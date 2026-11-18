@@ -7,6 +7,7 @@ import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.contracts.EInvoiceBuyerIncomplete;
 import com.stockflow.customer.api.CustomerLegalProfile;
 import com.stockflow.customer.api.CustomerLegalProfiles;
 import com.stockflow.customer.api.CustomerService;
@@ -21,6 +22,7 @@ import com.stockflow.order.api.DeliveredShipment;
 import com.stockflow.order.api.DeliveredShipments;
 import com.stockflow.order.api.FeeKind;
 import com.stockflow.order.api.OrderShippingFee;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -82,15 +84,17 @@ public class EInvoiceDrafts {
     private final CustomerLegalProfiles legalProfiles;
     private final CustomerService customers;
     private final SellerProperties seller;
+    private final ApplicationEventPublisher events;
     private final Clock clock;
 
     EInvoiceDrafts(EInvoiceRepository invoices, DeliveredShipments shipments, CustomerLegalProfiles legalProfiles,
-                   CustomerService customers, SellerProperties seller, Clock clock) {
+                   CustomerService customers, SellerProperties seller, ApplicationEventPublisher events, Clock clock) {
         this.invoices = invoices;
         this.shipments = shipments;
         this.legalProfiles = legalProfiles;
         this.customers = customers;
         this.seller = seller;
+        this.events = events;
         this.clock = clock;
     }
 
@@ -161,7 +165,9 @@ public class EInvoiceDrafts {
                 new InvoiceParty(seller.name(), seller.taxCode(), seller.address(), null),
                 buyerOf(delivered.customerId()), lines.lines(), lines.rateDiffersFromContract(),
                 lines.rateNotOnContract());
-        return new DrawnUp(invoices.save(invoice).snapshot(), true);
+        EInvoice.Snapshot drawn = invoices.save(invoice).snapshot();
+        announceIncompleteBuyer(drawn);
+        return new DrawnUp(drawn, true);
     }
 
     /**
@@ -236,16 +242,49 @@ public class EInvoiceDrafts {
                 new InvoiceParty(seller.name(), seller.taxCode(), seller.address(), null),
                 buyerOf(order.customerId()), List.of(line), differs(fee.taxRate(), fee.contractTaxRate()),
                 fee.contractTaxRate() == null);
-        return Optional.of(new DrawnUp(invoices.save(invoice).snapshot(), true));
+        EInvoice.Snapshot drawn = invoices.save(invoice).snapshot();
+        announceIncompleteBuyer(drawn);
+        return Optional.of(new DrawnUp(drawn, true));
     }
 
-    /** The buyer copied again from the customer's legal profile, onto a draft (kltn-docs 21 §4.2 step 4). */
+    /**
+     * The buyer copied again from the customer's legal profile, onto a draft (kltn-docs 21 §4.2 step 4). Still
+     * incomplete, Sales are told what is missing again ({@link EInvoiceBuyerIncomplete}; told once per gap).
+     */
     @Transactional
     @Auditable(action = AuditAction.UPDATE, resourceType = "einvoice", resourceId = "#id")
     public EInvoice.Snapshot refreshBuyer(UUID id, long expectedVersion) {
         EInvoice invoice = lock(id, expectedVersion);
         invoice.reviseBuyer(buyerOf(invoice.customerId()));
-        return invoices.save(invoice).snapshot();
+        EInvoice.Snapshot refreshed = invoices.save(invoice).snapshot();
+        announceIncompleteBuyer(refreshed);
+        return refreshed;
+    }
+
+    /**
+     * Tells Sales, in this transaction, what the customer's profile lacks for the draft to be issued (HĐ-8; kltn-docs
+     * 21 BR-06: "thiếu thì chặn, báo Sale bổ sung"): issuing is refused until it is there, and only Sales can record
+     * it. Nothing when the buyer is complete.
+     */
+    private void announceIncompleteBuyer(EInvoice.Snapshot draft) {
+        InvoiceParty buyer = draft.buyer();
+        List<EInvoiceBuyerIncomplete.Missing> missing = new ArrayList<>();
+        if (buyer.name() == null) {
+            missing.add(EInvoiceBuyerIncomplete.Missing.NAME);
+        }
+        if (buyer.taxCode() == null) {
+            missing.add(EInvoiceBuyerIncomplete.Missing.TAX_CODE);
+        }
+        if (buyer.address() == null) {
+            missing.add(EInvoiceBuyerIncomplete.Missing.ADDRESS);
+        }
+        if (buyer.email() == null) {
+            missing.add(EInvoiceBuyerIncomplete.Missing.EMAIL);
+        }
+        if (!missing.isEmpty() && draft.customerId() != null) {
+            events.publishEvent(new EInvoiceBuyerIncomplete(draft.id(), draft.code(), draft.orderId(),
+                    draft.orderNumber(), draft.customerId(), List.copyOf(missing)));
+        }
     }
 
     /**

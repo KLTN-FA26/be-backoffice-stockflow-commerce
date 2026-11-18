@@ -37,8 +37,8 @@ import java.util.UUID;
  *   <li><b>A draft</b> takes two corrections - the buyer (refreshed from the customer's profile, or typed by the
  *       accountant) and the names on its lines. Its money never changes: quantities and prices are the contract's,
  *       and a draft that got them wrong is voided and drawn up again from the order.</li>
- *   <li><b>Issuing</b> needs a complete buyer (name, tax code, address - the e-mail only decides whether the
- *       invoice is also mailed) and a series for the invoice's year.
+ *   <li><b>Issuing</b> needs a complete buyer (name, tax code, address) with an e-mail that receives the invoice
+ *       (kltn-docs 21 BR-06; HĐ-8) and a series for the invoice's year.
  *       It gives the invoice a transaction id - its own id and the attempt's number - under which the provider knows
  *       at most one invoice. Every later question to the provider is asked under that id, so a reply that was lost can
  *       never turn into a second invoice for the same delivery.</li>
@@ -77,6 +77,14 @@ public final class EInvoice {
     public enum Warning {
         /** The buyer's name, tax code or address is missing: issuing is refused until it is there. */
         BUYER_PROFILE_INCOMPLETE,
+        /**
+         * HĐ-8: the buyer has no e-mail to receive the invoice, and issuing is refused until it has one
+         * ({@code EINVOICE_BUYER_EMAIL_MISSING}). kltn-docs 21 BR-06 lists it with the tax code as required before an
+         * invoice is issued, and Sales are told to add it ({@code EInvoiceBuyerIncomplete}); the legal review held it
+         * is not invoice content in law (WF05-E0 L7, which is why {@code ck_einvoice_buyer_complete} does not ask for
+         * it), so it is a warning of its own, apart from {@link #BUYER_PROFILE_INCOMPLETE}, and a code of its own.
+         */
+        BUYER_EMAIL_MISSING,
         /** A line's VAT rate on the day of delivery is not the one the contract fixed: the totals differ from the contract's. */
         TAX_RATE_DIFFERS_FROM_CONTRACT,
         /**
@@ -101,11 +109,26 @@ public final class EInvoice {
          * id could become a second invoice). It waits for the accountant, who sends it as a new transaction once the
          * provider confirms it holds none. Gone when the invoice is issued or leaves the provider.
          */
-        UNKNOWN_TO_PROVIDER
+        UNKNOWN_TO_PROVIDER,
+        /**
+         * HĐ-8: the provider issued the invoice, but the seller's digital signature on the XML it handed back does not
+         * hold ({@code InvoiceXmlSignature}: changed content, a signature its certificate did not make, none at all).
+         * The invoice exists in law and stays issued; it is not sent to the buyer, and the accountant replaces it.
+         * The only warning an issued invoice carries; set as it is issued, since an issued invoice changes no more and
+         * its stored XML always checks the same.
+         */
+        SIGNATURE_INVALID
     }
 
     /** The rejection code of an invoice taken back from a provider that confirmed it holds no such transaction. */
     public static final String UNKNOWN_TO_PROVIDER_CODE = "UNKNOWN_TO_PROVIDER";
+
+    /**
+     * The rejection code of an invoice the accountant took back from the provider after it was stuck there, the
+     * provider confirming it has no record of it (HĐ-1, {@code EInvoiceIssuance.withdraw}): reopened and issued again
+     * under a new transaction like any refused one. The accountant's reason is its rejection message.
+     */
+    public static final String WITHDRAWN_CODE = "WITHDRAWN_NO_PROVIDER_RECORD";
 
     /** How the customer pays: by bank transfer against the contract's installments (kltn-docs 15), always. */
     public static final String BANK_TRANSFER = "BANK_TRANSFER";
@@ -340,9 +363,7 @@ public final class EInvoice {
         }
         BigDecimal total = net.add(tax);
         Set<Warning> warnings = EnumSet.noneOf(Warning.class);
-        if (!buyer.completeBuyer()) {
-            warnings.add(Warning.BUYER_PROFILE_INCOMPLETE);
-        }
+        buyerWarnings(buyer, warnings);
         if (taxRateDiffersFromContract) {
             warnings.add(Warning.TAX_RATE_DIFFERS_FROM_CONTRACT);
         }
@@ -506,9 +527,7 @@ public final class EInvoice {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "buyer.name: required");
         }
         Set<Warning> warnings = EnumSet.noneOf(Warning.class);
-        if (!buyer.completeBuyer()) {
-            warnings.add(Warning.BUYER_PROFILE_INCOMPLETE);
-        }
+        buyerWarnings(buyer, warnings);
         if (atZeroRate(lines)) {
             warnings.add(Warning.TAX_EXEMPT_NOT_SUPPORTED);
         }
@@ -519,6 +538,18 @@ public final class EInvoice {
                 totals.net(), totals.tax(), totals.total(), VietnameseAmountInWords.of(totals.total()), warnings,
                 reason.strip(), null, null, null, null, null, null, null, null, null, null, null, 0, basis, null, null,
                 returnRequestId, listed));
+    }
+
+    /** {@link Warning#BUYER_PROFILE_INCOMPLETE} and {@link Warning#BUYER_EMAIL_MISSING}, as the buyer is now. */
+    private static void buyerWarnings(InvoiceParty buyer, Set<Warning> warnings) {
+        warnings.remove(Warning.BUYER_PROFILE_INCOMPLETE);
+        warnings.remove(Warning.BUYER_EMAIL_MISSING);
+        if (!buyer.completeBuyer()) {
+            warnings.add(Warning.BUYER_PROFILE_INCOMPLETE);
+        }
+        if (buyer.email() == null) {
+            warnings.add(Warning.BUYER_EMAIL_MISSING);
+        }
     }
 
     /** Whether a line other than a note is at 0%: only an EXEMPT one ({@link Warning#TAX_EXEMPT_NOT_SUPPORTED}). */
@@ -544,11 +575,7 @@ public final class EInvoice {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "buyer.name: required");
         }
         this.buyer = revised;
-        if (revised.completeBuyer()) {
-            warnings.remove(Warning.BUYER_PROFILE_INCOMPLETE);
-        } else {
-            warnings.add(Warning.BUYER_PROFILE_INCOMPLETE);
-        }
+        buyerWarnings(revised, warnings);
     }
 
     /**
@@ -638,7 +665,8 @@ public final class EInvoice {
      * @param by who issued it; null when it was issued automatically
      * @throws BusinessException {@code EINVOICE_INVALID_TRANSITION} unless it is a draft;
      *                           {@code EINVOICE_BUYER_PROFILE_INCOMPLETE} while the buyer's name, tax code or address
-     *                           is missing; {@code EINVOICE_AGREEMENT_REQUIRED} for the correction
+     *                           is missing; {@code EINVOICE_BUYER_EMAIL_MISSING} while it has no e-mail to receive
+     *                           the invoice; {@code EINVOICE_AGREEMENT_REQUIRED} for the correction
      *                           of an error without the agreement of both parties;
      *                           {@code EINVOICE_TAX_EXEMPT_NOT_SUPPORTED} for a line at 0%
      *                           ({@link Warning#TAX_EXEMPT_NOT_SUPPORTED});
@@ -650,6 +678,10 @@ public final class EInvoice {
         if (!buyer.completeBuyer()) {
             throw new BusinessException(ErrorCode.EINVOICE_BUYER_PROFILE_INCOMPLETE,
                     "Invoice %s: the buyer's name, tax code and address are all needed".formatted(code));
+        }
+        if (buyer.email() == null) {
+            throw new BusinessException(ErrorCode.EINVOICE_BUYER_EMAIL_MISSING, ("Invoice %s: the buyer has no e-mail to "
+                    + "receive it (kltn-docs 21 BR-06); Sales records one, then the buyer is refreshed").formatted(code));
         }
         if (correctionBasis != null && correctionBasis.requiresAgreement() && agreementFileKey == null) {
             throw new BusinessException(ErrorCode.EINVOICE_AGREEMENT_REQUIRED, ("Invoice %s corrects an error: the "
@@ -706,6 +738,18 @@ public final class EInvoice {
         this.issuedAt = Objects.requireNonNull(now, "now");
         // Whatever was worth a look is settled by the invoice having been issued.
         this.warnings.clear();
+    }
+
+    /**
+     * The seller's signature on the XML just handed back does not hold ({@link Warning#SIGNATURE_INVALID}). Only while
+     * the invoice is being recorded as issued: in the same write, since an issued invoice changes no more
+     * ({@code tg_einvoice_issued_immutable}).
+     */
+    public void signatureInvalid() {
+        if (status != EInvoiceStatus.ISSUED || issuedAt == null) {
+            throw new IllegalStateException("Only an invoice being recorded as issued is flagged for its signature");
+        }
+        warnings.add(Warning.SIGNATURE_INVALID);
     }
 
     /**

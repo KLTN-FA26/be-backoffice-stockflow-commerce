@@ -286,15 +286,35 @@ class EInvoiceTest {
         }
 
         @Test
-        @DisplayName("E0 L7: a buyer without an e-mail is issued - the e-mail is where it is mailed, not invoice content")
-        void aBuyerWithoutAnEmailIsIssued() {
+        @DisplayName("HĐ-8, 21 BR-06: a buyer without an e-mail to receive the invoice is flagged on its own and not "
+                + "issued, under a code of its own; with one it is")
+        void aBuyerWithoutAnEmailIsNotIssued() {
             EInvoice invoice = EInvoiceFixtures.draft(new InvoiceParty(BUYER.name(), BUYER.taxCode(), BUYER.address(),
                     null));
-            assertThat(invoice.warnings()).as("nothing holds back the automatic issuing").isEmpty();
+            assertThat(invoice.warnings()).as("not issued automatically either")
+                    .containsExactly(EInvoice.Warning.BUYER_EMAIL_MISSING);
 
+            assertThatThrownBy(() -> invoice.submit(SERIES, null, NOW))
+                    .extracting(EInvoiceTest::code).isEqualTo(ErrorCode.EINVOICE_BUYER_EMAIL_MISSING);
+            assertThat(invoice.status()).isEqualTo(DRAFT);
+
+            invoice.reviseBuyer(BUYER);
+            assertThat(invoice.warnings()).isEmpty();
             invoice.submit(SERIES, null, NOW);
-
             assertThat(invoice.status()).isEqualTo(SUBMITTING);
+        }
+
+        @Test
+        @DisplayName("HĐ-8: only an invoice recorded as issued is flagged for its signature, never a draft")
+        void theSignatureFlagIsSetOnlyAsItIsIssued() {
+            EInvoice invoice = EInvoiceFixtures.draft();
+            assertThatThrownBy(invoice::signatureInvalid).isInstanceOf(IllegalStateException.class);
+            invoice.submit(SERIES, null, NOW);
+            invoice.issued(7, "CQT", "LOOK", NOW, "x.xml", "x.pdf", NOW);
+
+            invoice.signatureInvalid();
+
+            assertThat(invoice.warnings()).containsExactly(EInvoice.Warning.SIGNATURE_INVALID);
         }
 
         @Test

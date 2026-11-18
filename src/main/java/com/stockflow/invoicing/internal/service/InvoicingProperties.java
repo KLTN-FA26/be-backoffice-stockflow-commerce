@@ -18,11 +18,17 @@ import java.util.List;
  *                       stuck; far longer than a provider takes, far shorter than the working day the law leaves
  * @param sandbox        how the sandbox provider behaves
  * @param corrections    what is done about an issued invoice that was wrong, where the law read leaves it open
+ * @param withdrawAfter  how long after it was last sent an invoice the provider has no record of may be taken back
+ *                       from it by the accountant (HĐ-1, {@code EInvoiceIssuance.withdraw}): longer than the provider
+ *                       can still be working on a request it took in - SePay retries one for up to two hours
+ * @param quotaWarningBelow the provider's remaining invoices under which the accountants are warned, once a day
+ *                       (kltn-docs 21 BR-09); 0 turns the warning off
  */
 @ConfigurationProperties(prefix = "stockflow.invoicing")
 public record InvoicingProperties(@DefaultValue("P1D") Duration dueWarningLead,
                                   @DefaultValue("PT30M") Duration stuckAfter, @DefaultValue Sandbox sandbox,
-                                  @DefaultValue Corrections corrections) {
+                                  @DefaultValue Corrections corrections, @DefaultValue("PT3H") Duration withdrawAfter,
+                                  @DefaultValue("50") long quotaWarningBelow) {
 
     /**
      * The constructor properties are bound through. Named, because a record with more than one constructor is
@@ -32,6 +38,19 @@ public record InvoicingProperties(@DefaultValue("P1D") Duration dueWarningLead,
     public InvoicingProperties {
         stuckAfter = stuckAfter == null ? DEFAULT_STUCK_AFTER : stuckAfter;
         corrections = corrections == null ? new Corrections(false) : corrections;
+        withdrawAfter = withdrawAfter == null ? DEFAULT_WITHDRAW_AFTER : withdrawAfter;
+        if (withdrawAfter.compareTo(Duration.ofHours(2)) <= 0) {
+            // SePay retries a request it took in for up to two hours: taking an invoice back sooner could race it.
+            throw new IllegalArgumentException("stockflow.invoicing.withdraw-after must be longer than two hours");
+        }
+        if (quotaWarningBelow < 0) {
+            throw new IllegalArgumentException("stockflow.invoicing.quota-warning-below is not negative");
+        }
+    }
+
+    /** As before stuck invoices could be taken back and the quota was watched: their defaults. */
+    public InvoicingProperties(Duration dueWarningLead, Duration stuckAfter, Sandbox sandbox, Corrections corrections) {
+        this(dueWarningLead, stuckAfter, sandbox, corrections, DEFAULT_WITHDRAW_AFTER, DEFAULT_QUOTA_WARNING_BELOW);
     }
 
     /** As before corrections existed: nothing the law leaves open is turned on. */
@@ -45,6 +64,8 @@ public record InvoicingProperties(@DefaultValue("P1D") Duration dueWarningLead,
     }
 
     private static final Duration DEFAULT_STUCK_AFTER = Duration.ofMinutes(30);
+    private static final Duration DEFAULT_WITHDRAW_AFTER = Duration.ofHours(3);
+    private static final long DEFAULT_QUOTA_WARNING_BELOW = 50;
 
     /**
      * @param errorNoticeWithCorrection whether a 04/SS-HĐĐT notice may also be recorded for an invoice that was

@@ -5,6 +5,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
+import java.util.OptionalLong;
 
 /**
  * Port: an e-invoice provider - the company outside the system that signs an invoice, sends it to the tax authority
@@ -90,6 +92,75 @@ public interface EInvoiceProvider {
     }
 
     /**
+     * Whether a refusal code this provider answered is about <b>the account</b> rather than the invoice: the plan's
+     * quota used up, its bill unpaid, the registration not finished or not approved by the tax authority (HĐ-1). Such a
+     * refusal is still a refusal - nothing was created - but every invoice sent meanwhile meets it, and it is fixed on
+     * the provider's portal, not on the invoice: the accountants are told once per cause, not once per invoice.
+     *
+     * @param errorCode the rejection code the provider's answer was recorded under
+     * @return the kind of problem; empty for a refusal of the invoice itself, and for every code by default
+     */
+    default Optional<AccountProblem> accountProblem(String errorCode) {
+        return Optional.empty();
+    }
+
+    /** What is wrong with the account a provider is called with (HĐ-1). */
+    enum AccountProblem {
+        /** The plan's invoices are used up: more are bought on the provider's portal. */
+        QUOTA_EXHAUSTED,
+        /** The plan is not paid. */
+        BILLING_UNPAID,
+        /** The registration is not complete, not approved by the tax authority, or not found. */
+        ACCOUNT_NOT_READY
+    }
+
+    /**
+     * How many invoices the provider's plan still issues (kltn-docs 21 BR-09), asked now; empty when the provider has
+     * no such figure (the sandbox, Viettel's adapter) or is not configured.
+     *
+     * @throws ProviderUnavailableException when the provider did not answer
+     */
+    default OptionalLong remainingQuota() {
+        return OptionalLong.empty();
+    }
+
+    /**
+     * Whether this provider can send a 04/SS-HĐĐT notice ({@link #notifyError}). One that cannot is never handed one:
+     * the notice is filed on the provider's or the tax authority's portal by hand, and nothing here records it as sent
+     * (HĐ-6) - a notice recorded but never sendable used to tell the buyer the tax authority was notified.
+     */
+    default boolean sendsErrorNotices() {
+        return false;
+    }
+
+    /**
+     * Whether the XML this provider hands back carries the seller's digital signature, so an issued invoice's XML is
+     * checked ({@code InvoiceXmlSignature}) before the buyer is sent it (HĐ-8). The sandbox signs nothing; a real
+     * provider's test system may not either.
+     */
+    default boolean signsDocuments() {
+        return true;
+    }
+
+    /**
+     * Whether the account offers a series - the provider's own template code and the symbol - so a series it would
+     * refuse every invoice under is refused when it is declared (HĐ-1).
+     *
+     * @throws ProviderUnavailableException when the provider did not answer
+     */
+    default SeriesCheck checkSeries(String providerTemplateCode, String symbol) {
+        return SeriesCheck.NOT_CHECKED;
+    }
+
+    /** What {@link #checkSeries} found. */
+    enum SeriesCheck {
+        OFFERED,
+        NOT_OFFERED,
+        /** The provider lists no templates, or is not configured yet: nothing is known either way. */
+        NOT_CHECKED
+    }
+
+    /**
      * A real provider's promise "the same transaction id is never a second invoice" has edges, and this states them so
      * the caller stays inside.
      *
@@ -131,9 +202,9 @@ public interface EInvoiceProvider {
      * authority through the provider, and returns its answer (Mẫu 01/TB-SSĐT, khoản 4) if it is already there. The
      * notice's reference is the system's own and the provider treats a second sending of it as the first again.
      *
-     * <p>A provider that has no such call answers {@link NoticeOutcome#NOT_SUPPORTED}: the notice stays recorded and
-     * is filed with the tax authority by hand. That is the default, so an implementation written before notices
-     * existed needs no change.</p>
+     * <p>Called only on a provider that says {@link #sendsErrorNotices()}: a notice for any other is refused before it
+     * is recorded, and filed by hand on a portal (HĐ-6). The default still answers {@link NoticeOutcome#NOT_SUPPORTED},
+     * which leaves a notice as it was, so nothing is ever taken for sent that was not.</p>
      *
      * @throws ProviderUnavailableException when the provider did not answer
      */
@@ -178,8 +249,18 @@ public interface EInvoiceProvider {
         REJECTED
     }
 
-    /** @param errorCode and {@code message}: why it was refused; null unless REJECTED */
-    record Submission(SubmissionOutcome outcome, String errorCode, String message) {
+    /**
+     * @param errorCode         and {@code message}: why it was refused; null unless REJECTED
+     * @param providerReference the provider's own handle on the submission, for a provider that tells its result
+     *                          only through it (SePay's tracking code); kept in the call log, never needed again by
+     *                          anyone else; null when there is none
+     */
+    record Submission(SubmissionOutcome outcome, String errorCode, String message, String providerReference) {
+
+        /** A submission the provider gives no handle on. */
+        public Submission(SubmissionOutcome outcome, String errorCode, String message) {
+            this(outcome, errorCode, message, null);
+        }
     }
 
     /** Where a transaction stands at the provider. */

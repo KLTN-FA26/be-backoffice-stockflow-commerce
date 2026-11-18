@@ -97,7 +97,8 @@ final class InvoicingWebMapper {
 
     static ProviderCallResponse toResponse(ProviderCallLog.Call call) {
         return new ProviderCallResponse(call.provider(), call.transactionId(), call.operation().name(),
-                call.outcome().name(), call.httpStatus(), call.errorCode(), call.calledAt(), call.durationMs());
+                call.outcome().name(), call.httpStatus(), call.errorCode(), call.calledAt(), call.durationMs(),
+                call.providerReference());
     }
 
     static CustomerEInvoiceErrorNoticeResponse toCustomerResponse(ErrorNotice.Snapshot notice) {

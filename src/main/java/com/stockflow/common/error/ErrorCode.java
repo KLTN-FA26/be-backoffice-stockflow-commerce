@@ -423,6 +423,13 @@ public enum ErrorCode {
     EINVOICE_NOT_DRAFT("Only a draft e-invoice can be changed", 409),
     /** WF-05 E2 (21 BR-06; NĐ 254 Phụ lục điểm 4.b): the buyer's name, tax code or address is missing, so the invoice is not issued. */
     EINVOICE_BUYER_PROFILE_INCOMPLETE("The buyer's name, tax code and address are needed before the invoice is issued", 409),
+    /**
+     * HĐ-8, kltn-docs 21 BR-06 and §4.2 step 4: the buyer has no e-mail to receive the invoice, so it is not issued until
+     * Sales records one on the customer and the accountant refreshes the buyer. Apart from the name, tax code and address
+     * because it is the business rule, not the law (legal review WF05-E0 L7: not invoice content), and the client tells
+     * the two apart.
+     */
+    EINVOICE_BUYER_EMAIL_MISSING("The buyer has no e-mail to receive the invoice; Sales records one, then the buyer is refreshed on the invoice", 409),
     /** WF-05 E2 (21 BR-01): the shipment is not delivered, or delivered nothing an invoice can carry. */
     EINVOICE_NOT_INVOICEABLE("This shipment cannot be invoiced: it is not delivered", 409),
     /**
@@ -433,6 +440,11 @@ public enum ErrorCode {
     EINVOICE_DELIVERY_TIME_MISSING("The delivery has no delivery time to date its invoice by; record it first", 409),
     /** WF-05 E2 (TT 91 Điều 4): no invoice series is in use at the provider for the invoice's year. */
     EINVOICE_SERIES_NOT_CONFIGURED("No invoice series is configured for the invoice's year", 409),
+    /**
+     * HĐ-1: the provider does not list this template code and symbol among the account's templates (SePay:
+     * {@code GET /v1/provider-accounts/{id}}, {@code templates}), so every invoice sent under it would be refused.
+     */
+    EINVOICE_SERIES_NOT_AT_PROVIDER("The e-invoice provider does not offer this template code and symbol on the account", 409),
     /**
      * WF-05 E2, HĐ-2 (NĐ 254 Phụ lục điểm 2; TT 91 Điều 10 khoản 6a): an invoice of the same provider and series dated
      * earlier is at the provider and may already hold the next number; sending this one now could give it the lower
@@ -453,8 +465,19 @@ public enum ErrorCode {
     EINVOICE_PROVIDER_ACCOUNT_INCOMPLETE("The e-invoice provider's account is not stored yet", 409),
     /** WF-05 E3: an invoice at the provider is sent as a new transaction only when the provider no longer remembers the old one and confirms it holds no such invoice. */
     EINVOICE_RESUBMISSION_REFUSED("The e-invoice cannot be sent as a new transaction: the provider may hold it", 409),
+    /**
+     * HĐ-1: an invoice stuck at the provider is taken back (to REJECTED, reopenable) only when it has waited longer than
+     * the provider can still be working on it and the provider, asked now, has no record of it.
+     */
+    EINVOICE_WITHDRAWAL_REFUSED("The e-invoice cannot be taken back from the provider: it is too recent, or the provider may hold it", 409),
     /** WF-05 E3+E4: the provider in use writes every invoice as an original, so a correction sent to it would be a second invoice. */
     EINVOICE_PROVIDER_CANNOT_CORRECT("The e-invoice provider in use cannot issue adjustments or replacements yet; the correction is kept as a draft", 409),
+    /**
+     * HĐ-5: an adjustment or replacement goes through the provider that issued the invoice it corrects - only it knows
+     * that invoice - and that provider is no longer usable here (no implementation, no account, or no series in use for
+     * the year).
+     */
+    EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE("The provider that issued the original e-invoice is not usable any more; the correction is not sent to another provider", 409),
     /** WF-05 E4 (TT 91 Điều 10): only an issued invoice still in force is adjusted, replaced or notified as drawn up wrongly. */
     EINVOICE_NOT_IN_FORCE("Only an issued e-invoice that is still in force can be corrected", 409),
     /** WF-05 E4 (TT 91 Điều 10 khoản 6 điểm a): an invoice already adjusted is adjusted again, one replaced is replaced again. */
@@ -469,6 +492,12 @@ public enum ErrorCode {
     EINVOICE_ERROR_NOTICE_NOT_FOUND("Notice of an e-invoice drawn up wrongly not found", 404),
     /** WF-05 E4: a notice of this invoice is still on its way, or the notice asked about is already answered. */
     EINVOICE_ERROR_NOTICE_NOT_SENDABLE("This notice cannot be recorded or sent now: another one of the invoice is still open, or it is already answered", 409),
+    /**
+     * HĐ-6: the provider that issued the invoice has no call for a 04/SS-HĐĐT notice (SePay's API has none; Viettel's
+     * adapter sends none), so the notice is filed on the provider's or the tax authority's portal by hand, and nothing
+     * here records it as sent.
+     */
+    EINVOICE_ERROR_NOTICE_NOT_SUPPORTED("The e-invoice provider cannot send a notice of an invoice drawn up wrongly; file form 04/SS-HDDT on the provider's or the tax authority's portal", 409),
     /**
      * 4B-4, WF-05 E2, BE3-A: stockflow.seller.* is blank in this deployment; no quote PDF, contract or invoice names a
      * seller.

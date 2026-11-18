@@ -34,8 +34,14 @@ import java.util.UUID;
  *
  * <p>Recorded first, committed, then sent - with no transaction open while the provider is called. A provider that
  * does not answer leaves the notice a draft, to be sent again ({@link #send}); the notice's own id is its reference at
- * the provider, so a second sending is the first again. A provider with no call for notices leaves it a draft too: it
- * is then filed with the tax authority by hand, and the record of what was notified is here either way.</p>
+ * the provider, so a second sending is the first again. The buyer is told once the provider took it in.</p>
+ *
+ * <p><b>Only through a provider that can send one</b> ({@code EInvoiceProvider.sendsErrorNotices}; HĐ-6). SePay's
+ * eInvoice API has no call for this form (developer.sepay.vn/vi/einvoice-api/v1/tong-quan lists none) and Viettel's
+ * adapter sends none, so for their invoices a notice is refused ({@code EINVOICE_ERROR_NOTICE_NOT_SUPPORTED}) and filed
+ * on the provider's or the tax authority's portal. It used to be recorded and left a draft that nothing could send,
+ * while the buyer was told the tax authority had been notified and every later notice of the invoice was refused as
+ * "another one is open".</p>
  */
 @Service
 public class EInvoiceErrorNotices {
@@ -80,14 +86,16 @@ public class EInvoiceErrorNotices {
      * what the provider says.
      *
      * @throws com.stockflow.common.error.BusinessException {@code EINVOICE_ERROR_NOTICE_NOT_FOUND}; {@code EINVOICE_ERROR_NOTICE_NOT_SENDABLE}
-     *         once it was answered; {@code EINVOICE_PROVIDER_UNAVAILABLE} when the provider the invoice was issued
-     *         through is not in this application
+     *         once it was answered; {@code EINVOICE_ERROR_NOTICE_NOT_SUPPORTED} when the provider the invoice was
+     *         issued through cannot send it (a draft recorded before that was refused: filed on a portal by hand);
+     *         {@code EINVOICE_PROVIDER_UNAVAILABLE} when the provider is not in this application
      */
     public ErrorNotice.Snapshot send(UUID invoiceId, UUID noticeId) {
         ErrorNoticeSteps.Loaded loaded = steps.load(invoiceId, noticeId);
         EInvoice.Snapshot invoice = loaded.invoice();
         ErrorNotice.Snapshot notice = loaded.notice();
         EInvoiceProvider provider = providers.require(invoice.provider());
+        steps.requireSendable(invoice);
         ErrorNoticeDocument document = new ErrorNoticeDocument(notice.id().toString(), notice.formCode(),
                 invoice.taxAuthorityCode(), invoice.templateCode(), invoice.symbol(), invoice.invoiceNumber(),
                 invoice.issueDate(), invoice.seller(), invoice.buyer().taxCode(), notice.reason(),

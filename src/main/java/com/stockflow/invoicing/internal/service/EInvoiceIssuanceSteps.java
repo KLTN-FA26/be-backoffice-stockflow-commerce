@@ -10,6 +10,7 @@ import com.stockflow.common.storage.RecordRetention;
 import com.stockflow.common.storage.StoredFile;
 import com.stockflow.contracts.EInvoiceIssued;
 import com.stockflow.contracts.EInvoiceNeedsAttention;
+import com.stockflow.contracts.EInvoiceProviderAccountAlert;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceProvider;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
@@ -81,6 +82,14 @@ class EInvoiceIssuanceSteps {
      * overdue for one stuck invoice. The draft's screen still names such an invoice
      * ({@code EInvoiceQueryService.earlierPending}), and the automatic issuing takes drafts earliest dated first.</p>
      *
+     * <p><b>A correction goes through the provider that issued the invoice it corrects</b> (HĐ-5), whichever provider
+     * is in use now: the adjustment or replacement names that invoice in the provider's own terms (SePay: by the
+     * reference it was issued under), and the provider in use since a switch has never heard of it - SePay refuses
+     * such a correction ({@code INVALID_ORIGIN_INVOICE}) or, worse, it would wait at a provider that cannot answer for
+     * it. The original's provider must still be usable here ({@link EInvoiceProviders#usable}) and have a series in use
+     * for the correction's year; otherwise the correction is refused ({@code EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE})
+     * and never sent to another provider.</p>
+     *
      * <p>What this does not prevent: an invoice dated before invoices already issued - a delivery recorded late, a
      * draft issued after a later one - is still issued, with the next number and its own date (the delivery's). A rule
      * "no date before the series' last issued one" would leave such an invoice unissuable for good, which the law
@@ -98,7 +107,9 @@ class EInvoiceIssuanceSteps {
      *         {@code EINVOICE_OLDER_DRAFT_PENDING} (an invoice of the same series dated before it is at the provider),
      *         {@code EINVOICE_TAX_EXEMPT_NOT_SUPPORTED} (a line at 0%, which here can only be an EXEMPT one),
      *         {@code EINVOICE_PROVIDER_UNAVAILABLE}, {@code EINVOICE_PROVIDER_CANNOT_CORRECT} (a correction, to a
-     *         provider that would issue it as an original)
+     *         provider that would issue it as an original), {@code EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE} (a
+     *         correction, when the provider that issued the original is no longer usable),
+     *         {@code EINVOICE_BUYER_EMAIL_MISSING}
      */
     @Transactional
     public EInvoice.Snapshot submit(UUID id, Long expectedVersion, UUID by) {
@@ -108,19 +119,29 @@ class EInvoiceIssuanceSteps {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
                     "Invoice %s changed since it was read".formatted(invoice.code()));
         }
-        InvoiceSettings.Provider provider = settings.active();
+        String active = settings.active().provider();
+        String provider = active;
+        if (invoice.originalEInvoiceId() != null) {
+            provider = invoices.findById(invoice.originalEInvoiceId()).map(original -> original.snapshot().provider())
+                    .orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_FOUND));
+            if (!provider.equals(active) && !providers.usable(provider)) {
+                throw new BusinessException(ErrorCode.EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE, ("The invoice %s corrects "
+                        + "was issued through %s, which is not usable here any more; %s is not sent to %s").formatted(
+                        invoice.code(), provider, invoice.code(), active));
+            }
+        }
         // Refused here, not after the status moved: an invoice must not wait on a provider nobody can call.
-        EInvoiceProvider port = providers.require(provider.provider());
+        EInvoiceProvider port = providers.require(provider);
         if (invoice.originalEInvoiceId() != null && !port.issuesCorrections()) {
             // Sent anyway, it would come back an original: a second invoice for goods already invoiced.
             throw new BusinessException(ErrorCode.EINVOICE_PROVIDER_CANNOT_CORRECT,
-                    "%s issues no adjustment or replacement; %s is not sent".formatted(provider.provider(),
-                            invoice.code()));
+                    "%s issues no adjustment or replacement; %s is not sent".formatted(provider, invoice.code()));
         }
-        InvoiceSeries series = settings.seriesInUse(provider.provider(), invoice.issueDate().getYear())
-                .orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_SERIES_NOT_CONFIGURED,
-                        "No series is in use at %s for %d".formatted(provider.provider(),
-                                invoice.issueDate().getYear())));
+        String at = provider;
+        InvoiceSeries series = settings.seriesInUse(at, invoice.issueDate().getYear())
+                .orElseThrow(() -> new BusinessException(at.equals(active) ? ErrorCode.EINVOICE_SERIES_NOT_CONFIGURED
+                        : ErrorCode.EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE, "No series is in use at %s for %d".formatted(
+                        at, invoice.issueDate().getYear())));
         invoices.lockSeries(series);
         invoices.findEarlierSubmitting(invoice.id(), series, invoice.issueDate()).ifPresent(earlier -> {
             throw new BusinessException(ErrorCode.EINVOICE_OLDER_DRAFT_PENDING, ("%s is dated before %s and is at the "
@@ -136,9 +157,15 @@ class EInvoiceIssuanceSteps {
      * transaction ({@link EInvoiceNeedsAttention}): a refusal nobody hears of leaves the invoice unissued while its
      * deadline runs, and the refusal and its announcement are recorded together or not at all.
      *
-     * <p>Except for {@link EInvoice#UNKNOWN_TO_PROVIDER_CODE}: that is not a refusal but the first half of sending an
-     * invoice again as a new transaction ({@link EInvoiceIssuance#resubmitAsNew}), done at the accountant's own
-     * request. Announcing it would tell the accountant that an invoice was refused at the moment it is being sent.</p>
+     * <p>Except for {@link EInvoice#UNKNOWN_TO_PROVIDER_CODE} and {@link EInvoice#WITHDRAWN_CODE}: neither is a
+     * refusal, both are done at the accountant's own request - the first half of sending an invoice again as a new
+     * transaction ({@link EInvoiceIssuance#resubmitAsNew}), and taking an invoice stuck at the provider back
+     * ({@link EInvoiceIssuance#withdraw}). Announcing them would tell the accountant of what they just did.</p>
+     *
+     * <p>And a refusal of <b>the account</b> rather than the invoice ({@link EInvoiceProvider#accountProblem}: the
+     * plan's quota used up, its bill unpaid, the registration not ready - HĐ-1) is announced as that, once per cause
+     * and day ({@link EInvoiceProviderAccountAlert}), not once per invoice: every invoice sent meanwhile meets the same
+     * refusal, and what the accountant does about it is on the provider's portal.</p>
      */
     @Transactional
     public void rejected(UUID id, String transactionId, String errorCode, String message) {
@@ -148,7 +175,16 @@ class EInvoiceIssuanceSteps {
         }
         invoice.rejected(errorCode == null || errorCode.isBlank() ? "REJECTED" : errorCode, message);
         EInvoice.Snapshot refused = invoices.save(invoice).snapshot();
-        if (EInvoice.UNKNOWN_TO_PROVIDER_CODE.equals(refused.rejectionCode())) {
+        if (EInvoice.UNKNOWN_TO_PROVIDER_CODE.equals(refused.rejectionCode())
+                || EInvoice.WITHDRAWN_CODE.equals(refused.rejectionCode())) {
+            return;
+        }
+        Optional<EInvoiceProvider.AccountProblem> account = providers.find(refused.provider())
+                .flatMap(provider -> provider.accountProblem(refused.rejectionCode()));
+        if (account.isPresent()) {
+            events.publishEvent(new EInvoiceProviderAccountAlert(refused.provider(),
+                    EInvoiceProviderAccountAlert.Problem.valueOf(account.get().name()), refused.rejectionCode(), null,
+                    null, clock.instant()));
             return;
         }
         events.publishEvent(new EInvoiceNeedsAttention(refused.id(), refused.code(), refused.orderId(),
@@ -177,6 +213,14 @@ class EInvoiceIssuanceSteps {
      * <p>{@link EInvoiceIssued} is published here, in the transaction that makes the invoice ISSUED, so the buyer is
      * told of exactly the invoices that were issued: the second arrival of the same answer returns above and publishes
      * nothing.</p>
+     *
+     * <p><b>The seller's signature is checked first</b> (HĐ-8), for a provider whose documents are signed
+     * ({@link EInvoiceProvider#signsDocuments()}): an XML whose signature does not hold - its content changed, a
+     * signature its certificate did not make, none at all - is still recorded, since the provider issued it and it
+     * exists in law, but flagged {@code SIGNATURE_INVALID}, and the accountants are told
+     * ({@link EInvoiceNeedsAttention.Cause#SIGNATURE_INVALID}) instead of the buyer being sent it: a buyer cannot
+     * declare an invoice whose signature fails, and the way out is a replacement, which is checked and sent on its own.
+     * Checked here, on the bytes about to be stored, because the stored XML never changes and always checks the same.</p>
      *
      * @throws com.stockflow.common.storage.StorageException when a file cannot be stored or locked
      */
@@ -216,7 +260,17 @@ class EInvoiceIssuanceSteps {
         }
         invoice.issued(result.invoiceNumber(), result.taxAuthorityCode(), result.lookupCode(), result.signedAt(),
                 xml.key(), pdf.key(), clock.instant());
+        boolean signed = providers.find(invoice.provider()).map(EInvoiceProvider::signsDocuments).orElse(false);
+        if (signed && !InvoiceXmlSignature.check(documents.xml()).valid()) {
+            invoice.signatureInvalid();
+        }
         EInvoice.Snapshot issued = invoices.save(invoice).snapshot();
+        if (issued.warnings().contains(EInvoice.Warning.SIGNATURE_INVALID)) {
+            events.publishEvent(new EInvoiceNeedsAttention(issued.id(), issued.code(), issued.orderId(),
+                    issued.orderNumber(), EInvoiceNeedsAttention.Cause.SIGNATURE_INVALID, null, issued.submittedAt(),
+                    issued.issueDueAt()));
+            return;
+        }
         events.publishEvent(new EInvoiceIssued(issued.id(), issued.code(), issued.orderId(), issued.orderNumber(),
                 issued.shipmentId(), issued.customerId(), issued.issuedAt()));
     }

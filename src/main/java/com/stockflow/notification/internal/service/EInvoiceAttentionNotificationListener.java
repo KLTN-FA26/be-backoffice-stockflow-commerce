@@ -22,7 +22,8 @@ import java.util.ResourceBundle;
  * Tells the people who issue e-invoices that one was refused, has waited too long for the provider, is no longer known
  * to the provider and will not be sent again unless they send it (WF-05 E5 and E3), or invoices a delivery that was
  * corrected to a failure after it went to the provider and needs a decrease adjustment (kltn-docs 21 §4.5; plan
- * §1.4 "Bị từ chối hoặc lỗi thì báo kế toán"). Without it a refusal is seen only by whoever happens to open the list,
+ * §1.4 "Bị từ chối hoặc lỗi thì báo kế toán"), or was issued with a seller's signature that does not hold and was not
+ * sent to the buyer (HĐ-8). Without it a refusal is seen only by whoever happens to open the list,
  * while the invoice's deadline - the working day after its date - keeps running. An in-app message, as the deadline
  * warning is ({@link EInvoiceDueNotificationListener}); nothing by e-mail.
  *
@@ -72,6 +73,7 @@ class EInvoiceAttentionNotificationListener {
             case STUCK_SUBMITTING -> "stuck";
             case UNKNOWN_TO_PROVIDER -> "unknown";
             case DELIVERY_FAILED_AFTER_SUBMISSION -> "delivery-failed";
+            case SIGNATURE_INVALID -> "signature-invalid";
         };
         String key = "inbox.einvoice." + kind;
         String body = event.cause() == EInvoiceNeedsAttention.Cause.REJECTED

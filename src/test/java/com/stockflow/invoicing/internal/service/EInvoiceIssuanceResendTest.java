@@ -50,8 +50,8 @@ class EInvoiceIssuanceResendTest {
     private final ProviderCallRecorder calls = mock(ProviderCallRecorder.class);
     private final EInvoiceProvider provider = mock(EInvoiceProvider.class);
     private final Clock clock = mock(Clock.class);
-    private final EInvoiceIssuance issuance = new EInvoiceIssuance(steps, providers, calls, clock,
-            mock(AsyncTaskExecutor.class));
+    private final EInvoiceIssuance issuance = new EInvoiceIssuance(steps, providers, calls,
+            new InvoicingProperties(Duration.ofDays(1), null), clock, mock(AsyncTaskExecutor.class));
     private EInvoice.Snapshot invoice;
     private UUID id;
     private String transaction;
@@ -210,5 +210,94 @@ class EInvoiceIssuanceResendTest {
 
         verify(provider, times(3)).query(transaction);
         verify(steps, times(2)).rejected(id, transaction, "ERR_TAX_CODE", "wrong");
+    }
+
+    @Test
+    @DisplayName("HĐ-1: the provider's handle on a submission it took in is kept with the call")
+    void theProvidersHandleOnASubmissionIsLogged() {
+        lastSent(Duration.ZERO);
+        now(Duration.ofMinutes(8));
+        when(provider.query(transaction)).thenReturn(Result.of(ResultState.NOT_FOUND), Result.of(ResultState.PENDING));
+        when(provider.submit(any())).thenReturn(new Submission(SubmissionOutcome.ACCEPTED, null, null,
+                "create/084e179d-d95a-11f0-aef4-52c7e9b4f41b"));
+
+        issuance.reconcile(id);
+
+        var logged = org.mockito.ArgumentCaptor.forClass(com.stockflow.invoicing.internal.domain.ProviderCallLog.Call.class);
+        verify(calls, times(3)).record(logged.capture());
+        assertThat(logged.getAllValues()).filteredOn(call -> call.operation()
+                        == com.stockflow.invoicing.internal.domain.ProviderCallLog.Operation.SUBMIT)
+                .singleElement().extracting(com.stockflow.invoicing.internal.domain.ProviderCallLog.Call::providerReference)
+                .isEqualTo("create/084e179d-d95a-11f0-aef4-52c7e9b4f41b");
+    }
+
+    // ---- HĐ-1: taking an invoice stuck at the provider back ------------------------------------------------------
+
+    @Test
+    @DisplayName("HĐ-1: last sent more than three hours ago and the provider has no record - taken back as REJECTED "
+            + "with the accountant's reason, not announced")
+    void aStuckInvoiceTheProviderHasNoRecordOfIsTakenBack() {
+        lastSent(Duration.ZERO);
+        now(Duration.ofHours(3));
+        when(provider.query(transaction)).thenReturn(Result.of(ResultState.NOT_FOUND));
+
+        issuance.withdraw(id, invoice.version(), "  SePay support: no invoice under this reference  ", null);
+
+        verify(steps).rejected(id, transaction, EInvoice.WITHDRAWN_CODE,
+                "SePay support: no invoice under this reference");
+        verify(provider, never()).submit(any());
+        verify(steps).release(eq(id), any(UUID.class));
+    }
+
+    @Test
+    @DisplayName("HĐ-1: sent less than three hours ago - refused, the provider is not even asked")
+    void aRecentSendIsNotTakenBack() {
+        lastSent(Duration.ZERO);
+        now(Duration.ofHours(3).minusSeconds(1));
+
+        assertThatThrownBy(() -> issuance.withdraw(id, invoice.version(), "stuck", null))
+                .isInstanceOfSatisfying(BusinessException.class, refused -> assertThat(refused.errorCode())
+                        .isEqualTo(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED));
+        verify(provider, never()).query(any());
+        verify(steps, never()).rejected(any(), any(), any(), any());
+        verify(steps).release(eq(id), any(UUID.class));
+    }
+
+    @Test
+    @DisplayName("HĐ-1: the provider holds it, is working on it, cannot confirm it, or does not answer - refused")
+    void anInvoiceTheProviderMayHoldIsNotTakenBack() {
+        lastSent(Duration.ZERO);
+        now(Duration.ofDays(1));
+        for (ResultState state : java.util.List.of(ResultState.ISSUED, ResultState.PENDING, ResultState.UNKNOWN,
+                ResultState.REJECTED)) {
+            when(provider.query(transaction)).thenReturn(Result.of(state));
+            assertThatThrownBy(() -> issuance.withdraw(id, invoice.version(), "stuck", null)).as(state.name())
+                    .isInstanceOfSatisfying(BusinessException.class, refused -> assertThat(refused.errorCode())
+                            .isEqualTo(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED));
+        }
+        when(provider.query(transaction)).thenThrow(new ProviderUnavailableException("no answer"));
+        assertThatThrownBy(() -> issuance.withdraw(id, invoice.version(), "stuck", null))
+                .isInstanceOfSatisfying(BusinessException.class, refused -> assertThat(refused.errorCode())
+                        .isEqualTo(ErrorCode.EINVOICE_PROVIDER_UNAVAILABLE));
+        verify(steps, never()).rejected(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("HĐ-1: without a reason, a stale version, another holder of the lease - refused, nothing asked")
+    void aWithdrawalNeedsAReasonTheVersionAndTheLease() {
+        lastSent(Duration.ZERO);
+        now(Duration.ofDays(1));
+        assertThatThrownBy(() -> issuance.withdraw(id, invoice.version(), " ", null))
+                .isInstanceOfSatisfying(BusinessException.class, refused -> assertThat(refused.errorCode())
+                        .isEqualTo(ErrorCode.VALIDATION_FAILED));
+        assertThatThrownBy(() -> issuance.withdraw(id, invoice.version() + 1, "stuck", null))
+                .isInstanceOfSatisfying(BusinessException.class, refused -> assertThat(refused.errorCode())
+                        .isEqualTo(ErrorCode.OPTIMISTIC_LOCK));
+        when(steps.claim(eq(id), any(UUID.class), any(Duration.class))).thenReturn(false);
+        assertThatThrownBy(() -> issuance.withdraw(id, invoice.version(), "stuck", null))
+                .isInstanceOfSatisfying(BusinessException.class, refused -> assertThat(refused.errorCode())
+                        .isEqualTo(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED));
+        verify(provider, never()).query(any());
+        verify(steps, never()).rejected(any(), any(), any(), any());
     }
 }

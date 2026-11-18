@@ -103,6 +103,18 @@ class EInvoiceAttentionNotificationListenerTest {
     }
 
     @Test
+    @DisplayName("HĐ-8 SIGNATURE_INVALID: critical, says the buyer was not sent it and asks for a replacement")
+    void anInvoiceWhoseSignatureDoesNotHoldIsAnnounced() {
+        InboxMessage sent = told(event(Cause.SIGNATURE_INVALID, null, SUBMITTED));
+
+        assertThat(sent.severity()).isEqualTo(InboxSeverity.CRITICAL);
+        assertThat(sent.title()).isEqualTo("Hoá đơn EINV-20261112-0001 đã phát hành nhưng chữ ký số không hợp lệ");
+        assertThat(sent.body()).contains("SO-20261101-0007", "09:15 12/11/2026", "chưa được gửi cho khách",
+                "thay thế");
+        assertThat(sent.dedupeKey()).isEqualTo("einvoice-signature-invalid:" + INVOICE + ":" + SUBMITTED.toEpochMilli());
+    }
+
+    @Test
     @DisplayName("one message per submission and cause: a redelivery repeats the key, the next attempt and the other "
             + "cause have their own")
     void oncePerSubmissionAndCause() {

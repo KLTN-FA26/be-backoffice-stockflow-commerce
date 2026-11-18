@@ -117,6 +117,9 @@ class Wf05ReturnPerDeliveryIntegrationTest {
         String taxCode = "03" + (10_000_000 + ThreadLocalRandom.current().nextInt(89_999_999));
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE customer.customer SET tax_code = ? WHERE id = ?", taxCode, customer);
+            // 21 BR-06 (HĐ-8): an invoice is issued only to a buyer with an e-mail to receive it.
+            jdbc.update("UPDATE customer.customer_legal_profile SET invoice_email = ? WHERE customer_id = ?",
+                    "hoa.don@" + customer + ".example.com", customer);
             jdbc.update("""
                     INSERT INTO customer.credit_profile (id, customer_id, credit_limit, credit_term_days, approved_by,
                                                          approved_at)
