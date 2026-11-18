@@ -59,6 +59,11 @@ interface WarehouseJpaRepository extends BaseJpaRepository<WarehouseJpaEntity> {
             """)
     List<PlacementRow> findPlacements(@Param("warehouseId") UUID warehouseId);
 
+    /** Every location code of the warehouse, bins and areas, of any status. */
+    @Query(nativeQuery = true, value = """
+            SELECT l.location_code FROM warehouse.storage_location l WHERE l.warehouse_id = :warehouseId""")
+    List<String> findLocationCodes(@Param("warehouseId") UUID warehouseId);
+
     interface PlacementRow {
         UUID getId();
 

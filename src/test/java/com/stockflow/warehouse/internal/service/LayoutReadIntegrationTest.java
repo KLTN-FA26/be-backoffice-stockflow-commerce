@@ -2,6 +2,7 @@ package com.stockflow.warehouse.internal.service;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -215,7 +216,9 @@ class LayoutReadIntegrationTest {
         @Test
         @DisplayName("an INACTIVE warehouse makes every location INACTIVE and unusable")
         void inactiveWarehouse() {
-            warehouses.deactivate(WAREHOUSE_HCM);
+            // By SQL: the subject is how the layout reads an inactive warehouse, and the demo warehouse holds cartons
+            // the service would refuse it for (06 BR-04, PlaceDeactivationIntegrationTest).
+            jdbc.update("UPDATE warehouse.warehouse SET status = 'INACTIVE' WHERE id = ?", WAREHOUSE_HCM);
             flushAndClear();
 
             WarehouseLayout layout = warehouses.layoutOf(WAREHOUSE_HCM);
@@ -233,6 +236,7 @@ class LayoutReadIntegrationTest {
         @Test
         @DisplayName("an INACTIVE shelf is still on the layout, marked so")
         void inactiveShelvesAreIncluded() {
+            CartonRows.moveOut(jdbc, "HCM-B01-", "HCM-OVF01");     // 06 BR-04: emptied before it goes off the layout
             shelves.changeShelfStatus(DemoData.shelf("B01"), LocationStatus.INACTIVE);
             flushAndClear();
 
