@@ -123,6 +123,8 @@ class LoadingSheetDocument {
         private final Facts facts;
         private final Layout layout;
         private final NumberFormat number = NumberFormat.getNumberInstance(VI);
+        /** Volumes in cubic metres to two decimals: a small load must not print as 0,2 beside a 1 % bar. */
+        private final NumberFormat volume = NumberFormat.getNumberInstance(VI);
         private final Map<String, Color> colors = new TreeMap<>();
         private PDPageContentStream out;
         private float y;
@@ -136,6 +138,8 @@ class LoadingSheetDocument {
             this.layout = facts.layout();
             this.number.setMaximumFractionDigits(1);
             this.number.setMinimumFractionDigits(0);
+            this.volume.setMaximumFractionDigits(2);
+            this.volume.setMinimumFractionDigits(0);
             List<String> skus = layout.boxes().stream().map(Layout.Box::partName).distinct().sorted().toList();
             for (int i = 0; i < skus.size(); i++) {
                 colors.put(skus.get(i), PALETTE[i % PALETTE.length]);
@@ -207,6 +211,8 @@ class LoadingSheetDocument {
         }
 
         private void totals() throws IOException {
+            // The percentages are worked out here from the very figures printed beside them - used over capacity - never
+            // taken from a stored fill percentage, so the bar, the % and the numbers cannot disagree.
             BigDecimal usedM3 = BigDecimal.valueOf(layout.usedVolumeMm3()).movePointLeft(9);
             BigDecimal innerM3 = BigDecimal.valueOf((long) layout.innerMm().l() * layout.innerMm().w()
                     * layout.innerMm().h()).movePointLeft(9);
@@ -214,10 +220,10 @@ class LoadingSheetDocument {
             text(bold, 10, t.getString("loading-sheet.pdf.totals").formatted(layout.boxes().size()), MARGIN, y - 10,
                     INK);
             y -= 18;
-            bar(t.getString("loading-sheet.pdf.volume").formatted(number.format(usedM3), number.format(innerM3)),
-                    layout.volumeFillPct());
+            bar(t.getString("loading-sheet.pdf.volume").formatted(volume.format(usedM3), volume.format(innerM3)),
+                    percent(usedM3, innerM3));
             bar(t.getString("loading-sheet.pdf.weight").formatted(number.format(layout.usedWeightKg()),
-                    number.format(layout.maxPayloadKg())), layout.weightFillPct());
+                    number.format(layout.maxPayloadKg())), percent(layout.usedWeightKg(), layout.maxPayloadKg()));
             if (facts.planStatus() != null) {
                 String note = switch (facts.planStatus()) {
                     case "DRAFT", "PLANNED" -> t.getString("loading-sheet.pdf.note.unconfirmed");
@@ -231,6 +237,14 @@ class LoadingSheetDocument {
             }
             y -= 2;
             rule();
+        }
+
+        /** {@code used} over {@code capacity}, in percent to one decimal; 0 when there is no capacity. */
+        private BigDecimal percent(BigDecimal used, BigDecimal capacity) {
+            if (capacity.signum() <= 0) {
+                return BigDecimal.ZERO;
+            }
+            return used.multiply(BigDecimal.valueOf(100)).divide(capacity, 1, java.math.RoundingMode.HALF_UP);
         }
 
         /** A caption, a bar filled to {@code pct} of the width (capped at the frame), and the percentage. */

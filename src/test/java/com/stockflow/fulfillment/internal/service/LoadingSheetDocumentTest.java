@@ -14,12 +14,15 @@ import org.junit.jupiter.api.Test;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.text.NumberFormat;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -37,9 +40,14 @@ class LoadingSheetDocumentTest {
 
     private final LoadingSheetDocument document = new LoadingSheetDocument(new LabelFonts());
 
+    /** Each carton weighs 20 kg: 160 of them are 3,200 kg on a 5,000 kg truck, a load BR-12 allows. */
+    private static final BigDecimal CARTON_KG = new BigDecimal("20");
+
     /**
      * {@code count} cartons 600 long (along the truck) x 400 wide x 300 high filled into a 5.2 x 2.05 x 2.05 m truck:
-     * five across, then along, then up; every seventh turned on its side. SKUs alternate between two.
+     * five across, then along, then up; every seventh turned on its side. SKUs alternate between two. The stored fill
+     * percentages are deliberately wrong (42.9 and 3.1): the sheet must work its percentages out from the figures it
+     * prints, never read these.
      */
     private static Layout truck(int count) {
         List<Layout.Box> boxes = new ArrayList<>();
@@ -50,10 +58,10 @@ class LoadingSheetDocumentTest {
             boolean turned = i % 7 == 6;
             boxes.add(new Layout.Box(across * 400, up * 300, along * 600, 400, 300, 600, "ref-" + i, null,
                     "LPN-20261117-%06d".formatted(i + 1), i % 2 == 0 ? "SOFA-3S-GREY" : "GHE-AN-ACME-01", null,
-                    new Layout.Dims(600, 400, 300), turned ? "WLH" : "LWH", true, new BigDecimal("52.5"), i + 1));
+                    new Layout.Dims(600, 400, 300), turned ? "WLH" : "LWH", true, CARTON_KG, i + 1));
         }
         return new Layout(1, "TRUCK-5T", UUID.randomUUID(), new Layout.Dims(5200, 2050, 2050), new BigDecimal("5000"),
-                List.of(), boxes, count * 400L * 300 * 600, new BigDecimal("52.5").multiply(BigDecimal.valueOf(count)),
+                List.of(), boxes, count * 400L * 300 * 600, CARTON_KG.multiply(BigDecimal.valueOf(count)),
                 new BigDecimal("42.9"), new BigDecimal("3.1"));
     }
 
@@ -98,13 +106,14 @@ class LoadingSheetDocumentTest {
         assertThat(text).contains("PHIẾU XẾP HÀNG", "LP-20261117-0004", "Xe #1 (TRUCK-5T)", "LD-20261117-0006",
                 "Xe tải 5 tấn", "Kho Hồ Chí Minh", "Hãng vận chuyển", "Xe tải Thăng Long", "WB-778899", "51C-246.80",
                 "Nguyễn Văn Tài - 0912345678", "520 × 205 × 205 cm", "5.000 kg", "10:30 18/11/2026",
-                "TỔNG KẾT: 3 kiện", "Lấp đầy thể tích", "42,9%", "Lấp đầy khối lượng", "3,1%",
+                "TỔNG KẾT: 3 kiện", "Lấp đầy thể tích: 0,22 / 21,85 m³ 1%", "Lấp đầy khối lượng: 60 / 5.000 kg 1,2%",
                 "Sơ đồ nhìn từ trên xuống", "Sơ đồ nhìn từ bên trái xe", "Đầu xe ở bên trái, cửa xe ở bên phải",
                 "DANH SÁCH KIỆN THEO THỨ TỰ XẾP", "STT", "Mã kiện (LPN)", "Hướng đặt", "Giữ nguyên",
                 "LPN-20261117-000001", "LPN-20261117-000002", "LPN-20261117-000003", "SO-20261117-000011",
                 "SO-20261117-000012", "SOFA-3S-GREY (2 kiện)", "GHE-AN-ACME-01 (1 kiện)", "60×40×30",
-                "0 / 0 / 0", "Trang 1/1", "Tổng: 3 kiện", "157,5");
+                "0 / 0 / 0", "Trang 1/1", "Tổng: 3 kiện 60");
         assertThat(text).as("no glyph was replaced by a question mark").doesNotContain("?");
+        assertThat(text).as("the stored fill percentages are not what is printed").doesNotContain("42,9%", "3,1%");
     }
 
     @Test
@@ -191,7 +200,8 @@ class LoadingSheetDocumentTest {
             assertThat(matcher.find()).as(lpn + " appears once").isFalse();
         }
         assertThat(positions).as("in loading order").isSorted();
-        assertThat(text).contains("Tổng: 160 kiện", "8.400");
+        assertThat(text).contains("Tổng: 160 kiện 3.200", "Lấp đầy thể tích: 11,52 / 21,85 m³ 52,7%",
+                "Lấp đầy khối lượng: 3.200 / 5.000 kg 64%");
     }
 
     @Test
@@ -209,6 +219,27 @@ class LoadingSheetDocumentTest {
             assertThat(count(page, 0xA9D6F5)).as("first SKU's colour").isPositive();
             assertThat(count(page, 0xF5C6A0)).as("second SKU's colour").isPositive();
             assertThat(count(page, 0xB0B5BD)).as("the gusset's grey").isPositive();
+        }
+    }
+
+    @Test
+    @DisplayName("each fill percentage is used / capacity of the very figures printed beside it, for volume and weight, "
+            + "at any load - whatever fill the layout carries")
+    void percentagesAreUsedOverCapacity() throws Exception {
+        BigDecimal innerM3 = BigDecimal.valueOf(5200L * 2050 * 2050).movePointLeft(9);
+        NumberFormat vi = NumberFormat.getNumberInstance(Locale.forLanguageTag("vi"));
+        vi.setMaximumFractionDigits(1);
+        for (int count : new int[] {1, 3, 40, 100, 160, 200}) {
+            Layout layout = truck(count);
+            BigDecimal usedM3 = BigDecimal.valueOf(layout.usedVolumeMm3()).movePointLeft(9);
+            String volume = vi.format(usedM3.multiply(BigDecimal.valueOf(100)).divide(innerM3, 1, RoundingMode.HALF_UP));
+            String weight = vi.format(layout.usedWeightKg().multiply(BigDecimal.valueOf(100))
+                    .divide(layout.maxPayloadKg(), 1, RoundingMode.HALF_UP));
+            String text = text(document.render(booked(layout)));
+            assertThat(text).as("%d cartons: volume", count).containsPattern(
+                    "Lấp đầy thể tích: [\\d.,]+ / 21,85 m³ " + Pattern.quote(volume) + "%");
+            assertThat(text).as("%d cartons: weight", count).containsPattern(
+                    "Lấp đầy khối lượng: [\\d.,]+ / 5\\.000 kg " + Pattern.quote(weight) + "%");
         }
     }
 
