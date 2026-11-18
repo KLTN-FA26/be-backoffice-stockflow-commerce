@@ -294,6 +294,13 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         return repository.findByIdForUpdate(new OrderId(orderId)).map(Order::status);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<UUID> shippingWarehouseId(UUID orderId) {
+        return repository.findById(new OrderId(orderId))
+                .map(o -> o.warehouseId() != null ? o.warehouseId() : o.shippingWarehouseId());
+    }
+
     private Order lockOrder(UUID orderId) {
         return repository.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));

@@ -812,6 +812,8 @@ public enum ErrorCode {
     LOAD_ESTIMATE_PACKAGING_MISSING("No line has an item with a size and weight to estimate its cartons", 422),
     LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE("This order cannot be estimated in its current status, or has nothing left to ship", 409),
     LOAD_ESTIMATE_SOURCE_UNSUPPORTED("This kind of source cannot be estimated yet", 400),
+    /** Docs 09 §4.0 step 1 (RTM-ESTWH, 18/11): an order is estimated only once its shipping warehouse is chosen. */
+    LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN("Choose the order's shipping warehouse before estimating its load", 409),
     LOAD_ESTIMATE_TOO_MANY_CARTONS("The order has too many cartons to estimate at once", 422),
     VEHICLE_TYPE_INACTIVE("This vehicle type is no longer in use", 409),
     INVALID_LOAD_TRANSITION("The load cannot do that in its current status", 409),

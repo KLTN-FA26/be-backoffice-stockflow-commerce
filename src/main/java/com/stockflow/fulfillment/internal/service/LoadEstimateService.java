@@ -34,8 +34,6 @@ import com.stockflow.inventory.api.PackagingSpecResolver;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.warehouse.api.WarehouseService;
-import com.stockflow.warehouse.api.WarehouseView;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
@@ -106,7 +104,6 @@ class LoadEstimateService implements LoadEstimates {
     private final LoadEstimateJpaRepository estimates;
     private final VehicleTypeJpaRepository vehicleTypes;
     private final OrderService orders;
-    private final WarehouseService warehouses;
     private final PackagingSpecResolver packaging;
     /** The LPN cartons allocated to an order's lines (09 §4.0 step 2). */
     private final InventoryService inventory;
@@ -118,14 +115,13 @@ class LoadEstimateService implements LoadEstimates {
     private final LoadPlanner planner = new LoadPlanner();
 
     LoadEstimateService(LoadEstimateJpaRepository estimates, VehicleTypeJpaRepository vehicleTypes,
-                        OrderService orders, WarehouseService warehouses, PackagingSpecResolver packaging,
+                        OrderService orders, PackagingSpecResolver packaging,
                         InventoryService inventory, ObjectMapper json, PlatformTransactionManager transactionManager,
                         @Value("${stockflow.fulfillment.load-planning.solver-budget:PT5S}") Duration budget,
                         @Value("${stockflow.fulfillment.load-planning.solver-wall-limit:PT12S}") Duration wallLimit) {
         this.estimates = estimates;
         this.vehicleTypes = vehicleTypes;
         this.orders = orders;
-        this.warehouses = warehouses;
         this.packaging = packaging;
         this.inventory = inventory;
         this.json = json;
@@ -386,31 +382,29 @@ class LoadEstimateService implements LoadEstimates {
     }
 
     /**
-     * The warehouse the estimate belongs to: a released order's own; a CONFIRMED one has none yet, so the caller names
-     * the warehouse the release dialog is about to choose - it must exist, be active and be within the caller's scope.
+     * The warehouse the estimate belongs to: the order's shipping warehouse - the one it was released to, or the one
+     * Sales chose while it is CONFIRMED. Docs 09 §4.0 step 1 (owner answer RTM-ESTWH, 18/11: "chặn như docs, phải chọn
+     * kho trước"): an order with none chosen yet is not estimated ({@code LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN}), unless
+     * it may not be estimated at all ({@code LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE}). A warehouse the caller names must be
+     * that one.
      */
     private UUID warehouseOf(OrderSummary order, UUID requested) {
-        if (order.warehouseId() != null) {
-            if (requested != null && !requested.equals(order.warehouseId())) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Order " + order.orderNumber()
-                        + " was released to another warehouse", List.of(new FieldError("warehouseId",
-                        "must be the order's warehouse, or left out", "WarehouseMismatch")));
+        UUID shipping = order.warehouseId() != null ? order.warehouseId()
+                : orders.shippingWarehouseId(order.orderId()).orElse(null);
+        if (shipping == null) {
+            if (!ESTIMABLE.contains(order.status())) {
+                throw new BusinessException(ErrorCode.LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE, "Order " + order.orderNumber()
+                        + " is " + order.status() + "; an estimate is made from confirmation until everything shipped");
             }
-            return order.warehouseId();
+            throw new BusinessException(ErrorCode.LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN, "Order " + order.orderNumber()
+                    + " has no shipping warehouse yet: choose it before estimating its load");
         }
-        if (requested == null) {
+        if (requested != null && !requested.equals(shipping)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Order " + order.orderNumber()
-                    + " is not released yet: name the warehouse it will ship from", List.of(new FieldError(
-                    "warehouseId", "is required for an order that is not released yet", "NotNull")));
+                    + " ships from another warehouse", List.of(new FieldError("warehouseId",
+                    "must be the order's shipping warehouse, or left out", "WarehouseMismatch")));
         }
-        WarehouseView warehouse = warehouses.findWarehouse(requested)
-                .orElseThrow(() -> new NotFoundException("Warehouse", requested));
-        if (!warehouse.active()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Warehouse " + warehouse.name()
-                    + " is not active", List.of(new FieldError("warehouseId", "is not an active warehouse",
-                    "WarehouseInactive")));
-        }
-        return requested;
+        return shipping;
     }
 
     /**

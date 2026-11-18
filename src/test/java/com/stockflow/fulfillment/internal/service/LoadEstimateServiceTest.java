@@ -21,7 +21,6 @@ import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.support.WithCurrentUser;
 import com.stockflow.warehouse.api.WarehouseService;
-import com.stockflow.warehouse.api.WarehouseView;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -63,7 +62,7 @@ class LoadEstimateServiceTest {
     private final InventoryService inventory = mock(InventoryService.class);
     private final PlatformTransactionManager transactions = mock(PlatformTransactionManager.class);
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules();
-    private final LoadEstimateService service = new LoadEstimateService(estimates, vehicleTypes, orders, warehouses,
+    private final LoadEstimateService service = new LoadEstimateService(estimates, vehicleTypes, orders,
             packaging, inventory, json, transactions, Duration.ofSeconds(2), Duration.ofSeconds(12));
 
     private final UUID orderId = UUID.randomUUID();
@@ -123,9 +122,9 @@ class LoadEstimateServiceTest {
     @Test
     @DisplayName("a solver budget that is not positive is refused at start-up")
     void budgetMustBePositive() {
-        assertThatThrownBy(() -> new LoadEstimateService(estimates, vehicleTypes, orders, warehouses, packaging, inventory, json,
+        assertThatThrownBy(() -> new LoadEstimateService(estimates, vehicleTypes, orders, packaging, inventory, json,
                 transactions, Duration.ZERO, Duration.ofSeconds(12))).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new LoadEstimateService(estimates, vehicleTypes, orders, warehouses, packaging, inventory, json,
+        assertThatThrownBy(() -> new LoadEstimateService(estimates, vehicleTypes, orders, packaging, inventory, json,
                 transactions, null, Duration.ofSeconds(12))).isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -231,29 +230,35 @@ class LoadEstimateServiceTest {
         }
 
         @Test
-        @DisplayName("a confirmed order not released yet needs the warehouse it will ship from, an existing and active one")
+        @DisplayName("09 §4.0 step 1 (RTM-ESTWH): an order whose shipping warehouse is not chosen yet is "
+                + "LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN, whatever warehouse the caller names; once chosen it is the "
+                + "estimate's, and another named is refused")
         void confirmedOrderNeedsAWarehouse() {
             when(orders.findById(orderId)).thenReturn(Optional.of(order(OrderStatus.CONFIRMED, null, 10, 0, 0)));
             when(orders.lockedStatus(orderId)).thenReturn(Optional.of(OrderStatus.CONFIRMED));
             var source = List.of(new LoadEstimates.Source(LoadEstimates.SourceType.ORDER, orderId));
 
-            assertThat(refusal(() -> service.create(new LoadEstimates.CreateEstimate(source, null, List.of(truckId), null)))
-                    .fieldErrors()).extracting(f -> f.field()).containsExactly("warehouseId");
+            assertThat(refusal(() -> service.create(new LoadEstimates.CreateEstimate(source, null, List.of(truckId),
+                    null))).errorCode()).isEqualTo(ErrorCode.LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN);
+            assertThat(refusal(() -> service.create(new LoadEstimates.CreateEstimate(source, WAREHOUSE,
+                    List.of(truckId), null))).errorCode()).isEqualTo(ErrorCode.LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN);
+            verify(estimates, never()).saveAndFlush(any());
 
-            UUID unknown = UUID.randomUUID();
-            when(warehouses.findWarehouse(unknown)).thenReturn(Optional.empty());
-            assertThatThrownBy(() -> service.create(new LoadEstimates.CreateEstimate(source, unknown, List.of(truckId),
-                    null))).isInstanceOf(NotFoundException.class);
-
-            when(warehouses.findWarehouse(WAREHOUSE)).thenReturn(Optional.of(
-                    new WarehouseView(WAREHOUSE, "HCM", "HCM warehouse", "1 Le Loi", false)));
-            assertThat(refusal(() -> service.create(new LoadEstimates.CreateEstimate(source, WAREHOUSE, List.of(truckId),
-                    null))).fieldErrors()).extracting(f -> f.code()).containsExactly("WarehouseInactive");
-
-            when(warehouses.findWarehouse(WAREHOUSE)).thenReturn(Optional.of(
-                    new WarehouseView(WAREHOUSE, "HCM", "HCM warehouse", "1 Le Loi", true)));
-            assertThat(service.create(new LoadEstimates.CreateEstimate(source, WAREHOUSE, List.of(truckId), null))
+            when(orders.shippingWarehouseId(orderId)).thenReturn(Optional.of(WAREHOUSE));
+            assertThat(refusal(() -> service.create(new LoadEstimates.CreateEstimate(source, OTHER_WAREHOUSE,
+                    List.of(truckId), null))).fieldErrors()).extracting(f -> f.code())
+                    .containsExactly("WarehouseMismatch");
+            assertThat(service.create(new LoadEstimates.CreateEstimate(source, null, List.of(truckId), null))
                     .warehouseId()).isEqualTo(WAREHOUSE);
+        }
+
+        @Test
+        @DisplayName("an order that may not be estimated at all says so first, even with no shipping warehouse")
+        void notEligibleBeforeNoWarehouse() {
+            when(orders.findById(orderId)).thenReturn(Optional.of(order(OrderStatus.DRAFT, null, 10, 0, 0)));
+
+            assertThat(refusal(() -> service.create(create())).errorCode())
+                    .isEqualTo(ErrorCode.LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE);
         }
     }
 

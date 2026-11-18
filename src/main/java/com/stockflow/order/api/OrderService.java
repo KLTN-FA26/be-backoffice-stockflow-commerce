@@ -258,6 +258,13 @@ public interface OrderService {
     Optional<OrderStatus> lockedStatus(UUID orderId);
 
     /**
+     * The warehouse the order ships from: the one it was released to, else the one Sales chose while it is CONFIRMED
+     * (kltn-docs 17 §4.2). Empty for an unknown order, or one whose shipping warehouse is not chosen yet - which a load
+     * estimate refuses (09 §4.0 step 1).
+     */
+    Optional<UUID> shippingWarehouseId(UUID orderId);
+
+    /**
      * SCRUM-245/WBS 3.17.7. One customer's own order history, newest first, paginated. {@code
      * lines} is empty on every row — see {@code OrderSearchRepository} for why; a single order's
      * lines are available from {@link #findById}.
