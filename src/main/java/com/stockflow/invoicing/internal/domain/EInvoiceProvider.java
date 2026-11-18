@@ -38,6 +38,19 @@ public interface EInvoiceProvider {
     String code();
 
     /**
+     * Whether a refusal recorded under {@code rejectionCode} came from what the provider reported of its processing
+     * alone, without its invoice look-up confirming that nothing was issued (HĐ-1; SePay: its tracking said
+     * {@code Failed}). Such a refusal is read from the provider's words, and a provider that changes them, or that is
+     * still settling the result with the body that numbers invoices, may yet issue that attempt. So such a refusal is
+     * recorded only once the provider can no longer be working on the transaction and, asked again then, still reports
+     * it ({@code EInvoiceIssuance}, "A refusal nobody confirmed is recorded only once it is settled"); until then the
+     * invoice stays SUBMITTING. False for every other refusal, which the provider's look-up stood behind.
+     */
+    default boolean refusalUnconfirmedByLookup(String rejectionCode) {
+        return false;
+    }
+
+    /**
      * Hands an invoice over under its transaction id.
      *
      * @throws ProviderUnavailableException when the provider did not answer - it may or may not have the invoice;

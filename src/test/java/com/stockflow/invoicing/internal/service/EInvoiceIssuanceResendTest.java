@@ -250,6 +250,59 @@ class EInvoiceIssuanceResendTest {
     }
 
     @Test
+    @DisplayName("HĐ-1 (review): still unknown to the provider an hour after it was submitted - asked, no longer sent "
+            + "again by itself, so its last send stops moving")
+    void theReconciliationStopsSendingAgainAfterTheAutomaticPeriod() {
+        lastSent(Duration.ofMinutes(55));
+        now(Duration.ofHours(1));
+        when(provider.query(transaction)).thenReturn(Result.of(ResultState.NOT_FOUND));
+
+        EInvoice.Snapshot waiting = issuance.reconcile(id);
+
+        assertThat(waiting.status()).isEqualTo(EInvoiceStatus.SUBMITTING);
+        verify(provider).query(transaction);
+        verify(provider, never()).submit(any());
+        verify(steps, never()).aboutToSend(any(), any(), any(), any());
+        verify(steps, never()).rejected(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("HĐ-1 (review): one second short of the automatic period, a send past the quiet period still goes")
+    void insideTheAutomaticPeriodItIsSentAgain() {
+        lastSent(Duration.ofMinutes(50));
+        now(Duration.ofHours(1).minusSeconds(1));
+        when(provider.query(transaction)).thenReturn(Result.of(ResultState.NOT_FOUND));
+        when(provider.submit(any())).thenThrow(new ProviderUnavailableException("no answer"));
+
+        issuance.reconcile(id);
+
+        verify(provider).submit(any());
+    }
+
+    @Test
+    @DisplayName("HĐ-1 (review): sent again until the automatic period ended, then left alone - the accountant can "
+            + "take it back three hours after that last send (before, every ten-minute resend kept it out of reach)")
+    void aStuckInvoiceBecomesWithdrawable() {
+        lastSent(Duration.ofMinutes(55));
+        when(provider.query(transaction)).thenReturn(Result.of(ResultState.NOT_FOUND));
+        for (Duration at : java.util.List.of(Duration.ofHours(1), Duration.ofHours(2), Duration.ofHours(3),
+                Duration.ofMinutes(55).plusHours(3).minusSeconds(1))) {
+            now(at);
+            issuance.reconcile(id);
+            assertThatThrownBy(() -> issuance.withdraw(id, invoice.version(), "stuck", null)).as(at.toString())
+                    .isInstanceOfSatisfying(BusinessException.class, refused -> assertThat(refused.errorCode())
+                            .isEqualTo(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED));
+        }
+        verify(provider, never()).submit(any());
+
+        now(Duration.ofMinutes(55).plusHours(3));
+        issuance.withdraw(id, invoice.version(), "SePay portal: no invoice under this reference", null);
+
+        verify(steps).rejected(id, transaction, EInvoice.WITHDRAWN_CODE,
+                "SePay portal: no invoice under this reference");
+    }
+
+    @Test
     @DisplayName("HĐ-1: sent less than three hours ago - refused, the provider is not even asked")
     void aRecentSendIsNotTakenBack() {
         lastSent(Duration.ZERO);
@@ -264,10 +317,11 @@ class EInvoiceIssuanceResendTest {
     }
 
     @Test
-    @DisplayName("HĐ-1: the provider holds it, is working on it, cannot confirm it, or does not answer - refused")
+    @DisplayName("HĐ-1: the provider holds it, is working on it, cannot confirm it (under a day), or does not answer - "
+            + "refused")
     void anInvoiceTheProviderMayHoldIsNotTakenBack() {
         lastSent(Duration.ZERO);
-        now(Duration.ofDays(1));
+        now(Duration.ofHours(4));
         for (ResultState state : java.util.List.of(ResultState.ISSUED, ResultState.PENDING, ResultState.UNKNOWN,
                 ResultState.REJECTED)) {
             when(provider.query(transaction)).thenReturn(Result.of(state));
@@ -299,5 +353,144 @@ class EInvoiceIssuanceResendTest {
                         .isEqualTo(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED));
         verify(provider, never()).query(any());
         verify(steps, never()).rejected(any(), any(), any(), any());
+    }
+
+    // ============================================================ a refusal nobody confirmed (HĐ-1, review finding 1)
+
+    /** The provider reports a refusal of its processing alone (SePay's tracking "Failed"), as {@code code}. */
+    private void reportedRefusal(String code, boolean unconfirmedByLookup) {
+        when(provider.query(transaction)).thenReturn(new Result(ResultState.REJECTED, null, null, null, null, code,
+                "Thông tin hóa đơn không hợp lệ"));
+        when(provider.refusalUnconfirmedByLookup(code)).thenReturn(unconfirmedByLookup);
+    }
+
+    @Test
+    @DisplayName("HĐ-1 (review): refused on the processing report alone, last sent under three hours ago - not "
+            + "recorded: it stays at the provider, nothing is sent, it is asked about again")
+    void aReportedRefusalIsNotRecordedTooSoon() {
+        lastSent(Duration.ZERO);
+        now(Duration.ofHours(3).minusSeconds(1));
+        reportedRefusal(SepayEInvoiceAnswers.ISSUANCE_FAILED, true);
+
+        EInvoice.Snapshot waiting = issuance.reconcile(id);
+
+        assertThat(waiting.status()).isEqualTo(EInvoiceStatus.SUBMITTING);
+        verify(steps, never()).rejected(any(), any(), any(), any());
+        verify(provider, never()).submit(any());
+    }
+
+    @Test
+    @DisplayName("HĐ-1 (review): three hours after its last send the provider still reports the refusal - recorded, "
+            + "so the accountant may reopen, void or draw it up again without a second invoice following")
+    void aReportedRefusalSettledIsRecorded() {
+        lastSent(Duration.ofMinutes(5));
+        now(Duration.ofHours(3).plusMinutes(5));
+        reportedRefusal(SepayEInvoiceAnswers.ISSUANCE_FAILED, true);
+
+        issuance.reconcile(id);
+
+        verify(steps).rejected(id, transaction, SepayEInvoiceAnswers.ISSUANCE_FAILED, "Thông tin hóa đơn không hợp lệ");
+        verify(provider, never()).submit(any());
+    }
+
+    @Test
+    @DisplayName("HĐ-1 (review): reported refused, then issued by the provider inside the wait - recorded issued, as "
+            + "any other invoice")
+    void anAttemptIssuedDuringTheWaitIsRecordedIssued() {
+        lastSent(Duration.ZERO);
+        now(Duration.ofHours(1));
+        reportedRefusal(SepayEInvoiceAnswers.ISSUANCE_FAILED, true);
+        issuance.reconcile(id);
+        verify(steps, never()).rejected(any(), any(), any(), any());
+
+        Result issued = Result.of(ResultState.ISSUED);
+        when(provider.query(transaction)).thenReturn(issued);
+        now(Duration.ofHours(2));
+        issuance.reconcile(id);
+
+        verify(steps).issued(eq(id), eq(transaction), eq(issued), any());
+        verify(steps, never()).rejected(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("HĐ-1 (review): a refusal the provider's look-up stood behind (a wrong tax code) is recorded at once")
+    void aConfirmedRefusalIsRecordedAtOnce() {
+        lastSent(Duration.ZERO);
+        now(Duration.ofMinutes(1));
+        reportedRefusal("INVALID_BUYER_TAX_CODE", false);
+
+        issuance.reconcile(id);
+
+        verify(steps).rejected(id, transaction, "INVALID_BUYER_TAX_CODE", "Thông tin hóa đơn không hợp lệ");
+    }
+
+    @Test
+    @DisplayName("HĐ-1 (review): a reopened draft is issued at once whatever its last refusal was - a refusal is only "
+            + "ever recorded settled, so issuing again needs no question of the provider")
+    void aReopenedDraftIsIssuedAtOnce() {
+        EInvoice refused = EInvoiceFixtures.draft();
+        refused.submit(EInvoiceFixtures.SERIES, null, SUBMITTED);
+        refused.rejected(SepayEInvoiceAnswers.ISSUANCE_FAILED, "Thông tin hóa đơn không hợp lệ");
+        refused.reopen();
+        EInvoice.Snapshot draft = refused.snapshot();
+        when(steps.get(draft.id())).thenReturn(draft);
+        now(Duration.ofMinutes(1));
+
+        issuance.issue(draft.id(), draft.version(), null);
+
+        verify(steps).submit(draft.id(), draft.version(), null);
+        verify(provider, never()).query(any());
+    }
+
+    // ======================================================================= second review, findings 2b and 3
+
+    @Test
+    @DisplayName("second review, finding 3: a marked invoice (its delivery corrected to a failure) the provider has no "
+            + "record of is asked about, never sent again - even inside the automatic resending")
+    void aMarkedInvoiceIsNeverSentAgain() {
+        lastSent(Duration.ZERO);
+        now(Duration.ofMinutes(10));
+        when(provider.query(transaction)).thenReturn(Result.of(ResultState.NOT_FOUND));
+        when(steps.markedDeliveryFailed(id)).thenReturn(true);
+
+        EInvoice.Snapshot waiting = issuance.reconcile(id);
+
+        assertThat(waiting.status()).isEqualTo(EInvoiceStatus.SUBMITTING);
+        verify(provider, never()).submit(any());
+        verify(steps, never()).aboutToSend(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("second review, finding 2b: the provider cannot say what became of it - withdrawal refused until "
+            + "nothing was sent for a day, then allowed with the accountant's reason; 'still working' stays refused")
+    void anUnknownResultIsWithdrawnAfterADay() {
+        when(provider.query(transaction)).thenReturn(Result.of(ResultState.UNKNOWN));
+        lastSent(Duration.ZERO);
+        now(Duration.ofDays(1).minusSeconds(1));
+        assertThatThrownBy(() -> issuance.withdraw(id, invoice.version(), "SePay support: no invoice", null))
+                .isInstanceOfSatisfying(BusinessException.class, refused -> assertThat(refused.errorCode())
+                        .isEqualTo(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED));
+        verify(steps, never()).rejected(any(), any(), any(), any());
+
+        when(provider.query(transaction)).thenReturn(Result.of(ResultState.PENDING));
+        now(Duration.ofDays(2));
+        assertThatThrownBy(() -> issuance.withdraw(id, invoice.version(), "SePay support: no invoice", null))
+                .isInstanceOfSatisfying(BusinessException.class, refused -> assertThat(refused.errorCode())
+                        .isEqualTo(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED));
+        verify(steps, never()).rejected(any(), any(), any(), any());
+
+        when(provider.query(transaction)).thenReturn(Result.of(ResultState.UNKNOWN));
+        now(Duration.ofDays(1));
+        issuance.withdraw(id, invoice.version(), "SePay support: no invoice", null);
+        verify(steps).rejected(id, transaction, EInvoice.WITHDRAWN_CODE, "SePay support: no invoice");
+    }
+
+    @Test
+    @DisplayName("second review, finding 2b: withdraw-unknown-after shorter than withdraw-after is refused at startup")
+    void theUnknownWaitIsNotShorterThanTheOther() {
+        assertThatThrownBy(() -> new InvoicingProperties(Duration.ofDays(1), null, null, null, Duration.ofHours(3), 50,
+                Duration.ofHours(1), Duration.ofHours(2))).isInstanceOf(IllegalArgumentException.class);
+        assertThat(new InvoicingProperties(Duration.ofDays(1), null).withdrawUnknownAfter())
+                .isEqualTo(Duration.ofDays(1));
     }
 }

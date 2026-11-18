@@ -84,8 +84,8 @@ class EInvoiceDeliveryReversalTest {
     }
 
     @Test
-    @DisplayName("only an issued original that nothing corrects yet: not issued, already adjusted, being corrected, or "
-            + "itself a correction - the accountant's to reduce by hand")
+    @DisplayName("only an issued invoice of a shipment that nothing corrects yet: not issued, already adjusted, being "
+            + "corrected, or an adjustment - the accountant's to reduce by hand")
     void onlyAnUncorrectedIssuedOriginal() {
         assertRefused(() -> reversalOf(EInvoiceFixtures.in(EInvoiceStatus.DRAFT), EInvoice.Corrections.NONE),
                 ErrorCode.EINVOICE_NOT_IN_FORCE);
@@ -96,9 +96,29 @@ class EInvoiceDeliveryReversalTest {
         assertRefused(() -> reversalOf(EInvoiceFixtures.in(EInvoiceStatus.ISSUED),
                 new EInvoice.Corrections(true, false, new BigDecimal("-100"))),
                 ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE);
+        EInvoice adjustment = EInvoiceFixtures.issued(EInvoiceFixtures.agreed(EInvoiceFixtures.adjustment(
+                EInvoiceFixtures.in(EInvoiceStatus.ISSUED), CorrectionBasis.ERROR, -1)), 3);
+        assertRefused(() -> reversalOf(adjustment, EInvoice.Corrections.NONE),
+                ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE);
+    }
+
+    @Test
+    @DisplayName("WF-05 review, defect 5: the replacement standing for the shipment is reduced in full like an "
+            + "original - an adjustment of the replacement, basis DELIVERY_FAILED, no agreement")
+    void aReplacementInForceIsReducedToo() {
         EInvoice replacement = EInvoiceFixtures.issued(EInvoiceFixtures.agreed(EInvoiceFixtures.replacement(
                 EInvoiceFixtures.in(EInvoiceStatus.ISSUED), 18)), 2);
-        assertRefused(() -> reversalOf(replacement, EInvoice.Corrections.NONE),
+
+        EInvoice.Snapshot s = reversalOf(replacement, EInvoice.Corrections.NONE).snapshot();
+
+        assertThat(s.type()).isEqualTo(EInvoiceType.ADJUSTMENT);
+        assertThat(s.correctionBasis()).isEqualTo(CorrectionBasis.DELIVERY_FAILED);
+        assertThat(s.originalEInvoiceId()).as("it adjusts the replacement, the invoice in force")
+                .isEqualTo(replacement.id());
+        assertThat(s.shipmentId()).isEqualTo(replacement.snapshot().shipmentId());
+        assertThat(s.agreementFileKey()).isNull();
+        assertThat(s.grandTotal().add(replacement.snapshot().grandTotal())).isEqualByComparingTo(BigDecimal.ZERO);
+        assertRefused(() -> reversalOf(replacement, new EInvoice.Corrections(false, true, BigDecimal.ZERO)),
                 ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE);
     }
 }

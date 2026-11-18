@@ -26,19 +26,57 @@ public interface EInvoiceRepository {
     Optional<EInvoice> findLiveOriginalOfShipment(UUID shipmentId);
 
     /**
-     * Notes that an issued original no longer stands for its shipment: its delivery was corrected to a failure and the
-     * full reduction of it ({@code CorrectionBasis.DELIVERY_FAILED}) was drawn up in this transaction (kltn-docs 21
-     * §4.4-§4.5, BR-01; WF-05 HĐ-3). From then on {@link #findLiveOriginalOfShipment}, {@link #findInForceOfOrder},
-     * {@link #invoicedOfOrder} and the completion check pass it over, and the shipment may take a second original
-     * ({@code uk_einvoice_original_per_shipment}, {@code uk_einvoice_in_force_per_shipment} leave it out).
+     * Notes that an issued invoice - the original, or the replacement standing for the shipment - no longer stands for
+     * its shipment: its delivery was corrected to a failure and the full reduction of it
+     * ({@code CorrectionBasis.DELIVERY_FAILED}) was drawn up in this transaction (kltn-docs 21 §4.4-§4.5, BR-01; WF-05
+     * HĐ-3). From then on {@link #findLiveOriginalOfShipment}, {@link #findInForceOfOrder}, {@link #invoicedOfOrder},
+     * {@link #hasReplacedOriginalOfShipment} and the completion check pass it over - and, for a replacement, the
+     * original it replaced - and the shipment may take a new original ({@code uk_einvoice_original_per_shipment},
+     * {@code uk_einvoice_in_force_per_shipment}, {@code tg_einvoice_original_per_shipment} leave them out).
      *
      * <p>Outside the aggregate and its version, as the overdue reminder is: the invoice is issued and says nothing new -
      * what changes is which invoice stands for the shipment. {@code tg_einvoice_guard} lets it be written once, on an
-     * issued original, and only while a live reduction of that kind names it.</p>
+     * issued invoice, and only while a live reduction of that kind names it.</p>
      *
      * @return false when it was noted before
      */
-    boolean markReversed(UUID originalId, Instant at);
+    boolean markReversed(UUID invoiceId, Instant at);
+
+    /**
+     * Notes that the delivery an invoice still at the provider was sent for has been corrected to a failure (WF-05
+     * HĐ-3): nothing can be done to it until the provider answers, and the mark says what to do then - reduce it in
+     * full once issued, void it once refused ({@code EInvoiceDrafts.settleCorrectedDelivery}). Outside the aggregate
+     * and its version, as {@link #markReversed}: an invoice at the provider does not change. Written once, while it is
+     * SUBMITTING ({@code tg_einvoice_delivery_failed}, which also keeps it from being sent again).
+     *
+     * @return false when it is no longer SUBMITTING, or was marked before
+     */
+    boolean markDeliveryFailed(UUID invoiceId, Instant at);
+
+    /** Whether the invoice was marked by {@link #markDeliveryFailed}. */
+    boolean deliveryFailed(UUID invoiceId);
+
+    /**
+     * Takes the mark of {@link #markDeliveryFailed} back: the delivery was corrected again, to delivered (a failure
+     * recorded by mistake, or delivered on the carrier's retry), so the invoice is what it was before - one the
+     * provider is working on, or one it refused, to be corrected and sent again as usual. Never on an issued invoice,
+     * which does not change; one so marked is settled as delivered ({@code EInvoiceDrafts.settleCorrectedDelivery}).
+     *
+     * @return false when it was not marked, or is issued or voided
+     */
+    boolean clearDeliveryFailed(UUID invoiceId);
+
+    /**
+     * The invoices of a shipment marked by {@link #markDeliveryFailed} and not settled yet: at the provider, or refused
+     * and not yet voided. Oldest first.
+     */
+    List<EInvoice> findUnsettledDeliveryFailedOfShipment(UUID shipmentId);
+
+    /**
+     * The replacement of {@code originalId} on its way - drawn up, refused or at the provider - if any. An issued
+     * replacement has taken the original's place already ({@link #findLiveOriginalOfShipment} finds it).
+     */
+    Optional<EInvoice> findPendingReplacementOf(UUID originalId);
 
     /** What already corrects an invoice: its live adjustments and replacement. Read under the invoice's lock. */
     EInvoice.Corrections correctionsOf(UUID invoiceId);
@@ -68,9 +106,11 @@ public interface EInvoiceRepository {
     boolean hasLiveReturnAdjustment(UUID returnRequestId, UUID invoiceId);
 
     /**
-     * Whether the shipment has an original that was replaced. Its replacement stands for the shipment and
-     * {@link #findLiveOriginalOfShipment} returns it, so this answers true only where that found nothing; a second
-     * original beside a replacement is refused here and by {@code tg_einvoice_original_per_shipment}.
+     * Whether the shipment has an original that was replaced, and whose replacement still stands for the shipment or
+     * may. Its replacement stands for the shipment and {@link #findLiveOriginalOfShipment} returns it, so this answers
+     * true only where that found nothing; a second original beside a replacement is refused here and by
+     * {@code tg_einvoice_original_per_shipment}. A replacement reversed for a failed delivery ({@link #markReversed})
+     * keeps nothing back: the shipment delivered again gets a new original.
      */
     boolean hasReplacedOriginalOfShipment(UUID shipmentId);
 

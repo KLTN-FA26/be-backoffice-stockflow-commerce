@@ -513,6 +513,24 @@ class SepayEInvoiceContractTest {
     }
 
     @Test
+    void HD1_anUnconfirmedTrackingReworded_isStillUnknown() {
+        signsIn();
+        notRecorded();
+        tracked("create", "Failed", "He thong CHUA  XAC NHAN duoc ket qua tu nha cung cap");
+
+        assertThat(provider().query(TRANSACTION).state()).as("never REJECTED: the accountant would issue it again")
+                .isEqualTo(ResultState.UNKNOWN);
+    }
+
+    @Test
+    void HD1_aTrackingRefusalIsOneTheLookUpDidNotStandBehind() {
+        assertThat(provider().refusalUnconfirmedByLookup(SepayEInvoiceAnswers.ISSUANCE_FAILED)).isTrue();
+        assertThat(provider().refusalUnconfirmedByLookup("SEPAY_INVOICE_FAILED")).isFalse();
+        assertThat(provider().refusalUnconfirmedByLookup(SepayEInvoiceAnswers.QUOTA_EXHAUSTED)).isFalse();
+        assertThat(provider().refusalUnconfirmedByLookup(null)).isFalse();
+    }
+
+    @Test
     void HD1_aSubmissionSepayIsStillRetryingIsPendingThoughTheLookUpDoesNotFindIt() {
         signsIn();
         notRecorded();

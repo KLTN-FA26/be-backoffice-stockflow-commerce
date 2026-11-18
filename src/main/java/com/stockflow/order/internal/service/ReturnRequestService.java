@@ -342,8 +342,10 @@ public class ReturnRequestService {
     // ================================================================================================= withdrawal
 
     /**
-     * The customer (their own return) or Sales withdraw a return before its goods are back: REQUESTED or
-     * AWAITING_RETURN → CANCELLED; the order goes back to DELIVERED if no other return of it is open.
+     * The customer (their own return) or Sales withdraw a return before any of its goods is back: REQUESTED or
+     * AWAITING_RETURN → CANCELLED; the order goes back to DELIVERED if no other return of it is open. Refused once a
+     * parcel came back ({@code RETURN_GOODS_PARTLY_RECEIVED}): Sales then mark the goods complete
+     * ({@link #markGoodsComplete}).
      */
     @Auditable(action = AuditAction.TRANSITION, resourceType = "return-request", resourceId = "#returnId")
     public ReturnRequest cancel(UUID returnId, UUID ownCustomerId, String reason, UUID by) {

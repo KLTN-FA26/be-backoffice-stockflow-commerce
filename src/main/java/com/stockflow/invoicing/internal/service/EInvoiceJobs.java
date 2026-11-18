@@ -55,11 +55,14 @@ class EInvoiceJobs {
     private final EInvoiceWorkQueues queues;
     private final EInvoiceIssuance issuance;
     private final EInvoiceQuotaWatch quota;
+    private final EInvoiceDrafts drafts;
 
-    EInvoiceJobs(EInvoiceWorkQueues queues, EInvoiceIssuance issuance, EInvoiceQuotaWatch quota) {
+    EInvoiceJobs(EInvoiceWorkQueues queues, EInvoiceIssuance issuance, EInvoiceQuotaWatch quota,
+                 EInvoiceDrafts drafts) {
         this.queues = queues;
         this.issuance = issuance;
         this.quota = quota;
+        this.drafts = drafts;
     }
 
     @Scheduled(initialDelayString = "${stockflow.invoicing.reconcile-interval:PT30S}",
@@ -110,11 +113,22 @@ class EInvoiceJobs {
         return done;
     }
 
-    /** @return how many drafts were sent to the provider */
+    /**
+     * Sends the drafts the automatic issuing takes, each checked first against the rules as they are now
+     * ({@link EInvoiceDrafts#recheckForAutomaticIssue}): a draft drawn up before a rule existed - the e-mail warning, a
+     * VAT reduction period - is held back with its warning instead of being issued as the rule never was.
+     *
+     * @return how many drafts were sent to the provider
+     */
     int issueAutomatically() {
         int done = 0;
         for (UUID id : queues.autoIssuable(BATCH)) {
             try {
+                if (!drafts.recheckForAutomaticIssue(id)) {
+                    log.info("E-invoice {} was not issued automatically: it no longer is what drawing it up now "
+                            + "gives, and waits for the accountant", id);
+                    continue;
+                }
                 issuance.issue(id, null, null);
                 done++;
             } catch (BusinessException refused) {
