@@ -97,30 +97,33 @@ public final class PaymentReceipt {
                                         String note, List<Payment> payments, UUID by, Instant at, LocalDate today) {
         String ref = reference == null ? "" : reference.strip();
         if (ref.isEmpty() || ref.length() > REFERENCE_MAX) {
-            throw invalid("The statement reference is 1 to %d characters".formatted(REFERENCE_MAX));
+            throw invalid("The statement reference is 1 to %d characters".formatted(REFERENCE_MAX),
+                    "refusal.payment.reference", REFERENCE_MAX);
         }
         if (receivedOn == null || receivedOn.isAfter(today)) {
-            throw invalid("The money was received on a day not after today");
+            throw invalid("The money was received on a day not after today", "refusal.payment.receivedInFuture");
         }
         String text = note == null || note.isBlank() ? null : note.strip();
         if (text != null && text.length() > TEXT_MAX) {
-            throw invalid("A note is at most %d characters".formatted(TEXT_MAX));
+            throw invalid("A note is at most %d characters".formatted(TEXT_MAX), "refusal.payment.note", TEXT_MAX);
         }
         if (payments == null || payments.isEmpty() || payments.size() > LINES_MAX) {
-            throw invalid("A receipt pays 1 to %d installments".formatted(LINES_MAX));
+            throw invalid("A receipt pays 1 to %d installments".formatted(LINES_MAX), "refusal.payment.lineCount",
+                    LINES_MAX);
         }
         Set<UUID> seen = new HashSet<>();
         BigDecimal total = BigDecimal.ZERO;
         List<Line> lines = new java.util.ArrayList<>();
         for (Payment payment : payments) {
             if (payment == null || payment.installmentId() == null || payment.amount() == null) {
-                throw invalid("Each line names an installment and an amount");
+                throw invalid("Each line names an installment and an amount", "refusal.payment.lineIncomplete");
             }
             if (!seen.add(payment.installmentId())) {
-                throw invalid("Installment %s is paid twice in one receipt".formatted(payment.installmentId()));
+                throw invalid("Installment %s is paid twice in one receipt".formatted(payment.installmentId()),
+                        "refusal.payment.installmentTwice");
             }
             if (payment.amount().signum() <= 0 || payment.amount().stripTrailingZeros().scale() > 0) {
-                throw invalid("Each line pays a whole number of dong above zero");
+                throw invalid("Each line pays a whole number of dong above zero", "refusal.payment.lineAmount");
             }
             total = total.add(payment.amount());
             lines.add(new Line(Identifiers.newId(), payment.installmentId(), payment.amount()));
@@ -138,11 +141,13 @@ public final class PaymentReceipt {
     public void voidReceipt(String reason, UUID by, Instant at) {
         if (status == PaymentReceiptStatus.VOIDED) {
             throw new BusinessException(ErrorCode.PAYMENT_RECEIPT_ALREADY_VOIDED,
-                    "Receipt %s was voided on %s".formatted(reference, voidedAt));
+                    "Receipt %s was voided on %s".formatted(reference, voidedAt))
+                    .localized("refusal.payment.alreadyVoided", reference);
         }
         String why = reason == null ? "" : reason.strip();
         if (why.isEmpty() || why.length() > TEXT_MAX) {
-            throw invalid("Voiding a receipt says why, in at most %d characters".formatted(TEXT_MAX));
+            throw invalid("Voiding a receipt says why, in at most %d characters".formatted(TEXT_MAX),
+                    "refusal.payment.voidReason", TEXT_MAX);
         }
         this.status = PaymentReceiptStatus.VOIDED;
         this.voidedBy = Objects.requireNonNull(by, "by");
@@ -168,8 +173,8 @@ public final class PaymentReceipt {
         return normalize(reference);
     }
 
-    private static BusinessException invalid(String message) {
-        return new BusinessException(ErrorCode.VALIDATION_FAILED, message);
+    private static BusinessException invalid(String message, String key, Object... arguments) {
+        return new BusinessException(ErrorCode.VALIDATION_FAILED, message).localized(key, arguments);
     }
 
     public UUID id() { return id; }

@@ -78,8 +78,8 @@ public final class ContractTerms {
     public static List<DeliveryBatch> schedule(Order order, List<BatchEntry> entries) {
         List<FieldError> errors = new ArrayList<>();
         if (entries == null || entries.isEmpty() || entries.size() > MAX_ROWS) {
-            throw invalidSchedule(List.of(new FieldError("deliverySchedule", "1 to " + MAX_ROWS + " delivery batches",
-                    "BR-23")));
+            throw invalidSchedule(List.of(FieldError.localized("deliverySchedule", "1 to " + MAX_ROWS
+                    + " delivery batches", "BR-23", "refusal.contract.schedule.count", MAX_ROWS)));
         }
         Map<UUID, OrderLine> lines = new HashMap<>();
         order.lines().forEach(line -> lines.put(line.id(), line));
@@ -90,24 +90,27 @@ public final class ContractTerms {
             BatchEntry entry = entries.get(i);
             String field = "deliverySchedule[" + i + "]";
             if (entry == null) {
-                errors.add(new FieldError(field, "a delivery batch", "NotNull"));
+                errors.add(FieldError.localized(field, "a delivery batch", "NotNull",
+                        "refusal.contract.schedule.batchMissing"));
                 continue;
             }
             if ((entry.windowStart() == null) != (entry.windowEnd() == null)) {
-                errors.add(new FieldError(field + ".windowEnd", "a window has both its days, or neither yet",
-                        "BR-23"));
+                errors.add(FieldError.localized(field + ".windowEnd", "a window has both its days, or neither yet",
+                        "BR-23", "refusal.contract.schedule.windowBoth", i + 1));
             } else if (entry.windowStart() != null && entry.windowStart().isAfter(entry.windowEnd())) {
-                errors.add(new FieldError(field + ".windowEnd", "not before the window's first day", "BR-23"));
+                errors.add(FieldError.localized(field + ".windowEnd", "not before the window's first day", "BR-23",
+                        "refusal.contract.schedule.windowOrder", i + 1));
             }
             if (entry.windowStart() != null && previousStart != null && entry.windowStart().isBefore(previousStart)) {
-                errors.add(new FieldError(field + ".windowStart", "a batch starts no earlier than the one before",
-                        "BR-23"));
+                errors.add(FieldError.localized(field + ".windowStart", "a batch starts no earlier than the one before",
+                        "BR-23", "refusal.contract.schedule.startOrder", i + 1));
             }
             if (entry.windowStart() != null) {
                 previousStart = entry.windowStart();
             }
             if (entry.lines().isEmpty()) {
-                errors.add(new FieldError(field + ".lines", "at least one carton", "BR-23"));
+                errors.add(FieldError.localized(field + ".lines", "at least one carton", "BR-23",
+                        "refusal.contract.schedule.batchEmpty", i + 1));
             }
             Set<UUID> seen = new HashSet<>();
             List<DeliveryBatch.Line> batchLines = new ArrayList<>();
@@ -115,17 +118,19 @@ public final class ContractTerms {
                 LineEntry line = entry.lines().get(j);
                 String lineField = field + ".lines[" + j + "]";
                 if (line == null || line.orderLineId() == null || !lines.containsKey(line.orderLineId())) {
-                    errors.add(new FieldError(lineField + ".orderLineId", "a line of order " + order.orderNumber(),
-                            "BR-23"));
+                    errors.add(FieldError.localized(lineField + ".orderLineId", "a line of order "
+                            + order.orderNumber(), "BR-23", "refusal.contract.schedule.lineUnknown", i + 1,
+                            order.orderNumber().value()));
                     continue;
                 }
                 if (!seen.add(line.orderLineId())) {
-                    errors.add(new FieldError(lineField + ".orderLineId", "each line once in a batch", "BR-23"));
+                    errors.add(FieldError.localized(lineField + ".orderLineId", "each line once in a batch", "BR-23",
+                            "refusal.contract.schedule.lineTwice", i + 1));
                     continue;
                 }
                 if (line.cartons() == null || line.cartons() < 1) {
-                    errors.add(new FieldError(lineField + ".cartons", "a whole number of cartons, at least 1",
-                            "BR-23"));
+                    errors.add(FieldError.localized(lineField + ".cartons", "a whole number of cartons, at least 1",
+                            "BR-23", "refusal.contract.schedule.cartons", i + 1));
                     continue;
                 }
                 planned.merge(line.orderLineId(), line.cartons(), Integer::sum);
@@ -139,8 +144,9 @@ public final class ContractTerms {
         for (OrderLine line : order.lines()) {
             int over = planned.getOrDefault(line.id(), 0);
             if (!Objects.equals(line.cartons(), over)) {
-                errors.add(new FieldError("deliverySchedule", "%s: %d carton(s) over the batches, the order has %d"
-                        .formatted(line.sku().code(), over, line.cartons()), "BR-23"));
+                errors.add(FieldError.localized("deliverySchedule", "%s: %d carton(s) over the batches, the order "
+                        .formatted(line.sku().code(), over) + "has " + line.cartons(), "BR-23",
+                        "refusal.contract.schedule.cartonsMismatch", line.sku().code(), over, line.cartons()));
             }
         }
         if (!errors.isEmpty()) {
@@ -159,11 +165,11 @@ public final class ContractTerms {
         for (DeliveryBatch batch : batches) {
             String field = "deliverySchedule[" + (batch.seq() - 1) + "]";
             if (!batch.hasWindow()) {
-                errors.add(new FieldError(field + ".windowStart", "the delivery window, before the contract is sent",
-                        "BR-23"));
+                errors.add(FieldError.localized(field + ".windowStart", "the delivery window, before the contract is "
+                        + "sent", "BR-23", "refusal.contract.schedule.windowMissing", batch.seq()));
             } else if (batch.windowStart().isBefore(today)) {
-                errors.add(new FieldError(field + ".windowStart", "not in the past when the contract is sent",
-                        "BR-23"));
+                errors.add(FieldError.localized(field + ".windowStart", "not in the past when the contract is sent",
+                        "BR-23", "refusal.contract.schedule.windowPast", batch.seq()));
             }
         }
         if (!errors.isEmpty()) {
@@ -190,7 +196,8 @@ public final class ContractTerms {
                                                 boolean creditApproved, Integer creditTermDays) {
         Money total = order.total();
         if (entries == null || entries.isEmpty() || entries.size() > MAX_ROWS) {
-            throw invalidPlan(List.of(new FieldError("paymentPlan", "1 to " + MAX_ROWS + " installments", "BR-13")));
+            throw invalidPlan(List.of(FieldError.localized("paymentPlan", "1 to " + MAX_ROWS + " installments",
+                    "BR-13", "refusal.contract.plan.count", MAX_ROWS)));
         }
         List<FieldError> errors = new ArrayList<>();
         List<Money> amounts = new ArrayList<>();
@@ -200,49 +207,55 @@ public final class ContractTerms {
             InstallmentEntry entry = entries.get(i);
             String field = "paymentPlan[" + i + "]";
             if (entry == null) {
-                errors.add(new FieldError(field, "an installment", "NotNull"));
+                errors.add(FieldError.localized(field, "an installment", "NotNull",
+                        "refusal.contract.plan.installmentMissing"));
                 amounts.add(null);
                 continue;
             }
             if (entry.name() == null || entry.name().isBlank() || entry.name().strip().length() > 100) {
-                errors.add(new FieldError(field + ".name", "a name of at most 100 characters", "BR-13"));
+                errors.add(FieldError.localized(field + ".name", "a name of at most 100 characters", "BR-13",
+                        "refusal.contract.plan.name", i + 1));
             }
             if (entry.milestone() == null) {
-                errors.add(new FieldError(field + ".milestone", "ON_SIGNING, BEFORE_DELIVERY or AFTER_DELIVERY",
-                        "BR-13"));
+                errors.add(FieldError.localized(field + ".milestone", "ON_SIGNING, BEFORE_DELIVERY or AFTER_DELIVERY",
+                        "BR-13", "refusal.contract.plan.milestone", i + 1));
             }
             afterDelivery |= entry.milestone() == PaymentMilestone.AFTER_DELIVERY;
             if (entry.deliveryBatchSeq() != null) {
                 if (entry.milestone() == PaymentMilestone.ON_SIGNING) {
-                    errors.add(new FieldError(field + ".deliveryBatchSeq", "an installment on signing is tied to no "
-                            + "delivery batch", "BR-13"));
+                    errors.add(FieldError.localized(field + ".deliveryBatchSeq", "an installment on signing is tied "
+                            + "to no delivery batch", "BR-13", "refusal.contract.plan.onSigningNoBatch", i + 1));
                 } else if (entry.deliveryBatchSeq() < 1 || entry.deliveryBatchSeq() > batches) {
-                    errors.add(new FieldError(field + ".deliveryBatchSeq", "a delivery batch of the schedule, 1 to "
-                            + batches, "BR-13"));
+                    errors.add(FieldError.localized(field + ".deliveryBatchSeq", "a delivery batch of the schedule, "
+                            + "1 to " + batches, "BR-13", "refusal.contract.plan.batchRange", i + 1, batches));
                 }
             }
             if (entry.dueDays() != null && (entry.milestone() == PaymentMilestone.BEFORE_DELIVERY
                     || entry.dueDays() < 0 || entry.dueDays() > 365)) {
-                errors.add(new FieldError(field + ".dueDays", entry.milestone() == PaymentMilestone.BEFORE_DELIVERY
+                boolean beforeDelivery = entry.milestone() == PaymentMilestone.BEFORE_DELIVERY;
+                errors.add(FieldError.localized(field + ".dueDays", beforeDelivery
                         ? "an installment before delivery has no due day: it blocks the handover until paid"
-                        : "0 to 365 days", "BR-13"));
+                        : "0 to 365 days", "BR-13", beforeDelivery ? "refusal.contract.plan.beforeDeliveryNoDueDays"
+                        : "refusal.contract.plan.dueDays", i + 1));
             }
             if ((entry.amount() == null) == (entry.percent() == null)) {
-                errors.add(new FieldError(field, "an amount or a share of the total, one of the two", "BR-13"));
+                errors.add(FieldError.localized(field, "an amount or a share of the total, one of the two", "BR-13",
+                        "refusal.contract.plan.amountOrPercent", i + 1));
                 amounts.add(null);
                 continue;
             }
             if (entry.amount() != null) {
                 if (entry.amount().signum() <= 0 || entry.amount().stripTrailingZeros().scale() > 0) {
-                    errors.add(new FieldError(field + ".amount", "whole dong, more than 0", "BR-13"));
+                    errors.add(FieldError.localized(field + ".amount", "whole dong, more than 0", "BR-13",
+                            "refusal.contract.plan.amount", i + 1));
                     amounts.add(null);
                 } else {
                     amounts.add(new Money(entry.amount(), total.currency()));
                 }
             } else if (entry.percent().signum() <= 0 || entry.percent().compareTo(HUNDRED) > 0
                     || entry.percent().stripTrailingZeros().scale() > 2) {
-                errors.add(new FieldError(field + ".percent", "more than 0, at most 100, two decimals at most",
-                        "BR-13"));
+                errors.add(FieldError.localized(field + ".percent", "more than 0, at most 100, two decimals at most",
+                        "BR-13", "refusal.contract.plan.percent", i + 1));
                 amounts.add(null);
             } else {
                 shares++;
@@ -253,7 +266,7 @@ public final class ContractTerms {
         if (afterDelivery && !creditApproved) {
             throw new BusinessException(ErrorCode.PAYMENT_SCHEDULE_NEEDS_CREDIT, ("Order %s: an installment after "
                     + "delivery is credit, and accounting has approved none for this customer").formatted(
-                    order.orderNumber()));
+                    order.orderNumber())).localized("refusal.contract.needsCredit", order.orderNumber().value());
         }
         if (errors.isEmpty() && shares > 0) {
             // 14 §4.3 step 12: shares rounded to the dong, what the rounding left on the last. Each share is off by at
@@ -265,17 +278,17 @@ public final class ContractTerms {
                 int last = amounts.size() - 1;
                 amounts.set(last, new Money(amounts.get(last).amount().add(off), total.currency()));
                 if (amounts.get(last).amount().signum() <= 0) {
-                    errors.add(new FieldError("paymentPlan[" + last + "]", "leaves nothing for the last installment",
-                            "BR-13"));
+                    errors.add(FieldError.localized("paymentPlan[" + last + "]", "leaves nothing for the last "
+                            + "installment", "BR-13", "refusal.contract.plan.lastEmpty", last + 1));
                 }
             }
         }
         if (errors.isEmpty()) {
             Money planned = amounts.stream().reduce(Money.zero(total.currency()), Money::plus);
             if (!planned.equals(total)) {
-                errors.add(new FieldError("paymentPlan", "the installments add up to %s; the order's total with tax "
-                        .formatted(planned.amount().toPlainString()) + "is " + total.amount().toPlainString(),
-                        "BR-13"));
+                errors.add(FieldError.localized("paymentPlan", "the installments add up to %s; the order's total "
+                        .formatted(planned.amount().toPlainString()) + "with tax is " + total.amount().toPlainString(),
+                        "BR-13", "refusal.contract.plan.totalMismatch", planned.amount(), total.amount()));
             }
         }
         if (!errors.isEmpty()) {
@@ -346,8 +359,9 @@ public final class ContractTerms {
             InstallmentEntry entry = plan.get(i);
             if (entry.milestone() != PaymentMilestone.ON_SIGNING && entry.deliveryBatchSeq() != null) {
                 if (!values.containsKey(entry.deliveryBatchSeq())) {
-                    throw invalidPlan(List.of(new FieldError("paymentPlan[" + i + "].deliveryBatchSeq",
-                            "a delivery batch of the schedule, 1 to " + batches.size(), "BR-13")));
+                    throw invalidPlan(List.of(FieldError.localized("paymentPlan[" + i + "].deliveryBatchSeq",
+                            "a delivery batch of the schedule, 1 to " + batches.size(), "BR-13",
+                            "refusal.contract.plan.batchRange", i + 1, batches.size())));
                 }
                 tied.add(i);
                 perBatch.merge(entry.deliveryBatchSeq(), 1, Integer::sum);
@@ -366,9 +380,10 @@ public final class ContractTerms {
                         .divide(BigDecimal.valueOf(perBatch.get(plan.get(i).deliveryBatchSeq())), 10, RoundingMode.HALF_UP))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         if (rest.amount().signum() <= 0 || worth.signum() <= 0) {
-            throw invalidPlan(List.of(new FieldError("paymentPlan", ("the installments tied to no delivery batch take "
-                    + "%s of the total %s: nothing is left for those tied to one").formatted(
-                    untied.amount().toPlainString(), total.amount().toPlainString()), "BR-13")));
+            throw invalidPlan(List.of(FieldError.localized("paymentPlan", ("the installments tied to no delivery "
+                    + "batch take %s of the total %s: nothing is left for those tied to one").formatted(
+                    untied.amount().toPlainString(), total.amount().toPlainString()), "BR-13",
+                    "refusal.contract.plan.nothingLeftForTied", untied.amount(), total.amount())));
         }
         List<InstallmentEntry> suggested = new ArrayList<>(plan);
         BigDecimal given = BigDecimal.ZERO;
@@ -392,11 +407,13 @@ public final class ContractTerms {
 
     private static BusinessException invalidSchedule(List<FieldError> errors) {
         return new BusinessException(ErrorCode.DELIVERY_SCHEDULE_INVALID,
-                "The delivery schedule breaks " + errors.size() + " rule(s) (14 BR-23)", errors);
+                "The delivery schedule breaks " + errors.size() + " rule(s) (14 BR-23)", errors, Map.of(),
+                "refusal.contract.scheduleInvalid", errors.size());
     }
 
     private static BusinessException invalidPlan(List<FieldError> errors) {
         return new BusinessException(ErrorCode.PAYMENT_PLAN_INVALID,
-                "The payment plan breaks " + errors.size() + " rule(s) (14 BR-13)", errors);
+                "The payment plan breaks " + errors.size() + " rule(s) (14 BR-13)", errors, Map.of(),
+                "refusal.contract.planInvalid", errors.size());
     }
 }

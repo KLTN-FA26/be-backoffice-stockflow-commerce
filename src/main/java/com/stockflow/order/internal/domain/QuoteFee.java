@@ -27,16 +27,20 @@ public record QuoteFee(UUID id, FeeKind kind, Sku sku, Money amount, String taxC
         Objects.requireNonNull(kind, "kind");
         if ((kind == FeeKind.PLATE_FEE) != (sku != null)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "A plate fee names the SKU it is for; the shipping fee names none");
+                    "A plate fee names the SKU it is for; the shipping fee names none")
+                    .localized("refusal.quote.feeSku");
         }
         if (amount != null && (!Money.VND.equals(amount.currency()) || amount.isNegative()
                 || amount.amount().stripTrailingZeros().scale() > 0
                 || (kind == FeeKind.SHIPPING_FEE && amount.isZero()))) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, kind == FeeKind.SHIPPING_FEE
-                    ? "A shipping fee is a positive whole VND amount" : "A plate fee is a whole VND amount, 0 or more");
+                    ? "A shipping fee is a positive whole VND amount" : "A plate fee is a whole VND amount, 0 or more")
+                    .localized(kind == FeeKind.SHIPPING_FEE ? "refusal.quote.shippingFeeAmount"
+                            : "refusal.quote.plateFeeAmount");
         }
         if (kind == FeeKind.SHIPPING_FEE && amount == null) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A shipping fee is added with its amount");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A shipping fee is added with its amount")
+                    .localized("refusal.quote.shippingFeeAmount");
         }
         if ((taxClass == null) != (taxRate == null)) {
             throw new IllegalArgumentException("A fee has its tax class and rate, or neither");

@@ -122,7 +122,8 @@ class SalesContractService implements SalesContracts {
         Order order = lockInScope(orderId);
         if (contracts.findLiveByOrderId(orderId).isPresent()) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_EXISTS, ("Order %s already has a contract in force; "
-                    + "cancel it to draw up another").formatted(order.orderNumber()));
+                    + "cancel it to draw up another").formatted(order.orderNumber()))
+                    .localized("refusal.contract.exists", order.orderNumber().value());
         }
         if (!seller.complete()) {
             throw new BusinessException(ErrorCode.SELLER_PROFILE_UNAVAILABLE,
@@ -131,7 +132,8 @@ class SalesContractService implements SalesContracts {
         CustomerLegalProfile buyer = legalProfiles.legalProfile(order.customerId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_LEGAL_PROFILE_MISSING, ("Customer of "
                         + "order %s: record the registered address and the legal representative first (18 BR-05)")
-                        .formatted(order.orderNumber())));
+                        .formatted(order.orderNumber())).localized("refusal.contract.legalProfileMissing",
+                        order.orderNumber().value()));
         Draft given = draft == null ? new Draft(null, null, null) : draft;
         SalesContract.requireContractable(order);
         List<DeliveryBatch> schedule = given.deliverySchedule() == null ? ContractTerms.defaultSchedule(order)
@@ -279,7 +281,8 @@ class SalesContractService implements SalesContracts {
     public ContractView sign(CurrentUser user, UUID orderId, long version, IncomingFiles signedFile,
                              LocalDate signedOn) {
         if (signedFile == null || signedFile.count() != 1 || signedOn == null) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "One signed file and the day it was signed");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "One signed file and the day it was signed")
+                    .localized("refusal.contract.signedFileRequired");
         }
         if (signedFile instanceof IncomingFiles.Uploaded uploaded) {
             // The key is the upload's own, so a contract naming it is the one this upload signed.
@@ -352,7 +355,8 @@ class SalesContractService implements SalesContracts {
         SalesContract contract = live(readInScope(orderId));
         if (contract.sentDocumentKey() == null) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, "Contract %s was not sent yet"
-                    .formatted(contract.contractNumber()));
+                    .formatted(contract.contractNumber()))
+                    .localized("refusal.contract.notSentYet", contract.contractNumber());
         }
         return files.downloadLink(contract.sentDocumentKey(), contract.contractNumber() + ".pdf");
     }
@@ -363,7 +367,8 @@ class SalesContractService implements SalesContracts {
         SalesContract contract = live(readInScope(orderId));
         if (contract.signedFileKey() == null) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, "Contract %s is not signed"
-                    .formatted(contract.contractNumber()));
+                    .formatted(contract.contractNumber()))
+                    .localized("refusal.contract.notSignedYet", contract.contractNumber());
         }
         return files.downloadLink(contract.signedFileKey(), contract.signedFileName());
     }
@@ -436,7 +441,8 @@ class SalesContractService implements SalesContracts {
 
     private SalesContract live(Order order) {
         return contracts.findLiveByOrderId(order.id().value()).orElseThrow(() -> new BusinessException(
-                ErrorCode.SALES_CONTRACT_NOT_FOUND, "Order %s has no contract".formatted(order.orderNumber())));
+                ErrorCode.SALES_CONTRACT_NOT_FOUND, "Order %s has no contract".formatted(order.orderNumber()))
+                .localized("refusal.contract.none", order.orderNumber().value()));
     }
 
     private SalesContract live(Order order, long version) {
@@ -448,7 +454,7 @@ class SalesContractService implements SalesContracts {
     private static void requireVersion(SalesContract contract, long version) {
         if (contract.version() != version) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK, "Contract %s changed since it was read"
-                    .formatted(contract.contractNumber()));
+                    .formatted(contract.contractNumber())).localized("refusal.contract.changed", contract.contractNumber());
         }
     }
 
@@ -456,7 +462,8 @@ class SalesContractService implements SalesContracts {
     private SalesContract sentContract(Order order) {
         return contracts.findLiveByOrderId(order.id().value()).filter(c -> c.status() != SalesContractStatus.DRAFT)
                 .orElseThrow(() -> new BusinessException(ErrorCode.SALES_CONTRACT_NOT_FOUND,
-                        "Order %s has no contract sent".formatted(order.orderNumber())));
+                        "Order %s has no contract sent".formatted(order.orderNumber()))
+                        .localized("refusal.contract.noneSent", order.orderNumber().value()));
     }
 
     // ---- building --------------------------------------------------------------------------------------------------
@@ -534,7 +541,8 @@ class SalesContractService implements SalesContracts {
         if (contract.plan().stream().anyMatch(i -> i.milestone() == PaymentMilestone.AFTER_DELIVERY)
                 && !creditApproved(customers.creditTerms(order.customerId()))) {
             throw new BusinessException(ErrorCode.PAYMENT_SCHEDULE_NEEDS_CREDIT, ("Contract %s pays after delivery, "
-                    + "and accounting approves no credit for this customer now").formatted(contract.contractNumber()));
+                    + "and accounting approves no credit for this customer now").formatted(contract.contractNumber()))
+                    .localized("refusal.contract.needsCreditNow", contract.contractNumber());
         }
     }
 

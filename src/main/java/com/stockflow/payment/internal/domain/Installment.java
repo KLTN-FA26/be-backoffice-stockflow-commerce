@@ -231,12 +231,15 @@ public final class Installment {
         }
         if (!status.takesMoney()) {
             throw new BusinessException(ErrorCode.INSTALLMENT_NOT_PAYABLE, "Installment %d of contract %s is %s"
-                    .formatted(seq, contractNumber, status));
+                    .formatted(seq, contractNumber, status))
+                    .localized("refusal.payment.notPayable", seq, contractNumber, status);
         }
         if (money.compareTo(outstanding()) > 0) {
             throw new BusinessException(ErrorCode.PAYMENT_RECEIPT_EXCEEDS_OUTSTANDING,
                     "Installment %d of contract %s still owes %s %s, not %s".formatted(seq, contractNumber,
-                            outstanding().toPlainString(), currency, money.toPlainString()));
+                            outstanding().toPlainString(), currency, money.toPlainString()), java.util.List.of(),
+                    java.util.Map.of("installmentId", id, "outstanding", outstanding(), "currency", currency),
+                    "refusal.payment.exceedsOutstanding", seq, contractNumber, outstanding(), money);
         }
         this.paidAmount = paidAmount.add(money);
         if (paidAmount.add(reducedAmount).compareTo(amount) == 0) {

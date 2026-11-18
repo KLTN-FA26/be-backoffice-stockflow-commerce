@@ -78,7 +78,8 @@ public final class QuoteLine {
         this.printSpec = printSpec;
         if (quantity < 1 || (long) quantity * unitsPerCarton > MAX_UNITS) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line %d: %d %s is out of range (at most %d pieces)"
-                    .formatted(lineNo, quantity, noun(), MAX_UNITS));
+                    .formatted(lineNo, quantity, noun(), MAX_UNITS))
+                    .localized("refusal.quote.quantityOutOfRange", lineNo, quantity, MAX_UNITS);
         }
         this.quantity = quantity;
         // No tiers = not priced yet. Only a customer's reorder made one (user decision R1), and the reorder went with team
@@ -89,7 +90,8 @@ public final class QuoteLine {
         for (PriceTier tier : tiers) {
             if (!seen.add(tier.minQuantity())) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                        "Line %d has two price tiers starting at %d %s".formatted(lineNo, tier.minQuantity(), noun()));
+                        "Line %d has two price tiers starting at %d %s".formatted(lineNo, tier.minQuantity(), noun()))
+                        .localized("refusal.quote.tierTwice", lineNo, tier.minQuantity());
             }
         }
         this.tiers = tiers.stream().sorted(Comparator.comparingInt(PriceTier::minQuantity)).toList();
@@ -128,7 +130,8 @@ public final class QuoteLine {
         Objects.requireNonNull(uomConversionId, "uomConversionId");
         if (unitsPerCarton < 2) {
             throw new BusinessException(ErrorCode.CARTON_SPEC_MISSING,
-                    "%s: a carton holds more than one piece, not %d".formatted(sku.code(), unitsPerCarton));
+                    "%s: a carton holds more than one piece, not %d".formatted(sku.code(), unitsPerCarton))
+                    .localized("refusal.quote.cartonOfOne", sku.code(), unitsPerCarton);
         }
         return new QuoteLine(id, lineNo, Measure.CARTON, sku, uomConversionId, unitsPerCarton, null, null, cartons,
                 tiers, acceptedCartons, acceptedUnitPrice, taxClass, taxRate);
@@ -141,7 +144,8 @@ public final class QuoteLine {
         String spec = printSpec == null || printSpec.isBlank() ? null : printSpec.strip();
         if (spec != null && spec.length() > MAX_PRINT_SPEC) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "A print specification is at most " + MAX_PRINT_SPEC + " characters");
+                    "A print specification is at most " + MAX_PRINT_SPEC + " characters")
+                    .localized("refusal.quote.printSpecTooLong", MAX_PRINT_SPEC);
         }
         return new QuoteLine(id, lineNo, Measure.UNIT, blankSku, null, 1, designSnapshotId, spec, units, tiers,
                 acceptedUnits, acceptedUnitPrice, null, null);
@@ -171,10 +175,11 @@ public final class QuoteLine {
         requirePriced();
         if ((long) quantity * unitsPerCarton > MAX_UNITS) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line %d: %d %s is more than %d pieces"
-                    .formatted(lineNo, quantity, noun(), MAX_UNITS));
+                    .formatted(lineNo, quantity, noun(), MAX_UNITS))
+                    .localized("refusal.quote.quantityOutOfRange", lineNo, quantity, MAX_UNITS);
         }
         if (quantity < moq()) {
-            throw new BusinessException(ErrorCode.QUOTE_BELOW_MOQ,
+            throw belowMoq(lineNo, sku.code(), quantity, moq(),
                     "Line %d: %d %s is below its MOQ of %d".formatted(lineNo, quantity, noun(), moq()));
         }
         Money price = tiers.getFirst().unitPrice();
@@ -200,8 +205,20 @@ public final class QuoteLine {
 
     private void requirePriced() {
         if (tiers.isEmpty()) {
-            throw new BusinessException(ErrorCode.QUOTE_NOT_PRICED, "Line " + lineNo + " has no price yet");
+            throw new BusinessException(ErrorCode.QUOTE_NOT_PRICED, "Line " + lineNo + " has no price yet")
+                    .localized("refusal.quote.linePriceMissing", lineNo);
         }
+    }
+
+    /**
+     * F-03 (1), 14 BR-07: cartons below the line's MOQ - its lowest tier - are refused, and the refusal shows the MOQ: in
+     * the message people read, and as {@code details} ({@code lineNo}, {@code sku}, {@code cartons}, {@code moq}) for a
+     * form to put next to the line.
+     */
+    static BusinessException belowMoq(int lineNo, String sku, int cartons, int moq, String english) {
+        return new BusinessException(ErrorCode.QUOTE_BELOW_MOQ, english, List.of(),
+                java.util.Map.of("lineNo", lineNo, "sku", sku, "cartons", cartons, "moq", moq),
+                "refusal.quote.belowMoq", lineNo, sku, cartons, moq);
     }
 
     void clearAcceptance() {
