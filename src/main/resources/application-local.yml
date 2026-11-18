@@ -30,6 +30,11 @@ logging:
     # org.hibernate.orm.jdbc.bind: TRACE
 
 stockflow:
+  fulfillment:
+    ahamove:
+      # A laptop books Ahamove against the fake (no network, no secrets key). AHAMOVE_MODE=live tries the real API with
+      # a staging key sealed on a carrier.
+      mode: ${AHAMOVE_MODE:fake}
   payment:
     # Obviously not a real account (SCRUM-193): demo values so the transfer instructions render on a laptop.
     company-bank:

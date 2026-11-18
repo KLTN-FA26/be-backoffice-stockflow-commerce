@@ -1,6 +1,7 @@
 package com.stockflow.fulfillment.internal.service;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
 import java.time.Duration;
@@ -16,12 +17,30 @@ import java.util.List;
  * @param cancelComment the reason sent when an order is cancelled; Ahamove takes only reasons from its own list, so it
  *                      is configuration (application.yml), not code
  * @param webhook       how its callbacks are defended, since it does not sign them
+ * @param mode          {@code live}: Ahamove's real API ({@link AhamoveGateway}); {@code fake}: an in-memory Ahamove
+ *                      that makes no network call, for demos on a laptop ({@link FakeAhamoveGateway}). Never
+ *                      {@code fake} under the {@code prod} profile: the application refuses to start
  */
 @ConfigurationProperties(prefix = "stockflow.fulfillment.ahamove")
 public record AhamoveProperties(@DefaultValue("https://partner-apistg.ahamove.com") String stagingUrl,
                                 @DefaultValue("https://partner-api.ahamove.com") String productionUrl,
                                 String cancelComment,
-                                Webhook webhook) {
+                                Webhook webhook,
+                                @DefaultValue("live") Mode mode) {
+
+    /** Which Ahamove the carrier calls reach. */
+    public enum Mode {
+        LIVE, FAKE
+    }
+
+    /** Live mode; what a test that builds the properties by hand means. */
+    public AhamoveProperties(String stagingUrl, String productionUrl, String cancelComment, Webhook webhook) {
+        this(stagingUrl, productionUrl, cancelComment, webhook, Mode.LIVE);
+    }
+
+    public boolean fake() {
+        return mode == Mode.FAKE;
+    }
 
     /**
      * Ahamove's callback carries a fixed header value and no signature of its body, so whoever learns the value can
@@ -60,7 +79,11 @@ public record AhamoveProperties(@DefaultValue("https://partner-apistg.ahamove.co
         }
     }
 
+    @ConstructorBinding
     public AhamoveProperties {
+        if (mode == null) {
+            mode = Mode.LIVE;
+        }
         if (cancelComment == null || cancelComment.isBlank()) {
             throw new IllegalArgumentException("stockflow.fulfillment.ahamove.cancel-comment is required");
         }
