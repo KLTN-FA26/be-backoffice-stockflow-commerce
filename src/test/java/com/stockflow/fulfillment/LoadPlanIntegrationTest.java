@@ -17,6 +17,8 @@ import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.RedisContainer;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.text.PDFTextStripper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -25,6 +27,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
@@ -56,6 +59,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -361,6 +366,22 @@ class LoadPlanIntegrationTest {
         dispatch(get(PLANS + "/" + id + "/vehicles/2/layout")).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_VEHICLE_NOT_FOUND"));
 
+        // The vehicle's loading sheet PDF (09 §4.2 step 5): a real PDF with the vehicle, the totals and every carton's
+        // LPN with its order, from the stored placements; an unconfirmed plan says so, and there is no dispatch load yet.
+        String sheet = pdfText(dispatch(get(PLANS + "/" + id + "/vehicles/1/loading-sheet.pdf"))
+                .andExpect(status().isOk()).andExpect(content().contentType(MediaType.APPLICATION_PDF))
+                .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString(
+                        "loading-sheet-" + plan.path("code").asText() + "-xe1.pdf")))
+                .andReturn().getResponse().getContentAsByteArray());
+        assertThat(sheet).contains("PHIẾU XẾP HÀNG", plan.path("code").asText(), "TRUCK-5T", "TỔNG KẾT: 3 kiện",
+                "Lấp đầy thể tích", "Lấp đầy khối lượng", "Kế hoạch chưa chốt", "Chưa có (kế hoạch chưa chốt)",
+                orderA.orderNumber(), orderB.orderNumber(), "Trang 1/1");
+        layout.path("boxes").forEach(box -> assertThat(sheet).contains(box.path("label").asText()));
+        dispatch(get(PLANS + "/" + id + "/vehicles/2/loading-sheet.pdf")).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_VEHICLE_NOT_FOUND"));
+        dispatch(get(PLANS + "/" + UUID.randomUUID() + "/vehicles/1/loading-sheet.pdf")).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_NOT_FOUND"));
+
         // Which carton is which: order A's two, order B's one (the plan lists every shipment's cartons).
         List<String> cartonsOfA = new ArrayList<>();
         String carton = null;
@@ -460,6 +481,12 @@ class LoadPlanIntegrationTest {
         dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan, List.of(sofa1, sofa2), List.of())))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_PLAN_TRANSITION"));
+
+        // Confirmed: the sheet now carries the vehicle's dispatch load and has no "not confirmed" note.
+        String confirmedSheet = pdfText(dispatch(get(PLANS + "/" + id + "/vehicles/1/loading-sheet.pdf"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray());
+        assertThat(confirmedSheet).contains((String) load.get("code"), "TỔNG KẾT: 2 kiện")
+                .doesNotContain("Kế hoạch chưa chốt");
 
         // The piece check: in = placed + unplaced, per shipment and order.
         JsonNode check = data(dispatch(get(PLANS + "/" + id + "/reconciliation")).andExpect(status().isOk()));
@@ -792,6 +819,12 @@ class LoadPlanIntegrationTest {
         as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(url)).andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
         as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(url + "/vehicles/1/layout")).andExpect(status().isForbidden());
+        as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(url + "/vehicles/1/loading-sheet.pdf"))
+                .andExpect(status().isForbidden());
+        as(sales, "SALES_STAFF", get(url + "/vehicles/1/loading-sheet.pdf")).andExpect(status().isForbidden());
+        as(customerUser, "CUSTOMER", get(url + "/vehicles/1/loading-sheet.pdf")).andExpect(status().isForbidden());
+        oc(get(url + "/vehicles/1/loading-sheet.pdf")).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_VEHICLE_NOT_FOUND"));
         as(dispatcherElsewhere, "WAREHOUSE_STAFF", body(post(url + "/cancellation"), reason(plan, "x")))
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
         as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(BASE + "/load-plan-candidates?warehouseId=" + HCM))
@@ -804,5 +837,11 @@ class LoadPlanIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_NOT_FOUND"));
         as(manager, "WAREHOUSE_MANAGER", body(post(url + "/cancellation"), reason(plan, "not needed")))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("CANCELLED"));
+    }
+
+    private static String pdfText(byte[] pdf) throws Exception {
+        try (var document = Loader.loadPDF(pdf)) {
+            return new PDFTextStripper().getText(document).replaceAll("\\s+", " ");
+        }
     }
 }
