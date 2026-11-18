@@ -27,6 +27,7 @@ import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.internal.domain.AdjustmentReason;
 import com.stockflow.inventory.internal.domain.AdjustmentStatus;
 import com.stockflow.inventory.internal.domain.CountSlot;
+import com.stockflow.inventory.internal.domain.CycleCountTrigger;
 import com.stockflow.inventory.internal.domain.AdjustmentDirection;
 import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
@@ -474,7 +475,7 @@ class StockOperationsServiceImpl implements StockOperations {
                     "%s is %s; only a carton in stock is quarantined".formatted(normal, carton.status()));
         }
         List<StockItemId> rowIds = stockItems.findIdsInStockPackages(List.of(carton.id()));
-        requireNotUnderCount(List.of(carton), rowIds, to);
+        boolean reportedShort = requireNotUnderCountUnlessShortReported(carton, rowIds, to);
         List<StockItem> rows = new ArrayList<>();
         for (StockItemId id : rowIds) {
             rows.add(stockItems.findByIdForUpdate(id).orElseThrow(() ->
@@ -483,6 +484,16 @@ class StockOperationsServiceImpl implements StockOperations {
         List<StockItem> live = rows.stream().filter(row -> row.onHand().value() > 0).toList();
         if (live.isEmpty()) {
             throw new IllegalStateException("Stock package %s is in stock with nothing in it".formatted(normal));
+        }
+        if (reportedShort) {
+            // 07 §4.4 step 9, 20 §4.8: the picker reported the carton short (the blind count it opened holds it) and the
+            // manager quarantines it at once. What the order held on it is a shortage, given up as a short pick is and
+            // announced as a count's shortage is: the line is SHORT already, and is reallocated afterwards.
+            for (StockItem row : rows) {
+                if (!row.reserved().isZero()) {
+                    row.giveUpHoldsOfWrittenOffCarton(actorId, clock.instant());
+                }
+            }
         }
         if (rows.stream().anyMatch(row -> !row.reserved().isZero())) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_HELD,
@@ -521,6 +532,9 @@ class StockOperationsServiceImpl implements StockOperations {
                         .ofLot(row.lotId()).leaving(carton.id()).arriving(carton.id()));
             }
         }
+        if (reportedShort) {
+            rows.forEach(events::publishEventsOf);
+        }
         log.info("Quarantined carton {} ({} x {}) from {} into {}", LogSafe.text(normal), onHand, unit.sku(), from,
                 LogSafe.text(to));
         return view(carton, unit, onHand);
@@ -544,6 +558,34 @@ class StockOperationsServiceImpl implements StockOperations {
      * what {@code claim} calls busy (open count, or submitted with its variance still pending), so the two cannot
      * disagree. Whoever asks, whatever they may do: this protects the count, it is not a visibility rule.
      */
+    /**
+     * {@link #requireNotUnderCount} for a quarantine, with one exception (kltn-docs 07 §4.4 step 9, §4.4 edge "thùng hư
+     * hỏng", decided 2026-11-19): a carton the picker reported short is on the blind count that report opened
+     * ({@code SHORT_PICK}, still open), and the manager quarantines it at once instead of waiting for the count to be
+     * submitted. The count goes on for its other cartons; its line follows the carton to the quarantine area as it does
+     * for any whole move. A carton held by another count, a submitted variance or an adjustment still refuses.
+     *
+     * @return whether the carton is on such a count
+     */
+    private boolean requireNotUnderCountUnlessShortReported(StockPackage carton, List<StockItemId> rowIds,
+                                                            LocationId to) {
+        StockItem row = rowIds.stream().map(stockItems::findById).flatMap(Optional::stream).findFirst().orElse(null);
+        if (row == null) {
+            return false;
+        }
+        CountSlot slot = CountSlot.carton(carton.location(), row.sku(), row.lotNumber(), carton.id());
+        String holder = countLines.claim(List.of(slot)).get(slot);
+        if (holder == null) {
+            return false;
+        }
+        boolean shortReport = countLines.findHolding(slot).filter(count -> count.number().equals(holder)
+                && count.trigger() == CycleCountTrigger.SHORT_PICK && count.status().isOpen()).isPresent();
+        if (!shortReport) {
+            requireNotUnderCount(List.of(carton), rowIds, to);
+        }
+        return shortReport;
+    }
+
     private void requireNotUnderCount(List<StockPackage> cartons, List<StockItemId> rowIds, LocationId to) {
         Map<StockPackageId, StockItem> rowOf = new HashMap<>();
         for (StockItemId id : rowIds) {
