@@ -96,8 +96,10 @@ class LoadPlannerModesTest {
     void storableModes() {
         assertThat(SelectionMode.values()).extracting(SelectionMode::name).containsExactly("SINGLE_TYPE",
                 "FEWEST_VEHICLES", "KEEP_LINES", "PRIORITY_FILL", "OVER_CAPACITY");
+        // WF4-LP-MODES: a plan and an estimate store every mode but PRIORITY_FILL (docs issue #40, question 4).
         assertThat(SelectionMode.values()).filteredOn(SelectionMode::storable)
-                .containsExactly(SelectionMode.SINGLE_TYPE, SelectionMode.FEWEST_VEHICLES);
+                .containsExactly(SelectionMode.SINGLE_TYPE, SelectionMode.FEWEST_VEHICLES, SelectionMode.KEEP_LINES,
+                        SelectionMode.OVER_CAPACITY);
     }
 
     // ------------------------------------------------------------------ Giữ nguyên dòng

@@ -8,8 +8,9 @@ package com.stockflow.fulfillment.internal.domain.loadplanning;
  * pick vehicles before a calculation: it edits a calculated plan (09 §4.2 step 3, BR-11), see
  * {@code LoadPlans#editPlacements} and {@code LoadPlans#recalculateVehicle}.</p>
  *
- * <p>Load plans and order estimates store their mode, and the database takes only {@link #SINGLE_TYPE} and
- * {@link #FEWEST_VEHICLES} for them; the other modes are offered by the trial estimate (LP2-9, WF4-TRIAL-EST).</p>
+ * <p>Load plans and order estimates store their mode ({@link #storable()}, their tables' checks): every mode but
+ * {@link #PRIORITY_FILL} (WF4-LP-MODES), which waits for the docs to say how a plan's cargo is split into main and
+ * filler (docs issue #40, question 4). The trial estimate offers every mode (LP2-9, WF4-TRIAL-EST).</p>
  */
 public enum SelectionMode {
     /** "Một loại": the one type that loads best, as many of it as needed (the original's {@code same_type}). */
@@ -18,9 +19,9 @@ public enum SelectionMode {
     FEWEST_VEHICLES,
     /**
      * "Giữ nguyên dòng": every carton of one line rides in one vehicle (the original's {@code keep_line_together}). A
-     * line is the cartons sharing a {@link CargoPackage#sourceRef()} - an estimate line, a row of the trial sheet - or
-     * a kit group. A line too big for one vehicle loads what fits and the rest is reported unplaced (09 edge case
-     * "Chế độ Giữ nguyên dòng").
+     * line is the cartons sharing a {@link CargoPackage#sourceRef()} - an estimate line, a row of the trial sheet, the
+     * order line a load plan's parcel holds - or a kit group. A line too big for one vehicle loads what fits and the
+     * rest is reported unplaced (09 edge case "Chế độ Giữ nguyên dòng").
      */
     KEEP_LINES,
     /**
@@ -36,9 +37,9 @@ public enum SelectionMode {
      */
     OVER_CAPACITY;
 
-    /** Whether a load plan or an order estimate may store this mode (its database check). */
+    /** Whether a load plan or an order estimate may store this mode (their database checks). */
     public boolean storable() {
-        return this == SINGLE_TYPE || this == FEWEST_VEHICLES;
+        return this != PRIORITY_FILL;
     }
 
     /** Whether the search mixes the vehicle types (the fleet drive) rather than trying each type alone. */

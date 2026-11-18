@@ -367,6 +367,19 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         return saved(plan, header, now);
     }
 
+    @Override
+    public PlanDetail removeShipment(UUID loadPlanId, UUID shipmentId, Long expectedVersion, CurrentUser actor) {
+        LoadPlanJpaEntity header = lock(loadPlanId, expectedVersion);
+        LoadPlan plan = store.load(header);
+        Instant now = clock.instant();
+        Set<UUID> released = plan.removeShipment(shipmentId, now);
+        plan.refreshUsage(cartons(parcels.of(plan.placedPackageIds())));
+        log.info("Load plan {}: shipment {} taken out ({} package(s)); vehicle(s) {} to recalculate", plan.code(),
+                shipmentId, released.size(), plan.activeVehicles().stream().filter(LoadPlan.Vehicle::needsRecalculation)
+                        .map(LoadPlan.Vehicle::seq).toList());
+        return saved(plan, header, now);
+    }
+
     /**
      * The orders' fulfilment tasks, locked before the plan (id order of the orders): the lock the order-cancellation
      * listener takes first. A cancellation running meanwhile then either finishes before the parcels are claimed (the
@@ -1103,8 +1116,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
     }
 
     /**
-     * A plan stores its mode, and only the two its table takes ({@link SelectionMode#storable()}); the other modes are
-     * the trial estimate's (WF4-TRIAL-EST) and are refused here like an unknown word, not left to the database check.
+     * A mode a plan stores ({@link SelectionMode#storable()}, WF4-LP-MODES); none named: SINGLE_TYPE, the docs' default
+     * "Một loại". PRIORITY_FILL is refused like an unknown word: its main / filler split is not defined for a plan yet.
      */
     private static SelectionMode mode(String raw) {
         if (raw == null || raw.isBlank()) {
@@ -1118,7 +1131,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         }
         if (mode == null || !mode.storable()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Invalid selection mode",
-                    List.of(new FieldError("selectionMode", "SINGLE_TYPE or FEWEST_VEHICLES", "LOAD_PLAN_MODE_INVALID")));
+                    List.of(new FieldError("selectionMode", "SINGLE_TYPE, FEWEST_VEHICLES, KEEP_LINES or OVER_CAPACITY",
+                            "LOAD_PLAN_MODE_INVALID")));
         }
         return mode;
     }

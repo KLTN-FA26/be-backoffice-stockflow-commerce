@@ -819,6 +819,8 @@ public enum ErrorCode {
     /** A load plan of a warehouse outside the caller's scope is OUT_OF_DATA_SCOPE, not this. */
     LOAD_PLAN_NOT_FOUND("Load plan not found", 404),
     LOAD_PLAN_VEHICLE_NOT_FOUND("This vehicle is not in the load plan", 404),
+    /** Docs 09 §4.2 step 9: the shipment taken out of a plan has no parcel the plan holds. */
+    LOAD_PLAN_SHIPMENT_NOT_IN_PLAN("This shipment is not in the load plan", 404),
     /** Docs 09 §5: the plan's status does not allow the step. */
     INVALID_LOAD_PLAN_TRANSITION("The load plan cannot do that in its current status", 409),
     /** Docs 09 BR-09: a parcel belongs to at most one load plan that is not cancelled. */

@@ -41,6 +41,9 @@ import java.util.stream.Collectors;
  *   <li>{@code kitGroup} is the kit's group id: the planner keeps each physical set on one vehicle (LP-3).</li>
  *   <li>{@code groupKey} is the shipment; a shipment may span vehicles (LP-3, LP2-7), so the planner does not keep it
  *       together.</li>
+ *   <li>{@code sourceRef} is the order line the parcel holds - the "dòng hàng" that {@code KEEP_LINES} keeps in one
+ *       vehicle (09 §4.2 "Giữ nguyên dòng"); a parcel of several lines is keyed by all of them, one with none by
+ *       itself.</li>
  * </ul>
  */
 @Component
@@ -105,8 +108,13 @@ class LoadPlanParcels {
             if (order != null) {
                 order.lines().forEach(l -> skuByLine.put(l.lineId(), l.sku()));
             }
-            String partName = partName(row, linesByPackage.getOrDefault(row.getId(), List.of()), skuByLine);
-            out.put(row.getId(), new Parcel(row, shipment, order, carton(row, partName), partName));
+            List<ParcelContents.Line> held = linesByPackage.getOrDefault(row.getId(), List.of());
+            String partName = partName(row, held, skuByLine);
+            TreeSet<UUID> lineIds = new TreeSet<>();
+            held.forEach(l -> lineIds.add(l.orderLineId()));
+            String lineKey = lineIds.isEmpty() ? null
+                    : lineIds.stream().map(UUID::toString).collect(Collectors.joining("+"));
+            out.put(row.getId(), new Parcel(row, shipment, order, carton(row, partName, lineKey), partName));
         }
         return out;
     }
@@ -132,11 +140,16 @@ class LoadPlanParcels {
      * → chặn tính phương án").
      */
     static CargoPackage carton(PackageJpaEntity row, String partName) {
+        return carton(row, partName, null);
+    }
+
+    /** As {@link #carton(PackageJpaEntity, String)}, keyed by the order line(s) it holds ({@code null}: by itself). */
+    static CargoPackage carton(PackageJpaEntity row, String partName, String lineKey) {
         if (!(positive(row.getLengthCm()) && positive(row.getWidthCm()) && positive(row.getHeightCm())
                 && positive(row.getWeightKg()))) {
             return null;
         }
-        return new CargoPackage(row.getId().toString(), null, mm(row.getLengthCm()), mm(row.getWidthCm()),
+        return new CargoPackage(row.getId().toString(), lineKey, mm(row.getLengthCm()), mm(row.getWidthCm()),
                 mm(row.getHeightCm()), row.getWeightKg(), row.isRotatable(), partName, null,
                 row.getShipmentId() == null ? null : row.getShipmentId().toString(), false);
     }

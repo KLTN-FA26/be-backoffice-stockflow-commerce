@@ -183,6 +183,16 @@ public interface LoadPlans {
     /** The shipments (whole), vehicle types and mode; from PLANNED back to DRAFT (09 §5). */
     PlanDetail setInputs(UUID loadPlanId, Inputs inputs, CurrentUser actor);
 
+    /**
+     * Takes one whole shipment out of a PLANNED plan (09 §4.2 step 9; RTM 09A-158): its parcels go back to the dispatch
+     * area and only the vehicles that carried them change - left empty, a vehicle leaves the plan; otherwise it waits
+     * to be recalculated ({@code needsRecalculation}). The plan stays PLANNED. A confirmed plan is reopened first.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code INVALID_LOAD_PLAN_TRANSITION} when not PLANNED;
+     *         {@code LOAD_PLAN_SHIPMENT_NOT_IN_PLAN}; {@code OPTIMISTIC_LOCK}
+     */
+    PlanDetail removeShipment(UUID loadPlanId, UUID shipmentId, Long expectedVersion, CurrentUser actor);
+
     /** Runs the planner over the whole plan and stores the result: PLANNED. */
     PlanDetail calculate(UUID loadPlanId, Long expectedVersion, CurrentUser actor);
 

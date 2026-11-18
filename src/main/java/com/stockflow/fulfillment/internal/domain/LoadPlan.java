@@ -213,9 +213,9 @@ public final class LoadPlan {
 
     /**
      * Sets what the plan is calculated from: the parcels (package id to its shipment; LP-5: the service passes whole
-     * shipments), the vehicle types it may use and the selection mode (LP-6). From PLANNED this goes back to DRAFT
-     * (09 §5 "đổi kiện / loại xe / chế độ"): the vehicles are dropped and must be calculated again. The same inputs
-     * again change nothing.
+     * shipments), the vehicle types it may use and the selection mode (09 §4.2, WF4-LP-MODES). From PLANNED this goes
+     * back to DRAFT (09 §5 "đổi kiện / loại xe / chế độ"): the vehicles are dropped and must be calculated again. The
+     * same inputs again change nothing.
      *
      * @return the parcels newly held by this plan (to be claimed under BR-09)
      */
@@ -690,15 +690,58 @@ public final class LoadPlan {
         if (!status.isLive()) {
             return false;
         }
-        Set<UUID> dropped = new HashSet<>();
+        if (takeOut(shipmentId, LoadPlanReleaseReason.ORDER_CANCELLED, at).isEmpty()) {
+            return false;
+        }
+        changed = true;
+        if (status == LoadPlanStatus.CONFIRMED && !loadingStarted) {
+            status = LoadPlanStatus.PLANNED;
+            vehicles.replaceAll(v -> v.active() && v.placements().isEmpty() ? v.retired() : v);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * The dispatcher takes a whole shipment out of a PLANNED plan (09 §4.2 step 9: "chưa có xe nào bắt đầu xếp → mở lại
+     * kế hoạch về Planned, gỡ kiện, các xe bị ảnh hưởng chờ tính lại"; a confirmed plan is reopened first, BR-14). Its
+     * parcels leave the plan ({@link LoadPlanReleaseReason#INPUTS_CHANGED}: the parcel list changed) and go back to the
+     * dispatch area; only the vehicles that carried them change - one left empty leaves the plan, any other is flagged
+     * {@code needsRecalculation}, as when an order is cancelled ({@link #dropShipment}). The plan stays PLANNED and the
+     * other vehicles keep their layout.
+     *
+     * @return the parcels released
+     * @throws BusinessException {@code INVALID_LOAD_PLAN_TRANSITION} when the plan is not PLANNED;
+     *         {@code LOAD_PLAN_SHIPMENT_NOT_IN_PLAN} when the plan holds no parcel of the shipment
+     */
+    public Set<UUID> removeShipment(UUID shipmentId, Instant at) {
+        requireStatus("have a shipment taken out (reopen a confirmed plan first)", LoadPlanStatus.PLANNED);
+        Set<UUID> dropped = takeOut(shipmentId, LoadPlanReleaseReason.INPUTS_CHANGED, at);
+        if (dropped.isEmpty()) {
+            throw new BusinessException(ErrorCode.LOAD_PLAN_SHIPMENT_NOT_IN_PLAN,
+                    "Load plan %s holds no package of shipment %s".formatted(code, shipmentId));
+        }
+        changed = true;
+        return dropped;
+    }
+
+    /**
+     * Releases the shipment's parcels with {@code reason} and frees their places: a vehicle left empty leaves the plan
+     * unless the plan is confirmed; a vehicle that lost parcels but keeps others is flagged {@code needsRecalculation}
+     * ("bỏ kiện &amp; tính lại": what rested on a removed parcel may float).
+     *
+     * @return the parcels released; empty when the plan held none of the shipment
+     */
+    private Set<UUID> takeOut(UUID shipmentId, LoadPlanReleaseReason reason, Instant at) {
+        Set<UUID> dropped = new LinkedHashSet<>();
         for (Member m : List.copyOf(members.values())) {
             if (m.active() && Objects.equals(m.shipmentId(), shipmentId)) {
-                members.put(m.packageId(), m.released(LoadPlanReleaseReason.ORDER_CANCELLED, at));
+                members.put(m.packageId(), m.released(reason, at));
                 dropped.add(m.packageId());
             }
         }
         if (dropped.isEmpty()) {
-            return false;
+            return dropped;
         }
         for (int i = 0; i < vehicles.size(); i++) {
             Vehicle v = vehicles.get(i);
@@ -714,13 +757,7 @@ public final class LoadPlan {
                         v.usedWeightKg(), v.volumeFillPct(), v.weightFillPct(), !kept.isEmpty()));
             }
         }
-        changed = true;
-        if (status == LoadPlanStatus.CONFIRMED && !loadingStarted) {
-            status = LoadPlanStatus.PLANNED;
-            vehicles.replaceAll(v -> v.active() && v.placements().isEmpty() ? v.retired() : v);
-            return true;
-        }
-        return false;
+        return dropped;
     }
 
     /** Recomputes the weight figures of the vehicles after {@link #dropShipment}, once the cartons are known. */
