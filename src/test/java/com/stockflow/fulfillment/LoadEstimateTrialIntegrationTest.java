@@ -79,9 +79,9 @@ class LoadEstimateTrialIntegrationTest {
         return id;
     }
 
-    /** A line of boxes of 1 kg each. */
+    /** A line of boxes of 1 kg each; a line with no boxes still weighs 1 kg, so only its quantity is wrong. */
     private static String line(int length, int width, int height, int quantity) {
-        return line(length, width, height, quantity, String.valueOf(quantity), false);
+        return line(length, width, height, quantity, String.valueOf(Math.max(quantity, 1)), false);
     }
 
     private static String line(int length, int width, int height, int quantity, String totalKg, boolean fill) {
