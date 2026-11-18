@@ -61,7 +61,9 @@ class SalesContractController {
     }
 
     @GetMapping
-    @Operation(summary = "The order's contract in force: parties, totals, delivery schedule, payment plan, status")
+    @Operation(summary = "The order's contract in force: parties, totals, delivery schedule, payment plan, status. A "
+            + "DRAFT contract carries creditWarning (OVERDUE / OVER_LIMIT) when its part paid after delivery would not "
+            + "fit the customer's credit now, so Sales decide before sending (14 §4.3 step 13, 15 BR-11)")
     @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.READ)
     public ApiResponse<SalesContracts.ContractView> get(@PathVariable UUID orderId,
                                                         @AuthenticatedUser CurrentUser user) {

@@ -149,14 +149,15 @@ class SalesContractService implements SalesContracts {
                 : given.returnWindowDays());
         SalesContract saved = contracts.save(contract);
         log.info("Sales contract {} drawn up for order {}", saved.contractNumber(), order.orderNumber());
-        return view(saved, order, null);
+        return view(saved, order, draftWarning(order, saved));
     }
 
     @Override
     @Transactional(readOnly = true)
     public ContractView get(UUID orderId) {
         Order order = readInScope(orderId);
-        return view(live(order), order, null);
+        SalesContract contract = live(order);
+        return view(contract, order, draftWarning(order, contract));
     }
 
     @Override
@@ -197,7 +198,8 @@ class SalesContractService implements SalesContracts {
         if (given.returnWindowDays() != null) {
             contract.agreeReturnWindow(order, given.returnWindowDays());
         }
-        return view(contracts.save(contract), order, null);
+        SalesContract saved = contracts.save(contract);
+        return view(saved, order, draftWarning(order, saved));
     }
 
     /**
@@ -534,6 +536,16 @@ class SalesContractService implements SalesContracts {
             throw new BusinessException(ErrorCode.PAYMENT_SCHEDULE_NEEDS_CREDIT, ("Contract %s pays after delivery, "
                     + "and accounting approves no credit for this customer now").formatted(contract.contractNumber()));
         }
+    }
+
+    /**
+     * 14 §4.3 step 13: Sales are warned before they send, not only after - a DRAFT contract carries the warning its plan
+     * would raise now, so they may change the plan or send it anyway knowing accounting decides at signing. Read again
+     * at each step: what the customer owes moves with every receipt.
+     */
+    private CreditWarning draftWarning(Order order, SalesContract contract) {
+        return contract.status() == com.stockflow.order.internal.domain.SalesContractStatus.DRAFT
+                ? creditWarning(order, contract) : null;
     }
 
     /**
