@@ -136,7 +136,7 @@ class CustomerOrdersService implements CustomerOrders {
         if (lifecycle.shipments().isEmpty()) {
             com.stockflow.order.api.OrderShipmentStatus whole = wholeOrderShipmentStatus(summary.status());
             return whole == null || lifecycle.shippedAt() == null ? List.of()
-                    : List.of(new Shipment(null, whole, 0, null, lifecycle.shippedAt(),
+                    : List.of(new Shipment(null, null, whole, 0, null, lifecycle.shippedAt(),
                     whole == com.stockflow.order.api.OrderShipmentStatus.HANDED_OVER ? null
                             : whole == com.stockflow.order.api.OrderShipmentStatus.DELIVERED ? lifecycle.deliveredAt()
                             : null,
@@ -146,7 +146,7 @@ class CustomerOrdersService implements CustomerOrders {
                 .sorted(java.util.Comparator.comparing(OrderSummary.Shipment::handedOverAt))
                 .map(s -> {
                     var carriage = s.carriage();
-                    return new Shipment(carriage == null ? null : carriage.shipmentCode(), s.status(),
+                    return new Shipment(s.shipmentId(), carriage == null ? null : carriage.shipmentCode(), s.status(),
                             carriage == null ? 0 : carriage.packageCount(),
                             carriage == null ? null : carriage.carrierName(), s.handedOverAt(), s.outcomeAt(),
                             s.failureReason());

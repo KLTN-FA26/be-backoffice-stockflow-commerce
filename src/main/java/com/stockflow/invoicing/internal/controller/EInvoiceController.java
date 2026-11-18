@@ -298,7 +298,11 @@ class EInvoiceController {
     @Operation(summary = "Take back an e-invoice stuck at the provider (SUBMITTING): it becomes REJECTED with code "
             + "WITHDRAWN_NO_PROVIDER_RECORD and the reason as its message, to be reopened and issued again under a new "
             + "transaction. Only when it was last sent longer ago than the provider can still be working on it "
-            + "(stockflow.invoicing.withdraw-after, 3 hours) and the provider, asked now, has no record of it; "
+            + "(stockflow.invoicing.withdraw-after, 3 hours) and the provider, asked now, has no record of it - or "
+            + "still cannot say what became of it and nothing was sent for stockflow.invoicing.withdraw-unknown-after "
+            + "(1 day; the reason then says what the provider's portal or support showed); "
+            + "the reconciliation stops sending an invoice again by itself stockflow.invoicing.auto-resend-for "
+            + "(1 hour) after it was submitted, so that time does come; "
             + "otherwise 409 EINVOICE_WITHDRAWAL_REFUSED (use /reconciliation when the provider holds it). 503 "
             + "EINVOICE_PROVIDER_UNAVAILABLE when the provider does not answer")
     @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.APPROVE, scope = DataScope.ALL)

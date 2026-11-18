@@ -118,6 +118,13 @@ class EInvoiceIssuanceSteps {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
                     "Invoice %s changed since it was read".formatted(invoice.code()));
         }
+        if (invoices.deliveryFailed(id)) {
+            // WF-05 HĐ-3: its delivery was corrected to a failure while it was at the provider. Refused there, it is
+            // voided (DeliveryCorrectionListener), not sent again for goods nobody received; tg_einvoice_delivery_failed
+            // says the same.
+            throw new BusinessException(ErrorCode.EINVOICE_NOT_INVOICEABLE, ("Invoice %s invoices a delivery that was "
+                    + "corrected to a failure: it is voided, not sent again").formatted(invoice.code()));
+        }
         String active = settings.active().provider();
         String provider = active;
         if (invoice.originalEInvoiceId() != null) {
@@ -165,6 +172,11 @@ class EInvoiceIssuanceSteps {
      * plan's quota used up, its bill unpaid, the registration not ready - HĐ-1) is announced as that, once per cause
      * and day ({@link EInvoiceProviderAccountAlert}), not once per invoice: every invoice sent meanwhile meets the same
      * refusal, and what the accountant does about it is on the provider's portal.</p>
+     *
+     * <p>An invoice whose delivery was corrected to a failure while it was at the provider
+     * ({@link EInvoiceRepository#markDeliveryFailed}; WF-05 HĐ-3) is handed on to be voided instead
+     * ({@link DeliveryFailedInvoiceAnswered}, in this transaction), whatever the refusal: there is nothing to correct
+     * and send again, so the refusal itself is not announced as one to put right.</p>
      */
     @Transactional
     public void rejected(UUID id, String transactionId, String errorCode, String message) {
@@ -174,6 +186,10 @@ class EInvoiceIssuanceSteps {
         }
         invoice.rejected(errorCode == null || errorCode.isBlank() ? "REJECTED" : errorCode, message);
         EInvoice.Snapshot refused = invoices.save(invoice).snapshot();
+        boolean deliveryFailed = invoices.deliveryFailed(id);
+        if (deliveryFailed) {
+            events.publishEvent(new DeliveryFailedInvoiceAnswered(refused.id()));
+        }
         if (EInvoice.UNKNOWN_TO_PROVIDER_CODE.equals(refused.rejectionCode())
                 || EInvoice.WITHDRAWN_CODE.equals(refused.rejectionCode())) {
             return;
@@ -184,6 +200,9 @@ class EInvoiceIssuanceSteps {
             events.publishEvent(new EInvoiceProviderAccountAlert(refused.provider(),
                     EInvoiceProviderAccountAlert.Problem.valueOf(account.get().name()), refused.rejectionCode(), null,
                     null, clock.instant()));
+            return;
+        }
+        if (deliveryFailed) {
             return;
         }
         events.publishEvent(new EInvoiceNeedsAttention(refused.id(), refused.code(), refused.orderId(),
@@ -220,6 +239,10 @@ class EInvoiceIssuanceSteps {
      * ({@link EInvoiceNeedsAttention.Cause#SIGNATURE_INVALID}) instead of the buyer being sent it: a buyer cannot
      * declare an invoice whose signature fails, and the way out is a replacement, which is checked and sent on its own.
      * Checked here, on the bytes about to be stored, because the stored XML never changes and always checks the same.</p>
+     *
+     * <p>An invoice whose delivery was corrected to a failure while it was at the provider
+     * ({@link EInvoiceRepository#markDeliveryFailed}; WF-05 HĐ-3) exists in law from here and invoices goods nobody
+     * received: it is handed on, in this transaction, to be reduced in full ({@link DeliveryFailedInvoiceAnswered}).</p>
      *
      * @throws com.stockflow.common.storage.StorageException when a file cannot be stored or locked
      */
@@ -264,6 +287,9 @@ class EInvoiceIssuanceSteps {
             invoice.signatureInvalid();
         }
         EInvoice.Snapshot issued = invoices.save(invoice).snapshot();
+        if (invoices.deliveryFailed(id)) {
+            events.publishEvent(new DeliveryFailedInvoiceAnswered(issued.id()));
+        }
         if (issued.warnings().contains(EInvoice.Warning.SIGNATURE_INVALID)) {
             events.publishEvent(new EInvoiceNeedsAttention(issued.id(), issued.code(), issued.orderId(),
                     issued.orderNumber(), EInvoiceNeedsAttention.Cause.SIGNATURE_INVALID, null, issued.submittedAt(),
@@ -296,6 +322,15 @@ class EInvoiceIssuanceSteps {
         return true;
     }
 
+    /**
+     * Whether the invoice was marked because its delivery was corrected to a failure while it was at the provider
+     * ({@link EInvoiceRepository#markDeliveryFailed}).
+     */
+    @Transactional(readOnly = true)
+    public boolean markedDeliveryFailed(UUID id) {
+        return invoices.deliveryFailed(id);
+    }
+
     /** When the invoice was last sent to the provider under {@code transactionId}; empty when it never was. */
     @Transactional(readOnly = true)
     public Optional<Instant> lastSent(UUID id, String transactionId) {
@@ -313,7 +348,8 @@ class EInvoiceIssuanceSteps {
      */
     @Transactional
     public boolean aboutToSend(UUID id, String transactionId, UUID holder, Duration lease) {
-        if (waitingFor(id, transactionId) == null || !sending.renew(id, holder, lease)) {
+        // A marked invoice invoices a delivery that failed: it is asked about, never sent (second review, finding 3).
+        if (waitingFor(id, transactionId) == null || invoices.deliveryFailed(id) || !sending.renew(id, holder, lease)) {
             return false;
         }
         sending.sent(id, transactionId, clock.instant());

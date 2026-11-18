@@ -106,6 +106,22 @@ class EInvoiceAttentionNotificationListenerTest {
     }
 
     @Test
+    @DisplayName("WF-05 HĐ-3, DELIVERY_FAILED_AWAITING_PROVIDER: a warning - the system settles it when the provider "
+            + "answers - that asks not to issue it by hand, keyed once per submission")
+    void anInvoiceOfAFailedDeliveryAtTheProviderIsAnnounced() {
+        InboxMessage sent = told(event(Cause.DELIVERY_FAILED_AWAITING_PROVIDER, null, SUBMITTED));
+
+        assertThat(sent.category()).isEqualTo("EINVOICE_ATTENTION");
+        assertThat(sent.severity()).isEqualTo(InboxSeverity.WARN);
+        assertThat(sent.title()).isEqualTo("Hoá đơn EINV-20261112-0001 đang ở nhà cung cấp cho một lần giao không "
+                + "thành công");
+        assertThat(sent.body()).contains("EINV-20261112-0001", "SO-20261101-0007", "09:15 12/11/2026",
+                "Không phát hành lại").doesNotContain("null");
+        assertThat(sent.dedupeKey())
+                .isEqualTo("einvoice-delivery-failed-awaiting:" + INVOICE + ":" + SUBMITTED.toEpochMilli());
+    }
+
+    @Test
     @DisplayName("UNKNOWN_TO_PROVIDER: critical, asks for a fresh send and keys on its own cause")
     void anInvoiceUnknownToTheProviderIsAnnounced() {
         InboxMessage sent = told(event(Cause.UNKNOWN_TO_PROVIDER, null, SUBMITTED));

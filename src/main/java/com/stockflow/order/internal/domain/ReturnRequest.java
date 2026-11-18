@@ -550,14 +550,28 @@ public final class ReturnRequest extends AggregateRoot {
     // ================================================================================================= withdrawal
 
     /**
-     * The customer (or Sales for them) withdraws the return before the goods are back: REQUESTED or AWAITING_RETURN →
-     * CANCELLED. Goods a return receipt already opened for it brings in anyway ({@link #goodsReceived}).
+     * The customer (or Sales for them) withdraws the return before any of its goods is back: REQUESTED or
+     * AWAITING_RETURN → CANCELLED. Goods a return receipt already opened for it brings in anyway ({@link #goodsReceived}).
+     *
+     * <p>Not once a parcel came back (WF-05 TH-3). A return sent in several parcels is still AWAITING_RETURN after the
+     * first one, and withdrawing it then would leave those goods in quarantine with nothing refunded, while the order
+     * went back to DELIVERED and on to completion. Sales mark the goods complete instead ({@link #markGoodsComplete}),
+     * and the refund is decided - or the return closed without one - on what came. The database refuses the same step
+     * ({@code tg_return_request_no_cancel_after_parcel}).</p>
+     *
+     * @throws BusinessException {@code RETURN_INVALID_TRANSITION} past AWAITING_RETURN;
+     *         {@code RETURN_GOODS_PARTLY_RECEIVED} once a parcel of its goods came back
      */
     public void cancel(UUID by, Instant now, String why, boolean byCustomer) {
         Objects.requireNonNull(by, "by");
         if (status != ReturnStatus.REQUESTED && status != ReturnStatus.AWAITING_RETURN) {
             throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION,
                     "Return %s is %s: it is withdrawn only before its goods are back".formatted(rmaNumber, status));
+        }
+        if (anyParcel()) {
+            throw new BusinessException(ErrorCode.RETURN_GOODS_PARTLY_RECEIVED, ("Return %s has %d parcel(s) of its "
+                    + "goods back: mark its goods complete instead of withdrawing it").formatted(rmaNumber,
+                    Math.max(parcels.size(), 1)));
         }
         String text = trimmed(why) == null ? "WITHDRAWN" : limited(why, REASON_LIMIT, "reason");
         this.cancelledBy = by;
@@ -698,6 +712,9 @@ public final class ReturnRequest extends AggregateRoot {
      * the parcels brought, the units short recorded; the refund is then decided on those, or the return closed without
      * one. Without it such a return would wait for its deadline. A parcel still on its way is taken all the same
      * ({@link #goodsReceived}).
+     *
+     * <p>The only way to settle such a return before its deadline: once a parcel is in, it is no longer withdrawn
+     * ({@link #cancel}).</p>
      *
      * @throws BusinessException {@code RETURN_INVALID_TRANSITION} for a return not awaiting its goods, or one no parcel
      *         of which came back yet - nothing is here to decide on; withdraw it, or let it expire
