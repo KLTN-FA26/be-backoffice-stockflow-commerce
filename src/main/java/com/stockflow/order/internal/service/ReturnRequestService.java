@@ -67,10 +67,13 @@ import java.util.UUID;
  * return, or two returns of one order are decided one after the other, each on what the other committed. A screen
  * sending the version it showed is refused with {@code OPTIMISTIC_LOCK} when the return moved meanwhile.</p>
  *
- * <p><b>The goods come back through a return receipt</b> (03 §4.2): the warehouse scans the cartons by LPN into
+ * <p><b>The goods come back through return receipts</b> (03 §4.2): the warehouse scans the cartons by LPN into
  * quarantine on a goods receipt of type RETURN ({@code procurement}), and its confirmation, announced as
- * {@link ReturnedGoodsReceived}, is what tells the return its goods are back ({@link #goodsReceived}). There is no QC
- * of returned goods: a warehouse manager decides on each carton in quarantine (20 §4.8).</p>
+ * {@link ReturnedGoodsReceived}, is what tells the return its goods are back ({@link #goodsReceived}). A customer may
+ * send them in several parcels, each on a receipt of its own (WF-05 TH-3): the return waits for the rest until
+ * everything approved is back, Sales mark the goods complete ({@link #markGoodsComplete}), or its deadline passes
+ * ({@link #expire}). There is no QC of returned goods: a warehouse manager decides on each carton in quarantine
+ * (20 §4.8).</p>
  *
  * <p><b>The order follows its returns</b> (17 §5.1; BR-ORD-005). Opening one takes a DELIVERED order to
  * RETURN_REQUESTED, which keeps it from completing; goods back take it to RETURNED; once no return of it is open and
@@ -88,9 +91,9 @@ import java.util.UUID;
  *
  * <p><b>The money</b>: Sales propose the refund, a second person approves it, and payment settles it against the
  * order's installments in the same transaction ({@link PaymentService#settleReturn}): the goods' value comes off what
- * the installments still owe, what was paid is to be refunded. Nothing is replaced and nothing kept as credit (17 §4.10
- * step 41: an exchange is a new quote; 15 BR-05). Each step is announced with a {@code contracts.Return*} event after
- * commit.</p>
+ * the installments still owe, what was paid is to be refunded. An order with no installments had nothing paid in the
+ * system, and its refund is worth 0 (WF-05 TH-2). Nothing is replaced and nothing kept as credit (17 §4.10 step 41: an
+ * exchange is a new quote; 15 BR-05). Each step is announced with a {@code contracts.Return*} event after commit.</p>
  */
 @Service
 @Transactional
@@ -370,10 +373,10 @@ public class ReturnRequestService {
     // ================================================================================================= goods back
 
     /**
-     * The goods of a return came back on a confirmed return receipt (17 §4.10 step 39; 03 §4.2 step 12): the return is
-     * RECEIVED with the units of each line's SKU among the cartons, and its order RETURNED. Called by
-     * {@link ReturnedGoodsListener} after the receipt committed, in a transaction of its own; a receipt seen again
-     * changes nothing.
+     * A parcel of a return's goods came back on a confirmed return receipt (17 §4.10 step 39; 03 §4.2 step 12): each
+     * line adds the units of its SKU among the cartons; once everything approved is back the return is RECEIVED and its
+     * order RETURNED (WF-05 TH-3: until then it awaits the rest). Called by {@link ReturnedGoodsListener} after the
+     * receipt committed, in a transaction of its own; a receipt seen again changes nothing.
      *
      * <p>A receipt against a shipment the carrier brought back (RTO) names no return. It used to be dropped here - the
      * order was RETURNED by the shipment's outcome and nothing followed, so no money was ever settled and the order
@@ -408,8 +411,20 @@ public class ReturnRequestService {
             return;
         }
         finish(locked, event.receivedBy());
-        log.info("Return {}: goods back on receipt {} at {}", request.rmaNumber(), event.receiptNumber(),
-                event.locationCode());
+        log.info("Return {}: goods back on receipt {} at {}, now {}", request.rmaNumber(), event.receiptNumber(),
+                event.locationCode(), request.status());
+    }
+
+    /**
+     * Sales say the goods of a return are all here although fewer than approved came back (WF-05 TH-3): the customer
+     * sent what they had, or another SKU by mistake. AWAITING_RETURN → RECEIVED with what the parcels brought, the order
+     * RETURNED; the refund is decided on those goods, or the return closed without one.
+     */
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "return-request", resourceId = "#returnId")
+    public ReturnRequest markGoodsComplete(UUID returnId, String note, Long version, UUID by) {
+        Locked locked = lock(returnId, null, version);
+        locked.request().markGoodsComplete(by, now(), note);
+        return finish(locked, by);
     }
 
     // ================================================================================================= refund
@@ -418,20 +433,16 @@ public class ReturnRequestService {
      * Sales propose the refund of the goods that came back (17 §4.10 step 40; RECEIVED → SETTLEMENT_PENDING): the units
      * per line, worth what the order line charged for them with VAT. A second person approves it.
      *
-     * <p>Refused here already, not only at approval, for an order not paid through a contract's installments (review
-     * M-4): there is nothing for the refund to be settled against, and a proposal nobody can approve would only wait.</p>
-     *
-     * @throws BusinessException {@code RETURN_REFUND_NO_INSTALLMENTS}, as {@link #approveSettlement} does
+     * <p>An order with no installments at all (WF-05 TH-2: a sample order, one of before contracts) had nothing paid in
+     * the system - money is recorded only against installments (15 BR-01, BR-05) - so its refund is settled against
+     * that: the units are refunded worth 0, and a second person still approves it. Refused before (review M-4,
+     * {@code RETURN_REFUND_NO_INSTALLMENTS}), which left the return in RECEIVED and its order RETURNED for good.</p>
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "return-request", resourceId = "#returnId")
     public ReturnRequest proposeRefund(UUID returnId, ProposeRefundCommand command, UUID by) {
         Locked locked = lock(returnId, null, command.version());
-        if (!locked.order().paidByContract()) {
-            throw new BusinessException(ErrorCode.RETURN_REFUND_NO_INSTALLMENTS, ("Order %s is not paid through a "
-                    + "contract's installments: refund return %s outside the system").formatted(
-                    locked.request().orderNumber(), locked.request().rmaNumber()));
-        }
-        locked.request().proposeRefund(by, now(), command.units(), locked.order(), command.note());
+        boolean nothingPaid = !payments.installmentStanding(locked.order().id().value()).opened();
+        locked.request().proposeRefund(by, now(), command.units(), locked.order(), command.note(), nothingPaid);
         return finish(locked, by);
     }
 
@@ -439,10 +450,11 @@ public class ReturnRequestService {
      * The second person approves the refund (four eyes): payment takes the goods' value off what the order's
      * installments still owe and makes the rest refundable (15 §4.5 step 15), the return is RESOLVED - all in this
      * transaction, or none of it. The accountant then records the transfer (15 §4.5 step 16); the order is REFUNDED
-     * once everything to refund is.
+     * once everything to refund is. A refund worth nothing - the order had nothing paid (WF-05 TH-2) - moves no money
+     * and is resolved without payment.
      *
-     * @throws BusinessException {@code RETURN_REFUND_NO_INSTALLMENTS} for an order not paid through a contract's
-     *         installments: there is nothing for payment to settle against
+     * @throws BusinessException {@code RETURN_REFUND_NO_INSTALLMENTS} when a refund worth something finds the order
+     *         without installments - they were there when it was proposed; a defect, never the normal answer
      */
     @Auditable(action = AuditAction.APPROVE, resourceType = "return-request", resourceId = "#returnId")
     public ReturnRequest approveSettlement(UUID returnId, Long version, UUID by) {
@@ -450,13 +462,19 @@ public class ReturnRequestService {
         ReturnRequest request = locked.request();
         request.requireSettlementApprover(by);
         Instant now = now();
-        // WF-05 TH-1: the delivery batch the goods came on takes the refund first.
+        if (request.settlementAmount().signum() == 0) {
+            request.resolve(by, now, ReturnRequest.MoneyOutcome.NONE);
+            return finish(locked, by);
+        }
+        // WF-05 TH-1: the delivery batch the goods came on takes the refund first; TT-5: the batches still to come
+        // keep what they owe for their own goods while paid money is left to hand back.
         UUID batch = locked.order().shipments().stream().filter(s -> s.id().equals(request.shipmentId()))
                 .map(OrderShipment::deliveryBatchId).filter(Objects::nonNull).findFirst().orElse(null);
         OrderSettlementResult settled = payments.settleReturn(new SettleReturnCommand(request.orderId(), request.id(),
-                request.settlementAmount(), by, now, batch)).orElseThrow(() -> new BusinessException(
-                ErrorCode.RETURN_REFUND_NO_INSTALLMENTS, ("Order %s is not paid through a contract's installments: "
-                        + "refund return %s outside the system").formatted(request.orderNumber(), request.rmaNumber())));
+                request.settlementAmount(), by, now, batch, HandedOverBatches.of(locked.order()))).orElseThrow(() ->
+                new BusinessException(ErrorCode.RETURN_REFUND_NO_INSTALLMENTS, ("Order %s is not paid through a "
+                        + "contract's installments: refund return %s outside the system").formatted(
+                        request.orderNumber(), request.rmaNumber())));
         request.resolve(by, now, new ReturnRequest.MoneyOutcome(settled.reduced(), settled.refundable()));
         return finish(locked, by);
     }
@@ -536,10 +554,11 @@ public class ReturnRequestService {
     }
 
     /**
-     * The approved goods did not arrive by the deadline (AWAITING_RETURN → EXPIRED), each return in its own
-     * transaction. Goods received meanwhile win: the return is no longer waiting, and nothing changes.
+     * The deadline for the approved goods passed, each return in its own transaction: none of them came back,
+     * AWAITING_RETURN → EXPIRED; part of them did (WF-05 TH-3), → RECEIVED with what came. Goods received in full
+     * meanwhile win: the return is no longer waiting, and nothing changes.
      *
-     * @return whether it expired
+     * @return whether it moved
      */
     @Auditable(action = AuditAction.TRANSITION, resourceType = "return-request", resourceId = "#returnId")
     public boolean expire(UUID returnId) {
@@ -553,7 +572,8 @@ public class ReturnRequestService {
             return false;
         }
         finish(new Locked(order, request), null);
-        log.info("Return {} expired: its goods did not arrive by {}", request.rmaNumber(), request.returnDeadline());
+        log.info("Return {}: its deadline {} passed, now {}", request.rmaNumber(), request.returnDeadline(),
+                request.status());
         return true;
     }
 

@@ -564,8 +564,9 @@ public enum ErrorCode {
     /** BR-CUS-003: a customer who is not ACTIVE opens no return themselves. */
     RETURN_CUSTOMER_NOT_ACTIVE("The customer account is not active", 409),
     /**
-     * Team plan 4D-3 (kltn-docs 15 §4.5): a return is refunded against the order's installments; an order paid any
-     * other way (a checkout order of before contracts) has none, and its return is refunded outside the system.
+     * Team plan 4D-3 (kltn-docs 15 §4.5): a return is refunded against the order's installments. An order with none had
+     * nothing paid in the system and is refunded at 0 (WF-05 TH-2); this answers only a refund worth something that
+     * finds no installment to settle against - a defect, never the normal answer.
      */
     RETURN_REFUND_NO_INSTALLMENTS("This order is not paid through a contract's installments; refund it outside the "
             + "system", 409),

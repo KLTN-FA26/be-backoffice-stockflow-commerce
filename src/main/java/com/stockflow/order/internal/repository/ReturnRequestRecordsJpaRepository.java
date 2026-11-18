@@ -2,6 +2,7 @@ package com.stockflow.order.internal.repository;
 
 import com.stockflow.order.internal.entity.ReturnRequestDiscrepancyJpaEntity;
 import com.stockflow.order.internal.entity.ReturnRequestEvidenceJpaEntity;
+import com.stockflow.order.internal.entity.ReturnRequestReceiptJpaEntity;
 import com.stockflow.order.internal.entity.ReturnRequestStatusHistoryJpaEntity;
 import jakarta.persistence.EntityManager;
 import org.springframework.stereotype.Component;
@@ -10,7 +11,8 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * The append-only rows of a return - photos, discrepancies, status history - written with {@code persist} (they are
+ * The append-only rows of a return - photos, discrepancies, the receipts of its parcels, status history - written with
+ * {@code persist} (they are
  * only ever inserted; a Spring Data {@code save} of an entity with an assigned id would merge, reading first) and read
  * per return with one query each.
  */
@@ -41,6 +43,15 @@ class ReturnRequestRecordsJpaRepository {
                         select d from ReturnRequestDiscrepancyJpaEntity d
                         where d.returnRequestId = :id order by d.recordedAt, d.id""",
                         ReturnRequestDiscrepancyJpaEntity.class)
+                .setParameter("id", returnRequestId)
+                .getResultList();
+    }
+
+    List<ReturnRequestReceiptJpaEntity> parcelsOf(UUID returnRequestId) {
+        return entityManager.createQuery("""
+                        select p from ReturnRequestReceiptJpaEntity p
+                        where p.returnRequestId = :id order by p.parcel""",
+                        ReturnRequestReceiptJpaEntity.class)
                 .setParameter("id", returnRequestId)
                 .getResultList();
     }

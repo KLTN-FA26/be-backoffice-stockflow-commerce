@@ -1681,6 +1681,10 @@ def return_request(o, key, when, reason, status, cartons=0, channel="PORTAL", no
         upd("ordering.return_request", rid, status="RECEIVED", goods_receipt_id=gid, received_at=t + timedelta(hours=1),
             received_by=staff, receiving_location_code=qrt)
         upd("ordering.return_request_line", lid, received_quantity=units)
+        # WF-05 TH-3 (V20261202000300): every receipt that brought goods of the return, numbered; this one is the first.
+        ins("ordering.return_request_receipt", t + timedelta(hours=1), goods_receipt_id=gid, return_request_id=rid,
+            parcel=1, receipt_number=gnumber, receiving_location_code=qrt, received_by=staff,
+            received_at=t + timedelta(hours=1))
         hist.append(("AWAITING_RETURN", "RECEIVED", t + timedelta(hours=1), staff, f"Nhận lại {len(back)} thùng"))
         o.move("RETURNED", t + timedelta(hours=1), staff, f"Hàng hoàn theo {number} đã về kho")
     for k, (frm, to, at_, by, why) in enumerate(hist):

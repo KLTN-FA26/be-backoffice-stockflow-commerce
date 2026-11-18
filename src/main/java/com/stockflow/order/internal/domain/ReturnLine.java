@@ -60,7 +60,10 @@ public final class ReturnLine {
         this.approvedQuantity = units;
     }
 
-    /** The units of the line's SKU in the cartons received: none or more, never fewer ({@code ck_return_request_line_received}). */
+    /**
+     * The units of the line's SKU in the cartons received, every parcel so far counted together (WF-05 TH-3): none or
+     * more, never fewer ({@code ck_return_request_line_received}).
+     */
     void receive(int units) {
         if (units < 0) {
             throw new IllegalArgumentException("A return line receives no fewer than zero units");

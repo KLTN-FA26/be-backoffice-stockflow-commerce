@@ -62,7 +62,9 @@ import java.util.stream.Collectors;
  *
  * <p>A return request is against one delivered shipment (WF-05 TH-1): its receipt takes only that shipment's cartons,
  * and lists them as what to expect. A request of an order delivered without shipments takes any carton delivered on
- * the order, as before.</p>
+ * the order, as before. Its goods may come in several parcels (WF-05 TH-3): while the request still awaits part of
+ * them, each parcel is received on a receipt of its own - one draft at a time - and a carton that came back on one is
+ * never taken again by the next (it is no longer CONSUMED).</p>
  *
  * <p>What is inside is counted (WF-05 TH-4): each carton keeps the units found in it - fewer than its label, it came
  * back opened, goes into quarantine whole as every carton does, is marked so in inventory and is only ever written
@@ -200,7 +202,8 @@ public class ReturnReceiptService {
                         + "are received while it is approved and awaiting them").formatted(request.rmaNumber(),
                         request.status()));
             }
-            receipts.findLiveForReturnRequest(request.id()).ifPresent(ReturnReceiptService::alreadyOpen);
+            // WF-05 TH-3: a further parcel of the return gets a receipt of its own; one is counted at a time.
+            receipts.findDraftForReturnRequest(request.id()).ifPresent(ReturnReceiptService::alreadyOpen);
             UUID area = quarantineArea(command.quarantineLocationCode(), warehouseId).id();
             receipt = ReturnReceipt.forReturnRequest(Identifiers.newId(), nextNumber(now), warehouseId,
                     request.orderId(), request.id(), area, userId, command.note(), now);
@@ -415,7 +418,7 @@ public class ReturnReceiptService {
 
     private static void alreadyOpen(ReturnReceipt open) {
         throw new BusinessException(ErrorCode.RETURN_RECEIPT_ALREADY_OPEN, ("Return receipt %s (%s) is already open "
-                + "for these goods; they come back once").formatted(open.number(), open.status()), List.of(),
+                + "for these goods; confirm or cancel it first").formatted(open.number(), open.status()), List.of(),
                 Map.of("receiptId", open.id(), "receiptNumber", open.number()));
     }
 

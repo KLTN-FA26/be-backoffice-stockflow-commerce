@@ -20,9 +20,9 @@ interface ReturnReceiptJpaRepository extends BaseJpaRepository<ReturnReceiptJpaE
     @Query("select r.id from ReturnReceiptJpaEntity r where r.returnShipmentId = :id and r.status <> :cancelled")
     List<UUID> findLiveByShipment(@Param("id") UUID shipmentId, @Param("cancelled") GoodsReceiptStatus cancelled);
 
-    @Query("select r.id from ReturnReceiptJpaEntity r where r.returnRequestId = :id and r.status <> :cancelled")
-    List<UUID> findLiveByReturnRequest(@Param("id") UUID returnRequestId,
-                                       @Param("cancelled") GoodsReceiptStatus cancelled);
+    @Query("select r.id from ReturnReceiptJpaEntity r where r.returnRequestId = :id and r.status = :status")
+    List<UUID> findByReturnRequestInStatus(@Param("id") UUID returnRequestId,
+                                           @Param("status") GoodsReceiptStatus status);
 
     /** How many cartons each receipt lists, for a page of the list: one query, not one per row. */
     @Query("""

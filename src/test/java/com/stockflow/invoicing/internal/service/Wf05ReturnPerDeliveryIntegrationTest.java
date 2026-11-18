@@ -225,6 +225,11 @@ class Wf05ReturnPerDeliveryIntegrationTest {
                 coordinator);
     }
 
+    private boolean parcelTaken(UUID receiptId) {
+        return jdbc.queryForObject("SELECT count(*) FROM ordering.return_request_receipt WHERE goods_receipt_id = ?",
+                Long.class, receiptId) == 1;
+    }
+
     private ReturnStatus returnStatus(UUID returnId) {
         return ReturnStatus.valueOf(jdbc.queryForObject("SELECT status FROM ordering.return_request WHERE id = ?",
                 String.class, returnId));
@@ -277,10 +282,14 @@ class Wf05ReturnPerDeliveryIntegrationTest {
             assertThat(c.opened()).isTrue();
         });
         asHcmClerk(() -> returnReceipts.confirm(draft.id(), staff));
-        Await.until("the return received", ASYNC, () -> returnStatus(request.id()) == ReturnStatus.RECEIVED);
+        Await.until("the parcel taken", ASYNC, () -> parcelTaken(draft.id()));
         assertThat(jdbc.queryForObject("SELECT received_quantity FROM ordering.return_request_line WHERE "
                 + "return_request_id = ?", Integer.class, request.id())).as("what was counted, not the label")
                 .isEqualTo(40);
+        // WF-05 TH-3: 10 of the 50 approved are still awaited, until Sales say the customer keeps them.
+        assertThat(returnStatus(request.id())).isEqualTo(ReturnStatus.AWAITING_RETURN);
+        returns.markGoodsComplete(request.id(), "the customer keeps the rest", null, confirmedOrders.sales().userId());
+        assertThat(returnStatus(request.id())).isEqualTo(ReturnStatus.RECEIVED);
         assertThat(status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
         assertThat(code(catchThrowable(() -> asHcmClerk(() -> quarantine.release(opened, staff)))))
                 .isEqualTo(ErrorCode.RETURN_CARTON_OPENED);
@@ -305,6 +314,45 @@ class Wf05ReturnPerDeliveryIntegrationTest {
                 second) == 1);
         assertThat(status()).as("the return ended before: it does not drag the order along")
                 .isEqualTo(OrderStatus.DELIVERED);
+    }
+
+    @Test
+    @DisplayName("TH-3/TT-5: batch 1 paid in full, its two cartons returned in two parcels on two receipts - the "
+            + "return awaits the second, then RECEIVED with both; the refund is money back, batch 2's installment "
+            + "is left as it is")
+    void batchOnePaidReturnedInTwoParcels() {
+        UUID first = batchOneDelivered();
+        ShippedCartons.Shipped cartons = ShippedCartons.onShipment(jdbc, tx, orderId, lineId, sku.sku(), 2, 50,
+                "LOT-B1-" + orderId.toString().substring(0, 8), first, staff);
+        UUID afterBatchOne = jdbc.queryForObject("SELECT id FROM payment.installment WHERE order_id = ? AND seq = 2",
+                UUID.class, orderId);
+        Await.until("batch 1's installment due", ASYNC, () -> "DUE".equals(jdbc.queryForObject(
+                "SELECT status FROM payment.installment WHERE id = ?", String.class, afterBatchOne)));
+        confirmedOrders.pay(customer, afterBatchOne, new BigDecimal("132000"));
+        ReturnRequest request = approved(first, 100);
+
+        ReturnReceiptService.ReturnReceiptView monday = asHcmClerk(() -> returnReceipts.create(
+                new ReturnReceiptService.Create(null, request.id(), QUARANTINE, null), staff));
+        asHcmClerk(() -> returnReceipts.scan(monday.id(), cartons.lpns().get(0), null, staff));
+        asHcmClerk(() -> returnReceipts.confirm(monday.id(), staff));
+        Await.until("Monday's parcel taken", ASYNC, () -> parcelTaken(monday.id()));
+        assertThat(returnStatus(request.id())).isEqualTo(ReturnStatus.AWAITING_RETURN);
+
+        ReturnReceiptService.ReturnReceiptView thursday = asHcmClerk(() -> returnReceipts.create(
+                new ReturnReceiptService.Create(null, request.id(), QUARANTINE, null), staff));
+        asHcmClerk(() -> returnReceipts.scan(thursday.id(), cartons.lpns().get(1), null, staff));
+        asHcmClerk(() -> returnReceipts.confirm(thursday.id(), staff));
+        Await.until("the return received", ASYNC, () -> returnStatus(request.id()) == ReturnStatus.RECEIVED);
+
+        // 100 pieces at 2,000 with 10% VAT: 220,000. Batch 1 owes nothing any more; batch 2 has not left.
+        assertThat(returns.proposeRefund(request.id(), new ReturnRequestService.ProposeRefundCommand(null, null, null),
+                confirmedOrders.sales().userId()).settlementAmount()).isEqualByComparingTo("220000");
+        returns.approveSettlement(request.id(), null, accountant);
+        assertThat(reduced(2)).isEqualByComparingTo("0");
+        assertThat(reduced(3)).as("batch 2's installment: its goods are still to come").isEqualByComparingTo("0");
+        assertThat(jdbc.queryForObject("SELECT refundable_amount FROM payment.order_settlement WHERE kind = "
+                + "'GOODS_RETURNED' AND source_id = ?", BigDecimal.class, request.id()))
+                .as("handed back: 176,000 + 132,000 was paid").isEqualByComparingTo("220000");
     }
 
     @Test

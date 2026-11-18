@@ -21,11 +21,12 @@ import java.util.UUID;
  *
  * <p><b>Cancellation</b> ({@link #cancel}): the installments not paid in full are cancelled; every dong collected on
  * them is surplus. <b>Closure</b> ({@link #closeRemainder}): what the goods closed were worth comes off what the
- * installments still owe - those tied to a delivery batch that never came first, then the latest, after delivery before
- * before delivery before on signing (§4.6 step 19) - and what cannot come off, because it was paid already, is surplus.
- * Either way the surplus pays the fee first (BR-15); the rest is refundable; what it did not cover is owed on a
+ * installments still owe - those tied to the delivery batches the closure closed first, then the latest, after delivery
+ * before before delivery before on signing (§4.6 step 19) - and what cannot come off, because it was paid already, is
+ * surplus. Either way the surplus pays the fee first (BR-15); the rest is refundable; what it did not cover is owed on a
  * cancellation fee item, due from that day. <b>Return</b> ({@link #returned}, team plan 4D-3): what the goods refunded
- * were worth comes off the installments as a closure's does, with no fee; the rest is refundable.</p>
+ * were worth comes off what the customer still owes for goods they have - not what a batch still to come owes for its
+ * own - and the rest is refundable, with no fee.</p>
  *
  * <p>The arithmetic is stated a second time in {@code ck_order_settlement_*}: a settlement row that does not add up
  * cannot be written.</p>
@@ -187,6 +188,20 @@ public final class OrderSettlement {
      */
     public static Outcome closeRemainder(List<Installment> ofOrder, UUID closureId, BigDecimal closed, Fee fee, UUID by,
                                          Instant at, LocalDate day) {
+        return closeRemainder(ofOrder, closureId, closed, fee, by, at, day, null);
+    }
+
+    /**
+     * As {@link #closeRemainder(List, UUID, BigDecimal, Fee, UUID, Instant, LocalDate)}, knowing which delivery batches
+     * had goods handed over ({@code handedOverBatches}; WF-05 TT-5). A closure closes what has not left, so the batches
+     * it closed are the others: the installments tied to them take the value first - in {@link #CLOSURE_ORDER} among
+     * themselves - and only what they cannot take comes off the rest, in that order (15 §4.6 step 19: the installments
+     * of the batches closed first, then the latest). Without this, batch 1 failing and closed while batch 2 was
+     * delivered lowered batch 2's installment - the latest - and left the customer owing batch 1's for goods they never
+     * received. Null: not known, the closure's order alone, as before.
+     */
+    public static Outcome closeRemainder(List<Installment> ofOrder, UUID closureId, BigDecimal closed, Fee fee, UUID by,
+                                         Instant at, LocalDate day, java.util.Set<UUID> handedOverBatches) {
         Installment first = contractRow(ofOrder);
         Objects.requireNonNull(closureId, "closureId");
         Objects.requireNonNull(closed, "closed");
@@ -204,9 +219,20 @@ public final class OrderSettlement {
         BigDecimal collected = collected(ofOrder);
         List<Reduction> reductions = new ArrayList<>();
         List<Installment> changed = new ArrayList<>();
-        BigDecimal left = takeOff(ofOrder, closed, at, reductions, changed);
+        BigDecimal left = takeOff(ofOrder.stream().filter(i -> stillToCome(i, handedOverBatches)).toList(), closed, at,
+                reductions, changed);
+        left = takeOff(ofOrder, left, at, reductions, changed);
         return settle(first, ofOrder, Kind.REMAINDER_CLOSED, closureId, collected, closed, reductions, left,
-                terms.on(collected), terms, by, at, day, "Fee for the rest closed", changed);
+                terms.on(collected), terms, by, at, day, "Fee for the rest closed", distinct(changed));
+    }
+
+    /**
+     * Whether {@code installment} is tied to a delivery batch none of whose goods were handed over: a batch still to
+     * come - for a closure, one it closed. False when nothing is known of the batches.
+     */
+    private static boolean stillToCome(Installment installment, java.util.Set<UUID> handedOverBatches) {
+        return handedOverBatches != null && installment.deliveryBatchId() != null
+                && !handedOverBatches.contains(installment.deliveryBatchId());
     }
 
     /**
@@ -234,6 +260,31 @@ public final class OrderSettlement {
      */
     public static Outcome returned(List<Installment> ofOrder, UUID returnRequestId, UUID deliveryBatchId,
                                    BigDecimal returned, UUID by, Instant at, LocalDate day) {
+        return returned(ofOrder, returnRequestId, deliveryBatchId, returned, null, BigDecimal.ZERO, by, at, day);
+    }
+
+    /**
+     * As {@link #returned(List, UUID, UUID, BigDecimal, UUID, Instant, LocalDate)}, knowing which delivery batches had
+     * goods handed over ({@code handedOverBatches}) and what the order's earlier settlements made refundable already
+     * ({@code refundableBefore}). The rule a return follows (WF-05 TT-5; 15 §4.5 step 15, BR-14; 17 §4.10 step 40):
+     * <ol>
+     *   <li>what the return's own batch's installments still owe ({@code deliveryBatchId});</li>
+     *   <li>then what the customer still owes for goods they have or that are on their way - every installment but those
+     *       tied to a batch still to come - in {@link #CLOSURE_ORDER}: a refund is set off against the customer's debt
+     *       first, and only what is left is money to hand back;</li>
+     *   <li>then refundable, up to the money collected that no earlier settlement made refundable
+     *       ({@code collected - refundableBefore}; BR-14: never more than was paid);</li>
+     *   <li>only past that - the customer paid less than the goods they gave back are worth - off the installments of
+     *       the batches still to come, in the closure's order, so the order still adds up.</li>
+     * </ol>
+     * Before step 3, what the return's batch could not take came off the latest batch first: a batch still to come had
+     * its installment before delivery - its handover's gate - lowered for goods another batch brought, while the
+     * customer, who had paid for the goods given back, got nothing back. {@code handedOverBatches} null: not known,
+     * every installment is the customer's debt and nothing is set apart, as before.
+     */
+    public static Outcome returned(List<Installment> ofOrder, UUID returnRequestId, UUID deliveryBatchId,
+                                   BigDecimal returned, java.util.Set<UUID> handedOverBatches,
+                                   BigDecimal refundableBefore, UUID by, Instant at, LocalDate day) {
         Installment first = contractRow(ofOrder);
         Objects.requireNonNull(returnRequestId, "returnRequestId");
         Objects.requireNonNull(returned, "returned");
@@ -248,9 +299,14 @@ public final class OrderSettlement {
             left = takeOff(ofOrder.stream().filter(i -> deliveryBatchId.equals(i.deliveryBatchId())).toList(), left, at,
                     reductions, changed);
         }
-        left = takeOff(ofOrder, left, at, reductions, changed);
-        return settle(first, ofOrder, Kind.GOODS_RETURNED, returnRequestId, collected, returned, reductions, left,
-                BigDecimal.ZERO, Fee.none(), by, at, day, "Fee", distinct(changed));
+        left = takeOff(ofOrder.stream().filter(i -> !stillToCome(i, handedOverBatches)).toList(), left, at, reductions,
+                changed);
+        BigDecimal before = refundableBefore == null ? BigDecimal.ZERO : refundableBefore;
+        BigDecimal refund = handedOverBatches == null ? BigDecimal.ZERO
+                : left.min(collected.subtract(before).max(BigDecimal.ZERO));
+        left = takeOff(ofOrder, left.subtract(refund), at, reductions, changed);
+        return settle(first, ofOrder, Kind.GOODS_RETURNED, returnRequestId, collected, returned, reductions,
+                refund.add(left), BigDecimal.ZERO, Fee.none(), by, at, day, "Fee", distinct(changed));
     }
 
     /**
@@ -301,11 +357,10 @@ public final class OrderSettlement {
      * (it is reached only once the whole order is) before a before-delivery one of the batch closed. Handing the closed
      * batches in and ranking on them is left open (reports/C3.md).</p>
      *
-     * <p>Known limitation, made common by WF-05 (review F11): when batch 1 fails to deliver and its rest is cancelled
-     * while batch 2 was delivered, the cut lands on batch 2's installment and batch 1's stays owed - the total is right,
-     * the installment named is wrong. Fixing it is not local to this class: the order closes its rest per line, not per
-     * batch, and {@code OrderRemainderClosed} names no batch, so the closure would first have to say which batches it
-     * closed. Open question in the WF05-dfail report.</p>
+     * <p>Which batches a closure closed is handed in now (WF-05 TT-5, review F11): those with no goods handed over,
+     * whose installments go before this order applies to the rest
+     * ({@link #closeRemainder(List, UUID, BigDecimal, Fee, UUID, Instant, LocalDate, java.util.Set)}). Batch 1 failing
+     * and cancelled while batch 2 was delivered lowers batch 1's installment, not batch 2's.</p>
      */
     static final Comparator<Installment> CLOSURE_ORDER = Comparator
             .comparing((Installment i) -> i.deliveryBatchSeq() == null ? Integer.MIN_VALUE : i.deliveryBatchSeq(),

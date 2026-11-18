@@ -90,6 +90,12 @@ public final class ReturnRequests {
     public record Version(Long version) {
     }
 
+    @Schema(description = "The goods of an AWAITING_RETURN return are all here, fewer than approved (WF-05 TH-3)")
+    public record GoodsComplete(
+            @Size(max = 500, message = "note is at most 500 characters") String note,
+            Long version) {
+    }
+
     @Schema(description = "Close a RECEIVED return with no refund: nothing approved came back usable (WF-05 TH-4)")
     public record CloseWithoutRefund(
             @Size(max = 1000, message = "note is at most 1000 characters") String note,

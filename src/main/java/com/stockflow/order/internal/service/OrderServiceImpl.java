@@ -1090,11 +1090,11 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         // 4B-9 (15 §4.6 step 19, BR-16): a contract order's installments owe less by the goods closed with their VAT -
         // never the mould / print or shipping fee lines (D30, D32), which closeRemainder leaves out of `closed`; money
         // paid above the order's new worth pays the fee first and the rest is to refund. In this transaction, under the
-        // order's lock.
+        // order's lock. WF-05 TT-5: the batches whose goods left are named, so the installments of those closed go first.
         if (order.paidByContract() && closed.signum() > 0) {
             paymentService.settleRemainderClosure(new com.stockflow.payment.api.SettleRemainderClosureCommand(orderId,
                     order.lastClosureId(), closed, fee == null ? null : fee.amount(), fee == null ? null : fee.reason(),
-                    fee == null ? null : fee.detail(), by, now));
+                    fee == null ? null : fee.detail(), by, now, HandedOverBatches.of(order)));
         }
         log.info("Order {}: rest closed ({}), {} {} worth; now {}", order.orderNumber(), reasonCode, closed,
                 order.total().currency(), order.status());

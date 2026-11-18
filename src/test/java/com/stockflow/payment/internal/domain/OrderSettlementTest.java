@@ -326,6 +326,41 @@ class OrderSettlementTest {
         }
 
         @Test
+        @DisplayName("WF-05 TT-5: batch 1 failed and closed while batch 2 was delivered - batch 1's installment is "
+                + "lowered, not batch 2's (the latest)")
+        void closedBatchFirst() {
+            UUID batch1 = UUID.randomUUID();
+            UUID batch2 = UUID.randomUUID();
+            Installment onSigning = installment(1, InstallmentMilestone.ON_SIGNING, 1_000_000, 0);
+            onSigning.reach(AT, DAY);
+            Installment afterBatch1 = Installment.open(contractId, UUID.randomUUID(), orderId, customerId,
+                    "HD-20261109-000001-1", "SO-20261109-000001", 2, "Batch 1 after delivery",
+                    InstallmentMilestone.AFTER_DELIVERY, batch1, 1, dong(500_000), "VND", 30);
+            Installment afterBatch2 = Installment.open(contractId, UUID.randomUUID(), orderId, customerId,
+                    "HD-20261109-000001-1", "SO-20261109-000001", 3, "Batch 2 after delivery",
+                    InstallmentMilestone.AFTER_DELIVERY, batch2, 2, dong(500_000), "VND", 30);
+            OrderSettlement s = OrderSettlement.closeRemainder(List.of(onSigning, afterBatch1, afterBatch2),
+                    UUID.randomUUID(), dong(500_000), OrderSettlement.Fee.none(), STAFF, AT, DAY,
+                    java.util.Set.of(batch2)).settlement();
+            assertThat(afterBatch1.status()).isEqualTo(InstallmentStatus.CANCELLED);
+            assertThat(afterBatch2.reducedAmount()).isEqualByComparingTo("0");
+            assertThat(s.reductions()).singleElement()
+                    .satisfies(r -> assertThat(r.installmentId()).isEqualTo(afterBatch1.id()));
+
+            // Not known which batches left: the latest first, as before.
+            Installment b1 = Installment.open(contractId, UUID.randomUUID(), orderId, customerId,
+                    "HD-20261109-000001-1", "SO-20261109-000001", 2, "Batch 1 after delivery",
+                    InstallmentMilestone.AFTER_DELIVERY, batch1, 1, dong(500_000), "VND", 30);
+            Installment b2 = Installment.open(contractId, UUID.randomUUID(), orderId, customerId,
+                    "HD-20261109-000001-1", "SO-20261109-000001", 3, "Batch 2 after delivery",
+                    InstallmentMilestone.AFTER_DELIVERY, batch2, 2, dong(500_000), "VND", 30);
+            OrderSettlement.closeRemainder(List.of(onSigning, b1, b2), UUID.randomUUID(), dong(100_000),
+                    OrderSettlement.Fee.none(), STAFF, AT, DAY);
+            assertThat(b2.reducedAmount()).isEqualByComparingTo(dong(100_000));
+            assertThat(b1.reducedAmount()).isEqualByComparingTo("0");
+        }
+
+        @Test
         @DisplayName("a second fee item of the contract is numbered after the first")
         void secondFeeItem() {
             List<Installment> plan = new java.util.ArrayList<>(plan(924_000, 1_232_000));
@@ -481,6 +516,51 @@ class OrderSettlementTest {
             OrderSettlement.returned(whole, UUID.randomUUID(), dong(100_000), STAFF, AT, DAY);
             assertThat(whole.get(2).reducedAmount()).isEqualByComparingTo(dong(100_000));
             assertThat(whole.get(1).reducedAmount()).isEqualByComparingTo(BigDecimal.ZERO);
+        }
+
+        @Test
+        @DisplayName("WF-05 TT-5: batch 1 paid in full, batch 2 still to come - the value is refunded, batch 2's "
+                + "before-delivery installment (its handover's gate) is left as it is")
+        void paidBatchRefundedNotTakenOffTheNext() {
+            List<Installment> plan = twoBatches();
+            plan.get(1).reach(AT, DAY);
+            plan.get(1).pay(dong(300_000), AT);
+            OrderSettlement s = OrderSettlement.returned(plan, UUID.randomUUID(), batch1, dong(250_000),
+                    java.util.Set.of(batch1), BigDecimal.ZERO, STAFF, AT, DAY).settlement();
+            assertThat(plan.get(2).reducedAmount()).as("batch 2 still owes for its own goods")
+                    .isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(s.reduced()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(s.refundable()).isEqualByComparingTo(dong(250_000));
+        }
+
+        @Test
+        @DisplayName("WF-05 TT-5: what the customer still owes for goods they have is set off first, then refunded")
+        void debtForGoodsHeldFirst() {
+            List<Installment> plan = twoBatches();
+            Installment untied = installment(4, InstallmentMilestone.AFTER_DELIVERY, 100_000, 30);
+            List<Installment> withUntied = List.of(plan.get(0), plan.get(1), plan.get(2), untied);
+            plan.get(1).reach(AT, DAY);
+            plan.get(1).pay(dong(300_000), AT);
+            OrderSettlement s = OrderSettlement.returned(withUntied, UUID.randomUUID(), batch1, dong(250_000),
+                    java.util.Set.of(batch1), BigDecimal.ZERO, STAFF, AT, DAY).settlement();
+            assertThat(untied.reducedAmount()).isEqualByComparingTo(dong(100_000));
+            assertThat(plan.get(2).reducedAmount()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(s.refundable()).isEqualByComparingTo(dong(150_000));
+        }
+
+        @Test
+        @DisplayName("WF-05 TT-5 (BR-14): never more refunded than was collected and not refundable already; past that "
+                + "a batch still to come owes less, so the order still adds up")
+        void refundBoundedByWhatWasPaid() {
+            List<Installment> plan = twoBatches();
+            plan.get(1).reach(AT, DAY);
+            plan.get(1).pay(dong(300_000), AT);
+            // 700 000 collected, 650 000 made refundable by earlier settlements: 50 000 left to hand back.
+            OrderSettlement s = OrderSettlement.returned(plan, UUID.randomUUID(), batch1, dong(250_000),
+                    java.util.Set.of(batch1), dong(650_000), STAFF, AT, DAY).settlement();
+            assertThat(s.refundable()).isEqualByComparingTo(dong(50_000));
+            assertThat(plan.get(2).reducedAmount()).isEqualByComparingTo(dong(200_000));
+            assertThat(s.reduced()).isEqualByComparingTo(dong(200_000));
         }
     }
 

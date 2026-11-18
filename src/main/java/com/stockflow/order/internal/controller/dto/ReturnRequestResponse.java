@@ -49,10 +49,18 @@ public record ReturnRequestResponse(
     }
 
     /**
-     * The goods back: the return receipt that took them ({@code goodsReceiptId}, under
-     * {@code /api/v1/goods-receipts/returns}), who confirmed it and when, and the quarantine area they are in.
+     * The goods back: the first return receipt that took them ({@code goodsReceiptId}, under
+     * {@code /api/v1/goods-receipts/returns}), who confirmed the latest and when, and the quarantine area it put them
+     * in. {@code parcels}: every return receipt that brought goods of the return, the first first - a customer may send
+     * them in several (WF-05 TH-3).
      */
-    public record Receipt(UUID receivedBy, Instant receivedAt, String locationCode, UUID goodsReceiptId) {
+    public record Receipt(UUID receivedBy, Instant receivedAt, String locationCode, UUID goodsReceiptId,
+                          List<Parcel> parcels) {
+    }
+
+    /** One return receipt that brought goods of the return: its place among them (1 for the first), when and where. */
+    public record Parcel(int parcel, UUID goodsReceiptId, String receiptNumber, String locationCode, UUID receivedBy,
+                         Instant receivedAt) {
     }
 
     /**
