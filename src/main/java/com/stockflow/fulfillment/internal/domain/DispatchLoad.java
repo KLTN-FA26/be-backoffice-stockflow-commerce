@@ -192,6 +192,16 @@ public final class DispatchLoad {
     private final Map<UUID, Member> members = new LinkedHashMap<>();
     private final Map<UUID, Loaded> loaded = new LinkedHashMap<>();
     private final Map<UUID, Unload> unloads = new LinkedHashMap<>();
+    /** The bookings {@link #cancelBooking} took off since this load was read, until the store writes them. */
+    private final List<CancelledBooking> cancelledBookings = new ArrayList<>();
+
+    /**
+     * A booking taken off the load, as it stood (09 §4.2 step 6: the carrier, waybill number, plate and driver leave the
+     * load but stay in its history; RTM 09A-125). {@code cancelledBy} is null when the system cancelled it.
+     */
+    public record CancelledBooking(UUID carrierId, String waybillNo, String vehiclePlate, String driverName,
+                                   String driverPhone, Instant bookedAt, UUID bookedBy, Instant cancelledAt,
+                                   UUID cancelledBy, String reason) { }
 
     private DispatchLoad(Snapshot s) {
         this.id = Objects.requireNonNull(s.id(), "id");
@@ -535,8 +545,9 @@ public final class DispatchLoad {
 
     /**
      * The booking fell through before loading started (the carrier cancelled, another vehicle is booked instead):
-     * VEHICLE_BOOKED → PLANNED, the carrier, vehicle and waybill number cleared (the waybill history keeps them, 09
-     * §4.2 step 6), the reason kept. PLANNED already: nothing changes.
+     * VEHICLE_BOOKED → PLANNED, the carrier, vehicle and waybill number cleared - kept as a {@link CancelledBooking}
+     * for the store to write into the load's booking history (09 §4.2 step 6) - the reason kept. PLANNED already:
+     * nothing changes.
      *
      * @throws BusinessException {@code INVALID_LOAD_TRANSITION} once loading started; {@code VALIDATION_FAILED} without a
      *         reason
@@ -553,6 +564,8 @@ public final class DispatchLoad {
         if (why == null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Cancelling a booking says why");
         }
+        cancelledBookings.add(new CancelledBooking(carrierId, waybillNo, vehiclePlate, driverName, driverPhone,
+                bookedAt, bookedBy, at, by, why));
         carrierId = null;
         vehiclePlate = null;
         driverName = null;
@@ -565,6 +578,16 @@ public final class DispatchLoad {
         bookingCancelReason = why;
         status = LoadStatus.PLANNED;
         return true;
+    }
+
+    /**
+     * The bookings cancelled since this load was read, handed over once: the store writes each into the load's booking
+     * history as it saves the load.
+     */
+    public List<CancelledBooking> takeCancelledBookings() {
+        List<CancelledBooking> out = List.copyOf(cancelledBookings);
+        cancelledBookings.clear();
+        return out;
     }
 
     /** The booked vehicle arrived and loading starts (BR-14: its plan is locked from now on). LOADING already: no-op. */
