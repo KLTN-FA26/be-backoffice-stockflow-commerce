@@ -30,7 +30,8 @@ class LoadEstimateWebMapper {
     LoadEstimates.TrialEstimate toCommand(TrialLoadEstimateRequest r) {
         List<LoadEstimates.TrialLine> lines = r.lines().stream()
                 .map(l -> new LoadEstimates.TrialLine(l.name(), l.group(), l.lengthMm(), l.widthMm(), l.heightMm(),
-                        l.quantity(), l.rotatable() == null || l.rotatable()))
+                        l.quantity(), l.totalWeightKg(), l.rotatable() == null || l.rotatable(),
+                        Boolean.TRUE.equals(l.fill())))
                 .toList();
         return new LoadEstimates.TrialEstimate(lines, r.vehicleTypeIds() == null ? List.of() : r.vehicleTypeIds(),
                 r.selectionMode() == null ? null : SelectionMode.valueOf(r.selectionMode()));

@@ -42,6 +42,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -79,10 +80,10 @@ class LoadEstimateService implements LoadEstimates {
     static final long SEED = 0L;
 
     /**
-     * The weight of every carton of a trial (LP2-9): the sheet has none, and a carton must weigh something. Tiny on
-     * purpose, so no total of it can look like a load; the payload is not checked in a trial at all.
+     * Decimals of a trial carton's weight, the line's total weight shared out over its boxes: enough that a gram
+     * shared by 3 000 boxes is still a positive weight, as the planner requires.
      */
-    static final BigDecimal TRIAL_WEIGHT_KG = new BigDecimal("0.001");
+    static final int TRIAL_WEIGHT_SCALE = 9;
 
     /**
      * Where an estimate makes sense: CONFIRMED or AWAITING_STOCK (the release dialog estimates before releasing, design
@@ -146,6 +147,12 @@ class LoadEstimateService implements LoadEstimates {
     public LoadEstimateView create(CreateEstimate command) {
         Source source = onlySource(command.sources());
         SelectionMode mode = command.selectionMode() == null ? SelectionMode.SINGLE_TYPE : command.selectionMode();
+        if (!mode.storable()) {
+            // A stored estimate keeps its mode, and its table takes only these two; the others are the trial's.
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "An order estimate is SINGLE_TYPE or "
+                    + "FEWEST_VEHICLES", List.of(new FieldError("selectionMode", "SINGLE_TYPE or FEWEST_VEHICLES",
+                    "Pattern")));
+        }
         Prepared prepared = reads.execute(s -> prepare(source.id(), command.warehouseId(), command.vehicleTypeIds(),
                 mode));
 
@@ -179,8 +186,11 @@ class LoadEstimateService implements LoadEstimates {
 
     /**
      * LP2-9: the trial. Only the vehicle types are read; the planner then runs outside any transaction and its answer
-     * is mapped and returned - there is no write step, so nothing can be left behind (no estimate row, no event). The
-     * cartons weigh a placeholder and the request says {@code ignorePayload}: the sheet has no weights.
+     * is mapped and returned - there is no write step, so nothing can be left behind (no estimate row, no event).
+     * WF4-TRIAL-EST: each box weighs its line's total weight over its quantity and the payload holds (BR-10), and the
+     * mode is any of the docs' modes. A line's boxes share the line's {@code sourceRef}, which is what
+     * {@link SelectionMode#KEEP_LINES} keeps together; the sheet's "Hàng chèn" flag is read only by
+     * {@link SelectionMode#PRIORITY_FILL} (docs 09 §3: the main / fill split is that mode's input only).
      */
     @Override
     public TrialView trial(TrialEstimate command) {
@@ -192,10 +202,11 @@ class LoadEstimateService implements LoadEstimates {
         long boxes = 0;
         for (int i = 0; i < lines.size(); i++) {
             TrialLine l = lines.get(i);
-            if (l == null || l.lengthMm() <= 0 || l.widthMm() <= 0 || l.heightMm() <= 0 || l.quantity() <= 0) {
+            if (l == null || l.lengthMm() <= 0 || l.widthMm() <= 0 || l.heightMm() <= 0 || l.quantity() <= 0
+                    || l.totalWeightKg() == null || l.totalWeightKg().signum() <= 0) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line " + (i + 1)
-                        + " needs positive sizes and quantity", List.of(new FieldError("lines[" + i + "]",
-                        "sizes and quantity must be positive", "Positive")));
+                        + " needs positive sizes, quantity and weight", List.of(new FieldError("lines[" + i + "]",
+                        "sizes, quantity and total weight must be positive", "Positive")));
             }
             boxes += l.quantity();
         }
@@ -214,19 +225,27 @@ class LoadEstimateService implements LoadEstimates {
             String name = l.name() != null && !l.name().isBlank() ? l.name().strip()
                     : group != null ? group : "Line " + (i + 1);
             String lineRef = "T" + (i + 1);
+            BigDecimal weight = boxWeight(l.totalWeightKg(), l.quantity());
+            boolean fill = mode == SelectionMode.PRIORITY_FILL && l.fill();
             for (int n = 1; n <= l.quantity(); n++) {
                 String ref = lineRef + "#" + n;
-                cartons.add(new CargoPackage(ref, lineRef, l.lengthMm(), l.widthMm(), l.heightMm(), TRIAL_WEIGHT_KG,
-                        l.rotatable(), name, null, group, false));
+                cartons.add(new CargoPackage(ref, lineRef, l.lengthMm(), l.widthMm(), l.heightMm(), weight,
+                        l.rotatable(), name, null, group, fill));
                 labels.put(ref, name);
             }
         }
         LoadPlanRequest request = new LoadPlanRequest(cartons, types, mode, List.of(), KitDistribution.AUTO, false,
-                null, SEED, budget, true);
+                null, SEED, budget, wallLimit, false);
         LoadPlanResult result = planner.plan(request);
         Layouts.Mapped mapped = Layouts.of(request, result, c -> labels.get(c.ref()));
         return new TrialView(mode, types.stream().map(VehicleSpec::typeId).toList(), mapped.vehicles(),
                 mapped.unplaced(), meta(result));
+    }
+
+    /** One box of a trial line: the line's total weight shared out evenly, never rounded down to nothing. */
+    static BigDecimal boxWeight(BigDecimal totalWeightKg, int quantity) {
+        BigDecimal each = totalWeightKg.divide(BigDecimal.valueOf(quantity), TRIAL_WEIGHT_SCALE, RoundingMode.HALF_UP);
+        return each.signum() > 0 ? each : BigDecimal.ONE.movePointLeft(TRIAL_WEIGHT_SCALE);
     }
 
     /**

@@ -61,6 +61,11 @@ public final class LoadPlanner {
     private final Duration wallCap;
     /** The source of real time: {@link System#nanoTime}, or the tests' own. */
     private final LongSupplier nanoTime;
+    /**
+     * Only the quick pass, never the full search: {@link LineKeeper}'s fit tests, which ask many times whether some
+     * cartons fit one vehicle and need an answer, not the best one.
+     */
+    private final boolean quickOnly;
 
     public LoadPlanner() {
         this(TICKS_PER_SECOND);
@@ -81,10 +86,30 @@ public final class LoadPlanner {
 
     /** For the tests: also the source of real time, so the real time cap can be passed without waiting. */
     LoadPlanner(double ticksPerSecond, SpaceChoice spaceChoice, Duration wallCap, LongSupplier nanoTime) {
+        this(ticksPerSecond, spaceChoice, wallCap, nanoTime, false);
+    }
+
+    private LoadPlanner(double ticksPerSecond, SpaceChoice spaceChoice, Duration wallCap, LongSupplier nanoTime,
+                        boolean quickOnly) {
         this.ticksPerSecond = ticksPerSecond;
         this.spaceChoice = spaceChoice;
         this.wallCap = wallCap;
         this.nanoTime = nanoTime;
+        this.quickOnly = quickOnly;
+    }
+
+    /** This planner without its full search: one construction per vehicle, see {@link #quickOnly}. */
+    LoadPlanner quickOnly() {
+        return new LoadPlanner(ticksPerSecond, spaceChoice, null, nanoTime, true);
+    }
+
+    /** This planner with the request's own real time cap, for the line drive's sub-plans. */
+    LoadPlanner withRequestWallLimit() {
+        return new LoadPlanner(ticksPerSecond, spaceChoice, null, nanoTime, quickOnly);
+    }
+
+    long now() {
+        return nanoTime.getAsLong();
     }
 
     /** What a carton type is keyed by: cartons equal on all of these pack alike (see {@link #plan}). */
@@ -106,6 +131,9 @@ public final class LoadPlanner {
         List<CargoPackage> cartons = request.cartons();
         checkUnique(cartons, request.vehicleTypes());
         long deadline = startNanos + (wallCap != null ? wallCap : request.wallLimit()).toNanos();
+        if (request.mode() == SelectionMode.KEEP_LINES) {
+            return new LineKeeper(this).plan(request, startNanos, deadline);
+        }
         double budget = request.budget().toNanos() / 1e9;
 
         List<Bin> usable = new ArrayList<>();
@@ -171,7 +199,7 @@ public final class LoadPlanner {
         Solved quick = solve(request, usable, main, fill, kits, budget, quickClock);
         WorkClock clock = new WorkClock(WorkClock.Unit.EVALUATION, ticksPerSecond, deadline, nanoTime);
         Solved chosen = quick;
-        if (!clock.expired()) {
+        if (!quickOnly && !clock.expired()) {
             Solved full = solve(request, usable, main, fill, kits, budget, clock);
             if (KitSolver.docsOrder().compare(full.outcome(), quick.outcome()) <= 0) {
                 chosen = full;
@@ -219,7 +247,7 @@ public final class LoadPlanner {
         if (!splits.isEmpty()) {
             throw new IllegalStateException("the plan splits a physical set over vehicles: " + splits);
         }
-        boolean fleet = request.mode() == SelectionMode.FEWEST_VEHICLES && usable.size() > 1;
+        boolean fleet = request.mode().mixesTypes() && usable.size() > 1;
         for (int idx : binding.left()) {
             CargoPackage c = cartons.get(idx);
             UnplacedReason r = classifyLeftover(c, fillType.get(typeOf.get(idx)), scope, usedByType, fleet,
@@ -254,8 +282,8 @@ public final class LoadPlanner {
         }
         KitSolver.Outcome fleet = null;
         double singleBudget = budget;
-        if (request.mode() == SelectionMode.FEWEST_VEHICLES) {
-            // The original's minimize: a mixed fleet. A single-type plan is a mixed plan too, and the fleet search
+        if (request.mode().mixesTypes()) {
+            // FEWEST_VEHICLES and OVER_CAPACITY: the original's minimize: a mixed fleet. A single-type plan is a mixed plan too, and the fleet search
             // spreads its screening over every vehicle on offer, so on a large fleet it can end above the best single
             // type; the single types are tried as well, with half the budget, and the best plan by the docs' order
             // of merit wins. Fewest vehicles can then never mean more vehicles than one type alone would need.
@@ -264,7 +292,8 @@ public final class LoadPlanner {
             clock.improved();
             singleBudget = budget / 2;
         }
-        // SINGLE_TYPE: the original's same_type - each type alone, the best by the docs' order of merit.
+        // SINGLE_TYPE and PRIORITY_FILL: the original's same_type - each type alone, the best by the docs' order of
+        // merit.
         KitSolver.Outcome best = null;
         Bin bestBin = null;
         double each = singleBudget / usable.size();
@@ -585,7 +614,7 @@ public final class LoadPlanner {
     }
 
     /** The reason a carton can never load, whatever else is in the plan; null when some usable type takes it. */
-    private static UnplacedReason classifyAlone(CargoPackage c, List<VehicleSpec> types, boolean ignorePayload) {
+    static UnplacedReason classifyAlone(CargoPackage c, List<VehicleSpec> types, boolean ignorePayload) {
         boolean fits = false;
         boolean light = false;
         for (VehicleSpec t : types) {
@@ -773,7 +802,7 @@ public final class LoadPlanner {
     }
 
     /** The piece check: every carton is placed or unplaced, exactly once. */
-    private static void checkPieces(List<CargoPackage> cartons, LoadPlanResult result) {
+    static void checkPieces(List<CargoPackage> cartons, LoadPlanResult result) {
         Set<String> seen = new HashSet<>();
         for (PlannedVehicle v : result.vehicles()) {
             for (Placement p : v.placements()) {
