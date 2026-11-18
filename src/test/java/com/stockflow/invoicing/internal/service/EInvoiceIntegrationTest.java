@@ -483,13 +483,11 @@ class EInvoiceIntegrationTest {
         assertThat(queries.get(draft.id()).status()).as("still a draft, nothing sent").isEqualTo(EInvoiceStatus.DRAFT);
         assertThat(calls(draft.id())).isEmpty();
 
-        // HĐ-8: Sales adds the tax code but not yet the invoice e-mail - refused under the e-mail's own code.
+        // HĐ-8: Sales adds the tax code but not yet the invoice e-mail - still flagged, so not issued automatically
+        // (issuing it by hand is not refused: see EInvoice.Warning.BUYER_EMAIL_MISSING).
         buyer(taxCode, null);
         EInvoice.Snapshot noEmail = drafts.refreshBuyer(draft.id(), draft.version());
         assertThat(noEmail.warnings()).containsExactly(EInvoice.Warning.BUYER_EMAIL_MISSING);
-        assertThatThrownBy(() -> issuance.issue(draft.id(), noEmail.version(), accountant))
-                .extracting(EInvoiceIntegrationTest::code).isEqualTo(ErrorCode.EINVOICE_BUYER_EMAIL_MISSING);
-        assertThat(calls(draft.id())).isEmpty();
 
         // Sales adds what was missing to the customer's profile; the accountant copies it onto the draft.
         buyer(taxCode, "hoa.don@" + customer + ".example.com");

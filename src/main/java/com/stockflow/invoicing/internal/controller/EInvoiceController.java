@@ -267,7 +267,7 @@ class EInvoiceController {
     @Operation(summary = "Issue a draft through the provider. Answers SUBMITTING at once: the provider is called "
             + "afterwards, and the invoice becomes ISSUED or REJECTED when it has answered (read it again, or ask with "
             + "/reconciliation). 409 EINVOICE_BUYER_PROFILE_INCOMPLETE while the buyer's name, tax code or address is "
-            + "missing; 409 EINVOICE_BUYER_EMAIL_MISSING while it has no e-mail to receive the invoice; 409 "
+            + "missing (a missing invoice e-mail is only the warning BUYER_EMAIL_MISSING); 409 "
             + "EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE for a correction whose original was issued through a provider "
             + "that is not usable any more (it goes only through that provider); 409 EINVOICE_OLDER_DRAFT_PENDING while an invoice of the same series dated before it is at the "
             + "provider (a draft or a rejected one does not keep it back); 409 EINVOICE_TAX_EXEMPT_NOT_SUPPORTED for a "

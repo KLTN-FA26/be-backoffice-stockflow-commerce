@@ -286,20 +286,14 @@ class EInvoiceTest {
         }
 
         @Test
-        @DisplayName("HĐ-8, 21 BR-06: a buyer without an e-mail to receive the invoice is flagged on its own and not "
-                + "issued, under a code of its own; with one it is")
-        void aBuyerWithoutAnEmailIsNotIssued() {
+        @DisplayName("HĐ-8, 21 BR-06: a buyer without an e-mail to receive the invoice is flagged on its own, so it is "
+                + "not issued automatically - but an accountant may still issue it, on time")
+        void aBuyerWithoutAnEmailIsFlaggedButNotRefused() {
             EInvoice invoice = EInvoiceFixtures.draft(new InvoiceParty(BUYER.name(), BUYER.taxCode(), BUYER.address(),
                     null));
-            assertThat(invoice.warnings()).as("not issued automatically either")
+            assertThat(invoice.warnings()).as("not issued automatically")
                     .containsExactly(EInvoice.Warning.BUYER_EMAIL_MISSING);
 
-            assertThatThrownBy(() -> invoice.submit(SERIES, null, NOW))
-                    .extracting(EInvoiceTest::code).isEqualTo(ErrorCode.EINVOICE_BUYER_EMAIL_MISSING);
-            assertThat(invoice.status()).isEqualTo(DRAFT);
-
-            invoice.reviseBuyer(BUYER);
-            assertThat(invoice.warnings()).isEmpty();
             invoice.submit(SERIES, null, NOW);
             assertThat(invoice.status()).isEqualTo(SUBMITTING);
         }

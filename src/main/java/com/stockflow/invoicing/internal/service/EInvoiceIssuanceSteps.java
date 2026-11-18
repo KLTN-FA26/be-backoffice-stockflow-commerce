@@ -108,8 +108,7 @@ class EInvoiceIssuanceSteps {
      *         {@code EINVOICE_TAX_EXEMPT_NOT_SUPPORTED} (a line at 0%, which here can only be an EXEMPT one),
      *         {@code EINVOICE_PROVIDER_UNAVAILABLE}, {@code EINVOICE_PROVIDER_CANNOT_CORRECT} (a correction, to a
      *         provider that would issue it as an original), {@code EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE} (a
-     *         correction, when the provider that issued the original is no longer usable),
-     *         {@code EINVOICE_BUYER_EMAIL_MISSING}
+     *         correction, when the provider that issued the original is no longer usable)
      */
     @Transactional
     public EInvoice.Snapshot submit(UUID id, Long expectedVersion, UUID by) {

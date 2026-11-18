@@ -429,7 +429,6 @@ public enum ErrorCode {
      * because it is the business rule, not the law (legal review WF05-E0 L7: not invoice content), and the client tells
      * the two apart.
      */
-    EINVOICE_BUYER_EMAIL_MISSING("The buyer has no e-mail to receive the invoice; Sales records one, then the buyer is refreshed on the invoice", 409),
     /** WF-05 E2 (21 BR-01): the shipment is not delivered, or delivered nothing an invoice can carry. */
     EINVOICE_NOT_INVOICEABLE("This shipment cannot be invoiced: it is not delivered", 409),
     /**

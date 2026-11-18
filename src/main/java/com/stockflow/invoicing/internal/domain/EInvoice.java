@@ -80,11 +80,12 @@ public final class EInvoice {
         /** The buyer's name, tax code or address is missing: issuing is refused until it is there. */
         BUYER_PROFILE_INCOMPLETE,
         /**
-         * HĐ-8: the buyer has no e-mail to receive the invoice, and issuing is refused until it has one
-         * ({@code EINVOICE_BUYER_EMAIL_MISSING}). kltn-docs 21 BR-06 lists it with the tax code as required before an
-         * invoice is issued, and Sales are told to add it ({@code EInvoiceBuyerIncomplete}); the legal review held it
-         * is not invoice content in law (WF05-E0 L7, which is why {@code ck_einvoice_buyer_complete} does not ask for
-         * it), so it is a warning of its own, apart from {@link #BUYER_PROFILE_INCOMPLETE}, and a code of its own.
+         * HĐ-8: the buyer has no e-mail to receive the invoice. kltn-docs 21 BR-06 wants one before issuing, so the
+         * draft is not issued automatically and Sales are told to add it ({@code EInvoiceBuyerIncomplete}). It does not
+         * refuse an accountant's issuing, though: the e-mail is not invoice content in law (legal review WF05-E0 L7,
+         * which is why {@code ck_einvoice_buyer_complete} does not ask for it), while issuing after the deadline is an
+         * offence of its own, so a missing address must not hold a lawful invoice back (owner's decision 2026-11-18).
+         * The provider then cannot mail it; the customer still finds it on the portal.
          */
         BUYER_EMAIL_MISSING,
         /** A line's VAT rate on the day of delivery is not the one the contract fixed: the totals differ from the contract's. */
@@ -701,8 +702,8 @@ public final class EInvoice {
      * @param by who issued it; null when it was issued automatically
      * @throws BusinessException {@code EINVOICE_INVALID_TRANSITION} unless it is a draft;
      *                           {@code EINVOICE_BUYER_PROFILE_INCOMPLETE} while the buyer's name, tax code or address
-     *                           is missing; {@code EINVOICE_BUYER_EMAIL_MISSING} while it has no e-mail to receive
-     *                           the invoice; {@code EINVOICE_AGREEMENT_REQUIRED} for the correction
+     *                           is missing (a missing e-mail is only {@link Warning#BUYER_EMAIL_MISSING});
+     *                           {@code EINVOICE_AGREEMENT_REQUIRED} for the correction
      *                           of an error without the agreement of both parties;
      *                           {@code EINVOICE_TAX_EXEMPT_NOT_SUPPORTED} for a line at 0%
      *                           ({@link Warning#TAX_EXEMPT_NOT_SUPPORTED});
@@ -714,10 +715,6 @@ public final class EInvoice {
         if (!buyer.completeBuyer()) {
             throw new BusinessException(ErrorCode.EINVOICE_BUYER_PROFILE_INCOMPLETE,
                     "Invoice %s: the buyer's name, tax code and address are all needed".formatted(code));
-        }
-        if (buyer.email() == null) {
-            throw new BusinessException(ErrorCode.EINVOICE_BUYER_EMAIL_MISSING, ("Invoice %s: the buyer has no e-mail to "
-                    + "receive it (kltn-docs 21 BR-06); Sales records one, then the buyer is refreshed").formatted(code));
         }
         if (correctionBasis != null && correctionBasis.requiresAgreement() && agreementFileKey == null) {
             throw new BusinessException(ErrorCode.EINVOICE_AGREEMENT_REQUIRED, ("Invoice %s corrects an error: the "
