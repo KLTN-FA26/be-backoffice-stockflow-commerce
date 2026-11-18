@@ -12,7 +12,7 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * {@code ordering.order_address_change} (V20261204000110, WF04 G2): every change of an order's delivery address by Sales
+ * {@code ordering.order_address_change} (V20261204006110, WF04 G2): every change of an order's delivery address by Sales
  * before its first carton was labelled (kltn-docs 17 §4.7, BR-16) - who, when, at what status, from what to what.
  * Append-only, the order's history of its address.
  */

@@ -69,7 +69,7 @@ public final class OrderResources {
     /**
      * WF04 G2 (kltn-docs 17 §4.7 steps 23-24, BR-16; 08 BR-04): Sales change the delivery address of an order until its
      * first carton is labelled. Its own resource, not {@code sales-orders:UPDATE}, which the portal customer holds for
-     * their own orders: the customer asks, Sales changes it. Seeded by V20261204000100 for SALES_STAFF (and
+     * their own orders: the customer asks, Sales changes it. Seeded by V20261204006100 for SALES_STAFF (and
      * SYSTEM_ADMIN, who holds everything).
      */
     public static final String ADDRESSES = "sales-order-addresses";
