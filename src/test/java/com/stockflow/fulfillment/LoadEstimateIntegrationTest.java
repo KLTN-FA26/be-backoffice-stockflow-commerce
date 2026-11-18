@@ -309,8 +309,10 @@ class LoadEstimateIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM fulfillment.load_estimate WHERE source_id = ?",
                 Integer.class, confirmed)).isZero();
 
-        tx.executeWithoutResult(s -> jdbc.update(
-                "UPDATE ordering.customer_order SET shipping_warehouse_id = ? WHERE id = ?", HCM, confirmed));
+        // Sales chooses its shipping warehouse (17 §4.2), as ShippingWarehouseService#choose records it.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET shipping_warehouse_id = ?, "
+                + "shipping_warehouse_chosen_at = NOW(), shipping_warehouse_chosen_by = ? WHERE id = ?", HCM,
+                coordinator, confirmed));
         estimate(Role.SALES_STAFF, coordinator, bodyFor(confirmed, "ORDER", UUID.randomUUID(), container))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors[0].code").value("WarehouseMismatch"));

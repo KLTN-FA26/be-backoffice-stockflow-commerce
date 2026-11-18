@@ -191,11 +191,22 @@ class LoadPlanModesIntegrationTest {
         return "{\"expectedVersion\":" + plan.path("version").asLong() + "}";
     }
 
-    private JsonNode inputs(JsonNode plan, List<UUID> shipments, String mode) throws Exception {
+    private JsonNode inputs(JsonNode plan, List<UUID> shipments, UUID type, String mode) throws Exception {
         return data(dispatch(body(put(PLANS + "/" + plan.path("loadPlanId").asText() + "/inputs"),
                 "{\"expectedVersion\":" + plan.path("version").asLong() + ",\"shipmentIds\":" + ids(shipments)
-                        + ",\"vehicleTypeIds\":[\"" + truck2t5 + "\"],\"selectionMode\":\"" + mode + "\"}"))
+                        + ",\"vehicleTypeIds\":[\"" + type + "\"],\"selectionMode\":\"" + mode + "\"}"))
                 .andExpect(status().isOk()));
+    }
+
+    /** A 2.5 t truck type of its own with one vehicle on offer, so no other test's fleet reaches this one. */
+    private UUID oneTruck() {
+        UUID id = UUID.randomUUID();
+        tx.executeWithoutResult(s -> jdbc.update("INSERT INTO fulfillment.vehicle_type (id, code, name, kind, "
+                + "inner_length_mm, inner_width_mm, inner_height_mm, gusset_mm, max_payload_kg, available_count, "
+                + "is_preset, status, created_at) VALUES (?, ?, 'One 2.5 t truck', 'TRUCK', 4300, 1800, 1800, 0, 2500, "
+                + "1, FALSE, 'ACTIVE', NOW())", id, "ONE" + id.toString().substring(0, 6).toUpperCase(
+                java.util.Locale.ROOT)));
+        return id;
     }
 
     /** Package id to the vehicle seq it was placed on, of the plan's parcels. */
@@ -230,28 +241,24 @@ class LoadPlanModesIntegrationTest {
         assertThat(vehiclesOfLine).hasSize(2).allSatisfy((sku, seqs) -> assertThat(seqs).as(sku).hasSize(1));
 
         // "Vượt sức chứa" with one 2.5 t truck on offer: what fits goes, the rest is left for want of a vehicle.
-        jdbc.update("UPDATE fulfillment.vehicle_type SET available_count = 1 WHERE id = ?", truck2t5);
-        try {
-            plan = inputs(plan, List.of(shipment), "OVER_CAPACITY");
-            assertThat(plan.path("status").asText()).as("a new mode: back to DRAFT").isEqualTo("DRAFT");
-            plan = step(plan, "/calculation", version(plan));
-            assertThat(plan.path("selectionMode").asText()).isEqualTo("OVER_CAPACITY");
-            assertThat(plan.path("vehicles")).hasSize(1);
-            assertThat(plan.path("unplacedCount").asInt()).isPositive();
-            List<String> reasons = new java.util.ArrayList<>();
-            plan.path("packages").forEach(p -> {
-                if (p.hasNonNull("unplacedReason")) {
-                    reasons.add(p.path("unplacedReason").asText());
-                }
-            });
-            assertThat(reasons).contains("NO_VEHICLE_AVAILABLE");
-        } finally {
-            jdbc.update("UPDATE fulfillment.vehicle_type SET available_count = 10 WHERE id = ?", truck2t5);
-        }
+        UUID one = oneTruck();
+        plan = inputs(plan, List.of(shipment), one, "OVER_CAPACITY");
+        assertThat(plan.path("status").asText()).as("a new mode: back to DRAFT").isEqualTo("DRAFT");
+        plan = step(plan, "/calculation", version(plan));
+        assertThat(plan.path("selectionMode").asText()).isEqualTo("OVER_CAPACITY");
+        assertThat(plan.path("vehicles")).hasSize(1);
+        assertThat(plan.path("unplacedCount").asInt()).isPositive();
+        List<String> reasons = new java.util.ArrayList<>();
+        plan.path("packages").forEach(p -> {
+            if (p.hasNonNull("unplacedReason")) {
+                reasons.add(p.path("unplacedReason").asText());
+            }
+        });
+        assertThat(reasons).contains("NO_VEHICLE_AVAILABLE");
 
         String id = plan.path("loadPlanId").asText();
         dispatch(body(put(PLANS + "/" + id + "/inputs"), "{\"expectedVersion\":" + plan.path("version").asLong()
-                + ",\"shipmentIds\":" + ids(List.of(shipment)) + ",\"vehicleTypeIds\":[\"" + truck2t5
+                + ",\"shipmentIds\":" + ids(List.of(shipment)) + ",\"vehicleTypeIds\":[\"" + one
                 + "\"],\"selectionMode\":\"PRIORITY_FILL\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors[0].code").value("LOAD_PLAN_MODE_INVALID"));
