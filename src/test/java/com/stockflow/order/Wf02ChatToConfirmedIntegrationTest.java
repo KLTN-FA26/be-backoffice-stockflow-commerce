@@ -24,6 +24,7 @@ import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.TestPdfs;
+import com.stockflow.support.VatOfTheDay;
 import com.stockflow.support.WithCurrentUser;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -67,8 +68,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *   <li>The accountant records the instalment on signing: the order is CONFIRMED by itself.</li>
  * </ol>
  *
- * <p>The money, from one line: 100 cartons x 1,000 cups x 1,050 = 105,000,000; plate fee 1,500,000; VAT 10% of each,
- * 10,500,000 + 150,000; total with tax 117,150,000 = 35,145,000 on signing + 41,002,500 + 41,002,500.</p>
+ * <p>The money, from one line: 100 cartons x 1,000 cups x 1,050 = 105,000,000; plate fee 1,500,000; VAT at the day's
+ * STANDARD rate of each ({@link VatOfTheDay}) - at 10%, 10,500,000 + 150,000, total with tax 117,150,000 = 35,145,000
+ * on signing + 41,002,500 + 41,002,500; at 8% (through 2026), 115,020,000 = 34,506,000 + 40,257,000 + 40,257,000.</p>
  *
  * <p>The context is {@link Wf02SalesFlowIntegrationTest}'s (same configuration and mocks), so it starts nothing new.</p>
  */
@@ -88,8 +90,6 @@ class Wf02ChatToConfirmedIntegrationTest {
     private static final UUID DESIGN = DemoData.demoId("demo:wf02:design");
     private static final UUID CONVERSATION = DemoData.demoId("demo:wf02:conversation:ds02a");
     private static final String SKU = "LY-GIAY-DEMO-12OZ-XANH";
-
-    private static final BigDecimal TOTAL = new BigDecimal("117150000");
 
     @Autowired DesignQuoteRequestService quoteRequests;
     @Autowired ChatCardActions cardActions;
@@ -112,6 +112,12 @@ class Wf02ChatToConfirmedIntegrationTest {
             + "sent, signed -> receipt on signing -> CONFIRMED by itself")
     void ds02aFromTheChatToAConfirmedOrder() throws Exception {
         LocalDate today = LocalDate.now(VIETNAM);
+        // The quote is drawn up today, so its VAT is the day's STANDARD rate (8% through 2026, 10% after).
+        BigDecimal rate = VatOfTheDay.standard(jdbc);
+        BigDecimal tax = VatOfTheDay.tax(105_000_000, rate).add(VatOfTheDay.tax(1_500_000, rate));
+        BigDecimal total = new BigDecimal("106500000").add(tax);
+        BigDecimal onSigning = total.multiply(new BigDecimal("0.30")).setScale(0, java.math.RoundingMode.HALF_UP);
+        BigDecimal perBatch = total.subtract(onSigning).divide(BigDecimal.TWO);
 
         // 1. The customer asks; the system's card lands in the conversation about the design (BR-11).
         UUID requestId = quoteRequests.request(DESIGN, CUSTOMER_ACCOUNT,
@@ -149,8 +155,9 @@ class Wf02ChatToConfirmedIntegrationTest {
         Quotes.QuoteView priced = quotes.edit(sales, quoteId, drafted.version(), new Quotes.Draft(drafted.validUntil(),
                 null, List.of(new Quotes.Line(SKU, 60, List.of())), drafted.requestedDeliveryDate(),
                 List.of(new Quotes.Fee(FeeKind.PLATE_FEE, SKU, new BigDecimal("1500000")))));
-        assertThat(priced.proposedTotal()).as("69,000,000 + 1,500,000 + VAT 7,050,000")
-                .isEqualByComparingTo("77550000");
+        assertThat(priced.proposedTotal()).as("69,000,000 + 1,500,000 + VAT (7,050,000 at 10%)")
+                .isEqualByComparingTo(new BigDecimal("70500000").add(VatOfTheDay.tax(69_000_000, rate))
+                        .add(VatOfTheDay.tax(1_500_000, rate)));
         Quotes.QuoteView sent = quotes.send(sales, quoteId, priced.version());
         assertThat(sent.status()).isEqualTo(QuoteStatus.SENT);
         UUID quoteCard = awaitCard("QUOTE", "quoteId", quoteId);
@@ -171,22 +178,23 @@ class Wf02ChatToConfirmedIntegrationTest {
         Quotes.QuoteView accepted = quotes.get(sales, quoteId);
         assertThat(accepted.lines().getFirst().acceptedUnitPrice()).as("the 100-carton tier")
                 .isEqualByComparingTo("1050");
-        assertThat(accepted.acceptedTotal()).as("105,000,000 + 1,500,000 + VAT 10,650,000").isEqualByComparingTo(TOTAL);
+        assertThat(accepted.acceptedTotal()).as("105,000,000 + 1,500,000 + VAT (10,650,000 at 10%)")
+                .isEqualByComparingTo(total);
 
         // 5. Sales convert it: the DRAFT order is the accepted quote, line, fee and VAT, to the dong.
         UUID orderId = quotes.convert(sales, quoteId, new Quotes.Conversion(accepted.version(), null, null))
                 .convertedOrder().orderId();
         assertThat(status(orderId)).isEqualTo(OrderStatus.DRAFT);
-        assertThat(orders.findById(orderId).orElseThrow().total().amount()).isEqualByComparingTo(TOTAL);
+        assertThat(orders.findById(orderId).orElseThrow().total().amount()).isEqualByComparingTo(total);
         assertThat(jdbc.queryForObject("""
                 SELECT (SELECT sum(round(l.quantity * l.unit_price) + l.tax_amount) FROM ordering.order_line l
                          WHERE l.order_id = o.id)
                      + (SELECT coalesce(sum(f.amount + f.tax_amount), 0) FROM ordering.order_fee_line f
                          WHERE f.order_id = o.id)
                   FROM ordering.customer_order o WHERE o.id = ?""", BigDecimal.class, orderId))
-                .as("total with tax = the lines + the fees + each one's VAT").isEqualByComparingTo(TOTAL);
+                .as("total with tax = the lines + the fees + each one's VAT").isEqualByComparingTo(total);
         assertThat(jdbc.queryForObject("SELECT tax_amount FROM ordering.customer_order WHERE id = ?", BigDecimal.class,
-                orderId)).isEqualByComparingTo("10650000");
+                orderId)).isEqualByComparingTo(tax);
 
         // ... the contract: 50 + 50 cartons, 30% on signing, batch 1 before its delivery, batch 2 after it.
         UUID orderLine = jdbc.queryForObject("SELECT id FROM ordering.order_line WHERE order_id = ?", UUID.class,
@@ -198,15 +206,13 @@ class Wf02ChatToConfirmedIntegrationTest {
                                 List.of(new SalesContracts.BatchLine(orderLine, 50)))),
                 List.of(new SalesContracts.Installment("Dat coc khi ky", "ON_SIGNING", null, new BigDecimal("30"), 3,
                                 null),
-                        new SalesContracts.Installment("Truoc giao dot 1", "BEFORE_DELIVERY",
-                                new BigDecimal("41002500"), null, null, 1),
-                        new SalesContracts.Installment("Sau giao dot 2", "AFTER_DELIVERY", new BigDecimal("41002500"),
-                                null, 30, 2)))));
-        assertThat(drafted2.paymentPlan()).extracting(i -> i.amount().longValueExact())
-                .containsExactly(35_145_000L, 41_002_500L, 41_002_500L);
+                        new SalesContracts.Installment("Truoc giao dot 1", "BEFORE_DELIVERY", perBatch, null, null, 1),
+                        new SalesContracts.Installment("Sau giao dot 2", "AFTER_DELIVERY", perBatch, null, 30, 2)))));
+        assertThat(drafted2.paymentPlan()).extracting(SalesContracts.InstallmentView::amount)
+                .usingElementComparator(BigDecimal::compareTo).containsExactly(onSigning, perBatch, perBatch);
         assertThat(drafted2.paymentPlan().stream().map(SalesContracts.InstallmentView::amount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add)).as("the plan adds up to the total with tax")
-                .isEqualByComparingTo(TOTAL);
+                .isEqualByComparingTo(total);
 
         SalesContracts.ContractView sentContract = asStaff(() -> contracts.send(sales, orderId, drafted2.version()));
         assertThat(status(orderId)).isEqualTo(OrderStatus.PENDING_CONTRACT);
@@ -224,12 +230,12 @@ class Wf02ChatToConfirmedIntegrationTest {
                 () -> "ACTED".equals(card(contractCard).path("state").asText()));
 
         // 6. The accountant records the money on signing: the order confirms itself.
-        UUID onSigning = jdbc.queryForObject("SELECT id FROM payment.installment WHERE order_id = ? AND seq = 1",
-                UUID.class, orderId);
+        UUID onSigningInstallment = jdbc.queryForObject(
+                "SELECT id FROM payment.installment WHERE order_id = ? AND seq = 1", UUID.class, orderId);
         PaymentReceipt receipt = receipts.record(new PaymentReceiptService.RecordReceiptCommand(CUSTOMER,
                 "FT" + UUID.randomUUID().toString().replace("-", "").substring(0, 14).toUpperCase(), today, null,
-                List.of(new PaymentReceipt.Payment(onSigning, new BigDecimal("35145000"))), ACCOUNTANT)).receipt();
-        assertThat(receipt.amount()).isEqualByComparingTo("35145000");
+                List.of(new PaymentReceipt.Payment(onSigningInstallment, onSigning)), ACCOUNTANT)).receipt();
+        assertThat(receipt.amount()).isEqualByComparingTo(onSigning);
         Await.until("the order confirmed by its receipt", ASYNC, () -> status(orderId) == OrderStatus.CONFIRMED);
         assertThat(jdbc.queryForList("SELECT to_status FROM ordering.order_status_history WHERE order_id = ? "
                 + "ORDER BY occurred_at, created_at", String.class, orderId))

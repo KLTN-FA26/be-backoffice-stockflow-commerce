@@ -73,10 +73,12 @@ SELECT pg_temp.expect_true('T1 none of the 21 procurement tables of purchasing r
 SELECT pg_temp.expect_true('T2 nor the notification and warehouse ones', $c$
     to_regclass('notification.po_delivery_control') IS NULL AND to_regclass('notification.po_retry_cursor') IS NULL
     AND to_regclass('warehouse.subcontractor_site') IS NULL $c$);
-SELECT pg_temp.expect_true('T3 procurement keeps exactly its receiving tables (and 4D-2''s return cartons)', $c$
+SELECT pg_temp.expect_true('T3 procurement keeps exactly its receiving tables (and the return receipt''s cartons, 4D-2, '
+    || 'and loose units, V20261201000310)', $c$
     (SELECT string_agg(table_name, ',' ORDER BY table_name) FROM information_schema.tables
       WHERE table_schema = 'procurement' AND table_type = 'BASE TABLE')
-    = 'goods_receipt_lines,goods_receipt_photos,goods_receipt_return_cartons,goods_receipts' $c$);
+    = 'goods_receipt_lines,goods_receipt_photos,goods_receipt_return_cartons,goods_receipt_return_loose_lines,'
+      || 'goods_receipts' $c$);
 SELECT pg_temp.expect_true('T4 goods_receipts lost its PO, supplier, blind and approval columns', $c$
     NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'procurement'
                  AND table_name = 'goods_receipts' AND column_name IN ('po_id', 'po_revision_id', 'supplier_id',

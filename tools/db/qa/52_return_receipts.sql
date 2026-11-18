@@ -250,6 +250,19 @@ SELECT pg_temp.expect_ok('RC12 a carton scanned by mistake removed while the rec
     VALUES (md5('qa52:rc12')::uuid, md5('qa52:r:rma1')::uuid, md5('qa52:c1')::uuid, 'QA52-LPN-1', 'SOFA-3S-GREY',
             'PO-QA52-LOT', 4, md5('demo:user:editor')::uuid);
     DELETE FROM procurement.goods_receipt_return_cartons WHERE id = md5('qa52:rc12')::uuid $q$);
+SELECT pg_temp.expect_true('RC13 a carton scanned with no count is counted whole (V20261201000310)',
+    (SELECT counted_qty = quantity FROM procurement.goods_receipt_return_cartons
+      WHERE receipt_id = md5('qa52:r:s1')::uuid));
+SELECT pg_temp.expect_fail('RC14 more units counted inside a carton than its label says', $q$
+    UPDATE procurement.goods_receipt_return_cartons SET counted_qty = quantity + 1
+     WHERE receipt_id = md5('qa52:r:s1')::uuid $q$);
+SELECT pg_temp.expect_fail('RC15 the count inside a scanned carton cleared', $q$
+    UPDATE procurement.goods_receipt_return_cartons SET counted_qty = NULL
+     WHERE receipt_id = md5('qa52:r:s1')::uuid $q$);
+SELECT pg_temp.expect_ok('RC16 a carton counted short while the receipt is a draft, then counted whole again', $q$
+    UPDATE procurement.goods_receipt_return_cartons SET counted_qty = 1 WHERE receipt_id = md5('qa52:r:s1')::uuid;
+    UPDATE procurement.goods_receipt_return_cartons SET counted_qty = quantity
+     WHERE receipt_id = md5('qa52:r:s1')::uuid $q$);
 
 \echo '--- the ledger: a GOODS_RECEIPT reference is a RECEIPT of a carton into QUARANTINE, once (BR-08, BR-14)'
 SELECT pg_temp.expect_fail('RL1 a GOODS_RECEIPT line that is not a RECEIPT', $q$

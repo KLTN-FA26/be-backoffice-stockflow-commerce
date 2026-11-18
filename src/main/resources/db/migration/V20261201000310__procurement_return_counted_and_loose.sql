@@ -5,7 +5,7 @@
 -- never sold again.
 --
 --  1. goods_receipt_return_cartons.counted_qty: the units actually inside a scanned carton (0..quantity; the full count
---     unless the warehouse says otherwise). Fewer than the label says: the carton was opened. It is received into
+--     unless the warehouse says otherwise - an insert that names no count gets quantity from check_return_receipt_carton). Fewer than the label says: the carton was opened. It is received into
 --     quarantine whole as before - the books know it only as a carton - but it never leaves quarantine for sale: its
 --     stock_package is marked return_opened_at, and only a write-off (an approved DAMAGED adjustment of the carton) takes
 --     it out. The return refunds the units counted, not the label.
@@ -118,6 +118,11 @@ BEGIN
     END IF;
     IF TG_OP = 'DELETE' THEN
         RETURN OLD;
+    END IF;
+    -- A writer that says nothing of the count took the carton whole: what it was before counted_qty existed. NOT NULL
+    -- is checked after this trigger, so it still refuses an explicit NULL on an update.
+    IF TG_OP = 'INSERT' AND NEW.counted_qty IS NULL THEN
+        NEW.counted_qty := NEW.quantity;
     END IF;
     IF TG_OP = 'UPDATE' AND (NEW.receipt_id IS DISTINCT FROM OLD.receipt_id
         OR NEW.stock_package_id IS DISTINCT FROM OLD.stock_package_id OR NEW.lpn IS DISTINCT FROM OLD.lpn

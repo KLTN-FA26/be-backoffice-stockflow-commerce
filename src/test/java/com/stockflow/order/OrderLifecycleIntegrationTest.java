@@ -165,6 +165,11 @@ class OrderLifecycleIntegrationTest {
                     + "VALUES (gen_random_uuid(), ?, '1 Le Loi, TP HCM', 'Tran Van A', 'Director', ?, 0, NOW()) "
                     + "ON CONFLICT (customer_id) DO UPDATE SET invoice_email = EXCLUDED.invoice_email", customer,
                     "ke.toan@" + customer + ".example.com");
+            // Its deliveries are invoiced below: a STANDARD product, quoted and invoiced at the day's rate. The
+            // fixture's EXEMPT product makes a 0% line, which an e-invoice refuses at submit
+            // (EINVOICE_TAX_EXEMPT_NOT_SUPPORTED).
+            jdbc.update("UPDATE product.products SET tax_class = 'STANDARD' WHERE id = (SELECT product_id FROM "
+                    + "product.variants WHERE sku = ?)", sku);
         });
         OrderSummary order = picking(4);
         assertThat(order.status()).isEqualTo(OrderStatus.PICKING);
