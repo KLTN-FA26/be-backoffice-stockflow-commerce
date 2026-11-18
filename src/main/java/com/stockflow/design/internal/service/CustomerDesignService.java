@@ -78,14 +78,16 @@ public class CustomerDesignService {
     private final EntityManager entityManager;
     private final Clock clock;
     private final FileTransfers files;
+    private final TemplateAvailability availability;
 
+    @SuppressWarnings("java:S107")
     public CustomerDesignService(DesignDraftJpaRepository drafts, DesignDocumentJpaRepository documents,
                                  DesignAssetJpaRepository assets,
                                  DesignDecisionJpaRepository decisions, DesignSnapshotJpaRepository snapshots,
                                  CustomerService customers, ProductService products, PrintConfigs printConfigs,
                                  DraftViews views, DesignQuoteRequestService quoteRequests,
                                  DesignProjectService projects, EntityManager entityManager, Clock clock,
-                                 FileTransfers files) {
+                                 FileTransfers files, TemplateAvailability availability) {
         this.drafts = drafts;
         this.documents = documents;
         this.assets = assets;
@@ -100,6 +102,7 @@ public class CustomerDesignService {
         this.entityManager = entityManager;
         this.clock = clock;
         this.files = files;
+        this.availability = availability;
     }
 
     /**
@@ -227,6 +230,10 @@ public class CustomerDesignService {
      * The template the design is drawn on, as {@link TemplateShapes} writes it: for an approved design the template
      * frozen in its snapshot, so it reopens exactly as approved (BR-08); otherwise the template as it is now, whether
      * or not it is still active (B39).
+     *
+     * <p>Either way with {@code designable} and {@code hasCartonSpec} as they are now ({@link TemplateAvailability}, the
+     * submission's own rule), never frozen: they answer "would a submission be refused for the variant", which the
+     * studio asks before it offers "Gửi duyệt" (FE request 2026-11-18 BE-11).</p>
      */
     @Transactional(readOnly = true)
     public String template(UUID id, UUID actor, DesignReadRights rights) {
@@ -236,14 +243,17 @@ public class CustomerDesignService {
         if (draft.getTemplateId() == null) {
             throw new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND, "This design was not started on a template");
         }
+        TemplateAvailability.Availability available = availability.of(draft.getTemplateId(), draft.getSku());
         if (draft.getStatus() == DesignStatus.APPROVED) {
             var frozen = snapshots.findByDraftId(id).map(snapshot -> snapshot.getTemplate());
             if (frozen.isPresent() && frozen.get() != null) {
-                return TemplateShapes.forReader(frozen.get(), this::modelLink);
+                return TemplateShapes.withAvailability(TemplateShapes.forReader(frozen.get(), this::modelLink),
+                        available);
             }
         }
-        return TemplateShapes.forReader(TemplateShapes.json(printConfigs.byId(draft.getTemplateId())
-                .orElseThrow(() -> new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND))), this::modelLink);
+        return TemplateShapes.withAvailability(TemplateShapes.forReader(TemplateShapes.json(printConfigs
+                .byId(draft.getTemplateId()).orElseThrow(() -> new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND))),
+                this::modelLink), available);
     }
 
     /**
@@ -410,8 +420,11 @@ public class CustomerDesignService {
         // The lock read may hand back a copy this transaction loaded before: read the row as it is now.
         entityManager.refresh(draft);
         CustomerDesignRules.requireOwner(actor, draft.getOwnerUserId(), draft.getStatus());
-        DesignWorkflow.requireVersion(draft.getVersion(), version);
+        // Status before version, as a submission checks them (DesignSubmissionService.requireSubmittable): submitting
+        // from another tab moved the version too, and "no longer a draft" is what the studio can act on, where a bare
+        // version conflict only makes it reload and try again.
         CustomerDesignRules.requireDraft(draft.getStatus());
+        DesignWorkflow.requireVersion(draft.getVersion(), version);
         return draft;
     }
 

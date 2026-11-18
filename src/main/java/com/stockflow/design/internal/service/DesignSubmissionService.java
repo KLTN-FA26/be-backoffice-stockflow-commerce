@@ -2,7 +2,6 @@ package com.stockflow.design.internal.service;
 
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.json.CanonicalJson;
@@ -22,8 +21,6 @@ import com.stockflow.design.internal.repository.DesignAssetJpaRepository;
 import com.stockflow.design.internal.repository.DesignDecisionJpaRepository;
 import com.stockflow.design.internal.repository.DesignDocumentJpaRepository;
 import com.stockflow.design.internal.repository.DesignDraftJpaRepository;
-import com.stockflow.inventory.api.UomConversion;
-import com.stockflow.inventory.api.UomConversionService;
 import com.stockflow.product.api.PrintConfig;
 import com.stockflow.product.api.PrintConfigs;
 import jakarta.persistence.EntityManager;
@@ -87,7 +84,7 @@ public class DesignSubmissionService {
     private final DesignArtifactJpaRepository artifacts;
     private final DesignDecisionJpaRepository decisions;
     private final PrintConfigs printConfigs;
-    private final UomConversionService units;
+    private final TemplateAvailability availability;
     private final ApplicationEventPublisher events;
     private final DraftViews views;
     private final DesignQuoteRequestService quoteRequests;
@@ -99,8 +96,8 @@ public class DesignSubmissionService {
     public DesignSubmissionService(DesignDraftJpaRepository drafts, DesignDocumentJpaRepository documents,
                                    DesignAssetJpaRepository assets, DesignArtifactJpaRepository artifacts,
                                    DesignDecisionJpaRepository decisions, PrintConfigs printConfigs,
-                                   UomConversionService units, ApplicationEventPublisher events, DraftViews views,
-                                   DesignQuoteRequestService quoteRequests, EntityManager entityManager,
+                                   TemplateAvailability availability, ApplicationEventPublisher events,
+                                   DraftViews views, DesignQuoteRequestService quoteRequests, EntityManager entityManager,
                                    TransactionOperations tx, Clock clock, FileStorage storage) {
         this.drafts = drafts;
         this.documents = documents;
@@ -108,7 +105,7 @@ public class DesignSubmissionService {
         this.artifacts = artifacts;
         this.decisions = decisions;
         this.printConfigs = printConfigs;
-        this.units = units;
+        this.availability = availability;
         this.events = events;
         this.views = views;
         this.quoteRequests = quoteRequests;
@@ -188,11 +185,12 @@ public class DesignSubmissionService {
                         .localized("refusal.design.noLayout"));
 
         List<LayoutPreflight.Issue> issues = new ArrayList<>();
-        if (!printConfigs.designable(draft.getTemplateId())) {
+        TemplateAvailability.Availability available = availability.of(draft.getTemplateId(), draft.getSku());
+        if (!available.designable()) {
             issues.add(new LayoutPreflight.Issue("VARIANT_UNAVAILABLE", null, null,
                     "The variant or its product can no longer be designed on"));
         }
-        if (!hasCartonSpec(draft.getSku())) {
+        if (!available.hasCartonSpec()) {
             // B25: what a customer orders in; without it nothing printed could be quoted or packed.
             issues.add(new LayoutPreflight.Issue("CARTON_SPEC_MISSING", null, null,
                     "The variant has no carton specification yet; ask the sales staff"));
@@ -350,12 +348,6 @@ public class DesignSubmissionService {
                 asset.getAssetId().toString(), new LayoutPreflight.Asset(asset.getContentType(), asset.getSizeBytes(),
                         asset.getWidthPx(), asset.getHeightPx())));
         return found;
-    }
-
-    /** An active packing unit of more than one base unit: the variant's carton specification (kltn-docs 01 BR-03). */
-    private boolean hasCartonSpec(String sku) {
-        return units.conversionsOf(List.of(new Sku(sku))).getOrDefault(sku, List.of()).stream()
-                .anyMatch(UomConversion::cartonCandidate);
     }
 
     /** The design's current file of each role, its own. */

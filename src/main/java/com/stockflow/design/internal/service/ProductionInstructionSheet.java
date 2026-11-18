@@ -1,7 +1,9 @@
 package com.stockflow.design.internal.service;
 
 import com.stockflow.common.label.LabelFonts;
+import com.stockflow.design.internal.domain.BagSheet;
 import com.stockflow.inventory.api.UomConversion;
+import com.stockflow.product.api.BagModel;
 import com.stockflow.product.api.PrintArea;
 import com.stockflow.product.api.PrintConfig;
 import java.io.ByteArrayInputStream;
@@ -27,7 +29,7 @@ import org.springframework.stereotype.Component;
 /**
  * The production instruction issued with an approved design (kltn-docs 12 §4.5; plan D2): one A4 page for the
  * producer, generated from what the system knows - the customer's SKU, the variant and its carton spec, the template's
- * print areas and colour mode, the layout's checksum and who approved it - rather than drawn by the customer.
+ * print areas and colour mode (and, for a bag, its flat sheet and folds), the layout's checksum and who approved it - rather than drawn by the customer.
  *
  * <p>Vietnamese, as the producer reads it; the text lives in the {@code design.instruction.*} keys of the message
  * bundle, the code stays English. Drawn with the embedded Noto Sans of the labels ({@link LabelFonts}): the 14
@@ -49,10 +51,14 @@ class ProductionInstructionSheet {
         this.intent = intent;
     }
 
-    /** What the sheet states. {@code carton} is null when the variant has none (preflight refuses that already). */
+    /**
+     * What the sheet states. {@code carton} is null when the variant has none (preflight refuses that already).
+     * {@code printPages} is how many pages the stamped print file has: a bag's flat sheet is stated only when the file
+     * is that one sheet - a bag submitted side by side before the sheet (four pages) is printed as it was drawn.
+     */
     record Facts(String customerSku, String productName, String sourceSku, PrintConfig template,
                  UomConversion carton, String layoutChecksum, String printFileChecksum, UUID approvedBy,
-                 Instant approvedAt) {
+                 Instant approvedAt, int printPages) {
     }
 
     byte[] render(Facts facts) {
@@ -74,6 +80,14 @@ class ProductionInstructionSheet {
             lines.add(row(texts, "design.instruction.area", texts.getString("design.instruction.areaValue")
                     .formatted(area.code(), area.name(), area.widthMm(), area.heightMm(), area.bleedMm(),
                             area.safeMarginMm())));
+        }
+        // A bag is printed as one flat sheet (FE request 2026-11-18 BE-10): the producer reads its die-cut size and the
+        // folds the sides do not show - the glue flap, the top fold, the bottom fold.
+        if (facts.template().model() instanceof BagModel bag && facts.printPages() == 1) {
+            BagSheet sheet = BagSheet.of(bag, facts.template().printAreas());
+            lines.add(row(texts, "design.instruction.sheet", texts.getString("design.instruction.sheetValue")
+                    .formatted(sheet.trimWidth(), sheet.trimHeight(), sheet.bleedMm(), sheet.glueFlapMm(),
+                            sheet.topFoldMm(), sheet.bottomFoldMm())));
         }
         lines.add(row(texts, "design.instruction.layoutChecksum", facts.layoutChecksum()));
         lines.add(row(texts, "design.instruction.printFileChecksum", facts.printFileChecksum()));
