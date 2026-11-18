@@ -104,7 +104,8 @@ public class OrderSettlementService {
             return Optional.empty();
         }
         OrderSettlement.Outcome outcome = OrderSettlement.returned(ofOrder, command.returnRequestId(),
-                command.returnedAmount(), command.settledBy(), command.settledAt(), day(command.settledAt()));
+                command.deliveryBatchId(), command.returnedAmount(), command.settledBy(), command.settledAt(),
+                day(command.settledAt()));
         OrderSettlement settlement = save(outcome);
         log.info("Order {}: goods returned worth {} {}; {} taken off {} installment(s), {} to refund",
                 settlement.orderNumber(), settlement.closed(), settlement.currency(), settlement.reduced(),

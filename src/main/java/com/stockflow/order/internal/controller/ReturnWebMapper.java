@@ -32,7 +32,7 @@ final class ReturnWebMapper {
         return new ReturnRequestService.OpenReturnCommand(body.requestId(), orderId, body.reasonCode(),
                 body.description(), body.requestedResolution(), body.lines().stream()
                 .map(line -> new ReturnRequest.Claim(line.orderLineId(), line.quantity())).toList(),
-                body.lateClaimReason());
+                body.lateClaimReason(), body.shipmentId());
     }
 
     static ReturnRequestService.ApproveReturnCommand toCommand(ReturnRequests.Approve body) {
@@ -72,7 +72,7 @@ final class ReturnWebMapper {
     static ReturnRequestResponse toResponse(ReturnRequest r, List<ReturnTransition> history,
                                             java.util.function.Function<String, String> thumbnails) {
         return new ReturnRequestResponse(r.id(), r.rmaNumber(), r.orderId(), r.orderNumber(), r.customerId(),
-                r.status().name(), r.reason().name(), r.description(), r.requestedResolution().name(),
+                r.shipmentId(), r.status().name(), r.reason().name(), r.description(), r.requestedResolution().name(),
                 r.channel().name(), r.requestedBy(), r.requestedAt(), r.windowOverride(), r.currency(),
                 new ReturnRequestResponse.Review(r.decidedBy(), r.decidedAt(), r.decisionNote(), r.rejectionReason(),
                         r.returnRequired(), r.returnDeadline()),
@@ -98,7 +98,8 @@ final class ReturnWebMapper {
     /** With a thumbnail link per photo of the claim. */
     static CustomerReturnResponse toCustomerResponse(ReturnRequest r, List<ReturnTransition> history,
                                                      java.util.function.Function<String, String> thumbnails) {
-        return new CustomerReturnResponse(r.id(), r.rmaNumber(), r.orderId(), r.orderNumber(), r.status().name(),
+        return new CustomerReturnResponse(r.id(), r.rmaNumber(), r.orderId(), r.orderNumber(), r.shipmentId(),
+                r.status().name(),
                 r.reason().name(), r.description(), r.requestedResolution().name(), r.requestedAt(),
                 r.returnRequired(), r.returnDeadline(), r.rejectionReason(), r.receivedAt(), r.closedAt(),
                 r.currency(), decided(r) ? r.money().refunded() : null, decided(r) ? r.money().offset() : null,

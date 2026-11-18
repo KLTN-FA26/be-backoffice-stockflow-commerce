@@ -20,6 +20,7 @@ import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
+import com.stockflow.order.internal.domain.OrderShipment;
 import com.stockflow.order.internal.domain.ReturnChannel;
 import com.stockflow.order.internal.domain.ReturnEvidence;
 import com.stockflow.order.internal.domain.ReturnLine;
@@ -29,6 +30,8 @@ import com.stockflow.order.internal.domain.ReturnRequest;
 import com.stockflow.order.internal.domain.ReturnRequestRepository;
 import com.stockflow.order.internal.domain.ReturnResolution;
 import com.stockflow.order.internal.domain.ReturnStatus;
+import com.stockflow.order.internal.domain.SalesContract;
+import com.stockflow.order.internal.domain.SalesContractRepository;
 import com.stockflow.payment.api.OrderSettlementResult;
 import com.stockflow.payment.api.PaymentService;
 import com.stockflow.payment.api.SettleReturnCommand;
@@ -75,6 +78,14 @@ import java.util.UUID;
  * it moves on to REFUNDED or PARTIALLY_REFUNDED. A return that ends before its goods came back takes the order back
  * to DELIVERED.</p>
  *
+ * <p><b>Only once the order is DELIVERED</b> (WF-05 TH-1). A return is against one delivered shipment, and may be
+ * opened while later batches of the order are still to come - the order PARTIALLY_FULFILLED, SHIPPED, ON_HOLD... Its
+ * status is then its deliveries': releasing, picking and handing over the next batch need it, so a return moves none
+ * of it, and its money and invoice are settled per return as always. When the last batch is delivered and the order
+ * becomes DELIVERED, {@link #followDelivery} looks at its returns as they stand: one still open takes it to
+ * RETURN_REQUESTED (or RETURNED, its goods back) as if it had been opened then; returns that ended before leave it
+ * DELIVERED, their refunds already tracked by payment.</p>
+ *
  * <p><b>The money</b>: Sales propose the refund, a second person approves it, and payment settles it against the
  * order's installments in the same transaction ({@link PaymentService#settleReturn}): the goods' value comes off what
  * the installments still owe, what was paid is to be refunded. Nothing is replaced and nothing kept as credit (17 §4.10
@@ -91,15 +102,24 @@ public class ReturnRequestService {
     /**
      * Open a return on {@code orderId}: the lines and units claimed, why, and what the customer would like.
      * {@code lateClaimReason}: Sales accept a claim outside the return window, and say why (back office only).
+     * {@code shipmentId}: the delivered shipment the goods came on (WF-05 TH-1); null names the order's only delivered
+     * one, and is what an order delivered without shipments takes.
      */
     public record OpenReturnCommand(UUID requestId, UUID orderId, ReturnReason reason, String description,
                                     ReturnResolution requestedResolution, List<ReturnRequest.Claim> lines,
-                                    String lateClaimReason) {
+                                    String lateClaimReason, UUID shipmentId) {
 
         /** Within the return window. */
         public OpenReturnCommand(UUID requestId, UUID orderId, ReturnReason reason, String description,
                                  ReturnResolution requestedResolution, List<ReturnRequest.Claim> lines) {
-            this(requestId, orderId, reason, description, requestedResolution, lines, null);
+            this(requestId, orderId, reason, description, requestedResolution, lines, null, null);
+        }
+
+        /** Against the order's only delivered shipment. */
+        public OpenReturnCommand(UUID requestId, UUID orderId, ReturnReason reason, String description,
+                                 ReturnResolution requestedResolution, List<ReturnRequest.Claim> lines,
+                                 String lateClaimReason) {
+            this(requestId, orderId, reason, description, requestedResolution, lines, lateClaimReason, null);
         }
     }
 
@@ -122,12 +142,14 @@ public class ReturnRequestService {
     private final ReturnPolicy policy;
     private final Clock clock;
     private final DeliveryFailureService deliveryFailures;
+    private final SalesContractRepository contracts;
 
     ReturnRequestService(ReturnRequestRepository returns, OrderRepository orders, OrderEventPublisher events,
                          PaymentService payments, CustomerService customers, FileTransfers files,
                          StagedUploads staged, TransactionOperations tx, ReturnPolicy policy, Clock clock,
-                         DeliveryFailureService deliveryFailures) {
+                         DeliveryFailureService deliveryFailures, SalesContractRepository contracts) {
         this.deliveryFailures = deliveryFailures;
+        this.contracts = contracts;
         this.returns = returns;
         this.orders = orders;
         this.events = events;
@@ -188,21 +210,29 @@ public class ReturnRequestService {
                         "This account is %s: ask Sales to open the return".formatted(status));
             }
         }
+        // WF-05 TH-1: the delivery the goods came on; what its other returns claim bounds this one.
+        OrderShipment shipment = ReturnRequest.deliveredShipment(order, command.shipmentId());
+        UUID shipmentId = shipment == null ? null : shipment.id();
         Map<UUID, Integer> claimed = new HashMap<>();
+        Map<UUID, Integer> claimedOnShipment = new HashMap<>();
         Set<UUID> open = new HashSet<>();
         for (ReturnRequest other : returns.findByOrder(order.id().value())) {
+            boolean sameDelivery = Objects.equals(other.shipmentId(), shipmentId);
             for (ReturnLine line : other.lines()) {
                 claimed.merge(line.orderLineId(), line.claimedUnits(other.status()), Integer::sum);
-                if (other.status().isOpen()) {
-                    open.add(line.orderLineId());
+                if (sameDelivery) {
+                    claimedOnShipment.merge(line.orderLineId(), line.claimedUnits(other.status()), Integer::sum);
+                    if (other.status().isOpen()) {
+                        open.add(line.orderLineId());
+                    }
                 }
             }
         }
         Instant now = now();
         ReturnRequest request = ReturnRequest.open(returns.nextRmaNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)),
-                command.requestId(), order, channel, command.reason(), command.description(),
-                command.requestedResolution(), command.lines(), claimed, open, by, now, policy,
-                channel == ReturnChannel.BACK_OFFICE ? command.lateClaimReason() : null);
+                command.requestId(), order, shipmentId, channel, command.reason(), command.description(),
+                command.requestedResolution(), command.lines(), claimed, claimedOnShipment, open, by, now,
+                policyOf(order.id().value()), channel == ReturnChannel.BACK_OFFICE ? command.lateClaimReason() : null);
         if (order.requestReturn(by, now, "RETURN_REQUESTED " + request.rmaNumber())) {
             orders.save(order);
             events.publishEventsOf(order);
@@ -367,8 +397,11 @@ public class ReturnRequestService {
             throw new IllegalStateException("Return receipt %s names order %s, not %s's order %s".formatted(
                     event.receiptNumber(), event.orderId(), request.rmaNumber(), request.orderId()));
         }
-        boolean taken = request.goodsReceived(event.receiptId(), event.receiptNumber(), event.locationCode(),
-                event.cartons().stream().map(c -> new ReturnRequest.ReturnedCarton(c.sku(), c.quantity())).toList(),
+        // WF-05 TH-4: what was counted inside each carton, not its label, and the units that came back loose.
+        List<ReturnRequest.ReturnedCarton> back = new ArrayList<>();
+        event.cartons().forEach(c -> back.add(new ReturnRequest.ReturnedCarton(c.sku(), c.unitsInside())));
+        event.looseLines().forEach(l -> back.add(new ReturnRequest.ReturnedCarton(l.sku(), l.quantity())));
+        boolean taken = request.goodsReceived(event.receiptId(), event.receiptNumber(), event.locationCode(), back,
                 event.receivedBy(), event.receivedAt().truncatedTo(ChronoUnit.MICROS));
         if (!taken) {
             log.info("Return {}: receipt {} was taken already", request.rmaNumber(), event.receiptNumber());
@@ -417,11 +450,26 @@ public class ReturnRequestService {
         ReturnRequest request = locked.request();
         request.requireSettlementApprover(by);
         Instant now = now();
+        // WF-05 TH-1: the delivery batch the goods came on takes the refund first.
+        UUID batch = locked.order().shipments().stream().filter(s -> s.id().equals(request.shipmentId()))
+                .map(OrderShipment::deliveryBatchId).filter(Objects::nonNull).findFirst().orElse(null);
         OrderSettlementResult settled = payments.settleReturn(new SettleReturnCommand(request.orderId(), request.id(),
-                request.settlementAmount(), by, now)).orElseThrow(() -> new BusinessException(
+                request.settlementAmount(), by, now, batch)).orElseThrow(() -> new BusinessException(
                 ErrorCode.RETURN_REFUND_NO_INSTALLMENTS, ("Order %s is not paid through a contract's installments: "
                         + "refund return %s outside the system").formatted(request.orderNumber(), request.rmaNumber())));
         request.resolve(by, now, new ReturnRequest.MoneyOutcome(settled.reduced(), settled.refundable()));
+        return finish(locked, by);
+    }
+
+    /**
+     * The goods came back with nothing usable in them - every carton counted empty, or nothing the return claims - so
+     * nothing approved is refunded (WF-05 TH-4): RECEIVED → RESOLVED, no money, no adjustment invoice, by one person.
+     * Without it such a return could never leave RECEIVED.
+     */
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "return-request", resourceId = "#returnId")
+    public ReturnRequest closeWithoutRefund(UUID returnId, String note, Long version, UUID by) {
+        Locked locked = lock(returnId, null, version);
+        locked.request().closeWithoutRefund(by, now(), note);
         return finish(locked, by);
     }
 
@@ -447,6 +495,35 @@ public class ReturnRequestService {
         if (followReturns(order, returns.findByOrder(orderId), by, now())) {
             orders.save(order);
             events.publishEventsOf(order);
+        }
+    }
+
+    /**
+     * A shipment of the order was delivered (WF-05 TH-1): once that made the order DELIVERED - its last batch arrived -
+     * its returns are looked at as they stand, under the order's lock, exactly as when one of them moves. A return
+     * opened while batches were still on their way and still open takes the order to RETURN_REQUESTED (RETURNED with
+     * its goods back) now; returns that ended before leave it DELIVERED. Called by {@link OrderDeliveredReturnsListener}
+     * after the delivery committed; seen again it changes nothing.
+     */
+    public void followDelivery(UUID orderId, UUID by) {
+        Optional<Order> found = orders.findByIdForUpdate(new OrderId(orderId));
+        if (found.isEmpty() || found.get().status() != OrderStatus.DELIVERED) {
+            return;
+        }
+        Order order = found.get();
+        List<ReturnRequest> all = returns.findByOrder(orderId);
+        if (all.isEmpty()) {
+            return;
+        }
+        Instant now = now();
+        // An open return would have taken a DELIVERED order to RETURN_REQUESTED when it was opened; it does now.
+        boolean moved = all.stream().anyMatch(r -> r.status().isOpen())
+                && order.requestReturn(by, now, "RETURN_REQUESTED_ON_FULL_DELIVERY");
+        moved |= followReturns(order, all, by, now);
+        if (moved) {
+            orders.save(order);
+            events.publishEventsOf(order);
+            log.info("Order {} delivered in full follows its returns: {}", order.orderNumber(), order.status());
         }
     }
 
@@ -559,6 +636,15 @@ public class ReturnRequestService {
     private static BigDecimal goodsWorth(Order order) {
         return order.lines().stream().map(l -> l.grossOf(l.quantity() - l.cancelledQuantity()).amount())
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /**
+     * The return rules for the order: the complaint period its contract agreed (Điều 318), else the configured one. A
+     * contract cancelled and drawn up again is read as the live one.
+     */
+    private ReturnPolicy policyOf(UUID orderId) {
+        return policy.withWindowDays(contracts.findLiveByOrderId(orderId).map(SalesContract::returnWindowDays)
+                .orElse(null));
     }
 
     /** Microseconds, as the database keeps them. */

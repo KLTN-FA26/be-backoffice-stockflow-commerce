@@ -431,6 +431,60 @@ class OrderSettlementTest {
     }
 
     @Nested
+    @DisplayName("WF-05 TH-1: a return of one delivery batch")
+    class ReturnOfABatch {
+
+        private final UUID batch1 = UUID.randomUUID();
+        private final UUID batch2 = UUID.randomUUID();
+
+        /** 40% on signing (paid), 30% after batch 1, 30% before batch 2 - the one that gates batch 2's handover. */
+        private List<Installment> twoBatches() {
+            Installment onSigning = installment(1, InstallmentMilestone.ON_SIGNING, 400_000, 0);
+            onSigning.reach(AT.minusSeconds(864_000), DAY.minusDays(10));
+            onSigning.pay(dong(400_000), AT.minusSeconds(86_400));
+            Installment afterBatch1 = Installment.open(contractId, UUID.randomUUID(), orderId, customerId,
+                    "HD-20261109-000001-1", "SO-20261109-000001", 2, "Batch 1 after delivery",
+                    InstallmentMilestone.AFTER_DELIVERY, batch1, 1, dong(300_000), "VND", 10);
+            Installment beforeBatch2 = Installment.open(contractId, UUID.randomUUID(), orderId, customerId,
+                    "HD-20261109-000001-1", "SO-20261109-000001", 3, "Batch 2 before delivery",
+                    InstallmentMilestone.BEFORE_DELIVERY, batch2, 2, dong(300_000), "VND", null);
+            return List.of(onSigning, afterBatch1, beforeBatch2);
+        }
+
+        @Test
+        @DisplayName("goods of batch 1 come off batch 1's installments first; batch 2's before-delivery installment is "
+                + "left as it is")
+        void theReturnedBatchFirst() {
+            List<Installment> plan = twoBatches();
+            OrderSettlement s = OrderSettlement.returned(plan, UUID.randomUUID(), batch1, dong(100_000), STAFF, AT,
+                    DAY).settlement();
+
+            assertThat(plan.get(1).reducedAmount()).isEqualByComparingTo(dong(100_000));
+            assertThat(plan.get(2).reducedAmount()).as("batch 2 still owes for its own goods")
+                    .isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(s.reductions()).singleElement().satisfies(r ->
+                    assertThat(r.installmentId()).isEqualTo(plan.get(1).id()));
+        }
+
+        @Test
+        @DisplayName("more than batch 1 still owes goes on to the rest in the closure's order; without a batch, the "
+                + "latest batch comes first, as before")
+        void theRestAsBefore() {
+            List<Installment> plan = twoBatches();
+            OrderSettlement s = OrderSettlement.returned(plan, UUID.randomUUID(), batch1, dong(350_000), STAFF, AT,
+                    DAY).settlement();
+            assertThat(plan.get(1).reducedAmount()).isEqualByComparingTo(dong(300_000));
+            assertThat(plan.get(2).reducedAmount()).isEqualByComparingTo(dong(50_000));
+            assertThat(s.reductions()).hasSize(2);
+
+            List<Installment> whole = twoBatches();
+            OrderSettlement.returned(whole, UUID.randomUUID(), dong(100_000), STAFF, AT, DAY);
+            assertThat(whole.get(2).reducedAmount()).isEqualByComparingTo(dong(100_000));
+            assertThat(whole.get(1).reducedAmount()).isEqualByComparingTo(BigDecimal.ZERO);
+        }
+    }
+
+    @Nested
     @DisplayName("an order's refund (15 §5.3)")
     class Standing {
 

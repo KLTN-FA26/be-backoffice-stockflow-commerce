@@ -13,7 +13,8 @@ import java.util.UUID;
 
 /**
  * {@code procurement.goods_receipt_return_cartons} (V20261112000300): a carton scanned on a return receipt, named as it
- * was shipped. Only its condition changes, and only while the receipt is a draft ({@code check_return_receipt_carton}).
+ * was shipped. Only its condition and the count inside it ({@code counted_qty}, V20261201000310) change, and only while
+ * the receipt is a draft ({@code check_return_receipt_carton}).
  */
 @Entity
 @Table(name = "goods_receipt_return_cartons", schema = "procurement")
@@ -41,6 +42,9 @@ public class ReturnReceiptCartonJpaEntity extends BaseEntity {
     @Column(name = "condition_note", length = 500)
     private String conditionNote;
 
+    @Column(name = "counted_qty", nullable = false)
+    private int countedQty;
+
     @Column(name = "scanned_by", nullable = false, updatable = false)
     private UUID scannedBy;
 
@@ -48,8 +52,9 @@ public class ReturnReceiptCartonJpaEntity extends BaseEntity {
     }
 
     public ReturnReceiptCartonJpaEntity(UUID id, UUID stockPackageId, String lpn, String sku, String lotNumber,
-                                        int quantity, String conditionNote, UUID scannedBy) {
+                                        int quantity, String conditionNote, UUID scannedBy, int countedQty) {
         super(id);
+        this.countedQty = countedQty;
         this.stockPackageId = stockPackageId;
         this.lpn = lpn;
         this.sku = sku;
@@ -67,12 +72,17 @@ public class ReturnReceiptCartonJpaEntity extends BaseEntity {
         this.conditionNote = condition;
     }
 
+    public void recount(int units) {
+        this.countedQty = units;
+    }
+
     public UUID getStockPackageId() { return stockPackageId; }
     public String getLpn() { return lpn; }
     public String getSku() { return sku; }
     public String getLotNumber() { return lotNumber; }
     public int getQuantity() { return quantity; }
     public String getConditionNote() { return conditionNote; }
+    public int getCountedQty() { return countedQty; }
     public UUID getScannedBy() { return scannedBy; }
     /** When it was scanned: the row's creation time. */
     public Instant getScannedAt() { return getCreatedAt(); }

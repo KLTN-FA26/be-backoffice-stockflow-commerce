@@ -15,8 +15,13 @@ import java.util.UUID;
  */
 public interface SettlementCandidates {
 
-    /** DELIVERED orders delivered at or before {@code deliveredBy}, oldest first, the first {@code skip} left out. */
-    List<UUID> deliveredBy(Instant deliveredBy, int skip, int limit);
+    /**
+     * DELIVERED orders whose return window may have closed by {@code now}, oldest delivery first, the first {@code skip}
+     * left out: delivered at least the window before - each order's own window, the days its live contract agreed
+     * ({@code sales_contract.return_window_days}, WF-05 TH-1), else {@code defaultWindowDays}. A coarse filter, never
+     * finer than {@link Order#complete}, which decides in calendar days.
+     */
+    List<UUID> deliveredPastWindow(Instant now, int defaultWindowDays, int skip, int limit);
 
     /**
      * COMPLETED orders completed, and REFUNDED / PARTIALLY_REFUNDED ones refunded, at or before {@code settledBy}, the

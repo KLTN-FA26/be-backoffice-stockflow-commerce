@@ -226,6 +226,7 @@ class SalesContractController {
                 request.paymentPlan() == null ? null : request.paymentPlan().stream()
                         .map(i -> i == null ? null : new SalesContracts.Installment(i.name(), i.milestone(),
                                 i.amount(), i.percent(), i.dueDays(), i.deliveryBatchSeq()))
-                        .toList());
+                        .toList(),
+                request.returnWindowDays());
     }
 }

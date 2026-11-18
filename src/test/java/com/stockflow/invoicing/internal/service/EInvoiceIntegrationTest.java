@@ -995,16 +995,19 @@ class EInvoiceIntegrationTest {
 
     /**
      * {@code pieces} of the invoice's goods line accepted back and refunded. The return itself is a bare row: the
-     * adjustment only has to be able to name it ({@code fk_einvoice_return_request}).
+     * adjustment only has to be able to name it ({@code fk_einvoice_return_request}). It is against the invoice's
+     * delivered shipment, as every return of an order delivered in shipments is (WF-05 TH-1).
      */
     private ReturnResolved returned(EInvoice.Snapshot invoice, int pieces) {
         UUID returnId = com.stockflow.common.id.Identifiers.newId();
         String rma = "RMA-L2-" + returnId.toString().substring(24);
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO ordering.return_request (id, rma_number, order_id, customer_id, status, reason_code,
-                                                     requested_at, order_number, request_id, channel, requested_by)
-                VALUES (?, ?, ?, ?, 'REQUESTED', 'PRINT_DEFECT', NOW(), ?, ?, 'PORTAL', ?)""", returnId, rma,
-                invoice.orderId(), invoice.customerId(), invoice.orderNumber(), UUID.randomUUID(), staff));
+                                                     requested_at, order_number, request_id, channel, requested_by,
+                                                     shipment_id)
+                VALUES (?, ?, ?, ?, 'REQUESTED', 'PRINT_DEFECT', NOW(), ?, ?, 'PORTAL', ?, ?)""", returnId, rma,
+                invoice.orderId(), invoice.customerId(), invoice.orderNumber(), UUID.randomUUID(), staff,
+                invoice.shipmentId()));
         EInvoiceLine goods = invoice.lines().getFirst();
         return new ReturnResolved(returnId, rma, invoice.orderId(), invoice.orderNumber(), invoice.customerId(), null,
                 null, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, "VND", true,

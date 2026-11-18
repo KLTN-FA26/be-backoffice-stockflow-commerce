@@ -101,6 +101,7 @@ class ReturnRequestIntegrationTest {
     @Autowired OrderRepository orderRepository;
     @Autowired ReturnRequestService returns;
     @Autowired ReturnReceiptService returnReceipts;
+    @Autowired com.stockflow.inventory.internal.service.CartonQuarantineService quarantine;
     @Autowired PaymentService payments;
     @Autowired InstallmentService installments;
     @Autowired PaymentReceiptService receipts;
@@ -548,5 +549,93 @@ class ReturnRequestIntegrationTest {
         ReturnRequest second = approved(d, 50);
         assertThat(returns.expire(second.id())).as("the deadline has not passed").isFalse();
         assertThat(returnStatus(second.id())).isEqualTo(ReturnStatus.AWAITING_RETURN);
+    }
+
+    // ---- WF-05 TH-4: what came back is what was counted ----------------------------------------------------------------
+
+    @Test
+    @DisplayName("TH-4: a carton counted 40 of 50 and 5 loose units: 45 received and refunded (99,000); the opened "
+            + "carton is in quarantine whole, marked, and never released; a count above the label and a loose SKU "
+            + "the order does not have are refused")
+    void anOpenedCartonAndLooseUnits() {
+        Delivered d = delivered(4, true);
+        ReturnRequest request = approved(d, 100);
+        var draft = asHcmClerk(() -> returnReceipts.create(new ReturnReceiptService.Create(null, request.id(),
+                QUARANTINE, null), clerk));
+        String opened = d.shipped().lpns().getFirst();
+        var scanned = asHcmClerk(() -> returnReceipts.scan(draft.id(), opened, "tape cut", 40, clerk));
+        assertThat(scanned.cartons()).singleElement().satisfies(c -> {
+            assertThat(c.countedQuantity()).isEqualTo(40);
+            assertThat(c.opened()).isTrue();
+        });
+        assertThat(code(catchThrowable(() -> asHcmClerk(() -> returnReceipts.scan(draft.id(), opened, null, 51,
+                clerk))))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(code(catchThrowable(() -> asHcmClerk(() -> returnReceipts.recordLoose(draft.id(), "NOT-OF-ORDER",
+                null, 1, clerk))))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        var withLoose = asHcmClerk(() -> returnReceipts.recordLoose(draft.id(), sku.sku(), null, 5, clerk));
+        assertThat(withLoose.looseLines()).singleElement().satisfies(l -> assertThat(l.quantity()).isEqualTo(5));
+
+        asHcmClerk(() -> returnReceipts.confirm(draft.id(), clerk));
+        Await.until("return " + request.rmaNumber() + " received", ASYNC,
+                () -> returnStatus(request.id()) == ReturnStatus.RECEIVED);
+        assertThat(jdbc.queryForObject("SELECT received_quantity FROM ordering.return_request_line WHERE "
+                + "return_request_id = ?", Integer.class, request.id())).isEqualTo(45);
+        assertThat(jdbc.queryForMap("""
+                SELECT p.return_opened_at IS NOT NULL AS opened, s.status, s.on_hand
+                  FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
+                 WHERE p.lpn = ?""", opened)).as("in quarantine whole, as the books know a carton")
+                .containsEntry("opened", true).containsEntry("status", "QUARANTINE").containsEntry("on_hand", 50);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_movement WHERE reference_type = "
+                + "'GOODS_RECEIPT' AND reference_id = ?", Long.class, draft.id())).as("loose units are no stock")
+                .isEqualTo(1L);
+        assertThat(code(catchThrowable(() -> asHcmClerk(() -> quarantine.release(opened, clerk)))))
+                .isEqualTo(ErrorCode.RETURN_CARTON_OPENED);
+
+        ReturnRequest proposed = returns.proposeRefund(request.id(), new ReturnRequestService.ProposeRefundCommand(
+                null, null, null), sales.userId());
+        assertThat(proposed.settlementAmount()).as("45 pieces at 2 200").isEqualByComparingTo("99000");
+    }
+
+    @Test
+    @DisplayName("TH-4: loose units only - a receipt with no carton closes, and the return is RECEIVED with them")
+    void looseUnitsOnly() {
+        Delivered d = delivered(2, true);
+        ReturnRequest request = approved(d, 50);
+        var draft = asHcmClerk(() -> returnReceipts.create(new ReturnReceiptService.Create(null, request.id(),
+                QUARANTINE, null), clerk));
+        asHcmClerk(() -> returnReceipts.recordLoose(draft.id(), sku.sku(), "LOT-UNKNOWN", 30, clerk));
+        assertThat(asHcmClerk(() -> returnReceipts.confirm(draft.id(), clerk)).status().name()).isEqualTo("CLOSED");
+        Await.until("return " + request.rmaNumber() + " received", ASYNC,
+                () -> returnStatus(request.id()) == ReturnStatus.RECEIVED);
+        assertThat(jdbc.queryForObject("SELECT received_quantity FROM ordering.return_request_line WHERE "
+                + "return_request_id = ?", Integer.class, request.id())).isEqualTo(30);
+    }
+
+    @Test
+    @DisplayName("TH-4: nothing usable came back (one carton counted empty): no refund can be proposed, Sales close "
+            + "the return without one - RESOLVED, no settlement, no money")
+    void nothingUsableClosesWithoutARefund() {
+        Delivered d = delivered(2, true);
+        ReturnRequest request = approved(d, 50);
+        var draft = asHcmClerk(() -> returnReceipts.create(new ReturnReceiptService.Create(null, request.id(),
+                QUARANTINE, null), clerk));
+        asHcmClerk(() -> returnReceipts.scan(draft.id(), d.shipped().lpns().getFirst(), "empty", 0, clerk));
+        asHcmClerk(() -> returnReceipts.confirm(draft.id(), clerk));
+        Await.until("return " + request.rmaNumber() + " received", ASYNC,
+                () -> returnStatus(request.id()) == ReturnStatus.RECEIVED);
+
+        assertThat(code(catchThrowable(() -> returns.proposeRefund(request.id(),
+                new ReturnRequestService.ProposeRefundCommand(null, null, null), sales.userId()))))
+                .isEqualTo(ErrorCode.RETURN_QUANTITIES_INVALID);
+        ReturnRequest closed = returns.closeWithoutRefund(request.id(), "the carton came back empty", null,
+                sales.userId());
+
+        assertThat(closed.status()).isEqualTo(ReturnStatus.RESOLVED);
+        assertThat(closed.settlementAmount()).isZero();
+        assertThat(closed.vatAdjustmentRequired()).isFalse();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE source_id = ?", Integer.class,
+                request.id())).isZero();
+        // Its goods came back (RETURNED) and nothing is owed back: settled, as a return refunded in part.
+        assertThat(statusOf(d.orderId())).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
     }
 }

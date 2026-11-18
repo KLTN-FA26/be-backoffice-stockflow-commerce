@@ -43,7 +43,11 @@ public final class ReturnRequests {
             List<@Valid ClaimedLine> lines,
             @Schema(description = "Sales only: why a claim outside the return window is accepted (goods that came late, "
                     + "a defect found after the window, goodwill). Another person approves it")
-            @Size(max = 500, message = "lateClaimReason is at most 500 characters") String lateClaimReason) {
+            @Size(max = 500, message = "lateClaimReason is at most 500 characters") String lateClaimReason,
+            @Schema(description = "The delivered shipment the goods came on (WF-05 TH-1: one return per delivery). "
+                    + "Omitted: the order's only delivered shipment; required (RETURN_SHIPMENT_REQUIRED) once the order "
+                    + "was delivered in several. A shipment not delivered: RETURN_SHIPMENT_NOT_DELIVERED")
+            UUID shipmentId) {
     }
 
     @Schema(description = "Units approved of one return line (0: none of it)")
@@ -84,5 +88,11 @@ public final class ReturnRequests {
     }
 
     public record Version(Long version) {
+    }
+
+    @Schema(description = "Close a RECEIVED return with no refund: nothing approved came back usable (WF-05 TH-4)")
+    public record CloseWithoutRefund(
+            @Size(max = 1000, message = "note is at most 1000 characters") String note,
+            Long version) {
     }
 }

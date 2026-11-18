@@ -505,6 +505,12 @@ public enum ErrorCode {
     RETURN_QUANTITY_EXCEEDED("More units than can still be returned from this order line", 409),
     /** One open return per order line: the open one is decided first. */
     RETURN_LINE_ALREADY_OPEN("This order line already has an open return", 409),
+    /**
+     * WF-05 TH-1: a return is against one delivered shipment; the order was delivered in several, and none was named.
+     */
+    RETURN_SHIPMENT_REQUIRED("Name the delivery the returned goods came on", 422),
+    /** WF-05 TH-1 (Luật Thương mại Điều 44): only goods of a shipment the customer received come back. */
+    RETURN_SHIPMENT_NOT_DELIVERED("This shipment has not been delivered; its goods cannot be returned", 409),
     /** BR-RMA-002: goods printed to the customer's design come back only when defective. */
     RETURN_CUSTOM_ITEM_NOT_DEFECTIVE("Custom-printed goods are returned only when defective", 409),
     /** SCRUM-243 (B2B plan 2026-10-06): returns are taken for defects and delivery faults, not a change of mind. */
@@ -684,6 +690,11 @@ public enum ErrorCode {
     RETURN_CARTON_NOT_OF_SOURCE("This carton did not leave on the shipment or order the receipt is for", 409),
     /** Team plan 4D-2 (kltn-docs 03 §4.2 step 10): a carton still in the warehouse has not come back. */
     RETURN_CARTON_IN_WAREHOUSE("This carton is in the warehouse; it has not come back", 409),
+    /**
+     * WF-05 TH-4 (kltn-docs 20 BR-14): a carton that came back opened - fewer units in it than its label - is not whole,
+     * so it never goes back on sale; it is only written off.
+     */
+    RETURN_CARTON_OPENED("This carton came back opened; it can only be written off, not released", 409),
     /** Team plan 4C-3 (20 §4.3, BR-05): one adjustment of a carton waits for approval at a time. */
     STOCK_PACKAGE_ADJUSTMENT_PENDING("Another adjustment of this carton is waiting for approval", 409),
     /** Docs 07 step 9: a pick task closes only when every line is picked. */

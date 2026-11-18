@@ -238,9 +238,11 @@ public class EInvoiceCorrections {
 
     /**
      * Goods that came back were refunded (the return's settlement was approved): each order line's refunded pieces are
-     * taken off the issued invoices in force that invoiced that line, the oldest first, as far as each still holds
-     * them - one draft adjustment per invoice, naming the return (TT 91 Điều 10 khoản 5 điểm c.1; no agreement is
-     * needed, the return is the record). The accountant reads and issues them.
+     * taken off the issued invoices in force that invoiced that line - those of the shipment the return was against
+     * first (17 §4.10 step 40: the invoice of the shipment that carried the goods; WF-05 TH-1), then the order's others,
+     * the oldest first - as far as each still holds them - one draft adjustment per invoice, naming the return (TT 91
+     * Điều 10 khoản 5 điểm c.1; no agreement is needed, the return is the record). The accountant reads and issues
+     * them. A return of an order delivered without shipments names none, and is taken off the oldest first.
      *
      * <p>Whole cartons come off as cartons at the carton's price. Pieces that are not whole cartons come off as pieces,
      * when the carton's price divides into whole dong; otherwise they are left for the accountant, as are pieces no
@@ -264,12 +266,18 @@ public class EInvoiceCorrections {
         if (remaining.isEmpty() || invoices.hasAdjustmentForReturn(resolved.returnRequestId())) {
             return new ReturnAdjustments(List.of(), Map.of());
         }
-        List<UUID> candidates = invoices.findInForceOfOrder(resolved.orderId());
+        List<UUID> inForce = invoices.findInForceOfOrder(resolved.orderId());
         // Locked in id order, like every correction, each read once as the lock refreshes it; then walked oldest
         // first. One that is gone or no longer issued by the time its lock is held is passed over below.
         Map<UUID, EInvoice> locked = new HashMap<>();
-        for (UUID id : new TreeSet<>(candidates)) {
+        for (UUID id : new TreeSet<>(inForce)) {
             invoices.findByIdForUpdate(id).ifPresent(invoice -> locked.put(id, invoice));
+        }
+        // The shipment's own invoices first (its original, or the replacement in force), the rest as they were.
+        List<UUID> candidates = new ArrayList<>(inForce);
+        if (resolved.shipmentId() != null) {
+            candidates.sort(java.util.Comparator.comparing(id -> locked.get(id) == null
+                    || !resolved.shipmentId().equals(locked.get(id).shipmentId())));
         }
         ResourceBundle t = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
         LocalDate date = BusinessCalendar.date(resolved.resolvedAt() == null ? clock.instant()

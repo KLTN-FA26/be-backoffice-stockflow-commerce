@@ -68,12 +68,29 @@ class OrderSettlementServiceTest {
     }
 
     @Test
-    @DisplayName("completion candidates are the orders delivered at or before now minus the return window, after the ones skipped")
+    @DisplayName("completion candidates are the orders past their return window by now - the contract's, else the "
+            + "configured 7 days - after the ones skipped")
     void completionCandidatesUseTheReturnWindow() {
         List<UUID> found = List.of(UUID.randomUUID());
-        when(candidates.deliveredBy(NOW.minus(Duration.ofDays(7)), 5, 50)).thenReturn(found);
+        when(candidates.deliveredPastWindow(NOW, 7, 5, 50)).thenReturn(found);
 
         assertThat(at(NOW).completionCandidates(5, 50)).isEqualTo(found);
+    }
+
+    @Test
+    @DisplayName("WF-05 TH-1: an order whose contract agreed 14 days to complain is not completed after the configured "
+            + "7, only once its own 14 have passed")
+    void theContractsReturnWindowHoldsTheOrder() {
+        Order order = OrderFixtures.delivered(NOW);
+        when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
+        SalesContract contract = mock(SalesContract.class);
+        when(contract.returnWindowDays()).thenReturn(14);
+        when(contracts.findLiveByOrderId(order.id().value())).thenReturn(Optional.of(contract));
+
+        assertThat(at(LATER).complete(order.id().value())).as("8 days on: inside the contract's 14").isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
+        assertThat(at(NOW.plus(Duration.ofDays(16))).complete(order.id().value())).isTrue();
+        assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
     }
 
     @Test

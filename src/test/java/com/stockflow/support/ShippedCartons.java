@@ -41,11 +41,29 @@ public final class ShippedCartons {
      */
     public static Shipped ship(JdbcTemplate jdbc, TransactionTemplate tx, UUID orderId, UUID orderLineId, String sku,
                                int count, int perCarton, String lot, String shipmentStatus, UUID staff) {
+        return ship(jdbc, tx, orderId, orderLineId, sku, count, perCarton, lot, shipmentStatus, staff, null);
+    }
+
+    /**
+     * {@code count} cartons labelled onto {@code shipmentId}, a shipment the test already has - one the order module
+     * recorded the handover and delivery of, through {@code OrderService} with a {@link ShipmentRows} row (WF-05 TH-1:
+     * a return is against that very shipment, and its receipt takes that shipment's cartons).
+     */
+    public static Shipped onShipment(JdbcTemplate jdbc, TransactionTemplate tx, UUID orderId, UUID orderLineId,
+                                     String sku, int count, int perCarton, String lot, UUID shipmentId, UUID staff) {
+        return ship(jdbc, tx, orderId, orderLineId, sku, count, perCarton, lot, null, staff, shipmentId);
+    }
+
+    private static Shipped ship(JdbcTemplate jdbc, TransactionTemplate tx, UUID orderId, UUID orderLineId, String sku,
+                                int count, int perCarton, String lot, String shipmentStatus, UUID staff,
+                                UUID existingShipment) {
         UUID newPick = Identifiers.newId();
         UUID newPack = Identifiers.newId();
         UUID[] taken = new UUID[2];
-        UUID shipment = Identifiers.newId();
-        String shipmentCode = "S" + shipment.toString().replace("-", "").substring(0, 12).toUpperCase();
+        UUID shipment = existingShipment == null ? Identifiers.newId() : existingShipment;
+        String shipmentCode = existingShipment == null
+                ? "S" + shipment.toString().replace("-", "").substring(0, 12).toUpperCase()
+                : jdbc.queryForObject("SELECT code FROM fulfillment.shipment WHERE id = ?", String.class, shipment);
         List<Carton> shipped = new ArrayList<>();
         tx.executeWithoutResult(s -> {
             jdbc.execute("SET LOCAL session_replication_role = replica");
@@ -71,11 +89,13 @@ public final class ShippedCartons {
             }
             UUID pick = taken[0];
             UUID pack = taken[1];
-            jdbc.update("""
-                    INSERT INTO fulfillment.shipment (id, pack_id, order_id, status, code, warehouse_id, ready_at, created_at,
-                                                      handed_over_at, outcome_at, whole_order_handover)
-                    VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW(), NOW(), TRUE)""", shipment, pack, orderId,
-                    shipmentStatus, shipmentCode, DemoData.WAREHOUSE_HCM);
+            if (existingShipment == null) {
+                jdbc.update("""
+                        INSERT INTO fulfillment.shipment (id, pack_id, order_id, status, code, warehouse_id, ready_at,
+                                                          created_at, handed_over_at, outcome_at, whole_order_handover)
+                        VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW(), NOW(), TRUE)""", shipment, pack, orderId,
+                        shipmentStatus, shipmentCode, DemoData.WAREHOUSE_HCM);
+            }
             // The cartons go in with the triggers on: tg_stock_item_lot gives each row its lot_id (NOT NULL since 4C-3).
             jdbc.execute("SET LOCAL session_replication_role = origin");
             var stocked = CartonRows.stock(jdbc, sku, "HCM-A01-1-A", count, perCarton, lot,

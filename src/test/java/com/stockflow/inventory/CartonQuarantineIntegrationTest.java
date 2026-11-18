@@ -46,6 +46,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 /**
@@ -315,6 +316,33 @@ class CartonQuarantineIntegrationTest {
         assertThat(refusal(() -> quarantine("LPN-NOPE-0001", quarantineArea)).errorCode())
                 .isEqualTo(ErrorCode.STOCK_PACKAGE_NOT_FOUND);
         assertThat(cartonRow(lpn)).containsEntry("stock", "AVAILABLE").containsEntry("location", bin);
+    }
+
+    @Test
+    @DisplayName("WF-05 TH-4: a carton that came back opened on a return is never released (RETURN_CARTON_OPENED), the "
+            + "database refuses its stock AVAILABLE whatever path tries and keeps the mark; it is only written off")
+    void anOpenedReturnCartonIsOnlyWrittenOff() {
+        String lpn = carton(2);
+        quarantine(lpn, quarantineArea);
+        // What the return receipt's confirmation leaves on a carton it counted short (CartonReturnService).
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE inventory.stock_package SET return_opened_at = NOW() WHERE lpn = ?", lpn));
+
+        assertThat(refusal(() -> quarantine.release(lpn, manager)).errorCode())
+                .isEqualTo(ErrorCode.RETURN_CARTON_OPENED);
+        assertThat(cartonRow(lpn)).containsEntry("stock", "QUARANTINE");
+        Throwable onSale = catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE inventory.stock_item SET status = 'AVAILABLE'
+                 WHERE stock_package_id = (SELECT id FROM inventory.stock_package WHERE lpn = ?)""", lpn)));
+        assertThat(onSale).as("tg_stock_item_opened_return").hasMessageContaining("came back opened");
+        Throwable unmarked = catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE inventory.stock_package SET return_opened_at = NULL WHERE lpn = ?", lpn)));
+        assertThat(unmarked).as("tg_stock_package_return_opened").hasMessageContaining("came back opened");
+
+        StockAdjustmentSummary asked = operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn, -10,
+                StockAdjustmentReason.DAMAGED, "Came back opened, 8 of 10 inside", manager));
+        operations.approve(asked.adjustmentId(), approver);
+        assertThat(cartonRow(lpn)).containsEntry("carton", "CONSUMED").containsEntry("on_hand", 0);
     }
 
     @Test

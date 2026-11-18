@@ -26,7 +26,14 @@ public interface SalesContracts {
      * one delivery batch of every carton in the window the customer asked for, the customer's default payment schedule.
      * On an edit, the schedule and the plan are replaced whole.
      */
-    record Draft(Integer freeSampleRounds, List<Batch> deliverySchedule, List<Installment> paymentPlan) { }
+    record Draft(Integer freeSampleRounds, List<Batch> deliverySchedule, List<Installment> paymentPlan,
+                 Integer returnWindowDays) {
+
+        /** The complaint period left as it is: the configured default on drawing up, kept on an edit. */
+        public Draft(Integer freeSampleRounds, List<Batch> deliverySchedule, List<Installment> paymentPlan) {
+            this(freeSampleRounds, deliverySchedule, paymentPlan, null);
+        }
+    }
 
     /** A delivery batch as entered, in delivery order. */
     record Batch(LocalDate windowStart, LocalDate windowEnd, List<BatchLine> lines) { }
@@ -73,14 +80,30 @@ public interface SalesContracts {
     record PlanSuggestion(UUID contractId, long version, BigDecimal totalAmount, List<InstallmentView> paymentPlan) { }
 
     /**
-     * @param creditWarning set only on the answer to a send that warned
+     * @param creditWarning    set only on the answer to a send that warned
+     * @param returnWindowDays the complaint period agreed, in calendar days from each delivery (Luật Thương mại Điều
+     *                         318; WF-05 TH-1); null on a contract drawn up before it was written down, whose returns
+     *                         use the configured default
      */
     record ContractView(UUID id, String contractNumber, UUID orderId, String orderNumber, String status, Party seller,
                         Party buyer, int freeSampleRounds, Totals totals, List<BatchView> deliverySchedule,
                         List<InstallmentView> paymentPlan, Instant sentAt, UUID sentBy, LocalDate signedOn,
                         String signedFileName, Instant signedAt, UUID signedBy, Instant cancelledAt,
                         UUID cancelledBy, String cancellationReason, Instant completedAt, long version,
-                        CreditWarning creditWarning) { }
+                        CreditWarning creditWarning, Integer returnWindowDays) {
+
+        /** With no complaint period written down. */
+        public ContractView(UUID id, String contractNumber, UUID orderId, String orderNumber, String status,
+                            Party seller, Party buyer, int freeSampleRounds, Totals totals,
+                            List<BatchView> deliverySchedule, List<InstallmentView> paymentPlan, Instant sentAt,
+                            UUID sentBy, LocalDate signedOn, String signedFileName, Instant signedAt, UUID signedBy,
+                            Instant cancelledAt, UUID cancelledBy, String cancellationReason, Instant completedAt,
+                            long version, CreditWarning creditWarning) {
+            this(id, contractNumber, orderId, orderNumber, status, seller, buyer, freeSampleRounds, totals,
+                    deliverySchedule, paymentPlan, sentAt, sentBy, signedOn, signedFileName, signedAt, signedBy,
+                    cancelledAt, cancelledBy, cancellationReason, completedAt, version, creditWarning, null);
+        }
+    }
 
     /**
      * Draws up the order's contract (14 §4.3 step 11).

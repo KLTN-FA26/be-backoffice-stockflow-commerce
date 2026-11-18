@@ -31,16 +31,22 @@ class SettlementCandidatesAdapter implements SettlementCandidates {
 
     @Override
     @SuppressWarnings("unchecked")
-    public List<UUID> deliveredBy(Instant deliveredBy, int skip, int limit) {
+    public List<UUID> deliveredPastWindow(Instant now, int defaultWindowDays, int skip, int limit) {
         return entityManager.createNativeQuery("""
                         SELECT o.id FROM ordering.customer_order o
-                         WHERE o.status = 'DELIVERED' AND o.delivered_at <= :cutoff
+                         WHERE o.status = 'DELIVERED'
+                           -- The order's own window (WF-05 TH-1): what its live contract agreed, else the default.
+                           AND o.delivered_at <= CAST(:now AS timestamptz) - make_interval(days => COALESCE(
+                                   (SELECT c.return_window_days FROM ordering.sales_contract c
+                                     WHERE c.order_id = o.id AND c.status <> 'CANCELLED'
+                                     ORDER BY c.created_at DESC LIMIT 1), :days))
                            -- A return open: the aggregate would refuse; leave room in the batch. Whether the order still
                            -- owes is its installments' (payment's schema): the service asks, and the run skips it.
                            AND NOT EXISTS (SELECT 1 FROM ordering.return_request r WHERE r.order_id = o.id
                                               AND r.status IN (%s))
                          ORDER BY o.delivered_at, o.id""".formatted(OPEN_RETURN))
-                .setParameter("cutoff", deliveredBy)
+                .setParameter("now", now)
+                .setParameter("days", defaultWindowDays)
                 .setFirstResult(skip)
                 .setMaxResults(limit)
                 .getResultList();

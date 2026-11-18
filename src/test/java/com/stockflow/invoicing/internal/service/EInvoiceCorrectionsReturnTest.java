@@ -82,6 +82,26 @@ class EInvoiceCorrectionsReturnTest {
     }
 
     @Test
+    @DisplayName("WF-05 TH-1 (17 §4.10 step 40): a return against shipment 2 is taken off shipment 2's invoice, though "
+            + "shipment 1's is older and invoiced the same line; a return naming no shipment, the oldest first")
+    void aReturnIsTakenOffItsShipmentsInvoiceFirst() {
+        UUID order = UUID.randomUUID();
+        UUID line = UUID.randomUUID();
+        EInvoice first = issued(line, 1);
+        EInvoice second = issued(line, 2);
+        when(invoices.findInForceOfOrder(order)).thenReturn(List.of(first.id(), second.id()));
+        ReturnResolved plain = returned(order, List.of(refunded(line, 30)));
+        ReturnResolved ofSecond = new ReturnResolved(plain.returnRequestId(), plain.rmaNumber(), order,
+                plain.orderNumber(), plain.customerId(), null, null, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+                "VND", true, plain.lines(), plain.resolvedBy(), RESOLVED_AT, null, second.shipmentId());
+
+        assertThat(corrections.drawUpForReturn(ofSecond).drafts()).singleElement()
+                .satisfies(draft -> assertThat(draft.originalEInvoiceId()).isEqualTo(second.id()));
+        assertThat(corrections.drawUpForReturn(returned(order, List.of(refunded(line, 30)))).drafts()).singleElement()
+                .satisfies(draft -> assertThat(draft.originalEInvoiceId()).isEqualTo(first.id()));
+    }
+
+    @Test
     @DisplayName("review L3: every candidate invoice is locked once, in id order, and read only under its lock")
     void aReturnLocksEachInvoiceOnceInIdOrder() {
         UUID order = UUID.randomUUID();

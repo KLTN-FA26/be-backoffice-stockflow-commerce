@@ -17,9 +17,12 @@ import java.util.Objects;
  * a claim made at 18:00 on the seventh day for goods delivered at 17:00, and the order would complete on the same
  * hour-based clock while the customer still thinks the window open.</p>
  *
- * @param window                  BR-RMA-001 / OQ-07: how long after delivery a return may be opened. The same figure
- *                                as {@code stockflow.order.return-window-days} (7), after which an order completes
- *                                (BR-ORD-005): a return is possible exactly while the order could still complete
+ * @param window                  BR-RMA-001 / OQ-07: how long after a delivery a return of its goods may be opened. The
+ *                                same figure as {@code stockflow.order.return-window-days} (7), after which an order
+ *                                completes (BR-ORD-005): a return is possible exactly while the order could still
+ *                                complete. It is the default: an order whose contract agreed its own period
+ *                                ({@code sales_contract.return_window_days}, Điều 318) uses that one
+ *                                ({@link #withWindowDays}), for its returns and its completion alike
  * @param returnDeadline          how long the customer has to send approved goods back before the return expires (14
  *                                days: a B2B customer books its own carrier, often once a week)
  * @param noReturnMaxValue        the most a defect may be worth (unit price x approved units, VND) for Sales to accept
@@ -49,6 +52,18 @@ public record ReturnPolicy(Duration window, Duration returnDeadline, BigDecimal 
     public static ReturnPolicy defaults() {
         return new ReturnPolicy(Duration.ofDays(7), Duration.ofDays(14), BigDecimal.valueOf(2_000_000), true, 10,
                 false);
+    }
+
+    /**
+     * The same rules with the complaint period an order's contract agreed (Luật Thương mại 2005 Điều 318; WF-05 TH-1):
+     * {@code days} when it names one, this policy's own window otherwise.
+     */
+    public ReturnPolicy withWindowDays(Integer days) {
+        if (days == null || days == window.toDays()) {
+            return this;
+        }
+        return new ReturnPolicy(Duration.ofDays(days), returnDeadline, noReturnMaxValue, evidenceRequired, maxEvidence,
+                changeOfMindForStockItems);
     }
 
     /** When the return window of goods delivered at {@code deliveredAt} closes: the start of the day after its last. */

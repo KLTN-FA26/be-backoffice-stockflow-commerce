@@ -18,7 +18,10 @@ import java.util.UUID;
 /**
  * Completes and closes orders as time passes (G3-2; kltn-docs 17 §4.3 step 10, BR-05; BR-ORD-005):
  * <ul>
- *   <li>DELIVERED → COMPLETED once the return window ({@code stockflow.order.return-window-days}, default 7) has passed,
+ *   <li>DELIVERED → COMPLETED once the return window has passed - the order's own: the days its contract agreed
+ *       ({@code sales_contract.return_window_days}, Luật Thương mại Điều 318; WF-05 TH-1), else
+ *       {@code stockflow.order.return-window-days}, default 7 - so an order never completes while its customer may still
+ *       claim under the contract,
  *       every installment of its contract is paid (17 §4.6 step 21; 4B-10: asked of payment, the order keeps no
  *       money of its own), no return request is open, and every delivered shipment has its e-invoice issued (WF-05
  *       plan §4, condition 5: asked of invoicing, see {@link #complete}). An order whose installments still owe
@@ -82,7 +85,7 @@ public class OrderSettlementService {
 
     @Transactional(readOnly = true)
     public List<UUID> completionCandidates(int skip, int limit) {
-        return candidates.deliveredBy(clock.instant().minus(returnWindow), skip, limit);
+        return candidates.deliveredPastWindow(clock.instant(), (int) returnWindow.toDays(), skip, limit);
     }
 
     @Transactional(readOnly = true)
@@ -161,16 +164,21 @@ public class OrderSettlementService {
         Order order = repository.findByIdForUpdate(new OrderId(orderId)).orElse(null);
         // One moment for both: the order and its contract complete together, and say so.
         java.time.Instant now = clock.instant();
-        if (order == null || !order.complete(now, returnWindow, candidates.hasOpenReturn(orderId), owing(order),
+        java.util.Optional<com.stockflow.order.internal.domain.SalesContract> contract = order == null
+                ? java.util.Optional.empty() : contracts.findLiveByOrderId(orderId);
+        // The window the contract agreed (WF-05 TH-1), the configured one when it names none.
+        Duration window = contract.map(com.stockflow.order.internal.domain.SalesContract::returnWindowDays)
+                .map(Duration::ofDays).orElse(returnWindow);
+        if (order == null || !order.complete(now, window, candidates.hasOpenReturn(orderId), owing(order),
                 awaitingInvoice(order))) {
             return false;
         }
         repository.save(order);
         // 4B-8 (14 §5.2): the order completed - every batch delivered, invoiced and paid - completes its contract.
-        contracts.findLiveByOrderId(orderId).filter(contract -> contract.complete(now))
-                .ifPresent(contract -> {
-                    contracts.save(contract);
-                    log.info("Sales contract {} completed with its order", contract.contractNumber());
+        contract.filter(live -> live.complete(now))
+                .ifPresent(done -> {
+                    contracts.save(done);
+                    log.info("Sales contract {} completed with its order", done.contractNumber());
                 });
         events.publishEventsOf(order);
         log.info("Order {} completed", order.orderNumber());

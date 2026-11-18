@@ -41,6 +41,11 @@ import java.util.stream.Collectors;
  * same lot, whole and sealed - into a QUARANTINE area, and a warehouse manager decides on it afterwards
  * ({@link CartonQuarantineService#release}, or a {@code DAMAGED} write-off). No RECEIVING, no putaway task, nothing
  * opened or relabelled: a return receipt does not make a carton, it recognises one.
+ *
+ * <p>A carton the receipt found opened (WF-05 TH-4) comes back the same way - the books know a carton only whole, at
+ * its label's count (20 BR-14) - and is marked so: it is never released, only written off, and none of its stock
+ * becomes AVAILABLE again ({@code tg_stock_item_opened_return}). What it really held is the receipt's record, and the
+ * return refunds that.</p>
  */
 @Service
 @Transactional
@@ -132,9 +137,12 @@ public class CartonReturnService implements CartonReturns {
                     .ofLot(row.lotId()).forOrder(command.orderId()).arriving(seen.id()));
             received.add(new ReturnedCarton(seen.id().value(), lpn, skuByLpn.get(lpn), row.lotNumber(),
                     row.onHand().value(), "IN_STOCK", to.code()));
-            log.info("Return receipt {}: carton {} ({} x {}, lot {}) back into quarantine at {}", command.receiptId(),
-                    lpn, row.onHand().value(), row.sku(), row.lotNumber(), to);
+            log.info("Return receipt {}: carton {} ({} x {}, lot {}) back into quarantine at {}{}", command.receiptId(),
+                    lpn, row.onHand().value(), row.sku(), row.lotNumber(), to,
+                    command.openedLpns().contains(lpn) ? ", opened: to be written off" : "");
         }
+        stockPackages.markOpenedOnReturn(command.openedLpns().stream().map(lpn -> byLpn.get(lpn).id()).toList(),
+                command.receivedAt());
         return received;
     }
 

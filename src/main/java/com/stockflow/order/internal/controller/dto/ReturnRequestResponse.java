@@ -18,6 +18,9 @@ public record ReturnRequestResponse(
         UUID orderId,
         String orderNumber,
         UUID customerId,
+        @Schema(description = "The delivered shipment the return is against (WF-05 TH-1); null for an order "
+                + "delivered without shipments")
+        UUID shipmentId,
         @Schema(example = "AWAITING_RETURN") String status,
         @Schema(example = "PRINT_DEFECT") String reasonCode,
         String description,

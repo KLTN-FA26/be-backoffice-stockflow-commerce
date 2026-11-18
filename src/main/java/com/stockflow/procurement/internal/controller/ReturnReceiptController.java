@@ -8,6 +8,7 @@ import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.procurement.internal.controller.dto.CreateReturnReceiptRequest;
+import com.stockflow.procurement.internal.controller.dto.RecordLooseUnitsRequest;
 import com.stockflow.procurement.internal.controller.dto.ScanReturnCartonRequest;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
 import com.stockflow.procurement.internal.service.ReturnReceiptService;
@@ -100,13 +101,41 @@ class ReturnReceiptController {
                     Only a carton that left on the receipt's shipment, or was delivered on the return request's \
                     order, and is not in the warehouse: `RETURN_CARTON_NOT_OF_SOURCE`, `RETURN_CARTON_IN_WAREHOUSE` \
                     (409). It keeps its LPN, SKU, count and lot. The same LPN again is the same carton: a \
-                    `condition` sent replaces the one noted before. `INVALID_RECEIPT_TRANSITION` once the receipt \
-                    is not a draft.""")
+                    `condition` sent replaces the one noted before, and so does a `countedQuantity`. \
+                    `countedQuantity` (WF-05 TH-4): the units found inside, 0 to its label (`VALIDATION_FAILED` \
+                    above it); omitted, sealed. Fewer than its label marks it `opened`: it goes into quarantine whole \
+                    and can only be written off (`RETURN_CARTON_OPENED` on a release); the return refunds what was \
+                    counted. A return request against a shipment takes that shipment's cartons only. \
+                    `INVALID_RECEIPT_TRANSITION` once the receipt is not a draft.""")
     @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<ReturnReceiptView> scan(@PathVariable UUID receiptId,
                                                @Valid @RequestBody ScanReturnCartonRequest request,
                                                @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(receipts.scan(receiptId, request.lpn(), request.condition(), user.userId()));
+        return ApiResponse.ok(receipts.scan(receiptId, request.lpn(), request.condition(), request.countedQuantity(),
+                user.userId()));
+    }
+
+    @PostMapping("/{receiptId}/loose-lines")
+    @Operation(summary = "Record units that came back with no carton label onto a DRAFT return receipt",
+            description = """
+                    WF-05 TH-4: the SKU (one of the order's, else `VALIDATION_FAILED`), the lot when it can be read, \
+                    and how many. On a receipt against a return request only (`INVALID_RECEIPT_TRANSITION` for a \
+                    returned shipment's, or once not a draft). Recorded on the receipt and never put into stock - the \
+                    units are destroyed - but received for the return. The same SKU and lot again replaces the \
+                    count.""")
+    @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.UPDATE)
+    public ApiResponse<ReturnReceiptView> recordLoose(@PathVariable UUID receiptId,
+                                                      @Valid @RequestBody RecordLooseUnitsRequest request,
+                                                      @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(receipts.recordLoose(receiptId, request.sku(), request.lotNumber(), request.quantity(),
+                user.userId()));
+    }
+
+    @DeleteMapping("/{receiptId}/loose-lines/{lineId}")
+    @Operation(summary = "Take loose units recorded by mistake off a DRAFT return receipt")
+    @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.UPDATE)
+    public ApiResponse<ReturnReceiptView> removeLoose(@PathVariable UUID receiptId, @PathVariable UUID lineId) {
+        return ApiResponse.ok(receipts.removeLoose(receiptId, lineId));
     }
 
     @DeleteMapping("/{receiptId}/cartons/{lpn}")
