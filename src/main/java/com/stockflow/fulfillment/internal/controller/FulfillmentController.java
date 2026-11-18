@@ -268,10 +268,13 @@ class FulfillmentController {
     }
 
     /**
-     * Completes packing (G4-5, docs 08 step 7-9): every sealed package not shipped yet becomes one shipment,
-     * READY_TO_DISPATCH ({@code shipmentId} in the answer). Without a body, everything the order wants must be packed
-     * (409 PACKING_INCOMPLETE); {@code partial} ships what is sealed and leaves the rest for later. Completed again,
-     * the same.
+     * Completes the carton check (team plan 4C-6, kltn-docs 08 §4.4 steps 8-9), checked in the order of step 8: every
+     * carton of the session LABELED or REMOVED, at least one labelled, and a shortfall against what the task's delivery
+     * batch wants only with {@code partial} and a note on an order Sales allowed to ship in parts. The labelled cartons
+     * not shipped yet then become one shipment READY_TO_DISPATCH ({@code shipmentId} in the answer); an installment
+     * BEFORE_DELIVERY still unpaid comes back as a warning ({@code paymentDue}), not a refusal (08 BR-11). Without a
+     * body the whole of it must be labelled (409 PACKING_INCOMPLETE); {@code partial} ships what is labelled and leaves
+     * the rest for the cartons picked later. Completed again, or the same {@code requestId} again, it answers as it is.
      */
     @PostMapping("/tasks/{taskId}/packing-completion")
     @RequiresPermission(resource = FulfillmentResources.PACKING, action = Action.UPDATE)

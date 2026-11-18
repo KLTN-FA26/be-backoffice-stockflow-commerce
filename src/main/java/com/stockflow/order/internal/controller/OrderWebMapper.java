@@ -124,6 +124,11 @@ final class OrderWebMapper {
                                 fee.taxRate(), fee.taxAmount().amount())).toList());
     }
 
+    /** An address as the order answers it; null for none. */
+    static OrderResponse.Address toAddress(OrderSummary.AddressSummary address) {
+        return toResponse(address);
+    }
+
     private static OrderResponse.Address toResponse(OrderSummary.AddressSummary address) {
         if (address == null) return null;
         return new OrderResponse.Address(

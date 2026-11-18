@@ -78,13 +78,16 @@ class OrderController {
     private final com.stockflow.identity.api.IdentityService identities;
 
     private final com.stockflow.order.internal.service.PartialShipments partialShipments;
+    private final com.stockflow.order.internal.service.ShippingAddressChanges addressChanges;
     private final com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility;
 
     OrderController(OrderService orderService, CustomerService customerService,
                     CustomerOrders customerOrders,
                     com.stockflow.identity.api.IdentityService identities,
                     com.stockflow.order.internal.service.PartialShipments partialShipments,
+                    com.stockflow.order.internal.service.ShippingAddressChanges addressChanges,
                     com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility) {
+        this.addressChanges = addressChanges;
         this.warehouseVisibility = warehouseVisibility;
         this.partialShipments = partialShipments;
         this.identities = identities;
@@ -278,10 +281,14 @@ class OrderController {
         List<com.stockflow.order.api.PartialShipmentDecision> decisions = partialShipments.decisions(orderId);
         // WF4-CLOSE-HIST-SCHEMA: so are the closures of the rest (REMAINDER_CLOSURE), whether or not one moved the status.
         List<com.stockflow.order.api.RemainderClosure> closures = orderService.remainderClosures(orderId);
+        // WF04 G2: and so are Sales' changes of the delivery address (ADDRESS_CHANGE), before the first label.
+        List<com.stockflow.order.internal.service.ShippingAddressChanges.Change> addresses =
+                addressChanges.changes(orderId);
         java.util.Map<UUID, String> names = identities.displayNames(java.util.stream.Stream.of(
                         changes.stream().map(com.stockflow.order.api.OrderStatusChange::actorId),
                         decisions.stream().map(com.stockflow.order.api.PartialShipmentDecision::decidedBy),
-                        closures.stream().map(com.stockflow.order.api.RemainderClosure::closedBy))
+                        closures.stream().map(com.stockflow.order.api.RemainderClosure::closedBy),
+                        addresses.stream().map(com.stockflow.order.internal.service.ShippingAddressChanges.Change::changedBy))
                 .flatMap(stream -> stream)
                 .filter(java.util.Objects::nonNull).distinct().toList());
         // Listed first so that a closure and the status change it caused, stamped alike, read closure first.
@@ -295,7 +302,10 @@ class OrderController {
                                 change.actorId() == null ? null : names.get(change.actorId()))),
                 decisions.stream().map(decision -> OrderStatusChangeResponse.partialShipmentDecision(
                         decision.allowed(), decision.note(), decision.decidedAt(), decision.decidedBy(),
-                        decision.decidedBy() == null ? null : names.get(decision.decidedBy()))))
+                        decision.decidedBy() == null ? null : names.get(decision.decidedBy()))),
+                addresses.stream().map(change -> OrderStatusChangeResponse.addressChange(
+                        OrderWebMapper.toAddress(change.previous()), OrderWebMapper.toAddress(change.next()),
+                        change.changedAt(), change.changedBy(), names.get(change.changedBy()))))
                 .flatMap(stream -> stream)
                 .sorted(java.util.Comparator.comparing(OrderStatusChangeResponse::occurredAt))
                 .toList());

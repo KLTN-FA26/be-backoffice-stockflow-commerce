@@ -67,6 +67,14 @@ public final class OrderResources {
     public static final String PARTIAL_SHIPMENTS = "sales-order-partial-shipments";
 
     /**
+     * WF04 G2 (kltn-docs 17 §4.7 steps 23-24, BR-16; 08 BR-04): Sales change the delivery address of an order until its
+     * first carton is labelled. Its own resource, not {@code sales-orders:UPDATE}, which the portal customer holds for
+     * their own orders: the customer asks, Sales changes it. Seeded by V20261204000100 for SALES_STAFF (and
+     * SYSTEM_ADMIN, who holds everything).
+     */
+    public static final String ADDRESSES = "sales-order-addresses";
+
+    /**
      * 4B-7 (kltn-docs 17 §4.2 steps 2-3): the warehouse an order of a contract ships from, and how much of its stock is
      * held there - UPDATE for Sales, who chooses it; READ for those who follow the order. Not
      * {@code sales-orders:UPDATE}, which the portal customer holds for their own orders.

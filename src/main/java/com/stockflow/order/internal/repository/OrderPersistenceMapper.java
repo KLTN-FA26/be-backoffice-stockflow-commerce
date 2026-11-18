@@ -132,6 +132,7 @@ final class OrderPersistenceMapper {
         entity.applyClosedAmount(order.closedAmount());
         entity.applyFulfilmentStarted(order.fulfilmentStartedAt());
         entity.applyFirstLabeled(order.firstLabeledAt());
+        entity.applyShippingAddress(toEntity(order.shippingAddress()));
         entity.applyLifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(), order.shippedAt(),
                 order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(), order.refundedAt(),
                 order.closedAt());

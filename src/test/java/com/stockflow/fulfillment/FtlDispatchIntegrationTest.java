@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.OrderCancelled;
+import com.stockflow.customer.api.CustomerService;
+import com.stockflow.customer.api.SaveAddressCommand;
 import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
@@ -111,6 +113,7 @@ class FtlDispatchIntegrationTest {
     @MockitoBean com.stockflow.fulfillment.internal.service.CarrierBookingGateway carrierGateway;
     @Autowired com.stockflow.fulfillment.internal.service.CarrierBookingSweeper bookingSweeper;
     @Autowired OrderService orders;
+    @Autowired CustomerService customers;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
@@ -4247,6 +4250,95 @@ class FtlDispatchIntegrationTest {
                 cancelled, order.orderId(), code + "-X", HCM));
         dispatch(get(BASE + "/shipments/" + cancelled + "/delivery-note")).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("SHIPMENT_STATE_CONFLICT"));
+    }
+
+    @Test
+    @DisplayName("WF04 G2 (17 §4.7 steps 23-24, BR-16; 08 BR-04, §6 'Địa chỉ giao không hợp lệ'): Sales hold the order "
+            + "ADDRESS, change its delivery address to another of the customer's and release it; the change is in the "
+            + "order's history; once a carton is labelled the address no longer changes (409 ORDER_ADDRESS_LOCKED)")
+    void salesChangeTheDeliveryAddressUntilTheFirstLabel() throws Exception {
+        OrderSummary order = ftlOrder(1);
+        UUID firstAddress = jdbc.queryForObject("SELECT id FROM customer.address WHERE customer_id = ? AND type = "
+                + "'SHIPPING' ORDER BY is_default DESC, created_at LIMIT 1", UUID.class, order.customerId());
+        UUID corrected = customers.addAddress(order.customerId(), sales, true, new SaveAddressCommand("SHIPPING",
+                "Kho Đa Kao", "0907654321", "9 Hai Bà Trưng", null, "26737", "Phường Đa Kao", "79", "TP. Hồ Chí Minh",
+                "VN", null, false, null)).addressId();
+        String path = ORDERS + "/" + order.orderId() + "/shipping-address";
+        String toCorrected = "{\"shippingAddressId\":\"" + corrected + "\"}";
+
+        // Sales' to change: not the warehouse's; an address not the customer's is not found.
+        packer(body(put(path), toCorrected)).andExpect(status().isForbidden());
+        sales(body(put(path), "{\"shippingAddressId\":\"" + UUID.randomUUID() + "\"}"))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("ADDRESS_NOT_FOUND"));
+
+        // 08 §6: caught before the first label - held ADDRESS, corrected, released.
+        sales(body(post(ORDERS + "/" + order.orderId() + "/hold"), "{\"reasonCode\":\"ADDRESS\","
+                + "\"note\":\"Sai phường\"}")).andExpect(status().isOk());
+        sales(body(put(path), toCorrected)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("ON_HOLD"))
+                .andExpect(jsonPath("$.data.shippingAddress.line1").value("9 Hai Bà Trưng"))
+                .andExpect(jsonPath("$.data.shippingAddress.recipientName").value("Kho Đa Kao"));
+        sales(body(post(ORDERS + "/" + order.orderId() + "/hold/resolution"),
+                "{\"note\":\"Khách xác nhận địa chỉ mới\"}")).andExpect(status().isOk());
+        // The same address again changes nothing and records nothing.
+        sales(body(put(path), toCorrected)).andExpect(status().isOk());
+
+        JsonNode history = data(sales(get(ORDERS + "/" + order.orderId() + "/history")).andExpect(status().isOk()));
+        List<JsonNode> changes = new ArrayList<>();
+        history.forEach(entry -> {
+            if ("ADDRESS_CHANGE".equals(entry.path("type").asText())) {
+                changes.add(entry);
+            }
+        });
+        assertThat(changes).singleElement().satisfies(change -> {
+            assertThat(change.path("newAddress").path("line1").asText()).isEqualTo("9 Hai Bà Trưng");
+            assertThat(change.path("previousAddress").path("line1").asText()).isNotEqualTo("9 Hai Bà Trưng");
+            assertThat(change.path("actorId").asText()).isEqualTo(sales.toString());
+        });
+
+        // 08 BR-04: the first carton labelled locks it; the label carries the corrected address.
+        UUID task = picked(order);
+        CartonStationSupport.startAndScanAll(this::packer, jdbc, task);
+        CartonStationSupport.labelAll(this::packer, task);
+        sales(body(put(path), "{\"shippingAddressId\":\"" + firstAddress + "\"}")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("ORDER_ADDRESS_LOCKED"));
+        assertThat(jdbc.queryForObject("SELECT shipping_line1 FROM ordering.customer_order WHERE id = ?", String.class,
+                order.orderId())).isEqualTo("9 Hai Bà Trưng");
+    }
+
+    private ResultActions reprintLpnLabel(UUID user, String role, String lpn) throws Exception {
+        return as(user, role, body(post("/api/v1/inventory/stock-packages/labels"), "{\"format\":\"THERMAL_ROLL\","
+                + "\"lpns\":[\"" + lpn + "\"]}").accept(MediaType.APPLICATION_PDF, MediaType.APPLICATION_JSON));
+    }
+
+    @Test
+    @DisplayName("WF04 G1 (03 §4.1 step 4, 08 §6 'Nhãn LPN rách'): a carton picked for the order (CONSUMED at dispatch) "
+            + "has its LPN label printed again by its LPN - before its check and while labelled in a shipment waiting "
+            + "for its load - and no longer once that shipment is handed over")
+    void aPickedCartonsLpnLabelIsPrintedAgainUntilHandover() throws Exception {
+        OrderSummary order = ftlOrder(1);
+        UUID task = picked(order);
+        String lpn = CartonStationSupport.pickedLpns(jdbc, task).getFirst();
+        assertThat(jdbc.queryForObject("SELECT status FROM inventory.stock_package WHERE lpn = ?", String.class, lpn))
+                .isEqualTo("CONSUMED");
+
+        // At the dispatch area, not checked yet: the warehouse staff reprint it, then scan it at the station.
+        reprintLpnLabel(picker, "WAREHOUSE_STAFF", lpn).andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.APPLICATION_PDF));
+        // Checked, labelled and completed: its shipment waits at dispatch for its load - still the order's, still here.
+        UUID shipment = CartonStationSupport.ship(this::packer, jdbc, json, task, null);
+        assertThat(shipmentStatus(shipment)).isEqualTo("READY_TO_DISPATCH");
+        reprintLpnLabel(coordinator, "WAREHOUSE_MANAGER", lpn).andExpect(status().isOk());
+        // Another warehouse's clerk is refused before anything is said about the carton.
+        reprintLpnLabel(dispatcherElsewhere, "WAREHOUSE_STAFF", lpn).andExpect(status().isForbidden());
+
+        // Handed over: the carton left with the carrier, there is no LPN label to print any more.
+        String loadId = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        book(loadId, ghn, "51C-135.79");
+        loadAndSign(loadId, "51C-135.79");
+        assertThat(shipmentStatus(shipment)).isEqualTo("HANDED_OVER");
+        reprintLpnLabel(picker, "WAREHOUSE_STAFF", lpn).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_STOCK_PACKAGE_TRANSITION"));
     }
 
     private static String pdfText(byte[] pdf) throws Exception {
