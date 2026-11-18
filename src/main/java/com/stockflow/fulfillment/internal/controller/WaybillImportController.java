@@ -67,8 +67,8 @@ class WaybillImportController {
     }
 
     @PostMapping(path = "/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @Operation(summary = "Check each line of a file against the loads it names; nothing is written. 400 "
-            + "WAYBILL_IMPORT_INVALID_FILE")
+    @Operation(summary = "Check each line of a file (CSV UTF-8 or an .xlsx workbook, the template's table) against the "
+            + "loads it names; nothing is written. 400 WAYBILL_IMPORT_INVALID_FILE")
     @RequiresPermission(resource = FulfillmentResources.WAYBILL_IMPORTS, action = Action.CREATE)
     public ApiResponse<WaybillImportResponse> preview(@RequestPart("file") MultipartFile file,
                                                       @AuthenticatedUser CurrentUser actor) {
@@ -80,7 +80,7 @@ class WaybillImportController {
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Import a file: its valid lines are applied, the others kept with their reason, the file kept "
+    @Operation(summary = "Import a file (CSV UTF-8 or .xlsx): its valid lines are applied, the others kept with their reason, the file kept "
             + "with every load a line changed. A line overwriting a load's number applies only when its line number is "
             + "in overwriteLines (the overwrites the preview showed and the dispatcher confirmed). 400 "
             + "WAYBILL_IMPORT_INVALID_FILE")

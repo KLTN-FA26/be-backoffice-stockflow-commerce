@@ -75,7 +75,6 @@ import java.util.stream.Collectors;
 class WaybillImportService implements WaybillImports {
 
     private static final Logger log = LoggerFactory.getLogger(WaybillImportService.class);
-    private static final String CSV = "text/csv";
 
     private final DispatchLoadJpaRepository loads;
     private final DispatchLoadStore store;
@@ -140,7 +139,10 @@ class WaybillImportService implements WaybillImports {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
         List<WaybillImportFile.Row> rows = parse(file);
-        String name = fileName == null || fileName.isBlank() ? "waybills.csv" : fileName.strip();
+        // What the file is comes from its bytes: a workbook named .csv, or text named .xlsx, is read as what it is.
+        String type = WaybillImportFile.contentType(file);
+        String name = fileName == null || fileName.isBlank()
+                ? (WaybillImportFile.isXlsx(file) ? "waybills.xlsx" : "waybills.csv") : fileName.strip();
         Set<String> codes = codes(rows);
         Optional<AssignedWarehouses> restriction = WarehouseScope.restriction();
         // A load never changes warehouse, so which warehouse each line is of can be read before the transaction.
@@ -155,8 +157,9 @@ class WaybillImportService implements WaybillImports {
         boolean oneWarehouse = warehouses.size() == 1
                 && rows.stream().allMatch(r -> r.loadCode() != null && warehouseOf.containsKey(r.loadCode()));
         List<FileUpload> uploads = new ArrayList<>();
-        // The file was read as CSV text above, whatever type the browser declared (Windows says vnd.ms-excel).
-        uploads.add(new FileUpload(name, CSV, file.length, new ByteArrayInputStream(file)));
+        // The file was read as CSV text or as a workbook above, whatever type the browser declared (Windows says
+        // vnd.ms-excel for both).
+        uploads.add(new FileUpload(name, type, file.length, new ByteArrayInputStream(file)));
         List<UUID> extracted = new ArrayList<>();
         if (!oneWarehouse) {
             for (UUID warehouse : warehouses) {
@@ -164,7 +167,7 @@ class WaybillImportService implements WaybillImports {
                         && warehouse.equals(warehouseOf.get(r.loadCode()))).map(WaybillImportFile.Row::line)
                         .collect(Collectors.toSet());
                 byte[] extract = WaybillImportFile.extract(file, lines);
-                uploads.add(new FileUpload(name, CSV, extract.length, new ByteArrayInputStream(extract)));
+                uploads.add(new FileUpload(name, type, extract.length, new ByteArrayInputStream(extract)));
                 extracted.add(warehouse);
             }
         }
@@ -180,7 +183,7 @@ class WaybillImportService implements WaybillImports {
             }
             Set<Integer> confirmed = overwriteLines == null ? Set.of() : Set.copyOf(overwriteLines);
             ImportView view = tx.execute(status -> {
-                ImportView applied = apply(rows, places, restriction, original, fileOf, name, confirmed, actor);
+                ImportView applied = apply(rows, places, restriction, original, fileOf, name, type, confirmed, actor);
                 prepared.adopt();
                 return applied;
             });
@@ -195,7 +198,8 @@ class WaybillImportService implements WaybillImports {
      */
     private ImportView apply(List<WaybillImportFile.Row> rows, List<DispatchLoadJpaRepository.LoadPlace> places,
                              Optional<AssignedWarehouses> restriction, StoredFile original,
-                             Map<UUID, StoredFile> fileOf, String name, Set<Integer> confirmed, CurrentUser actor) {
+                             Map<UUID, StoredFile> fileOf, String name, String type, Set<Integer> confirmed,
+                             CurrentUser actor) {
         List<DispatchLoadJpaEntity> locked = new ArrayList<>();
         places.stream().filter(pl -> visible(restriction, pl.getWarehouseId()))
                 .map(DispatchLoadJpaRepository.LoadPlace::getId).sorted()
@@ -232,7 +236,7 @@ class WaybillImportService implements WaybillImports {
                         "File " + name + ", line " + row.line());
                 // Kept with a load the file changed: a line that changed nothing adds no copy.
                 StoredFile kept = fileOf.getOrDefault(header.getWarehouseId(), original);
-                files.add(new LoadWaybillFileJpaEntity(Identifiers.newId(), load.id(), kept.key(), name, CSV,
+                files.add(new LoadWaybillFileJpaEntity(Identifiers.newId(), load.id(), kept.key(), name, type,
                         kept.sizeBytes(), actor.userId(), now, importId));
             }
         }

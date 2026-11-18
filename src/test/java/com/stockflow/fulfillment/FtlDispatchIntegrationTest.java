@@ -774,6 +774,108 @@ class FtlDispatchIntegrationTest {
         assertThat(new String(template, java.nio.charset.StandardCharsets.UTF_8).split(",")).hasSize(5);
     }
 
+    private ResultActions importingFile(UUID user, String role, String path, String name, String type, byte[] bytes)
+            throws Exception {
+        var file = new org.springframework.mock.web.MockMultipartFile("file", name, type, bytes);
+        return as(user, role, org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/waybill-imports" + path).file(file));
+    }
+
+    /** The template's table as a workbook: the heading row, then each line as text cells. */
+    private static byte[] workbookOf(String[]... lines) throws java.io.IOException {
+        try (var workbook = new org.apache.poi.xssf.usermodel.XSSFWorkbook();
+             var out = new java.io.ByteArrayOutputStream()) {
+            var sheet = workbook.createSheet("Nhập");
+            String[] all = {"Mã chuyến", "Mã vận đơn", "Biển số", "Tên tài xế", "Điện thoại tài xế"};
+            var heading = sheet.createRow(0);
+            for (int c = 0; c < all.length; c++) {
+                heading.createCell(c).setCellValue(all[c]);
+            }
+            for (int r = 0; r < lines.length; r++) {
+                var row = sheet.createRow(r + 1);
+                for (int c = 0; c < lines[r].length; c++) {
+                    if (lines[r][c] != null) {
+                        row.createCell(c).setCellValue(lines[r][c]);
+                    }
+                }
+            }
+            workbook.write(out);
+            return out.toByteArray();
+        }
+    }
+
+    @Test
+    @DisplayName("an .xlsx workbook of the template's table gives the same preview and result as its CSV, is kept as "
+            + "the load's waybill file as it is (a workbook), and a file that is neither is refused whole")
+    void waybillNumbersFromAWorkbook() throws Exception {
+        JsonNode first = bookedWithoutNumber(ghn);
+        JsonNode second = bookedWithoutNumber(ghn);
+        String one = first.path("code").asText();
+        String two = second.path("code").asText();
+        String other = historyLoad("51C-HELD-X");
+        String held = jdbc.queryForObject("SELECT waybill_no FROM fulfillment.dispatch_load WHERE id = ?::uuid",
+                String.class, other);
+        String number = "WB-XLS-" + first.path("loadId").asText();
+        String[][] lines = {{one, number, "51C-222.22", "Tài", "0900"}, {two, held}, {"LD-NOPE", number + "-X"},
+                {"", number + "-Y"}};
+        String csv = one + "," + number + ",51C-222.22,Tài,0900\r\n" + two + "," + held + "\r\n"
+                + "LD-NOPE," + number + "-X\r\n" + "," + number + "-Y\r\n";
+        byte[] xlsx = workbookOf(lines);
+        String xlsxType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+        // The same lines, outcomes and problems whichever the format - even when the browser declares another type or
+        // the name says another.
+        JsonNode fromCsv = data(importing(dispatcher, "WAREHOUSE_STAFF", "/preview", csv).andExpect(status().isOk()));
+        JsonNode fromXlsx = data(importingFile(dispatcher, "WAREHOUSE_STAFF", "/preview", "van-don.xlsx", xlsxType,
+                xlsx).andExpect(status().isOk()));
+        JsonNode renamed = data(importingFile(dispatcher, "WAREHOUSE_STAFF", "/preview", "van-don.csv",
+                "application/vnd.ms-excel", xlsx).andExpect(status().isOk()));
+        assertThat(fromXlsx.path("lines")).isEqualTo(fromCsv.path("lines"));
+        assertThat(renamed.path("lines")).isEqualTo(fromCsv.path("lines"));
+        assertThat(fromXlsx.path("rowsTotal").asInt()).isEqualTo(4);
+        assertThat(fromXlsx.path("rowsApplied").asInt()).isEqualTo(1);
+        assertThat(fromXlsx.path("lines").findValuesAsText("outcome")).containsExactly("NEW", "ERROR", "ERROR",
+                "ERROR");
+        assertThat(fromXlsx.path("lines").get(1).path("problem").asText()).isEqualTo("DUPLICATE_IN_CARRIER");
+        assertThat(fromXlsx.path("lines").get(3).path("problem").asText()).isEqualTo("MISSING_FIELDS");
+
+        JsonNode imported = data(importingFile(dispatcher, "WAREHOUSE_STAFF", "", "van-don.xlsx", xlsxType, xlsx)
+                .andExpect(status().isCreated()));
+        assertThat(imported.path("rowsApplied").asInt()).isEqualTo(1);
+        assertThat(imported.path("rowsRejected").asInt()).isEqualTo(3);
+        JsonNode now = load(first.path("loadId").asText());
+        assertThat(now.path("waybillNo").asText()).isEqualTo(number);
+        assertThat(now.path("vehiclePlate").asText()).isEqualTo("51C-222.22");
+        assertThat(now.path("driverName").asText()).isEqualTo("Tài");
+        // The booking slip names the load's warehouse (kltn-docs 09 §3 Output: kho xuất): by name, not by id alone.
+        assertThat(now.path("warehouseName").asText()).isEqualTo(jdbc.queryForObject(
+                "SELECT w.name FROM fulfillment.dispatch_load l JOIN warehouse.warehouse w ON w.id = l.warehouse_id "
+                        + "WHERE l.id = ?::uuid", String.class, first.path("loadId").asText()));
+        // The workbook itself is the load's waybill file, a workbook still.
+        assertThat(data(dispatch(get(LOADS + "/" + first.path("loadId").asText() + "/waybill-files"))
+                .andExpect(status().isOk()))).singleElement().satisfies(f -> {
+                    assertThat(f.path("contentType").asText()).isEqualTo(xlsxType);
+                    assertThat(f.path("fileName").asText()).isEqualTo("van-don.xlsx");
+                });
+        assertThat(jdbc.queryForObject("SELECT storage_key FROM fulfillment.waybill_import WHERE id = ?::uuid",
+                String.class, imported.path("importId").asText())).endsWith(".xlsx");
+
+        // Neither a workbook nor the template's text: refused whole, in either format's name.
+        importingFile(dispatcher, "WAREHOUSE_STAFF", "/preview", "van-don.xlsx", xlsxType, onePagePdf())
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("WAYBILL_IMPORT_INVALID_FILE"));
+        importingFile(dispatcher, "WAREHOUSE_STAFF", "", "van-don.csv", "text/csv",
+                new byte[] {'P', 'K', 3, 4, 0, 0, 0, 0}).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("WAYBILL_IMPORT_INVALID_FILE"));
+        importingFile(dispatcher, "WAREHOUSE_STAFF", "/preview", "van-don.xlsx", xlsxType, workbookOf())
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("WAYBILL_IMPORT_INVALID_FILE"));
+        // Without the permission to import, neither format is read.
+        sales(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/waybill-imports/preview").file(new org.springframework.mock.web.MockMultipartFile(
+                        "file", "van-don.xlsx", xlsxType, xlsx))).andExpect(status().isForbidden());
+    }
+
     // ---- booking through the carrier's API (3-4; 09 §4.2 step 6, BR-29, E24) -------------------
 
     /** An API_BOOKING carrier with a service code for 5 t trucks and a pickup point at HCM, both in province 79. */

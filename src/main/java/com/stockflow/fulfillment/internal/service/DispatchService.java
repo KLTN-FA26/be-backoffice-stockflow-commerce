@@ -1292,7 +1292,9 @@ class DispatchService implements Dispatching {
         }
         Map<UUID, String> names = people.isEmpty() ? new HashMap<>() : new HashMap<>(identities.displayNames(people));
         DispatchLoadJpaEntity replacement = replacementOf(header, ctx);
-        return new LoadDetail(header.getId(), header.getCode(), header.getWarehouseId(), header.getStatus().name(),
+        String warehouseName = warehouses.findWarehouse(header.getWarehouseId()).map(w -> w.name()).orElse(null);
+        return new LoadDetail(header.getId(), header.getCode(), header.getWarehouseId(), warehouseName,
+                header.getStatus().name(),
                 header.getCarrierId(), carrier == null ? null : carrier.getCode(),
                 carrier == null ? null : carrier.getName(), header.getVehiclePlate(), header.getDriverName(),
                 header.getDriverPhone(), header.getLoadingStartedAt(), header.getLoadingStartedBy(),
