@@ -8,6 +8,7 @@ import com.stockflow.invoicing.internal.domain.EInvoiceProvider.Submission;
 import com.stockflow.invoicing.internal.domain.EInvoiceProvider.SubmissionOutcome;
 
 import java.nio.charset.StandardCharsets;
+import java.text.Normalizer;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -45,6 +46,18 @@ import java.util.regex.Pattern;
  * failure: the documentation says the result is unknown and the request must not be sent again
  * ({@link Tracking#UNCONFIRMED}; kltn-docs 21 BR-05). Every other {@code Failed} is a refusal: the documentation says
  * to correct the data and issue again.</p>
+ *
+ * <p><b>Telling the two apart rests on SePay's words</b>, since the tracking carries no code for it. So the words are
+ * read without accents, case or extra spacing ({@link #unconfirmed}), and narrowly: the phrase "result not confirmed
+ * yet", its words next to each other - Vietnamese with or without accents, or English. Narrowly on purpose: a reading
+ * too loose takes a real refusal ("chưa xác nhận được MST người mua theo kết quả tra cứu") for "not known", and an
+ * unknown result is left to the provider's own answer for a day before the accountant may take it back
+ * ({@code EInvoiceIssuance.withdraw}), holding its series back meanwhile. A {@code Failed}
+ * without words is unconfirmed. And a refusal read from the words is still not trusted on its own: it carries
+ * {@link #ISSUANCE_FAILED}, which {@code SepayEInvoiceProvider.refusalUnconfirmedByLookup} names, so the invoice is
+ * recorded as refused only once SePay can no longer be working on the transaction and, asked again, still says so
+ * ({@code EInvoiceIssuance}, "A refusal nobody confirmed is recorded only once it is settled"). A rewording SePay makes
+ * tomorrow then costs a wait of a few hours, never a second invoice.</p>
  *
  * <h2>ASSUMPTIONS - what the documentation does not state</h2>
  * <ul>
@@ -99,8 +112,18 @@ final class SepayEInvoiceAnswers {
     private static final Set<String> ISSUED = Set.of("issued", "replaced", "adjusted");
     /** Look-up states taken for "no invoice in force under this reference" (see ASSUMPTIONS). */
     static final Set<String> REFUSED = Set.of("failed", "rejected", "cancelled", "canceled", "deleted");
-    /** What SePay's tracking says when it does not know the result (/theo-doi-trang-thai-xuat-hoa-don). */
-    private static final String UNCONFIRMED_WORDS = "chưa xác nhận được kết quả";
+    /**
+     * What SePay's tracking says when it does not know the result (/theo-doi-trang-thai-xuat-hoa-don: "chưa xác nhận
+     * được kết quả phát hành"), as words compared without accents, case or extra spaces ({@link #unconfirmed}): the
+     * phrase itself, its words next to each other - "chưa xác nhận (được) kết quả", or in English "unconfirmed result" /
+     * "result (is) not (yet) confirmed". Words merely present somewhere are not enough: "chưa xác nhận được MST người
+     * mua theo kết quả tra cứu" is a refusal of the buyer's data.
+     */
+    private static final Pattern UNCONFIRMED = Pattern.compile("\\bchua xac nhan( duoc)? ket qua\\b"
+            + "|\\bunconfirmed results?\\b"
+            + "|\\bresults? (is |was )?(still )?(unconfirmed|not (yet )?confirmed)\\b");
+    private static final Pattern MARKS = Pattern.compile("\\p{M}+");
+    private static final Pattern SPACES = Pattern.compile("\\s+");
     private static final Set<String> WORKING = Set.of("draft", "pending", "processing");
     private static final List<String> TAX_AUTHORITY_CODE_FIELDS = List.of("tax_authority_code", "mccqt", "cqt_code");
     private static final List<String> LOOKUP_CODE_FIELDS = List.of("lookup_code", "search_code", "secret_code");
@@ -196,14 +219,23 @@ final class SepayEInvoiceAnswers {
         return switch (state) {
             case "pending" -> Tracking.PENDING;
             case "success" -> Tracking.SUCCESS;
-            case "failed" -> {
-                String message = trackingMessage(body);
-                // A Failed without words cannot be told from the unconfirmed one: never taken for a refusal.
-                yield message == null || message.toLowerCase(Locale.ROOT).contains(UNCONFIRMED_WORDS)
-                        ? Tracking.UNCONFIRMED : Tracking.FAILED;
-            }
+            case "failed" -> unconfirmed(trackingMessage(body)) ? Tracking.UNCONFIRMED : Tracking.FAILED;
             default -> Tracking.NONE;
         };
+    }
+
+    /**
+     * Whether a {@code Failed} tracking's message says SePay does not know the result rather than that the invoice was
+     * refused. Without words it cannot be told from the unconfirmed one, so it is taken for it: never for a refusal.
+     */
+    static boolean unconfirmed(String message) {
+        if (message == null || message.isBlank()) {
+            return true;
+        }
+        String plain = MARKS.matcher(Normalizer.normalize(message, Normalizer.Form.NFD)).replaceAll("")
+                .replace('đ', 'd').replace('Đ', 'D').toLowerCase(Locale.ROOT);
+        String words = SPACES.matcher(plain).replaceAll(" ").strip();
+        return UNCONFIRMED.matcher(words).find();
     }
 
     /** The tracking's {@code data.message}: why it failed; null when it says nothing. */

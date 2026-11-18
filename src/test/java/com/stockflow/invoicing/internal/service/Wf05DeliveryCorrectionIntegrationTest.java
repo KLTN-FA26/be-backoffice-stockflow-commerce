@@ -97,6 +97,7 @@ class Wf05DeliveryCorrectionIntegrationTest {
     @Autowired EInvoiceIssuance issuance;
     @Autowired EInvoiceQueryService queries;
     @Autowired EInvoiceDrafts drafts;
+    @Autowired EInvoiceCorrections invoiceCorrections;
     @Autowired com.stockflow.inventory.api.InventoryService inventory;
     @Autowired ApplicationEventPublisher publisher;
     @Autowired ApplicationContext context;
@@ -314,6 +315,305 @@ class Wf05DeliveryCorrectionIntegrationTest {
         assertThat(drafts.voidForCorrectedDelivery(orderId, shipment))
                 .isEqualTo(EInvoiceDrafts.CorrectionOutcome.NO_INVOICE);
         assertThat(drafts.reverseForCorrectedDelivery(orderId, shipment)).isEmpty();
+    }
+
+    /** The buyer's tax code and invoice e-mail, as the sandbox provider reads them to rehearse a failure. */
+    private void buyer(String taxCode, String invoiceEmail) {
+        tx.executeWithoutResult(s -> {
+            // A tax code belongs to one customer (uk_customer_tax_code): the sandbox's refused one is taken back from
+            // whichever earlier test customer was given it.
+            jdbc.update("UPDATE customer.customer SET tax_code = NULL WHERE tax_code = ? AND id <> ?", taxCode, customer);
+            jdbc.update("UPDATE customer.customer SET tax_code = ? WHERE id = ?", taxCode, customer);
+            jdbc.update("UPDATE customer.customer_legal_profile SET invoice_email = ? WHERE customer_id = ?",
+                    invoiceEmail, customer);
+        });
+    }
+
+    private String currentTaxCode() {
+        return jdbc.queryForObject("SELECT tax_code FROM customer.customer WHERE id = ?", String.class, customer);
+    }
+
+    private boolean markedDeliveryFailed(UUID invoice) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT delivery_failed_at IS NOT NULL FROM invoicing.einvoice WHERE id = ?", Boolean.class, invoice));
+    }
+
+    private long reductionsOf(UUID invoice) {
+        return jdbc.queryForObject("""
+                SELECT count(*) FROM invoicing.einvoice
+                 WHERE original_einvoice_id = ? AND type = 'ADJUSTMENT' AND correction_basis = 'DELIVERY_FAILED'""",
+                Long.class, invoice);
+    }
+
+    @Test
+    @DisplayName("WF-05 review, defect 5 + finding 5: corrected while its invoice is at the provider, delivered after "
+            + "all before the provider's answer is settled - once issued the invoice stands: no reduction, no second "
+            + "original")
+    void anInvoiceAtTheProviderDeliveredAfterAllStands() {
+        // The first send is taken in and its reply lost: the provider holds it, so nothing needs sending again.
+        buyer(currentTaxCode(), "ke.toan+sandbox-reply-lost@" + customer + ".example.com");
+        UUID shipment = batchOneDelivered(1);
+        Await.until("the draft e-invoice of the delivery", ASYNC, () -> originalsOf(shipment).size() == 1);
+        EInvoice.Snapshot sent = issue(queries.get(originalsOf(shipment).getFirst()));
+        assertThat(sent.status()).as("the provider could not be reached").isEqualTo(EInvoiceStatus.SUBMITTING);
+
+        correctToFailed(shipment);
+        Await.until("the invoice marked", ASYNC, () -> markedDeliveryFailed(sent.id()));
+        assertThat(queries.get(sent.id()).status()).as("it may exist in law: not voided")
+                .isEqualTo(EInvoiceStatus.SUBMITTING);
+        assertThat(reductionsOf(sent.id())).isZero();
+        // The mark is written once: moved to another time, refused.
+        assertThat(catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE invoicing.einvoice SET delivery_failed_at = NOW() + interval '1 day' WHERE id = ?",
+                sent.id())))).hasMessageContaining("marked once");
+
+        // Delivered after all while the provider still has the invoice (the event that would take the mark back not
+        // heard yet): it still stands, nothing new is drawn up.
+        orders.recordShipmentDelivered(orderId, shipment, staff);
+        assertThat(drafts.drawUp(orderId, shipment).invoice().id()).isEqualTo(sent.id());
+
+        // The provider answers: issued. The shipment is delivered as it is now, so the invoice stands.
+        assertThat(issuance.reconcile(sent.id()).status()).isEqualTo(EInvoiceStatus.ISSUED);
+        assertThat(drafts.settleCorrectedDelivery(sent.id()).settlement())
+                .isEqualTo(EInvoiceDrafts.Settlement.DELIVERED_AFTER_ALL);
+        assertThat(reductionsOf(sent.id())).isZero();
+        assertThat(jdbc.queryForObject("SELECT reversed_at IS NULL FROM invoicing.einvoice WHERE id = ?",
+                Boolean.class, sent.id())).isTrue();
+        assertThat(originalsOf(shipment)).as("one invoice for one delivery").containsExactly(sent.id());
+        assertThat(drafts.drawUp(orderId, shipment).invoice().id()).isEqualTo(sent.id());
+    }
+
+    /** As fulfillment's ShipmentService.correctOutcome, the other way: the failure corrected back to delivered. */
+    private void correctToDelivered(UUID shipment) {
+        tx.executeWithoutResult(s -> {
+            orders.recordShipmentDelivered(orderId, shipment, staff);
+            publisher.publishEvent(new ShipmentStatusChanged(UUID.randomUUID(), shipment, "T-" + shipment, orderId,
+                    orders.findById(orderId).orElseThrow().orderNumber(), customer, DemoData.WAREHOUSE_HCM,
+                    "DELIVERY_FAILED", "DELIVERED", null, 1, "Truck Co", null, staff, Instant.now()));
+        });
+    }
+
+    @Test
+    @DisplayName("WF-05 review finding 5: corrected to a failure while its invoice is at the provider, then corrected "
+            + "back to delivered - the mark is taken back and the provider's answer is taken as for any invoice")
+    void aFailureCorrectedBackTakesTheMarkBack() {
+        buyer(currentTaxCode(), "ke.toan+sandbox-unreachable@" + customer + ".example.com");
+        UUID shipment = batchOneDelivered(1);
+        Await.until("the draft e-invoice of the delivery", ASYNC, () -> originalsOf(shipment).size() == 1);
+        EInvoice.Snapshot sent = issue(queries.get(originalsOf(shipment).getFirst()));
+        assertThat(sent.status()).isEqualTo(EInvoiceStatus.SUBMITTING);
+
+        correctToFailed(shipment);
+        Await.until("the invoice marked", ASYNC, () -> markedDeliveryFailed(sent.id()));
+        correctToDelivered(shipment);
+        Await.until("the mark taken back", ASYNC, () -> !markedDeliveryFailed(sent.id()));
+
+        assertThat(issuance.reconcile(sent.id()).status()).isEqualTo(EInvoiceStatus.ISSUED);
+        assertThat(reductionsOf(sent.id())).isZero();
+        assertThat(originalsOf(shipment)).containsExactly(sent.id());
+    }
+
+    @Test
+    @DisplayName("second review, finding 1: the failure event heard late - after the shipment was corrected back to "
+            + "delivered - leaves the delivered shipment's invoice as it is")
+    void aLateFailureEventChangesNothing() {
+        UUID shipment = batchOneDelivered(1);
+        Await.until("the draft e-invoice of the delivery", ASYNC, () -> originalsOf(shipment).size() == 1);
+        UUID draft = originalsOf(shipment).getFirst();
+        tx.executeWithoutResult(s -> orders.correctShipmentToFailed(orderId, shipment,
+                DeliveryFailureReason.CUSTOMER_ABSENT, null, Instant.now(), staff));
+        orders.recordShipmentDelivered(orderId, shipment, staff);
+
+        // As the registry replaying the DELIVERED -> DELIVERY_FAILED event now.
+        assertThat(drafts.voidForCorrectedDelivery(orderId, shipment))
+                .isEqualTo(EInvoiceDrafts.CorrectionOutcome.NO_INVOICE);
+        assertThat(drafts.reverseForCorrectedDelivery(orderId, shipment)).isEmpty();
+        assertThat(queries.get(draft).status()).isEqualTo(EInvoiceStatus.DRAFT);
+        assertThat(originalsOf(shipment)).containsExactly(draft);
+    }
+
+    /**
+     * Second review, finding 3: a marked invoice the provider never received is not sent again - asked about, it stays
+     * at the provider - and the accountant takes it back once its last send is old enough (moved back four hours here,
+     * as the clock would), which records the refusal its settling then voids.
+     */
+    private void takenBack(UUID invoice) {
+        long submitted = submissionsOf(invoice);
+        assertThat(issuance.reconcile(invoice).status()).as("asked about, not sent").isEqualTo(EInvoiceStatus.SUBMITTING);
+        assertThat(submissionsOf(invoice)).as("no submission since it was marked").isEqualTo(submitted);
+        tx.executeWithoutResult(s -> {
+            jdbc.update("UPDATE invoicing.einvoice SET submitted_at = submitted_at - interval '4 hours' WHERE id = ?",
+                    invoice);
+            jdbc.update("""
+                    UPDATE invoicing.einvoice_sending SET last_sent_at = last_sent_at - interval '4 hours'
+                     WHERE einvoice_id = ?""", invoice);
+        });
+        issuance.withdraw(invoice, queries.get(invoice).version(), "SePay portal: no invoice under this reference",
+                accountant);
+    }
+
+    private long submissionsOf(UUID invoice) {
+        return queries.calls(invoice).stream().filter(call -> "SUBMIT".equals(call.operation().name())).count();
+    }
+
+    /** A replacement of {@code original}, renaming its goods, agreed by both parties and naming {@code buyer}. */
+    private EInvoice.Snapshot agreedReplacement(EInvoice.Snapshot original, EInvoiceCorrections.Buyer buyer)
+            throws Exception {
+        EInvoice.Snapshot draft = invoiceCorrections.replace(new EInvoiceCorrections.Replace(original.id(),
+                "sai ten hang", buyer, List.of(new EInvoiceCorrections.LineChange(original.lines().getFirst().id(),
+                        null, null, null, "Ly giay in logo (ten dung)"))));
+        java.io.ByteArrayOutputStream pdf = new java.io.ByteArrayOutputStream();
+        try (org.apache.pdfbox.pdmodel.PDDocument document = new org.apache.pdfbox.pdmodel.PDDocument()) {
+            document.addPage(new org.apache.pdfbox.pdmodel.PDPage());
+            document.save(pdf);
+        }
+        byte[] bytes = pdf.toByteArray();
+        return invoiceCorrections.attachAgreement(draft.id(), draft.version(), "BB-01/2026",
+                LocalDate.now(ConfirmedOrders.VIETNAM), new com.stockflow.common.storage.FileUpload("bien-ban.pdf",
+                        "application/pdf", bytes.length, new java.io.ByteArrayInputStream(bytes)));
+    }
+
+    /** An issued original of a delivered batch, of a shipment returned. */
+    private EInvoice.Snapshot issuedOriginal(UUID shipment) {
+        Await.until("the draft e-invoice of the delivery", ASYNC, () -> originalsOf(shipment).size() == 1);
+        EInvoice.Snapshot original = issue(queries.get(originalsOf(shipment).getFirst()));
+        assertThat(original.status()).isEqualTo(EInvoiceStatus.ISSUED);
+        return original;
+    }
+
+    @Test
+    @DisplayName("WF-05 review finding 4: corrected while a replacement of the issued original is only drawn up - the "
+            + "replacement is voided and the original reduced in full by the system")
+    void aReplacementDrawnUpIsVoidedAndTheOriginalReduced() throws Exception {
+        UUID shipment = batchOneDelivered(1);
+        EInvoice.Snapshot original = issuedOriginal(shipment);
+        EInvoice.Snapshot replacement = agreedReplacement(original, null);
+        assertThat(replacement.status()).isEqualTo(EInvoiceStatus.DRAFT);
+
+        correctToFailed(shipment);
+
+        Await.until("the original reduced", ASYNC, () -> reductionsOf(original.id()) == 1);
+        assertThat(queries.get(replacement.id()).status()).isEqualTo(EInvoiceStatus.VOIDED_DRAFT);
+        assertThat(queries.get(original.id()).status()).isEqualTo(EInvoiceStatus.ISSUED);
+        assertThat(jdbc.queryForObject("SELECT reversed_at IS NOT NULL FROM invoicing.einvoice WHERE id = ?",
+                Boolean.class, original.id())).isTrue();
+    }
+
+    @Test
+    @DisplayName("WF-05 review finding 4: corrected while a replacement is at the provider - the replacement is "
+            + "marked, and once issued (the original replaced) it is the one reduced in full")
+    void aReplacementAtTheProviderIssuedIsReduced() throws Exception {
+        UUID shipment = batchOneDelivered(1);
+        EInvoice.Snapshot original = issuedOriginal(shipment);
+        EInvoice.Snapshot replacement = issue(agreedReplacement(original, new EInvoiceCorrections.Buyer(null, null,
+                null, "ke.toan+sandbox-reply-lost@" + customer + ".example.com")));
+        assertThat(replacement.status()).as("taken in, its reply lost").isEqualTo(EInvoiceStatus.SUBMITTING);
+
+        correctToFailed(shipment);
+        Await.until("the replacement marked", ASYNC, () -> markedDeliveryFailed(replacement.id()));
+        assertThat(markedDeliveryFailed(original.id())).isFalse();
+        assertThat(reductionsOf(original.id())).as("the original waits with its replacement").isZero();
+
+        assertThat(issuance.reconcile(replacement.id()).status()).isEqualTo(EInvoiceStatus.ISSUED);
+        Await.until("the replacement reduced", ASYNC, () -> reductionsOf(replacement.id()) == 1);
+        assertThat(queries.get(original.id()).status()).isEqualTo(EInvoiceStatus.REPLACED);
+        assertThat(reductionsOf(original.id())).isZero();
+        assertThat(jdbc.queryForObject("SELECT reversed_at IS NOT NULL FROM invoicing.einvoice WHERE id = ?",
+                Boolean.class, replacement.id())).isTrue();
+    }
+
+    @Test
+    @DisplayName("WF-05 review finding 4: corrected while a replacement is at the provider, which refuses it - the "
+            + "replacement is voided and the original, still in force, reduced in full")
+    void aReplacementAtTheProviderRefusedLeavesTheOriginalReduced() throws Exception {
+        UUID shipment = batchOneDelivered(1);
+        EInvoice.Snapshot original = issuedOriginal(shipment);
+        // Its first send never arrives; marked, it is not sent again, and the accountant takes it back.
+        EInvoice.Snapshot replacement = issue(agreedReplacement(original, new EInvoiceCorrections.Buyer(null, null,
+                null, "ke.toan+sandbox-unreachable@" + customer + ".example.com")));
+        assertThat(replacement.status()).isEqualTo(EInvoiceStatus.SUBMITTING);
+
+        correctToFailed(shipment);
+        Await.until("the replacement marked", ASYNC, () -> markedDeliveryFailed(replacement.id()));
+        takenBack(replacement.id());
+        Await.until("the original reduced", ASYNC, () -> reductionsOf(original.id()) == 1);
+        assertThat(queries.get(replacement.id()).status()).isEqualTo(EInvoiceStatus.VOIDED_DRAFT);
+        assertThat(queries.get(original.id()).status()).isEqualTo(EInvoiceStatus.ISSUED);
+        assertThat(jdbc.queryForObject("SELECT reversed_at IS NOT NULL FROM invoicing.einvoice WHERE id = ?",
+                Boolean.class, original.id())).isTrue();
+    }
+
+    @Test
+    @DisplayName("WF-05 review, defect 5: corrected while its invoice is at the provider, which then refuses it - the "
+            + "invoice is voided and not sent again; the shipment delivered again gets a new original")
+    void anInvoiceAtTheProviderRefusedIsVoided() {
+        // The first send never arrives, and a marked invoice is never sent again: the accountant takes it back.
+        buyer(currentTaxCode(), "ke.toan+sandbox-unreachable@" + customer + ".example.com");
+        UUID shipment = batchOneDelivered(1);
+        Await.until("the draft e-invoice of the delivery", ASYNC, () -> originalsOf(shipment).size() == 1);
+        EInvoice.Snapshot sent = issue(queries.get(originalsOf(shipment).getFirst()));
+        assertThat(sent.status()).isEqualTo(EInvoiceStatus.SUBMITTING);
+
+        correctToFailed(shipment);
+        Await.until("the invoice marked", ASYNC, () -> markedDeliveryFailed(sent.id()));
+        takenBack(sent.id());
+        Await.until("the refused invoice voided", ASYNC,
+                () -> queries.get(sent.id()).status() == EInvoiceStatus.VOIDED_DRAFT);
+        assertThat(reductionsOf(sent.id())).isZero();
+        assertThat(originalsOf(shipment)).as("nothing stands for the shipment").isEmpty();
+
+        orders.recordShipmentDelivered(orderId, shipment, staff);
+        Await.until("a new original for the redelivery", ASYNC, () -> originalsOf(shipment).size() == 1);
+        assertThat(originalsOf(shipment).getFirst()).isNotEqualTo(sent.id());
+    }
+
+    @Test
+    @DisplayName("WF-05 review, defect 5: corrected after the shipment's invoice was replaced - the replacement in "
+            + "force is reduced in full by the system, and the redelivery gets a new original beside the replaced one")
+    void aReplacementInForceIsReduced() throws Exception {
+        UUID shipment = batchOneDelivered(1);
+        Await.until("the draft e-invoice of the delivery", ASYNC, () -> originalsOf(shipment).size() == 1);
+        EInvoice.Snapshot original = issue(queries.get(originalsOf(shipment).getFirst()));
+        assertThat(original.status()).isEqualTo(EInvoiceStatus.ISSUED);
+        EInvoice.Snapshot draft = invoiceCorrections.replace(new EInvoiceCorrections.Replace(original.id(),
+                "sai ten hang", null, List.of(new EInvoiceCorrections.LineChange(original.lines().getFirst().id(),
+                        null, null, null, "Ly giay in logo (ten dung)"))));
+        java.io.ByteArrayOutputStream pdf = new java.io.ByteArrayOutputStream();
+        try (org.apache.pdfbox.pdmodel.PDDocument document = new org.apache.pdfbox.pdmodel.PDDocument()) {
+            document.addPage(new org.apache.pdfbox.pdmodel.PDPage());
+            document.save(pdf);
+        }
+        byte[] bytes = pdf.toByteArray();
+        EInvoice.Snapshot agreed = invoiceCorrections.attachAgreement(draft.id(), draft.version(), "BB-01/2026",
+                LocalDate.now(ConfirmedOrders.VIETNAM), new com.stockflow.common.storage.FileUpload("bien-ban.pdf",
+                        "application/pdf", bytes.length, new java.io.ByteArrayInputStream(bytes)));
+        EInvoice.Snapshot replacement = issue(agreed);
+        assertThat(replacement.status()).isEqualTo(EInvoiceStatus.ISSUED);
+        assertThat(queries.get(original.id()).status()).isEqualTo(EInvoiceStatus.REPLACED);
+
+        correctToFailed(shipment);
+
+        Await.until("the replacement reduced", ASYNC, () -> reductionsOf(replacement.id()) == 1);
+        EInvoice.Snapshot reversal = queries.get(jdbc.queryForObject(
+                "SELECT id FROM invoicing.einvoice WHERE original_einvoice_id = ? AND type = 'ADJUSTMENT'", UUID.class,
+                replacement.id()));
+        assertThat(reversal.correctionBasis()).isEqualTo(CorrectionBasis.DELIVERY_FAILED);
+        assertThat(reversal.agreementFileKey()).as("no agreement of a buyer who received nothing").isNull();
+        assertThat(reversal.grandTotal().add(replacement.grandTotal())).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(jdbc.queryForObject("SELECT reversed_at IS NOT NULL FROM invoicing.einvoice WHERE id = ?",
+                Boolean.class, replacement.id())).isTrue();
+
+        orders.recordShipmentDelivered(orderId, shipment, staff);
+        Await.until("a new original for the redelivery", ASYNC, () -> originalsOf(shipment).size() == 2);
+        EInvoice.Snapshot redrawn = queries.get(originalsOf(shipment).getLast());
+        assertThat(redrawn.status()).isEqualTo(EInvoiceStatus.DRAFT);
+        assertThat(redrawn.grandTotal()).as("the same goods and fees again").isEqualByComparingTo(original.grandTotal());
+        issue(redrawn);
+        issue(reversal);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM invoicing.einvoice WHERE shipment_id = ? AND type IN ('ORIGINAL', 'REPLACEMENT')
+                   AND status = 'ISSUED' AND reversed_at IS NULL""", Long.class, shipment))
+                .as("one invoice in force per shipment: the new original").isEqualTo(1L);
     }
 
     @Test

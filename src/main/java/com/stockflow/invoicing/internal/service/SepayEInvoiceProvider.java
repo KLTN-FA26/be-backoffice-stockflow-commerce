@@ -116,6 +116,12 @@ class SepayEInvoiceProvider implements EInvoiceProvider {
         return new Resubmission(properties.resubmitQuietPeriod(), null);
     }
 
+    /** The tracking's {@code Failed}: the look-up had found nothing to stand behind it ({@link #query}). */
+    @Override
+    public boolean refusalUnconfirmedByLookup(String rejectionCode) {
+        return SepayEInvoiceAnswers.ISSUANCE_FAILED.equals(rejectionCode);
+    }
+
     /** Yes: SePay takes an adjustment and a replacement as such, each naming the invoice it changes. */
     @Override
     public boolean issuesCorrections() {

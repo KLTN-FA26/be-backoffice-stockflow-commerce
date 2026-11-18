@@ -1049,6 +1049,43 @@ class ReturnRequestTest {
             assertThat(request.pullDomainEvents()).noneMatch(event -> event instanceof OrderEvent.ReturnChanged changed
                     && changed.payload() instanceof ReturnClosed);
         }
+
+        @Test
+        @DisplayName("review defect: a return with a parcel back is not withdrawn - by the customer or by Sales - and "
+                + "stays awaiting its goods, to be marked complete; one with nothing back is withdrawn as before")
+        void noWithdrawalOncePartIsBack() {
+            ReturnRequest request = awaiting(6);
+            request.goodsReceived(RECEIPT, "GR-RET-1", "HCM-QUA01",
+                    List.of(new ReturnRequest.ReturnedCarton("CUP-12OZ", 4)), WAREHOUSE, NOW);
+            request.pullTransitions();
+            request.pullDomainEvents();
+            assertThat(code(catchThrowable(() -> request.cancel(CUSTOMER, LATER, "changed my mind", true))))
+                    .isEqualTo(ErrorCode.RETURN_GOODS_PARTLY_RECEIVED);
+            assertThat(code(catchThrowable(() -> request.cancel(SALES, LATER, null, false))))
+                    .isEqualTo(ErrorCode.RETURN_GOODS_PARTLY_RECEIVED);
+            assertThat(request.status()).isEqualTo(ReturnStatus.AWAITING_RETURN);
+            assertThat(request.cancelledBy()).isNull();
+            assertThat(request.closedAt()).isNull();
+            assertThat(request.pullTransitions()).isEmpty();
+            assertThat(request.pullDomainEvents()).isEmpty();
+
+            request.markGoodsComplete(SALES, LATER, null);
+            assertThat(request.status()).isEqualTo(ReturnStatus.RECEIVED);
+            assertThat(line(request, PRINTED_LINE).receivedQuantity()).isEqualTo(4);
+
+            ReturnRequest restored = awaiting(6).restoreParcels(List.of(
+                    new ReturnParcel(SECOND, 1, "GR-RET-2", "HCM-QUA01", WAREHOUSE, NOW)));
+            assertThat(code(catchThrowable(() -> restored.cancel(SALES, LATER, null, false))))
+                    .as("a parcel as stored counts the same").isEqualTo(ErrorCode.RETURN_GOODS_PARTLY_RECEIVED);
+
+            ReturnRequest nothingBack = awaiting(6);
+            nothingBack.cancel(CUSTOMER, LATER, null, true);
+            assertThat(nothingBack.status()).isEqualTo(ReturnStatus.CANCELLED);
+            nothingBack.goodsReceived(SECOND, "GR-RET-2", "HCM-QUA01",
+                    List.of(new ReturnRequest.ReturnedCarton("CUP-12OZ", 6)), WAREHOUSE, LATER);
+            assertThat(nothingBack.status()).as("a parcel on its way when it was withdrawn still brings it back")
+                    .isEqualTo(ReturnStatus.RECEIVED);
+        }
     }
 
     // ---- WF-05 TH-2: an order with no installments ----------------------------------------------------------------------
