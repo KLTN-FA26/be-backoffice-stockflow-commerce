@@ -577,6 +577,12 @@ public enum ErrorCode {
     ORDER_NOT_ON_HOLD("This order is not on hold", 409),
     /** G3-2: a credit hold is decided through credit approval, not resolved like the others. */
     ORDER_CREDIT_HOLD_USE_APPROVAL("A credit hold is decided through credit approval", 409),
+    /** WF-05 GH-2: the order's completion is paused already; release that hold first. */
+    ORDER_COMPLETION_ALREADY_HELD("This order's completion is already paused", 409),
+    /** WF-05 GH-2: releasing a completion hold on an order whose completion is not paused. */
+    ORDER_COMPLETION_NOT_HELD("This order's completion is not paused", 409),
+    /** WF-05 GH-2: an order completed, closed, cancelled or refunded has no completion left to pause. */
+    ORDER_COMPLETION_HOLD_NOT_APPLICABLE("This order can no longer be completed, so there is nothing to pause", 409),
     /**
      * WF-05 fix plan, section 2: a hold for a failed delivery is lifted by deciding its delivery failure case - deliver
      * again, or cancel what was not delivered - not resolved with a note.
@@ -878,6 +884,12 @@ public enum ErrorCode {
      * nothing (a billed delivery's receivable is taken back by the instalments, not here).
      */
     ORDER_DELIVERY_NOT_CORRECTABLE("This delivery can no longer be corrected", 409),
+    /**
+     * WF-05 (gap after TH-1): a delivery with a return request against it, open or resolved, is not corrected to a
+     * failure - the customer claimed for goods they received, and the return's refund, quarantine and invoice
+     * adjustment all stand on that delivery.
+     */
+    ORDER_DELIVERY_HAS_RETURN("This delivery has a return request against it and cannot be corrected to a failure", 409),
     /**
      * 4B-1 (18 BR-03, 14 BR-13): an instalment after delivery needs the customer's credit approved by accounting with a
      * limit above 0 - and that credit is not taken away while the default schedule still uses it.

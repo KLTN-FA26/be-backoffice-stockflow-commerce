@@ -16,6 +16,7 @@ import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceLine;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
+import com.stockflow.invoicing.internal.domain.EInvoiceType;
 import com.stockflow.invoicing.internal.domain.FeeAllocation;
 import com.stockflow.invoicing.internal.domain.InvoiceParty;
 import com.stockflow.order.api.DeliveredShipment;
@@ -56,7 +57,9 @@ import java.util.regex.Pattern;
  *       its draft, flagged; it is issuing that is refused.</li>
  * </ul>
  *
- * <p>A shipment has one original invoice in force. Asking again for a shipment that has one returns it. Drafts of one
+ * <p>A shipment has one original invoice in force - an original reversed because its delivery was corrected to a
+ * failure no longer counts, so a shipment delivered again is drawn up anew (WF-05 HĐ-3). Asking again for a shipment
+ * that has one returns it. Drafts of one
  * order are drawn up one after the other, under the order's invoicing lock: the second sees the first, and the fees it
  * carries. {@code uk_einvoice_original_per_shipment} is the last line of defence.</p>
  */
@@ -332,7 +335,10 @@ public class EInvoiceDrafts {
         NO_INVOICE,
         /** Its draft - never sent, or sent and refused - was voided. */
         VOIDED,
-        /** Its invoice is at the provider or issued: it cannot be voided, and is the accountant's to adjust (E4). */
+        /**
+         * Its invoice is at the provider or issued: it cannot be voided. An issued original is reduced in full by the
+         * system ({@link #reverseForCorrectedDelivery}); anything else is the accountant's to adjust (E4).
+         */
         LEFT_FOR_ADJUSTMENT
     }
 
@@ -342,7 +348,7 @@ public class EInvoiceDrafts {
      * a draft first - no invoice exists at the provider for it - and is voided the same way.
      *
      * <p>An invoice already at the provider, or issued, is not touched: it may exist in law, and an issued invoice is
-     * only ever adjusted (21 §4.4: a full decrease), which is package E4's.</p>
+     * only ever adjusted (21 §4.4: a full decrease, {@link #reverseForCorrectedDelivery}).</p>
      */
     @Transactional
     public CorrectionOutcome voidForCorrectedDelivery(UUID orderId, UUID shipmentId) {
@@ -363,6 +369,55 @@ public class EInvoiceDrafts {
         invoice.voidDraft("The delivery was corrected to a failure: nothing was delivered", null, clock.instant());
         invoices.save(invoice);
         return CorrectionOutcome.VOIDED;
+    }
+
+    /**
+     * The delivery of a shipment whose original invoice is issued was corrected to a failure (kltn-docs 21 §4.4 and the
+     * edge case "hoá đơn đã Issued" of §6; 09 §4.3 step 5; WF-05 HĐ-3): the system draws up the full reduction of that
+     * invoice as a draft ({@code CorrectionBasis.DELIVERY_FAILED}, {@link EInvoice#drawUpDeliveryReversal}) for the
+     * accountant to issue, and from now on the invoice no longer stands for the shipment
+     * ({@link EInvoiceRepository#markReversed}). Delivered again, the shipment is drawn up anew by {@link #drawUp}, as
+     * 21 §4.5 step 14 and BR-01 ask: one original in force per delivered shipment, dated the day it really was
+     * delivered.
+     *
+     * <p>Empty - nothing drawn up, the accountant told instead - when there is no issued original to reduce whole: the
+     * invoice is still at the provider (it may come back issued, or refused), it was replaced, or something already
+     * corrects it, so that taking every line off would reduce it below nothing or reduce the wrong invoice. Those are
+     * the accountant's to bring to nothing by hand. A second call finds the original reversed already, and nothing in
+     * force: empty as well.</p>
+     *
+     * <p>Under the order's invoicing lock, in the caller's transaction: the listener's, which voided a draft or found
+     * this invoice under the same lock a moment before. A shipment delivered again before this was heard (its event
+     * retried late) kept the old invoice when it was drawn up, and is drawn up by hand afterwards.</p>
+     */
+    @Transactional
+    public Optional<EInvoice.Snapshot> reverseForCorrectedDelivery(UUID orderId, UUID shipmentId) {
+        invoices.lockOrder(orderId);
+        Optional<EInvoice> inForce = invoices.findLiveOriginalOfShipment(shipmentId);
+        if (inForce.isEmpty()) {
+            return Optional.empty();
+        }
+        EInvoice original = invoices.findByIdForUpdate(inForce.get().id()).orElseThrow();
+        if (original.status() != EInvoiceStatus.ISSUED || original.type() != EInvoiceType.ORIGINAL
+                || original.adjusted()) {
+            return Optional.empty();
+        }
+        EInvoice.Corrections corrections = invoices.correctionsOf(original.id());
+        if (corrections.liveAdjustment() || corrections.liveReplacement()) {
+            return Optional.empty();
+        }
+        Instant now = clock.instant();
+        LocalDate today = BusinessCalendar.date(now);
+        ResourceBundle t = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+        String shipmentCode = original.snapshot().shipmentCode();
+        String reason = t.getString("einvoice.correction.deliveryFailed").formatted(original.code(),
+                shipmentCode == null ? "-" : shipmentCode);
+        EInvoice reversal = EInvoice.drawUpDeliveryReversal(Identifiers.newId(), invoices.nextCode(today), original,
+                reason.substring(0, Math.min(500, reason.length())), today, corrections);
+        EInvoice.Snapshot drawn = invoices.save(reversal).snapshot();
+        // After the reduction is written: tg_einvoice_guard lets an original be reversed only while one names it.
+        invoices.markReversed(original.id(), now);
+        return Optional.of(drawn);
     }
 
     private EInvoice lock(UUID id, long expectedVersion) {

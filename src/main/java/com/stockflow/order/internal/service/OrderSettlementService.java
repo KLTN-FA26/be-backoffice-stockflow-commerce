@@ -169,7 +169,10 @@ public class OrderSettlementService {
         // The window the contract agreed (WF-05 TH-1), the configured one when it names none.
         Duration window = contract.map(com.stockflow.order.internal.domain.SalesContract::returnWindowDays)
                 .map(Duration::ofDays).orElse(returnWindow);
-        if (order == null || !order.complete(now, window, candidates.hasOpenReturn(orderId), owing(order),
+        // WF-05 GH-2: Sales paused the completion while a delivery is verified (OrderCompletionHolds) - completed, the
+        // delivery could no longer be corrected. Passed by tonight; found again once the hold is released.
+        if (order == null || candidates.completionHeld(orderId)
+                || !order.complete(now, window, candidates.hasOpenReturn(orderId), owing(order),
                 awaitingInvoice(order))) {
             return false;
         }

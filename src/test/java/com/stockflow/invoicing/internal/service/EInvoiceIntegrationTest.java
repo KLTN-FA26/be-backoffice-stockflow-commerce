@@ -953,7 +953,8 @@ class EInvoiceIntegrationTest {
     }
 
     @Test
-    @DisplayName("21 §4.5: a delivery corrected to a failure voids the draft; an issued invoice is left for an adjustment")
+    @DisplayName("21 §4.5: a delivery corrected to a failure voids the draft; an issued invoice is reduced in full by a "
+            + "system draft (WF-05 HĐ-3) and stands for its shipment no more")
     void aCorrectedDeliveryVoidsTheDraft() {
         Delivered delivered = delivered(1);
         Delivered issuedOne = delivered(1);
@@ -973,9 +974,13 @@ class EInvoiceIntegrationTest {
         assertThat(voided.voidedBy()).as("the system's doing").isNull();
         assertThat(voided.voidReason()).contains("corrected to a failure");
         assertThat(invoiceOf(delivered.shipmentId())).as("no invoice in force for an undelivered shipment").isNull();
+        Await.until("the issued invoice reduced in full", ASYNC, () -> jdbc.queryForObject("""
+                SELECT count(*) FROM invoicing.einvoice WHERE original_einvoice_id = ? AND type = 'ADJUSTMENT'
+                   AND correction_basis = 'DELIVERY_FAILED' AND status = 'DRAFT'""", Long.class, issued.id()) == 1);
         assertThat(drafts.voidForCorrectedDelivery(issuedOne.orderId(), issuedOne.shipmentId()))
-                .isEqualTo(EInvoiceDrafts.CorrectionOutcome.LEFT_FOR_ADJUSTMENT);
-        assertThat(queries.get(issued.id())).as("issued: untouched").isEqualTo(issued);
+                .as("reversed: nothing stands for the shipment any more")
+                .isEqualTo(EInvoiceDrafts.CorrectionOutcome.NO_INVOICE);
+        assertThat(queries.get(issued.id())).as("issued: what it says is untouched").isEqualTo(issued);
         assertThat(queries.get(untouched.draft().id()).status()).isEqualTo(EInvoiceStatus.DRAFT);
     }
 

@@ -12,7 +12,8 @@ import java.util.UUID;
  * deadline ({@code issueDueAt}: the end of the working day after {@code issueDate}).
  *
  * <p>On an adjustment or a replacement (WF-05 E4): {@code originalEInvoiceId} is the invoice it changes,
- * {@code correctionBasis} why (ERROR, RETURN, TRADE_DISCOUNT), {@code correctionReason} what it says is corrected,
+ * {@code correctionBasis} why (ERROR, RETURN, TRADE_DISCOUNT, or DELIVERY_FAILED - the system's full reduction of an
+ * invoice whose delivery was corrected to a failure, which takes an agreement as optional evidence), {@code correctionReason} what it says is corrected,
  * {@code agreement} the written agreement with the buyer once attached - an ERROR correction cannot be issued without
  * it ({@code agreementRequired}) - {@code returnRequestId} the return a RETURN adjustment is for, and
  * {@code listedInvoiceIds} the other invoices a trade discount covers. An adjustment's lines are signed: below zero

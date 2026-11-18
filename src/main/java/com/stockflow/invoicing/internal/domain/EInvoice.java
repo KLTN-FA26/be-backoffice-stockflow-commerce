@@ -2,6 +2,7 @@ package com.stockflow.invoicing.internal.domain;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.text.VietnameseAmountInWords;
 
 import java.math.BigDecimal;
@@ -53,7 +54,8 @@ import java.util.UUID;
  * <ul>
  *   <li><b>An adjustment</b> ({@link #drawUpAdjustment}) states what changes, signed: below zero reduces. The invoice it
  *       names stays in force and is flagged once the adjustment is issued. Its {@link CorrectionBasis} says why: an
- *       error, returned goods, or a trade discount - the last two only reduce.</li>
+ *       error, returned goods, a trade discount, or a delivery corrected to a failure - the last three only reduce,
+ *       and the last, drawn up by the system alone ({@link #drawUpDeliveryReversal}), reduces the whole invoice.</li>
  *   <li><b>A replacement</b> ({@link #drawUpReplacement}) is the invoice as it should have been; the one it names
  *       becomes REPLACED as the replacement is issued.</li>
  *   <li><b>The form is kept</b> (khoản 6 điểm a): an invoice with an adjustment is not replaced, one being replaced is
@@ -382,6 +384,38 @@ public final class EInvoice {
     }
 
     /**
+     * Draws up the reduction of a whole issued original whose delivery was corrected to a failure, as a draft
+     * ({@link CorrectionBasis#DELIVERY_FAILED}; kltn-docs 21 §4.4, 09 §4.3 step 5; WF-05 HĐ-3): every line of the
+     * invoice taken off at its own quantity, price and rate, so that the two together come to nothing - each line's tax
+     * is rounded the same way below zero as above it ({@link EInvoiceLine#vat}).
+     *
+     * <p>Only an original that nothing corrects yet: an adjustment already drawn up of it, issued or not, or a
+     * replacement, would leave the full reduction either reducing it below nothing or reducing the wrong invoice. Such
+     * an invoice is the accountant's to bring to nothing by hand. Whether to reduce at all is the caller's to decide -
+     * the delivery is what was corrected, not the invoice.</p>
+     *
+     * @param original read under its lock
+     * @throws BusinessException {@code EINVOICE_NOT_IN_FORCE} unless it is issued; {@code
+     *         EINVOICE_CORRECTION_NOT_APPLICABLE} for anything but an original of a shipment that nothing corrects
+     */
+    public static EInvoice drawUpDeliveryReversal(UUID id, String code, EInvoice original, String reason,
+                                                  LocalDate issueDate, Corrections corrections) {
+        requireCorrectable(original);
+        if (original.type != EInvoiceType.ORIGINAL || original.shipmentId == null || original.adjusted
+                || corrections.liveAdjustment() || corrections.liveReplacement()) {
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE, ("Invoice %s is not an "
+                    + "original of a delivery that nothing corrects yet: it is reduced by hand").formatted(original.code));
+        }
+        List<EInvoiceLine> lines = new ArrayList<>();
+        for (EInvoiceLine line : original.lines) {
+            lines.add(line.corrected(Identifiers.newId(), lines.size() + 1, -line.quantity(), line.unitsPerCarton(),
+                    line.unit(), line.unitPrice(), line.taxRate(), line.itemName()));
+        }
+        return drawUpAdjustment(id, code, original, CorrectionBasis.DELIVERY_FAILED, reason, original.buyer, lines,
+                issueDate, null, List.of(), corrections);
+    }
+
+    /**
      * Draws up an adjustment of an issued invoice, as a draft (TT 91 Điều 10): what changes, line by line, signed.
      *
      * @param original        the invoice adjusted, read under its lock
@@ -609,16 +643,18 @@ public final class EInvoice {
 
     /**
      * The written agreement of the two parties on what was wrong (TT 91 Điều 10 khoản 1 điểm b): its signed file, its
-     * number and its date. On a draft correction of an error; attaching again replaces it.
+     * number and its date. On a draft correction of an error; attaching again replaces it. On the reduction of a
+     * delivery corrected to a failure the same three fields carry its written evidence, which is accepted but not
+     * required ({@link CorrectionBasis#DELIVERY_FAILED}).
      *
      * @param today no agreement is dated after the day it is attached
      * @throws BusinessException {@code EINVOICE_NOT_DRAFT}; {@code EINVOICE_CORRECTION_NOT_APPLICABLE} for an invoice
-     *         that needs none (an original, a return, a trade discount); {@code VALIDATION_FAILED} for a blank or long
+     *         that takes none (an original, a return, a trade discount); {@code VALIDATION_FAILED} for a blank or long
      *         number or a date in the future
      */
     public void attachAgreement(String fileKey, String number, LocalDate date, LocalDate today) {
         requireDraft("attach an agreement to");
-        if (correctionBasis == null || !correctionBasis.requiresAgreement()) {
+        if (correctionBasis == null || !correctionBasis.acceptsAgreement()) {
             throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE,
                     "Invoice %s needs no agreement: only the correction of an error is agreed in writing".formatted(code));
         }
@@ -784,13 +820,22 @@ public final class EInvoice {
 
     /**
      * Gives up a draft that was never sent: DRAFT → VOIDED_DRAFT. Not for anything that reached the provider, and
-     * never for an issued invoice - that is adjusted or replaced, not voided.
+     * never for an issued invoice - that is adjusted or replaced, not voided. Never for the reduction of a delivery
+     * corrected to a failure ({@link CorrectionBasis#DELIVERY_FAILED}): the invoice it reduces stopped standing for its
+     * shipment when it was drawn up, and the shipment may already carry its new original - voiding it would leave an
+     * invoice in force for goods that were not delivered (WF-05 HĐ-3). Refused by the provider, it is reopened,
+     * corrected and issued like any draft.
      *
      * @param by null when the system voids it
+     * @throws BusinessException {@code EINVOICE_CORRECTION_NOT_APPLICABLE} for a failed delivery's reduction
      */
     public void voidDraft(String reason, UUID by, Instant now) {
         if (reason == null || reason.isBlank()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "reason: required to void a draft");
+        }
+        if (correctionBasis != null && correctionBasis.systemOnly()) {
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE, ("Invoice %s reduces an invoice "
+                    + "whose delivery was corrected to a failure: it is issued, not voided").formatted(code));
         }
         move(EInvoiceStatus.VOIDED_DRAFT);
         this.voidReason = reason.strip().substring(0, Math.min(500, reason.strip().length()));

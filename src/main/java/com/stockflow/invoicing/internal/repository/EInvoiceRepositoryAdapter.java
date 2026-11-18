@@ -63,17 +63,25 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
 
     @Override
     public Optional<EInvoice> findLiveOriginalOfShipment(UUID shipmentId) {
-        // At most one original that is not voided or replaced (uk_einvoice_original_per_shipment) and at most one
-        // issued original-or-replacement (uk_einvoice_in_force_per_shipment). The issued one first: a replacement
-        // still on its way does not stand for the shipment yet.
+        // At most one original that is not voided, replaced or reversed (uk_einvoice_original_per_shipment) and at
+        // most one issued original-or-replacement not reversed (uk_einvoice_in_force_per_shipment). The issued one
+        // first: a replacement still on its way does not stand for the shipment yet. An original reversed for a failed
+        // delivery stands for nothing (WF-05 HĐ-3).
         List<UUID> ids = jdbc.queryForList("""
                 SELECT id FROM invoicing.einvoice
                  WHERE shipment_id = ? AND type IN ('ORIGINAL', 'REPLACEMENT')
-                   AND status NOT IN ('VOIDED_DRAFT', 'REPLACED')
+                   AND status NOT IN ('VOIDED_DRAFT', 'REPLACED') AND reversed_at IS NULL
                  ORDER BY CASE WHEN status = 'ISSUED' THEN 0 ELSE 1 END, created_at, id
                  LIMIT 1""",
                 UUID.class, shipmentId);
         return ids.isEmpty() ? Optional.empty() : findById(ids.getFirst());
+    }
+
+    @Override
+    public boolean markReversed(UUID originalId, Instant at) {
+        // The version is left alone: the invoice is issued and says nothing new (tg_einvoice_guard checks the rest).
+        return jdbc.update("UPDATE invoicing.einvoice SET reversed_at = ? WHERE id = ? AND reversed_at IS NULL",
+                Timestamp.from(at), originalId) == 1;
     }
 
     @Override
@@ -109,7 +117,8 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
     @Override
     public FeeAllocation.Invoiced invoicedOfOrder(UUID orderId) {
         // Every original of the order that was not voided: a replaced one counts too - what replaces it carries its
-        // lines again, and a fee must not be drawn up a second time beside the replacement.
+        // lines again, and a fee must not be drawn up a second time beside the replacement. A reversed one does not
+        // (WF-05 HĐ-3): its full reduction took its fees off, and the redelivery's original carries them again.
         return jdbc.queryForObject("""
                 SELECT COALESCE(sum(l.quantity * COALESCE(l.units_per_carton, 1)) FILTER (WHERE l.kind = 'GOODS'), 0)
                            AS units,
@@ -117,7 +126,8 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
                        COALESCE(array_agg(DISTINCT l.sku) FILTER (WHERE l.fee_kind = 'PLATE_FEE'), '{}') AS plate_skus
                   FROM invoicing.einvoice i
                   JOIN invoicing.einvoice_line l ON l.einvoice_id = i.id
-                 WHERE i.order_id = ? AND i.type = 'ORIGINAL' AND i.status <> 'VOIDED_DRAFT'""",
+                 WHERE i.order_id = ? AND i.type = 'ORIGINAL' AND i.status <> 'VOIDED_DRAFT'
+                   AND i.reversed_at IS NULL""",
                 (row, n) -> new FeeAllocation.Invoiced(row.getLong("units"), row.getBigDecimal("shipping"),
                         plateSkus((String[]) row.getArray("plate_skus").getArray())), orderId);
     }
@@ -152,6 +162,7 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
         return jdbc.queryForList("""
                 SELECT id FROM invoicing.einvoice
                  WHERE order_id = ? AND type IN ('ORIGINAL', 'REPLACEMENT') AND status = 'ISSUED'
+                   AND reversed_at IS NULL
                  ORDER BY issue_date, created_at, id""", UUID.class, orderId);
     }
 
@@ -159,7 +170,8 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
     public java.util.Map<UUID, Long> piecesTakenOff(UUID invoiceId) {
         // A return's lines are all goods taken off. An error's line moves pieces only when it is priced as the line
         // it corrects (a quantity that was wrong, or a rate: off and on again at that price); a price that was wrong is
-        // stated at the difference over the whole quantity and moves none. A trade discount moves no goods.
+        // stated at the difference over the whole quantity and moves none. A trade discount moves no goods. The
+        // reduction of a failed delivery takes every piece off (WF-05 HĐ-3).
         java.util.Map<UUID, Long> pieces = new java.util.HashMap<>();
         jdbc.query("""
                 SELECT l.order_line_id, sum(-l.quantity::bigint * COALESCE(l.units_per_carton, 1)) AS pieces
@@ -167,7 +179,7 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
                   JOIN invoicing.einvoice_line l ON l.einvoice_id = a.id
                  WHERE a.original_einvoice_id = ? AND a.type = 'ADJUSTMENT' AND a.status <> 'VOIDED_DRAFT'
                    AND l.kind = 'GOODS'
-                   AND (a.correction_basis = 'RETURN'
+                   AND (a.correction_basis IN ('RETURN', 'DELIVERY_FAILED')
                         OR a.correction_basis = 'ERROR' AND EXISTS (
                             SELECT 1 FROM invoicing.einvoice_line o
                              WHERE o.einvoice_id = a.original_einvoice_id AND o.kind = 'GOODS'

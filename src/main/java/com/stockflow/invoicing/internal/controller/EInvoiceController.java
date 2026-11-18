@@ -363,7 +363,8 @@ class EInvoiceController {
     @PutMapping(path = "/{id}/agreement", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @Operation(summary = "Attach the written agreement with the buyer to a draft correction of an error (multipart: "
             + "file - the signed PDF, number, date, version). Without it the correction is not issued: 409 "
-            + "EINVOICE_AGREEMENT_REQUIRED")
+            + "EINVOICE_AGREEMENT_REQUIRED. On a DELIVERY_FAILED reduction the same fields carry optional written "
+            + "evidence of the failed delivery; it is issued without")
     @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.UPDATE, scope = DataScope.ALL)
     public ApiResponse<EInvoiceResponse> attachAgreement(
             @PathVariable UUID id,

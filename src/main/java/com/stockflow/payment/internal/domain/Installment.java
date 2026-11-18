@@ -13,7 +13,9 @@ import java.util.UUID;
 /**
  * One installment of a signed contract's payment plan (kltn-docs 15 §4.1, §5.1): made when the contract is signed, as
  * the plan row says - amount, milestone, days to pay, the delivery batch it is tied to - and never changed after. Its
- * milestone comes once ({@link #reach}); receipts pay it ({@link #pay}), a voided receipt takes that back
+ * milestone comes once ({@link #reach}) - unless it is paid after delivery and the delivery it counted from is
+ * corrected to a failure, which takes the milestone back ({@link #withdrawMilestone}) until the goods are delivered
+ * again; receipts pay it ({@link #pay}), a voided receipt takes that back
  * ({@link #unpay}); the unpaid installments of a cancelled order are {@link #cancel cancelled}, and a closure of the
  * rest of the order takes off what the goods closed were worth ({@link #reduce}, 4B-9).
  *
@@ -168,7 +170,9 @@ public final class Installment {
     /**
      * Its milestone came on {@code day} (15 §4.1 step 2): due from then on, and by {@code day} plus its days to pay
      * unless it is paid before delivery, which has no due day. Paid early, it keeps PARTIALLY_PAID or PAID and from now
-     * on has a due day (step 3). A milestone comes once; a cancelled installment stays cancelled.
+     * on has a due day (step 3). A milestone comes once - unless a delivery it counted from is corrected to a failure
+     * ({@link #withdrawMilestone}), after which the next delivery reaches it again; a cancelled installment stays
+     * cancelled.
      *
      * @return whether anything changed
      */
@@ -182,6 +186,33 @@ public final class Installment {
         this.dueDate = milestone == InstallmentMilestone.BEFORE_DELIVERY ? null : day.plusDays(dueDays);
         if (status == InstallmentStatus.NOT_DUE) {
             this.status = InstallmentStatus.DUE;
+        }
+        return true;
+    }
+
+    /**
+     * The delivery its milestone counted from did not happen after all: the carrier reported it delivered and the
+     * warehouse manager corrected that to a failure (kltn-docs 09 §4.3 step 5; E17: the milestone of an installment
+     * paid after delivery "tính lại theo kết quả mới"; WF-05 GH-3). Only after delivery - the one milestone a
+     * correction undoes. It has no due day any more: DUE goes back to NOT_DUE, and PARTIALLY_PAID keeps what was paid,
+     * as an installment paid early does (15 §4.1 step 3). Overdue, the receivable or committed figure of
+     * {@code ReceivablesAdapter} and the credit check ({@code InstallmentBook.overdue}) are all read from the due day,
+     * none from a stored flag, so the customer is no longer overdue for goods they never received. The next delivery
+     * {@link #reach reaches} it again, from that delivery's own day.
+     *
+     * <p>A paid one keeps what it has: it owes nothing, so its due day decides nothing. A cancelled one is final.</p>
+     *
+     * @return whether anything changed
+     */
+    public boolean withdrawMilestone() {
+        if (milestone != InstallmentMilestone.AFTER_DELIVERY || reachedAt == null
+                || status == InstallmentStatus.PAID || status == InstallmentStatus.CANCELLED) {
+            return false;
+        }
+        this.reachedAt = null;
+        this.dueDate = null;
+        if (status == InstallmentStatus.DUE) {
+            this.status = InstallmentStatus.NOT_DUE;
         }
         return true;
     }

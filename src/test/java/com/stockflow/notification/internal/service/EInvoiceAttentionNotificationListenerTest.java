@@ -90,6 +90,22 @@ class EInvoiceAttentionNotificationListenerTest {
     }
 
     @Test
+    @DisplayName("WF-05 HĐ-3, DELIVERY_FAILED_REVERSAL_DRAWN_UP: critical, names the draft reduction, the order and its "
+            + "deadline, says no agreement is needed, and keys once per draft")
+    void aReversalDrawnUpIsAnnounced() {
+        InboxMessage sent = told(event(Cause.DELIVERY_FAILED_REVERSAL_DRAWN_UP, null, null));
+
+        assertThat(sent.category()).isEqualTo("EINVOICE_ATTENTION");
+        assertThat(sent.severity()).isEqualTo(InboxSeverity.CRITICAL);
+        assertThat(sent.title()).isEqualTo("Nháp điều chỉnh EINV-20261112-0001 giảm hoá đơn của một lần giao không "
+                + "thành công");
+        assertThat(sent.body()).contains("EINV-20261112-0001", "SO-20261101-0007", "00:00 14/11/2026",
+                "không cần biên bản").doesNotContain("null");
+        assertThat(sent.link()).isEqualTo("/invoicing/einvoices/" + INVOICE);
+        assertThat(sent.dedupeKey()).isEqualTo("einvoice-delivery-reversal:" + INVOICE + ":0");
+    }
+
+    @Test
     @DisplayName("UNKNOWN_TO_PROVIDER: critical, asks for a fresh send and keys on its own cause")
     void anInvoiceUnknownToTheProviderIsAnnounced() {
         InboxMessage sent = told(event(Cause.UNKNOWN_TO_PROVIDER, null, SUBMITTED));

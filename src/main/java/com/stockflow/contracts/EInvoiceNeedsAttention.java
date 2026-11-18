@@ -19,11 +19,16 @@ import java.util.UUID;
  *       after the invoice went to the provider (kltn-docs 21 §4.5). An invoice that may exist in law is never voided by
  *       the system, so it stands for goods that were not delivered until the accountant draws up a full decrease
  *       adjustment (TT 91 Điều 10). Published in the transaction that handles the correction, once per invoice and
- *       submission.</li>
+ *       submission - only when the system could not draw that adjustment up itself (the invoice still at the
+ *       provider, replaced, or already being corrected).</li>
  *   <li>{@link Cause#SIGNATURE_INVALID} - the provider issued it, but the seller's digital signature on the XML it
  *       handed back does not hold (HĐ-8). The invoice exists in law; it is not sent to the buyer
  *       ({@link EInvoiceIssued} is not published for it) until the accountant has it replaced. Published in the
  *       transaction that records it issued, once.</li>
+ *   <li>{@link Cause#DELIVERY_FAILED_REVERSAL_DRAWN_UP} - the same correction of an issued original, for which the
+ *       system drew up the full reduction as a draft (21 §4.4; WF-05 HĐ-3). {@code einvoiceId} and {@code code} name that
+ *       draft, which the accountant issues; {@code submittedAt} is null. Published in the transaction that draws it up,
+ *       once.</li>
  * </ul>
  * For the first three the deadline of the working day after the invoice's date keeps running (NĐ 254/2026/NĐ-CP Phụ lục điểm 7).
  * Notification tells the people who issue invoices; nothing else listens.
@@ -40,5 +45,8 @@ import java.util.UUID;
 public record EInvoiceNeedsAttention(UUID einvoiceId, String code, UUID orderId, String orderNumber, Cause cause,
                                      String rejectionCode, Instant submittedAt, Instant issueDueAt) {
 
-    public enum Cause { REJECTED, STUCK_SUBMITTING, UNKNOWN_TO_PROVIDER, DELIVERY_FAILED_AFTER_SUBMISSION, SIGNATURE_INVALID }
+    public enum Cause {
+        REJECTED, STUCK_SUBMITTING, UNKNOWN_TO_PROVIDER, DELIVERY_FAILED_AFTER_SUBMISSION, SIGNATURE_INVALID,
+        DELIVERY_FAILED_REVERSAL_DRAWN_UP
+    }
 }

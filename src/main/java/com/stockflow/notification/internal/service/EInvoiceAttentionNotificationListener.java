@@ -74,6 +74,7 @@ class EInvoiceAttentionNotificationListener {
             case UNKNOWN_TO_PROVIDER -> "unknown";
             case DELIVERY_FAILED_AFTER_SUBMISSION -> "delivery-failed";
             case SIGNATURE_INVALID -> "signature-invalid";
+            case DELIVERY_FAILED_REVERSAL_DRAWN_UP -> "delivery-reversal";
         };
         String key = "inbox.einvoice." + kind;
         String body = event.cause() == EInvoiceNeedsAttention.Cause.REJECTED
