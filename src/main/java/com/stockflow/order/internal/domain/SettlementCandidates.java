@@ -9,9 +9,9 @@ import java.util.UUID;
  * completed or refunded orders old enough to close. Bounded batches; the aggregate decides each one.
  *
  * <p>{@code skip}: the candidates a run already looked at and left as they were (still owing on their installments, a
- * return open). Whether an order still owes is payment's to say (4B-10: the order keeps no money of its own), so the
- * query cannot leave those out; skipping them keeps one run from reading the same refused orders again and again while
- * the ones behind them wait.</p>
+ * refund still to make to the customer - TT-4 - or a return open). Whether money is owed either way is payment's to
+ * say (4B-10: the order keeps no money of its own), so the query cannot leave those out; skipping them keeps one run
+ * from reading the same refused orders again and again while the ones behind them wait.</p>
  */
 public interface SettlementCandidates {
 

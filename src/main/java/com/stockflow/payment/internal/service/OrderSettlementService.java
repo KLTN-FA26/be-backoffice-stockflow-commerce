@@ -120,6 +120,14 @@ public class OrderSettlementService {
         return new RefundProgress(standing.refundable(), standing.refunded());
     }
 
+    /** {@link com.stockflow.payment.api.PaymentService#refundVoidReason}, read in the caller's transaction. */
+    @Transactional(propagation = Propagation.SUPPORTS, readOnly = true)
+    public Optional<String> refundVoidReason(java.util.UUID recordId) {
+        return settlements.findRecord(recordId)
+                .filter(record -> record.status() == com.stockflow.payment.internal.domain.RefundRecord.Status.VOIDED)
+                .map(com.stockflow.payment.internal.domain.RefundRecord::voidReason);
+    }
+
     /** The installments changed, the fee item (before the settlement that names it), then the settlement. */
     private OrderSettlement save(OrderSettlement.Outcome outcome) {
         outcome.changed().forEach(installments::save);

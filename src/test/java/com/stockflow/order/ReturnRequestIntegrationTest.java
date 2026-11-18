@@ -11,6 +11,7 @@ import com.stockflow.common.security.Role;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.IncomingFiles;
 import com.stockflow.order.api.OrderService;
+import com.stockflow.order.api.OrderStatusChange;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderLine;
@@ -21,6 +22,7 @@ import com.stockflow.order.internal.domain.ReturnReason;
 import com.stockflow.order.internal.domain.ReturnRequest;
 import com.stockflow.order.internal.domain.ReturnResolution;
 import com.stockflow.order.internal.domain.ReturnStatus;
+import com.stockflow.order.internal.service.OrderSettlementService;
 import com.stockflow.order.internal.service.ReturnRequestService;
 import com.stockflow.order.internal.service.SalesContracts;
 import com.stockflow.payment.api.PaymentService;
@@ -103,6 +105,7 @@ class ReturnRequestIntegrationTest {
     @Autowired InstallmentService installments;
     @Autowired PaymentReceiptService receipts;
     @Autowired RefundService refunds;
+    @Autowired OrderSettlementService settlements;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
     @Autowired TransactionTemplate tx;
@@ -411,6 +414,106 @@ class ReturnRequestIntegrationTest {
         refunds.record(new RefundService.RecordRefundCommand(d.orderId(), new BigDecimal("2200000"), today, reference(),
                 null, accountant));
         Await.until("the order follows the refund", ASYNC, () -> statusOf(d.orderId()) == OrderStatus.REFUNDED);
+    }
+
+    /** Every return of {@code d} back and settled: the whole order (2 200 000) to refund, nothing recorded yet. */
+    private void returnedInFull(Delivered d) {
+        ReturnRequest request = approved(d, 1000);
+        goodsBack(request, d, 20);
+        returns.proposeRefund(request.id(), new ReturnRequestService.ProposeRefundCommand(null, null, null),
+                sales.userId());
+        returns.approveSettlement(request.id(), null, accountant);
+    }
+
+    private UUID recordRefund(Delivered d, String reference) {
+        refunds.record(new RefundService.RecordRefundCommand(d.orderId(), new BigDecimal("2200000"), today, reference,
+                null, accountant));
+        return jdbc.queryForObject("SELECT id FROM payment.refund_record WHERE reference = ?", UUID.class, reference);
+    }
+
+    /** Time passes: the order was refunded {@code days} ago, as far as the closing delay is concerned. */
+    private void refundedDaysAgo(UUID orderId, int days) {
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET refunded_at = NOW() - "
+                + "make_interval(days => ?) WHERE id = ?", days, orderId));
+    }
+
+    /** {@code count} OrderRefundRecorded of the order published, and every one handled by its listener. */
+    private void refundEventsHandled(UUID orderId, int count) {
+        Await.until(count + " refund events handled", ASYNC, () -> Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT count(*) = ? AND count(*) FILTER (WHERE completion_date IS NULL) = 0
+                  FROM event_publication WHERE event_type LIKE '%OrderRefundRecorded' AND serialized_event LIKE ?""",
+                Boolean.class, count, "%" + orderId + "%")));
+    }
+
+    @Test
+    @DisplayName("TT-4: a refund voided takes a REFUNDED order back to RETURNED with the reason in its history, and a "
+            + "refund owed keeps it from closing; recorded again it is REFUNDED and closes after the delay")
+    void aVoidedRefundReopensTheOrderUntilItIsRefundedAgain() {
+        Delivered d = delivered(20, true);
+        returnedInFull(d);
+        UUID first = recordRefund(d, reference());
+        Await.until("the order follows the refund", ASYNC, () -> statusOf(d.orderId()) == OrderStatus.REFUNDED);
+        refundedDaysAgo(d.orderId(), 40);
+
+        refunds.voidRecord(first, "  wrong statement line ", accountant);
+        Await.until("the order follows the void", ASYNC, () -> statusOf(d.orderId()) == OrderStatus.RETURNED);
+        OrderStatusChange reopened = orders.history(d.orderId()).getLast();
+        assertThat(reopened.from()).isEqualTo(OrderStatus.REFUNDED);
+        assertThat(reopened.to()).isEqualTo(OrderStatus.RETURNED);
+        assertThat(reopened.reason()).isEqualTo("REFUND_VOIDED: wrong statement line");
+        assertThat(reopened.actorId()).isEqualTo(accountant);
+        assertThat(jdbc.queryForObject("SELECT refunded_at IS NOT NULL FROM ordering.customer_order WHERE id = ?",
+                Boolean.class, d.orderId())).as("kept: when it last became refunded").isTrue();
+        assertThat(payments.refundProgress(d.orderId()).outstanding()).isEqualByComparingTo("2200000");
+        assertThat(settlements.close(d.orderId())).as("RETURNED is not closed").isFalse();
+
+        // The void's event not handled yet: the order still says REFUNDED, refunded long ago, while its refund is owed
+        // again. The nightly closing asks payment under the order's lock and refuses it.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET status = 'REFUNDED' WHERE id = ?",
+                d.orderId()));
+        assertThat(settlements.close(d.orderId())).as("a refund is owed").isFalse();
+        assertThat(statusOf(d.orderId())).isEqualTo(OrderStatus.REFUNDED);
+        // The trigger takes the new edge too (V20261201000100): back where the void's event leaves it.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET status = 'RETURNED' WHERE id = ?",
+                d.orderId()));
+
+        recordRefund(d, reference());
+        Await.until("the order follows the refund again", ASYNC,
+                () -> statusOf(d.orderId()) == OrderStatus.REFUNDED);
+        assertThat(settlements.close(d.orderId())).as("the delay counts from the new refund").isFalse();
+        refundedDaysAgo(d.orderId(), 31);
+        assertThat(settlements.close(d.orderId())).isTrue();
+        assertThat(statusOf(d.orderId())).isEqualTo(OrderStatus.CLOSED);
+    }
+
+    @Test
+    @DisplayName("TT-4 / BR-05: a refund voided after the order closed leaves it CLOSED; the debt stays on the "
+            + "accountant's list with what remains, the oldest debt first")
+    void aVoidAfterClosingShowsOnlyOnTheAccountantsList() {
+        Delivered older = delivered(20, true);
+        returnedInFull(older);
+        UUID record = recordRefund(older, reference());
+        Await.until("the order follows the refund", ASYNC, () -> statusOf(older.orderId()) == OrderStatus.REFUNDED);
+        refundedDaysAgo(older.orderId(), 31);
+        assertThat(settlements.close(older.orderId())).isTrue();
+
+        refunds.voidRecord(record, "the bank sent the transfer back", accountant);
+        refundEventsHandled(older.orderId(), 2);
+        assertThat(statusOf(older.orderId())).as("never reopened").isEqualTo(OrderStatus.CLOSED);
+        assertThat(orders.history(older.orderId()).getLast().to()).isEqualTo(OrderStatus.CLOSED);
+
+        // A newer debt of the same customer: settled after the older one, nothing refunded yet.
+        Delivered newer = delivered(20, true);
+        returnedInFull(newer);
+
+        var outstanding = refunds.orderRefunds(customerId, true, 0, 20).items();
+        assertThat(outstanding).extracting(com.stockflow.payment.internal.domain.OrderRefund::orderId)
+                .as("oldest debt first").containsExactly(older.orderId(), newer.orderId());
+        assertThat(outstanding).allSatisfy(row -> {
+            assertThat(row.refunded()).isEqualByComparingTo("0");
+            assertThat(row.remaining()).isEqualByComparingTo("2200000");
+        });
+        assertThat(refunds.orderRefunds(customerId, false, 0, 20).items()).isEmpty();
     }
 
     @Test

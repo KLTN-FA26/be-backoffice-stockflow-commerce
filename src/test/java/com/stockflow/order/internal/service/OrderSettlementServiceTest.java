@@ -10,6 +10,7 @@ import com.stockflow.order.internal.domain.SalesContractRepository;
 import com.stockflow.order.internal.domain.SettlementCandidates;
 import com.stockflow.payment.api.InstallmentStanding;
 import com.stockflow.payment.api.PaymentService;
+import com.stockflow.payment.api.RefundProgress;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -51,6 +52,9 @@ class OrderSettlementServiceTest {
     {
         // Without installments an order owes nothing in the system (4B-10).
         when(payments.installmentStanding(any())).thenAnswer(call -> InstallmentStanding.none(call.getArgument(0)));
+        // Nothing to refund unless a test says otherwise (TT-4).
+        when(payments.refundProgress(any())).thenReturn(RefundProgress.NONE);
+        when(payments.refundVoidReason(any())).thenReturn(Optional.empty());
         // Every delivery invoiced unless a test says otherwise (WF-05 condition 5).
         // Null-tolerant: a test re-stubbing with when(invoices.invoiced(any())) calls this answer with null.
         when(invoices.invoiced(any())).thenAnswer(call -> call.getArgument(0) == null ? Set.of()
@@ -186,7 +190,108 @@ class OrderSettlementServiceTest {
         assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
     }
 
-    // ---- WF-05 plan 4, condition 5: every delivered shipment has its e-invoice issued ---------------------------------
+    // ---- TT-4: no order is closed while the seller still owes a refund
+    // ------------------------------------------------
+
+    /** Delivered at NOW, returned and refunded (in full or in part) at LATER. */
+    private static Order refunded(boolean full) {
+        Order order = OrderFixtures.delivered(NOW);
+        order.requestReturn(STAFF, LATER);
+        order.goodsReturned(STAFF, LATER, null);
+        order.refunded(full, STAFF, LATER, "REFUNDED");
+        order.pullDomainEvents();
+        order.pullTransitions();
+        return order;
+    }
+
+    private static RefundProgress progress(long refundable, long refunded) {
+        return new RefundProgress(BigDecimal.valueOf(refundable), BigDecimal.valueOf(refunded));
+    }
+
+    @Test
+    @DisplayName("TT-4: a refunded order with a refund still owed is not closed; once the refund is made in full it is")
+    void aRefundOwedKeepsTheOrderOpen() {
+        Order order = refunded(true);
+        when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
+        when(payments.refundProgress(order.id().value())).thenReturn(progress(1_000, 600));
+
+        assertThat(at(LATER.plus(Duration.ofDays(45))).close(order.id().value())).isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.REFUNDED);
+        verify(repository, never()).save(any());
+        verify(events, never()).publishEventsOf(any());
+
+        when(payments.refundProgress(order.id().value())).thenReturn(progress(1_000, 1_000));
+        assertThat(at(LATER.plus(Duration.ofDays(45))).close(order.id().value())).isTrue();
+        assertThat(order.status()).isEqualTo(OrderStatus.CLOSED);
+        verify(repository).save(order);
+    }
+
+    @Test
+    @DisplayName("TT-4: a completed order with a refund owed completes, but does not close until it is refunded")
+    void aCompletedOrderOwingARefundCompletesButDoesNotClose() {
+        Order order = OrderFixtures.delivered(NOW);
+        when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
+        when(payments.refundProgress(order.id().value())).thenReturn(progress(200, 0));
+
+        assertThat(at(LATER).complete(order.id().value())).as("completion does not wait for a refund").isTrue();
+        assertThat(at(LATER.plus(Duration.ofDays(31))).close(order.id().value())).isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
+
+        when(payments.refundProgress(order.id().value())).thenReturn(progress(200, 200));
+        assertThat(at(LATER.plus(Duration.ofDays(31))).close(order.id().value())).isTrue();
+    }
+
+    @Test
+    @DisplayName("TT-4: a refund voided takes a PARTIALLY_REFUNDED order back to RETURNED, saved and announced, the "
+            + "reason in its history")
+    void aVoidedRefundReopensTheOrder() {
+        Order order = refunded(false);
+        when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
+        when(payments.refundProgress(order.id().value())).thenReturn(progress(1_000, 0));
+
+        UUID record = UUID.randomUUID();
+        when(payments.refundVoidReason(record)).thenReturn(Optional.of("wrong statement line"));
+
+        assertThat(at(LATER.plusSeconds(60)).refundVoided(order.id().value(), record, STAFF)).isTrue();
+
+        assertThat(order.status()).isEqualTo(OrderStatus.RETURNED);
+        assertThat(order.pullTransitions()).singleElement()
+                .satisfies(t -> assertThat(t.reason()).isEqualTo("REFUND_VOIDED: wrong statement line"));
+        verify(repository).save(order);
+        verify(events).publishEventsOf(order);
+    }
+
+    @Test
+    @DisplayName("TT-4: a void handled after the refund was recorded again leaves the order as it is")
+    void aVoidAlreadyMadeGoodChangesNothing() {
+        Order order = refunded(true);
+        when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
+        when(payments.refundProgress(order.id().value())).thenReturn(progress(1_000, 1_000));
+
+        assertThat(at(LATER).refundVoided(order.id().value(), UUID.randomUUID(), STAFF)).isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.REFUNDED);
+        verify(repository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("TT-4 / BR-05: a refund voided after the order closed never reopens it")
+    void aClosedOrderIsNeverReopened() {
+        Order order = refunded(true);
+        order.close(LATER.plus(Duration.ofDays(31)), Duration.ofDays(30), false, false);
+        order.pullTransitions();
+        when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
+        when(payments.refundProgress(order.id().value())).thenReturn(progress(1_000, 0));
+
+        assertThat(at(LATER.plus(Duration.ofDays(40))).refundVoided(order.id().value(), UUID.randomUUID(), STAFF))
+                .isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.CLOSED);
+        assertThat(order.pullTransitions()).isEmpty();
+        verify(repository, never()).save(any());
+        verify(events, never()).publishEventsOf(any());
+    }
+
+    // ---- WF-05 plan 4, condition 5: every delivered shipment has its e-invoice issued
+    // ---------------------------------
 
     /** Released, picked, packed and handed over whole on one shipment, delivered at NOW. */
     private static Order deliveredOn(UUID shipment) {

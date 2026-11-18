@@ -83,6 +83,15 @@ public interface PaymentService {
     RefundProgress refundProgress(UUID orderId);
 
     /**
+     * TT-4: why the refund record was voided, as the accountant wrote it - what the order's status history says when
+     * the void takes a refunded order back to RETURNED ({@code OrderRefundRecorded.voidedRecordId}; the event carries
+     * the id, not the text). In the caller's transaction.
+     *
+     * @return empty for no such record, or one not voided
+     */
+    java.util.Optional<String> refundVoidReason(UUID refundRecordId);
+
+    /**
      * The account customers transfer to (SCRUM-193), from this deployment's configuration; empty while any of its parts
      * is not set, so a customer is never shown half an account - or a demo one.
      */

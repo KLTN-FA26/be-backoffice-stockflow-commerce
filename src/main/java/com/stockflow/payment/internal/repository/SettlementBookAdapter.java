@@ -242,7 +242,7 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
                                AS customer_id, MAX(s.currency) AS currency, SUM(s.refundable_amount) AS refundable,
                                COALESCE((SELECT SUM(r.amount) FROM payment.refund_record r
                                           WHERE r.order_id = s.order_id AND r.status = 'RECORDED'), 0) AS refunded,
-                               MAX(s.settled_at) AS settled_at
+                               MIN(s.settled_at) FILTER (WHERE s.refundable_amount > 0) AS owed_since
                           FROM payment.order_settlement s
                          WHERE CAST(:customer AS UUID) IS NULL OR s.customer_id = :customer
                          GROUP BY s.order_id
@@ -253,10 +253,13 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
                 .addValue("limit", pageable.getPageSize()).addValue("offset", pageable.getOffset());
         long total = count("SELECT count(*)" + from, params);
         List<OrderRefund> content = jdbc.query("""
-                        SELECT o.order_id, o.order_number, o.customer_id, o.currency, o.refundable, o.refunded""" + from
-                        + " ORDER BY o.settled_at DESC, o.order_id LIMIT :limit OFFSET :offset", params,
+                        SELECT o.order_id, o.order_number, o.customer_id, o.currency, o.refundable, o.refunded,
+                               GREATEST(o.refundable - o.refunded, 0) AS remaining""" + from
+                        // TT-4: the oldest debt first - by the first settlement that made something refundable.
+                        + " ORDER BY o.owed_since, o.order_id LIMIT :limit OFFSET :offset", params,
                 (rs, n) -> new OrderRefund(rs.getObject(1, UUID.class), rs.getString(2),
-                        UUID.fromString(rs.getString(3)), rs.getString(4), rs.getBigDecimal(5), rs.getBigDecimal(6)));
+                        UUID.fromString(rs.getString(3)), rs.getString(4), rs.getBigDecimal(5), rs.getBigDecimal(6),
+                        rs.getBigDecimal(7)));
         return new PageImpl<>(content, pageable, total);
     }
 

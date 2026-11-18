@@ -108,14 +108,13 @@ final class PaymentWebMapper {
                 r.status().name(), null, r.recordedAt(), null, null, null);
     }
 
-    /** A row of the accountant's work list: amounts only. */
+    /** A row of the accountant's work list: amounts only, {@code remaining} what is still owed (TT-4). */
     static com.stockflow.payment.internal.controller.dto.OrderRefundResponse toResponse(
             com.stockflow.payment.internal.domain.OrderRefund o) {
         var standing = com.stockflow.payment.internal.domain.RefundStanding.of(o.orderId(), o.refundable(),
                 o.refunded());
         return new com.stockflow.payment.internal.controller.dto.OrderRefundResponse(o.orderId(), o.orderNumber(),
-                o.currency(), standing.status().name(), standing.refundable(), standing.refunded(),
-                standing.remaining(), null, null);
+                o.currency(), standing.status().name(), o.refundable(), o.refunded(), o.remaining(), null, null);
     }
 
     static com.stockflow.payment.internal.controller.dto.RefundRecordResponse toResponse(

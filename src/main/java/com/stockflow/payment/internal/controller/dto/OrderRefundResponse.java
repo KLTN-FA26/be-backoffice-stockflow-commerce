@@ -19,7 +19,11 @@ public record OrderRefundResponse(UUID orderId, @Schema(example = "SO-20261108-0
                                           + "một phần), REFUNDED (đã hoàn) - computed, never stored",
                                           allowableValues = {"NONE", "PENDING", "PARTIALLY_REFUNDED", "REFUNDED"})
                                   String refundStatus,
-                                  BigDecimal refundable, BigDecimal refunded, BigDecimal remaining,
+                                  BigDecimal refundable, BigDecimal refunded,
+                                  @Schema(description = "refundable - refunded, never below zero: what the seller "
+                                          + "still owes the customer. The order does not close while it is above "
+                                          + "zero (TT-4)")
+                                  BigDecimal remaining,
                                   List<Settlement> settlements, List<RefundRecordResponse> records) {
 
     /**

@@ -128,9 +128,9 @@ class OrderInstallmentsTest {
         assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
 
         Instant muchLater = later.plus(java.time.Duration.ofDays(31));
-        assertThat(order.close(muchLater, java.time.Duration.ofDays(30), true))
+        assertThat(order.close(muchLater, java.time.Duration.ofDays(30), true, false))
                 .as("a debt is never put out of the order's sight").isFalse();
-        assertThat(order.close(muchLater, java.time.Duration.ofDays(30), false)).isTrue();
+        assertThat(order.close(muchLater, java.time.Duration.ofDays(30), false, false)).isTrue();
         assertThat(order.status()).isEqualTo(OrderStatus.CLOSED);
     }
 

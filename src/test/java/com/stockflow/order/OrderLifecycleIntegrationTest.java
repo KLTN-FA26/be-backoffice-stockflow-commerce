@@ -565,7 +565,9 @@ class OrderLifecycleIntegrationTest {
                 "UPDATE ordering.customer_order SET status = 'SHIPPED', shipped_at = NOW() WHERE id = ?", order.orderId())));
         assertThat(jump).isInstanceOf(DataAccessException.class).hasMessageContaining("cannot move from CONFIRMED to SHIPPED");
         assertThat(jdbc.queryForList("SELECT from_status || '>' || to_status FROM ordering.order_status_transition",
-                String.class)).containsExactlyInAnyOrderElementsOf(OrderStatus.edges());
+                String.class)).containsExactlyInAnyOrderElementsOf(OrderStatus.edges())
+                .as("TT-4, V20261201000100: a voided refund reopens a refunded order")
+                .contains("REFUNDED>RETURNED", "PARTIALLY_REFUNDED>RETURNED");
     }
 
     @Test

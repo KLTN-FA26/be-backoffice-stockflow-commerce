@@ -90,7 +90,7 @@ class OrderReturnTest {
         assertThat(partly.pullTransitions()).extracting(OrderTransition::to)
                 .containsExactly(OrderStatus.PARTIALLY_REFUNDED);
         assertThat(partly.refunded(true, STAFF, NOW, "again")).as("once").isFalse();
-        assertThat(partly.close(NOW.plus(Duration.ofDays(31)), Duration.ofDays(30), false)).isTrue();
+        assertThat(partly.close(NOW.plus(Duration.ofDays(31)), Duration.ofDays(30), false, false)).isTrue();
 
         Order whole = delivered();
         whole.requestReturn(STAFF, NOW, null);
