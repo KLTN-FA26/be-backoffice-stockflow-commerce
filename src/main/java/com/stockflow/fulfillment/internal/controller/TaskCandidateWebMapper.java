@@ -13,6 +13,7 @@ class TaskCandidateWebMapper {
                 .toList();
         return new TaskCandidateResponse(candidate.orderId(), candidate.orderNumber(), candidate.customerId(),
                 candidate.customerName(), candidate.warehouseId(), candidate.placedAt(), candidate.releasedAt(),
-                lines.size(), lines.stream().mapToInt(TaskCandidateResponse.Line::quantity).sum(), lines);
+                lines.size(), lines.stream().mapToInt(TaskCandidateResponse.Line::quantity).sum(), lines,
+                candidate.status() == null ? null : candidate.status().name(), candidate.partialShipmentAllowed());
     }
 }

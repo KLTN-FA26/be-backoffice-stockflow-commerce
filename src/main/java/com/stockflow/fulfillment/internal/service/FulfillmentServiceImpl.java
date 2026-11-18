@@ -23,6 +23,7 @@ import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
+import com.stockflow.order.api.PrePicking;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.OrderHold;
@@ -65,10 +66,13 @@ class FulfillmentServiceImpl implements FulfillmentService {
     private final WarehouseService warehouses;
     private final PickListService pickLists;
     private final CartonCheckService cartonChecks;
+    private final PrePicking prePicking;
 
     FulfillmentServiceImpl(PickJpaRepository picks, PackJpaRepository packs, OrderService orders,
             IdentityService identities, InventoryService inventory,
-            WarehouseService warehouses, PickListService pickLists, CartonCheckService cartonChecks, Clock clock) {
+            WarehouseService warehouses, PickListService pickLists, CartonCheckService cartonChecks,
+            PrePicking prePicking, Clock clock) {
+        this.prePicking = prePicking;
         this.cartonChecks = cartonChecks;
         this.picks = picks;
         this.packs = packs;
@@ -127,6 +131,9 @@ class FulfillmentServiceImpl implements FulfillmentService {
             return toTask(latest);
         }
         OrderSummary order = requireOrder(orderId);
+        if (order.status() == OrderStatus.AWAITING_STOCK && redelivery.isEmpty() && batch.isEmpty()) {
+            return prePickTask(order, assignedUserId, destination, stagingLocationCode, actor);
+        }
         // Released - its warehouse chosen: READY_TO_FULFILL (SCRUM-423, kltn-docs 17 BR-02). A later delivery batch is
         // released while the order is PARTIALLY_FULFILLED and picked in that status (17 §4.5: no new order status).
         // WF4-COUNT-EDGE (b): an order held for stock (INVENTORY) from one of those - a carton it was allocated counted
@@ -163,6 +170,47 @@ class FulfillmentServiceImpl implements FulfillmentService {
         // SCRUM-267: one line per hold of the order's stock lines, in this warehouse (docs 07 step 2).
         pickLists.planLines(pick, order, actor.userId());
         return toTask(pick, nameOf(assignedUserId), null);
+    }
+
+    /**
+     * Kltn-docs 07 §4.1 step 2, 17 §4.4 step 15: a task for the part held of an order AWAITING_STOCK - its next delivery
+     * batch's cartons held at the shipping warehouse - to the staging area, or to dispatch when Sales allowed a partial
+     * shipment. The order allocates them and stays AWAITING_STOCK ({@link PrePicking#prePick}); the task picks that
+     * batch and is topped up as the rest arrives (07 §4.3 step 7). The order's row lock is taken there, before
+     * anything of the task is written.
+     */
+    private FulfillmentTask prePickTask(OrderSummary order, UUID assignedUserId, PickDestination destination,
+                                        String stagingLocationCode, CurrentUser actor) {
+        PickDestination to = destination == null ? PickDestination.DISPATCH : destination;
+        requireAwaitingStockDestination(order, to);
+        PrePicking.PrePick prePick = prePicking.prePick(order.orderId(), actor.userId());
+        UUID warehouseId = prePick.warehouseId();
+        WarehouseScope.requireWarehouse(warehouseId);
+        requireWarehouseAssignee(assignedUserId, warehouseId);
+        String stagingArea = stagingAreaFor(warehouseId, to, stagingLocationCode);
+        var pick = new PickJpaEntity(Identifiers.newId(), null, order.orderId(), order.orderNumber(), warehouseId,
+                PickStatus.PENDING, to, stagingArea).forDeliveryBatch(prePick.deliveryBatchId());
+        pick.assign(assignedUserId, clock.instant());
+        picks.saveAndFlush(pick);      // the pick row first: its lines' trigger and foreign key look for it
+        packs.save(new PackJpaEntity(Identifiers.newId(), pick.getId(), PackStatus.PENDING, null));
+        pickLists.planLines(pick, requireOrder(order.orderId()), actor.userId());
+        return toTask(pick, nameOf(assignedUserId), null);
+    }
+
+    /**
+     * Kltn-docs 07 §4.1 step 2: "Đơn Awaiting Stock chỉ tạo được task khi đích là STAGING, hoặc khi Sale đã cho phép
+     * giao một phần (đích DISPATCH)" (17 §4.4 step 15).
+     */
+    private static void requireAwaitingStockDestination(OrderSummary order, PickDestination to) {
+        if (to != PickDestination.STAGING && !partialShipmentAllowed(order)) {
+            throw new BusinessException(ErrorCode.PICK_AWAITING_STOCK_DESTINATION, ("Order %s awaits stock: its part "
+                    + "held is picked to the staging area, or to dispatch once Sales allow a partial shipment")
+                    .formatted(order.orderNumber()));
+        }
+    }
+
+    private static boolean partialShipmentAllowed(OrderSummary order) {
+        return order.lifecycle() != null && order.lifecycle().allowPartialShipment();
     }
 
     /** WF4-COUNT-EDGE (b): the order is on hold for stock ({@code INVENTORY}), the hold a shortage puts it on. */
@@ -249,6 +297,10 @@ class FulfillmentServiceImpl implements FulfillmentService {
                     "A task is given another destination only while PENDING; it is " + pick.getStatus());
         }
         PickDestination to = destination == null ? PickDestination.DISPATCH : destination;
+        // 07 §4.1 step 2: the rule of creation holds for the change - an order awaiting stock goes to staging unless
+        // Sales allowed a partial shipment.
+        orders.findById(pick.getOrderId()).filter(order -> order.status() == OrderStatus.AWAITING_STOCK)
+                .ifPresent(order -> requireAwaitingStockDestination(order, to));
         pick.changeDestination(to, stagingAreaFor(pick.getWarehouseId(), to, stagingLocationCode));
         return toTask(picks.save(pick));
     }
@@ -273,11 +325,18 @@ class FulfillmentServiceImpl implements FulfillmentService {
                     "A task moves to dispatch from STAGED; it is " + pick.getStatus());
         }
         TaskAccess.requireStillInFulfilment(orders, pick);
-        if (orders.lockedStatus(pick.getOrderId()).orElseThrow() == OrderStatus.ON_HOLD) {
+        OrderStatus orderStatus = orders.lockedStatus(pick.getOrderId()).orElseThrow();
+        if (orderStatus == OrderStatus.ON_HOLD) {
             // 07 edge case, an order on hold while its task is STAGED: its cartons stay in the staging area until the
             // hold is resolved.
             throw new BusinessException(ErrorCode.PICK_ORDER_ON_HOLD, "Order %s is on hold; task %s stays staged"
                     .formatted(pick.getOrderNumber(), taskId));
+        }
+        if (orderStatus == OrderStatus.AWAITING_STOCK && !partialShipmentAllowed(requireOrder(pick.getOrderId()))) {
+            // 07 §4.3 step 8: "khi đơn đã sẵn sàng xuất (đủ hàng, hoặc Sale cho phép giao một phần)" - picked before
+            // its release, the order still waits for the rest; its cartons stay in the staging area.
+            throw new BusinessException(ErrorCode.PICK_AWAITING_STOCK_NOT_READY, ("Order %s still awaits stock; task "
+                    + "%s stays staged").formatted(pick.getOrderNumber(), taskId));
         }
         pickLists.moveStagedLinesToDispatch(pick, actor.userId());
         pick.moveToDispatch(actor.userId(), clock.instant());
@@ -322,7 +381,9 @@ class FulfillmentServiceImpl implements FulfillmentService {
     public FulfillmentTask findTask(UUID taskId, CurrentUser actor) {
         var pick = requirePick(taskId);
         TaskAccess.requireVisible(pick, actor);
-        return toTask(pick, nameOf(pick.getAssignedUserId()), linesOf(requireOrder(pick.getOrderId())));
+        OrderSummary order = requireOrder(pick.getOrderId());
+        return toTask(pick, nameOf(pick.getAssignedUserId()), linesOf(order))
+                .withTopUpAvailable(pickLists.topUpAvailable(pick, order));
     }
 
     /**

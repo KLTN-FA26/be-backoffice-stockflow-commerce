@@ -22,7 +22,7 @@ class FulfillmentWebMapper {
                 task.paymentDue() == null ? null : new FulfillmentTaskResponse.PaymentDue(
                         task.paymentDue().amountDueBeforeHandover(), task.paymentDue().currency()),
                 task.shipmentId(), task.destination().name(), task.stagingLocationCode(), task.stagedAt(),
-                task.movedToDispatchAt());
+                task.movedToDispatchAt(), task.topUpAvailable());
     }
 
     AssigneeResponse toResponse(FulfillmentAssignee assignee) {

@@ -199,4 +199,93 @@ class OrderAwaitingStockTest {
         assertThat(printing.status()).isEqualTo(OrderStatus.CANCELLED);
         assertThat(printing.cancellationFeeAmount()).isEqualByComparingTo("500000");
     }
+
+    // ---- picked before its release (07 §4.1 step 2, §4.3 step 7; 08 §4.1 step 1; 17 §4.4 steps 15-16, §4.5 step 18)
+
+    @Test
+    @DisplayName("07 §4.1 step 2: a task opened for the part held - the order stays AWAITING_STOCK, not released, and "
+            + "records once that its task is open")
+    void prePickKeepsItWaiting() {
+        Order order = waiting();
+
+        assertThat(order.startPrePicking(NOW)).isTrue();
+        assertThat(order.startPrePicking(NOW.plusSeconds(60))).as("once").isFalse();
+
+        assertThat(order.status()).isEqualTo(OrderStatus.AWAITING_STOCK);
+        assertThat(order.fulfilmentStartedAt()).isEqualTo(NOW);
+        assertThat(order.releasedAt()).isNull();
+        assertThat(order.prePicked()).isTrue();
+        assertThat(order.pullTransitions()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("only an order awaiting stock, not released, is picked before its release")
+    void prePickOnlyWhileAwaitingStock() {
+        Order confirmed = confirmed();
+        assertThatThrownBy(() -> confirmed.startPrePicking(NOW)).isInstanceOf(InvalidOrderTransitionException.class);
+        Order released = waiting();
+        released.lines().forEach(line -> released.holdMore(line.id(), List.of(UUID.randomUUID())));
+        released.release(HCM, "HCM", SALES, NOW);
+        assertThatThrownBy(() -> released.startPrePicking(NOW)).isInstanceOf(InvalidOrderTransitionException.class);
+    }
+
+    @Test
+    @DisplayName("08 §4.1 step 1, 17 §5.1: the part held is labelled and goes first only when Sales allowed a partial "
+            + "shipment - AWAITING_STOCK → PARTIALLY_FULFILLED")
+    void partHeldGoesFirstOnlyWhenAllowed() {
+        Order order = waiting();
+        order.startPrePicking(NOW);
+        assertThatThrownBy(() -> order.recordFirstLabel(NOW)).extracting(OrderAwaitingStockTest::code)
+                .isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
+        assertThatThrownBy(() -> order.markPartlyPacked(NOW, MANAGER))
+                .isInstanceOf(InvalidOrderTransitionException.class);
+
+        order.decidePartialShipment(true);
+        assertThat(order.recordFirstLabel(NOW)).isTrue();
+        assertThat(order.markPartlyPacked(NOW, MANAGER)).isTrue();
+
+        assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(order.pullTransitions()).extracting(OrderTransition::to)
+                .containsExactly(OrderStatus.PARTIALLY_FULFILLED);
+    }
+
+    @Test
+    @DisplayName("07 §4.3 step 7: the rest held, an order picked before its release is released - AWAITING_STOCK → "
+            + "READY_TO_FULFILL, or PARTIALLY_FULFILLED kept when its part held went first")
+    void theRestHeldReleasesIt() {
+        Order waitingStill = waiting();
+        waitingStill.startPrePicking(NOW);
+        waitingStill.lines().forEach(line -> waitingStill.holdMore(line.id(), List.of(UUID.randomUUID())));
+        waitingStill.release(HCM, "HCM", SALES, NOW);
+        assertThat(waitingStill.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
+        assertThat(waitingStill.prePicked()).isFalse();
+
+        Order partFirst = waiting();
+        partFirst.startPrePicking(NOW);
+        partFirst.decidePartialShipment(true);
+        partFirst.markPartlyPacked(NOW, MANAGER);
+        partFirst.lines().forEach(line -> partFirst.holdMore(line.id(), List.of(UUID.randomUUID())));
+        partFirst.pullTransitions();
+        partFirst.pullDomainEvents();
+
+        partFirst.release(HCM, "HCM", SALES, NOW);
+
+        assertThat(partFirst.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(partFirst.releasedAt()).isEqualTo(NOW);
+        assertThat(partFirst.pullTransitions()).isEmpty();
+        assertThat(partFirst.pullDomainEvents()).singleElement().isInstanceOf(OrderEvent.Released.class);
+    }
+
+    @Test
+    @DisplayName("a PARTIALLY_FULFILLED order released before (a later batch) is not released again through this path")
+    void partiallyFulfilledReleasedBeforeIsNotReleasedAgain() {
+        Order order = waiting();
+        order.lines().forEach(line -> order.holdMore(line.id(), List.of(UUID.randomUUID())));
+        order.release(HCM, "HCM", SALES, NOW);
+        order.decidePartialShipment(true);
+        order.markPartlyPacked(NOW, MANAGER);
+
+        assertThatThrownBy(() -> order.release(HCM, "HCM", SALES, NOW))
+                .isInstanceOf(InvalidOrderTransitionException.class);
+    }
 }

@@ -776,6 +776,18 @@ public enum ErrorCode {
      * its cartons in the staging area; the task moves to dispatch once the hold is resolved.
      */
     PICK_ORDER_ON_HOLD("The order is on hold; its cartons stay in the staging area until the hold is resolved", 409),
+    /**
+     * Kltn-docs 07 §4.1 step 2, 17 §4.4 step 15: the part held of an order awaiting stock is picked to the staging area,
+     * or to dispatch only when Sales allowed the order to ship in parts.
+     */
+    PICK_AWAITING_STOCK_DESTINATION("An order awaiting stock is picked to the staging area, or to dispatch only when "
+            + "a partial shipment is allowed", 409),
+    /**
+     * Kltn-docs 07 §4.3 step 8: a staged task moves to dispatch once its order is ready to go - held in full, or allowed
+     * to ship in parts.
+     */
+    PICK_AWAITING_STOCK_NOT_READY("The order still awaits stock; its cartons stay in the staging area until the rest "
+            + "arrives or a partial shipment is allowed", 409),
     /** G4-5 (docs 08 step 1): packing starts once picking is complete. */
     PACKING_NOT_READY("Picking must finish before packing starts", 409),
     /** G4-5: another packer took this order at the packing table; a warehouse manager may step in. */
