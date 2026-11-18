@@ -8,10 +8,11 @@ import java.util.UUID;
  * Published by the <b>order</b> module when the goods of a return came back (team plan 4D-3; kltn-docs 17 §4.10 step
  * 39): the warehouse confirmed the return receipt that scanned them ({@code ReturnedGoodsReceived}), and they are in
  * QUARANTINE at {@code locationCode}, out of sale until a warehouse manager releases or writes off each carton
- * (20 §4.8). A return comes back on one receipt, so {@code parcel} is 1. Each line counts the units of its SKU in the
- * cartons received; {@code receivedSku} is the line's own. {@code discrepancy} is true when the cartons held fewer or
- * more units of a line than approved, or a SKU the return did not claim: Sales follow it up with the customer outside
- * the system (03 edge cases).
+ * (20 §4.8). Published once per return receipt: a return may come back in several parcels, each on a receipt of its
+ * own (WF-05 TH-3), and {@code parcel} numbers them from 1. Each line counts the units of its SKU in the cartons
+ * received by every parcel so far; {@code receivedSku} is the line's own. {@code discrepancy} is true when this parcel
+ * held more units of a line than approved, a SKU the return did not claim, or - when no more is awaited - fewer than
+ * approved: Sales follow it up with the customer outside the system (03 edge cases).
  *
  * <p>Before 4D-3 it was published per parcel the warehouse counted in loose, QC deciding afterwards; the shape is kept
  * (see {@code package-info.java} for the rules on changing this contract).</p>

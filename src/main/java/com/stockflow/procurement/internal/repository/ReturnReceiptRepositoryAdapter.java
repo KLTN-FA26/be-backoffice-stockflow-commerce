@@ -120,8 +120,8 @@ class ReturnReceiptRepositoryAdapter implements ReturnReceiptRepository, ReturnR
     }
 
     @Override
-    public Optional<ReturnReceipt> findLiveForReturnRequest(UUID returnRequestId) {
-        return jpa.findLiveByReturnRequest(returnRequestId, GoodsReceiptStatus.CANCELLED).stream().findFirst()
+    public Optional<ReturnReceipt> findDraftForReturnRequest(UUID returnRequestId) {
+        return jpa.findByReturnRequestInStatus(returnRequestId, GoodsReceiptStatus.DRAFT).stream().findFirst()
                 .flatMap(this::findById);
     }
 

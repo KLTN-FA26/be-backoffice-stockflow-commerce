@@ -19,6 +19,8 @@ import java.util.UUID;
  *       returned than the invoice still holds of the order line.</li>
  *   <li>{@code basis} TRADE_DISCOUNT: a discount by volume or revenue. Every line reduces; {@code listedInvoiceIds}
  *       are the buyer's other issued invoices the discount was earned on.</li>
+ *   <li>{@code basis} DELIVERY_FAILED is refused here (409 {@code EINVOICE_CORRECTION_NOT_APPLICABLE}): the system
+ *       draws that full reduction up itself when a delivery is corrected to a failure (WF-05 HĐ-3).</li>
  * </ul>
  */
 public record AdjustEInvoiceRequest(

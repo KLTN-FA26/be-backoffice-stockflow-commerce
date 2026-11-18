@@ -60,14 +60,29 @@ class ReturnResolutionController {
 
     @PostMapping("/{returnId}/settlement-approval")
     @Operation(summary = "Approve the refund (not the proposer): payment takes the goods' value off what the order's "
-            + "installments still owe and makes what was paid refundable; the return is RESOLVED. 409 "
-            + "RETURN_REFUND_NO_INSTALLMENTS for an order not paid through a contract's installments")
+            + "installments still owe and makes what was paid refundable; the return is RESOLVED. A refund of an order "
+            + "with no installments (nothing was paid in the system, WF-05 TH-2) is worth 0 and moves no money")
     @RequiresPermission(resource = OrderResources.RMA_RESOLUTIONS, action = Action.APPROVE, scope = DataScope.ALL)
     public ApiResponse<ReturnRequestResponse> approve(@PathVariable UUID returnId,
                                                       @Valid @RequestBody(required = false) ReturnRequests.Version request,
                                                       @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(ReturnWebMapper.toResponse(returns.approveSettlement(returnId,
                 request == null ? null : request.version(), user.userId()), List.of()));
+    }
+
+    @PostMapping("/{returnId}/goods-complete")
+    @Operation(summary = "Say the goods of an AWAITING_RETURN return are all here although fewer than approved came "
+            + "back - the customer sent what they had, or another SKU (WF-05 TH-3): RECEIVED with what its return "
+            + "receipts brought, the units short recorded; the refund is then proposed on those, or the return closed "
+            + "without one. 409 RETURN_INVALID_TRANSITION when not AWAITING_RETURN or when no receipt brought anything "
+            + "yet")
+    @RequiresPermission(resource = OrderResources.RMA_RESOLUTIONS, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<ReturnRequestResponse> goodsComplete(@PathVariable UUID returnId,
+            @Valid @RequestBody(required = false) ReturnRequests.GoodsComplete request,
+            @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(ReturnWebMapper.toResponse(returns.markGoodsComplete(returnId,
+                request == null ? null : request.note(), request == null ? null : request.version(), user.userId()),
+                List.of()));
     }
 
     @PostMapping("/{returnId}/closure-without-refund")

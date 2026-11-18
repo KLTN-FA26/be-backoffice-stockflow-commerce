@@ -23,10 +23,10 @@ public record InvoiceParty(String name, String taxCode, String address, String e
      * to the buyer; kltn-docs 21 BR-06): its name, tax code and address. The same rule is
      * {@code ck_einvoice_buyer_complete}.
      *
-     * <p>Not the e-mail. It is not invoice content in the law's list, only where the invoice is mailed; a buyer without
-     * one learns of the invoice on the portal and the mail is recorded as skipped. Requiring it would hold back an
-     * invoice the law requires to be issued by the next working day, for the want of something the law does not ask
-     * for.</p>
+     * <p>Not the e-mail: it is not invoice content in the law's list (legal review WF05-E0 L7), so the database does not
+     * ask for it. The business does (kltn-docs 21 BR-06, HĐ-8): a draft whose buyer has none carries
+     * {@code BUYER_EMAIL_MISSING}, a warning of its own that keeps it from being issued automatically but does not
+     * refuse an accountant's issuing.</p>
      */
     public boolean completeBuyer() {
         return name != null && taxCode != null && address != null;

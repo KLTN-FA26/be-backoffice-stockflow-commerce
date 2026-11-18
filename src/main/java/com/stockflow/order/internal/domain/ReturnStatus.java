@@ -11,6 +11,8 @@ package com.stockflow.order.internal.domain;
  *                                                                          approved by another ─▶ RESOLVED
  *   EXPIRED, CANCELLED (after approval) ─a return receipt opened before brings the goods anyway─▶ RECEIVED
  *   RECEIVED ─nothing approved came back usable, closed without a refund (WF-05 TH-4)─▶ RESOLVED
+ *   AWAITING_RETURN ─parcels of part of the goods (WF-05 TH-3): stays, until everything approved is back, Sales mark
+ *                    the goods complete, or the deadline passes with some back─▶ RECEIVED
  * </pre>
  *
  * <p>Sales approve the claim on its photos, and the goods always come back (17 BR-18): the warehouse receives them on a
@@ -25,7 +27,10 @@ public enum ReturnStatus {
     /** Opened by the customer or by Sales for them; Sales review it. */
     REQUESTED,
 
-    /** Approved (the RMA); the customer sends the approved goods back to the order's warehouse before the deadline. */
+    /**
+     * Approved (the RMA); the customer sends the approved goods back to the order's warehouse before the deadline, in
+     * one parcel or several - each on a return receipt of its own, while part of the goods is still awaited.
+     */
     AWAITING_RETURN,
 
     /** The goods came back on a return receipt, into quarantine; Sales propose the refund. */

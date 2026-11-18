@@ -26,7 +26,9 @@ import java.util.UUID;
  *       and once its deadline has passed, reminded once a day for as long as it is not issued (HĐ-2) - an invoice left
  *       in draft or stuck at the provider is late every day it stays so. In the same sweep they are told, once per
  *       submission, of an invoice that has waited for the provider's answer for too long (WF-05 E5): the
- *       reconciliation keeps asking, but somebody has to know.</li>
+ *       reconciliation keeps asking, but somebody has to know. And the provider's remaining invoices are looked at
+ *       ({@link EInvoiceQuotaWatch}, kltn-docs 21 BR-09), so a plan running out is known before invoices are
+ *       refused for it.</li>
  * </ul>
  *
  * <p>Bounded batches, the most urgent first; what does not fit waits for the next run. One invoice failing does not
@@ -52,10 +54,12 @@ class EInvoiceJobs {
 
     private final EInvoiceWorkQueues queues;
     private final EInvoiceIssuance issuance;
+    private final EInvoiceQuotaWatch quota;
 
-    EInvoiceJobs(EInvoiceWorkQueues queues, EInvoiceIssuance issuance) {
+    EInvoiceJobs(EInvoiceWorkQueues queues, EInvoiceIssuance issuance, EInvoiceQuotaWatch quota) {
         this.queues = queues;
         this.issuance = issuance;
+        this.quota = quota;
     }
 
     @Scheduled(initialDelayString = "${stockflow.invoicing.reconcile-interval:PT30S}",
@@ -79,6 +83,11 @@ class EInvoiceJobs {
         if (warned > 0 || reminded > 0 || stuck > 0) {
             log.info("E-invoices: {} close to their deadline, {} past it and {} stuck at the provider announced",
                     warned, reminded, stuck);
+        }
+        try {
+            quota.check();
+        } catch (RuntimeException failure) {
+            log.warn("The e-invoice provider's quota was not looked at: {}", failure.toString());
         }
     }
 

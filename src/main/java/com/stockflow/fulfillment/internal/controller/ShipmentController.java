@@ -115,7 +115,9 @@ class ShipmentController {
     @PostMapping("/{shipmentId}/delivery-outcome-correction")
     @Operation(summary = "Correct an outcome the carrier reported wrongly: DELIVERED <-> DELIVERY_FAILED, with a reason, "
             + "while the order is not completed; the shipment takes no carrier report for its outcome afterwards (E17). "
-            + "409 ORDER_DELIVERY_NOT_CORRECTABLE for a completed order or a delivery that billed the customer")
+            + "409 ORDER_DELIVERY_NOT_CORRECTABLE for a completed order or a delivery that billed the customer; "
+            + "409 ORDER_DELIVERY_HAS_RETURN, to DELIVERY_FAILED, while a return request against the shipment is open "
+            + "or resolved")
     @RequiresPermission(resource = FulfillmentResources.DELIVERY_CORRECTIONS, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "shipment", resourceId = "#shipmentId")
     public ApiResponse<ShipmentResponse> correctOutcome(@PathVariable UUID shipmentId,

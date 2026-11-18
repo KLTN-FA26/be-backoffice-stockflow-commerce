@@ -19,7 +19,8 @@ public interface SettlementCandidates {
      * DELIVERED orders whose return window may have closed by {@code now}, oldest delivery first, the first {@code skip}
      * left out: delivered at least the window before - each order's own window, the days its live contract agreed
      * ({@code sales_contract.return_window_days}, WF-05 TH-1), else {@code defaultWindowDays}. A coarse filter, never
-     * finer than {@link Order#complete}, which decides in calendar days.
+     * finer than {@link Order#complete}, which decides in calendar days. An order whose completion is held (WF-05 GH-2)
+     * is left out: the run would refuse it, and it is found again the night after its hold is released.
      */
     List<UUID> deliveredPastWindow(Instant now, int defaultWindowDays, int skip, int limit);
 
@@ -31,4 +32,10 @@ public interface SettlementCandidates {
 
     /** Whether a return request of the order is still open (BR-ORD-005: it keeps the order from completing). */
     boolean hasOpenReturn(UUID orderId);
+
+    /**
+     * Whether the order's automatic completion is paused while a delivery is verified (WF-05 GH-2,
+     * {@code ordering.order_completion_hold}): read under the order's lock, which holding and releasing take too.
+     */
+    boolean completionHeld(UUID orderId);
 }

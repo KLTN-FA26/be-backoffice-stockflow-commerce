@@ -224,6 +224,18 @@ class SandboxProvider implements EInvoiceProvider {
         return true;
     }
 
+    /** The sandbox takes notices in, so the flow can be rehearsed end to end. */
+    @Override
+    public boolean sendsErrorNotices() {
+        return true;
+    }
+
+    /** Its XML is a test document and carries no signature ({@link #NOTICE}): nothing to check. */
+    @Override
+    public boolean signsDocuments() {
+        return false;
+    }
+
     @Override
     public NoticeReceipt notifyError(ErrorNoticeDocument notice) {
         String reason = notice.reason() == null ? "" : notice.reason().toLowerCase(Locale.ROOT);

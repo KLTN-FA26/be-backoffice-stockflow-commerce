@@ -6,6 +6,7 @@ import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.order.internal.domain.ReturnDiscrepancy;
 import com.stockflow.order.internal.domain.ReturnEvidence;
 import com.stockflow.order.internal.domain.ReturnLine;
+import com.stockflow.order.internal.domain.ReturnParcel;
 import com.stockflow.order.internal.domain.ReturnRequest;
 import com.stockflow.order.internal.domain.ReturnRequestRepository;
 import com.stockflow.order.internal.domain.ReturnStatus;
@@ -15,6 +16,7 @@ import com.stockflow.order.internal.entity.ReturnRequestDiscrepancyJpaEntity;
 import com.stockflow.order.internal.entity.ReturnRequestEvidenceJpaEntity;
 import com.stockflow.order.internal.entity.ReturnRequestJpaEntity;
 import com.stockflow.order.internal.entity.ReturnRequestLineJpaEntity;
+import com.stockflow.order.internal.entity.ReturnRequestReceiptJpaEntity;
 import com.stockflow.order.internal.entity.ReturnRequestStatusHistoryJpaEntity;
 import jakarta.persistence.EntityManager;
 import org.springframework.data.domain.Page;
@@ -112,6 +114,10 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
             records.insert(new ReturnRequestEvidenceJpaEntity(photo.id(), request.id(), photo.stage().name(),
                     photo.fileKey(), photo.originalName(), photo.contentType(), photo.sizeBytes(), photo.uploadedBy(),
                     photo.uploadedAt()));
+        }
+        for (ReturnParcel parcel : request.pullNewParcels()) {
+            records.insert(new ReturnRequestReceiptJpaEntity(parcel.goodsReceiptId(), request.id(), parcel.parcel(),
+                    parcel.receiptNumber(), parcel.locationCode(), parcel.receivedBy(), parcel.receivedAt()));
         }
         for (ReturnDiscrepancy found : request.pullNewDiscrepancies()) {
             records.insert(new ReturnRequestDiscrepancyJpaEntity(found.id(), request.id(), found.lineId(),
@@ -225,6 +231,9 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
                 records.discrepanciesOf(e.getId()).stream().map(row -> new ReturnDiscrepancy(row.getId(),
                         row.getReturnRequestLineId(), ReturnDiscrepancy.Kind.valueOf(row.getKind()), row.getSku(),
                         row.getQuantity(), row.getNote(), row.getRecordedBy(), row.getRecordedAt())).toList());
+        request.restoreParcels(records.parcelsOf(e.getId()).stream().map(row -> new ReturnParcel(
+                row.getGoodsReceiptId(), row.getParcel(), row.getReceiptNumber(), row.getReceivingLocationCode(),
+                row.getReceivedBy(), row.getReceivedAt())).toList());
         return request;
     }
 
@@ -232,7 +241,7 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
         return new ReturnRequestRow(e.getId(), e.getRmaNumber(), e.getOrderId(), e.getOrderNumber(), e.getCustomerId(),
                 e.getStatus(), e.getReasonCode(), e.getRequestedResolution(), e.getChannel().name(), e.getRequestedAt(),
                 e.getReturnDeadline(), e.getSettlementAmount(), e.getRefundedAmount(), e.getOffsetAmount(),
-                e.getCurrency(), e.isVatAdjustmentRequired(), e.getClosedAt(), e.getVersion());
+                e.getCurrency(), e.isVatAdjustmentRequired(), e.getClosedAt(), e.getVersion(), e.getShipmentId());
     }
 
     private static ReturnStatus statusOrNull(String name) {

@@ -20,15 +20,32 @@ public interface EInvoiceRepository {
     /**
      * The invoice that stands for a shipment (kltn-docs 21 BR-01: at most one in force): its original while that is not
      * voided or replaced, else what replaced it. While a replacement is still a draft the invoice it will replace is
-     * the one in force, and the one returned.
+     * the one in force, and the one returned. An original reduced in full because its delivery was corrected to a
+     * failure ({@link #markReversed}) stands for nothing any more: the shipment delivered again gets a new original.
      */
     Optional<EInvoice> findLiveOriginalOfShipment(UUID shipmentId);
+
+    /**
+     * Notes that an issued original no longer stands for its shipment: its delivery was corrected to a failure and the
+     * full reduction of it ({@code CorrectionBasis.DELIVERY_FAILED}) was drawn up in this transaction (kltn-docs 21
+     * §4.4-§4.5, BR-01; WF-05 HĐ-3). From then on {@link #findLiveOriginalOfShipment}, {@link #findInForceOfOrder},
+     * {@link #invoicedOfOrder} and the completion check pass it over, and the shipment may take a second original
+     * ({@code uk_einvoice_original_per_shipment}, {@code uk_einvoice_in_force_per_shipment} leave it out).
+     *
+     * <p>Outside the aggregate and its version, as the overdue reminder is: the invoice is issued and says nothing new -
+     * what changes is which invoice stands for the shipment. {@code tg_einvoice_guard} lets it be written once, on an
+     * issued original, and only while a live reduction of that kind names it.</p>
+     *
+     * @return false when it was noted before
+     */
+    boolean markReversed(UUID originalId, Instant at);
 
     /** What already corrects an invoice: its live adjustments and replacement. Read under the invoice's lock. */
     EInvoice.Corrections correctionsOf(UUID invoiceId);
 
     /**
-     * The issued invoices in force of an order - originals and replacements, never adjustments - the oldest first:
+     * The issued invoices in force of an order - originals and replacements, never adjustments, never an original
+     * reversed for a failed delivery ({@link #markReversed}) - the oldest first:
      * what goods returned on the order are taken off. Ids only: the caller locks them and reads each once, under its
      * lock.
      */
@@ -36,7 +53,8 @@ public interface EInvoiceRepository {
 
     /**
      * The pieces of each order line that the adjustments of an invoice already take off it, by order line: every
-     * adjustment that is not voided, issued or not, that changes a quantity - a return's, and an error's that lowered a
+     * adjustment that is not voided, issued or not, that changes a quantity - a return's, a failed delivery's (all of
+     * them), and an error's that lowered a
      * quantity (one that raised it puts pieces back, below zero). Counting only the returns' adjustments let a return
      * take off again pieces an error's adjustment had already taken, and leave pieces it had added unplaced. A price
      * that was wrong and a trade discount change money, not pieces, and are not counted.
@@ -69,7 +87,11 @@ public interface EInvoiceRepository {
      */
     void lockOrder(UUID orderId);
 
-    /** What the order's originals that were not voided already carry of its fees, and how many pieces. */
+    /**
+     * What the order's originals that were not voided already carry of its fees, and how many pieces. An original
+     * reversed for a failed delivery ({@link #markReversed}) carries nothing: its full reduction took its fees off too,
+     * and the shipment's new original carries them again.
+     */
     FeeAllocation.Invoiced invoicedOfOrder(UUID orderId);
 
     /**

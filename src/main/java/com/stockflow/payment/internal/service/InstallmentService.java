@@ -194,6 +194,49 @@ public class InstallmentService {
         }
     }
 
+    /**
+     * A delivery of the order was corrected to a failure (kltn-docs 09 §4.3 step 5, 15 §4.1; E17: the milestone of an
+     * installment paid after delivery is worked out again from the corrected outcome; WF-05 GH-3). {@link #delivered}
+     * reaches a milestone once, so without this the installment of a delivery that never happened stayed due from the
+     * wrong day: overdue thirty days later, the customer refused new releases and new contracts held for credit.
+     *
+     * <p>Each installment paid after delivery is held against the days the order has <b>now</b> - the same facts
+     * {@link #delivered} reads, so the two never disagree: tied to a batch, the moment that batch was delivered in full;
+     * tied to none, the moment the whole order was. A milestone the order no longer has is taken back
+     * ({@link Installment#withdrawMilestone}: due again only when the goods are delivered again, from that delivery's
+     * day, which {@link #delivered} then sets). A milestone the order has from another moment - the goods were already
+     * delivered again when this was heard - is moved to that moment. One the order still has as it was, or one paid in
+     * full, is left alone.</p>
+     *
+     * <p>Worked out from what the order says, never from the event: hearing it twice, or after the redelivery's own
+     * event, changes nothing more.</p>
+     */
+    public void deliveryCorrected(UUID orderId) {
+        // Read before the installments are locked, as delivered() reads them: orders before installments.
+        java.util.Map<UUID, Instant> batches = orders.batchesDeliveredAt(orderId);
+        Instant whole = orders.deliveredInFullAt(orderId).orElse(null);
+        for (Installment installment : book.lockOfOrder(orderId)) {
+            if (installment.milestone() != InstallmentMilestone.AFTER_DELIVERY || !installment.reached()) {
+                continue;
+            }
+            Instant from = installment.deliveryBatchId() == null ? whole
+                    : batches.getOrDefault(installment.deliveryBatchId(), whole);
+            if (from != null && from.equals(installment.reachedAt())) {
+                continue;
+            }
+            if (!installment.withdrawMilestone()) {
+                continue;
+            }
+            if (from != null) {
+                installment.reach(from, LocalDate.ofInstant(from, BUSINESS_ZONE));
+            }
+            book.save(installment);
+            log.info("Installment {} of contract {}: a delivery was corrected to a failure, {}", installment.seq(),
+                    installment.contractNumber(), from == null ? "not due until the goods are delivered again"
+                            : "due again by " + installment.dueDate());
+        }
+    }
+
     private void reach(UUID orderId, InstallmentMilestone milestone, Instant at) {
         LocalDate day = LocalDate.ofInstant(at, BUSINESS_ZONE);
         for (Installment installment : book.lockOfOrder(orderId)) {

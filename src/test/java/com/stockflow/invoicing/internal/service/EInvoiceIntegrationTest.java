@@ -209,6 +209,55 @@ class EInvoiceIntegrationTest {
                 + "AND state = 'ISSUED'", Long.class, invoiceId + "-%");
     }
 
+    @Test
+    @DisplayName("HĐ-1: the provider's handle on a submission is kept with its SUBMIT call, the latest one is found, "
+            + "and the database keeps it off any other call")
+    void theProvidersHandleOnASubmissionIsKept() {
+        EInvoice.Snapshot draft = delivered(1).draft();
+        // Written in a transaction of its own, as ProviderCallRecorder writes it: outside one nothing commits.
+        com.stockflow.invoicing.internal.domain.ProviderCallLog logged =
+                context.getBean(com.stockflow.invoicing.internal.domain.ProviderCallLog.class);
+        com.stockflow.invoicing.internal.domain.ProviderCallLog log = new com.stockflow.invoicing.internal.domain
+                .ProviderCallLog() {
+            @Override
+            public void record(Call call) {
+                tx.executeWithoutResult(s -> logged.record(call));
+            }
+
+            @Override
+            public List<Call> of(UUID einvoiceId) {
+                return logged.of(einvoiceId);
+            }
+
+            @Override
+            public java.util.Optional<String> lastProviderReference(String provider, String transactionId) {
+                return logged.lastProviderReference(provider, transactionId);
+            }
+        };
+        String transaction = draft.id() + "-1";
+        java.time.Instant at = java.time.Instant.now();
+        log.record(new com.stockflow.invoicing.internal.domain.ProviderCallLog.Call(draft.id(), "SEPAY_EINVOICE",
+                transaction, com.stockflow.invoicing.internal.domain.ProviderCallLog.Operation.SUBMIT,
+                com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome.ACCEPTED, 200, null, null, null,
+                at.minusSeconds(60), 5, "create/first"));
+        log.record(new com.stockflow.invoicing.internal.domain.ProviderCallLog.Call(draft.id(), "SEPAY_EINVOICE",
+                transaction, com.stockflow.invoicing.internal.domain.ProviderCallLog.Operation.SUBMIT,
+                com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome.ACCEPTED, 202, null, null, null, at, 5,
+                "create/second"));
+
+        assertThat(log.lastProviderReference("SEPAY_EINVOICE", transaction)).contains("create/second");
+        assertThat(log.lastProviderReference("SANDBOX", transaction)).isEmpty();
+        assertThat(queries.calls(draft.id())).extracting(
+                com.stockflow.invoicing.internal.domain.ProviderCallLog.Call::providerReference)
+                .containsExactly("create/first", "create/second");
+        assertThatThrownBy(() -> log.record(new com.stockflow.invoicing.internal.domain.ProviderCallLog.Call(
+                draft.id(), "SEPAY_EINVOICE", transaction,
+                com.stockflow.invoicing.internal.domain.ProviderCallLog.Operation.QUERY,
+                com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome.PENDING, 200, null, null, null, at, 5,
+                "create/third"))).as("ck_einvoice_provider_call_reference")
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
+
     private List<org.assertj.core.groups.Tuple> calls(UUID invoiceId) {
         return queries.calls(invoiceId).stream().map(call -> tuple(call.operation(), call.outcome())).toList();
     }
@@ -424,7 +473,9 @@ class EInvoiceIntegrationTest {
     void anIncompleteBuyerBlocksIssuing() {
         buyer(null, null);
         EInvoice.Snapshot draft = delivered(1).draft();
-        assertThat(draft.warnings()).containsExactly(EInvoice.Warning.BUYER_PROFILE_INCOMPLETE);
+        assertThat(draft.warnings()).as("HĐ-8: the missing e-mail is a warning of its own")
+                .containsExactlyInAnyOrder(EInvoice.Warning.BUYER_PROFILE_INCOMPLETE,
+                        EInvoice.Warning.BUYER_EMAIL_MISSING);
         assertThat(draft.buyer().taxCode()).isNull();
 
         assertThatThrownBy(() -> issuance.issue(draft.id(), draft.version(), accountant))
@@ -432,13 +483,19 @@ class EInvoiceIntegrationTest {
         assertThat(queries.get(draft.id()).status()).as("still a draft, nothing sent").isEqualTo(EInvoiceStatus.DRAFT);
         assertThat(calls(draft.id())).isEmpty();
 
+        // HĐ-8: Sales adds the tax code but not yet the invoice e-mail - still flagged, so not issued automatically
+        // (issuing it by hand is not refused: see EInvoice.Warning.BUYER_EMAIL_MISSING).
+        buyer(taxCode, null);
+        EInvoice.Snapshot noEmail = drafts.refreshBuyer(draft.id(), draft.version());
+        assertThat(noEmail.warnings()).containsExactly(EInvoice.Warning.BUYER_EMAIL_MISSING);
+
         // Sales adds what was missing to the customer's profile; the accountant copies it onto the draft.
         buyer(taxCode, "hoa.don@" + customer + ".example.com");
-        EInvoice.Snapshot refreshed = drafts.refreshBuyer(draft.id(), draft.version());
+        EInvoice.Snapshot refreshed = drafts.refreshBuyer(draft.id(), noEmail.version());
         assertThat(refreshed.buyer().taxCode()).isEqualTo(taxCode);
         assertThat(refreshed.buyer().email()).isEqualTo("hoa.don@" + customer + ".example.com");
         assertThat(refreshed.warnings()).isEmpty();
-        assertThatThrownBy(() -> drafts.refreshBuyer(draft.id(), draft.version())).as("a stale version")
+        assertThatThrownBy(() -> drafts.refreshBuyer(draft.id(), noEmail.version())).as("a stale version")
                 .extracting(EInvoiceIntegrationTest::code).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
 
         assertThat(FirstSend.issue(issuance, queries, draft.id(), refreshed.version(), accountant).status())
@@ -894,7 +951,8 @@ class EInvoiceIntegrationTest {
     }
 
     @Test
-    @DisplayName("21 §4.5: a delivery corrected to a failure voids the draft; an issued invoice is left for an adjustment")
+    @DisplayName("21 §4.5: a delivery corrected to a failure voids the draft; an issued invoice is reduced in full by a "
+            + "system draft (WF-05 HĐ-3) and stands for its shipment no more")
     void aCorrectedDeliveryVoidsTheDraft() {
         Delivered delivered = delivered(1);
         Delivered issuedOne = delivered(1);
@@ -914,9 +972,13 @@ class EInvoiceIntegrationTest {
         assertThat(voided.voidedBy()).as("the system's doing").isNull();
         assertThat(voided.voidReason()).contains("corrected to a failure");
         assertThat(invoiceOf(delivered.shipmentId())).as("no invoice in force for an undelivered shipment").isNull();
+        Await.until("the issued invoice reduced in full", ASYNC, () -> jdbc.queryForObject("""
+                SELECT count(*) FROM invoicing.einvoice WHERE original_einvoice_id = ? AND type = 'ADJUSTMENT'
+                   AND correction_basis = 'DELIVERY_FAILED' AND status = 'DRAFT'""", Long.class, issued.id()) == 1);
         assertThat(drafts.voidForCorrectedDelivery(issuedOne.orderId(), issuedOne.shipmentId()))
-                .isEqualTo(EInvoiceDrafts.CorrectionOutcome.LEFT_FOR_ADJUSTMENT);
-        assertThat(queries.get(issued.id())).as("issued: untouched").isEqualTo(issued);
+                .as("reversed: nothing stands for the shipment any more")
+                .isEqualTo(EInvoiceDrafts.CorrectionOutcome.NO_INVOICE);
+        assertThat(queries.get(issued.id())).as("issued: what it says is untouched").isEqualTo(issued);
         assertThat(queries.get(untouched.draft().id()).status()).isEqualTo(EInvoiceStatus.DRAFT);
     }
 

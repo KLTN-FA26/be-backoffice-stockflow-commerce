@@ -1,5 +1,6 @@
 package com.stockflow.invoicing.internal.service;
 
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
@@ -31,6 +32,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -83,7 +85,16 @@ import java.util.function.Supplier;
  *
  * <p>No transaction is open while the provider is called: the steps before and after are short transactions of their
  * own ({@link EInvoiceIssuanceSteps}). Every call is logged ({@link ProviderCallLog}) with hashes of what went and
- * came, never the content.</p>
+ * came, never the content - and the provider's own handle on a submission it took in, where it gives one (SePay's
+ * tracking code, which is how its refusal after taking an invoice in is learnt: HĐ-1).</p>
+ *
+ * <h2>The way out of SUBMITTING (HĐ-1)</h2>
+ *
+ * <p>An invoice the provider refused, issued or never received settles on its own: the reconciliation asks and records
+ * it. One the provider says it has no record of, yet that never settles - its sends are answered "already taken" while
+ * the look-up finds nothing, or it was sent before its provider's handle was kept - is taken back by the accountant
+ * ({@link #withdraw}): REJECTED with {@link EInvoice#WITHDRAWN_CODE} and the accountant's reason, reopened and issued
+ * again under a new transaction like any refused invoice.</p>
  */
 @Service
 public class EInvoiceIssuance {
@@ -93,6 +104,7 @@ public class EInvoiceIssuance {
     private final EInvoiceIssuanceSteps steps;
     private final EInvoiceProviders providers;
     private final ProviderCallRecorder calls;
+    private final InvoicingProperties properties;
     private final Clock clock;
     private final AsyncTaskExecutor executor;
 
@@ -104,10 +116,12 @@ public class EInvoiceIssuance {
     static final Duration PROVIDER_LEASE = Duration.ofMinutes(15);
 
     EInvoiceIssuance(EInvoiceIssuanceSteps steps, EInvoiceProviders providers, ProviderCallRecorder calls,
-                     Clock clock, @Qualifier("applicationTaskExecutor") AsyncTaskExecutor executor) {
+                     InvoicingProperties properties, Clock clock,
+                     @Qualifier("applicationTaskExecutor") AsyncTaskExecutor executor) {
         this.steps = steps;
         this.providers = providers;
         this.calls = calls;
+        this.properties = properties;
         this.clock = clock;
         this.executor = executor;
     }
@@ -192,6 +206,95 @@ public class EInvoiceIssuance {
         // After this thread let go of the invoice: the sender takes hold of it itself.
         sendSoon(id);
         return submitting;
+    }
+
+    /**
+     * Takes back an invoice stuck at the provider (HĐ-1): SUBMITTING → REJECTED under {@link EInvoice#WITHDRAWN_CODE},
+     * with the accountant's reason as its message, so it is reopened, corrected if need be, and issued again under a new
+     * transaction like any refused invoice. Not announced as a refusal: the accountant did it.
+     *
+     * <h2>Why this cannot issue the invoice twice</h2>
+     *
+     * <p>A second invoice would come from the provider issuing the old transaction after this one let it go, while the
+     * new transaction is issued too. Each of the conditions below closes a way for that to happen; all of them hold, or
+     * nothing changes:</p>
+     * <ol>
+     *   <li><b>The provider, asked now, has no record of the transaction</b> ({@code NOT_FOUND}). It holds it, is still
+     *       working on it ({@code PENDING} - SePay's tracking says {@code Pending} while it retries), cannot confirm what
+     *       became of it (SePay's "chưa xác nhận được kết quả", {@code UNKNOWN}), or does not answer: refused. ISSUED and
+     *       REJECTED are what "check again" ({@link #reconcile}) records, and are refused here too.</li>
+     *   <li><b>Nothing was sent under it for longer than the provider can still be working on it</b>
+     *       ({@code stockflow.invoicing.withdraw-after}, three hours by default): longer than SePay's own retries of a
+     *       request it took in ("up to 2 hours", its tracking documentation), than every provider's quiet period
+     *       ({@link EInvoiceProvider.Resubmission}), and than the provider lease. A send still on its way could be taken
+     *       in after the look-up said "not found"; no send is that old.</li>
+     *   <li><b>Under the invoice's provider lease</b>: no reconciliation sends the transaction between the look-up and the
+     *       refusal being recorded, and once REJECTED nothing is sent under it again
+     *       ({@link EInvoiceIssuanceSteps#aboutToSend} checks the invoice still waits for that transaction).</li>
+     *   <li><b>The old transaction id is never used again</b>: the next attempt is a new transaction, a new reference at
+     *       the provider. A stray send of the old one is the provider's duplicate of itself (SePay:
+     *       {@code EINVOICE_DOCUMENT_EXISTED}), not a second invoice of ours.</li>
+     * </ol>
+     * <p>What is left is a provider that holds a request out of sight for longer than the configured time and issues it
+     * afterwards - against its own documentation; the reason recorded is the accountant's account of having checked on
+     * the provider's portal.</p>
+     *
+     * @param reason why, as the accountant states it after checking the provider's portal; required, at most 500
+     * @throws BusinessException {@code EINVOICE_NOT_FOUND}; {@code OPTIMISTIC_LOCK}; {@code VALIDATION_FAILED} without a
+     *         reason; 409 {@code EINVOICE_INVALID_TRANSITION} when it is not at the provider; 409
+     *         {@code EINVOICE_WITHDRAWAL_REFUSED} when it was sent too recently, the provider holds it or may, or
+     *         somebody is asking the provider about it right now; 503 {@code EINVOICE_PROVIDER_UNAVAILABLE} when the
+     *         provider does not answer
+     */
+    @Auditable(action = AuditAction.REJECT, resourceType = "einvoice", resourceId = "#id")
+    public EInvoice.Snapshot withdraw(UUID id, long expectedVersion, String reason, UUID by) {
+        if (reason == null || reason.isBlank() || reason.strip().length() > 500) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "reason: required, at most 500 characters",
+                    List.of(FieldError.of("reason", "required, at most 500 characters")));
+        }
+        steps.get(id);
+        UUID holder = Identifiers.newId();
+        if (!steps.claim(id, holder, PROVIDER_LEASE)) {
+            throw new BusinessException(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED,
+                    "The provider is being asked about this invoice right now");
+        }
+        try {
+            EInvoice.Snapshot invoice = steps.get(id);
+            if (invoice.version() != expectedVersion) {
+                throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
+                        "Invoice %s changed since it was read".formatted(invoice.code()));
+            }
+            if (invoice.status() != EInvoiceStatus.SUBMITTING) {
+                throw new BusinessException(ErrorCode.EINVOICE_INVALID_TRANSITION,
+                        "Invoice %s is %s, not at the provider".formatted(invoice.code(), invoice.status()));
+            }
+            EInvoiceProvider provider = providers.require(invoice.provider());
+            Instant lastSent = steps.lastSent(id, invoice.transactionId()).orElse(invoice.submittedAt());
+            Instant now = clock.instant();
+            if (lastSent != null && Duration.between(lastSent, now).compareTo(properties.withdrawAfter()) < 0) {
+                throw new BusinessException(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED, ("Invoice %s was last sent at %s; the "
+                        + "provider may still be working on it until %s").formatted(invoice.code(), lastSent,
+                        lastSent.plus(properties.withdrawAfter())));
+            }
+            Result result;
+            try {
+                result = query(provider, invoice);
+            } catch (ProviderUnavailableException unavailable) {
+                throw new BusinessException(ErrorCode.EINVOICE_PROVIDER_UNAVAILABLE,
+                        "The provider did not say whether it holds invoice %s".formatted(invoice.code()));
+            }
+            if (result.state() != ResultState.NOT_FOUND) {
+                throw new BusinessException(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED, ("Invoice %s: the provider does not "
+                        + "say it has no record of it (%s%s); check it again instead").formatted(invoice.code(),
+                        result.state(), result.errorCode() == null ? "" : ", " + result.errorCode()));
+            }
+            steps.rejected(id, invoice.transactionId(), EInvoice.WITHDRAWN_CODE, reason.strip());
+            log.warn("E-invoice {} (transaction {}) was taken back from {} by {}: the provider has no record of it",
+                    LogSafe.text(invoice.code()), LogSafe.text(invoice.transactionId()), invoice.provider(), by);
+        } finally {
+            release(id, holder);
+        }
+        return steps.get(id);
     }
 
     /**
@@ -358,23 +461,28 @@ public class EInvoiceIssuance {
             record(invoice, operation, outcome.apply(answer), errorCode.apply(answer), requestHash,
                     hash(String.valueOf(answer instanceof EInvoiceProvider.Documents documents
                             ? Checksums.sha256Hex(documents.xml()) + Checksums.sha256Hex(documents.pdf()) : answer)),
-                    started);
+                    started, answer instanceof Submission submission ? submission.providerReference() : null);
             return answer;
         } catch (ProviderUnavailableException unavailable) {
-            record(invoice, operation, Outcome.TIMEOUT, null, requestHash, null, started);
+            record(invoice, operation, Outcome.TIMEOUT, null, requestHash, null, started, null);
             throw unavailable;
         } catch (RuntimeException failure) {
-            record(invoice, operation, Outcome.ERROR, failure.getClass().getSimpleName(), requestHash, null, started);
+            record(invoice, operation, Outcome.ERROR, failure.getClass().getSimpleName(), requestHash, null, started,
+                    null);
             throw new ProviderUnavailableException("The e-invoice provider failed", failure);
         }
     }
 
+    /**
+     * @param providerReference the provider's handle on a submission it took in: the only way some providers tell a
+     *                          refusal after that (SePay's tracking code), so it is kept with the call
+     */
     private void record(EInvoice.Snapshot invoice, Operation operation, Outcome outcome, String errorCode,
-                        String requestHash, String responseHash, Instant started) {
+                        String requestHash, String responseHash, Instant started, String providerReference) {
         try {
             calls.record(new ProviderCallLog.Call(invoice.id(), invoice.provider(), invoice.transactionId(), operation,
                     outcome, null, errorCode, requestHash, responseHash, started,
-                    Math.max(0, Duration.between(started, clock.instant()).toMillis())));
+                    Math.max(0, Duration.between(started, clock.instant()).toMillis()), providerReference));
         } catch (RuntimeException logFailure) {
             // The log is evidence, not a step of issuing: an invoice is not left unissued because a log row failed.
             log.error("Could not log the {} call for e-invoice {}", operation, LogSafe.text(invoice.code()),

@@ -76,6 +76,30 @@ class InvoicingEventListenersTest {
         }
 
         @Test
+        @DisplayName("WF-05 HĐ-3: an issued original is reduced in full by the system - the accountants are told to "
+                + "issue that draft, not to draw one up")
+        void anIssuedInvoiceIsReducedByTheSystem() {
+            when(drafts.voidForCorrectedDelivery(corrected.orderId(), corrected.shipmentId()))
+                    .thenReturn(EInvoiceDrafts.CorrectionOutcome.LEFT_FOR_ADJUSTMENT);
+            EInvoice.Snapshot reversal = EInvoice.drawUpDeliveryReversal(UUID.randomUUID(), "EINV-20261113-0009",
+                    EInvoiceFixtures.in(EInvoiceStatus.ISSUED), "Giao khong thanh cong", EInvoiceFixtures.CORRECTED_ON,
+                    EInvoice.Corrections.NONE).snapshot();
+            when(drafts.reverseForCorrectedDelivery(corrected.orderId(), corrected.shipmentId()))
+                    .thenReturn(Optional.of(reversal));
+
+            listener.on(corrected);
+
+            var published = ArgumentCaptor.forClass(EInvoiceNeedsAttention.class);
+            verify(events).publishEvent(published.capture());
+            assertThat(published.getValue().einvoiceId()).isEqualTo(reversal.id());
+            assertThat(published.getValue().code()).isEqualTo("EINV-20261113-0009");
+            assertThat(published.getValue().submittedAt()).isNull();
+            assertThat(published.getValue().cause())
+                    .isEqualTo(EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_REVERSAL_DRAWN_UP);
+            verifyNoInteractions(invoices);
+        }
+
+        @Test
         @DisplayName("a draft voided: nothing to tell")
         void aVoidedDraftIsQuiet() {
             when(drafts.voidForCorrectedDelivery(corrected.orderId(), corrected.shipmentId()))

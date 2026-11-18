@@ -44,6 +44,9 @@ class SettlementCandidatesAdapter implements SettlementCandidates {
                            -- owes is its installments' (payment's schema): the service asks, and the run skips it.
                            AND NOT EXISTS (SELECT 1 FROM ordering.return_request r WHERE r.order_id = o.id
                                               AND r.status IN (%s))
+                           -- Completion paused while a delivery is verified (WF-05 GH-2): refused as well.
+                           AND NOT EXISTS (SELECT 1 FROM ordering.order_completion_hold h WHERE h.order_id = o.id
+                                              AND h.released_at IS NULL)
                          ORDER BY o.delivered_at, o.id""".formatted(OPEN_RETURN))
                 .setParameter("now", now)
                 .setParameter("days", defaultWindowDays)
@@ -68,6 +71,16 @@ class SettlementCandidatesAdapter implements SettlementCandidates {
                 .setFirstResult(skip)
                 .setMaxResults(limit)
                 .getResultList();
+    }
+
+    @Override
+    public boolean completionHeld(UUID orderId) {
+        Object found = entityManager.createNativeQuery("""
+                        SELECT EXISTS (SELECT 1 FROM ordering.order_completion_hold
+                                        WHERE order_id = :order AND released_at IS NULL)""")
+                .setParameter("order", orderId)
+                .getSingleResult();
+        return Boolean.TRUE.equals(found);
     }
 
     @Override

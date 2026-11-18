@@ -129,6 +129,20 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
     }
 
     @Override
+    public boolean hasReturnAgainst(UUID orderId, UUID shipmentId) {
+        // Listed by what does not count rather than what does: a status added later counts until somebody decides
+        // otherwise, which is the safe way round for a check that keeps a delivery from being undone.
+        Object found = entityManager.createNativeQuery("""
+                        SELECT EXISTS (SELECT 1 FROM ordering.return_request
+                                        WHERE order_id = :order AND shipment_id = :shipment
+                                          AND status NOT IN ('REJECTED', 'CANCELLED', 'EXPIRED'))""")
+                .setParameter("order", orderId)
+                .setParameter("shipment", shipmentId)
+                .getSingleResult();
+        return Boolean.TRUE.equals(found);
+    }
+
+    @Override
     public List<com.stockflow.order.api.OrderHoldState> holdStates(java.util.Collection<UUID> ids) {
         return ids.isEmpty() ? List.of() : jpa.holdStates(ids);
     }

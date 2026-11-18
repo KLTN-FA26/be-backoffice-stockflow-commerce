@@ -185,8 +185,14 @@ class ReturnRequestHttpTest {
         http.asRole(Role.SALES_STAFF, staff, post("/api/v1/returns/" + returnId + "/settlement-rejection")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"x\"}"))
                 .andExpect(status().isForbidden());
-        // Held but too early: nothing has come back, so there is nothing to refund. (The order is a signed contract's -
-        // contract_signed_at - or the proposal would be refused before that, RETURN_REFUND_NO_INSTALLMENTS, review M-4.)
+        // Held but too early: nothing has come back, so there is nothing to refund, and nothing to call complete.
+        http.asRole(Role.WAREHOUSE_STAFF, staff, post("/api/v1/returns/" + returnId + "/goods-complete")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"note\":\"x\"}"))
+                .andExpect(status().isForbidden());
+        http.asRole(Role.SALES_STAFF, staff, post("/api/v1/returns/" + returnId + "/goods-complete")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"note\":\"x\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("RETURN_INVALID_TRANSITION"));
         http.asRole(Role.SALES_STAFF, staff, post("/api/v1/returns/" + returnId + "/resolution")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"note\":\"x\"}"))
                 .andExpect(status().isConflict())

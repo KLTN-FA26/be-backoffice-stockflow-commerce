@@ -575,6 +575,13 @@ stockflow:
     # How long an invoice may wait for the provider's answer before the accountants are told it is stuck (the same
     # sweep). The reconciliation keeps asking either way.
     stuck-after: ${EINVOICE_STUCK_AFTER:PT30M}
+    # How long after it was last sent an invoice the provider has no record of may be taken back from it by the
+    # accountant (POST /api/v1/einvoices/{id}/withdrawal). Longer than two hours: SePay retries a request it took in for
+    # up to two hours, and the application refuses to start with less.
+    withdraw-after: ${EINVOICE_WITHDRAW_AFTER:PT3H}
+    # The provider's remaining invoices under which the accountants are warned, once a day (kltn-docs 21 BR-09). Only a
+    # provider that tells its quota (SePay: GET /v1/usage) is asked; 0 turns the warning off.
+    quota-warning-below: ${EINVOICE_QUOTA_WARNING_BELOW:50}
     sandbox:
       # How long the sandbox provider takes to "sign and get the tax authority's code" before a result is there.
       processing-delay: ${EINVOICE_SANDBOX_PROCESSING_DELAY:PT5S}

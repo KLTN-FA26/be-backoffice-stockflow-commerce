@@ -64,13 +64,15 @@ class EInvoiceDraftsTest {
     private final SellerProperties seller = new SellerProperties("CONG TY TNHH BAO BI", "0312345678",
             "1 Le Loi, P. Ben Nghe, TP HCM", "Nguyen Van A", "Giam doc");
     private final Clock clock = Clock.fixed(DELIVERED_AT.plusSeconds(60), ZoneOffset.UTC);
+    private final org.springframework.context.ApplicationEventPublisher events =
+            mock(org.springframework.context.ApplicationEventPublisher.class);
     private EInvoiceDrafts drafts;
     /** The invoices "in the database": what a later draft of the same order sees. */
     private final List<EInvoice> saved = new java.util.ArrayList<>();
 
     @BeforeEach
     void setUp() {
-        drafts = new EInvoiceDrafts(invoices, shipments, legalProfiles, customers, seller, clock);
+        drafts = new EInvoiceDrafts(invoices, shipments, legalProfiles, customers, seller, events, clock);
         when(invoices.findLiveOriginalOfShipment(any())).thenReturn(Optional.empty());
         when(invoices.nextCode(any())).thenReturn("EINV-20261112-0001");
         when(invoices.save(any())).thenAnswer(call -> {
@@ -371,6 +373,34 @@ class EInvoiceDraftsTest {
         assertThat(invoice.buyer().email()).as("the contact e-mail: the invoice e-mail's default")
                 .isEqualTo("lien.he@trasua.example.com");
         assertThat(invoice.warnings()).containsExactly(EInvoice.Warning.BUYER_PROFILE_INCOMPLETE);
+        verify(events).publishEvent(new com.stockflow.contracts.EInvoiceBuyerIncomplete(invoice.id(), invoice.code(),
+                invoice.orderId(), invoice.orderNumber(), CUSTOMER,
+                List.of(com.stockflow.contracts.EInvoiceBuyerIncomplete.Missing.TAX_CODE,
+                        com.stockflow.contracts.EInvoiceBuyerIncomplete.Missing.ADDRESS)));
+    }
+
+    @Test
+    @DisplayName("HĐ-8: a buyer without an invoice e-mail is flagged on its own, and Sales are told what is missing")
+    void aBuyerWithoutInvoiceEmail() {
+        when(legalProfiles.legalProfile(CUSTOMER)).thenReturn(Optional.of(new CustomerLegalProfile(CUSTOMER,
+                "Cong ty Tra Sua", "0398765432", "12 Nguyen Hue, TP HCM", "Tran Van B", "Giam doc", null, null,
+                3)));
+
+        EInvoice.Snapshot invoice = drawUp(shipment(UUID.randomUUID(), 20, 5));
+
+        assertThat(invoice.buyer().email()).isNull();
+        assertThat(invoice.warnings()).containsExactly(EInvoice.Warning.BUYER_EMAIL_MISSING);
+        verify(events).publishEvent(new com.stockflow.contracts.EInvoiceBuyerIncomplete(invoice.id(), invoice.code(),
+                invoice.orderId(), invoice.orderNumber(), CUSTOMER,
+                List.of(com.stockflow.contracts.EInvoiceBuyerIncomplete.Missing.EMAIL)));
+    }
+
+    @Test
+    @DisplayName("a complete buyer tells Sales nothing")
+    void aCompleteBuyerTellsNobody() {
+        drawUp(shipment(UUID.randomUUID(), 20, 5));
+
+        verify(events, never()).publishEvent(any(Object.class));
     }
 
     @Test
@@ -410,7 +440,7 @@ class EInvoiceDraftsTest {
 
         when(shipments.find(ORDER, shipmentId)).thenReturn(Optional.of(shipment(shipmentId, 1, 0)));
         EInvoiceDrafts noSeller = new EInvoiceDrafts(invoices, shipments, legalProfiles, customers,
-                new SellerProperties("CONG TY", " ", "1 Le Loi", "A", "Giam doc"), clock);
+                new SellerProperties("CONG TY", " ", "1 Le Loi", "A", "Giam doc"), events, clock);
         assertThatThrownBy(() -> noSeller.drawUp(ORDER, shipmentId)).extracting(EInvoiceDraftsTest::code)
                 .isEqualTo(ErrorCode.SELLER_PROFILE_UNAVAILABLE);
         verify(invoices, never()).save(any());

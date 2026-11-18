@@ -12,7 +12,8 @@ import org.springframework.modulith.events.ApplicationModuleListener;
 import org.springframework.stereotype.Component;
 
 /**
- * Voids a shipment's draft invoice when its delivery is corrected to a failure (kltn-docs 09 §4.3 step 5; 21 §4.5): the
+ * Voids a shipment's draft invoice, or reduces its issued one in full, when its delivery is corrected to a failure
+ * (kltn-docs 09 §4.3 step 5; 21 §4.4, §4.5): the
  * warehouse manager found the carrier reported a delivery that did not happen, so there is nothing to invoice. Heard
  * as {@code ShipmentStatusChanged} from DELIVERED to DELIVERY_FAILED - the one step that is a correction, since a
  * delivery is otherwise final.
@@ -21,10 +22,14 @@ import org.springframework.stereotype.Component;
  * then the shipment is no longer delivered ({@code DeliveredShipments} answers nothing). A shipment delivered again
  * later gets a new draft.</p>
  *
- * <p>An invoice already at the provider, or issued, is not voided: it may exist in law. It now invoices goods that were
- * not delivered, and only a full decrease adjustment by the accountant puts that right (TT 91 Điều 10) - so the
- * accountants are told in the same transaction ({@link EInvoiceNeedsAttention.Cause#DELIVERY_FAILED_AFTER_SUBMISSION}).
- * A log line alone would leave the invoice standing until somebody happened to read the log.</p>
+ * <p>An invoice already at the provider, or issued, is not voided: it may exist in law, and it now invoices goods that
+ * were not delivered. An issued original is reduced in full by the system - the draft adjustment 21 §4.4 asks for, on
+ * the basis {@code DELIVERY_FAILED}, with no agreement to wait for ({@link EInvoiceDrafts#reverseForCorrectedDelivery};
+ * WF-05 HĐ-3) - and the accountants are told to issue it
+ * ({@link EInvoiceNeedsAttention.Cause#DELIVERY_FAILED_REVERSAL_DRAWN_UP}). One still at the provider, replaced, or
+ * already being corrected cannot be reduced whole by the system: the accountants are told it needs their adjustment
+ * ({@link EInvoiceNeedsAttention.Cause#DELIVERY_FAILED_AFTER_SUBMISSION}). Either way in the same transaction: a log
+ * line alone would leave the invoice standing until somebody happened to read the log.</p>
  */
 @Component
 class DeliveryCorrectionListener {
@@ -50,6 +55,17 @@ class DeliveryCorrectionListener {
             case VOIDED -> log.info("The draft e-invoice of shipment {} was voided: its delivery was corrected to a "
                     + "failure", LogSafe.text(event.shipmentCode()));
             case LEFT_FOR_ADJUSTMENT -> {
+                var reversal = drafts.reverseForCorrectedDelivery(event.orderId(), event.shipmentId());
+                if (reversal.isPresent()) {
+                    EInvoice.Snapshot drawn = reversal.get();
+                    log.info("Shipment {} of order {} was corrected to a failed delivery after its e-invoice was "
+                            + "issued: the full reduction {} is drawn up", LogSafe.text(event.shipmentCode()),
+                            LogSafe.text(event.orderNumber()), LogSafe.text(drawn.code()));
+                    events.publishEvent(new EInvoiceNeedsAttention(drawn.id(), drawn.code(), drawn.orderId(),
+                            drawn.orderNumber(), EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_REVERSAL_DRAWN_UP, null,
+                            null, drawn.issueDueAt()));
+                    return;
+                }
                 log.warn("Shipment {} of order {} was corrected to a failed delivery after its e-invoice went to the "
                         + "provider: the invoice needs an adjustment", LogSafe.text(event.shipmentCode()),
                         LogSafe.text(event.orderNumber()));

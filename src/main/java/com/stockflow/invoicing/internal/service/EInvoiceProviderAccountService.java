@@ -91,10 +91,18 @@ public class EInvoiceProviderAccountService {
     /**
      * Makes a series the one invoices of its year are numbered under at a provider.
      *
+     * <p>For a provider that lists its account's templates ({@link EInvoiceProvider#checkSeries}: SePay), the template
+     * code and the symbol are checked against that list now (HĐ-1): a series it does not offer would have every invoice
+     * sent under it refused, which used to surface only as invoices that never left SUBMITTING. A provider that is not
+     * configured yet, or lists nothing, is not asked; its invoices are then refused under a code of their own if the
+     * series is wrong.</p>
+     *
      * @param providerTemplateCode the provider's own code of the template; required for a real provider (every
-     *                             SInvoice call names the template by it), absent for the sandbox
+     *                             SInvoice and SePay call names the template by it), absent for the sandbox
      * @throws BusinessException 404 {@code NOT_FOUND}; 400 {@code VALIDATION_FAILED} when the symbol is not of the year
-     *         or the provider's template code is missing or superfluous
+     *         or the provider's template code is missing or superfluous; 409 {@code EINVOICE_SERIES_NOT_AT_PROVIDER}
+     *         when the provider does not offer the template and symbol on the account; 503
+     *         {@code EINVOICE_PROVIDER_UNAVAILABLE} when it does not answer the question
      */
     @Transactional
     @Auditable(action = AuditAction.UPDATE, resourceType = "einvoice-settings", resourceId = "#provider")
@@ -115,6 +123,22 @@ public class EInvoiceProviderAccountService {
         if (sandbox != (ownTemplateCode == null)) {
             throw invalid("providerTemplateCode", sandbox ? "The sandbox has no template code of its own"
                     : "The provider's own template code is required");
+        }
+        if (!sandbox) {
+            EInvoiceProvider.SeriesCheck offered;
+            try {
+                offered = providers.find(provider).map(port -> port.checkSeries(ownTemplateCode, symbol))
+                        .orElse(EInvoiceProvider.SeriesCheck.NOT_CHECKED);
+            } catch (EInvoiceProvider.ProviderUnavailableException unavailable) {
+                throw new BusinessException(ErrorCode.EINVOICE_PROVIDER_UNAVAILABLE,
+                        "%s did not say whether it offers template %s, symbol %s".formatted(provider, ownTemplateCode,
+                                symbol));
+            }
+            if (offered == EInvoiceProvider.SeriesCheck.NOT_OFFERED) {
+                throw new BusinessException(ErrorCode.EINVOICE_SERIES_NOT_AT_PROVIDER, ("%s does not offer template %s, "
+                        + "symbol %s on the account; use one of the account's templates").formatted(provider,
+                        ownTemplateCode, symbol));
+            }
         }
         accounts.useSeries(new InvoiceSeries(provider, templateCode, symbol, year), ownTemplateCode);
     }

@@ -58,6 +58,13 @@ public interface OrderRepository {
      */
     Optional<java.time.Instant> confirmedAt(UUID orderId);
 
+    /**
+     * Whether a return request against the shipment is open or resolved - anything but REJECTED, CANCELLED and EXPIRED
+     * (WF-05 TH-1: a return names the delivered shipment it is against). Such a delivery is not corrected to a failure
+     * ({@code ORDER_DELIVERY_HAS_RETURN}). Read under the order's lock: opening a return takes the same lock.
+     */
+    boolean hasReturnAgainst(UUID orderId, UUID shipmentId);
+
     /** The status and hold reason of each order among {@code ids} that exists, in one query, without its lines. */
     List<com.stockflow.order.api.OrderHoldState> holdStates(java.util.Collection<UUID> ids);
 

@@ -48,7 +48,8 @@ public interface PaymentService {
 
     /**
      * 4B-9 (15 §4.6 step 19, BR-16): the rest of a contract order was closed. What its installments still owe is
-     * lowered by the goods closed - those tied to an undelivered batch first, then the latest - so the customer never
+     * lowered by the goods closed - those tied to a batch the closure closed (none of its goods handed over, WF-05
+     * TT-5) first, then the latest - so the customer never
      * pays more than the goods received and the fees; what was paid above that pays the closure's fee first and the
      * rest is to be refunded; a shortfall becomes the cancellation fee item. In the caller's transaction, after the
      * order's lock; once per closure.
@@ -59,8 +60,10 @@ public interface PaymentService {
 
     /**
      * 4D-3 (17 §4.10 step 40; 15 §4.5 step 15, BR-14): goods that came back on a return are refunded. What they were
-     * worth comes off what the order's installments still owe - after delivery first, the latest first - and what was
-     * paid already is to be refunded; the accountant records the refund made (15 §4.5 step 16). No fee. In the
+     * worth comes off what the order's installments still owe for goods the customer has - the returned batch's
+     * first, then after delivery first, the latest first, never a batch still to come while paid money is left to hand
+     * back (WF-05 TT-5) - and what was paid already is to be refunded; the accountant records the refund made (15 §4.5
+     * step 16). No fee. In the
      * caller's transaction, after the order's lock (orders, then installments); once per return.
      *
      * @return empty for an order without installments (no signed contract)

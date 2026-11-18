@@ -31,6 +31,7 @@ import com.stockflow.invoicing.internal.controller.dto.RecordErrorNoticeRequest;
 import com.stockflow.invoicing.internal.controller.dto.ReplaceEInvoiceRequest;
 import com.stockflow.invoicing.internal.controller.dto.ReviseEInvoiceRequest;
 import com.stockflow.invoicing.internal.controller.dto.VoidEInvoiceRequest;
+import com.stockflow.invoicing.internal.controller.dto.WithdrawEInvoiceRequest;
 import com.stockflow.invoicing.internal.domain.EInvoiceQueries;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
 import com.stockflow.invoicing.internal.domain.EInvoiceType;
@@ -266,7 +267,9 @@ class EInvoiceController {
     @Operation(summary = "Issue a draft through the provider. Answers SUBMITTING at once: the provider is called "
             + "afterwards, and the invoice becomes ISSUED or REJECTED when it has answered (read it again, or ask with "
             + "/reconciliation). 409 EINVOICE_BUYER_PROFILE_INCOMPLETE while the buyer's name, tax code or address is "
-            + "missing; 409 EINVOICE_OLDER_DRAFT_PENDING while an invoice of the same series dated before it is at the "
+            + "missing (a missing invoice e-mail is only the warning BUYER_EMAIL_MISSING); 409 "
+            + "EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE for a correction whose original was issued through a provider "
+            + "that is not usable any more (it goes only through that provider); 409 EINVOICE_OLDER_DRAFT_PENDING while an invoice of the same series dated before it is at the "
             + "provider (a draft or a rejected one does not keep it back); 409 EINVOICE_TAX_EXEMPT_NOT_SUPPORTED for a "
             + "line at 0% (tax class EXEMPT, which cannot be issued yet)")
     @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.APPROVE, scope = DataScope.ALL)
@@ -288,6 +291,22 @@ class EInvoiceController {
                                                   @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(InvoicingWebMapper.toResponse(issuance.resubmitAsNew(id, request.version(),
+                user.userId()), clock.instant()));
+    }
+
+    @PostMapping("/{id}/withdrawal")
+    @Operation(summary = "Take back an e-invoice stuck at the provider (SUBMITTING): it becomes REJECTED with code "
+            + "WITHDRAWN_NO_PROVIDER_RECORD and the reason as its message, to be reopened and issued again under a new "
+            + "transaction. Only when it was last sent longer ago than the provider can still be working on it "
+            + "(stockflow.invoicing.withdraw-after, 3 hours) and the provider, asked now, has no record of it; "
+            + "otherwise 409 EINVOICE_WITHDRAWAL_REFUSED (use /reconciliation when the provider holds it). 503 "
+            + "EINVOICE_PROVIDER_UNAVAILABLE when the provider does not answer")
+    @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.APPROVE, scope = DataScope.ALL)
+    public ApiResponse<EInvoiceResponse> withdraw(@PathVariable UUID id,
+                                                  @Valid @RequestBody WithdrawEInvoiceRequest request,
+                                                  @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(InvoicingWebMapper.toResponse(issuance.withdraw(id, request.version(), request.reason(),
                 user.userId()), clock.instant()));
     }
 
@@ -344,7 +363,8 @@ class EInvoiceController {
     @PutMapping(path = "/{id}/agreement", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @Operation(summary = "Attach the written agreement with the buyer to a draft correction of an error (multipart: "
             + "file - the signed PDF, number, date, version). Without it the correction is not issued: 409 "
-            + "EINVOICE_AGREEMENT_REQUIRED")
+            + "EINVOICE_AGREEMENT_REQUIRED. On a DELIVERY_FAILED reduction the same fields carry optional written "
+            + "evidence of the failed delivery; it is issued without")
     @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.UPDATE, scope = DataScope.ALL)
     public ApiResponse<EInvoiceResponse> attachAgreement(
             @PathVariable UUID id,
@@ -388,7 +408,9 @@ class EInvoiceController {
     @PostMapping("/{id}/error-notices")
     @Operation(summary = "Notify an issued e-invoice as drawn up wrongly (04/SS-HDDT): the buyer's name or address "
             + "was wrong and the tax code right. No new invoice is drawn up and the invoice does not change. A wrong "
-            + "tax code or amount is adjusted or replaced instead")
+            + "tax code or amount is adjusted or replaced instead. 409 EINVOICE_ERROR_NOTICE_NOT_SUPPORTED when the "
+            + "invoice's provider cannot send the form (SePay, Viettel): it is filed on the provider's or the tax "
+            + "authority's portal, and nothing is recorded. The buyer is told once the provider took the notice in")
     @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.APPROVE, scope = DataScope.ALL)
     public ApiResponse<EInvoiceErrorNoticeResponse> notifyError(@PathVariable UUID id,
                                                                 @Valid @RequestBody RecordErrorNoticeRequest request,
@@ -401,7 +423,8 @@ class EInvoiceController {
 
     @PostMapping("/{id}/error-notices/{noticeId}/sending")
     @Operation(summary = "Send again a notice the provider never got, or ask for the answer of one on its way. 409 "
-            + "EINVOICE_ERROR_NOTICE_NOT_SENDABLE once it was answered")
+            + "EINVOICE_ERROR_NOTICE_NOT_SENDABLE once it was answered; 409 EINVOICE_ERROR_NOTICE_NOT_SUPPORTED when "
+            + "the invoice's provider cannot send it")
     @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.APPROVE, scope = DataScope.ALL)
     public ApiResponse<EInvoiceErrorNoticeResponse> sendErrorNotice(@PathVariable UUID id, @PathVariable UUID noticeId,
                                                                     @AuthenticatedUser CurrentUser user) {

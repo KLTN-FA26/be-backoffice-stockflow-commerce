@@ -8,7 +8,9 @@ import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.RecordRetention;
 import com.stockflow.common.storage.StorageException;
 import com.stockflow.common.storage.StoredFile;
+import com.stockflow.contracts.EInvoiceIssued;
 import com.stockflow.contracts.EInvoiceNeedsAttention;
+import com.stockflow.contracts.EInvoiceProviderAccountAlert;
 import com.stockflow.invoicing.internal.domain.CorrectionBasis;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceFixtures;
@@ -155,14 +157,16 @@ class EInvoiceIssuanceStepsTest {
     @Test
     @DisplayName("a correction is not sent to a provider that would issue it as an original: 409, and it stays a draft")
     void aCorrectionIsNotSentToAProviderThatCannotCorrectIt() {
-        EInvoice correction = EInvoiceFixtures.agreed(EInvoiceFixtures.adjustment(
-                EInvoiceFixtures.in(EInvoiceStatus.ISSUED), CorrectionBasis.ERROR, -1));
+        EInvoice original = EInvoiceFixtures.in(EInvoiceStatus.ISSUED);
+        EInvoice correction = EInvoiceFixtures.agreed(EInvoiceFixtures.adjustment(original, CorrectionBasis.ERROR,
+                -1));
         when(invoices.findByIdForUpdate(correction.id())).thenReturn(Optional.of(correction));
-        when(settings.active()).thenReturn(new InvoiceSettings.Provider("VIETTEL_SINVOICE", "SANDBOX",
-                "https://sinvoice.example", "user", true, true, 1));
-        EInvoiceProvider viettel = mock(EInvoiceProvider.class);
-        when(viettel.issuesCorrections()).thenReturn(false);
-        when(providers.require("VIETTEL_SINVOICE")).thenReturn(viettel);
+        when(invoices.findById(original.id())).thenReturn(Optional.of(original));
+        when(settings.active()).thenReturn(new InvoiceSettings.Provider("SANDBOX", "SANDBOX",
+                "https://sandbox.example", "user", true, true, 1));
+        EInvoiceProvider sandbox = mock(EInvoiceProvider.class);
+        when(sandbox.issuesCorrections()).thenReturn(false);
+        when(providers.require("SANDBOX")).thenReturn(sandbox);
 
         assertThatThrownBy(() -> steps.submit(correction.id(), null, null))
                 .isInstanceOfSatisfying(BusinessException.class, refused -> {
@@ -222,6 +226,136 @@ class EInvoiceIssuanceStepsTest {
 
         assertThat(draft.status()).isEqualTo(EInvoiceStatus.DRAFT);
         verify(invoices, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("HĐ-5: a correction goes through the provider that issued the original, not the one in use now")
+    void aCorrectionGoesThroughTheOriginalsProvider() {
+        EInvoice correction = aCorrectionOfASandboxInvoiceWhileSepayIsInUse();
+        when(providers.usable("SANDBOX")).thenReturn(true);
+        EInvoiceProvider sandbox = mock(EInvoiceProvider.class);
+        when(sandbox.issuesCorrections()).thenReturn(true);
+        when(providers.require("SANDBOX")).thenReturn(sandbox);
+        when(settings.seriesInUse("SANDBOX", correction.issueDate().getYear()))
+                .thenReturn(Optional.of(EInvoiceFixtures.SERIES));
+
+        EInvoice.Snapshot sent = steps.submit(correction.id(), null, null);
+
+        assertThat(sent.status()).isEqualTo(EInvoiceStatus.SUBMITTING);
+        assertThat(sent.provider()).isEqualTo("SANDBOX");
+        assertThat(sent.symbol()).isEqualTo(EInvoiceFixtures.SERIES.symbol());
+        verify(providers, never()).require("SEPAY_EINVOICE");
+        verify(settings, never()).seriesInUse(eq("SEPAY_EINVOICE"), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
+    @DisplayName("HĐ-5: the original's provider no longer usable - 409 EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE, never "
+            + "sent to the provider in use")
+    void aCorrectionIsNeverSentToAnotherProvider() {
+        EInvoice correction = aCorrectionOfASandboxInvoiceWhileSepayIsInUse();
+        when(providers.usable("SANDBOX")).thenReturn(false);
+
+        assertThatThrownBy(() -> steps.submit(correction.id(), null, null))
+                .isInstanceOfSatisfying(BusinessException.class, refused -> {
+                    assertThat(refused.errorCode()).isEqualTo(ErrorCode.EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE);
+                    assertThat(refused.errorCode().httpStatus()).isEqualTo(409);
+                });
+
+        assertThat(correction.status()).isEqualTo(EInvoiceStatus.DRAFT);
+        verify(providers, never()).require(any());
+        verify(invoices, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("HĐ-5: no series in use at the original's provider for the year - refused the same way")
+    void aCorrectionNeedsASeriesAtTheOriginalsProvider() {
+        EInvoice correction = aCorrectionOfASandboxInvoiceWhileSepayIsInUse();
+        when(providers.usable("SANDBOX")).thenReturn(true);
+        EInvoiceProvider sandbox = mock(EInvoiceProvider.class);
+        when(sandbox.issuesCorrections()).thenReturn(true);
+        when(providers.require("SANDBOX")).thenReturn(sandbox);
+        when(settings.seriesInUse("SANDBOX", correction.issueDate().getYear())).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> steps.submit(correction.id(), null, null))
+                .isInstanceOfSatisfying(BusinessException.class, refused -> assertThat(refused.errorCode())
+                        .isEqualTo(ErrorCode.EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE));
+        verify(invoices, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("HĐ-1: a refusal of the provider's account is announced once per cause, not as the invoice's refusal")
+    void aRefusalOfTheAccountIsAnnouncedAsTheAccounts() {
+        EInvoiceProvider sandbox = mock(EInvoiceProvider.class);
+        when(providers.find(invoice.provider())).thenReturn(Optional.of(sandbox));
+        when(sandbox.accountProblem("SEPAY_QUOTA_EXHAUSTED"))
+                .thenReturn(Optional.of(EInvoiceProvider.AccountProblem.QUOTA_EXHAUSTED));
+
+        steps.rejected(invoice.id(), invoice.transactionId(), "SEPAY_QUOTA_EXHAUSTED", "QUOTA_HAS_BEEN_USERD_UP: het");
+
+        assertThat(invoice.status()).as("refused: nothing was created, it is issued again once the plan is topped up")
+                .isEqualTo(EInvoiceStatus.REJECTED);
+        ArgumentCaptor<Object> told = ArgumentCaptor.forClass(Object.class);
+        verify(events).publishEvent(told.capture());
+        assertThat(told.getValue()).isInstanceOfSatisfying(EInvoiceProviderAccountAlert.class, alert -> {
+            assertThat(alert.provider()).isEqualTo(invoice.provider());
+            assertThat(alert.problem()).isEqualTo(EInvoiceProviderAccountAlert.Problem.QUOTA_EXHAUSTED);
+            assertThat(alert.rejectionCode()).isEqualTo("SEPAY_QUOTA_EXHAUSTED");
+        });
+    }
+
+    @Test
+    @DisplayName("HĐ-1: an invoice the accountant took back from the provider is not announced as a refusal")
+    void aWithdrawalIsNotARefusal() {
+        steps.rejected(invoice.id(), invoice.transactionId(), EInvoice.WITHDRAWN_CODE, "SePay confirmed: no record");
+
+        assertThat(invoice.status()).isEqualTo(EInvoiceStatus.REJECTED);
+        assertThat(invoice.snapshot().rejectionMessage()).isEqualTo("SePay confirmed: no record");
+        verify(events, never()).publishEvent(any(Object.class));
+    }
+
+    @Test
+    @DisplayName("HĐ-8: an XML whose seller's signature does not hold is issued but flagged, and the accountants are "
+            + "told instead of the buyer")
+    void anInvoiceWithASignatureThatDoesNotHoldIsNotSentToTheBuyer() {
+        EInvoiceProvider signing = mock(EInvoiceProvider.class);
+        when(signing.signsDocuments()).thenReturn(true);
+        when(providers.find(invoice.provider())).thenReturn(Optional.of(signing));
+
+        steps.issued(invoice.id(), invoice.transactionId(), ISSUED, DOCUMENTS);
+
+        assertThat(invoice.status()).as("the provider issued it: it exists in law").isEqualTo(EInvoiceStatus.ISSUED);
+        assertThat(invoice.snapshot().warnings()).containsExactly(EInvoice.Warning.SIGNATURE_INVALID);
+        ArgumentCaptor<Object> told = ArgumentCaptor.forClass(Object.class);
+        verify(events).publishEvent(told.capture());
+        assertThat(told.getValue()).isInstanceOfSatisfying(EInvoiceNeedsAttention.class, attention ->
+                assertThat(attention.cause()).isEqualTo(EInvoiceNeedsAttention.Cause.SIGNATURE_INVALID));
+    }
+
+    @Test
+    @DisplayName("HĐ-8: a provider whose documents are not signed (the sandbox) is not held to a signature")
+    void anUnsignedProvidersInvoiceGoesToTheBuyer() {
+        EInvoiceProvider sandbox = mock(EInvoiceProvider.class);
+        when(sandbox.signsDocuments()).thenReturn(false);
+        when(providers.find(invoice.provider())).thenReturn(Optional.of(sandbox));
+
+        steps.issued(invoice.id(), invoice.transactionId(), ISSUED, DOCUMENTS);
+
+        assertThat(invoice.snapshot().warnings()).isEmpty();
+        ArgumentCaptor<Object> told = ArgumentCaptor.forClass(Object.class);
+        verify(events).publishEvent(told.capture());
+        assertThat(told.getValue()).isInstanceOf(EInvoiceIssued.class);
+    }
+
+    /** An adjustment of an invoice issued at the sandbox, drawn up after SePay was put in use. */
+    private EInvoice aCorrectionOfASandboxInvoiceWhileSepayIsInUse() {
+        EInvoice original = EInvoiceFixtures.in(EInvoiceStatus.ISSUED);
+        EInvoice correction = EInvoiceFixtures.adjustment(original, CorrectionBasis.RETURN, -1);
+        when(invoices.findByIdForUpdate(correction.id())).thenReturn(Optional.of(correction));
+        when(invoices.findById(original.id())).thenReturn(Optional.of(original));
+        when(invoices.findEarlierSubmitting(any(), any(), any())).thenReturn(Optional.empty());
+        when(settings.active()).thenReturn(new InvoiceSettings.Provider("SEPAY_EINVOICE", "SANDBOX", null, null,
+                false, false, 1));
+        return correction;
     }
 
     private EInvoice aDraftToSendAtTheSandbox(EInvoice draft) {

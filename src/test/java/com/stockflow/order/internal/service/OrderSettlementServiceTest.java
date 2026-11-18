@@ -409,4 +409,66 @@ class OrderSettlementServiceTest {
         assertThat(at(LATER).complete(order.id().value())).isTrue();
         assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
     }
+
+    // ---- WF-05 DĐ-1: closing from the refund branch asks what completion asks, and completes the contract
+    // ---------------
+
+    /** Delivered on {@code shipment} at NOW, then returned in part and refunded at LATER. */
+    private static Order refundedAfterDeliveryOn(UUID shipment) {
+        Order order = deliveredOn(shipment);
+        order.requestReturn(STAFF, LATER);
+        order.goodsReturned(STAFF, LATER, null);
+        order.refunded(false, STAFF, LATER, "REFUNDED");
+        order.pullDomainEvents();
+        order.pullTransitions();
+        return order;
+    }
+
+    @Test
+    @DisplayName("DĐ-1: a PARTIALLY_REFUNDED order whose delivered shipment has no issued e-invoice is not closed, nor "
+            + "its contract completed; invoiced, it closes and its signed contract completes with it")
+    void theRefundBranchClosesOnlyInvoicedAndCompletesTheContract() {
+        UUID shipment = UUID.randomUUID();
+        Order order = refundedAfterDeliveryOn(shipment);
+        SalesContract contract = mock(SalesContract.class);
+        when(contract.status()).thenReturn(com.stockflow.order.internal.domain.SalesContractStatus.SIGNED);
+        when(contract.complete(any())).thenReturn(true);
+        when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
+        when(contracts.findLiveByOrderId(order.id().value())).thenReturn(Optional.of(contract));
+        when(invoices.invoiced(List.of(shipment))).thenReturn(Set.of());
+        Instant closing = LATER.plus(Duration.ofDays(31));
+
+        assertThat(at(closing).close(order.id().value())).isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
+        verify(repository, never()).save(any());
+        verify(contract, never()).complete(any());
+
+        when(invoices.invoiced(List.of(shipment))).thenReturn(Set.of(shipment));
+        assertThat(at(closing).close(order.id().value())).isTrue();
+        assertThat(order.status()).isEqualTo(OrderStatus.CLOSED);
+        verify(repository).save(order);
+        verify(contract).complete(closing);
+        verify(contracts).save(contract);
+    }
+
+    @Test
+    @DisplayName("DĐ-1: a COMPLETED order closes as before - its contract completed with it already - and a contract "
+            + "not signed is never completed by a closing")
+    void theNormalBranchIsUnchanged() {
+        UUID shipment = UUID.randomUUID();
+        Order completed = deliveredOn(shipment);
+        when(repository.findByIdForUpdate(completed.id())).thenReturn(Optional.of(completed));
+        assertThat(at(LATER).complete(completed.id().value())).isTrue();
+        when(invoices.invoiced(List.of(shipment))).thenReturn(Set.of());
+        assertThat(at(LATER.plus(Duration.ofDays(31))).close(completed.id().value()))
+                .as("closing a COMPLETED order asks no invoice again").isTrue();
+
+        Order refunded = refunded(false);
+        SalesContract draft = mock(SalesContract.class);
+        when(draft.status()).thenReturn(com.stockflow.order.internal.domain.SalesContractStatus.DRAFT);
+        when(repository.findByIdForUpdate(refunded.id())).thenReturn(Optional.of(refunded));
+        when(contracts.findLiveByOrderId(refunded.id().value())).thenReturn(Optional.of(draft));
+        assertThat(at(LATER.plus(Duration.ofDays(31))).close(refunded.id().value())).isTrue();
+        verify(draft, never()).complete(any());
+    }
 }

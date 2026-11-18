@@ -34,8 +34,11 @@ import java.util.concurrent.atomic.AtomicReference;
  * GET  /v1/provider-accounts                      the account's invoicing registrations
  * POST /v1/invoices/create                        an invoice; is_draft false issues it → data.tracking_code
  * POST /v1/invoices/adjust, /v1/invoices/replace  a correction of an issued invoice
+ * GET  /v1/invoices/{create|adjust|replace}/check/{tracking_code}   Pending, Success or Failed, with a message
  * GET  /v1/invoices/{reference_code}              the invoice under our reference; 404 when SePay never recorded one
  * GET  /v1/invoices/{reference_code}/download?type=pdf|xml   data.content, base64
+ * GET  /v1/provider-accounts/{id}                 one registration, with its templates and series
+ * GET  /v1/usage                                  data.quota_remaining: the invoices left in the plan
  * </pre>
  *
  * <p>Every call but the token carries {@code Authorization: Bearer}. The token is kept in memory until shortly before it
@@ -101,6 +104,31 @@ class SepayEInvoiceClient {
 
     Answer providerAccounts() {
         return authorised("GET", "/v1/provider-accounts?per_page=100", null);
+    }
+
+    Answer providerAccount(String id) {
+        return authorised("GET", "/v1/provider-accounts/" + segment(id), null);
+    }
+
+    Answer usage() {
+        return authorised("GET", "/v1/usage", null);
+    }
+
+    /**
+     * Where a submission SePay took in stands.
+     *
+     * @param reference {@code <create|adjust|replace>/<tracking_code>}, as {@link SepayEInvoiceAnswers#trackingReference}
+     *                  wrote it
+     * @throws IllegalArgumentException for anything else: nothing read back from a log goes into a path unchecked
+     */
+    Answer tracking(String reference) {
+        int slash = reference == null ? -1 : reference.indexOf('/');
+        String kind = slash < 0 ? "" : reference.substring(0, slash);
+        String code = slash < 0 ? "" : reference.substring(slash + 1);
+        if (!java.util.Set.of("create", "adjust", "replace").contains(kind) || !code.matches("[0-9A-Za-z-]{1,64}")) {
+            throw new IllegalArgumentException("Not a SePay tracking reference");
+        }
+        return authorised("GET", "/v1/invoices/" + kind + "/check/" + segment(code), null);
     }
 
     Answer create(String body) {
