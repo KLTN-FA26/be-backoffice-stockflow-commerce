@@ -660,6 +660,11 @@ public enum ErrorCode {
     ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED("This order does not allow partial shipments", 409),
     /** PACK-PARTIAL: whether the order may ship in parts can no longer change once everything left or it is closed. */
     ORDER_PARTIAL_SHIPMENT_LOCKED("Partial shipment can no longer be changed on this order", 409),
+    /**
+     * kltn-docs 17 §4.7 step 24, BR-16; 08 BR-04: the delivery address no longer changes - a carton of the order is
+     * labelled, or the order is in a status where only something else changes (a contract sent, packed and later).
+     */
+    ORDER_ADDRESS_LOCKED("The delivery address of this order can no longer change", 409),
     /** SCRUM-466: a task is picked in one warehouse; the order's stock is held in more than one, or elsewhere. */
     FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE("Stock held for this order is in another warehouse", 409),
     /** SCRUM-267 (docs 07 step 6): the bin scanned is not the one this pick line takes its goods from. */

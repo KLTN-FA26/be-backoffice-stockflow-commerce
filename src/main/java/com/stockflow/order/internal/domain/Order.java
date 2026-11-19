@@ -57,6 +57,16 @@ public final class Order extends AggregateRoot {
      */
     private static final java.util.Set<OrderStatus> LABELLABLE = java.util.EnumSet.of(OrderStatus.READY_TO_FULFILL,
             OrderStatus.PICKING, OrderStatus.PARTIALLY_FULFILLED);
+    /**
+     * Where Sales may change the delivery address (kltn-docs 17 §4.7 step 24): a DRAFT order is edited freely (14), and
+     * from PENDING_PAYMENT to PICKING the address alone changes, until the first carton is labelled (17 BR-16, 08 BR-04).
+     * An order ON_HOLD counts as the status it was held from: a wrong address is held ADDRESS, corrected, then released
+     * (08 §6 edge case). PENDING_CONTRACT is not here: the contract sent carries the address, so Sales cancels it and
+     * the order is a DRAFT again (14 §4.3 step 16).
+     */
+    private static final java.util.Set<OrderStatus> ADDRESS_CHANGEABLE = java.util.EnumSet.of(OrderStatus.DRAFT,
+            OrderStatus.PENDING_PAYMENT, OrderStatus.CONFIRMED, OrderStatus.AWAITING_STOCK, OrderStatus.READY_TO_FULFILL,
+            OrderStatus.PICKING);
 
     private final OrderId id;
     private final OrderNumber orderNumber;
@@ -64,7 +74,8 @@ public final class Order extends AggregateRoot {
     private final String contactName;
     private final String contactEmail;
     private final String contactPhone;
-    private final OrderAddressSnapshot shippingAddress;
+    /** Changed only by {@link #changeShippingAddress}, until the first label (17 BR-16). */
+    private OrderAddressSnapshot shippingAddress;
     private final OrderAddressSnapshot billingAddress;
     private final UUID requestId;
     private final List<OrderLine> lines;
@@ -809,6 +820,38 @@ public final class Order extends AggregateRoot {
     }
 
     public Instant firstLabeledAt() { return firstLabeledAt; }
+
+    /**
+     * Sales change the delivery address (kltn-docs 17 §4.7 steps 23-24, BR-16; 08 BR-04), under the order's row lock -
+     * the lock the first label takes ({@link #recordFirstLabel}), so no label is printed between this check and the
+     * change. The same address again changes nothing.
+     *
+     * @return whether the address changed
+     * @throws BusinessException {@code ORDER_CANCELLED}; {@code ORDER_ADDRESS_LOCKED} once a carton of the order is
+     *         labelled, or in a status where the address does not change ({@link #ADDRESS_CHANGEABLE})
+     */
+    public boolean changeShippingAddress(OrderAddressSnapshot to) {
+        java.util.Objects.requireNonNull(to, "to");
+        if (status == OrderStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.ORDER_CANCELLED,
+                    "Order %s is cancelled; its delivery address does not change".formatted(orderNumber));
+        }
+        if (firstLabeledAt != null) {
+            throw new BusinessException(ErrorCode.ORDER_ADDRESS_LOCKED, ("Order %s has a carton labelled since %s; its "
+                    + "delivery address does not change (kltn-docs 08 BR-04)").formatted(orderNumber, firstLabeledAt));
+        }
+        OrderStatus standing = status == OrderStatus.ON_HOLD ? statusBeforeHold : status;
+        if (!ADDRESS_CHANGEABLE.contains(standing)) {
+            throw new BusinessException(ErrorCode.ORDER_ADDRESS_LOCKED, (standing == OrderStatus.PENDING_CONTRACT
+                    ? "Order %s waits for its contract to be signed; cancel the contract to change the address"
+                    : "Order %s is %s; its delivery address does not change now").formatted(orderNumber, status));
+        }
+        if (to.equals(shippingAddress)) {
+            return false;
+        }
+        shippingAddress = to;
+        return true;
+    }
 
     /** Rehydration of when the first shipping label was printed. */
     public void restoreFirstLabeled(Instant at) {
