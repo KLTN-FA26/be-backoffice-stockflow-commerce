@@ -40,7 +40,7 @@ import static org.mockito.Mockito.when;
  */
 class CartonMeasuresTest {
 
-    private static final String SOFA = "SOFA-3S-GREY";
+    private static final String CUP = "LY-GIAY-DEMO-12OZ-XANH";
 
     private final InventoryControlService itemControls = mock(InventoryControlService.class);
     private final PickLineJpaRepository pickLines = mock(PickLineJpaRepository.class);
@@ -53,8 +53,8 @@ class CartonMeasuresTest {
     private final UUID shipment = UUID.randomUUID();
 
     @BeforeEach
-    void theSofaSpecWasCorrected() {
-        spec(SOFA, "230", "95", "90", "55", true);
+    void theCupCartonSpecWasCorrected() {
+        spec(CUP, "230", "95", "90", "55", true);
     }
 
     private void spec(String sku, String length, String width, String height, String weight, boolean rotatable) {
@@ -64,7 +64,7 @@ class CartonMeasuresTest {
                 rotatable)));
     }
 
-    /** A LABELED carton of one sofa, measured as the old spec said: 215 x 95 x 90 cm, 52.5 kg. */
+    /** A LABELED carton of cups, measured as the old spec said: 215 x 95 x 90 cm, 52.5 kg. */
     private PackageJpaEntity labelled(String sku) {
         PackageJpaEntity carton = mock(PackageJpaEntity.class);
         UUID id = UUID.randomUUID();
@@ -110,7 +110,7 @@ class CartonMeasuresTest {
     @DisplayName("a labelled carton no plan holds takes the corrected spec: size, full weight, rotatable, and the "
             + "volumetric weight 230 x 95 x 90 / 6000 = 327.750; it is saved and flushed")
     void aFreeCartonIsRemeasured() {
-        PackageJpaEntity carton = labelled(SOFA);
+        PackageJpaEntity carton = labelled(CUP);
         linesKnown();
 
         measures.refreshForPlanning(List.of(carton));
@@ -126,9 +126,9 @@ class CartonMeasuresTest {
     @Test
     @DisplayName("a carton a load plan holds, or one on a vehicle, keeps what its layout was computed from")
     void plannedOrLoadedCartonsKeepTheirMeasures() {
-        PackageJpaEntity inPlan = labelled(SOFA);
-        PackageJpaEntity onVehicle = labelled(SOFA);
-        PackageJpaEntity free = labelled(SOFA);
+        PackageJpaEntity inPlan = labelled(CUP);
+        PackageJpaEntity onVehicle = labelled(CUP);
+        PackageJpaEntity free = labelled(CUP);
         linesKnown();
         LoadPlanPackageJpaEntity membership = member(inPlan);
         DispatchLoadPackageJpaEntity onBoard = loaded(onVehicle);
@@ -146,8 +146,8 @@ class CartonMeasuresTest {
     @Test
     @DisplayName("a spec that did not change writes nothing")
     void unchangedSpecWritesNothing() {
-        spec(SOFA, "215", "95", "90", "52.5", true);
-        PackageJpaEntity carton = labelled(SOFA);
+        spec(CUP, "215", "95", "90", "52.5", true);
+        PackageJpaEntity carton = labelled(CUP);
         linesKnown();
 
         measures.refreshForPlanning(List.of(carton));
@@ -159,24 +159,24 @@ class CartonMeasuresTest {
     @Test
     @DisplayName("a spec that lost its size, or a SKU with no carton unit any more, keeps the measures the carton has")
     void unmeasuredOrMissingSpecKeeps() {
-        spec(SOFA, null, null, null, null, true);
-        when(itemControls.cartonSpec(new Sku("TABLE-OAK-160"))).thenReturn(Optional.empty());
-        PackageJpaEntity sofa = labelled(SOFA);
-        PackageJpaEntity table = labelled("TABLE-OAK-160");
+        spec(CUP, null, null, null, null, true);
+        when(itemControls.cartonSpec(new Sku("LY-GIAY-DEMO-12OZ-DO"))).thenReturn(Optional.empty());
+        PackageJpaEntity blue = labelled(CUP);
+        PackageJpaEntity red = labelled("LY-GIAY-DEMO-12OZ-DO");
         linesKnown();
 
-        measures.refreshForPlanning(List.of(sofa, table));
+        measures.refreshForPlanning(List.of(blue, red));
 
-        verify(sofa, never()).remeasure(any(), any(), any(), any(), any(), anyBoolean());
-        verify(table, never()).remeasure(any(), any(), any(), any(), any(), anyBoolean());
+        verify(blue, never()).remeasure(any(), any(), any(), any(), any(), anyBoolean());
+        verify(red, never()).remeasure(any(), any(), any(), any(), any(), anyBoolean());
         verify(packages, never()).saveAllAndFlush(any());
     }
 
     @Test
     @DisplayName("only a rotatable flag changed is a change too")
     void rotatableChangeCounts() {
-        spec(SOFA, "215", "95", "90", "52.5", false);
-        PackageJpaEntity carton = labelled(SOFA);
+        spec(CUP, "215", "95", "90", "52.5", false);
+        PackageJpaEntity carton = labelled(CUP);
         linesKnown();
 
         measures.refreshForPlanning(List.of(carton));
@@ -189,7 +189,7 @@ class CartonMeasuresTest {
     void repackParcelsAndUnlabelledCartonsAreIgnored() {
         PackageJpaEntity parcel = mock(PackageJpaEntity.class);
         when(parcel.getStatus()).thenReturn(PackageStatus.SEALED);
-        PackageJpaEntity removed = labelled(SOFA);
+        PackageJpaEntity removed = labelled(CUP);
         when(removed.getStatus()).thenReturn(PackageStatus.REMOVED);
 
         measures.refreshForPlanning(List.of(parcel, removed));
@@ -218,12 +218,12 @@ class CartonMeasuresTest {
     @DisplayName("specs: a SKU with no carton unit is missing; one with an unmeasured unit is there and not measured; a "
             + "divisor that is not positive is a configuration error")
     void specsAndDivisor() {
-        spec("TABLE-OAK-160", null, "95", "20", "38", true);
-        var specs = measures.specs(List.of(SOFA, "TABLE-OAK-160", "NO-CARTON", SOFA));
+        spec("LY-GIAY-DEMO-12OZ-DO", null, "95", "20", "38", true);
+        var specs = measures.specs(List.of(CUP, "LY-GIAY-DEMO-12OZ-DO", "NO-CARTON", CUP));
 
-        assertThat(specs).containsOnlyKeys(SOFA, "TABLE-OAK-160");
-        assertThat(specs.get(SOFA).measured()).isTrue();
-        assertThat(specs.get("TABLE-OAK-160").measured()).isFalse();
+        assertThat(specs).containsOnlyKeys(CUP, "LY-GIAY-DEMO-12OZ-DO");
+        assertThat(specs.get(CUP).measured()).isTrue();
+        assertThat(specs.get("LY-GIAY-DEMO-12OZ-DO").measured()).isFalse();
         assertThat(measures.divisor()).isEqualTo(6000);
         assertThatThrownBy(() -> new CartonMeasures(itemControls, pickLines, packages, planMembers, loadParcels, 0))
                 .isInstanceOf(IllegalArgumentException.class);

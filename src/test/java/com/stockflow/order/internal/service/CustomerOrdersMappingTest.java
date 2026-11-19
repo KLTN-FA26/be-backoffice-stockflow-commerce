@@ -29,8 +29,8 @@ class CustomerOrdersMappingTest {
     private static final UUID DESIGN = UUID.randomUUID();
 
     private static OrderSummary.LineSummary line(UUID id, int quantity, UUID design) {
-        return new OrderSummary.LineSummary(id, "SOFA-3S-GREY", quantity, Money.vnd(1000), Money.vnd(1000L * quantity),
-                List.of(), design, design == null ? null : "a".repeat(64));
+        return new OrderSummary.LineSummary(id, "LY-GIAY-DEMO-12OZ-XANH", quantity, Money.vnd(1000),
+                Money.vnd(1000L * quantity), List.of(), design, design == null ? null : "a".repeat(64));
     }
 
     private static CustomerOrders.Production production(OrderSummary.LineSummary line, OrderStatus status) {

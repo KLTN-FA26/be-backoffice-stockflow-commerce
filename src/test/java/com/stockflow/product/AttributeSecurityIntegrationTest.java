@@ -40,7 +40,7 @@ import java.util.UUID;
 @TestPropertySource(properties = "stockflow.security.enabled=true")
 class AttributeSecurityIntegrationTest {
     private static final String TEST_ROLE = "ACCOUNTANT";
-    private static final UUID SOFA = DemoData.demoId("demo:cat:SOFA");
+    private static final UUID PAPER_BOXES = DemoData.demoId("demo:cups:category:HOP_GIAY");
 
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;
@@ -110,10 +110,10 @@ class AttributeSecurityIntegrationTest {
     @Test
     void categoryAttributesNeedUpdateToReplace() throws Exception {
         String reader = token("product-attributes:READ");
-        mvc.perform(get("/api/v1/categories/{id}/attributes", SOFA).header("Authorization", reader))
+        mvc.perform(get("/api/v1/categories/{id}/attributes", PAPER_BOXES).header("Authorization", reader))
                 .andExpect(status().isOk());
         mvc.perform(
-                        put("/api/v1/categories/{id}/attributes", SOFA)
+                        put("/api/v1/categories/{id}/attributes", PAPER_BOXES)
                                 .header("Authorization", reader)
                                 .contentType("application/json")
                                 .content("{\"attributes\":[]}"))

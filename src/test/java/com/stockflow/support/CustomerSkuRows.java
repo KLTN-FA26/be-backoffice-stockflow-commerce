@@ -109,7 +109,7 @@ public final class CustomerSkuRows {
 
     /**
      * A SKU of {@code customerId} that handles like the catalogue SKU {@code like}: the same weight, sizes, packages
-     * (a two-package sofa is packed as a kit, LP2-6), storage class, and a barcode of its own.
+     * (a multi-package SKU is packed as a kit, LP2-6), storage class, and a barcode of its own.
      * What a test of picking, packing or loading needs since every order is a contract's, whose lines are only ever the
      * customer's own SKUs (14 BR-04): the demo catalogue's goods, as the customer's.
      */
@@ -132,7 +132,7 @@ public final class CustomerSkuRows {
                 "UPDATE inventory.uom_conversions SET default_shipping = FALSE WHERE id = ?", issued.uomConversionId()));
         // Since 4C-6 a parcel is a checked LPN carton, sized by its carton unit (08 BR-07): the issued carton takes the
         // catalogue SKU's carton size and weight as they are now (a test sets them first, CartonStationSupport), so a
-        // load plan counts the customer's sofas as it counted the catalogue's. Kept as issued where the catalogue
+        // load plan counts the customer's cartons as it counted the catalogue's. Kept as issued where the catalogue
         // declares none.
         tx.executeWithoutResult(s -> jdbc.update("""
                 UPDATE inventory.uom_conversions u

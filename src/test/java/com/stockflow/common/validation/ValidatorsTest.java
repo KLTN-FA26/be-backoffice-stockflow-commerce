@@ -75,8 +75,8 @@ class ValidatorsTest {
         @Test
         @DisplayName("delegates to the value object, so there is one definition of valid")
         void matchesTheValueObject() {
-            assertThat(validator.isValid("SOFA-3S-GREY", null)).isTrue();
-            assertThat(validator.isValid("sofa-3s-grey", null)).isTrue();
+            assertThat(validator.isValid("LY-GIAY-DEMO-12OZ-XANH", null)).isTrue();
+            assertThat(validator.isValid("ly-giay-demo-12oz-xanh", null)).isTrue();
             assertThat(validator.isValid("A B", null)).isFalse();
             assertThat(validator.isValid("AB", null)).isTrue();
             assertThat(validator.isValid("-AB", null)).isFalse();

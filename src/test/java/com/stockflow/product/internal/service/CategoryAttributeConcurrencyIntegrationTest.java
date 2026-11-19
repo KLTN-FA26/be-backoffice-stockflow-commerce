@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Import(PostgresContainer.class)
 class CategoryAttributeConcurrencyIntegrationTest {
 
-    private static final UUID SOFA = DemoData.demoId("demo:cat:SOFA");
+    private static final UUID PAPER_BOXES = DemoData.demoId("demo:cups:category:HOP_GIAY");
     private static final UUID COLOR = DemoData.demoId("demo:attr:COLOR");
     private static final UUID MATERIAL = DemoData.demoId("demo:attr:MATERIAL");
     private static final UUID LENGTH = DemoData.demoId("demo:attr:LENGTH");
@@ -48,14 +48,15 @@ class CategoryAttributeConcurrencyIntegrationTest {
 
     @BeforeEach
     void captureTheSet() {
-        original = new TransactionTemplate(transactionManager).execute(status -> service.list(SOFA).stream()
+        original = new TransactionTemplate(transactionManager).execute(status -> service.list(PAPER_BOXES).stream()
                 .map(v -> new CategoryAttributeEntry(v.attributeId(), v.defaultRole(), v.required(), v.sortOrder()))
                 .toList());
     }
 
     @AfterEach
     void restoreTheSet() {
-        new TransactionTemplate(transactionManager).executeWithoutResult(status -> service.replace(SOFA, original));
+        new TransactionTemplate(transactionManager)
+                .executeWithoutResult(status -> service.replace(PAPER_BOXES, original));
     }
 
     @Test
@@ -64,19 +65,19 @@ class CategoryAttributeConcurrencyIntegrationTest {
         CountDownLatch firstHoldsTheLock = new CountDownLatch(1);
 
         CompletableFuture<Void> first = CompletableFuture.runAsync(() -> tx.executeWithoutResult(status -> {
-            service.replace(SOFA, List.of(new CategoryAttributeEntry(LENGTH, VARIANT_AXIS, false, 0)));
+            service.replace(PAPER_BOXES, List.of(new CategoryAttributeEntry(LENGTH, VARIANT_AXIS, false, 0)));
             firstHoldsTheLock.countDown();
             pause(800);
         }));
         assertThat(firstHoldsTheLock.await(30, TimeUnit.SECONDS)).isTrue();
         CompletableFuture<Void> second = CompletableFuture.runAsync(() -> tx.executeWithoutResult(status ->
-                service.replace(SOFA, List.of(new CategoryAttributeEntry(COLOR, VARIANT_AXIS, true, 0),
+                service.replace(PAPER_BOXES, List.of(new CategoryAttributeEntry(COLOR, VARIANT_AXIS, true, 0),
                         new CategoryAttributeEntry(MATERIAL, DESCRIPTIVE, false, 1)))));
 
         first.get(30, TimeUnit.SECONDS);
         second.get(30, TimeUnit.SECONDS);
 
-        List<CategoryAttributeView> now = tx.execute(status -> service.list(SOFA));
+        List<CategoryAttributeView> now = tx.execute(status -> service.list(PAPER_BOXES));
         assertThat(now).extracting(CategoryAttributeView::attributeCode).containsExactly("COLOR", "MATERIAL");
     }
 

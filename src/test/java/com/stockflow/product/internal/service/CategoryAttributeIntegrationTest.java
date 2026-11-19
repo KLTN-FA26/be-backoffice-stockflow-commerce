@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.tuple;
 @Transactional
 class CategoryAttributeIntegrationTest {
 
-    private static final UUID SOFA = DemoData.demoId("demo:cat:SOFA");
+    private static final UUID PAPER_BOXES = DemoData.demoId("demo:cups:category:HOP_GIAY");
     private static final UUID COLOR = DemoData.demoId("demo:attr:COLOR");
     private static final UUID MATERIAL = DemoData.demoId("demo:attr:MATERIAL");
     private static final UUID LENGTH = DemoData.demoId("demo:attr:LENGTH");
@@ -64,32 +64,35 @@ class CategoryAttributeIntegrationTest {
 
     @Test
     void listsTheDemoSet() {
-        assertThat(service.list(SOFA)).extracting(CategoryAttributeView::attributeCode, CategoryAttributeView::defaultRole)
-                .containsExactlyInAnyOrder(tuple("COLOR", VARIANT_AXIS), tuple("MATERIAL", DESCRIPTIVE));
+        assertThat(service.list(PAPER_BOXES))
+                .extracting(CategoryAttributeView::attributeCode, CategoryAttributeView::defaultRole)
+                .containsExactlyInAnyOrder(tuple("COLOR", VARIANT_AXIS), tuple("MATERIAL", VARIANT_AXIS));
     }
 
     @Test
     void replacingKeepsAnExistingPairAndChangesItInPlace() {
-        UUID rowId = rowId(SOFA, MATERIAL);
-        service.replace(SOFA, List.of(new CategoryAttributeEntry(COLOR, DESCRIPTIVE, false, 0),
+        UUID rowId = rowId(PAPER_BOXES, MATERIAL);
+        service.replace(PAPER_BOXES, List.of(new CategoryAttributeEntry(COLOR, DESCRIPTIVE, false, 0),
                 new CategoryAttributeEntry(MATERIAL, DESCRIPTIVE, true, 1)));
         entityManager.flush();
-        assertThat(rowId(SOFA, MATERIAL)).isEqualTo(rowId);
-        assertThat(service.list(SOFA)).extracting(CategoryAttributeView::attributeCode, CategoryAttributeView::defaultRole)
+        assertThat(rowId(PAPER_BOXES, MATERIAL)).isEqualTo(rowId);
+        assertThat(service.list(PAPER_BOXES))
+                .extracting(CategoryAttributeView::attributeCode, CategoryAttributeView::defaultRole)
                 .containsExactly(tuple("COLOR", DESCRIPTIVE), tuple("MATERIAL", DESCRIPTIVE));
-        assertThat(service.list(SOFA)).extracting(CategoryAttributeView::required).containsExactly(false, true);
+        assertThat(service.list(PAPER_BOXES)).extracting(CategoryAttributeView::required).containsExactly(false, true);
     }
 
     @Test
     void anAttributeLeftOutIsRemovedAndANewOneAdded() {
-        service.replace(SOFA, List.of(new CategoryAttributeEntry(LENGTH, VARIANT_AXIS, false, 0)));
+        service.replace(PAPER_BOXES, List.of(new CategoryAttributeEntry(LENGTH, VARIANT_AXIS, false, 0)));
         entityManager.flush();
-        assertThat(service.list(SOFA)).extracting(CategoryAttributeView::attributeCode).containsExactly("LENGTH");
+        assertThat(service.list(PAPER_BOXES)).extracting(CategoryAttributeView::attributeCode)
+                .containsExactly("LENGTH");
     }
 
     @Test
     void theSameAttributeTwiceInOneRequestIsRefused() {
-        assertThat(errorOf(() -> service.replace(SOFA, List.of(
+        assertThat(errorOf(() -> service.replace(PAPER_BOXES, List.of(
                 new CategoryAttributeEntry(COLOR, VARIANT_AXIS, false, 0),
                 new CategoryAttributeEntry(COLOR, DESCRIPTIVE, false, 1))))).isEqualTo(ErrorCode.VALIDATION_FAILED);
     }
@@ -97,21 +100,22 @@ class CategoryAttributeIntegrationTest {
     @Test
     void aTextAttributeCannotBeAVariantAxis() {
         var text = dictionary.create("NOTE", TEXT, new AttributeDetails("Note", null, false, false, 0));
-        assertThat(errorOf(() -> service.replace(SOFA, List.of(
+        assertThat(errorOf(() -> service.replace(PAPER_BOXES, List.of(
                 new CategoryAttributeEntry(text.id(), VARIANT_AXIS, false, 0))))).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        service.replace(SOFA, List.of(new CategoryAttributeEntry(text.id(), DESCRIPTIVE, false, 0)));
-        assertThat(service.list(SOFA)).extracting(CategoryAttributeView::attributeCode).containsExactly("NOTE");
+        service.replace(PAPER_BOXES, List.of(new CategoryAttributeEntry(text.id(), DESCRIPTIVE, false, 0)));
+        assertThat(service.list(PAPER_BOXES)).extracting(CategoryAttributeView::attributeCode).containsExactly("NOTE");
     }
 
     @Test
     void anInactiveAttributeCannotBeNewlyAdded() {
         deactivate(LENGTH);
-        assertThat(errorOf(() -> service.replace(SOFA, List.of(
+        assertThat(errorOf(() -> service.replace(PAPER_BOXES, List.of(
                 new CategoryAttributeEntry(LENGTH, VARIANT_AXIS, false, 0))))).isEqualTo(ErrorCode.VALIDATION_FAILED);
 
         deactivate(COLOR);
-        service.replace(SOFA, List.of(new CategoryAttributeEntry(COLOR, VARIANT_AXIS, true, 0)));
-        assertThat(service.list(SOFA)).extracting(CategoryAttributeView::attributeCode, CategoryAttributeView::attributeActive)
+        service.replace(PAPER_BOXES, List.of(new CategoryAttributeEntry(COLOR, VARIANT_AXIS, true, 0)));
+        assertThat(service.list(PAPER_BOXES))
+                .extracting(CategoryAttributeView::attributeCode, CategoryAttributeView::attributeActive)
                 .containsExactly(tuple("COLOR", false));
     }
 
@@ -119,14 +123,14 @@ class CategoryAttributeIntegrationTest {
     void unknownCategoryOrAttributeIsNotFound() {
         assertThat(errorOf(() -> service.replace(UUID.randomUUID(), List.of()))).isEqualTo(ErrorCode.CATEGORY_NOT_FOUND);
         assertThat(errorOf(() -> service.list(UUID.randomUUID()))).isEqualTo(ErrorCode.CATEGORY_NOT_FOUND);
-        assertThat(errorOf(() -> service.replace(SOFA, List.of(
+        assertThat(errorOf(() -> service.replace(PAPER_BOXES, List.of(
                 new CategoryAttributeEntry(UUID.randomUUID(), DESCRIPTIVE, false, 0))))).isEqualTo(ErrorCode.ATTRIBUTE_NOT_FOUND);
     }
 
     @Test
     void anEmptyListClearsTheSet() {
-        service.replace(SOFA, List.of());
+        service.replace(PAPER_BOXES, List.of());
         entityManager.flush();
-        assertThat(service.list(SOFA)).isEmpty();
+        assertThat(service.list(PAPER_BOXES)).isEmpty();
     }
 }

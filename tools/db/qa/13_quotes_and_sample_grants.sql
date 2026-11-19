@@ -47,7 +47,7 @@ INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, v
 SELECT md5('qa9:quote')::uuid, 'QT-QA-1', gen_random_uuid(), c.id, 'DRAFT', NOW() + interval '7 days'
   FROM customer.customer c ORDER BY c.id LIMIT 1;
 INSERT INTO ordering.quote_line (id, quote_id, line_no, blank_sku, design_snapshot_id, quantity)
-VALUES (md5('qa9:line')::uuid, md5('qa9:quote')::uuid, 1, 'SOFA-3S-GREY', md5('qa9:snap')::uuid, 500);
+VALUES (md5('qa9:line')::uuid, md5('qa9:quote')::uuid, 1, 'LY-GIAY-DEMO-12OZ', md5('qa9:snap')::uuid, 500);
 INSERT INTO ordering.quote_price_tier (quote_line_id, min_quantity, unit_price)
 VALUES (md5('qa9:line')::uuid, 500, 2000);
 
@@ -156,7 +156,7 @@ SELECT pg_temp.expect_fail('QT25 a carton line of another customer''s SKU (14 BR
     VALUES (gen_random_uuid(), md5('qa9:c:other-quote')::uuid, 1, 'QA-QC-OWN', md5('qa9:c:carton')::uuid, 5, 50) $q$);
 SELECT pg_temp.expect_fail('QT26 a quote mixing a carton line and a line on a blank and a design (QD-16)', $q$
     INSERT INTO ordering.quote_line (id, quote_id, line_no, blank_sku, design_snapshot_id, quantity)
-    VALUES (gen_random_uuid(), md5('qa9:c:quote')::uuid, 9, 'SOFA-3S-GREY', md5('qa9:snap')::uuid, 500) $q$);
+    VALUES (gen_random_uuid(), md5('qa9:c:quote')::uuid, 9, 'LY-GIAY-DEMO-12OZ', md5('qa9:snap')::uuid, 500) $q$);
 SELECT pg_temp.expect_ok('QT27 the carton unit retired, then an order line copying it from the accepted quote line', $q$
     UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
      WHERE id = md5('qa9:c:carton')::uuid;

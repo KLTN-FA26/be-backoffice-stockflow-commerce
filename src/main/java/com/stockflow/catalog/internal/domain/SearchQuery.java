@@ -12,7 +12,7 @@ import java.util.List;
  *
  * @param text     the folded text, or empty when nothing searchable was typed
  * @param terms    the words of {@code text}, in order
- * @param skuKeys  forms the input may take as a SKU code (lower case, e.g. {@code sofa-3s-grey}),
+ * @param skuKeys  forms the input may take as a SKU code (lower case, e.g. {@code ly-giay-demo-12oz-xanh}),
  *                 compared with {@code lower(sku)}; empty when no term was typed
  */
 public record SearchQuery(String text, List<String> terms, List<String> skuKeys) {

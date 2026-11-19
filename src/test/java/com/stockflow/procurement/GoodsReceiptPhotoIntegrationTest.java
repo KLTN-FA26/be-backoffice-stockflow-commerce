@@ -81,7 +81,7 @@ class GoodsReceiptPhotoIntegrationTest {
     private UUID inspector;
     private ProductionReceivables.Receivable goods;
     private UUID receipt;
-    private UUID sofaLine;
+    private UUID cupLine;
     private UUID tableLine;
 
     @BeforeEach
@@ -95,7 +95,7 @@ class GoodsReceiptPhotoIntegrationTest {
         receipt = receivables.draftReceipt(goods, clerk).id();
         var counted = receipts.replaceLines(receipt, List.of(goods.goods().get(0).line("HCM-RCV01", 1),
                 goods.goods().get(1).line("HCM-RCV01", 1)));
-        sofaLine = lineOf(counted, goods.goods().get(0).sku());
+        cupLine = lineOf(counted, goods.goods().get(0).sku());
         tableLine = lineOf(counted, goods.goods().get(1).sku());
     }
 
@@ -138,7 +138,7 @@ class GoodsReceiptPhotoIntegrationTest {
     @DisplayName("receiving photos while counting: kept, listed, shown, audited; no QC photo is taken any more")
     void photosOfEachStepAreKeptListedAndLinked() {
         PhotoView pallet = photos.add(receipt, null, GoodsReceiptPhotoStage.RECEIPT, photo("pallet.jpg"), clerk);
-        PhotoView crate = photos.add(receipt, sofaLine, GoodsReceiptPhotoStage.RECEIPT, photo("thung-sofa.jpg"), clerk);
+        PhotoView crate = photos.add(receipt, cupLine, GoodsReceiptPhotoStage.RECEIPT, photo("thung-ly.jpg"), clerk);
         assertThat(code(() -> photos.add(receipt, tableLine, GoodsReceiptPhotoStage.QC, photo("qc.jpg"), inspector)))
                 .as("receiving QC was removed").isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
 
@@ -154,9 +154,9 @@ class GoodsReceiptPhotoIntegrationTest {
         assertThat(photos.list(receipt)).extracting(PhotoView::id, PhotoView::stage, PhotoView::receiptLineId)
                 .containsExactly(
                         org.assertj.core.groups.Tuple.tuple(pallet.id(), GoodsReceiptPhotoStage.RECEIPT, null),
-                        org.assertj.core.groups.Tuple.tuple(crate.id(), GoodsReceiptPhotoStage.RECEIPT, sofaLine));
+                        org.assertj.core.groups.Tuple.tuple(crate.id(), GoodsReceiptPhotoStage.RECEIPT, cupLine));
         PhotoView scratch = crate;
-        assertThat(scratch.fileName()).isEqualTo("thung-sofa.jpg");
+        assertThat(scratch.fileName()).isEqualTo("thung-ly.jpg");
         assertThat(scratch.takenBy()).isEqualTo(clerk);
         assertThat(scratch.takenAt()).isNotNull();
 
@@ -190,7 +190,7 @@ class GoodsReceiptPhotoIntegrationTest {
                 .isEqualTo(ErrorCode.GOODS_RECEIPT_PHOTO_LIMIT_REACHED);
         verify(storage, never()).store(any(), any(), any(), anyLong(), any(), any());
         // Each subject counts on its own: the delivery is full, a line is not.
-        photos.add(receipt, sofaLine, GoodsReceiptPhotoStage.RECEIPT, photo("line.jpg"), clerk);
+        photos.add(receipt, cupLine, GoodsReceiptPhotoStage.RECEIPT, photo("line.jpg"), clerk);
         assertThat(photos.list(receipt)).hasSize(GoodsReceiptPhotoService.MAX_PHOTOS_PER_SUBJECT + 1);
     }
 
@@ -220,11 +220,11 @@ class GoodsReceiptPhotoIntegrationTest {
     @Test
     @DisplayName("a browser upload named again answers with the photo it made, without accepting the upload twice")
     void aRepeatedUploadAnswersWithItsPhoto() {
-        PhotoView first = photos.add(receipt, sofaLine, GoodsReceiptPhotoStage.RECEIPT, photo("a.jpg"), clerk);
+        PhotoView first = photos.add(receipt, cupLine, GoodsReceiptPhotoStage.RECEIPT, photo("a.jpg"), clerk);
         UUID uploadId = UUID.randomUUID();
         doReturn(Optional.of(keyOf(first.id()))).when(staged).keyOf(FileCategory.QC_EVIDENCE, clerk, uploadId);
 
-        PhotoView again = photos.add(receipt, sofaLine, GoodsReceiptPhotoStage.RECEIPT,
+        PhotoView again = photos.add(receipt, cupLine, GoodsReceiptPhotoStage.RECEIPT,
                 IncomingFiles.uploaded(clerk, List.of(uploadId)), clerk);
 
         assertThat(again.id()).isEqualTo(first.id());
@@ -259,8 +259,8 @@ class GoodsReceiptPhotoIntegrationTest {
         assertThatThrownBy(() -> jdbc.update("UPDATE procurement.goods_receipt_photos SET original_name = 'x' WHERE id = ?",
                 kept)).isInstanceOf(DataAccessException.class);
         assertThatThrownBy(() -> jdbc.update("UPDATE procurement.goods_receipt_photos SET receipt_line_id = ? WHERE id = ?",
-                sofaLine, kept)).as("a photo is never moved onto a line").isInstanceOf(DataAccessException.class);
-        UUID ofTheLine = photos.add(receipt, sofaLine, GoodsReceiptPhotoStage.RECEIPT, photo("line.jpg"), clerk).id();
+                cupLine, kept)).as("a photo is never moved onto a line").isInstanceOf(DataAccessException.class);
+        UUID ofTheLine = photos.add(receipt, cupLine, GoodsReceiptPhotoStage.RECEIPT, photo("line.jpg"), clerk).id();
         assertThatThrownBy(() -> jdbc.update("UPDATE procurement.goods_receipt_photos SET receipt_line_id = NULL WHERE id = ?",
                 ofTheLine)).as("only dropping the line unlinks its photo").isInstanceOf(DataAccessException.class);
         assertThatThrownBy(() -> jdbc.update("DELETE FROM procurement.goods_receipt_photos WHERE id = ?", kept))

@@ -23,7 +23,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class StockItemTest {
 
-    private static final Sku SKU = new Sku("SOFA-3S-GREY");
+    private static final Sku SKU = new Sku("LY-GIAY-DEMO-12OZ-XANH");
     private static final LocationId LOCATION = new LocationId("HCM-A-01-02-B");
     private static final Instant NOW = Instant.parse("2026-09-07T10:00:00Z");
 

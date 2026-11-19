@@ -57,7 +57,8 @@ class LoadingSheetDocumentTest {
             int up = i / 40;
             boolean turned = i % 7 == 6;
             boxes.add(new Layout.Box(across * 400, up * 300, along * 600, 400, 300, 600, "ref-" + i, null,
-                    "LPN-20261117-%06d".formatted(i + 1), i % 2 == 0 ? "SOFA-3S-GREY" : "GHE-AN-ACME-01", null,
+                    "LPN-20261117-%06d".formatted(i + 1),
+                    i % 2 == 0 ? "LY-GIAY-DEMO-12OZ-XANH" : "GHE-AN-ACME-01", null,
                     new Layout.Dims(600, 400, 300), turned ? "WLH" : "LWH", true, CARTON_KG, i + 1));
         }
         return new Layout(1, "TRUCK-5T", UUID.randomUUID(), new Layout.Dims(5200, 2050, 2050), new BigDecimal("5000"),
@@ -110,7 +111,7 @@ class LoadingSheetDocumentTest {
                 "Sơ đồ nhìn từ trên xuống", "Sơ đồ nhìn từ bên trái xe", "Đầu xe ở bên trái, cửa xe ở bên phải",
                 "DANH SÁCH KIỆN THEO THỨ TỰ XẾP", "STT", "Mã kiện (LPN)", "Hướng đặt", "Giữ nguyên",
                 "LPN-20261117-000001", "LPN-20261117-000002", "LPN-20261117-000003", "SO-20261117-000011",
-                "SO-20261117-000012", "SOFA-3S-GREY (2 kiện)", "GHE-AN-ACME-01 (1 kiện)", "60×40×30",
+                "SO-20261117-000012", "LY-GIAY-DEMO-12OZ-XANH (2 kiện)", "GHE-AN-ACME-01 (1 kiện)", "60×40×30",
                 "0 / 0 / 0", "Trang 1/1", "Tổng: 3 kiện 60");
         assertThat(text).as("no glyph was replaced by a question mark").doesNotContain("?");
         assertThat(text).as("the stored fill percentages are not what is printed").doesNotContain("42,9%", "3,1%");

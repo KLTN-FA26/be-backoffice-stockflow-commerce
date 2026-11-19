@@ -461,8 +461,8 @@ class PermissionMatrixTest {
                 Map.entry("PUT /api/v1/customers/{customerId}", "{\"fullName\":\"Mallory\",\"version\":0}"),
                 Map.entry("PUT /api/v1/customers/me", "{\"fullName\":\"Attacker renamed\",\"version\":0}"),
                 // Customer designs (2F-3): well-formed writes, so only the owner check can refuse the victim's design.
-                Map.entry("POST /api/v1/designs/mine", "{\"productId\":\"" + DemoData.PRODUCT_SOFA
-                        + "\",\"sku\":\"SOFA-3S-GREY\",\"templateCode\":\"BODY\",\"name\":\"stolen\"}"),
+                Map.entry("POST /api/v1/designs/mine", "{\"productId\":\"" + DemoData.PRODUCT_CUP
+                        + "\",\"sku\":\"LY-GIAY-DEMO-12OZ\",\"templateCode\":\"BODY\",\"name\":\"stolen\"}"),
                 Map.entry("PUT /api/v1/designs/{id}/name", "{\"version\":0,\"name\":\"stolen\"}"),
                 Map.entry("POST /api/v1/designs/{id}/archive", "{\"version\":0}"),
                 Map.entry("POST /api/v1/designs/{id}/technical-review-requests", "{\"version\":0}"),
@@ -488,10 +488,10 @@ class PermissionMatrixTest {
                         + "\"inter\",\"sizePt\":24,\"color\":\"#1F2937\",\"align\":\"center\",\"lineHeight\":1.2}}"),
                 Map.entry("POST /api/v1/design-projects/{id}/preflight-failures", "{\"items\":[{\"designId\":\""
                         + victimDesign + "\",\"issues\":[{\"rule\":\"ON_SEAM\"}]}]}"),
-                Map.entry("POST /api/v1/designs/{id}/clones", "{\"variantSku\":\"SOFA-3S-BLUE\",\"document\":{"
-                        + "\"schemaVersion\":1,\"templateCode\":\"BODY\",\"sku\":\"SOFA-3S-BLUE\",\"surfaces\":{}}}"),
+                Map.entry("POST /api/v1/designs/{id}/clones", "{\"variantSku\":\"LY-GIAY-DEMO-12OZ-CLONE\",\"document\":{"
+                        + "\"schemaVersion\":1,\"templateCode\":\"BODY\",\"sku\":\"LY-GIAY-DEMO-12OZ-CLONE\",\"surfaces\":{}}}"),
                 Map.entry("PUT /api/v1/designs/{id}/document", "{\"version\":0,\"document\":{\"schemaVersion\":1,"
-                        + "\"templateCode\":\"BODY\",\"sku\":\"SOFA-3S-GREY\",\"surfaces\":{}}}"),
+                        + "\"templateCode\":\"BODY\",\"sku\":\"LY-GIAY-DEMO-12OZ\",\"surfaces\":{}}}"),
                 // SCRUM-448 / R1: valid bodies, so only the owner check can refuse the victim's quote and order.
                 Map.entry("POST /api/v1/quotes/{quoteId}/acceptance", "{\"version\":0}"),
                 Map.entry("POST /api/v1/quotes/{quoteId}/change-request", "{\"version\":0,\"feedback\":\"stolen\"}"),
@@ -552,7 +552,7 @@ class PermissionMatrixTest {
                     victimAddress, victimCustomer);
             jdbc.update("""
                     INSERT INTO design.design_draft (id, customer_id, product_id, owner_user_id, status, created_at, current_artifacts)
-                    VALUES (?, ?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", victimDesign, victimCustomer, DemoData.PRODUCT_SOFA, victimUser);
+                    VALUES (?, ?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", victimDesign, victimCustomer, DemoData.PRODUCT_CUP, victimUser);
             // The victim's design project (2F-9), holding their design.
             jdbc.update("""
                     INSERT INTO design.design_project (id, customer_id, owner_user_id, name, status, created_at)
@@ -562,7 +562,7 @@ class PermissionMatrixTest {
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, version, created_at, hold_reason)
                     VALUES (?, ?, ?, ?, 'ON_HOLD', 1000, 'VND', NOW(), 0, NOW(), 'CREDIT')""",
                     victimOrder, "SO-20991231-%06d".formatted(ThreadLocalRandom.current().nextInt(1_000_000)), victimCustomer, UUID.randomUUID());
-            jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) VALUES (?, ?, 'TABLE-OAK-160', 1, 1000, 'VND')",
+            jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) VALUES (?, ?, 'LY-GIAY-DEMO-12OZ-XANH', 1, 1000, 'VND')",
                     Identifiers.newId(), victimOrder);
             // The victim's own quote, sent to them (SCRUM-448).
             int n = ThreadLocalRandom.current().nextInt(1_000_000);
@@ -580,7 +580,7 @@ class PermissionMatrixTest {
             UUID victimQuoteLine = Identifiers.newId();
             jdbc.update("""
                     INSERT INTO ordering.quote_line (id, quote_id, line_no, blank_sku, design_snapshot_id, quantity)
-                    VALUES (?, ?, 1, 'SOFA-3S-GREY', ?, 1)""", victimQuoteLine, victimQuote, snapshot);
+                    VALUES (?, ?, 1, ?, ?, 1)""", victimQuoteLine, victimQuote, DemoData.BLANK_CUP, snapshot);
             jdbc.update("INSERT INTO ordering.quote_price_tier (quote_line_id, min_quantity, unit_price) VALUES (?, 1, 1000)",
                     victimQuoteLine);
         });

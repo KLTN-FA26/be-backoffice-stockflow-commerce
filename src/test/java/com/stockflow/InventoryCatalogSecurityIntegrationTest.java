@@ -89,7 +89,7 @@ values (?,?,'Table',?,'DRAFT')
         UUID variant = UUID.randomUUID();
         tx.executeWithoutResult(s -> {
             jdbc.update("insert into product.product_categories(id,product_id,category_id,is_primary)"
-                    + " values (?,?,md5('demo:cat:SOFA')::uuid,true)", UUID.randomUUID(), id);
+                    + " values (?,?,md5('demo:wf02:category:LY_GIAY')::uuid,true)", UUID.randomUUID(), id);
             jdbc.update("insert into product.variants(id,product_id,sku,name,status,attribute_signature)"
                     + " values (?,?,?,'Backfill','ACTIVE','')", variant, id, sku);
             jdbc.update("""
@@ -147,7 +147,7 @@ values (?,?,'Table',?,'DRAFT')
                 .andExpect(status().isOk());
         mvc.perform(
                         get("/api/v1/catalog/products/availability")
-                                .param("sku", "SOFA-3S-GREY")
+                                .param("sku", "LY-GIAY-DEMO-12OZ-XANH")
                                 .header("Authorization", authorization))
                 .andExpect(status().isForbidden());
     }

@@ -17,6 +17,7 @@ import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.internal.service.OrderReleases;
 import com.stockflow.support.Await;
 import com.stockflow.support.CartonRows;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -73,13 +74,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * a labelled carton loading and shipping through the load plan like a sealed parcel did.
  *
  * <p>Its own context, hence its own database: labelled orders cannot be cancelled, so their stock does not come back.
- * The demo carton units declare no size, so each test that labels sets it ({@link CartonStationSupport}).</p>
+ * Its goods are a SKU of its own, handling like the demo cup, its carton the big one the load tests were measured with
+ * ({@link CartonStationSupport#giveCartonsASize}): a test that changes the carton spec changes that SKU, never a demo
+ * one.</p>
  */
 @org.junit.jupiter.api.Disabled("Round 4 of the C3 tests, still disabled: its order()/pay() helpers are stubs (they used placeOrder, "
-        + "payment terms and the money ledger, all gone) and its stock and carton-spec corrections are the demo"
-        + " SOFA-3S-GREY in cartons of one, while a contract order is the customer's own SKU in cartons of two "
-        + "or more (14 BR-04, BR-08): the orders must come from support/ConfirmedOrders and every count be re-"
-        + "derived. The station itself is exercised end to end by FtlDispatch, ControlledUnload and LoadPlan "
+        + "payment terms and the money ledger, all gone) and its stock and carton-spec corrections are on a SKU of"
+        + " its own in cartons of two, but its counts are still those of the old demo cartons of one (14 BR-04, "
+        + "BR-08): the orders must come from support/ConfirmedOrders and every count be re-derived. The station "
+        + "itself is exercised end to end by FtlDispatch, ControlledUnload and LoadPlan "
         + "(CartonStationSupport). See reports/C3-tests.md, Round 4.")
 @IntegrationTest
 @Import({PostgresContainer.class, RedisContainer.class, RecordedEvents.class})
@@ -90,7 +93,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "stockflow.fulfillment.packing.dim-divisor=6000", "stockflow.test.context=carton-check-station"})
 class CartonCheckStationIntegrationTest {
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
     private static final Duration ASYNC = Duration.ofSeconds(15);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String BASE = "/api/v1/fulfillment";
@@ -119,6 +121,8 @@ class CartonCheckStationIntegrationTest {
     private UUID customer;
     private UUID carrier;
     private UUID truck5t;
+    /** The test customer's own SKU, handling like the demo cup, in cartons of two of the big carton's size. */
+    private Sku own;
 
     @BeforeEach
     void setUp() {
@@ -135,7 +139,8 @@ class CartonCheckStationIntegrationTest {
         customer = customerOf(customerUser);
         carrier = tx.execute(s -> ReferenceRows.truckCarrier(entityManager, "Xe tải Kiểm Thùng"));
         truck5t = jdbc.queryForObject("SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-5T'", UUID.class);
-        CartonStationSupport.giveCartonsASize(tx, jdbc);
+        own = new Sku(CustomerSkuRows.like(jdbc, tx, entityManager, customer, DemoData.SKU_STOCKED, 2).sku());
+        CartonStationSupport.giveCartonsASize(tx, jdbc, own.code());
     }
 
     // ---- fixtures ----------------------------------------------------------------------------
@@ -214,19 +219,19 @@ class CartonCheckStationIntegrationTest {
         return terms.configured() ? terms.version() : null;
     }
 
-    /** {@code sofas} more demo sofas: whole cartons of one, because this class shares one database. */
-    private void stock(int sofas) {
-        tx.executeWithoutResult(s -> CartonRows.stock(jdbc, SOFA.code(), "HCM-A02-1-A", sofas, 1, null,
+    /** {@code cartons} more whole cartons of the test's own SKU. */
+    private void stock(int cartons) {
+        tx.executeWithoutResult(s -> CartonRows.stock(jdbc, own.code(), "HCM-A02-1-A", cartons, 2, null,
                 Instant.now().minus(400, ChronoUnit.DAYS)));
     }
 
     /** An order of the test customer, its money received as {@code term} wants, released at HCM, partial delivery allowed. */
-    private OrderSummary order(Object term, Object policy, int sofas, long price) {
+    private OrderSummary order(Object term, Object policy, int cartons, long price) {
         throw new UnsupportedOperationException("to be rebuilt on support/ConfirmedOrders (round 3)");
     }
 
-    private OrderSummary order(int sofas) {
-        return order(null, null, sofas, 12_000_000);
+    private OrderSummary order(int cartons) {
+        return order(null, null, cartons, 12_000_000);
     }
 
     private void pay(OrderSummary order, BigDecimal amount) {
@@ -392,7 +397,7 @@ class CartonCheckStationIntegrationTest {
             + "the carton takes its size, weight and volumetric weight and the order is locked: no cancellation, a pending "
             + "request expires; the PDF has a page per carton; a reprint raises the version")
     void labelsNeedACartonSpecAndLockTheOrder() throws Exception {
-        CartonStationSupport.clearCartonSize(tx, jdbc, SOFA.code());
+        CartonStationSupport.clearCartonSize(tx, jdbc, own.code());
         OrderSummary order = order(2);
         String cancel = "/api/v1/orders/" + order.orderId() + "/cancellation";
         String request = data(as(customerUser, "CUSTOMER", body(post(cancel), "{\"reasonCode\":\"CUSTOMER_REQUEST\"}"))
@@ -400,12 +405,12 @@ class CartonCheckStationIntegrationTest {
         UUID task = pickedTask(order);
         List<String> mine = lpns(task);
         CartonStationSupport.startAndScanAll(asPackerWorker(), jdbc, task);
-        session(task).andExpect(jsonPath("$.data.skusWithoutCartonSpec[0]").value(SOFA.code()));
+        session(task).andExpect(jsonPath("$.data.skusWithoutCartonSpec[0]").value(own.code()));
 
         // 08 BR-07: no size, no label; the answer names the SKU and nothing is labelled, locked or half done.
         label(task, null).andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.errorCode").value("CARTON_SPEC_UNMEASURED"))
-                .andExpect(jsonPath("$.fieldErrors[0].message").value(SOFA.code()));
+                .andExpect(jsonPath("$.fieldErrors[0].message").value(own.code()));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.package WHERE lpn IN (?, ?) AND status = 'LABELED'",
                 Long.class, mine.get(0), mine.get(1))).isZero();
         assertThat(orderLockedAt(order)).isNull();
@@ -416,7 +421,7 @@ class CartonCheckStationIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("CARTON_NOT_CHECKED"));
 
         // The manager completes the carton spec on the item; the same call now labels.
-        CartonStationSupport.giveCartonsASize(tx, jdbc);
+        CartonStationSupport.giveCartonsASize(tx, jdbc, own.code());
         label(task, "{\"lpns\":[\"" + mine.get(0).toLowerCase() + "\"]}").andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.orderLocked").value(true))
                 .andExpect(jsonPath("$.data.cartons[?(@.lpn=='" + mine.get(0) + "')].status")
@@ -825,7 +830,7 @@ class CartonCheckStationIntegrationTest {
         assertThat((BigDecimal) carton(mine.get(0)).get("length_cm")).isEqualByComparingTo("215");
 
         // The manager finds the real carton is 230 cm long and 55 kg, and corrects the spec on the item.
-        CartonStationSupport.correctCartonSize(tx, jdbc, SOFA.code(), "230", "95", "90", "55");
+        CartonStationSupport.correctCartonSize(tx, jdbc, own.code(), "230", "95", "90", "55");
         // The first carton's label is printed again: it takes the corrected spec at once.
         asPacker(post(url(task, "/cartons/" + mine.get(0) + "/label-reprint"))).andExpect(status().isOk());
         assertThat((BigDecimal) carton(mine.get(0)).get("length_cm")).isEqualByComparingTo("230");
@@ -849,7 +854,7 @@ class CartonCheckStationIntegrationTest {
                 + "AND active", Long.class, plan)).isEqualTo(2);
 
         // Corrected again while the plan holds them: a reprint raises the version but keeps the planned measures.
-        CartonStationSupport.correctCartonSize(tx, jdbc, SOFA.code(), "240", "95", "90", "60");
+        CartonStationSupport.correctCartonSize(tx, jdbc, own.code(), "240", "95", "90", "60");
         asPacker(post(url(task, "/cartons/" + mine.get(1) + "/label-reprint"))).andExpect(status().isOk());
         assertThat(carton(mine.get(1))).containsEntry("label_version", 2);
         assertThat((BigDecimal) carton(mine.get(1)).get("length_cm")).as("planned: frozen").isEqualByComparingTo("230");
@@ -875,7 +880,7 @@ class CartonCheckStationIntegrationTest {
                 + "p.pack_id WHERE k.pick_id = ?", Long.class, task);
         UUID parcel = jdbc.queryForObject("SELECT p.id FROM fulfillment.package p JOIN fulfillment.pack k ON k.id = "
                 + "p.pack_id WHERE k.pick_id = ?", UUID.class, task);
-        String scan = "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":1}";
+        String scan = "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + own.code() + "\",\"quantity\":1}";
         String seal = "{\"weightKg\":5,\"lengthCm\":40,\"widthCm\":30,\"heightCm\":20}";
         String line = order.lines().getFirst().lineId().toString();
         List<MockHttpServletRequestBuilder> writes = List.of(
@@ -903,46 +908,41 @@ class CartonCheckStationIntegrationTest {
     @DisplayName("the carton spec of a SKU: its one carton unit; the default shipping one among several; none when several have "
             + "no default or there is no carton unit; measured only with a size and a weight")
     void theCartonSpecOfASku() {
-        // The table's carton unit, put through every shape and back (a SKU needs a catalogue variant to exist at all).
-        String sku = "TABLE-OAK-160";
+        // A SKU of the test's own: its carton unit put through every shape (a SKU needs a catalogue variant to exist at all).
+        String sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 2).sku();
         UUID first = jdbc.queryForObject("SELECT u.id FROM inventory.uom_conversions u JOIN inventory.inventory_items i "
                 + "ON i.id = u.inventory_item_id WHERE i.sku = ? AND NOT u.is_base AND u.active", UUID.class, sku);
         UUID second = Identifiers.newId();
-        try {
-            assertThat(itemControls.cartonSpec(new Sku("CK-NO-SUCH-SKU"))).as("unknown SKU").isEmpty();
-            write("UPDATE inventory.uom_conversions SET active = FALSE WHERE id = ?", first);
-            assertThat(itemControls.cartonSpec(new Sku(sku))).as("no carton unit").isEmpty();
+        assertThat(itemControls.cartonSpec(new Sku("CK-NO-SUCH-SKU"))).as("unknown SKU").isEmpty();
+        write("UPDATE inventory.uom_conversions SET active = FALSE WHERE id = ?", first);
+        assertThat(itemControls.cartonSpec(new Sku(sku))).as("no carton unit").isEmpty();
 
-            write("UPDATE inventory.uom_conversions SET active = TRUE, length_cm = NULL, width_cm = NULL, height_cm = NULL, "
-                    + "weight_kg = NULL WHERE id = ?", first);
-            var spec = itemControls.cartonSpec(new Sku(sku)).orElseThrow();
-            assertThat(spec.unitOfMeasure()).isEqualTo("CARTON");
-            assertThat(spec.unitsPerCarton()).isEqualTo(1);
-            assertThat(spec.measured()).as("no size, no weight declared").isFalse();
+        write("UPDATE inventory.uom_conversions SET active = TRUE, length_cm = NULL, width_cm = NULL, height_cm = NULL, "
+                + "weight_kg = NULL WHERE id = ?", first);
+        var spec = itemControls.cartonSpec(new Sku(sku)).orElseThrow();
+        assertThat(spec.unitOfMeasure()).isEqualTo("CARTON");
+        assertThat(spec.unitsPerCarton()).isEqualTo(2);
+        assertThat(spec.measured()).as("no size, no weight declared").isFalse();
 
-            write("UPDATE inventory.uom_conversions SET length_cm = 40, width_cm = 30, height_cm = 25, weight_kg = 6.5 "
-                    + "WHERE id = ?", first);
-            spec = itemControls.cartonSpec(new Sku(sku)).orElseThrow();
-            assertThat(spec.measured()).isTrue();
-            assertThat(spec.lengthCm()).isEqualByComparingTo("40");
-            assertThat(spec.weightKg()).isEqualByComparingTo("6.5");
+        write("UPDATE inventory.uom_conversions SET length_cm = 40, width_cm = 30, height_cm = 25, weight_kg = 6.5 "
+                + "WHERE id = ?", first);
+        spec = itemControls.cartonSpec(new Sku(sku)).orElseThrow();
+        assertThat(spec.measured()).isTrue();
+        assertThat(spec.lengthCm()).isEqualByComparingTo("40");
+        assertThat(spec.weightKg()).isEqualByComparingTo("6.5");
 
-            write("UPDATE inventory.uom_conversions SET weight_kg = NULL WHERE id = ?", first);
-            assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().measured()).as("a size without a weight")
-                    .isFalse();
+        write("UPDATE inventory.uom_conversions SET weight_kg = NULL WHERE id = ?", first);
+        assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().measured()).as("a size without a weight")
+                .isFalse();
 
-            write("INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active) "
-                    + "SELECT ?, id, 'CARTON24', 24, TRUE FROM inventory.inventory_items WHERE sku = ?", second, sku);
-            assertThat(itemControls.cartonSpec(new Sku(sku))).as("two units, none the default for shipping").isEmpty();
-            write("UPDATE inventory.uom_conversions SET default_shipping = TRUE WHERE id = ?", second);
-            assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().unitOfMeasure()).isEqualTo("CARTON24");
-            write("UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE WHERE id = ?", second);
-            assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().unitOfMeasure())
-                    .as("an inactive unit is not a candidate").isEqualTo("CARTON");
-        } finally {
-            write("DELETE FROM inventory.uom_conversions WHERE id = ?", second);
-            write("UPDATE inventory.uom_conversions SET active = TRUE WHERE id = ?", first);
-            CartonStationSupport.giveCartonsASize(tx, jdbc);
-        }
+        write("UPDATE inventory.uom_conversions SET default_shipping = FALSE WHERE id = ?", first);
+        write("INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active) "
+                + "SELECT ?, id, 'CARTON24', 24, TRUE FROM inventory.inventory_items WHERE sku = ?", second, sku);
+        assertThat(itemControls.cartonSpec(new Sku(sku))).as("two units, none the default for shipping").isEmpty();
+        write("UPDATE inventory.uom_conversions SET default_shipping = TRUE WHERE id = ?", second);
+        assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().unitOfMeasure()).isEqualTo("CARTON24");
+        write("UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE WHERE id = ?", second);
+        assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().unitOfMeasure())
+                .as("an inactive unit is not a candidate").isEqualTo("CARTON");
     }
 }

@@ -41,7 +41,7 @@ import java.util.UUID;
 @TestPropertySource(properties = "stockflow.security.enabled=true")
 class ProductAttributeSecurityIntegrationTest {
     private static final String TEST_ROLE = "ACCOUNTANT";
-    private static final UUID SOFA = DemoData.PRODUCT_SOFA;
+    private static final UUID BOX = DemoData.PRODUCT_BOX;
 
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;
@@ -86,15 +86,15 @@ class ProductAttributeSecurityIntegrationTest {
 
     @Test
     void anonymousIsUnauthorised() throws Exception {
-        mvc.perform(get("/api/v1/products/{id}/attributes", SOFA)).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/products/{id}/attributes", BOX)).andExpect(status().isUnauthorized());
     }
 
     @Test
     void variantsReadCanGetButNotReplaceAxes() throws Exception {
         String reader = token("product-variants:READ");
-        mvc.perform(get("/api/v1/products/{id}/attributes", SOFA).header("Authorization", reader))
+        mvc.perform(get("/api/v1/products/{id}/attributes", BOX).header("Authorization", reader))
                 .andExpect(status().isOk());
-        mvc.perform(put("/api/v1/products/{id}/axes", SOFA).header("Authorization", reader)
+        mvc.perform(put("/api/v1/products/{id}/axes", BOX).header("Authorization", reader)
                         .contentType("application/json").content("{\"axes\":[]}"))
                 .andExpect(status().isForbidden());
     }
@@ -112,10 +112,10 @@ class ProductAttributeSecurityIntegrationTest {
     @Test
     void productsUpdateAloneDoesNotOpenAxesButOpensDescriptives() throws Exception {
         String editor = token("product-products:UPDATE");
-        mvc.perform(put("/api/v1/products/{id}/axes", SOFA).header("Authorization", editor)
+        mvc.perform(put("/api/v1/products/{id}/axes", BOX).header("Authorization", editor)
                         .contentType("application/json").content("{\"axes\":[]}"))
                 .andExpect(status().isForbidden());
-        // A random id: 404 still proves the request got past security, and the shared demo SOFA is not committed to.
+        // A random id: 404 still proves the request got past security, and the shared demo box is not committed to.
         MvcResult result = mvc.perform(put("/api/v1/products/{id}/descriptive-attributes", UUID.randomUUID())
                         .header("Authorization", editor)
                         .contentType("application/json").content("{\"attributes\":[]}"))

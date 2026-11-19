@@ -98,7 +98,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "stockflow.fulfillment.carrier-booking-sweep-interval=PT24H"})
 class FtlDispatchIntegrationTest {
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
     private static final Duration ASYNC = Duration.ofSeconds(15);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String ORDERS = "/api/v1/orders";
@@ -134,7 +133,6 @@ class FtlDispatchIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        CartonStationSupport.giveCartonsASize(tx, jdbc);
         parts = new CartonStationSupport.Parts(this::packer, tx, jdbc, json);
         coordinator = staff("WAREHOUSE_MANAGER", HCM);
         sales = staff("SALES_STAFF");
@@ -218,25 +216,25 @@ class FtlDispatchIntegrationTest {
     }
 
     /**
-     * The order's sofas, as whole sealed cartons of one (the demo sofa's carton unit): an order is given whole cartons
-     * only (team plan 4C-2), so loose sofas would not be allocated and the order would draw on the shared demo cartons.
+     * The order's goods, as whole sealed cartons of its SKU's carton unit: an order is given whole cartons only (team
+     * plan 4C-2), so loose units would not be allocated and the order would draw on the shared demo cartons.
      * Received long ago, so the allocator hands them out first (FIFO).
      */
     /**
-     * A paid order of {@code sofas} sofas for the customer, released at HCM (every order is a full truckload): a
-     * contract's order, one carton of two pieces per sofa (14 BR-08), its sealed cartons held at HCM and picked one by
+     * A paid order of {@code cartons} cartons for the customer, released at HCM (every order is a full truckload): a
+     * contract's order, one carton of two pieces each (14 BR-08), its sealed cartons held at HCM and picked one by
      * one by their LPN (4C).
      */
-    private OrderSummary ftlOrder(int sofas, UUID customer) throws Exception {
-        return ftlOrder(sofas, customer, ConfirmedOrders.paidOnSigning());
+    private OrderSummary ftlOrder(int cartons, UUID customer) throws Exception {
+        return ftlOrder(cartons, customer, ConfirmedOrders.paidOnSigning());
     }
 
     /** The same, its contract paying as {@code plan} says; the installments on signing are paid. */
-    private OrderSummary ftlOrder(int sofas, UUID customer, List<SalesContracts.Installment> plan) throws Exception {
-        CustomerSkuRows.Issued issued = sofaOf(customer);
-        CustomerSkuRows.stock(jdbc, tx, issued.sku(), 2 * sofas);
+    private OrderSummary ftlOrder(int cartons, UUID customer, List<SalesContracts.Installment> plan) throws Exception {
+        CustomerSkuRows.Issued issued = cupOf(customer);
+        CustomerSkuRows.stock(jdbc, tx, issued.sku(), 2 * cartons);
         ConfirmedOrders.Signed signed = confirmedOrders().signed(customer, plan,
-                ConfirmedOrders.Line.cartons(issued, sofas, 6_000_000));
+                ConfirmedOrders.Line.cartons(issued, cartons, 6_000_000));
         return confirmedOrders().release(confirmedOrders().pay(signed).orderId(), HCM, coordinator);
     }
 
@@ -249,16 +247,23 @@ class FtlDispatchIntegrationTest {
         return confirmedOrders;
     }
 
-    private final java.util.Map<UUID, CustomerSkuRows.Issued> sofas = new java.util.HashMap<>();
+    private final java.util.Map<UUID, CustomerSkuRows.Issued> cupSkus = new java.util.HashMap<>();
 
-    /** The customer's own sofa, handling like the catalogue's, sold in cartons of two (a contract's lines are only ever the customer's, 14 BR-04). */
-    private CustomerSkuRows.Issued sofaOf(UUID customer) {
-        return sofas.computeIfAbsent(customer,
-                c -> CustomerSkuRows.like(jdbc, tx, entityManager, c, SOFA.code(), 2));
+    /**
+     * The customer's own SKU, handling like the demo cup, sold in cartons of two (a contract's lines are only ever the
+     * customer's, 14 BR-04), its carton the big one the truck maths below were measured with (215 x 95 x 90 cm,
+     * 52.5 kg).
+     */
+    private CustomerSkuRows.Issued cupOf(UUID customer) {
+        return cupSkus.computeIfAbsent(customer, c -> {
+            CustomerSkuRows.Issued issued = CustomerSkuRows.like(jdbc, tx, entityManager, c, DemoData.SKU_STOCKED, 2);
+            CartonStationSupport.giveCartonsASize(tx, jdbc, issued.sku());
+            return issued;
+        });
     }
 
-    private OrderSummary ftlOrder(int sofas) throws Exception {
-        return ftlOrder(sofas, DemoData.CUSTOMER_ID);
+    private OrderSummary ftlOrder(int cartons) throws Exception {
+        return ftlOrder(cartons, DemoData.CUSTOMER_ID);
     }
     /** The order picked and packed at the check station, one shipment of all its cartons. Returns the shipment and task. */
     private UUID[] packed(OrderSummary order, boolean kits) throws Exception {
@@ -2497,7 +2502,7 @@ class FtlDispatchIntegrationTest {
 
     // ---- review of #162: no-partial orders, the gate at every vehicle, concurrency, auto-cancel ------------------
 
-    /** An order of 2 sofas packed in two shipments (Sales allowed partial shipments), a carton each. */
+    /** An order of 2 cartons packed in two shipments (Sales allowed partial shipments), a carton each. */
     private UUID[] packedInTwo(OrderSummary order, boolean kits) throws Exception {
         tx.executeWithoutResult(s -> jdbc.update(
                 "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
@@ -2512,7 +2517,7 @@ class FtlDispatchIntegrationTest {
                             + "\"}")).andExpect(status().isOk());
         }
         packer(post(BASE + "/tasks/" + task + "/picking-completion")).andExpect(status().isOk());
-        // Two shipments of one sofa each: the check station runs once and hands the cartons out (see Parts).
+        // Two shipments of one carton each: the check station runs once and hands the cartons out (see Parts).
         UUID[] shipments = new UUID[2];
         for (int i = 0; i < 2; i++) {
             shipments[i] = parts.ship(task, 1);
@@ -2720,10 +2725,10 @@ class FtlDispatchIntegrationTest {
             + "(LOAD_HANDOVER_BLOCKED, DELIVERY_BATCH_WINDOW_NOT_OPEN); the window moved to today with the customer's "
             + "consent, it leaves: SHIPPED, each shipment recording its batch")
     void twoDeliveryBatches() throws Exception {
-        CustomerSkuRows.Issued sofa = sofaOf(DemoData.CUSTOMER_ID);
-        CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 2 * 4);
+        CustomerSkuRows.Issued cup = cupOf(DemoData.CUSTOMER_ID);
+        CustomerSkuRows.stock(jdbc, tx, cup.sku(), 2 * 4);
         ConfirmedOrders.Confirmed confirmed = confirmedOrders().pay(confirmedOrders().signedInBatches(
-                DemoData.CUSTOMER_ID, 2, ConfirmedOrders.Line.cartons(sofa, 4, 6_000_000)));
+                DemoData.CUSTOMER_ID, 2, ConfirmedOrders.Line.cartons(cup, 4, 6_000_000)));
         UUID orderId = confirmed.orderId();
         OrderSummary order = confirmedOrders().release(orderId, HCM, coordinator);
         assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
@@ -2833,7 +2838,7 @@ class FtlDispatchIntegrationTest {
         handOver(load).andExpect(status().isOk());
         assertThat(shipmentStatus(shipment)).isEqualTo("HANDED_OVER");
         OrderSummary after = orders.findById(order.orderId()).orElseThrow();
-        assertThat(after.status()).as("one sofa carton of two still to come").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(after.status()).as("one carton of two still to come").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
         assertThat(after.lifecycle().shipments()).singleElement()
                 .satisfies(s -> assertThat(s.shipmentId()).isEqualTo(shipment));
     }
@@ -2979,7 +2984,7 @@ class FtlDispatchIntegrationTest {
             + "session, completed in full and handed over on a later load: the order SHIPPED")
     void removedCartonIsReplacedAndShipsOnALaterLoad() throws Exception {
         OrderSummary order = ftlOrder(2);
-        CustomerSkuRows.stock(jdbc, tx, sofaOf(DemoData.CUSTOMER_ID).sku(), 2);
+        CustomerSkuRows.stock(jdbc, tx, cupOf(DemoData.CUSTOMER_ID).sku(), 2);
         Object[] x = removedAndPartShipped(order);
         UUID task = (UUID) x[0];
         UUID removed = (UUID) x[1];
@@ -3038,7 +3043,7 @@ class FtlDispatchIntegrationTest {
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
 
         // The goods arrive (a production order's receipt, say): the reallocation now replaces it, and the hold resolves.
-        CustomerSkuRows.stock(jdbc, tx, sofaOf(DemoData.CUSTOMER_ID).sku(), 2);
+        CustomerSkuRows.stock(jdbc, tx, cupOf(DemoData.CUSTOMER_ID).sku(), 2);
         assertThat(data(reallocate(task, removed).andExpect(status().isOk()))).hasSize(1);
         assertThat(orders.findById(order.orderId()).orElseThrow().status())
                 .as("back where it was before the hold").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
@@ -3052,7 +3057,7 @@ class FtlDispatchIntegrationTest {
             + "the order PACKED")
     void removedCartonIsReplacedBeforeTheCheckCompletes() throws Exception {
         OrderSummary order = ftlOrder(2);
-        CustomerSkuRows.stock(jdbc, tx, sofaOf(DemoData.CUSTOMER_ID).sku(), 2);
+        CustomerSkuRows.stock(jdbc, tx, cupOf(DemoData.CUSTOMER_ID).sku(), 2);
         UUID task = picked(order);
         CartonStationSupport.startAndScanAll(this::packer, jdbc, task);
         String damaged = CartonStationSupport.pickedLpns(jdbc, task).get(0);
@@ -3138,10 +3143,10 @@ class FtlDispatchIntegrationTest {
             + "is REMOVED into the put-back queue, the labelled one kept, the order stays PARTIALLY_FULFILLED; batch 2 "
             + "completed in full - still PARTIALLY_FULFILLED (a part left already); handed over in its window - SHIPPED")
     void laterBatchStaysPartialAndItsRestIsClosed() throws Exception {
-        CustomerSkuRows.Issued sofa = sofaOf(DemoData.CUSTOMER_ID);
-        CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 2 * 4);
+        CustomerSkuRows.Issued cup = cupOf(DemoData.CUSTOMER_ID);
+        CustomerSkuRows.stock(jdbc, tx, cup.sku(), 2 * 4);
         ConfirmedOrders.Confirmed confirmed = confirmedOrders().pay(confirmedOrders().signedInBatches(
-                DemoData.CUSTOMER_ID, 2, ConfirmedOrders.Line.cartons(sofa, 4, 6_000_000)));
+                DemoData.CUSTOMER_ID, 2, ConfirmedOrders.Line.cartons(cup, 4, 6_000_000)));
         UUID orderId = confirmed.orderId();
         OrderSummary order = confirmedOrders().release(orderId, HCM, coordinator);
         List<UUID> batchIds = jdbc.queryForList("""
@@ -3210,10 +3215,10 @@ class FtlDispatchIntegrationTest {
     @DisplayName("4B-8 (17 BR-15): a plan of delivery batch 1 is confirmed without partial shipments being allowed - the "
             + "later batch's units are not left behind")
     void aBatchIsPlannedWithoutAllowingPartialShipments() throws Exception {
-        CustomerSkuRows.Issued sofa = sofaOf(DemoData.CUSTOMER_ID);
-        CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 2 * 4);
+        CustomerSkuRows.Issued cup = cupOf(DemoData.CUSTOMER_ID);
+        CustomerSkuRows.stock(jdbc, tx, cup.sku(), 2 * 4);
         UUID orderId = confirmedOrders().pay(confirmedOrders().signedInBatches(DemoData.CUSTOMER_ID, 2,
-                ConfirmedOrders.Line.cartons(sofa, 4, 6_000_000))).orderId();
+                ConfirmedOrders.Line.cartons(cup, 4, 6_000_000))).orderId();
         OrderSummary order = confirmedOrders().release(orderId, HCM, coordinator);
         allowPartial(order, false);
         UUID shipment = packed(order, false)[0];
@@ -3232,14 +3237,14 @@ class FtlDispatchIntegrationTest {
                 INSERT INTO customer.credit_profile (id, customer_id, credit_limit, credit_term_days, approved_by,
                                                      approved_at)
                 VALUES (?, ?, 10000000000, 30, ?, NOW())""", Identifiers.newId(), customer, accountant));
-        CustomerSkuRows.Issued sofa = sofaOf(customer);
-        CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 2 * 4);
+        CustomerSkuRows.Issued cup = cupOf(customer);
+        CustomerSkuRows.stock(jdbc, tx, cup.sku(), 2 * 4);
         List<SalesContracts.Installment> plan = List.of(
                 new SalesContracts.Installment("Deposit", "ON_SIGNING", null, new BigDecimal("40"), 0, null),
                 new SalesContracts.Installment("After batch 1", "AFTER_DELIVERY", null, new BigDecimal("30"), 10, 1),
                 new SalesContracts.Installment("After all", "AFTER_DELIVERY", null, new BigDecimal("30"), 20, null));
         UUID orderId = confirmedOrders().pay(confirmedOrders().sign(confirmedOrders().draft(customer,
-                List.of(ConfirmedOrders.Line.cartons(sofa, 4, 6_000_000))), plan, 2)).orderId();
+                List.of(ConfirmedOrders.Line.cartons(cup, 4, 6_000_000))), plan, 2)).orderId();
         OrderSummary order = confirmedOrders().release(orderId, HCM, coordinator);
         UUID shipment = packed(order, false)[0];
         String load = loadOf(confirmed(List.of(shipment), truck5t), 1);
@@ -3639,7 +3644,7 @@ class FtlDispatchIntegrationTest {
         UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
         OrderSummary order = ftlOrder(2, customer);
         UUID orderId = order.orderId();
-        Sku sku = new Sku(sofaOf(customer).sku());
+        Sku sku = new Sku(cupOf(customer).sku());
         var inventory = context.getBean(com.stockflow.inventory.api.InventoryService.class);
         UUID[] first = handedOver(order, ghn);
         assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.SHIPPED);
@@ -3948,10 +3953,10 @@ class FtlDispatchIntegrationTest {
             + "only), refundable 21,000,000 not 45,000,000; the order back to DELIVERED, not RETURNED")
     void aFailedBatchAfterADeliveredOneIsCancelled() throws Exception {
         UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
-        CustomerSkuRows.Issued sofa = sofaOf(customer);
-        CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 2 * 4);
+        CustomerSkuRows.Issued cup = cupOf(customer);
+        CustomerSkuRows.stock(jdbc, tx, cup.sku(), 2 * 4);
         UUID orderId = confirmedOrders().pay(confirmedOrders().signedInBatches(customer, 2,
-                ConfirmedOrders.Line.cartons(sofa, 4, 6_000_000))).orderId();
+                ConfirmedOrders.Line.cartons(cup, 4, 6_000_000))).orderId();
         assertThat(installments(orderId)).containsExactly("1 ON_SIGNING PAID 48000000/48000000/0");
         List<UUID> batchIds = jdbc.queryForList("""
                 SELECT b.id FROM ordering.delivery_batch b JOIN ordering.sales_contract c ON c.id = b.contract_id
@@ -4065,7 +4070,7 @@ class FtlDispatchIntegrationTest {
         UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
         OrderSummary order = ftlOrder(2, customer);
         UUID orderId = order.orderId();
-        Sku sku = new Sku(sofaOf(customer).sku());
+        Sku sku = new Sku(cupOf(customer).sku());
         var inventory = context.getBean(com.stockflow.inventory.api.InventoryService.class);
         UUID[] first = handedOver(order, ghn);
         failedAndCameBack(first[0], "DAMAGED");
@@ -4184,13 +4189,13 @@ class FtlDispatchIntegrationTest {
             + "case can be held, the next run holds the case's cartons first and then the other order's")
     void aCaseThatCannotBeHeldStopsTheOrdinaryTopUp() throws Exception {
         UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
-        CustomerSkuRows.Issued sofa = sofaOf(customer);
+        CustomerSkuRows.Issued cup = cupOf(customer);
         OrderSummary order = ftlOrder(2, customer);
         UUID[] first = handedOver(order, ghn);
         failedAndCameBack(first[0], "DAMAGED");
         UUID caseId = receivedBack(first[0], null);
         UUID other = confirmedOrders().pay(confirmedOrders().signed(customer, ConfirmedOrders.paidOnSigning(),
-                ConfirmedOrders.Line.cartons(sofa, 2, 6_000_000))).orderId();
+                ConfirmedOrders.Line.cartons(cup, 2, 6_000_000))).orderId();
         assertThat(confirmedOrders().ship(other, HCM).fullyHeld()).as("no free stock of the SKU yet").isFalse();
         assertThat(heldForOrder(other)).isZero();
         var shipping = context.getBean(com.stockflow.order.internal.service.ShippingWarehouseService.class);
@@ -4198,8 +4203,8 @@ class FtlDispatchIntegrationTest {
         caseHoldsRefused(true);
         try {
             // Enough for both, inserted without an arrival event: only the explicit run below serves anyone.
-            CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 8);
-            Throwable failed = catchThrowable(() -> shipping.topUpWaiting(sofa.sku()));
+            CustomerSkuRows.stock(jdbc, tx, cup.sku(), 8);
+            Throwable failed = catchThrowable(() -> shipping.topUpWaiting(cup.sku()));
             assertThat(failed).as("the case's failure is the run's").isInstanceOf(RuntimeException.class)
                     .hasStackTraceContaining("test: case hold refused");
             assertThat(heldForCase(caseId)).isZero();
@@ -4208,7 +4213,7 @@ class FtlDispatchIntegrationTest {
             caseHoldsRefused(false);
         }
 
-        shipping.topUpWaiting(sofa.sku());
+        shipping.topUpWaiting(cup.sku());
         assertThat(heldForCase(caseId)).isEqualTo(4);
         assertThat(heldForOrder(other)).isEqualTo(4);
     }
@@ -4280,7 +4285,7 @@ class FtlDispatchIntegrationTest {
             + "for it, and the other order is not fully held")
     void choosingAWarehouseServesTheWaitingCaseFirst() throws Exception {
         UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
-        CustomerSkuRows.Issued sofa = sofaOf(customer);
+        CustomerSkuRows.Issued cup = cupOf(customer);
         OrderSummary order = ftlOrder(2, customer);
         UUID[] first = handedOver(order, ghn);
         failedAndCameBack(first[0], "DAMAGED");
@@ -4288,15 +4293,15 @@ class FtlDispatchIntegrationTest {
         assertThat(heldForCase(caseId)).as("the cartons that came back are in quarantine").isZero();
         // F14: only the orders whose returned goods are of the SKUs asked about are locked and served.
         var cases = context.getBean(com.stockflow.order.internal.domain.DeliveryFailureCases.class);
-        assertThat(cases.ordersWantingGoodsHeld(List.of(sofa.sku()))).contains(order.orderId());
-        assertThat(cases.ordersWantingGoodsHeld(List.of("NOT-" + sofa.sku()))).as("another SKU's arrival")
+        assertThat(cases.ordersWantingGoodsHeld(List.of(cup.sku()))).contains(order.orderId());
+        assertThat(cases.ordersWantingGoodsHeld(List.of("NOT-" + cup.sku()))).as("another SKU's arrival")
                 .doesNotContain(order.orderId());
         assertThat(cases.ordersWantingGoodsHeld(List.of())).isEmpty();
         assertThat(cases.ordersWantingGoodsHeld()).as("any SKU").contains(order.orderId());
         // Fresh stock of the same SKU, inserted without an arrival event: only choosing a warehouse can serve the case.
-        CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 4);
+        CustomerSkuRows.stock(jdbc, tx, cup.sku(), 4);
         UUID other = confirmedOrders().pay(confirmedOrders().signed(customer, ConfirmedOrders.paidOnSigning(),
-                ConfirmedOrders.Line.cartons(sofa, 2, 6_000_000))).orderId();
+                ConfirmedOrders.Line.cartons(cup, 2, 6_000_000))).orderId();
 
         var coverage = confirmedOrders().ship(other, HCM);
 
@@ -4370,10 +4375,10 @@ class FtlDispatchIntegrationTest {
             + "batch 2 released")
     void aFailedBatchIsDeliveredAgainBeforeTheNext() throws Exception {
         UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
-        CustomerSkuRows.Issued sofa = sofaOf(customer);
-        CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 2 * 4);
+        CustomerSkuRows.Issued cup = cupOf(customer);
+        CustomerSkuRows.stock(jdbc, tx, cup.sku(), 2 * 4);
         UUID orderId = confirmedOrders().pay(confirmedOrders().signedInBatches(customer, 2,
-                ConfirmedOrders.Line.cartons(sofa, 4, 6_000_000))).orderId();
+                ConfirmedOrders.Line.cartons(cup, 4, 6_000_000))).orderId();
         OrderSummary order = confirmedOrders().release(orderId, HCM, coordinator);
         List<UUID> batchIds = jdbc.queryForList("""
                 SELECT b.id FROM ordering.delivery_batch b JOIN ordering.sales_contract c ON c.id = b.contract_id

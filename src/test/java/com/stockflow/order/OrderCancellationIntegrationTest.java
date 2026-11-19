@@ -69,21 +69,21 @@ class OrderCancellationIntegrationTest {
     @Autowired ApplicationContext context;
 
     private ConfirmedOrders confirmedOrders;
-    /** The demo customer's own sofa (14 BR-04), stocked at HCM for the test alone. */
-    private Sku sofa;
+    /** The demo customer's own cup (14 BR-04), stocked at HCM for the test alone. */
+    private Sku cup;
     /** Its carton unit of two: what orders and stock both count (whole cartons, 4C-2). */
-    private CustomerSkuRows.Issued sofaCarton;
+    private CustomerSkuRows.Issued cupCarton;
 
     @BeforeEach
     void setUp() {
         confirmedOrders = new ConfirmedOrders(context);
-        sofaCarton = CustomerSkuRows.like(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, "SOFA-3S-GREY", 2);
-        sofa = new Sku(sofaCarton.sku());
-        CustomerSkuRows.stock(jdbc, tx, sofa.code(), 10);
+        cupCarton = CustomerSkuRows.like(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, DemoData.SKU_STOCKED, 2);
+        cup = new Sku(cupCarton.sku());
+        CustomerSkuRows.stock(jdbc, tx, cup.code(), 10);
     }
 
     private UUID confirmed(int units) {
-        return confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(sofaCarton, units / 2,
+        return confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(cupCarton, units / 2,
                 PRICE))
                 .orderId();
     }
@@ -105,11 +105,11 @@ class OrderCancellationIntegrationTest {
     @Test
     @DisplayName("a customer asks to cancel a confirmed order; approved, holds are released, the paid money is to refund")
     void customerAsksBeforeRelease() {
-        int before = inventory.availableToPromise(sofa);
+        int before = inventory.availableToPromise(cup);
         UUID sales = tx.execute(s -> ReferenceRows.user(entityManager));
         UUID orderId = confirmed(2);
         confirmedOrders.ship(orderId, DemoData.WAREHOUSE_HCM);
-        assertThat(inventory.availableToPromise(sofa)).as("held at HCM").isEqualTo(before - 2);
+        assertThat(inventory.availableToPromise(cup)).as("held at HCM").isEqualTo(before - 2);
 
         // 4B-5 (17 §4.8): never at once - the customer asks, before release too, and Sales decides.
         CancellationOutcome outcome = orders.cancelOwn(orderId, DemoData.CUSTOMER_ID,
@@ -120,7 +120,7 @@ class OrderCancellationIntegrationTest {
         OrderSummary cancelled = requests.approve(orderId, outcome.requestId(), null, "agreed", sales);
         assertThat(cancelled.status()).isEqualTo(OrderStatus.CANCELLED);
         assertThat(cancelled.cancellation().reasonCode()).isEqualTo(CancellationReasonCode.CUSTOMER_REQUEST);
-        assertThat(inventory.availableToPromise(sofa)).isEqualTo(before);
+        assertThat(inventory.availableToPromise(cup)).isEqualTo(before);
         // 4B-9 (17 BR-11): nothing mass printed, no fee - everything collected is to refund.
         Map<String, Object> settled = settlement(orderId);
         assertThat(settled).containsEntry("kind", "ORDER_CANCELLED");
