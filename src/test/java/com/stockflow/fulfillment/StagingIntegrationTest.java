@@ -74,14 +74,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * moved by hand; the destination and the assignee change only while the task is PENDING; a top-up adds lines to the
  * same task.
  *
- * <p>Like {@link PickConfirmationIntegrationTest}, each test brings sofa cartons of its own, received long before the
- * demo ones, which the allocator hands out first, so the shared demo cartons are not used up. HCM has exactly one
+ * <p>Like {@link PickConfirmationIntegrationTest}, each test brings demo cup cartons of its own, received long before
+ * the demo ones, which the allocator hands out first, so the shared demo cartons are not used up. HCM has exactly one
  * staging area in the demo data (HCM-STG01), so a STAGING task needs no area named.</p>
  */
 @org.junit.jupiter.api.Disabled("Round 4 of the C3 tests, still disabled: its order()/pay() helpers are stubs (they used placeOrder "
-        + "and the money ledger, both gone) and its stock, carton sizes and counts are the demo SOFA-3S-GREY in"
-        + " cartons of one, while a contract order is the customer's own SKU in cartons of two or more (14 "
-        + "BR-04, BR-08): the orders must come from support/ConfirmedOrders and every count be re-derived. See "
+        + "and the money ledger, both gone) and its counts are still those of the old demo stock in cartons"
+        + " of one, while the demo cups come 1,000 and 500 to a carton and a contract order is the customer's own "
+        + "SKU (14 BR-04, BR-08): the orders must come from support/ConfirmedOrders and every count be re-derived. See "
         + "reports/C3-tests.md, Round 4.")
 @IntegrationTest
 @Import({PostgresContainer.class, RedisContainer.class})
@@ -90,11 +90,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "stockflow.upload-inspection.enabled=false"})
 class StagingIntegrationTest {
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
+    private static final Sku STOCKED = new Sku(DemoData.SKU_STOCKED);
     private static final Duration ASYNC = Duration.ofSeconds(10);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
-    private static final String SOFA_BIN = "HCM-A01-2-B";
-    private static final String OTHER_SOFA_BIN = "HCM-A02-1-A";
+    private static final String STOCKED_BIN = "HCM-A01-2-B";
+    private static final String OTHER_STOCKED_BIN = "HCM-A02-1-A";
     private static final String STAGING = "HCM-STG01";
 
     @Autowired com.stockflow.common.security.RoleAuthorizationLookup grants;
@@ -126,8 +126,8 @@ class StagingIntegrationTest {
     void setUp() {
         Instant longAgo = Instant.now().minus(Duration.ofDays(500));
         tx.executeWithoutResult(s -> {
-            CartonRows.stock(jdbc, SOFA.code(), SOFA_BIN, 3, 1, null, longAgo);
-            CartonRows.stock(jdbc, SOFA.code(), OTHER_SOFA_BIN, 3, 1, null, longAgo);
+            CartonRows.stock(jdbc, STOCKED.code(), STOCKED_BIN, 3, 1, null, longAgo);
+            CartonRows.stock(jdbc, STOCKED.code(), OTHER_STOCKED_BIN, 3, 1, null, longAgo);
         });
         coordinator = staff("WAREHOUSE_MANAGER", HCM);
         managerHcm = staff("WAREHOUSE_MANAGER", HCM);
@@ -219,8 +219,8 @@ class StagingIntegrationTest {
         return token(pickerHcm, "WAREHOUSE_STAFF");
     }
 
-    private OrderSummary confirmedOrder(int sofas) {
-        return confirmedOrder(List.of(new PlaceOrderCommand.Line(SOFA, sofas, Money.vnd(12_000_000), null)));
+    private OrderSummary confirmedOrder(int units) {
+        return confirmedOrder(List.of(new PlaceOrderCommand.Line(STOCKED, units, Money.vnd(12_000_000), null)));
     }
 
     /** A paid stock-only order of the demo customer, its stock held at HCM, released there (READY_TO_FULFILL). */
@@ -324,7 +324,7 @@ class StagingIntegrationTest {
     }
 
     private int atp() {
-        return inventory.availableToPromise(SOFA);
+        return inventory.availableToPromise(STOCKED);
     }
 
     // ---- picking to the staging area -----------------------------------------------------------
@@ -361,7 +361,7 @@ class StagingIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT consumed_at FROM fulfillment.pick_line WHERE id = ?::uuid",
                 Instant.class, lineId)).isNull();
         assertThat(atp()).as("stock in a staging area is not in ATP; it was held already").isEqualTo(atpBefore);
-        assertThat(inventory.availabilityOf(SOFA)).extracting(a -> a.locationCode()).doesNotContain(STAGING);
+        assertThat(inventory.availabilityOf(STOCKED)).extracting(a -> a.locationCode()).doesNotContain(STAGING);
 
         // the same scan again: 200, one ledger row
         confirm(task, first).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("STAGED"));
@@ -638,7 +638,7 @@ class StagingIntegrationTest {
                 SELECT s.id::text FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
                  WHERE p.lpn = ?""", String.class, lpn);
         int ledgerBefore = jdbc.queryForObject("SELECT count(*) FROM inventory.stock_movement WHERE sku = ?",
-                Integer.class, SOFA.code());
+                Integer.class, STOCKED.code());
 
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(order.orderId(), "CUSTOMER_REQUEST"));
         Await.until("task cancelled", ASYNC, () -> "CANCELLED".equals(pickStatus(task)));
@@ -647,19 +647,19 @@ class StagingIntegrationTest {
 
         String lot = jdbc.queryForObject("SELECT lot_number FROM inventory.stock_item WHERE id = ?::uuid", String.class, row);
         Throwable surplus = catchThrowable(() -> tx.execute(s -> inventory.requestAdjustment(
-                new com.stockflow.inventory.api.RequestAdjustmentCommand(STAGING, SOFA, lot, 1,
+                new com.stockflow.inventory.api.RequestAdjustmentCommand(STAGING, STOCKED, lot, 1,
                         com.stockflow.inventory.api.StockAdjustmentReason.FOUND, "found in staging", managerHcm))));
         assertThat(surplus).isInstanceOfSatisfying(BusinessException.class,
                 refusal -> assertThat(refusal.errorCode()).isEqualTo(ErrorCode.STAGING_MOVE_NOT_ALLOWED));
         Throwable writeDown = catchThrowable(() -> tx.execute(s -> inventory.requestAdjustment(
-                new com.stockflow.inventory.api.RequestAdjustmentCommand(STAGING, SOFA, lot, -1,
+                new com.stockflow.inventory.api.RequestAdjustmentCommand(STAGING, STOCKED, lot, -1,
                         com.stockflow.inventory.api.StockAdjustmentReason.LOST, "gone from staging", managerHcm))));
         if (writeDown instanceof BusinessException refused) {
             assertThat(refused.errorCode()).as("a write-down is not what is refused")
                     .isNotEqualTo(ErrorCode.STAGING_MOVE_NOT_ALLOWED);
         }
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_movement WHERE sku = ?", Integer.class,
-                SOFA.code())).as("nothing was written for the refused calls").isEqualTo(ledgerBefore);
+                STOCKED.code())).as("nothing was written for the refused calls").isEqualTo(ledgerBefore);
     }
 
     // ---- review M1: the move to dispatch locks in the order every multi-SKU writer keeps ---------
@@ -668,9 +668,9 @@ class StagingIntegrationTest {
     @DisplayName("moving a two-SKU task to dispatch while checkouts of both SKUs race it finishes without deadlock; two moves at "
             + "once deduct once")
     void movingToDispatchDoesNotDeadlockAndDeductsOnce() throws Exception {
-        PlaceOrderCommand.Line sofaLine = new PlaceOrderCommand.Line(SOFA, 1, Money.vnd(12_000_000), null);
-        PlaceOrderCommand.Line table = new PlaceOrderCommand.Line(new Sku("TABLE-OAK-160"), 1, Money.vnd(3_000_000), null);
-        OrderSummary order = confirmedOrder(List.of(table, sofaLine));
+        PlaceOrderCommand.Line stockedLine = new PlaceOrderCommand.Line(STOCKED, 1, Money.vnd(12_000_000), null);
+        PlaceOrderCommand.Line quarantined = new PlaceOrderCommand.Line(new Sku(DemoData.SKU_QUARANTINED), 1, Money.vnd(3_000_000), null);
+        OrderSummary order = confirmedOrder(List.of(quarantined, stockedLine));
         UUID task = stagingTask(order);
         start(task);
         confirmAll(task);
@@ -694,7 +694,7 @@ class StagingIntegrationTest {
                 go.await();
                 for (int i = 0; i < 3; i++) {
                     try {
-                        OrderSummary other = confirmedOrder(List.of(sofaLine, table));
+                        OrderSummary other = confirmedOrder(List.of(stockedLine, quarantined));
                         placed.add(other.orderId());
                     } catch (BusinessException stockRanOut) {
                         return "no stock: " + stockRanOut.errorCode();
@@ -735,14 +735,14 @@ class StagingIntegrationTest {
         String free = jdbc.queryForObject("""
                 SELECT p.lpn FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
                  WHERE p.location_code = ? AND p.status = 'IN_STOCK' AND s.reserved = 0 AND s.on_hand > 0
-                 ORDER BY p.lpn LIMIT 1""", String.class, SOFA_BIN);
+                 ORDER BY p.lpn LIMIT 1""", String.class, STOCKED_BIN);
         Throwable into = catchThrowable(() -> moveByHand(List.of(free), STAGING));
         assertThat(into).isInstanceOfSatisfying(BusinessException.class,
                 refusal -> assertThat(refusal.errorCode()).isEqualTo(ErrorCode.STAGING_MOVE_NOT_ALLOWED));
-        assertThat(locationOf(free)).isEqualTo(SOFA_BIN);
+        assertThat(locationOf(free)).isEqualTo(STOCKED_BIN);
 
         // the staged carton out of it: refused for the staging area, whatever else could be said of a held carton
-        Throwable out = catchThrowable(() -> moveByHand(List.of(staged), SOFA_BIN));
+        Throwable out = catchThrowable(() -> moveByHand(List.of(staged), STOCKED_BIN));
         assertThat(out).isInstanceOf(BusinessException.class);
         assertThat(((BusinessException) out).errorCode()).isIn(ErrorCode.STAGING_MOVE_NOT_ALLOWED,
                 ErrorCode.STOCK_PACKAGE_HELD);
@@ -812,7 +812,7 @@ class StagingIntegrationTest {
         UUID task = createTask(order, "");
         String url = "/api/v1/fulfillment/tasks/" + task + "/destination";
 
-        for (String code : List.of(SOFA_BIN, "HCM-PACK01", "HCM-NOWHERE")) {
+        for (String code : List.of(STOCKED_BIN, "HCM-PACK01", "HCM-NOWHERE")) {
             call(put(url).header("Authorization", manager()).contentType("application/json")
                     .content("{\"destination\":\"STAGING\",\"stagingLocationCode\":\"" + code + "\"}"))
                     .andExpect(status().isUnprocessableEntity())

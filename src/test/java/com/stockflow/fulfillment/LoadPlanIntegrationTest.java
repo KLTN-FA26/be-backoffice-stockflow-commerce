@@ -2,7 +2,6 @@ package com.stockflow.fulfillment;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.order.api.OrderService;
@@ -77,7 +76,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "stockflow.upload-inspection.enabled=false"})
 class LoadPlanIntegrationTest {
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
     private static final Duration ASYNC = Duration.ofSeconds(15);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String ORDERS = "/api/v1/orders";
@@ -108,7 +106,6 @@ class LoadPlanIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        CartonStationSupport.giveCartonsASize(tx, jdbc);
         parts = new CartonStationSupport.Parts(this::packer, tx, jdbc, json);
         coordinator = staff("WAREHOUSE_MANAGER", HCM);
         sales = staff("SALES_STAFF");
@@ -213,10 +210,16 @@ class LoadPlanIntegrationTest {
 
     private final java.util.Map<UUID, CustomerSkuRows.Issued> sofas = new java.util.HashMap<>();
 
-    /** The customer's own sofa, handling like the catalogue's, sold in cartons of two (a contract's lines are only ever the customer's, 14 BR-04). */
+    /**
+     * The customer's own SKU, handling like the demo cup, sold in cartons of two (a contract's lines are only ever the
+     * customer's, 14 BR-04), its carton the big one the layouts below were measured with (215 x 95 x 90 cm, 52.5 kg).
+     */
     private CustomerSkuRows.Issued sofaOf(UUID customer) {
-        return sofas.computeIfAbsent(customer,
-                c -> CustomerSkuRows.like(jdbc, tx, entityManager, c, SOFA.code(), 2));
+        return sofas.computeIfAbsent(customer, c -> {
+            CustomerSkuRows.Issued issued = CustomerSkuRows.like(jdbc, tx, entityManager, c, DemoData.SKU_STOCKED, 2);
+            CartonStationSupport.giveCartonsASize(tx, jdbc, issued.sku());
+            return issued;
+        });
     }
 
     private OrderSummary ftlOrder(int sofas) throws Exception {

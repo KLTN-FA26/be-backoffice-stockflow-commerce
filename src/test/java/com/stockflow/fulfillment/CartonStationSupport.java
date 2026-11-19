@@ -19,8 +19,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * a shipment READY_TO_DISPATCH: start the check, scan the LPN of every carton the task picked, label them and complete.
  * It replaces the repack station's "open a package, scan the SKU, seal it" that every dispatch test used before.
  *
- * <p>The demo carton units declare no size on purpose (V20261111000100), and a label is refused without one (08 BR-07),
- * so {@link #giveCartonsASize} sets it first.</p>
+ * <p>A label is refused for a carton whose spec declares no size (08 BR-07). The demo cups' cartons are measured
+ * (V20261206000100) but small; a test that needs the big carton its truck maths was written for makes a SKU of its own
+ * and gives it that size ({@link #giveCartonsASize}). The demo SKUs themselves are never changed here.</p>
  */
 final class CartonStationSupport {
 
@@ -35,34 +36,31 @@ final class CartonStationSupport {
     private CartonStationSupport() { }
 
     /**
-     * The size and full weight the carton spec of the replacement demo SKUs declares: the big carton the load tests were
-     * measured with (215 x 95 x 90 cm, 52.5 kg), on both stocked cup SKUs.
+     * The size and full weight of the big carton the load tests were measured with (215 x 95 x 90 cm, 52.5 kg), on the
+     * carton spec of {@code sku}: a SKU the test made itself ({@code CustomerSkuRows.like}), never a demo SKU - every
+     * integration test shares one database, and a demo SKU resized here would change what the next class reads.
      */
-    static void giveCartonsASize(TransactionTemplate tx, JdbcTemplate jdbc) {
-        tx.executeWithoutResult(s -> {
-            size(jdbc, DemoData.SKU_STOCKED, "215", "95", "90", "52.5");
-            size(jdbc, DemoData.SKU_QUARANTINED, "215", "95", "90", "52.5");
-        });
+    static void giveCartonsASize(TransactionTemplate tx, JdbcTemplate jdbc, String sku) {
+        tx.executeWithoutResult(s -> size(jdbc, sku, "215", "95", "90", "52.5"));
     }
 
     /**
-     * Heavy cartons (say 1 200 kg): a 2.5 t truck (4 300 mm inside, a carton is 2 150 mm long once
-     * {@link #giveCartonsASize} has run) carries two of them by weight and by length - not three - so a shipment of four
-     * cartons needs two trucks with two cartons each. (A carton this long is too long for two to stand side by side in a
-     * 1.25 t truck, which carries one: four trucks.)
+     * Heavy cartons of {@code sku} (say 1 200 kg), a SKU the test made itself: a 2.5 t truck (4 300 mm inside, a carton
+     * is 2 150 mm long once {@link #giveCartonsASize} has run) carries two of them by weight and by length - not three -
+     * so a shipment of four cartons needs two trucks with two cartons each. (A carton this long is too long for two to
+     * stand side by side in a 1.25 t truck, which carries one: four trucks.)
      */
     static void giveHeavyCartons(TransactionTemplate tx, JdbcTemplate jdbc, String sku, BigDecimal kg) {
+        requireOwn(sku);
         tx.executeWithoutResult(s -> jdbc.update("""
                 UPDATE inventory.uom_conversions u SET weight_kg = ?
                   FROM inventory.inventory_items i
                  WHERE i.id = u.inventory_item_id AND i.sku = ? AND NOT u.is_base AND u.active""", kg, sku));
     }
 
-    /**
-     * The carton spec of the SKU declares no size, for a test of unmeasured cartons (the demo data measures the cup
-     * cartons, V20261206000100).
-     */
+    /** The carton spec of {@code sku}, a SKU the test made itself, declares no size: for a test of unmeasured cartons. */
     static void clearCartonSize(TransactionTemplate tx, JdbcTemplate jdbc, String sku) {
+        requireOwn(sku);
         tx.executeWithoutResult(s -> jdbc.update("""
                 UPDATE inventory.uom_conversions u SET length_cm = NULL, width_cm = NULL, height_cm = NULL, weight_kg = NULL
                   FROM inventory.inventory_items i
@@ -76,12 +74,21 @@ final class CartonStationSupport {
     }
 
     private static void size(JdbcTemplate jdbc, String sku, String length, String width, String height, String weight) {
+        requireOwn(sku);
         jdbc.update("""
                 UPDATE inventory.uom_conversions u SET length_cm = ?::numeric, width_cm = ?::numeric,
                        height_cm = ?::numeric, weight_kg = ?::numeric
                   FROM inventory.inventory_items i
                  WHERE i.id = u.inventory_item_id AND i.sku = ? AND NOT u.is_base AND u.active""",
                 length, width, height, weight, sku);
+    }
+
+    /** The demo SKUs are read by every class on the shared database: a fixture changes only a SKU of the test's own. */
+    private static void requireOwn(String sku) {
+        if (DemoData.SKU_STOCKED.equals(sku) || DemoData.SKU_QUARANTINED.equals(sku)) {
+            throw new IllegalArgumentException("A demo SKU is shared by every integration test; make one with "
+                    + "CustomerSkuRows.like and change that: " + sku);
+        }
     }
 
     /** The LPNs the task picked, in walking order. */
