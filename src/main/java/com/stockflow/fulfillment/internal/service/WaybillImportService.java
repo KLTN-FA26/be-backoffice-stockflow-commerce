@@ -163,7 +163,8 @@ class WaybillImportService implements WaybillImports {
         // A load never changes warehouse, so which warehouse each line is of can be read before the transaction.
         List<DispatchLoadJpaRepository.LoadPlace> places = tx.execute(s -> codes.isEmpty() ? List.of()
                 : loads.placesOfCodes(codes));
-        Map<String, UUID> warehouseOf = places.stream().filter(pl -> warehouseId.equals(pl.getWarehouseId()) && visible(restriction, pl.getWarehouseId()))
+        Map<String, UUID> warehouseOf = places.stream()
+                .filter(pl -> inImportScope(restriction, warehouseId, pl.getWarehouseId()))
                 .collect(Collectors.toMap(DispatchLoadJpaRepository.LoadPlace::getCode,
                         DispatchLoadJpaRepository.LoadPlace::getWarehouseId));
         // The file itself goes with the import; a load gets it whole only if every line is of the load's warehouse,
@@ -217,7 +218,7 @@ class WaybillImportService implements WaybillImports {
                              Map<UUID, StoredFile> fileOf, String name, String type, Set<Integer> confirmed,
                              CurrentUser actor) {
         List<DispatchLoadJpaEntity> locked = new ArrayList<>();
-        places.stream().filter(pl -> warehouseId.equals(pl.getWarehouseId()) && visible(restriction, pl.getWarehouseId()))
+        places.stream().filter(pl -> inImportScope(restriction, warehouseId, pl.getWarehouseId()))
                 .map(DispatchLoadJpaRepository.LoadPlace::getId).sorted()
                 .forEach(id -> loads.lockById(id).ifPresent(locked::add));
         Map<UUID, DispatchLoadJpaEntity> byId = locked.stream()
@@ -312,6 +313,11 @@ class WaybillImportService implements WaybillImports {
 
     // ------------------------------------------------------------------ internals
 
+    /** A load of the chosen warehouse, which the caller is assigned to. */
+    private static boolean inImportScope(Optional<AssignedWarehouses> restriction, UUID chosen, UUID loadWarehouse) {
+        return chosen.equals(loadWarehouse) && visible(restriction, loadWarehouse);
+    }
+
     /** The chosen warehouse exists and is one the caller is assigned to (RTM-WBIMPORT-WH). */
     private void requireWarehouse(UUID warehouseId) {
         if (warehouseId == null || warehouses.findWarehouse(warehouseId).isEmpty()) {
@@ -351,8 +357,7 @@ class WaybillImportService implements WaybillImports {
             facts.put(l.getCode(), new WaybillImportCheck.LoadFacts(l.getId(), l.getCode(), l.getStatus(),
                     l.getCarrierId(), carrier != null
                     && CarrierConnectionType.API_BOOKING.name().equals(carrier.getConnectionType()),
-                    l.getWaybillNo(), warehouseId.equals(l.getWarehouseId())
-                    && visible(restriction, l.getWarehouseId())));
+                    l.getWaybillNo(), inImportScope(restriction, warehouseId, l.getWarehouseId())));
         }
         Set<String> numbers = rows.stream().map(WaybillImportFile.Row::waybillNo).filter(Objects::nonNull)
                 .collect(Collectors.toSet());

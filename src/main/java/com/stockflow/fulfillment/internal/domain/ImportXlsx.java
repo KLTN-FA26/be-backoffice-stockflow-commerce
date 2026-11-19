@@ -105,7 +105,12 @@ public final class ImportXlsx {
         }
     }
 
-    /** One sheet holding each record as text cells, the first record the heading. */
+    /**
+     * One sheet holding each record as text cells, the first record the heading. Not {@code common.export.XlsxTable}:
+     * that writes report layouts (title lines, a blank row, autofilter, typed columns), whereas this file is re-read by
+     * {@link #read} as the import template - heading in row 1, every cell text, so a row keeps its number and a waybill
+     * number stays text.
+     */
     public static byte[] write(Collection<List<String>> records) {
         try (XSSFWorkbook workbook = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             Sheet sheet = workbook.createSheet("Sheet1");
