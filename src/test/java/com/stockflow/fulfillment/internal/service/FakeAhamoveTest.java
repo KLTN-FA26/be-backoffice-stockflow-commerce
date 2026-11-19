@@ -354,6 +354,24 @@ class FakeAhamoveTest {
     }
 
     @Test
+    @DisplayName("the fake's seed location is the local profile's alone: no server profile, nor the test one, lists it")
+    void theSeedIsLocalOnly() throws Exception {
+        String resources = "src/main/resources/";
+        assertThat(java.nio.file.Files.readString(java.nio.file.Path.of(resources + "application-local.yml")))
+                .contains("classpath:db/demo-fake").contains("mode: ${AHAMOVE_MODE:fake}");
+        for (String other : List.of("application.yml", "application-dev.yml", "application-prod.yml",
+                "application-test.yml")) {
+            assertThat(java.nio.file.Files.readString(java.nio.file.Path.of(resources + other)))
+                    .as(other).doesNotContain("db/demo-fake").doesNotContain("ahamove_mode");
+        }
+        assertThat(java.nio.file.Files.readString(java.nio.file.Path.of(resources + "application.yml")))
+                .contains("mode: ${AHAMOVE_MODE:live}");
+        assertThat(java.nio.file.Files.readString(java.nio.file.Path.of("deploy/docker-compose.yml")))
+                .as("compose passes no mode to a server").doesNotContain("AHAMOVE_MODE")
+                .doesNotContain("db/demo-fake");
+    }
+
+    @Test
     @DisplayName("in fake mode a carrier's sealed key is not opened (no secrets key is needed); in live mode it is")
     void theSealedKeyIsNotOpenedInFakeMode() {
         SecretCipher cipher = mock(SecretCipher.class);

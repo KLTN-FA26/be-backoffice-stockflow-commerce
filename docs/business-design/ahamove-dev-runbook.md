@@ -16,7 +16,7 @@ không chứa và không in bí mật nào.
 | Đường callback có đi qua nginx của dev không? | **Có, không cần sửa nginx.** `deploy/nginx/templates/stockflow.conf.template`: host `api.<DOMAIN>` là host chỉ-DNS (không qua Cloudflare, không bị `cloudflare-only`), `location /` chuyển mọi đường dẫn tới app. Header `apikey` và `Authorization` được chuyển nguyên (`proxy-headers.conf` chỉ xoá các header `Forwarded*` và `X-Stockflow-*`). Giới hạn `edge_req` 20 req/s/IP, burst 40 là đủ cho callback. Vì vậy **không có PR nginx**. |
 | App có đọc `STOCKFLOW_SECRETS_KEY` từ `.env` của server không? | **Có.** `deploy/docker-compose.yml` dòng `STOCKFLOW_SECRETS_KEY: ${STOCKFLOW_SECRETS_KEY:-}`; mẫu ở `deploy/.env.example`. |
 | Chế độ giả lập có bật trên dev không? | **Không.** `AHAMOVE_MODE` không được compose truyền vào, `application.yml` mặc định `live`; chỉ `application-local.yml` đặt `fake`. |
-| Dev có dữ liệu demo không? | **Không.** Profile `dev` chỉ chạy `db/migration`. Hãng AHAMOVE, mã dịch vụ, điểm lấy hàng **chưa có** trên dev: tạo ở bước 3. Loại xe mẫu (`PICKUP`, `TRUCK-1T25`, `TRUCK-2T5`…) có sẵn từ migration. |
+| Dev có dữ liệu demo không? | **Không.** Profile `dev` chỉ chạy `db/migration`; compose chỉ thêm `db/demo` nếu `.env` của server đặt `FLYWAY_LOCATIONS` (mặc định tắt). Kể cả khi bật, seed giả lập Ahamove nằm ở thư mục riêng `db/demo-fake`, chỉ `application-local.yml` liệt kê, nên **không** bao giờ chạy trên dev và không đụng tới hãng AHAMOVE của dev. Hãng AHAMOVE, mã dịch vụ, điểm lấy hàng **chưa có** trên dev: tạo ở bước 3. Loại xe mẫu (`PICKUP`, `TRUCK-1T25`, `TRUCK-2T5`…) có sẵn từ migration. |
 | Giới hạn IP cho callback | Ahamove không công bố danh sách IP; `AHAMOVE_WEBHOOK_ALLOWED_IPS` mặc định rỗng (cho mọi IP) và compose **không** truyền biến này. Để nguyên. |
 
 ## 1. Tạo và đặt `STOCKFLOW_SECRETS_KEY` (Tú làm)
@@ -191,7 +191,7 @@ Và: tài liệu không nói huỷ đơn **sau** khi lấy hàng có được kh
 ## 8. Phụ lục: demo local với Ahamove giả lập (không gọi mạng)
 
 Khác với chạy thật ở trên: trên máy local, profile `local` mặc định `stockflow.fulfillment.ahamove.mode=fake` (đặt `AHAMOVE_MODE=live` để tắt). Chạy luồng đặt xe giả lập **không cần** `STOCKFLOW_SECRETS_KEY`, **nhưng tạo hoặc sửa hãng kiểu `API_BOOKING` trên giao diện (hay `POST/PUT /carriers` có `apiKey`) vẫn cần**: không có khoá thì API trả **503 `SECRETS_UNAVAILABLE`**, kể cả ở chế độ giả lập, vì lúc lưu khoá API và giá trị xác thực hệ thống phải mã hoá chúng.
-Hãng `AHAMOVE` do seed demo (`V20261203000400__demo_fake_ahamove.sql`) tạo sẵn thì không cần khoá; chỉ cần khoá khi tạo hãng mới qua UI/API.
+Hãng `AHAMOVE` do seed demo (`db/demo-fake/V20261203000400__demo_fake_ahamove.sql`) tạo sẵn thì không cần khoá; chỉ cần khoá khi tạo hãng mới qua UI/API.
 
 Cách đặt (chỉ máy local, **giá trị thử bất kỳ, không dùng khoá thật**; khoá thật của server dev ở bước 1 không bao giờ nằm trên máy local):
 

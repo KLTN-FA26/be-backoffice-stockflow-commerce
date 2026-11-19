@@ -14,8 +14,12 @@
 --  * service codes per vehicle type for Ha Noi (province 01, Ahamove city HAN) and Ho Chi Minh City (79, SGN), and a
 --    pickup point at each warehouse HAN, BDG and HCM that exists. A warehouse that is absent is skipped.
 --
+-- Its own Flyway location, db/demo-fake, that only application-local.yml lists: a server that loads db/demo through
+-- FLYWAY_LOCATIONS (deploy/.env.example, off by default) never gets this seed, so a dev AHAMOVE carrier - real staging
+-- settings included - is not touched. The version is above the maximum of db/migration and db/demo.
+--
 -- Idempotent: it may be run again with psql after the tools/db/seed data is loaded, which comes after the migrations
--- on a fresh database.
+-- on a fresh database (psql -f this file).
 
 UPDATE fulfillment.carrier
    SET connection_type = 'API_BOOKING',
