@@ -1,6 +1,6 @@
 -- =============================================================================
 -- Adversarial checks + happy paths: the selection modes a load plan stores (WF4-LP-MODES, kltn-docs 09 §4.2;
--- V20261204004100, V20261204004300) and the history of cancelled bookings (09 §4.2 step 6; V20261204004200).
+-- V20261204004100) and the history of cancelled bookings (09 §4.2 step 6; V20261204004200).
 -- Needs the demo seed (its history holds a load plan and its dispatch load). Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
@@ -60,5 +60,9 @@ SELECT pg_temp.expect_fail('LB3 a load that does not exist', $q$
 SELECT pg_temp.expect_fail('LB4 no carrier: a booking always had one', $q$
     INSERT INTO fulfillment.load_booking_cancellation (id, load_id, carrier_id, cancelled_at, reason)
     SELECT gen_random_uuid(), (SELECT id FROM fulfillment.dispatch_load ORDER BY id LIMIT 1), NULL, NOW(), 'x' $q$);
+SELECT pg_temp.expect_fail('LB5 append-only: a kept booking is not rewritten', $q$
+    UPDATE fulfillment.load_booking_cancellation SET reason = 'sửa lại' WHERE waybill_no = 'WB-QA-1' $q$);
+SELECT pg_temp.expect_fail('LB6 append-only: a kept booking is not deleted', $q$
+    DELETE FROM fulfillment.load_booking_cancellation WHERE waybill_no = 'WB-QA-1' $q$);
 
 ROLLBACK;

@@ -49,9 +49,4 @@ public class LoadBookingCancellationJpaEntity extends BaseEntity {
     }
 
     public UUID getLoadId() { return loadId; }
-
-    public DispatchLoad.CancelledBooking toCancelledBooking() {
-        return new DispatchLoad.CancelledBooking(carrierId, waybillNo, vehiclePlate, driverName, driverPhone, bookedAt,
-                bookedBy, cancelledAt, cancelledBy, reason);
-    }
 }

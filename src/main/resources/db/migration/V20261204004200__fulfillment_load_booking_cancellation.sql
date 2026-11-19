@@ -6,7 +6,7 @@
 --     carrier, waybill number, plate and driver the load had, when it was booked and by whom, and when, by whom and
 --     why the booking was cancelled. Every path that cancels a booking writes it: by hand, a carrier order cancelled
 --     through the API, the carrier cancelling its own order, a shipment taken off a load booked on a carrier order.
---     Append-only: the load row itself keeps only the last cancellation's time and reason.
+--     Append-only (trigger below): the load row itself keeps only the last cancellation's time and reason.
 -- =============================================================================
 
 CREATE TABLE fulfillment.load_booking_cancellation
@@ -46,3 +46,9 @@ CREATE INDEX ix_load_booking_cancellation_booked_by ON fulfillment.load_booking_
     WHERE booked_by IS NOT NULL;
 CREATE INDEX ix_load_booking_cancellation_cancelled_by ON fulfillment.load_booking_cancellation (cancelled_by)
     WHERE cancelled_by IS NOT NULL;
+
+-- Append-only, as the entity says (every column insert-only) and as the other history tables of the module are
+-- (trg_waybill_change_append_only): a booking's history is never rewritten or deleted.
+CREATE TRIGGER trg_load_booking_cancellation_append_only
+    BEFORE UPDATE OR DELETE ON fulfillment.load_booking_cancellation
+    FOR EACH ROW EXECUTE FUNCTION platform.append_only();
