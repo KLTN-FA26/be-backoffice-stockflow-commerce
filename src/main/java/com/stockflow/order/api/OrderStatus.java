@@ -261,8 +261,10 @@ public enum OrderStatus {
             // PACKED: the rest packed while nothing was handed over yet (17 §5; WF4-PF-NEXT). SHIPPED: the rest handed
             // over. SHIPPED / DELIVERY_FAILED / DELIVERED /
             // RETURNED: the rest closed by staff, the order then shows its shipments.
+            // PARTIALLY_REFUNDED: a shipment came back while the others arrived and its part is refunded
+            // (RTM-RETURNED-PARTIAL, owner 19/11; 17 §5.1 edge, docs PR #42).
             case PARTIALLY_FULFILLED -> target == PACKED || target == SHIPPED || target == DELIVERY_FAILED
-                    || target == DELIVERED || target == RETURNED || target == ON_HOLD;
+                    || target == DELIVERED || target == RETURNED || target == ON_HOLD || target == PARTIALLY_REFUNDED;
             // Not CANCELLED: a completed package goes through a return (decision 2026-10-17). PARTIALLY_FULFILLED: only
             // part of it was handed over.
             case PACKED -> target == SHIPPED || target == PARTIALLY_FULFILLED || target == ON_HOLD;

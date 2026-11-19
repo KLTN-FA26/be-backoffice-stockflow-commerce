@@ -88,19 +88,6 @@ class DeliveryFailureController {
         return ApiResponse.ok(cases.stream().map(DeliveryFailureController::toResponse).toList());
     }
 
-    @PostMapping("/{orderId}/delivery-failures/{caseId}/redelivery")
-    @Operation(summary = "Deliver again the goods of a shipment that came back (Sales): the order leaves its hold, the "
-            + "goods are held for it as they are put away and the warehouse manager releases them. A trip the "
-            + "customer made fail (REFUSED, WRONG_ADDRESS) is charged with failedTripFee on a fee item; any other "
-            + "reason charges nothing. 409 DELIVERY_FAILURE_INVALID_TRANSITION when the case is not OPEN")
-    @RequiresPermission(resource = OrderResources.HOLDS, action = Action.UPDATE, scope = DataScope.ALL)
-    public ApiResponse<DeliveryFailureCaseResponse> redeliver(@PathVariable UUID orderId, @PathVariable UUID caseId,
-            @Valid @RequestBody DeliveryFailureCaseRequests.Redelivery request, @AuthenticatedUser CurrentUser user) {
-        ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(toResponse(failures.redeliver(orderId, caseId,
-                new DeliveryFailureService.Redeliver(request.note(), request.failedTripFee()), user.userId())));
-    }
-
     @PostMapping("/{orderId}/delivery-failures/{caseId}/cancellation")
     @Operation(summary = "Cancel what a failed delivery left undelivered (Sales): the rest of the order is closed "
             + "with the fee agreed for the goods already made - they are not refunded by default - and what was "

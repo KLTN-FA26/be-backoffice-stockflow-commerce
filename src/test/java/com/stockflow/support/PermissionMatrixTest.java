@@ -863,7 +863,6 @@ class PermissionMatrixTest {
         Map<String, String> expected = Map.of(
                 "GET /api/v1/orders/delivery-failures", "sales-orders:READ",
                 "GET /api/v1/orders/{orderId}/delivery-failures", "sales-orders:READ",
-                "POST /api/v1/orders/{orderId}/delivery-failures/{caseId}/redelivery", "sales-order-holds:UPDATE",
                 "POST /api/v1/orders/{orderId}/delivery-failures/{caseId}/cancellation",
                 "sales-order-cancellations:UPDATE",
                 // WF-05 review F6.1: what came back with no case yet is cancelled under the same permission.

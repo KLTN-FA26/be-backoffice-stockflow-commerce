@@ -1337,6 +1337,17 @@ public final class Order extends AggregateRoot {
         return true;
     }
 
+    /**
+     * RTM-RETURNED-PARTIAL: nothing more is coming of the order - every unit shipped or closed - and its shipments all
+     * have their last outcome, some delivered and some come back.
+     */
+    public boolean partlyReturnedAndDone() {
+        return outstandingUnits() == 0
+                && shipments.stream().anyMatch(OrderShipment::isReturned)
+                && shipments.stream().anyMatch(s -> s.status() == OrderShipmentStatus.DELIVERED)
+                && shipments.stream().allMatch(s -> s.isReturned() || s.status() == OrderShipmentStatus.DELIVERED);
+    }
+
     /** The carrier could not deliver one shipment (09 §4.3 step 2). OTHER needs a note. */
     public boolean recordShipmentDeliveryFailed(UUID shipmentId, DeliveryFailureReason reason, String note, Instant at,
                                                 UUID by) {
@@ -1368,16 +1379,37 @@ public final class Order extends AggregateRoot {
         if (!shipment.returned(at, by)) {
             return false;
         }
-        String why = shipment.failureReason() == null ? null : shipment.failureReason().name();
-        if (status != OrderStatus.ON_HOLD) {
-            transitionTo(OrderStatus.ON_HOLD, by, withNote(HoldReason.DELIVERY_FAILED.name(), why), at);
-        }
-        this.holdReason = HoldReason.DELIVERY_FAILED;
-        this.statusBeforeHold = OrderStatus.PARTIALLY_FULFILLED;
-        this.holdNote = why;
-        // ck_order_delivery_failure: the reason is the order's only while it is DELIVERY_FAILED; the shipment keeps it.
-        this.deliveryFailureReason = null;
+        // RTM-RETURNED (owner 18-19/11, kltn-docs 09 §4.3 step 4, 17 §5.1): the goods that came back are not delivered
+        // again on this order - to send them again Sales make a new order - so the shipment's units are closed now and
+        // their money is settled by payment (the caller); the order follows its shipments: RETURNED when nothing of it
+        // was delivered, PARTIALLY_FULFILLED while other shipments arrived (RTM-RETURNED-PARTIAL).
+        closedByReturn = closeUnitsOf(shipment);
+        this.lastClosureId = UUID.randomUUID();
+        followShipments(ShipmentChange.RETURNED, at, by,
+                shipment.failureReason() == null ? "RETURNED" : "RETURNED_" + shipment.failureReason().name());
         return true;
+    }
+
+    /** What the last shipment that came back closed, for payment to settle (RTM-RETURNED); not persisted. */
+    private BigDecimal closedByReturn = BigDecimal.ZERO;
+
+    public BigDecimal closedByReturn() {
+        return closedByReturn;
+    }
+
+    /** The units a shipment carried, closed on their lines; their gross value. */
+    private BigDecimal closeUnitsOf(OrderShipment shipment) {
+        Money closed = Money.zero(total().currency());
+        for (OrderLine line : lines) {
+            int units = Math.min(shipment.quantityOf(line.id()),
+                    line.quantity() - line.cancelledQuantity() - shippedUnits(line.id(), false));
+            if (units > 0) {
+                int open = line.quantity() - line.cancelledQuantity();
+                line.closeUnits(units);
+                closed = closed.plus(line.grossBetween(open - units, open));
+            }
+        }
+        return closed.amount();
     }
 
     /**
@@ -1533,7 +1565,10 @@ public final class Order extends AggregateRoot {
         } else if (shipments.stream().anyMatch(s -> s.status() == OrderShipmentStatus.DELIVERY_FAILED)) {
             target = OrderStatus.DELIVERY_FAILED;
         } else if (shipments.stream().anyMatch(s -> s.status() == OrderShipmentStatus.DELIVERED)) {
-            target = OrderStatus.DELIVERED;
+            // RTM-RETURNED-PARTIAL (owner 19/11): a shipment came back while the others arrived - the order is partly
+            // fulfilled, its returned part refunded (then PARTIALLY_REFUNDED), never DELIVERED as a whole.
+            target = shipments.stream().anyMatch(OrderShipment::isReturned) ? OrderStatus.PARTIALLY_FULFILLED
+                    : OrderStatus.DELIVERED;
         } else {
             target = OrderStatus.RETURNED;
         }
@@ -1780,6 +1815,12 @@ public final class Order extends AggregateRoot {
      * @return whether this changed the order
      */
     public boolean refunded(boolean full, UUID by, Instant at, String reason) {
+        if (status == OrderStatus.PARTIALLY_FULFILLED && partlyReturnedAndDone()) {
+            // RTM-RETURNED-PARTIAL (owner 19/11; 17 §5.1 edge added by docs PR #42): the part that came back is refunded.
+            transitionTo(OrderStatus.PARTIALLY_REFUNDED, by, reason, at);
+            this.refundedAt = at;
+            return true;
+        }
         if (status != OrderStatus.RETURNED) {
             return false;
         }
