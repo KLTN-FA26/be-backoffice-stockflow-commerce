@@ -3085,6 +3085,161 @@ class FtlDispatchIntegrationTest {
                 .isEqualTo("COMPLETED");
     }
 
+    // ---- RTM-RTDCANCEL (owner 2026-11-19; 09 §5.1 "Cancelled", 08 §5.1, 07 §4.3 step 7): a shipment cancelled ----------
+    // ---- before dispatch: the order held for stock, its cartons replaced and checked again -----------------------------
+
+    private ResultActions cancelShipment(UUID shipment, String content) throws Exception {
+        return oc(body(post(BASE + "/shipments/" + shipment + "/cancellation"), content));
+    }
+
+    @Test
+    @DisplayName("RTM-RTDCANCEL: an order packed whole into one shipment, its check COMPLETED; the warehouse manager "
+            + "cancels the shipment with a reason, one carton marked damaged: the shipment CANCELLED, both cartons out "
+            + "of it and REMOVED (DAMAGED / SHIPMENT_CANCELLED), the damaged one into quarantine and the good one back "
+            + "onto a bin through the put-back queue, the order ON_HOLD (INVENTORY), the check IN_PROGRESS again; both "
+            + "lines reallocated - the task PICKING with two top-up lines, the hold resolved back to PACKED; the "
+            + "replacements picked, checked and completed into a new shipment READY_TO_DISPATCH: the order PACKED")
+    void aShipmentCancelledBeforeDispatchIsReplaced() throws Exception {
+        OrderSummary order = ftlOrder(2);
+        CustomerSkuRows.stock(jdbc, tx, sofaOf(DemoData.CUSTOMER_ID).sku(), 4);
+        UUID[] made = packed(order, false);
+        UUID shipment = made[0];
+        UUID task = made[1];
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PACKED);
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pack WHERE pick_id = ?", String.class, task))
+                .isEqualTo("COMPLETED");
+        List<Map<String, Object>> cartons = jdbc.queryForList("SELECT id, lpn, pick_line_id, label_code FROM "
+                + "fulfillment.package WHERE shipment_id = ? ORDER BY package_no", shipment);
+        assertThat(cartons).hasSize(2);
+        UUID damagedId = (UUID) cartons.get(0).get("id");
+        String damagedLpn = (String) cartons.get(0).get("lpn");
+        UUID damagedLine = (UUID) cartons.get(0).get("pick_line_id");
+        UUID goodId = (UUID) cartons.get(1).get("id");
+        String goodLpn = (String) cartons.get(1).get("lpn");
+        UUID goodLine = (UUID) cartons.get(1).get("pick_line_id");
+
+        JsonNode cancelled = data(cancelShipment(shipment, "{\"reason\":\"Thùng móp khi chờ xe, xếp lại chuyến\","
+                + "\"damagedPackageIds\":[\"" + damagedId + "\"]}").andExpect(status().isOk()));
+        assertThat(cancelled.path("shipment").path("status").asText()).isEqualTo("CANCELLED");
+        assertThat(cancelled.path("cancelledAt").isNull()).isFalse();
+        assertThat(cancelled.path("packages")).as("its cartons left it").isEmpty();
+        JsonNode last = cancelled.path("timeline").get(cancelled.path("timeline").size() - 1);
+        assertThat(last.path("status").asText()).isEqualTo("CANCELLED");
+        assertThat(last.path("note").asText()).isEqualTo("Thùng móp khi chờ xe, xếp lại chuyến");
+        assertThat(last.path("recordedBy").asText()).isEqualTo(coordinator.toString());
+        assertThat(jdbc.queryForMap("SELECT status, removal_reason, removed_by, shipment_id FROM fulfillment.package "
+                + "WHERE id = ?", damagedId)).containsEntry("status", "REMOVED").containsEntry("removal_reason", "DAMAGED")
+                .containsEntry("removed_by", coordinator).containsEntry("shipment_id", null);
+        assertThat(jdbc.queryForMap("SELECT status, removal_reason, removed_by, shipment_id FROM fulfillment.package "
+                + "WHERE id = ?", goodId)).containsEntry("status", "REMOVED")
+                .containsEntry("removal_reason", "SHIPMENT_CANCELLED").containsEntry("shipment_id", null);
+        // Its labels are void: a removed carton has no shipping label to print (08 §5.2 "Removed").
+        packer(body(post(BASE + "/tasks/" + task + "/shipping-labels"), "{\"lpns\":[\"" + goodLpn + "\"]}")
+                .accept(MediaType.APPLICATION_PDF, MediaType.APPLICATION_JSON)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CARTON_NOT_CHECKED"));
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pack WHERE pick_id = ?", String.class, task))
+                .as("08 §5.1: Completed -> In Progress for the replacement cartons").isEqualTo("IN_PROGRESS");
+        OrderSummary held = orders.findById(order.orderId()).orElseThrow();
+        assertThat(held.status()).isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(held.lifecycle().holdReason()).isEqualTo(HoldReason.INVENTORY);
+        assertThat(batchHolds(order)).as("17 §5.5: the batch no longer counts either carton - it lacks both again")
+                .isZero();
+
+        // The put-back queue: the damaged carton for quarantine, the good one for a bin.
+        JsonNode queue = data(oc(get(BASE + "/put-backs").param("warehouseId", HCM.toString()).param("size", "200"))
+                .andExpect(status().isOk())).path("items");
+        Map<String, Boolean> queued = new HashMap<>();
+        queue.forEach(row -> queued.put(row.path("lpn").asText(), row.path("quarantine").asBoolean()));
+        assertThat(queued).containsEntry(damagedLpn, true).containsEntry(goodLpn, false);
+        packer(body(post(BASE + "/tasks/" + task + "/pick-lines/" + damagedLine + "/put-back"),
+                "{\"locationCode\":\"HCM-QC01\",\"lpn\":\"" + damagedLpn + "\"}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PUT_BACK"));
+        assertThat(jdbc.queryForMap("SELECT location_code, status FROM inventory.stock_package WHERE lpn = ?",
+                damagedLpn)).as("in quarantine").containsEntry("location_code", "HCM-QC01")
+                .containsEntry("status", "IN_STOCK");
+        String bin = jdbc.queryForObject("SELECT location_code FROM fulfillment.pick_line WHERE id = ?", String.class,
+                goodLine);
+        packer(body(post(BASE + "/tasks/" + task + "/pick-lines/" + goodLine + "/put-back"),
+                "{\"locationCode\":\"HCM-QC01\",\"lpn\":\"" + goodLpn + "\"}")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PUT_BACK_LOCATION_INVALID"));
+        packer(body(post(BASE + "/tasks/" + task + "/pick-lines/" + goodLine + "/put-back"),
+                "{\"locationCode\":\"" + bin + "\",\"lpn\":\"" + goodLpn + "\"}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PUT_BACK"));
+        assertThat(jdbc.queryForMap("SELECT location_code, status FROM inventory.stock_package WHERE lpn = ?",
+                goodLpn)).as("back onto its bin").containsEntry("location_code", bin).containsEntry("status", "IN_STOCK");
+
+        // 07 §4.4 step 10: the warehouse manager reallocates each line; the hold resolves with the last.
+        assertThat(pickLine(task, goodLine).path("removalReason").asText()).isEqualTo("SHIPMENT_CANCELLED");
+        assertThat(pickLine(task, goodLine).path("replacementPending").asBoolean()).isTrue();
+        JsonNode first = data(reallocate(task, damagedLine).andExpect(status().isOk()));
+        assertThat(first).hasSize(1);
+        // 07 §4.4 step 10: never the carton the line lacks; any other whole carton of the warehouse, FIFO - the good one
+        // already back on its bin included.
+        assertThat(first.get(0).path("lpn").asText()).isNotEqualTo(damagedLpn);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).as("one carton still lacks a replacement")
+                .isEqualTo(OrderStatus.ON_HOLD);
+        JsonNode second = data(reallocate(task, goodLine).andExpect(status().isOk()));
+        assertThat(second).hasSize(1);
+        assertThat(second.get(0).path("lpn").asText()).isNotIn(damagedLpn, goodLpn,
+                first.get(0).path("lpn").asText());
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pick WHERE id = ?", String.class, task))
+                .as("07 §5: Picked -> Picking with the top-up lines").isEqualTo("PICKING");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.pick_line WHERE pick_id = ? AND status = "
+                + "'OPEN'", Integer.class, task)).isEqualTo(2);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status())
+                .as("WF4-BE3-HOLD: the hold resolved, back to the status it was held from").isEqualTo(OrderStatus.PACKED);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.order_hold WHERE order_id = ? AND reason = "
+                + "'INVENTORY' AND resolved_at IS NULL", Integer.class, order.orderId())).isZero();
+        assertThat(batchHolds(order)).as("the replacements stand for the batch").isEqualTo(2);
+        assertLineCover(order, 2, 0);
+
+        // 08 §4.1-§4.4 for the replacements: picked, checked in the reopened session, completed: a new shipment.
+        pickOpenLines(task);
+        CartonStationSupport.startAndScanAll(this::packer, jdbc, task);
+        CartonStationSupport.labelAll(this::packer, task);
+        UUID replacement = UUID.fromString(CartonStationSupport.completeOnly(this::packer, json, task, "{}")
+                .path("shipmentId").asText());
+        assertThat(replacement).isNotEqualTo(shipment);
+        assertThat(jdbc.queryForMap("SELECT status, package_count, code FROM fulfillment.shipment WHERE id = ?",
+                replacement)).containsEntry("status", "READY_TO_DISPATCH").containsEntry("package_count", 2)
+                .containsEntry("code", order.orderNumber() + "-S2");
+        assertThat(jdbc.queryForList("SELECT lpn FROM fulfillment.package WHERE shipment_id = ?", String.class,
+                replacement)).doesNotContain(damagedLpn).hasSize(2);
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pack WHERE pick_id = ?", String.class, task))
+                .isEqualTo("COMPLETED");
+        OrderSummary after = orders.findById(order.orderId()).orElseThrow();
+        assertThat(after.status()).isEqualTo(OrderStatus.PACKED);
+        assertThat(after.lifecycle().holdReason()).isNull();
+    }
+
+    @Test
+    @DisplayName("RTM-RTDCANCEL refusals: warehouse staff without fulfillment-shipment-cancellations get 403; no reason "
+            + "is 400, a damaged carton of another shipment 400; a shipment in a load plan 409 PACKAGE_IN_LOAD_PLAN; "
+            + "one cancelled already (not READY_TO_DISPATCH) 409 SHIPMENT_STATE_CONFLICT - nothing changes")
+    void aShipmentIsCancelledBeforeDispatchOnly() throws Exception {
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        UUID planned = packed(ftlOrder(1), false)[0];
+        dispatch(body(post(BASE + "/shipments/" + shipment + "/cancellation"), "{\"reason\":\"x\"}"))
+                .andExpect(status().isForbidden());
+        cancelShipment(shipment, "{\"damagedPackageIds\":[]}").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+        cancelShipment(shipment, "{\"reason\":\"   \"}").andExpect(status().isBadRequest());
+        UUID elsewhere = jdbc.queryForObject("SELECT id FROM fulfillment.package WHERE shipment_id = ? LIMIT 1",
+                UUID.class, planned);
+        cancelShipment(shipment, "{\"reason\":\"móp\",\"damagedPackageIds\":[\"" + elsewhere + "\"]}")
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+        assertThat(shipmentStatus(shipment)).isEqualTo("READY_TO_DISPATCH");
+
+        plan(List.of(planned), truck5t);
+        cancelShipment(planned, "{\"reason\":\"xếp lại\"}").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PACKAGE_IN_LOAD_PLAN"));
+        assertThat(shipmentStatus(planned)).isEqualTo("READY_TO_DISPATCH");
+
+        cancelShipment(shipment, "{\"reason\":\"xếp lại\"}").andExpect(status().isOk());
+        cancelShipment(shipment, "{\"reason\":\"xếp lại\"}").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("SHIPMENT_STATE_CONFLICT"));
+    }
+
     @Test
     @DisplayName("WF4-CLOSE-REST (17 §4.8 step 33, owner decision 2026-11-13): completed in part, the checked part waiting "
             + "at dispatch - Sales closes the rest: 200, only the carton neither handed over nor labelled is closed and "

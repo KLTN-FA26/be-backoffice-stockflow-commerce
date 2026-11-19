@@ -457,19 +457,20 @@ public final class PickList {
     }
 
     /**
-     * As {@link #putBack(UUID, String, PutBackTarget, boolean, UUID, Instant)}; with {@code removedClosedRest}, the line's
-     * carton was removed at the check station because the rest of its order was closed (17 §4.8 step 33, WF4-CLOSE-REST
-     * 2026-11-13): it goes back onto an active bin of the task's warehouse although the task itself goes on - its
-     * labelled cartons are still delivered.
+     * As {@link #putBack(UUID, String, PutBackTarget, boolean, UUID, Instant)}; with {@code removedToBin}, the line's
+     * carton was removed while the task goes on and is good: the rest of its order was closed (17 §4.8 step 33,
+     * WF4-CLOSE-REST 2026-11-13), or its shipment was cancelled before dispatch and it was not marked damaged (09 §5.1,
+     * RTM-RTDCANCEL 2026-11-19). It goes back onto an active bin of the task's warehouse although the task itself goes
+     * on.
      */
     public PutBack putBack(UUID lineId, String scannedLpn, PutBackTarget target, boolean removedDamaged,
-                           boolean removedClosedRest, UUID actor, Instant now) {
+                           boolean removedToBin, UUID actor, Instant now) {
         PickLine line = requireLine(lineId);
         if (line.status() == PickLineStatus.PUT_BACK && lpnMatches(line, scannedLpn)) {
             return new PutBack(line, true);
         }
         boolean staged = line.status() == PickLineStatus.STAGED;
-        boolean queued = removedDamaged || removedClosedRest ? line.status() == PickLineStatus.PICKED
+        boolean queued = removedDamaged || removedToBin ? line.status() == PickLineStatus.PICKED
                 : status == PickStatus.CANCELLED && needsPutBack && (line.status() == PickLineStatus.PICKED || staged);
         if (!queued || line.pickedQty() == 0 || line.lpn() == null) {
             throw new BusinessException(ErrorCode.PUT_BACK_NOT_REQUIRED,

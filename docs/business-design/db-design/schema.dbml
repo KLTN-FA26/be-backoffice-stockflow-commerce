@@ -4086,7 +4086,7 @@ Table fulfillment.package [headercolor: #2C7873] {
   label_version        int [not null, default: 0]
   removed_at           timestamptz
   removed_by           uuid
-  removal_reason       varchar(16)
+  removal_reason       varchar(32)
   removal_note         varchar(500)
   indexes {
     (pack_id, package_no) [unique]

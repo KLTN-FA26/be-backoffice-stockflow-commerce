@@ -311,7 +311,11 @@ CHECKED → LABELED`, or `REMOVED`); the rules are on the pure `CartonCheck`. La
 (`InventoryControlService.cartonSpec`) and volumetric weight; the first label calls `OrderService.recordFirstLabel`,
 which locks cancellation and the delivery address. Completion makes the LABELED cartons one shipment. A carton removed
 as damaged goes whole into a QUARANTINE area (`PickConsumption.putBackToQuarantine`). The repack station (parcels, kits,
-`package_line`) went with 4C-7.
+`package_line`) went with 4C-7. The warehouse manager may cancel a READY_TO_DISPATCH shipment out of any plan or load
+(`POST /fulfillment/shipments/{id}/cancellation`, RTM-RTDCANCEL): its cartons are REMOVED (DAMAGED to quarantine,
+`SHIPMENT_CANCELLED` back to a bin), the order goes ON_HOLD(INVENTORY), and a COMPLETED session goes back to
+IN_PROGRESS - the one way out of COMPLETED - so the reallocated replacements are checked into a new shipment, the
+station accepting the PACKED order for that session only.
 
 ### Shipping a full truckload, and Ahamove
 

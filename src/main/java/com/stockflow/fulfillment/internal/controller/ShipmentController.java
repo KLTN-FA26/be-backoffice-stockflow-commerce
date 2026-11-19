@@ -12,9 +12,11 @@ import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.fulfillment.internal.controller.dto.DeliveryOutcomeCorrectionRequest;
 import com.stockflow.fulfillment.internal.controller.dto.FailureReasonCorrectionRequest;
 import com.stockflow.fulfillment.internal.controller.dto.DeliveryOutcomeRequest;
+import com.stockflow.fulfillment.internal.controller.dto.ShipmentCancellationRequest;
 import com.stockflow.fulfillment.internal.controller.dto.ShipmentResponse;
 import com.stockflow.fulfillment.internal.controller.dto.ShipmentRowResponse;
 import com.stockflow.fulfillment.internal.service.DeliveryNoteService;
+import com.stockflow.fulfillment.internal.service.ShipmentCancellations;
 import com.stockflow.fulfillment.internal.service.Shipments;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -43,6 +45,10 @@ import java.util.UUID;
  * returns receipt, SCRUM-295, records it itself); DELIVERED and DELIVERY_FAILED also need APPROVE (09 BR-02), the
  * warehouse manager's since the order coordinator role was retired (17 BR-27, team plan 5-7), as they move the order
  * and bill it.</p>
+ *
+ * <p>A shipment waiting for dispatch is cancelled by the warehouse manager ({@code fulfillment-shipment-cancellations},
+ * 09 §5.1; RTM-RTDCANCEL): the order is held for stock and the cartons are replaced (see
+ * {@link ShipmentCancellations}).</p>
  */
 @RestController
 @RequestMapping("/api/v1/fulfillment/shipments")
@@ -52,11 +58,14 @@ class ShipmentController {
     private final Shipments shipments;
     private final DispatchWebMapper mapper;
     private final DeliveryNoteService deliveryNotes;
+    private final ShipmentCancellations cancellations;
 
-    ShipmentController(Shipments shipments, DispatchWebMapper mapper, DeliveryNoteService deliveryNotes) {
+    ShipmentController(Shipments shipments, DispatchWebMapper mapper, DeliveryNoteService deliveryNotes,
+                       ShipmentCancellations cancellations) {
         this.shipments = shipments;
         this.mapper = mapper;
         this.deliveryNotes = deliveryNotes;
+        this.cancellations = cancellations;
     }
 
     @GetMapping
@@ -111,6 +120,25 @@ class ShipmentController {
         }
         return ApiResponse.ok(mapper.toResponse(shipments.recordOutcome(shipmentId, new Shipments.Outcome(
                 request.outcome(), request.failureReason(), request.note()), actor)));
+    }
+
+    @PostMapping("/{shipmentId}/cancellation")
+    @Operation(summary = "Cancel a shipment waiting for dispatch (09 §5.1, RTM-RTDCANCEL), with a reason and the "
+            + "cartons found damaged: the shipment CANCELLED, its cartons out of it, their labels void; the damaged "
+            + "ones wait in the put-back queue for quarantine, the others for a bin; the order ON_HOLD (INVENTORY) until "
+            + "the warehouse manager reallocates replacements (POST /tasks/{taskId}/pick-lines/{lineId}/reallocation), "
+            + "which are picked and checked into a new shipment - the check reopened even when it was COMPLETED. "
+            + "fulfillment-shipment-cancellations:UPDATE. 400 VALIDATION_FAILED (no reason; a damaged carton not in the "
+            + "shipment); 409 SHIPMENT_STATE_CONFLICT unless READY_TO_DISPATCH; 409 PACKAGE_IN_LOAD_PLAN while in a "
+            + "live load plan or on an open load; 409 PACKAGE_UNLOAD_PENDING while a carton is to be scanned off a "
+            + "vehicle called off")
+    @RequiresPermission(resource = FulfillmentResources.SHIPMENT_CANCELLATIONS, action = Action.UPDATE)
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "shipment", resourceId = "#shipmentId")
+    public ApiResponse<ShipmentResponse> cancel(@PathVariable UUID shipmentId,
+            @Valid @RequestBody ShipmentCancellationRequest request, @AuthenticatedUser CurrentUser actor) {
+        cancellations.cancel(shipmentId, new ShipmentCancellations.Cancellation(request.reason(),
+                request.damagedPackageIds()), actor);
+        return ApiResponse.ok(mapper.toResponse(shipments.get(shipmentId)));
     }
 
     @PostMapping("/{shipmentId}/delivery-outcome-correction")

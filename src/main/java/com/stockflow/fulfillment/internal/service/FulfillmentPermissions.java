@@ -97,6 +97,14 @@ public final class FulfillmentPermissions {
      */
     public static final String DELIVERY_DOCUMENTS = "fulfillment-delivery-documents";
 
+    /**
+     * UPDATE: cancel a shipment waiting for dispatch, with a reason and the cartons that are damaged - the order is
+     * held for stock, the cartons go to quarantine or back onto a bin, and replacements are reallocated, picked and
+     * checked into a new shipment (kltn-docs 09 §5.1 "Cancelled", 08 §5.1; RTM-RTDCANCEL; V20261204000600). Warehouse
+     * manager and system admin.
+     */
+    public static final String SHIPMENT_CANCELLATIONS = "fulfillment-shipment-cancellations";
+
     private FulfillmentPermissions() {
     }
 }

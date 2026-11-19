@@ -261,6 +261,9 @@ class PermissionMatrixTest {
             // 09B G12 (09 edge "hoàn hàng khi còn Handed Over"): the warehouse manager corrects the failure reason.
             Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/failure-reason-correction",
                     "fulfillment-delivery-corrections:UPDATE"),
+            // RTM-RTDCANCEL (V20261204000600, 09 §5.1): the warehouse manager cancels a shipment waiting for dispatch.
+            Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/cancellation",
+                    "fulfillment-shipment-cancellations:UPDATE"),
             // 09B G13 (V20261204000100): Sales read an order's POD and waybill files to send the customer.
             Map.entry("GET /api/v1/fulfillment/orders/{orderId}/delivery-documents",
                     "fulfillment-delivery-documents:READ"),
@@ -343,6 +346,8 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-carrier-events:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // 3-6, kltn-docs 09 §4.3 step 5: the warehouse manager corrects an outcome the carrier reported wrongly.
             Map.entry("fulfillment-delivery-corrections:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // RTM-RTDCANCEL, kltn-docs 09 §5.1 "Cancelled": the warehouse manager cancels a shipment before dispatch.
+            Map.entry("fulfillment-shipment-cancellations:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // 09B G13, kltn-docs 09 §2: Sales send the customer the POD / waybill file; never the customer (BR-05).
             Map.entry("fulfillment-delivery-documents:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
                     Role.SYSTEM_ADMIN)),

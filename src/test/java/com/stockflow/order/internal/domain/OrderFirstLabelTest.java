@@ -133,6 +133,18 @@ class OrderFirstLabelTest {
     }
 
     @Test
+    @DisplayName("RTM-RTDCANCEL: a packed order whose shipment was cancelled before dispatch has its replacement cartons "
+            + "labelled: locked by its first label already, it answers false and keeps the first time")
+    void packedOrderLabelsItsReplacements() {
+        Order order = picking();
+        order.recordFirstLabel(NOW);
+        order.markPacked(NOW.plusSeconds(60), STAFF);
+        assertThat(order.status()).isEqualTo(OrderStatus.PACKED);
+        assertThat(order.recordFirstLabel(NOW.plusSeconds(600))).isFalse();
+        assertThat(order.firstLabeledAt()).isEqualTo(NOW);
+    }
+
+    @Test
     @DisplayName("rehydration restores the lock without recording it again")
     void rehydration() {
         Order order = picking();

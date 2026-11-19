@@ -80,4 +80,9 @@ final class FulfillmentWorkResourceDeclarations {
             label = "An order's proofs of delivery and waybill files, for Sales to send the customer",
             route = "/fulfillment/orders", apiPath = "/api/v1/fulfillment/orders", actions = {Action.READ})
     static final class DeliveryDocuments { private DeliveryDocuments() { } }
+
+    @PermissionResource(code = FulfillmentResources.SHIPMENT_CANCELLATIONS, group = "Fulfillment",
+            label = "Cancel a shipment waiting for dispatch, with its damaged cartons", route = "/fulfillment/shipments",
+            apiPath = "/api/v1/fulfillment/shipments", actions = {Action.UPDATE})
+    static final class ShipmentCancellations { private ShipmentCancellations() { } }
 }

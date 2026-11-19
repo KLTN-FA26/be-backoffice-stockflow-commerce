@@ -24,8 +24,9 @@ import java.util.UUID;
  * @param removalReason   why the check station removed the line's carton ({@code DAMAGED}, {@code ORDER_CANCELLED},
  *                        ...); null while it was not removed. The line stays {@code PICKED}; a damaged carton goes to
  *                        quarantine (08 §4.2 step 4)
- * @param replacementPending the carton was removed as damaged and its order line still lacks it, so the warehouse
- *                        manager may replace it through the reallocation (07 §4.4 step 10); false once replaced
+ * @param replacementPending the carton was removed as damaged, or out of a shipment cancelled before dispatch
+ *                        ({@code SHIPMENT_CANCELLED}), and its order line still lacks it, so the warehouse manager may
+ *                        replace it through the reallocation (07 §4.4 step 10); false once replaced
  */
 public record PickLineResponse(UUID lineId, UUID taskId, int sequenceNo, UUID orderLineId, String sku, String barcode,
                                String locationCode, String lotNumber, int allocatedQty, int pickedQty, String status,

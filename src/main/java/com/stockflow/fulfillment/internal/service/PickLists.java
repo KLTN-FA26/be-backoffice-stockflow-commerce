@@ -82,7 +82,9 @@ public interface PickLists {
      * the removed line stays as it is (its carton goes to quarantine through the put-back queue). The new allocations
      * stand for the task's delivery batch and join the task as a top-up (07 §4.3 step 7): a PICKED task goes back to
      * PICKING, and the check session, still IN_PROGRESS, takes the replacement once it is picked. Refused once the
-     * task's check is complete or cancelled, and once the line lacks nothing more (replaced already, or closed).</p>
+     * task's check is complete or cancelled, and once the line lacks nothing more (replaced already, or closed). A line
+     * whose carton left a shipment the warehouse manager cancelled before dispatch is replaced the same way, damaged or
+     * not (09 §5.1, RTM-RTDCANCEL): that cancellation took the task's check back to IN_PROGRESS.</p>
      *
      * @return the new lines
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
@@ -113,6 +115,17 @@ public interface PickLists {
      * was not removed, or one replaced since, changes nothing.
      */
     void holdForRemovedCarton(UUID taskId, UUID lineId, CurrentUser actor);
+
+    /**
+     * The warehouse manager cancelled shipment {@code shipmentCode} before dispatch (kltn-docs 09 §5.1; owner decision
+     * RTM-RTDCANCEL, 2026-11-19): the line's carton left it - damaged into quarantine, or good back onto a bin - and its
+     * order line lacks it, so the order is held {@code INVENTORY} as for a carton removed at the check station
+     * ({@link #holdForRemovedCarton}); the warehouse manager reallocates the line ({@link #reallocateShort}), which
+     * resumes the order - back to the status it was held from - once nothing lacks a replacement. In the caller's
+     * transaction, which holds the pick's lock; then the order's. An order on hold already, or a line not lacking,
+     * changes nothing.
+     */
+    void holdForCancelledShipment(UUID taskId, UUID lineId, String shipmentCode, CurrentUser actor);
 
     /**
      * An approved count wrote off a carton an order still held (kltn-docs 20 §4.2 step 8): inventory gave the hold up
