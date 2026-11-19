@@ -80,7 +80,7 @@ public class PickLineJpaEntity extends BaseEntity {
     private String stagedLocationCode;
     /**
      * The removed line this line replaces (07 §4.4 step 10 for a carton removed at the check station or out of a
-     * shipment cancelled before dispatch; V20261204000700): the removed line is replaced once, whatever other lines of
+     * shipment cancelled before dispatch; V20261205010700): the removed line is replaced once, whatever other lines of
      * its order line still lack.
      */
     @Column(name = "replaces_line_id")
