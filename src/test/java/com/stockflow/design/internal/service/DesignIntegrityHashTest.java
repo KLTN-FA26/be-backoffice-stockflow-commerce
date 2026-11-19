@@ -77,6 +77,27 @@ class DesignIntegrityHashTest {
         return snapshot;
     }
 
+    private static final byte[] LOGO = "the customer's logo".getBytes(StandardCharsets.UTF_8);
+    private static final String LOGO_KEY = "design-assets/2026/11/18/logo.png";
+
+    /** An approved customer's design: its files, its layout and the one image the layout places. */
+    private DesignSnapshotJpaEntity approvedWithLogo(UUID logo) {
+        var draft = new DesignDraftJpaEntity(UUID.randomUUID(), customer, UUID.randomUUID(), "Cup", "Logo",
+                com.stockflow.design.internal.domain.DesignStatus.DRAFT);
+        var print = new DesignArtifactJpaEntity(UUID.randomUUID(), draft.getId(), DesignArtifactRole.PRINT_READY,
+                new StoredFile(PRINT_KEY, "print.pdf", "application/pdf", PRINT.length, Instant.now()),
+                Checksums.sha256Hex(PRINT));
+        var preview = new DesignArtifactJpaEntity(UUID.randomUUID(), draft.getId(), DesignArtifactRole.CUSTOMER_PREVIEW,
+                new StoredFile(PREVIEW_KEY, "preview.png", "image/png", PREVIEW.length, Instant.now()),
+                Checksums.sha256Hex(PREVIEW));
+        var image = new com.stockflow.design.internal.domain.DesignSnapshotAsset(logo, LOGO_KEY, "logo quán A.png",
+                "image/png", LOGO.length, Checksums.sha256Hex(LOGO), 1200, 800);
+        var snapshot = DesignSnapshotJpaEntity.approved(UUID.randomUUID(), draft, List.of(print, preview), "{}",
+                "e".repeat(64), List.of(image), "{}", UUID.randomUUID(), Instant.now());
+        when(snapshots.findById(snapshot.getId())).thenReturn(Optional.of(snapshot));
+        return snapshot;
+    }
+
     private void recorded(String key, byte[] bytes) {
         when(storage.stat(key)).thenReturn(new ObjectStat(bytes.length, "application/pdf", Checksums.sha256Hex(bytes)));
     }
@@ -204,6 +225,64 @@ class DesignIntegrityHashTest {
         assertThatThrownBy(() -> service.fulfillmentDownload(snapshot.getId(),
                 Checksums.sha256Hex("another bundle".getBytes(StandardCharsets.UTF_8)), DesignArtifactRole.CUSTOMER_PREVIEW))
                 .isInstanceOf(BusinessException.class);
+        verifyNoInteractions(files);
+    }
+
+    // ---- the customer's original images (FE request 2026-11-18 BE-6) ----
+
+    @Test
+    void theOriginalImagesAreListedFromTheDatabaseAlone() {
+        UUID logo = UUID.randomUUID();
+        var snapshot = approvedWithLogo(logo);
+
+        assertThat(service.confirmedAssets(snapshot.getId())).singleElement().satisfies(asset -> {
+            assertThat(asset.assetId()).isEqualTo(logo);
+            assertThat(asset.originalName()).isEqualTo("logo quán A.png");
+            assertThat(asset.checksum()).isEqualTo(Checksums.sha256Hex(LOGO));
+        });
+        // A snapshot of the staff workflow froze no image: nothing to hand out, nothing refused.
+        assertThat(service.confirmedAssets(bundle().getId())).isEmpty();
+        verifyNoInteractions(storage);
+    }
+
+    @Test
+    void anOriginalImageIsHandedOutOnlyWhileItIsTheApprovedOne() {
+        UUID logo = UUID.randomUUID();
+        var snapshot = approvedWithLogo(logo);
+        recorded(LOGO_KEY, LOGO);
+        when(files.downloadLink(LOGO_KEY, "logo quán A.png")).thenReturn(new DownloadLink("https://s3/logo",
+                Instant.now()));
+
+        var file = service.assetDownload(snapshot.getId(), snapshot.getChecksum(), logo);
+
+        assertThat(file.url()).isEqualTo("https://s3/logo");
+        assertThat(file.originalName()).isEqualTo("logo quán A.png");
+        verify(storage).stat(LOGO_KEY);
+        verify(storage, never()).stat(PRINT_KEY);
+        verify(storage, never()).stat(PREVIEW_KEY);
+        verify(storage, never()).download(anyString());
+
+        // Replaced in the store after approval: refused, and no link is signed.
+        recorded(LOGO_KEY, "another logo".getBytes(StandardCharsets.UTF_8));
+        assertThatThrownBy(() -> service.assetDownload(snapshot.getId(), snapshot.getChecksum(), logo))
+                .extracting(ex -> ((BusinessException) ex).errorCode())
+                .isEqualTo(com.stockflow.common.error.ErrorCode.CONFLICT);
+        verify(files, times(1)).downloadLink(anyString(), anyString());
+    }
+
+    @Test
+    void anOriginalImageIsRefusedAgainstAnotherChecksumOrWhenTheDesignDoesNotPlaceIt() {
+        UUID logo = UUID.randomUUID();
+        var snapshot = approvedWithLogo(logo);
+        recorded(LOGO_KEY, LOGO);
+
+        assertThatThrownBy(() -> service.assetDownload(snapshot.getId(),
+                Checksums.sha256Hex("another bundle".getBytes(StandardCharsets.UTF_8)), logo))
+                .extracting(ex -> ((BusinessException) ex).errorCode())
+                .isEqualTo(com.stockflow.common.error.ErrorCode.CONFLICT);
+        assertThatThrownBy(() -> service.assetDownload(snapshot.getId(), snapshot.getChecksum(), UUID.randomUUID()))
+                .extracting(ex -> ((BusinessException) ex).errorCode())
+                .isEqualTo(com.stockflow.common.error.ErrorCode.NOT_FOUND);
         verifyNoInteractions(files);
     }
 }
