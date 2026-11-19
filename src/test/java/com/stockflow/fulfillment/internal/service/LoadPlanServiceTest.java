@@ -260,6 +260,17 @@ class LoadPlanServiceTest {
         }
 
         @Test
+        @DisplayName("a mode the docs do not have is VALIDATION_FAILED, not a 500")
+        void trialOnlyModesAreRefused() {
+            for (String mode : List.of("MANUAL", "BEST")) {
+                var thrown = refusal(() -> service.create(new LoadPlans.CreatePlan(UUID.randomUUID(), WAREHOUSE, null,
+                        null, mode, null, null), actor));
+                assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+                assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("selectionMode");
+            }
+        }
+
+        @Test
         @DisplayName("an empty plan is a DRAFT: no parcels, no types, saved as a new plan with the next number")
         void emptyDraft() {
             var detail = service.create(request(null, null, null), actor);

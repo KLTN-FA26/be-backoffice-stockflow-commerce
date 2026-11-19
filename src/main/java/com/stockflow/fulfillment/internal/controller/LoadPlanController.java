@@ -86,7 +86,7 @@ class LoadPlanController {
                                                     @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(loadPlans.create(new LoadPlans.CreatePlan(request.requestId(), request.warehouseId(),
                 request.shipmentIds(), request.vehicleTypeIds(), request.selectionMode(), request.note(),
-                request.sourceType()), actor));
+                request.sourceType(), request.fillOrderLineIds()), actor));
     }
 
     @GetMapping("/load-plans")
@@ -116,7 +116,20 @@ class LoadPlanController {
     public ApiResponse<LoadPlans.PlanDetail> setInputs(@PathVariable UUID loadPlanId,
             @Valid @RequestBody LoadPlanInputsRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(loadPlans.setInputs(loadPlanId, new LoadPlans.Inputs(request.expectedVersion(),
-                request.shipmentIds(), request.vehicleTypeIds(), request.selectionMode()), actor));
+                request.shipmentIds(), request.vehicleTypeIds(), request.selectionMode(), request.fillOrderLineIds()),
+                actor));
+    }
+
+    @PostMapping("/load-plans/{loadPlanId}/shipments/{shipmentId}/removal")
+    @Operation(summary = "Take one whole shipment out of a PLANNED plan (09 §4.2 step 9): its packages go back to the "
+            + "dispatch area, only the vehicles that carried them wait to be recalculated; the plan stays PLANNED. "
+            + "404 LOAD_PLAN_SHIPMENT_NOT_IN_PLAN; 409 INVALID_LOAD_PLAN_TRANSITION (reopen a confirmed plan first), "
+            + "OPTIMISTIC_LOCK")
+    @RequiresPermission(resource = FulfillmentResources.LOAD_PLANS, action = Action.UPDATE)
+    @Auditable(action = AuditAction.UPDATE, resourceType = "load-plan", resourceId = "#loadPlanId")
+    public ApiResponse<LoadPlans.PlanDetail> removeShipment(@PathVariable UUID loadPlanId, @PathVariable UUID shipmentId,
+            @Valid @RequestBody LoadPlanVersionRequest request, @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(loadPlans.removeShipment(loadPlanId, shipmentId, request.expectedVersion(), actor));
     }
 
     @PostMapping("/load-plans/{loadPlanId}/calculation")

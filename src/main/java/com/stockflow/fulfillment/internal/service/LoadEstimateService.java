@@ -26,14 +26,14 @@ import com.stockflow.fulfillment.internal.entity.LoadEstimateJpaEntity;
 import com.stockflow.fulfillment.internal.entity.VehicleTypeJpaEntity;
 import com.stockflow.fulfillment.internal.repository.LoadEstimateJpaRepository;
 import com.stockflow.fulfillment.internal.repository.VehicleTypeJpaRepository;
+import com.stockflow.inventory.api.HoldView;
+import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.PackagingRequest;
 import com.stockflow.inventory.api.PackagingSpec;
 import com.stockflow.inventory.api.PackagingSpecResolver;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.warehouse.api.WarehouseService;
-import com.stockflow.warehouse.api.WarehouseView;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
@@ -42,6 +42,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -51,6 +52,7 @@ import java.util.Map;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.HashSet;
 import java.util.UUID;
 
 /**
@@ -79,10 +81,10 @@ class LoadEstimateService implements LoadEstimates {
     static final long SEED = 0L;
 
     /**
-     * The weight of every carton of a trial (LP2-9): the sheet has none, and a carton must weigh something. Tiny on
-     * purpose, so no total of it can look like a load; the payload is not checked in a trial at all.
+     * Decimals of a trial carton's weight, the line's total weight shared out over its boxes: enough that a gram
+     * shared by 3 000 boxes is still a positive weight, as the planner requires.
      */
-    static final BigDecimal TRIAL_WEIGHT_KG = new BigDecimal("0.001");
+    static final int TRIAL_WEIGHT_SCALE = 9;
 
     /**
      * Where an estimate makes sense: CONFIRMED or AWAITING_STOCK (the release dialog estimates before releasing, design
@@ -103,8 +105,9 @@ class LoadEstimateService implements LoadEstimates {
     private final LoadEstimateJpaRepository estimates;
     private final VehicleTypeJpaRepository vehicleTypes;
     private final OrderService orders;
-    private final WarehouseService warehouses;
     private final PackagingSpecResolver packaging;
+    /** The LPN cartons allocated to an order's lines (09 §4.0 step 2). */
+    private final InventoryService inventory;
     private final ObjectMapper json;
     private final TransactionTemplate reads;
     private final TransactionTemplate writes;
@@ -113,15 +116,15 @@ class LoadEstimateService implements LoadEstimates {
     private final LoadPlanner planner = new LoadPlanner();
 
     LoadEstimateService(LoadEstimateJpaRepository estimates, VehicleTypeJpaRepository vehicleTypes,
-                        OrderService orders, WarehouseService warehouses, PackagingSpecResolver packaging,
-                        ObjectMapper json, PlatformTransactionManager transactionManager,
+                        OrderService orders, PackagingSpecResolver packaging,
+                        InventoryService inventory, ObjectMapper json, PlatformTransactionManager transactionManager,
                         @Value("${stockflow.fulfillment.load-planning.solver-budget:PT5S}") Duration budget,
                         @Value("${stockflow.fulfillment.load-planning.solver-wall-limit:PT12S}") Duration wallLimit) {
         this.estimates = estimates;
         this.vehicleTypes = vehicleTypes;
         this.orders = orders;
-        this.warehouses = warehouses;
         this.packaging = packaging;
+        this.inventory = inventory;
         this.json = json;
         this.reads = new TransactionTemplate(transactionManager);
         this.reads.setReadOnly(true);
@@ -146,8 +149,14 @@ class LoadEstimateService implements LoadEstimates {
     public LoadEstimateView create(CreateEstimate command) {
         Source source = onlySource(command.sources());
         SelectionMode mode = command.selectionMode() == null ? SelectionMode.SINGLE_TYPE : command.selectionMode();
+        List<UUID> fillLines = command.fillOrderLineIds() == null ? List.of() : command.fillOrderLineIds();
+        if (!fillLines.isEmpty() && mode != SelectionMode.PRIORITY_FILL) {
+            // 09 §3: the main / filler split is the input of "Ưu tiên + hàng chèn" only.
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Filler lines are chosen only for PRIORITY_FILL",
+                    List.of(new FieldError("fillOrderLineIds", "only with PRIORITY_FILL", "FILL_NOT_IN_MODE")));
+        }
         Prepared prepared = reads.execute(s -> prepare(source.id(), command.warehouseId(), command.vehicleTypeIds(),
-                mode));
+                mode, fillLines));
 
         LoadPlanResult result = planner.plan(prepared.request());
         Layouts.Mapped mapped = Layouts.of(prepared.request(), result,
@@ -179,8 +188,11 @@ class LoadEstimateService implements LoadEstimates {
 
     /**
      * LP2-9: the trial. Only the vehicle types are read; the planner then runs outside any transaction and its answer
-     * is mapped and returned - there is no write step, so nothing can be left behind (no estimate row, no event). The
-     * cartons weigh a placeholder and the request says {@code ignorePayload}: the sheet has no weights.
+     * is mapped and returned - there is no write step, so nothing can be left behind (no estimate row, no event).
+     * WF4-TRIAL-EST: each box weighs its line's total weight over its quantity and the payload holds (BR-10), and the
+     * mode is any of the docs' modes. A line's boxes share the line's {@code sourceRef}, which is what
+     * {@link SelectionMode#KEEP_LINES} keeps together; the sheet's "Hàng chèn" flag is read only by
+     * {@link SelectionMode#PRIORITY_FILL} (docs 09 §3: the main / fill split is that mode's input only).
      */
     @Override
     public TrialView trial(TrialEstimate command) {
@@ -192,10 +204,11 @@ class LoadEstimateService implements LoadEstimates {
         long boxes = 0;
         for (int i = 0; i < lines.size(); i++) {
             TrialLine l = lines.get(i);
-            if (l == null || l.lengthMm() <= 0 || l.widthMm() <= 0 || l.heightMm() <= 0 || l.quantity() <= 0) {
+            if (l == null || l.lengthMm() <= 0 || l.widthMm() <= 0 || l.heightMm() <= 0 || l.quantity() <= 0
+                    || l.totalWeightKg() == null || l.totalWeightKg().signum() <= 0) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line " + (i + 1)
-                        + " needs positive sizes and quantity", List.of(new FieldError("lines[" + i + "]",
-                        "sizes and quantity must be positive", "Positive")));
+                        + " needs positive sizes, quantity and weight", List.of(new FieldError("lines[" + i + "]",
+                        "sizes, quantity and total weight must be positive", "Positive")));
             }
             boxes += l.quantity();
         }
@@ -214,19 +227,27 @@ class LoadEstimateService implements LoadEstimates {
             String name = l.name() != null && !l.name().isBlank() ? l.name().strip()
                     : group != null ? group : "Line " + (i + 1);
             String lineRef = "T" + (i + 1);
+            BigDecimal weight = boxWeight(l.totalWeightKg(), l.quantity());
+            boolean fill = mode == SelectionMode.PRIORITY_FILL && l.fill();
             for (int n = 1; n <= l.quantity(); n++) {
                 String ref = lineRef + "#" + n;
-                cartons.add(new CargoPackage(ref, lineRef, l.lengthMm(), l.widthMm(), l.heightMm(), TRIAL_WEIGHT_KG,
-                        l.rotatable(), name, null, group, false));
+                cartons.add(new CargoPackage(ref, lineRef, l.lengthMm(), l.widthMm(), l.heightMm(), weight,
+                        l.rotatable(), name, null, group, fill));
                 labels.put(ref, name);
             }
         }
         LoadPlanRequest request = new LoadPlanRequest(cartons, types, mode, List.of(), KitDistribution.AUTO, false,
-                null, SEED, budget, true);
+                null, SEED, budget, wallLimit, false);
         LoadPlanResult result = planner.plan(request);
         Layouts.Mapped mapped = Layouts.of(request, result, c -> labels.get(c.ref()));
         return new TrialView(mode, types.stream().map(VehicleSpec::typeId).toList(), mapped.vehicles(),
                 mapped.unplaced(), meta(result));
+    }
+
+    /** One box of a trial line: the line's total weight shared out evenly, never rounded down to nothing. */
+    static BigDecimal boxWeight(BigDecimal totalWeightKg, int quantity) {
+        BigDecimal each = totalWeightKg.divide(BigDecimal.valueOf(quantity), TRIAL_WEIGHT_SCALE, RoundingMode.HALF_UP);
+        return each.signum() > 0 ? each : BigDecimal.ONE.movePointLeft(TRIAL_WEIGHT_SCALE);
     }
 
     /**
@@ -283,7 +304,8 @@ class LoadEstimateService implements LoadEstimates {
         return sources.getFirst();
     }
 
-    private Prepared prepare(UUID orderId, UUID requestedWarehouse, List<UUID> requestedTypes, SelectionMode mode) {
+    private Prepared prepare(UUID orderId, UUID requestedWarehouse, List<UUID> requestedTypes, SelectionMode mode,
+                             List<UUID> fillOrderLineIds) {
         OrderSummary order = orders.findById(orderId).orElseThrow(() -> new NotFoundException("Order", orderId));
         UUID warehouseId = warehouseOf(order, requestedWarehouse);
         WarehouseScope.requireWarehouse(warehouseId);
@@ -303,10 +325,12 @@ class LoadEstimateService implements LoadEstimates {
         List<PackagingSpec> specs = packaging.resolveAll(lines.stream()
                 .map(l -> new PackagingRequest(new Sku(l.sku()), remaining.get(l.lineId()))).toList());
 
+        Map<UUID, Map<String, Integer>> allocated = allocatedCartons(lines);
+
         List<MissingLine> missing = new ArrayList<>();
         List<EstimateCartons.Line> resolved = new ArrayList<>();
-        List<EstimateLine> estimateLines = new ArrayList<>();
         List<EstimateWarning> warnings = new ArrayList<>();
+        List<OrderSummary.LineSummary> partlyAllocated = new ArrayList<>();
         for (int i = 0; i < lines.size(); i++) {
             OrderSummary.LineSummary line = lines.get(i);
             PackagingSpec spec = specs.get(i);
@@ -318,47 +342,73 @@ class LoadEstimateService implements LoadEstimates {
                 missing.add(new MissingLine(line.lineId(), spec.sku(), spec.inventoryItemId(), absent));
                 continue;
             }
-            resolved.add(new EstimateCartons.Line(line.lineId(), spec));
-            estimateLines.add(line(line, spec));
+            Map<String, Integer> lpns = allocated.getOrDefault(line.lineId(), Map.of());
+            int allocatedUnits = lpns.values().stream().mapToInt(Integer::intValue).sum();
+            int left = remaining.get(line.lineId());
+            if (lpns.isEmpty() || spec.kitParts() > 1 || allocatedUnits > left) {
+                // Nothing allocated yet (or a kit, or holds the line no longer needs all of): from the packaging.
+                resolved.add(new EstimateCartons.Line(line.lineId(), spec));
+            } else {
+                resolved.add(new EstimateCartons.Line(line.lineId(), spec, List.copyOf(lpns.keySet()), null));
+                if (allocatedUnits < left) {
+                    partlyAllocated.add(line);
+                }
+            }
         }
+        if (!partlyAllocated.isEmpty()) {
+            // The units of a line not allocated yet (a later delivery batch) are counted from the packaging.
+            List<PackagingSpec> rests = packaging.resolveAll(partlyAllocated.stream()
+                    .map(l -> new PackagingRequest(new Sku(l.sku()), remaining.get(l.lineId())
+                            - allocated.get(l.lineId()).values().stream().mapToInt(Integer::intValue).sum()))
+                    .toList());
+            Map<UUID, PackagingSpec> restOf = new HashMap<>();
+            for (int i = 0; i < partlyAllocated.size(); i++) {
+                restOf.put(partlyAllocated.get(i).lineId(), rests.get(i));
+            }
+            resolved.replaceAll(l -> restOf.containsKey(l.orderLineId())
+                    ? new EstimateCartons.Line(l.orderLineId(), l.spec(), l.allocatedLpns(), restOf.get(l.orderLineId()))
+                    : l);
+        }
+        List<EstimateLine> estimateLines = resolved.stream().map(LoadEstimateService::line).toList();
         if (resolved.isEmpty()) {
             throw new BusinessException(ErrorCode.LOAD_ESTIMATE_PACKAGING_MISSING, "No line of order "
                     + order.orderNumber() + " has an item with a size and weight; complete the item(s) and estimate"
                     + " again", missing.stream().map(LoadEstimateService::missingField).toList());
         }
         EstimateCartons.Built built = EstimateCartons.build(orderId.toString(), resolved);
-        LoadPlanRequest request = new LoadPlanRequest(built.cartons(), types, mode, built.kits(),
+        Set<String> fill = fillLines(order, fillOrderLineIds);
+        List<CargoPackage> cartons = built.cartons().stream()
+                .map(c -> fill.contains(c.sourceRef()) ? c.asFill() : c).toList();
+        LoadPlanRequest request = new LoadPlanRequest(cartons, types, mode, built.kits(),
                 KitDistribution.AUTO, false, null, SEED, budget, wallLimit);
         return new Prepared(warehouseId, remaining, types.stream().map(VehicleSpec::typeId).toList(), mode, request,
                 built, estimateLines, List.copyOf(missing), warnings);
     }
 
     /**
-     * The warehouse the estimate belongs to: a released order's own; a CONFIRMED one has none yet, so the caller names
-     * the warehouse the release dialog is about to choose - it must exist, be active and be within the caller's scope.
+     * The warehouse the estimate belongs to: the order's shipping warehouse - the one it was released to, or the one
+     * Sales chose while it is CONFIRMED. Docs 09 §4.0 step 1 (owner answer RTM-ESTWH, 18/11: "chặn như docs, phải chọn
+     * kho trước"): an order with none chosen yet is not estimated ({@code LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN}), unless
+     * it may not be estimated at all ({@code LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE}). A warehouse the caller names must be
+     * that one.
      */
     private UUID warehouseOf(OrderSummary order, UUID requested) {
-        if (order.warehouseId() != null) {
-            if (requested != null && !requested.equals(order.warehouseId())) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Order " + order.orderNumber()
-                        + " was released to another warehouse", List.of(new FieldError("warehouseId",
-                        "must be the order's warehouse, or left out", "WarehouseMismatch")));
+        UUID shipping = order.warehouseId() != null ? order.warehouseId()
+                : orders.shippingWarehouseId(order.orderId()).orElse(null);
+        if (shipping == null) {
+            if (!ESTIMABLE.contains(order.status())) {
+                throw new BusinessException(ErrorCode.LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE, "Order " + order.orderNumber()
+                        + " is " + order.status() + "; an estimate is made from confirmation until everything shipped");
             }
-            return order.warehouseId();
+            throw new BusinessException(ErrorCode.LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN, "Order " + order.orderNumber()
+                    + " has no shipping warehouse yet: choose it before estimating its load");
         }
-        if (requested == null) {
+        if (requested != null && !requested.equals(shipping)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Order " + order.orderNumber()
-                    + " is not released yet: name the warehouse it will ship from", List.of(new FieldError(
-                    "warehouseId", "is required for an order that is not released yet", "NotNull")));
+                    + " ships from another warehouse", List.of(new FieldError("warehouseId",
+                    "must be the order's shipping warehouse, or left out", "WarehouseMismatch")));
         }
-        WarehouseView warehouse = warehouses.findWarehouse(requested)
-                .orElseThrow(() -> new NotFoundException("Warehouse", requested));
-        if (!warehouse.active()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Warehouse " + warehouse.name()
-                    + " is not active", List.of(new FieldError("warehouseId", "is not an active warehouse",
-                    "WarehouseInactive")));
-        }
-        return requested;
+        return shipping;
     }
 
     /**
@@ -454,8 +504,70 @@ class LoadEstimateService implements LoadEstimates {
                 + " on its inventory item", "PackagingMissing");
     }
 
-    private static EstimateLine line(OrderSummary.LineSummary line, PackagingSpec spec) {
-        return line(line.lineId(), spec);
+    /**
+     * RTM-LPGROUP (19/11): the order lines ticked as filler cargo ("hàng chèn"), by the id an estimate carton carries as
+     * its {@code sourceRef}. A line the order does not have is refused.
+     */
+    private static Set<String> fillLines(OrderSummary order, List<UUID> fillOrderLineIds) {
+        if (fillOrderLineIds == null || fillOrderLineIds.isEmpty()) {
+            return Set.of();
+        }
+        Set<UUID> lines = new HashSet<>();
+        order.lines().forEach(l -> lines.add(l.lineId()));
+        List<FieldError> problems = fillOrderLineIds.stream().filter(id -> !lines.contains(id))
+                .map(id -> new FieldError(id.toString(), "not a line of this order", "FILL_LINE_UNKNOWN")).toList();
+        if (!problems.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Filler lines are lines of the order", problems);
+        }
+        Set<String> out = new HashSet<>();
+        fillOrderLineIds.forEach(id -> out.add(id.toString()));
+        return out;
+    }
+
+    /**
+     * The stored line: the packaging of what it has left to ship, with as many cartons as it makes - one per allocated
+     * LPN plus those of the rest (whose remainder carton, if any, is the line's).
+     */
+    private static EstimateLine line(EstimateCartons.Line l) {
+        if (l.allocatedLpns().isEmpty()) {
+            return line(l.orderLineId(), l.spec());
+        }
+        PackagingSpec spec = l.spec();
+        PackagingSpec.CartonSpec c = spec.carton();
+        PackagingSpec.PartialCarton rest = l.rest() == null ? null : l.rest().partialCarton();
+        return new EstimateLine(l.orderLineId(), spec.sku(), spec.inventoryItemId(), spec.quantity(),
+                spec.level().name(), spec.unitOfMeasure(), spec.factor(), l.cartons(),
+                rest == null ? null : new Partial(rest.units(), rest.weightKg()),
+                new Layout.Dims(c.lengthMm(), c.widthMm(), c.heightMm()), c.weightKg(), c.rotatable(),
+                Math.max(1, spec.kitParts()));
+    }
+
+    /**
+     * 09 §4.0 step 2, 07 BR-03: the LPN cartons allocated to each line and still on the shelf or staged (a live hold on
+     * a carton), with the units each holds. A carton already picked is no longer held; its units count as the line's
+     * remaining quantity does.
+     */
+    private Map<UUID, Map<String, Integer>> allocatedCartons(List<OrderSummary.LineSummary> lines) {
+        List<UUID> ids = lines.stream().flatMap(l -> l.reservationIds().stream()).distinct().toList();
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, HoldView> holds = new HashMap<>();
+        inventory.holds(ids).forEach(h -> holds.put(h.reservationId(), h));
+        Map<UUID, Map<String, Integer>> out = new HashMap<>();
+        for (OrderSummary.LineSummary line : lines) {
+            Map<String, Integer> lpns = new LinkedHashMap<>();
+            for (UUID id : line.reservationIds()) {
+                HoldView h = holds.get(id);
+                if (h != null && h.lpn() != null && h.status() == HoldView.Status.HELD) {
+                    lpns.merge(h.lpn(), h.quantity(), Integer::sum);
+                }
+            }
+            if (!lpns.isEmpty()) {
+                out.put(line.lineId(), lpns);
+            }
+        }
+        return out;
     }
 
     private static EstimateLine line(UUID lineId, PackagingSpec spec) {

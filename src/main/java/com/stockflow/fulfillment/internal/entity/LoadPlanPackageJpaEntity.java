@@ -32,6 +32,7 @@ public class LoadPlanPackageJpaEntity extends BaseEntity {
     @Column(name = "released_at") private Instant releasedAt;
     @Enumerated(EnumType.STRING)
     @Column(name = "release_reason", length = 24) private LoadPlanReleaseReason releaseReason;
+    @Column(name = "fill", nullable = false) private boolean fill;
 
     protected LoadPlanPackageJpaEntity() {
     }
@@ -50,11 +51,12 @@ public class LoadPlanPackageJpaEntity extends BaseEntity {
         this.addedBy = m.addedBy();
         this.releasedAt = m.releasedAt();
         this.releaseReason = m.releaseReason();
+        this.fill = m.fill();
     }
 
     public LoadPlan.Member toMember() {
         return new LoadPlan.Member(packageId, shipmentId, active, unplacedReason, addedAt, addedBy, releasedAt,
-                releaseReason);
+                releaseReason, fill);
     }
 
     public UUID getLoadPlanId() { return loadPlanId; }

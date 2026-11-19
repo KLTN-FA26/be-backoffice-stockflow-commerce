@@ -6,6 +6,7 @@ import com.stockflow.fulfillment.internal.entity.DispatchLoadJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadPackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadShipmentJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadUnloadJpaEntity;
+import com.stockflow.fulfillment.internal.entity.LoadBookingCancellationJpaEntity;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -30,13 +31,16 @@ public class DispatchLoadStore {
     private final DispatchLoadShipmentJpaRepository members;
     private final DispatchLoadPackageJpaRepository parcels;
     private final DispatchLoadUnloadJpaRepository unloads;
+    private final LoadBookingCancellationJpaRepository bookingCancellations;
 
     DispatchLoadStore(DispatchLoadJpaRepository loads, DispatchLoadShipmentJpaRepository members,
-                      DispatchLoadPackageJpaRepository parcels, DispatchLoadUnloadJpaRepository unloads) {
+                      DispatchLoadPackageJpaRepository parcels, DispatchLoadUnloadJpaRepository unloads,
+                      LoadBookingCancellationJpaRepository bookingCancellations) {
         this.loads = loads;
         this.members = members;
         this.parcels = parcels;
         this.unloads = unloads;
+        this.bookingCancellations = bookingCancellations;
     }
 
     public DispatchLoad load(DispatchLoadJpaEntity header) {
@@ -77,8 +81,18 @@ public class DispatchLoadStore {
     public DispatchLoadJpaEntity save(DispatchLoad load, DispatchLoadJpaEntity header) {
         DispatchLoad.Snapshot s = load.snapshot();
         writeRows(s);
+        writeCancelledBookings(load);
         header.apply(s);
         return loads.saveAndFlush(header);
+    }
+
+    /** 09 §4.2 step 6: each booking taken off the load since it was read, into its booking history. */
+    private void writeCancelledBookings(DispatchLoad load) {
+        List<LoadBookingCancellationJpaEntity> rows = load.takeCancelledBookings().stream()
+                .map(b -> new LoadBookingCancellationJpaEntity(Identifiers.newId(), load.id(), b)).toList();
+        if (!rows.isEmpty()) {
+            bookingCancellations.saveAllAndFlush(rows);
+        }
     }
 
     private void writeRows(DispatchLoad.Snapshot s) {

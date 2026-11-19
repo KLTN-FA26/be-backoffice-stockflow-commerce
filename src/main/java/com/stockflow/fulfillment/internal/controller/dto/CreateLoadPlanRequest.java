@@ -8,8 +8,10 @@ import java.util.UUID;
 
 /**
  * A new load plan (SCRUM-287 PR D; 09 §4.2 step 1). Idempotent by {@code requestId}. Shipments (whole, LP-5), vehicle
- * types and the selection mode ({@code SINGLE_TYPE} by default, or {@code FEWEST_VEHICLES}; LP-6) may be given now or
- * later with PUT inputs. {@code sourceType} may only be ORDER (or left out): transfers between warehouses were removed.
+ * types and the selection mode ({@code SINGLE_TYPE} by default, {@code FEWEST_VEHICLES}, {@code KEEP_LINES},
+ * {@code PRIORITY_FILL} or {@code OVER_CAPACITY}; 09 §4.2, WF4-LP-MODES) may be given now or later with PUT inputs,
+ * and with PRIORITY_FILL the order lines ticked as filler cargo ({@code fillOrderLineIds}; RTM-LPGROUP: main cargo by
+ * default). {@code sourceType} may only be ORDER (or left out): transfers between warehouses were removed.
  */
 public record CreateLoadPlanRequest(@NotNull UUID requestId,
                                     @NotNull UUID warehouseId,
@@ -17,5 +19,6 @@ public record CreateLoadPlanRequest(@NotNull UUID requestId,
                                     @Size(max = 50) List<@NotNull UUID> vehicleTypeIds,
                                     @Size(max = 24) String selectionMode,
                                     @Size(max = 500) String note,
-                                    @Size(max = 16) String sourceType) {
+                                    @Size(max = 16) String sourceType,
+                                    @Size(max = 3000) List<@NotNull UUID> fillOrderLineIds) {
 }

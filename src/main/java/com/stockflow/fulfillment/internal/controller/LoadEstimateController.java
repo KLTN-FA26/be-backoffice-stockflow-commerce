@@ -48,7 +48,8 @@ class LoadEstimateController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "Estimate how an order's remaining units load (advisory; synchronous within the solver "
-            + "budget) and make it the source's current estimate. CONFIRMED needs warehouseId. Lines without size or "
+            + "budget) and make it the source's current estimate. The order must have its shipping warehouse "
+            + "(409 LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN). Lines without size or "
             + "weight are listed in missing (incomplete=true). 400 VALIDATION_FAILED, 404, 409 LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE / VEHICLE_TYPE_INACTIVE, 422 "
             + "LOAD_ESTIMATE_PACKAGING_MISSING when no line resolves (field inventoryItems[<itemId>] per line) / "
             + "LOAD_ESTIMATE_TOO_MANY_CARTONS")
@@ -61,9 +62,10 @@ class LoadEstimateController {
     @PostMapping("/trial")
     @Operation(summary = "Trial estimate from a box list (EasyCargo sheet, SCRUM-474 TRIAL-FLOW, LP2-9): loads the "
             + "boxes on the chosen vehicle types and answers the viewer's layout with trial=true. NOTHING is stored - "
-            + "no estimate row, no audit entry, no event - and the answer cannot be fetched again. Boxes carry a "
-            + "placeholder weight and the payload is not checked (the sheet has no weights); no kits. Same box cap "
-            + "as an estimate. 200; 400 VALIDATION_FAILED, 404 VEHICLE_TYPE_NOT_FOUND, 409 VEHICLE_TYPE_INACTIVE, 422 "
+            + "no estimate row, no audit entry, no event - and the answer cannot be fetched again. Each box weighs its "
+            + "line's totalWeightKg over its quantity and the payload is checked; no kits. Any selection mode: "
+            + "SINGLE_TYPE, FEWEST_VEHICLES, KEEP_LINES (a line's boxes in one vehicle), PRIORITY_FILL (lines with "
+            + "fill=true only top up), OVER_CAPACITY. Same box cap as an estimate. 200; 400 VALIDATION_FAILED, 404 VEHICLE_TYPE_NOT_FOUND, 409 VEHICLE_TYPE_INACTIVE, 422 "
             + "LOAD_ESTIMATE_TOO_MANY_CARTONS")
     @RequiresPermission(resource = FulfillmentResources.LOAD_ESTIMATES, action = Action.CREATE)
     public ApiResponse<TrialLoadEstimateResponse> trial(@Valid @RequestBody TrialLoadEstimateRequest request) {
