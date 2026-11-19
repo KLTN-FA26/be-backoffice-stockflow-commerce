@@ -23,7 +23,7 @@ import java.util.UUID;
  * Tells the warehouse managers of the shipment's warehouse and the Sales account that answers for the order that the
  * carton check completed a shipment while an installment due before delivery is still unpaid (kltn-docs 08 §4.4 step 9,
  * BR-11, §2, §3; owner decision RTM-PAYNOTIFY, 2026-11-19: "thông báo trong app cho QLK kho và Sale phụ trách đơn"): an
- * in-app message, nothing by e-mail. The handover stays blocked until it is paid (09); this only tells.
+ * in-app message at level WARN (owner decision RTM-PAYNOTIFY-LEVEL, 2026-11-19), nothing by e-mail. The handover stays blocked until it is paid (09); this only tells.
  *
  * <p>The warehouse managers are chosen by permission, not by role name: whoever approves at the carton check station
  * ({@value #AUDIENCE}, the manager's permission there, as for a foreign carton) and can see the shipment's warehouse.

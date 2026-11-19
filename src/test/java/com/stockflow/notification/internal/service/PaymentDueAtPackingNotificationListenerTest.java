@@ -69,6 +69,8 @@ class PaymentDueAtPackingNotificationListenerTest {
         verify(inbox).post(who.capture(), message.capture());
         assertThat(recipients(who)).containsExactly(manager, sales);
         assertThat(message.getValue().category()).isEqualTo("PAYMENT_DUE_AT_PACKING");
+        // Owner decision RTM-PAYNOTIFY-LEVEL (2026-11-19): a warning
+        assertThat(message.getValue().severity()).isEqualTo(com.stockflow.notification.api.InboxSeverity.WARN);
         assertThat(message.getValue().title()).contains("SO-0001");
         assertThat(message.getValue().body()).contains("SO-0001-S1").contains("1.500.000 VND");
         assertThat(message.getValue().link()).isEqualTo("/admin/orders/" + event.orderId());
