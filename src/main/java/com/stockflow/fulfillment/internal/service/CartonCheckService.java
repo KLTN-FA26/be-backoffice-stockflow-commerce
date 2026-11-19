@@ -27,6 +27,7 @@ import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.identity.api.IdentityService;
+import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderHoldState;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
@@ -173,7 +174,8 @@ class CartonCheckService implements CartonChecks {
         Map<UUID, OrderHoldState> states = orders.holdStates(candidates.stream().map(PickJpaEntity::getOrderId)
                 .toList()).stream().collect(Collectors.toMap(OrderHoldState::orderId, Function.identity()));
         Set<UUID> replacing = replacingPicks(candidates.stream().filter(pick -> states.get(pick.getOrderId()) != null
-                && states.get(pick.getOrderId()).status() == OrderStatus.PACKED).map(PickJpaEntity::getId).toList());
+                && replacementStatus(states.get(pick.getOrderId()).status(), states.get(pick.getOrderId()).holdReason()))
+                .map(PickJpaEntity::getId).toList());
         List<PickJpaEntity> shown = candidates.stream()
                 .filter(pick -> states.get(pick.getOrderId()) != null
                         && (WORKABLE.contains(states.get(pick.getOrderId()).status())
@@ -409,6 +411,13 @@ class CartonCheckService implements CartonChecks {
         Instant now = clock.instant();
         // In part: the order is PARTIALLY_FULFILLED at once (08 §4.4 step 8; owner decision WF4-PF-STATUS, 2026-11-12),
         // not only when this part is handed over. In full: PACKED.
+        if (!completion.partial() && ctx.order().status() == OrderStatus.ON_HOLD) {
+            // RTM-RTDCANCEL step 5 (09 §5.1; 08 §5.1): the replacements of a shipment cancelled before dispatch are
+            // checked in full - requireWorkable let only that INVENTORY hold through - so the hold is resolved and the
+            // order goes back to the status it was held from (PACKED), then on with the packing as ever.
+            orders.resolveHold(ctx.order().orderId(), ("Replacement cartons of the shipment cancelled before dispatch "
+                    + "checked and labelled"), actor.userId());
+        }
         OrderSummary after = completion.partial()
                 ? orders.markPartlyPacked(ctx.order().orderId(), actor.userId())
                 : orders.markPacked(ctx.order().orderId(), actor.userId());
@@ -595,17 +604,25 @@ class CartonCheckService implements CartonChecks {
     }
 
     /**
-     * {@link #requireWorkable(OrderSummary)}, with the one exception of RTM-RTDCANCEL (owner decision 2026-11-19; 08
-     * §5.1, 07 §4.3 step 7): a PACKED order whose shipment the warehouse manager cancelled before dispatch has its check
-     * reopened for the replacement cartons - the hold resolved once they were allocated took it back to PACKED, the
-     * status it was held from - so the station checks, labels and completes them in it.
+     * {@link #requireWorkable(OrderSummary)}, with the one exception of RTM-RTDCANCEL (owner decision 2026-11-19; 09
+     * §5.1 steps 1-5, 08 §5.1, 07 §4.3 step 7): the check reopened for the replacement cartons of a shipment the
+     * warehouse manager cancelled before dispatch is worked while the order waits on the shortage hold that
+     * cancellation put on it ({@code ON_HOLD}, {@code INVENTORY}) - completing it in full resolves that hold
+     * ({@link #complete}) - or once it is {@code PACKED} again (a hold resolved by hand). Any other held order, and
+     * any other session, is refused as before.
      */
     private void requireWorkable(Context ctx) {
-        if (ctx.order().status() == OrderStatus.PACKED
+        HoldReason reason = ctx.order().lifecycle() == null ? null : ctx.order().lifecycle().holdReason();
+        if (replacementStatus(ctx.order().status(), reason)
                 && !replacingPicks(List.of(ctx.pick().getId())).isEmpty()) {
             return;
         }
         requireWorkable(ctx.order());
+    }
+
+    /** The order statuses a check reopened by a cancelled shipment is worked in (RTM-RTDCANCEL). */
+    private static boolean replacementStatus(OrderStatus status, HoldReason holdReason) {
+        return status == OrderStatus.PACKED || status == OrderStatus.ON_HOLD && holdReason == HoldReason.INVENTORY;
     }
 
     /**

@@ -14,6 +14,9 @@ public interface PickLineJpaRepository extends BaseJpaRepository<PickLineJpaEnti
 
     List<PickLineJpaEntity> findByPickIdOrderBySequenceNoAscIdAsc(UUID pickId);
 
+    /** The lines that replace any of these removed lines (07 §4.4 step 10). */
+    List<PickLineJpaEntity> findByReplacesLineIdIn(java.util.Collection<UUID> removedLineIds);
+
     Page<PickLineJpaEntity> findByPickId(UUID pickId, Pageable pageable);
 
     /** The one line not CANCELLED that stands on the hold (uk_pick_line_reservation_live); read without a lock. */

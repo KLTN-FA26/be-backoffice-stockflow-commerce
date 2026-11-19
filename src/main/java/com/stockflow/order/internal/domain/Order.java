@@ -793,15 +793,17 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.ORDER_CANCELLED,
                     "Order %s is cancelled; none of its cartons is labelled".formatted(orderNumber));
         }
+        if (firstLabeledAt != null && (status == OrderStatus.PACKED
+                || status == OrderStatus.ON_HOLD && holdReason == HoldReason.INVENTORY)) {
+            // RTM-RTDCANCEL (owner 2026-11-19; 09 §5.1, 08 §5.1): a shipment of the packed order was cancelled before
+            // dispatch and its replacement cartons are labelled in the reopened check, while the order waits on the
+            // shortage hold that cancellation put on it (or once it is PACKED again). The order was locked by its first
+            // label already; this one changes nothing. Which held order may be labelled at all is the station's call.
+            return false;
+        }
         if (status == OrderStatus.ON_HOLD) {
             throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, ("Order %s is on hold (%s); its cartons are "
                     + "labelled once the hold is resolved").formatted(orderNumber, holdReason));
-        }
-        if (status == OrderStatus.PACKED && firstLabeledAt != null) {
-            // RTM-RTDCANCEL (owner 2026-11-19; 08 §5.1): a shipment of the packed order was cancelled before dispatch and
-            // its replacement cartons are labelled in the reopened check. The order was locked by its first label
-            // already; this one changes nothing.
-            return false;
         }
         if (!LABELLABLE.contains(status)) {
             throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT,

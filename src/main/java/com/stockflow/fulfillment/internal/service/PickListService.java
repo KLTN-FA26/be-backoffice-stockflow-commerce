@@ -110,13 +110,17 @@ class PickListService implements PickLists {
     private final com.stockflow.fulfillment.internal.repository.PackJpaRepository packs;
     /** 4C-6: the check station's shipping cartons, to know a line whose carton was removed as damaged. */
     private final com.stockflow.fulfillment.internal.repository.PackageJpaRepository packages;
+    /** RTM-RTDCANCEL: whether a task's check was reopened by a shipment cancelled before dispatch. */
+    private final com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository shipments;
 
 
     PickListService(PickJpaRepository picks, PickLineJpaRepository pickLines, OrderService orders,
                     InventoryService inventory, InventoryControlService itemControls, PickConsumption consumption,
                     WarehouseService warehouses, Clock clock, OrderReservations orderReservations,
                     com.stockflow.fulfillment.internal.repository.PackJpaRepository packs,
-                    com.stockflow.fulfillment.internal.repository.PackageJpaRepository packages) {
+                    com.stockflow.fulfillment.internal.repository.PackageJpaRepository packages,
+                    com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository shipments) {
+        this.shipments = shipments;
         this.packs = packs;
         this.packages = packages;
         this.orderReservations = orderReservations;
@@ -281,7 +285,11 @@ class PickListService implements PickLists {
         }
         PickList list = toList(pick, pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId()));
         Map<UUID, Integer> lacking = lacking(pick, order, list);
-        return list.lines().stream().filter(line -> damaged.contains(line.id())
+        // A line replaced already is not offered again, though other removed cartons of its order line still lack theirs
+        // (a shipment of several cartons cancelled before dispatch, RTM-RTDCANCEL).
+        Set<UUID> replaced = pickLines.findByReplacesLineIdIn(damaged).stream()
+                .map(PickLineJpaEntity::getReplacesLineId).collect(Collectors.toSet());
+        return list.lines().stream().filter(line -> damaged.contains(line.id()) && !replaced.contains(line.id())
                 && lacking.getOrDefault(line.orderLineId(), 0) >= line.allocatedQty()).map(PickLine::id)
                 .collect(Collectors.toSet());
     }
@@ -543,7 +551,7 @@ class PickListService implements PickLists {
             picks.save(pick);
         }
         if (!list.hasShortLines() && !lacksRemovedCartons(pick)) {
-            resumeAfterInventory(pick.getOrderId(), actor.userId(), "Short pick reallocated: line %s".formatted(lineId));
+            resumeAfterInventory(pick, actor.userId(), "Short pick reallocated: line %s".formatted(lineId));
         }
         log.info("Short line {} of task {} reallocated to {} new line(s)", lineId, taskId, added.size());
         Map<String, String> barcodes = barcodesOf(List.of(shortLine.sku()));
@@ -615,8 +623,14 @@ class PickListService implements PickLists {
         orderReservations.holdReplacement(pick.getOrderId(), removed.orderLineId(), pick.getDeliveryBatchId(),
                 allocated);
         List<PickLine> added = planLines(pick, orders.findById(pick.getOrderId()).orElseThrow());
+        Set<UUID> replacing = added.stream().filter(line -> allocated.contains(line.reservationId())).map(PickLine::id)
+                .collect(Collectors.toSet());
+        pickLines.findAllById(replacing).forEach(row -> {
+            row.replaces(removed.id());
+            pickLines.save(row);
+        });
         if (!list.hasShortLines() && !lacksRemovedCartons(pick)) {
-            resumeAfterInventory(pick.getOrderId(), actor.userId(), "Removed carton %s replaced".formatted(removed.lpn()));
+            resumeAfterInventory(pick, actor.userId(), "Removed carton %s replaced".formatted(removed.lpn()));
         }
         if (!added.isEmpty() && orders.findById(pick.getOrderId()).orElseThrow().status()
                 != com.stockflow.order.api.OrderStatus.ON_HOLD) {
@@ -734,6 +748,17 @@ class PickListService implements PickLists {
         });
     }
 
+    /**
+     * The task's check is live and one of its shipments was cancelled: only the warehouse manager's cancellation before
+     * dispatch leaves both (RTM-RTDCANCEL) - an order's cancellation cancels the check with its shipments.
+     */
+    private boolean replacingCancelledShipment(PickJpaEntity pick) {
+        return packs.findByPickId(pick.getId()).filter(pack -> !checkLeft(pack))
+                .map(pack -> shipments.existsByPackIdAndStatus(pack.getId(),
+                        com.stockflow.fulfillment.internal.domain.ShipmentStatus.CANCELLED))
+                .orElse(false);
+    }
+
     /** {@link #requireOpenForMore} as a question: the read of the lines says whether a removed carton may be replaced. */
     private boolean isOpenForMore(PickJpaEntity pick) {
         return pick.getStatus() != PickStatus.CANCELLED
@@ -797,8 +822,19 @@ class PickListService implements PickLists {
         }
     }
 
-    /** The last short line reallocated: the INVENTORY hold, and only that one, is resolved back to where it was. */
-    private void resumeAfterInventory(UUID orderId, UUID by, String note) {
+    /**
+     * The last short line reallocated: the INVENTORY hold, and only that one, is resolved back to where it was - except
+     * for a task whose shipment the warehouse manager cancelled before dispatch (RTM-RTDCANCEL; 09 §5.1 steps 4-5): there
+     * the hold stays while the replacements are picked and checked in the reopened check, and completing that check in
+     * full resolves it ({@code CartonCheckService#complete}).
+     */
+    private void resumeAfterInventory(PickJpaEntity pick, UUID by, String note) {
+        if (replacingCancelledShipment(pick)) {
+            log.info("Order {}: replacements of a cancelled shipment allocated; the hold waits for their check",
+                    pick.getOrderNumber());
+            return;
+        }
+        UUID orderId = pick.getOrderId();
         OrderSummary order = orders.findById(orderId).orElseThrow();
         if (order.status() == com.stockflow.order.api.OrderStatus.ON_HOLD && order.lifecycle() != null
                 && order.lifecycle().holdReason() == com.stockflow.order.api.HoldReason.INVENTORY) {
