@@ -306,7 +306,7 @@ class EInvoiceIntegrationTest {
                 BigDecimal.valueOf(400_000)));
         assertThat(draft.amountInWords()).isEqualTo(standard.compareTo(new BigDecimal("8")) == 0
                 ? "Bốn trăm ba mươi hai nghìn đồng" : "Bốn trăm bốn mươi nghìn đồng");
-        assertThat(draft.seller().name()).as("stockflow.seller.*").isEqualTo("DEMO STOCKFLOW CO LTD");
+        assertThat(draft.seller().name()).as("stockflow.seller.*").isEqualTo("CÔNG TY TNHH STOCKFLOW");
         assertThat(draft.seller().taxCode()).isEqualTo("0000000000");
         assertThat(draft.buyer().name()).isEqualTo("Test customer");
         assertThat(draft.buyer().taxCode()).isEqualTo(taxCode);

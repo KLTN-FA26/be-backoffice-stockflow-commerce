@@ -30,4 +30,9 @@ class ProductionOrderMailDirectory implements ProductionOrderDirectory {
     public Optional<ProductionOrderMail> stop(UUID productionOrderId) {
         return dispatch.stopMail(productionOrderId);
     }
+
+    @Override
+    public Optional<byte[]> slipPdf(UUID productionOrderId) {
+        return dispatch.slipPdf(productionOrderId);
+    }
 }

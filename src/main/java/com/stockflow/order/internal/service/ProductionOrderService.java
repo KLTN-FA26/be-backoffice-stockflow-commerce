@@ -279,7 +279,7 @@ public class ProductionOrderService {
         }
         // 4A-3: the slip is drawn and stored with no lock held, from the version read - which the transaction checks.
         Instant now = clock.instant();
-        try (ProductionOrderDispatch.PreparedSlip slip = dispatch.prepareSlip(read, by, now)) {
+        try (ProductionOrderDispatch.PreparedSlip slip = dispatch.prepareSlip(read, now)) {
             return tx.execute(status -> {
                 Locked locked = lockedWithOrder(id, version);
                 ProductionOrder production = locked.production();
