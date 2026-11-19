@@ -130,7 +130,7 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
         boolean created = entity == null;
         if (created) {
             entity = new ProductionOrderJpaEntity(order.id(), order.code(), order.salesOrderId(),
-                    order.deliveryBatchId(), order.customerId(), order.sampleRequiredByDefault(), order.currency(),
+                    order.deliveryBatchId(), order.customerId(), order.sampleRequiredByDefault(),
                     order.drawnUpBy());
         } else if (entity.getVersion() != order.version()) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
@@ -141,7 +141,7 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
             writeStatusesPassed(order, changes);
         }
         entity.apply(order.producerId(), order.receivingWarehouseId(), order.needByDate(), order.status(),
-                order.sampleApprovalRequired(), order.sampleWaiverReason(), order.unitPrice(), order.note(),
+                order.sampleApprovalRequired(), order.sampleWaiverReason(), order.note(),
                 order.submittedAt(), order.approvedBy(), order.approvedAt(), order.returnedReason(), order.sentAt(),
                 order.productionStartedAt(), order.cancelledBy(), order.cancelledAt(), order.cancellationReason(),
                 order.closedBy(), order.closedAt(), order.closingReason());
@@ -303,7 +303,7 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
         return new ProductionOrder(e.getId(), e.getCode(), e.getSalesOrderId(), e.getDeliveryBatchId(),
                 e.getCustomerId(), e.getProducerId(), e.getReceivingWarehouseId(), e.getNeedByDate(), e.getStatus(),
                 e.isSampleApprovalRequired(), e.isSampleRequiredByDefault(), e.getSampleWaiverReason(),
-                e.getUnitPrice(), e.getCurrency(), e.getNote(), e.getDrawnUpBy(), e.getSubmittedAt(),
+                e.getNote(), e.getDrawnUpBy(), e.getSubmittedAt(),
                 e.getApprovedBy(), e.getApprovedAt(), e.getReturnedReason(), e.getSentAt(),
                 e.getProductionStartedAt(), e.getExpectedCompletionDate(), e.getCancelledBy(), e.getCancelledAt(),
                 e.getCancellationReason(),

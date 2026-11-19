@@ -480,7 +480,7 @@ class AwaitingStockIntegrationTest {
         ProductionOrder printing = sent(drawUp(orderId, 1));
         ProductionOrder drawn = drawUp(orderId, 2);
         ProductionOrder five = sent(productionOrders.edit(drawn.id(), drawn.version(), new ProductionOrder.Draft(
-                drawn.producerId(), drawn.needByDate(), null, null, true, null,
+                drawn.producerId(), drawn.needByDate(), null, true, null,
                 Map.of(drawn.lines().getFirst().orderLineId(), new ProductionOrder.LineEdit(5, null)))));
         ProductionOrder draft = drawUp(orderId, 2);
         assertThat(draft.lines()).singleElement().extracting(ProductionOrder.Line::cartons).isEqualTo(3);
