@@ -1,5 +1,5 @@
 -- =============================================================================
--- Adversarial checks + happy paths: picking an order awaiting stock before its release (V20261207013100; owner
+-- Adversarial checks + happy paths: picking an order awaiting stock before its release (V20261208010100; owner
 -- decision RTM-AWAIT-1118; kltn-docs 07 §4.1 step 2, §4.3 step 7; 17 §4.4 steps 15-16). A pick names a released
 -- delivery batch of its order - or, while the order is AWAITING_STOCK and not released, a batch of its own contract.
 -- Needs the demo seed (HCM, the first customer, demo.editor). Rolled back at the end.
