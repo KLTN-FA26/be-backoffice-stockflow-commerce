@@ -91,7 +91,7 @@ class PutBackQueueIntegrationTest {
                     "SO-20991230-%06d".formatted(java.util.concurrent.ThreadLocalRandom.current().nextInt(1_000_000)),
                     DemoData.CUSTOMER_ID, UUID.randomUUID());
             jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) "
-                    + "VALUES (?, ?, 'SOFA-3S-GREY', 1, 10, 'VND')", orderLine, order);
+                    + "VALUES (?, ?, 'LY-GIAY-DEMO-12OZ-XANH', 1, 10, 'VND')", orderLine, order);
             // What the cancellation left, written whole: the rows need no stock, only the queue reads them.
             jdbc.execute("SET LOCAL session_replication_role = replica");
             jdbc.update("""
@@ -106,7 +106,7 @@ class PutBackQueueIntegrationTest {
                 jdbc.update("""
                         INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, sku, location_code, lot_number,
                             sequence_no, allocated_qty, picked_qty, status, lpn, whole_carton, picked_by, picked_at)
-                        VALUES (?, ?, ?, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'L1', ?, 1, 1, 'PICKED', ?, TRUE, ?, ?)""", line,
+                        VALUES (?, ?, ?, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'L1', ?, 1, 1, 'PICKED', ?, TRUE, ?, ?)""", line,
                         pick, orderLine, ++no, "LPN-" + line.toString().substring(0, 8), UUID.randomUUID(),
                         Timestamp.from(picked));
             }
