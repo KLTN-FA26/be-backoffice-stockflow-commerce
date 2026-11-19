@@ -294,21 +294,33 @@ class LoadEstimateIntegrationTest {
     }
 
     @Test
-    @DisplayName("CONFIRMED: estimated in the release dialog for the warehouse it will go to, within the caller's scope")
+    @DisplayName("09 §4.0 step 1 (RTM-ESTWH): a CONFIRMED order with no shipping warehouse chosen is refused "
+            + "LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN; once Sales chose it, the estimate is of that warehouse, within the "
+            + "caller's scope")
     void confirmedOrderNeedsItsTargetWarehouse() throws Exception {
         measureTheBareItem();
         UUID confirmed = tx.execute(s -> order("CONFIRMED", Map.of(palletSku, 30)));
         estimate(Role.SALES_STAFF, coordinator, body(confirmed, "ORDER", container))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
-                .andExpect(jsonPath("$.fieldErrors[0].field").value("warehouseId"));
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN"));
+        estimate(Role.WAREHOUSE_MANAGER, manager, bodyFor(confirmed, "ORDER", HCM, container))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM fulfillment.load_estimate WHERE source_id = ?",
+                Integer.class, confirmed)).isZero();
+
+        // Sales chooses its shipping warehouse (17 §4.2), as ShippingWarehouseService#choose records it.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET shipping_warehouse_id = ?, "
+                + "shipping_warehouse_chosen_at = NOW(), shipping_warehouse_chosen_by = ? WHERE id = ?", HCM,
+                coordinator, confirmed));
         estimate(Role.SALES_STAFF, coordinator, bodyFor(confirmed, "ORDER", UUID.randomUUID(), container))
-                .andExpect(status().isNotFound());
-        estimate(Role.WAREHOUSE_MANAGER, managerElsewhere, bodyFor(confirmed, "ORDER", HCM, container))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("WarehouseMismatch"));
+        estimate(Role.WAREHOUSE_MANAGER, managerElsewhere, body(confirmed, "ORDER", container))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
 
-        JsonNode estimate = data(estimate(Role.WAREHOUSE_MANAGER, manager, bodyFor(confirmed, "ORDER", HCM, container))
+        JsonNode estimate = data(estimate(Role.WAREHOUSE_MANAGER, manager, body(confirmed, "ORDER", container))
                 .andExpect(status().isCreated()));
         assertThat(estimate.path("warehouseId").asText()).isEqualTo(HCM.toString());
         as(Role.WAREHOUSE_MANAGER, managerElsewhere, get(BASE + "/" + estimate.path("id").asText()))

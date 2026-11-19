@@ -208,6 +208,8 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}", "fulfillment-load-plans:READ"),
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/layouts", "fulfillment-load-plans:READ"),
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/vehicles/{seq}/layout", "fulfillment-load-plans:READ"),
+            Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/vehicles/{seq}/loading-sheet.pdf",
+                    "fulfillment-load-plans:READ"),
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/reconciliation", "fulfillment-load-plans:READ"),
             Map.entry("POST /api/v1/fulfillment/load-plans", "fulfillment-load-plans:CREATE"),
             Map.entry("PUT /api/v1/fulfillment/load-plans/{loadPlanId}/inputs", "fulfillment-load-plans:UPDATE"),
@@ -258,6 +260,19 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/carrier-events/{eventId}/resolution", "fulfillment-carrier-events:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/delivery-outcome-correction",
                     "fulfillment-delivery-corrections:UPDATE"),
+            // 09B G12 (09 edge "hoàn hàng khi còn Handed Over"): the warehouse manager corrects the failure reason.
+            Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/failure-reason-correction",
+                    "fulfillment-delivery-corrections:UPDATE"),
+            // RTM-RTDCANCEL (V20261207010600, 09 §5.1): the warehouse manager cancels a shipment waiting for dispatch.
+            Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/cancellation",
+                    "fulfillment-shipment-cancellations:UPDATE"),
+            // 09B G13 (V20261207010100): Sales read an order's POD and waybill files to send the customer.
+            Map.entry("GET /api/v1/fulfillment/orders/{orderId}/delivery-documents",
+                    "fulfillment-delivery-documents:READ"),
+            Map.entry("GET /api/v1/fulfillment/orders/{orderId}/delivery-documents/pod-files/{fileId}/download-url",
+                    "fulfillment-delivery-documents:READ"),
+            Map.entry("GET /api/v1/fulfillment/orders/{orderId}/delivery-documents/waybill-files/{fileId}/download-url",
+                    "fulfillment-delivery-documents:READ"),
             Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/pod-files", "fulfillment-delivery-outcomes:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/pod-files/uploads",
                     "fulfillment-delivery-outcomes:UPDATE"),
@@ -333,6 +348,11 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-carrier-events:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // 3-6, kltn-docs 09 §4.3 step 5: the warehouse manager corrects an outcome the carrier reported wrongly.
             Map.entry("fulfillment-delivery-corrections:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // RTM-RTDCANCEL, kltn-docs 09 §5.1 "Cancelled": the warehouse manager cancels a shipment before dispatch.
+            Map.entry("fulfillment-shipment-cancellations:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // 09B G13, kltn-docs 09 §2: Sales send the customer the POD / waybill file; never the customer (BR-05).
+            Map.entry("fulfillment-delivery-documents:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.SYSTEM_ADMIN)),
             // 4B-1, kltn-docs 18 BR-03: Sales sets the default payment schedule; an instalment after delivery is
             // accounting's.
             Map.entry("customer-payment-schedules:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER, Role.ACCOUNTANT,
@@ -386,6 +406,8 @@ class PermissionMatrixTest {
                     Role.SYSTEM_ADMIN)),
             // 4B-7, kltn-docs 17 §4.2 step 2: Sales chooses the shipping warehouse; those who follow the order read it.
             Map.entry("sales-order-shipping-warehouses:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            // WF04 G2 (V20261204006100; kltn-docs 17 §2, §3 "Khách / Sale ... đổi địa chỉ"): Sales change the address.
+            Map.entry("sales-order-addresses:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("sales-order-shipping-warehouses:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
                     Role.WAREHOUSE_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             // 4A-2, kltn-docs 17 §4.3, BR-23: the coordinator draws production orders up, the Sales Manager approves.
@@ -457,8 +479,8 @@ class PermissionMatrixTest {
                 Map.entry("PUT /api/v1/customers/{customerId}", "{\"fullName\":\"Mallory\",\"version\":0}"),
                 Map.entry("PUT /api/v1/customers/me", "{\"fullName\":\"Attacker renamed\",\"version\":0}"),
                 // Customer designs (2F-3): well-formed writes, so only the owner check can refuse the victim's design.
-                Map.entry("POST /api/v1/designs/mine", "{\"productId\":\"" + DemoData.PRODUCT_SOFA
-                        + "\",\"sku\":\"SOFA-3S-GREY\",\"templateCode\":\"BODY\",\"name\":\"stolen\"}"),
+                Map.entry("POST /api/v1/designs/mine", "{\"productId\":\"" + DemoData.PRODUCT_CUP
+                        + "\",\"sku\":\"LY-GIAY-DEMO-12OZ\",\"templateCode\":\"BODY\",\"name\":\"stolen\"}"),
                 Map.entry("PUT /api/v1/designs/{id}/name", "{\"version\":0,\"name\":\"stolen\"}"),
                 Map.entry("POST /api/v1/designs/{id}/archive", "{\"version\":0}"),
                 Map.entry("POST /api/v1/designs/{id}/technical-review-requests", "{\"version\":0}"),
@@ -484,10 +506,10 @@ class PermissionMatrixTest {
                         + "\"inter\",\"sizePt\":24,\"color\":\"#1F2937\",\"align\":\"center\",\"lineHeight\":1.2}}"),
                 Map.entry("POST /api/v1/design-projects/{id}/preflight-failures", "{\"items\":[{\"designId\":\""
                         + victimDesign + "\",\"issues\":[{\"rule\":\"ON_SEAM\"}]}]}"),
-                Map.entry("POST /api/v1/designs/{id}/clones", "{\"variantSku\":\"SOFA-3S-BLUE\",\"document\":{"
-                        + "\"schemaVersion\":1,\"templateCode\":\"BODY\",\"sku\":\"SOFA-3S-BLUE\",\"surfaces\":{}}}"),
+                Map.entry("POST /api/v1/designs/{id}/clones", "{\"variantSku\":\"LY-GIAY-DEMO-12OZ-CLONE\",\"document\":{"
+                        + "\"schemaVersion\":1,\"templateCode\":\"BODY\",\"sku\":\"LY-GIAY-DEMO-12OZ-CLONE\",\"surfaces\":{}}}"),
                 Map.entry("PUT /api/v1/designs/{id}/document", "{\"version\":0,\"document\":{\"schemaVersion\":1,"
-                        + "\"templateCode\":\"BODY\",\"sku\":\"SOFA-3S-GREY\",\"surfaces\":{}}}"),
+                        + "\"templateCode\":\"BODY\",\"sku\":\"LY-GIAY-DEMO-12OZ\",\"surfaces\":{}}}"),
                 // SCRUM-448 / R1: valid bodies, so only the owner check can refuse the victim's quote and order.
                 Map.entry("POST /api/v1/quotes/{quoteId}/acceptance", "{\"version\":0}"),
                 Map.entry("POST /api/v1/quotes/{quoteId}/change-request", "{\"version\":0,\"feedback\":\"stolen\"}"),
@@ -548,7 +570,7 @@ class PermissionMatrixTest {
                     victimAddress, victimCustomer);
             jdbc.update("""
                     INSERT INTO design.design_draft (id, customer_id, product_id, owner_user_id, status, created_at, current_artifacts)
-                    VALUES (?, ?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", victimDesign, victimCustomer, DemoData.PRODUCT_SOFA, victimUser);
+                    VALUES (?, ?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", victimDesign, victimCustomer, DemoData.PRODUCT_CUP, victimUser);
             // The victim's design project (2F-9), holding their design.
             jdbc.update("""
                     INSERT INTO design.design_project (id, customer_id, owner_user_id, name, status, created_at)
@@ -558,7 +580,7 @@ class PermissionMatrixTest {
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, version, created_at, hold_reason)
                     VALUES (?, ?, ?, ?, 'ON_HOLD', 1000, 'VND', NOW(), 0, NOW(), 'CREDIT')""",
                     victimOrder, "SO-20991231-%06d".formatted(ThreadLocalRandom.current().nextInt(1_000_000)), victimCustomer, UUID.randomUUID());
-            jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) VALUES (?, ?, 'TABLE-OAK-160', 1, 1000, 'VND')",
+            jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) VALUES (?, ?, 'LY-GIAY-DEMO-12OZ-XANH', 1, 1000, 'VND')",
                     Identifiers.newId(), victimOrder);
             // The victim's own quote, sent to them (SCRUM-448).
             int n = ThreadLocalRandom.current().nextInt(1_000_000);
@@ -576,7 +598,7 @@ class PermissionMatrixTest {
             UUID victimQuoteLine = Identifiers.newId();
             jdbc.update("""
                     INSERT INTO ordering.quote_line (id, quote_id, line_no, blank_sku, design_snapshot_id, quantity)
-                    VALUES (?, ?, 1, 'SOFA-3S-GREY', ?, 1)""", victimQuoteLine, victimQuote, snapshot);
+                    VALUES (?, ?, 1, ?, ?, 1)""", victimQuoteLine, victimQuote, DemoData.BLANK_CUP, snapshot);
             jdbc.update("INSERT INTO ordering.quote_price_tier (quote_line_id, min_quantity, unit_price) VALUES (?, 1, 1000)",
                     victimQuoteLine);
         });
@@ -850,7 +872,6 @@ class PermissionMatrixTest {
         Map<String, String> expected = Map.of(
                 "GET /api/v1/orders/delivery-failures", "sales-orders:READ",
                 "GET /api/v1/orders/{orderId}/delivery-failures", "sales-orders:READ",
-                "POST /api/v1/orders/{orderId}/delivery-failures/{caseId}/redelivery", "sales-order-holds:UPDATE",
                 "POST /api/v1/orders/{orderId}/delivery-failures/{caseId}/cancellation",
                 "sales-order-cancellations:UPDATE",
                 // WF-05 review F6.1: what came back with no case yet is cancelled under the same permission.

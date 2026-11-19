@@ -53,21 +53,21 @@ SAVEPOINT breach;
 -- An adjustment line with no stock moved (as if a write-up were posted to the ledger only).
 INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, to_location_code, quantity, to_status,
                                       reference_type, reference_id, occurred_at, version, created_at)
-VALUES (md5('qa99:ledger-only')::uuid, 'ADJUSTMENT', 'TABLE-OAK-160', 'LOT-2026-03', 'HCM-B01-1-A', 5, 'AVAILABLE',
+VALUES (md5('qa99:ledger-only')::uuid, 'ADJUSTMENT', 'LY-GIAY-DEMO-12OZ-DO', 'LOT-2026-03', 'HCM-B01-1-A', 5, 'AVAILABLE',
         'STOCK_ADJUSTMENT', md5('qa99:no-adjustment')::uuid, NOW(), 0, NOW());
 SELECT pg_temp.expect_true('LB1 a ledger line with no stock behind it is seen, by warehouse and SKU',
     EXISTS (SELECT 1 FROM pg_temp.unbalanced() u
-             WHERE u.warehouse = 'HCM' AND u.sku = 'TABLE-OAK-160' AND u.ledger_units = u.on_hand + 5));
+             WHERE u.warehouse = 'HCM' AND u.sku = 'LY-GIAY-DEMO-12OZ-DO' AND u.ledger_units = u.on_hand + 5));
 ROLLBACK TO SAVEPOINT breach;
 
 SAVEPOINT breach;
--- Stock written with no ledger line: a carton of the SOFA demo SKU written off by hand on its row only.
+-- Stock written with no ledger line: a carton of 1,000 blue demo cups written off by hand on its row only.
 UPDATE inventory.stock_item SET on_hand = 0
  WHERE stock_package_id = (SELECT id FROM inventory.stock_package WHERE lpn = 'LPN-20261111-000001');
 UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW() WHERE lpn = 'LPN-20261111-000001';
 SELECT pg_temp.expect_true('LB2 stock that changed with no ledger line is seen too',
     EXISTS (SELECT 1 FROM pg_temp.unbalanced() u
-             WHERE u.warehouse = 'HCM' AND u.sku = 'SOFA-3S-GREY' AND u.ledger_units = u.on_hand + 1));
+             WHERE u.warehouse = 'HCM' AND u.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND u.ledger_units = u.on_hand + 1000));
 ROLLBACK TO SAVEPOINT breach;
 
 \echo '--- the data balances'
@@ -81,6 +81,6 @@ SELECT pg_temp.expect_true('LB4 the seeded opening stock has its opening line: o
     (SELECT count(*) FROM inventory.stock_movement m
        JOIN inventory.stock_package p ON p.id = m.to_stock_package_id
       WHERE m.movement_type = 'RECEIPT' AND m.reference_type = 'STOCK_PACKAGE' AND m.reference_id = p.id
-        AND p.created_by = 'V20261111000110') = 75);
+        AND p.created_by = 'V20261206000100') = 75);
 
 ROLLBACK;

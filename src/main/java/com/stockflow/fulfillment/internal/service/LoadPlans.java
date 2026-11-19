@@ -21,11 +21,13 @@ public interface LoadPlans {
 
     /**
      * A parcel as planning shows it: sizes in whole mm (measured cm rounded up), its place ({@code vehicleSeq}) or why
-     * it has none ({@code unplacedReason}). {@code partName} is its SKU.
+     * it has none ({@code unplacedReason}). {@code partName} is its SKU, {@code orderLineId} the order line it holds
+     * (null when it holds none or several): the line the dispatcher ticks as filler cargo (RTM-LPGROUP). {@code fill}:
+     * filler cargo of a PRIORITY_FILL plan.
      */
     record ParcelView(UUID packageId, String labelCode, UUID shipmentId, String shipmentCode, String partName,
                       int lengthMm, int widthMm, int heightMm, BigDecimal weightKg, boolean rotatable,
-                      Integer vehicleSeq, String unplacedReason) { }
+                      Integer vehicleSeq, String unplacedReason, UUID orderLineId, boolean fill) { }
 
     /**
      * A full-truckload shipment waiting for dispatch with the parcels no live plan holds (LP-5: chosen whole).
@@ -139,18 +141,34 @@ public interface LoadPlans {
     // ---- commands --------------------------------------------------------------------------------------------------
 
     /**
-     * @param sourceType      ORDER, the default and the only value: transfers between warehouses were removed
+     * @param sourceType       ORDER, the default and the only value: transfers between warehouses were removed
+     * @param fillOrderLineIds the order lines ticked as filler cargo ("hàng chèn"; PRIORITY_FILL only, RTM-LPGROUP);
+     *                         null or empty: all main cargo
      */
     record CreatePlan(UUID requestId, UUID warehouseId, List<UUID> shipmentIds, List<UUID> vehicleTypeIds,
-                      String selectionMode, String note, String sourceType) {
+                      String selectionMode, String note, String sourceType, List<UUID> fillOrderLineIds) {
+
+        public CreatePlan(UUID requestId, UUID warehouseId, List<UUID> shipmentIds, List<UUID> vehicleTypeIds,
+                          String selectionMode, String note, String sourceType) {
+            this(requestId, warehouseId, shipmentIds, vehicleTypeIds, selectionMode, note, sourceType, null);
+        }
 
         public CreatePlan(UUID requestId, UUID warehouseId, List<UUID> shipmentIds, List<UUID> vehicleTypeIds,
                           String selectionMode, String note) {
-            this(requestId, warehouseId, shipmentIds, vehicleTypeIds, selectionMode, note, null);
+            this(requestId, warehouseId, shipmentIds, vehicleTypeIds, selectionMode, note, null, null);
         }
     }
 
-    record Inputs(Long expectedVersion, List<UUID> shipmentIds, List<UUID> vehicleTypeIds, String selectionMode) {
+    /**
+     * @param fillOrderLineIds the order lines ticked as filler cargo (PRIORITY_FILL only); null keeps the plan's choice
+     *                         (none under another mode)
+     */
+    record Inputs(Long expectedVersion, List<UUID> shipmentIds, List<UUID> vehicleTypeIds, String selectionMode,
+                  List<UUID> fillOrderLineIds) {
+
+        public Inputs(Long expectedVersion, List<UUID> shipmentIds, List<UUID> vehicleTypeIds, String selectionMode) {
+            this(expectedVersion, shipmentIds, vehicleTypeIds, selectionMode, null);
+        }
     }
 
     /**
@@ -182,6 +200,16 @@ public interface LoadPlans {
 
     /** The shipments (whole), vehicle types and mode; from PLANNED back to DRAFT (09 §5). */
     PlanDetail setInputs(UUID loadPlanId, Inputs inputs, CurrentUser actor);
+
+    /**
+     * Takes one whole shipment out of a PLANNED plan (09 §4.2 step 9; RTM 09A-158): its parcels go back to the dispatch
+     * area and only the vehicles that carried them change - left empty, a vehicle leaves the plan; otherwise it waits
+     * to be recalculated ({@code needsRecalculation}). The plan stays PLANNED. A confirmed plan is reopened first.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code INVALID_LOAD_PLAN_TRANSITION} when not PLANNED;
+     *         {@code LOAD_PLAN_SHIPMENT_NOT_IN_PLAN}; {@code OPTIMISTIC_LOCK}
+     */
+    PlanDetail removeShipment(UUID loadPlanId, UUID shipmentId, Long expectedVersion, CurrentUser actor);
 
     /** Runs the planner over the whole plan and stores the result: PLANNED. */
     PlanDetail calculate(UUID loadPlanId, Long expectedVersion, CurrentUser actor);

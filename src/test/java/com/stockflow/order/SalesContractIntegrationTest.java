@@ -166,7 +166,7 @@ class SalesContractIntegrationTest {
         assertThat(drafted.returnWindowDays()).as("WF-05 TH-1 (Điều 318): the configured period, written in the "
                 + "contract").isEqualTo(7);
         assertThat(drafted.buyer().representative()).isEqualTo("Tran Van B");
-        assertThat(drafted.seller().name()).isEqualTo("DEMO STOCKFLOW CO LTD");
+        assertThat(drafted.seller().name()).isEqualTo("CÔNG TY TNHH STOCKFLOW");
         assertThat(drafted.totals().totalAmount()).as("the order's total with tax").isEqualByComparingTo("2530000");
         assertThat(drafted.deliverySchedule()).singleElement().satisfies(batch -> {
             assertThat(batch.windowStart()).as("the day the customer asked for").isEqualTo(asked);

@@ -25,7 +25,7 @@ import java.util.List;
  */
 class InventoryLevelTest {
 
-    private static final Sku SKU = new Sku("SOFA-3S-GREY");
+    private static final Sku SKU = new Sku("LY-GIAY-DEMO-12OZ-XANH");
 
     private final StockItemRepository repository = mock(StockItemRepository.class);
     private final com.stockflow.inventory.internal.domain.LocationDirectory locations =
@@ -78,8 +78,8 @@ class InventoryLevelTest {
         List<StockLevel> levels = service.levelsOf(SKU);
 
         assertThat(levels).extracting(StockLevel::warehouseCode).containsExactly("HCM", "HN");
-        assertThat(levels.get(0)).isEqualTo(new StockLevel("SOFA-3S-GREY", "HCM", 3, 3, 1, 0, 2));
-        assertThat(levels.get(1)).isEqualTo(new StockLevel("SOFA-3S-GREY", "HN", 22, 15, 4, 0, 11));
+        assertThat(levels.get(0)).isEqualTo(new StockLevel("LY-GIAY-DEMO-12OZ-XANH", "HCM", 3, 3, 1, 0, 2));
+        assertThat(levels.get(1)).isEqualTo(new StockLevel("LY-GIAY-DEMO-12OZ-XANH", "HN", 22, 15, 4, 0, 11));
     }
 
     @Test
@@ -97,8 +97,8 @@ class InventoryLevelTest {
 
         List<StockLevel> levels = service.levelsOf(SKU);
 
-        assertThat(levels.get(0)).isEqualTo(new StockLevel("SOFA-3S-GREY", "HCM", 3, 3, 1, 0, 2));
-        assertThat(levels.get(1)).isEqualTo(new StockLevel("SOFA-3S-GREY", "HN", 15, 15, 1, 5, 9));
+        assertThat(levels.get(0)).isEqualTo(new StockLevel("LY-GIAY-DEMO-12OZ-XANH", "HCM", 3, 3, 1, 0, 2));
+        assertThat(levels.get(1)).isEqualTo(new StockLevel("LY-GIAY-DEMO-12OZ-XANH", "HN", 15, 15, 1, 5, 9));
     }
 
     @Test

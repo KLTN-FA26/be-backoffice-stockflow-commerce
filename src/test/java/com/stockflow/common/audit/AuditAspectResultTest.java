@@ -82,7 +82,7 @@ class AuditAspectResultTest {
 
     @Test
     void aCreationIsRecordedUnderTheIdItReturned() {
-        proxied().create("sofa");
+        proxied().create("cup");
 
         assertThat(entries).singleElement().satisfies(entry -> {
             assertThat(entry.action()).isEqualTo(AuditAction.CREATE);

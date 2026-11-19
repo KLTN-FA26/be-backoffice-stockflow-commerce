@@ -361,6 +361,8 @@ class Wf05DeliveryCorrectionIntegrationTest {
         Await.until("the invoice marked", ASYNC, () -> markedDeliveryFailed(sent.id()));
         assertThat(queries.get(sent.id()).status()).as("it may exist in law: not voided")
                 .isEqualTo(EInvoiceStatus.SUBMITTING);
+        java.time.Instant markedAt = queries.get(sent.id()).deliveryFailedAt();
+        assertThat(markedAt).as("the back office reads the mark off the invoice").isNotNull();
         assertThat(reductionsOf(sent.id())).isZero();
         // The mark is written once: moved to another time, refused.
         assertThat(catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update(
@@ -374,6 +376,8 @@ class Wf05DeliveryCorrectionIntegrationTest {
 
         // The provider answers: issued. The shipment is delivered as it is now, so the invoice stands.
         assertThat(issuance.reconcile(sent.id()).status()).isEqualTo(EInvoiceStatus.ISSUED);
+        assertThat(queries.get(sent.id()).deliveryFailedAt()).as("saving the issued invoice left the mark alone")
+                .isEqualTo(markedAt);
         assertThat(drafts.settleCorrectedDelivery(sent.id()).settlement())
                 .isEqualTo(EInvoiceDrafts.Settlement.DELIVERED_AFTER_ALL);
         assertThat(reductionsOf(sent.id())).isZero();
@@ -405,10 +409,13 @@ class Wf05DeliveryCorrectionIntegrationTest {
 
         correctToFailed(shipment);
         Await.until("the invoice marked", ASYNC, () -> markedDeliveryFailed(sent.id()));
+        assertThat(queries.get(sent.id()).deliveryFailedAt()).isNotNull();
         correctToDelivered(shipment);
         Await.until("the mark taken back", ASYNC, () -> !markedDeliveryFailed(sent.id()));
+        assertThat(queries.get(sent.id()).deliveryFailedAt()).isNull();
 
         assertThat(issuance.reconcile(sent.id()).status()).isEqualTo(EInvoiceStatus.ISSUED);
+        assertThat(markedDeliveryFailed(sent.id())).as("the save at issue did not put the old mark back").isFalse();
         assertThat(reductionsOf(sent.id())).isZero();
         assertThat(originalsOf(shipment)).containsExactly(sent.id());
     }

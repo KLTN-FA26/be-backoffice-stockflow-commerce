@@ -2,8 +2,9 @@
 spring:
   flyway:
     # Adds the demo seed on top of the production migrations. Deliberately a separate location,
-    # so demo stock can never reach an environment that did not ask for it.
-    locations: classpath:db/migration,classpath:db/demo
+    # so demo stock can never reach an environment that did not ask for it. db/demo-fake makes the seeded AHAMOVE
+    # carrier an API_BOOKING one for the fake Ahamove (stockflow.fulfillment.ahamove.mode=fake, this profile's default).
+    locations: classpath:db/migration,classpath:db/demo,classpath:db/demo-fake
   jpa:
     show-sql: true
     properties:
@@ -30,6 +31,11 @@ logging:
     # org.hibernate.orm.jdbc.bind: TRACE
 
 stockflow:
+  fulfillment:
+    ahamove:
+      # A laptop books Ahamove against the fake (no network, no secrets key). AHAMOVE_MODE=live tries the real API with
+      # a staging key sealed on a carrier.
+      mode: ${AHAMOVE_MODE:fake}
   payment:
     # Obviously not a real account (SCRUM-193): demo values so the transfer instructions render on a laptop.
     company-bank:
@@ -39,7 +45,7 @@ stockflow:
       bank-bin: ${COMPANY_BANK_BIN:970000}   # not a bank's BIN: the demo VietQR code names no real bank
   # Obviously not a real company (4B-4, WF-05 E1): demo values so a contract and an invoice can be drawn up here.
   seller:
-    name: ${SELLER_NAME:DEMO STOCKFLOW CO LTD}
+    name: ${SELLER_NAME:CÔNG TY TNHH STOCKFLOW}
     tax-code: ${SELLER_TAX_CODE:0000000000}
     address: ${SELLER_ADDRESS:1 Demo Street, Ho Chi Minh City}
     representative: ${SELLER_REPRESENTATIVE:Demo Director}

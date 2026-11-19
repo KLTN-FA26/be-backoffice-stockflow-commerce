@@ -23,6 +23,9 @@ import java.util.UUID;
  * <ul>
  *   <li>A line of {@code c} cartons gives cartons {@code <lineId>#1 .. #c}, {@code sourceRef} the line id, part code and
  *       label the SKU.</li>
+ *   <li>A line already allocated (kltn-docs 09 §4.0 step 2, 07 BR-03; RTM 09A-84) gives first one carton per LPN
+ *       allocated to it, labelled with the LPN, sized and weighed by the SKU's carton spec - the same for every carton of
+ *       the SKU (08 BR-07); then the cartons of what is not allocated yet, from its own resolution.</li>
  *   <li>The remainder carton (LP2-4) is the line's last one: full size, the resolver's partial weight.</li>
  *   <li>A kit (LP2-5, {@code kitParts} N above 1): every unit is a set of N same-size boxes, parts {@code SKU/1 ..
  *       SKU/N}, sharing the kit group {@code <lineId>/<unit>} so the planner keeps each set in one vehicle; the boxes
@@ -41,16 +44,39 @@ final class EstimateCartons {
     private EstimateCartons() {
     }
 
-    /** One resolved order line. */
-    record Line(UUID orderLineId, PackagingSpec spec) { }
+    /**
+     * One resolved order line.
+     *
+     * @param spec          the line's packaging for everything it has left to ship: the carton's sizes, weight and
+     *                      SKU
+     * @param allocatedLpns the LPN cartons already allocated to the line, in allocation order; empty when none is
+     * @param rest          the packaging of the units not allocated yet; null when every unit is ({@code spec} when
+     *                      none is)
+     */
+    record Line(UUID orderLineId, PackagingSpec spec, List<String> allocatedLpns, PackagingSpec rest) {
 
-    /** The cartons in line order, the declared kits, and each carton's label (its SKU) by ref. */
+        Line {
+            allocatedLpns = allocatedLpns == null ? List.of() : List.copyOf(allocatedLpns);
+        }
+
+        /** A line nothing is allocated to yet: every carton from its packaging. */
+        Line(UUID orderLineId, PackagingSpec spec) {
+            this(orderLineId, spec, List.of(), spec);
+        }
+
+        /** How many cartons the line makes: one per allocated LPN, then those of the rest. */
+        long cartons() {
+            return allocatedLpns.size() + (rest == null ? 0 : rest.totalCartons());
+        }
+    }
+
+    /** The cartons in line order, the declared kits, and each carton's label (its LPN once allocated, else its SKU). */
     record Built(List<CargoPackage> cartons, List<KitSpec> kits, Map<String, String> labels) { }
 
     static Built build(String groupKey, List<Line> lines) {
         long boxes = 0;
         for (Line line : lines) {
-            boxes += line.spec().totalCartons() * Math.max(1, line.spec().kitParts());
+            boxes += line.cartons() * Math.max(1, line.spec().kitParts());
         }
         if (boxes > MAX_BOXES) {
             throw new BusinessException(ErrorCode.LOAD_ESTIMATE_TOO_MANY_CARTONS,
@@ -68,11 +94,21 @@ final class EstimateCartons {
             String sku = spec.sku();
             PackagingSpec.CartonSpec carton = spec.carton();
             int parts = Math.max(1, spec.kitParts());
-            long units = spec.totalCartons();
+            if (!line.allocatedLpns().isEmpty() && parts > 1) {
+                throw new IllegalArgumentException("line " + line.orderLineId() + " is a kit: it is not allocated by LPN");
+            }
             int n = 0;
+            for (String lpn : line.allocatedLpns()) {
+                String ref = lineId + "#" + (++n);
+                cartons.add(new CargoPackage(ref, lineId, carton.lengthMm(), carton.widthMm(), carton.heightMm(),
+                        carton.weightKg(), carton.rotatable(), sku, null, groupKey, false));
+                labels.put(ref, lpn);
+            }
+            PackagingSpec rest = line.rest();
+            long units = rest == null ? 0 : rest.totalCartons();
             for (long unit = 1; unit <= units; unit++) {
-                boolean partial = unit == units && spec.partialCarton() != null;
-                BigDecimal weight = partial ? perBox(spec.partialCarton().weightKg(), parts) : carton.weightKg();
+                boolean partial = unit == units && rest.partialCarton() != null;
+                BigDecimal weight = partial ? perBox(rest.partialCarton().weightKg(), parts) : carton.weightKg();
                 for (int part = 1; part <= parts; part++) {
                     String ref = lineId + "#" + (++n);
                     cartons.add(new CargoPackage(ref, lineId, carton.lengthMm(), carton.widthMm(), carton.heightMm(),

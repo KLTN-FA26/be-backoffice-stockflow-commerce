@@ -54,9 +54,9 @@ VALUES (md5('qa:cp428:other')::uuid, 'QA khach khac', 'qa-cp-other@example.com',
 SELECT pg_temp.expect_ok('P1 a customer price for the customer''s own SKU', $q$
     INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
     VALUES (md5('qa:cp428:1')::uuid, 'c0000000-0000-4000-8000-000000000001', 'QA-CP-OWN', NOW()) $q$);
-SELECT pg_temp.expect_fail('P1a a customer price for a stock variant (13 BR-05: own SKUs only, 4B-2)', $q$
+SELECT pg_temp.expect_fail('P1a a customer price for a catalogue variant, no customer''s (13 BR-05: own SKUs only, 4B-2)', $q$
     INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
-    VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', 'SOFA-3S-GREY', NOW()) $q$);
+    VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', 'HOP-GIAY-DEMO-GREY-PAPER', NOW()) $q$);
 SELECT pg_temp.expect_fail('P1b a customer price for another customer''s SKU', $q$
     INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
     VALUES (gen_random_uuid(), md5('qa:cp428:other')::uuid, 'QA-CP-OWN', NOW()) $q$);
@@ -68,7 +68,7 @@ SELECT pg_temp.expect_fail('P3 a SKU that does not exist (no customer owns it: t
     VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', 'QA-NO-SUCH-SKU', NOW()) $q$);
 SELECT pg_temp.expect_fail('P4 a customer that does not exist (owns no SKU: tg_customer_price_own_sku, before the key)', $q$
     INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
-    VALUES (gen_random_uuid(), gen_random_uuid(), 'TABLE-OAK-160', NOW()) $q$);
+    VALUES (gen_random_uuid(), gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-DO', NOW()) $q$);
 SELECT pg_temp.expect_fail('P5 a currency other than VND', $q$
     UPDATE catalog.customer_price SET currency = 'USD' WHERE id = md5('qa:cp428:1')::uuid $q$);
 SELECT pg_temp.expect_ok('P6 two tiers, from 1 and 10 cartons', $q$

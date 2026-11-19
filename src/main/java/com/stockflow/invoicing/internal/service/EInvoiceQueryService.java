@@ -130,11 +130,27 @@ public class EInvoiceQueryService {
         return files.downloadLink(invoice.agreementFileKey(), "agreement-%s.pdf".formatted(invoice.code()));
     }
 
-    /** The invoices issued to one customer, the newest invoice date first: the portal's list. */
-    public PageResponse<EInvoiceQueries.Listing> issuedTo(UUID customerId, int page, int size) {
+    /**
+     * An invoice on the portal's list with the invoices it is linked to by replacement, so the portal follows the link
+     * the invoice itself states rather than guessing it from the order, the shipment and the type.
+     */
+    public record IssuedInvoice(EInvoiceQueries.Listing invoice, EInvoiceQueries.Replacements replacements) {
+    }
+
+    /**
+     * The invoices issued to one customer, the newest invoice date first: the portal's list. {@code orderId}, when
+     * given, narrows it to that order's invoices - under the customer, so another customer's order answers an empty
+     * page, as an order of its own with nothing issued yet does, and says nothing of whether the order exists. The
+     * replacement links of the whole page are read in one more statement, not one per row.
+     */
+    public PageResponse<IssuedInvoice> issuedTo(UUID customerId, UUID orderId, int page, int size) {
         var pageable = Pages.of(page, size);
-        return PageResponse.of(queries.issuedTo(customerId, (int) pageable.getOffset(), pageable.getPageSize()),
-                page, size, queries.countIssuedTo(customerId));
+        List<EInvoiceQueries.Listing> rows = queries.issuedTo(customerId, orderId, (int) pageable.getOffset(),
+                pageable.getPageSize());
+        var links = queries.replacementsOf(customerId, rows.stream().map(EInvoiceQueries.Listing::id).toList());
+        return PageResponse.of(rows.stream().map(row -> new IssuedInvoice(row,
+                        links.getOrDefault(row.id(), EInvoiceQueries.Replacements.NONE))).toList(),
+                page, size, queries.countIssuedTo(customerId, orderId));
     }
 
     /**

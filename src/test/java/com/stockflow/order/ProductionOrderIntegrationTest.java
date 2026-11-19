@@ -372,7 +372,7 @@ class ProductionOrderIntegrationTest {
     /** The draft's header as it is, with {@code lines} changed. */
     private static ProductionOrder.Draft draftOf(ProductionOrder production,
                                                  Map<UUID, ProductionOrder.LineEdit> lines) {
-        return new ProductionOrder.Draft(production.producerId(), production.needByDate(), production.unitPrice(),
+        return new ProductionOrder.Draft(production.producerId(), production.needByDate(),
                 production.note(), production.sampleApprovalRequired(), production.sampleWaiverReason(), lines);
     }
 
@@ -382,7 +382,7 @@ class ProductionOrderIntegrationTest {
     }
 
     private static ProductionOrder.Draft withSample(ProductionOrder production, boolean required, String reason) {
-        return new ProductionOrder.Draft(production.producerId(), production.needByDate(), production.unitPrice(),
+        return new ProductionOrder.Draft(production.producerId(), production.needByDate(),
                 production.note(), required, reason, null);
     }
 
@@ -445,7 +445,6 @@ class ProductionOrderIntegrationTest {
         assertThat(drawn.receivingWarehouseId()).as("received at the order's shipping warehouse").isEqualTo(a.id());
         assertThat(drawn.needByDate()).as("BR-26: the batch's window start").isEqualTo(today.plusDays(35));
         assertThat(drawn.drawnUpBy()).isEqualTo(coordinator);
-        assertThat(drawn.currency()).isEqualTo("VND");
         assertThat(drawn.sampleRequiredByDefault()).as("BR-24: the SKU was never mass printed").isTrue();
         assertThat(drawn.sampleApprovalRequired()).isTrue();
         assertThat(drawn.sampleWaiverReason()).isNull();
@@ -543,13 +542,12 @@ class ProductionOrderIntegrationTest {
 
         LocalDate earlier = today.plusDays(30);
         ProductionOrder edited = productionOrders.edit(drawn.id(), drawn.version(), new ProductionOrder.Draft(
-                producer.id(), earlier, new BigDecimal("1500"), "Deliver to dock 2", true, null,
+                producer.id(), earlier, "Deliver to dock 2", true, null,
                 Map.of(line, new ProductionOrder.LineEdit(5, "LPN label on every carton"))));
 
         assertThat(edited.status()).isEqualTo(ProductionOrderStatus.DRAFT);
         assertThat(edited.version()).isGreaterThan(drawn.version());
         assertThat(edited.needByDate()).as("B33: editable while a draft").isEqualTo(earlier);
-        assertThat(edited.unitPrice()).isEqualByComparingTo("1500");
         assertThat(edited.note()).isEqualTo("Deliver to dock 2");
         assertThat(edited.lines()).singleElement().satisfies(l -> {
             assertThat(l.cartons()).isEqualTo(5);
@@ -590,7 +588,7 @@ class ProductionOrderIntegrationTest {
 
         Producer another = producers.register(producerCode(), pdfProducer("Second workshop"));
         ProductionOrder moved = productionOrders.edit(back.id(), back.version(), new ProductionOrder.Draft(
-                another.id(), back.needByDate(), back.unitPrice(), back.note(), true, null, null));
+                another.id(), back.needByDate(), back.note(), true, null, null));
         assertThat(moved.producerId()).isEqualTo(another.id());
         producers.update(another.id(), another.version(), pdfProducer("Second workshop"), Producer.Status.INACTIVE);
         assertThatThrownBy(() -> productionOrders.edit(moved.id(), moved.version(), draftOf(moved, null)))
@@ -709,7 +707,7 @@ class ProductionOrderIntegrationTest {
         assertThat(returned.lines()).singleElement().satisfies(l -> assertThat(l.cartons()).isEqualTo(12));
 
         ProductionOrder fixed = productionOrders.edit(returned.id(), returned.version(), new ProductionOrder.Draft(
-                producer.id(), today.plusDays(19), null, null, true, null, null));
+                producer.id(), today.plusDays(19), null, true, null, null));
         assertThat(fixed.needByDate()).as("B33: edited after it was returned").isEqualTo(today.plusDays(19));
         assertThatThrownBy(() -> productionOrders.approve(fixed.id(), fixed.version(), manager))
                 .extracting(ProductionOrderIntegrationTest::code).isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);

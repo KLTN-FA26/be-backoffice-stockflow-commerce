@@ -101,7 +101,6 @@ class AwaitingStockPrePickIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        CartonStationSupport.giveCartonsASize(tx, jdbc);
         manager = staff("WAREHOUSE_MANAGER", HCM);
         picker = staff("WAREHOUSE_STAFF", HCM);
         coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
@@ -210,7 +209,7 @@ class AwaitingStockPrePickIntegrationTest {
                 Producer.Channel.PDF, 14, null));
         ProductionOrder draft = productionOrders.drawUp(orderId, 1, producer.id(), coordinator);
         ProductionOrder waived = productionOrders.edit(draft.id(), draft.version(), new ProductionOrder.Draft(
-                draft.producerId(), draft.needByDate(), draft.unitPrice(), draft.note(), false,
+                draft.producerId(), draft.needByDate(), draft.note(), false,
                 "The customer approved the same print on paper", null));
         ProductionOrder pending = productionOrders.submit(waived.id(), waived.version(), coordinator);
         assertThat(productionOrders.approve(pending.id(), pending.version(), manager).status())

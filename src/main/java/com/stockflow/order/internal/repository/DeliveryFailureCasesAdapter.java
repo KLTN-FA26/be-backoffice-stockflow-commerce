@@ -172,15 +172,16 @@ class DeliveryFailureCasesAdapter implements DeliveryFailureCases {
     public List<UUID> ordersReturnedByCancellation(int skip, int limit) {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = entityManager.createNativeQuery("""
-                        SELECT o.id, MIN(c.closed_at) AS first_closed
+                        SELECT o.id, MIN(r.outcome_at) AS first_returned
                           FROM ordering.customer_order o
-                          JOIN ordering.delivery_failure_case c ON c.order_id = o.id AND c.status = 'CANCELLED'
-                         WHERE o.status = 'RETURNED'
-                           AND NOT EXISTS (SELECT 1 FROM ordering.delivery_failure_case open
-                                            WHERE open.order_id = o.id AND open.status IN ('OPEN', 'REDELIVERY'))
-                           AND NOT EXISTS (SELECT 1 FROM ordering.order_shipment s
-                                            WHERE s.order_id = o.id AND s.status = 'DELIVERED')
-                         GROUP BY o.id ORDER BY first_closed, o.id""")
+                          JOIN ordering.order_shipment r ON r.order_id = o.id AND r.status = 'RETURNED'
+                         WHERE (o.status = 'RETURNED'
+                                AND NOT EXISTS (SELECT 1 FROM ordering.order_shipment s
+                                                 WHERE s.order_id = o.id AND s.status = 'DELIVERED'))
+                            OR (o.status = 'PARTIALLY_FULFILLED'
+                                AND NOT EXISTS (SELECT 1 FROM ordering.order_shipment s WHERE s.order_id = o.id
+                                                   AND s.status NOT IN ('DELIVERED', 'RETURNED')))
+                         GROUP BY o.id ORDER BY first_returned, o.id""")
                 .setFirstResult(skip).setMaxResults(limit).getResultList();
         return rows.stream().map(r -> (UUID) r[0]).toList();
     }

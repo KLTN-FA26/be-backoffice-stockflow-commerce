@@ -13,16 +13,23 @@ import java.util.UUID;
  * Estimate how a source loads before it is packed (SCRUM-287 PR EST; advisory, LP2-1).
  *
  * @param sources        exactly one for now: {@code {type: ORDER, id}}
- * @param warehouseId    required for a CONFIRMED order (estimated in the release dialog, before it has a warehouse):
- *                       the warehouse it is about to be released to; for a released order leave it out (or send its
- *                       own)
+ * @param warehouseId    optional, and never a choice: the estimate is of the order's own shipping warehouse - the one
+ *                       it was released to, or the one Sales chose while it is CONFIRMED (09 §4.0 step 1, RTM-ESTWH).
+ *                       An order with none chosen yet is refused (409 LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN) whatever
+ *                       is sent here; a value other than the order's is refused (400 WarehouseMismatch)
  * @param vehicleTypeIds the vehicle types the plan may use; empty or absent: every active type
- * @param selectionMode  SINGLE_TYPE ("Một loại", the default) or FEWEST_VEHICLES ("Ít xe nhất")
+ * @param selectionMode  SINGLE_TYPE ("Một loại", the default), FEWEST_VEHICLES ("Ít xe nhất"), KEEP_LINES ("Giữ
+ *                       nguyên dòng"), PRIORITY_FILL ("Ưu tiên + hàng chèn") or OVER_CAPACITY ("Vượt sức chứa");
+ *                       WF4-LP-MODES
+ * @param fillOrderLineIds the order lines that are filler cargo ("hàng chèn"), PRIORITY_FILL only (RTM-LPGROUP);
+ *                       absent: every line main cargo
  */
 public record LoadEstimateRequest(@NotEmpty @Size(max = 1) List<@Valid @NotNull SourceRef> sources,
                                   UUID warehouseId,
                                   @Size(max = 20) List<@NotNull UUID> vehicleTypeIds,
-                                  @Pattern(regexp = "SINGLE_TYPE|FEWEST_VEHICLES") String selectionMode) {
+                                  @Pattern(regexp = "SINGLE_TYPE|FEWEST_VEHICLES|KEEP_LINES|PRIORITY_FILL|OVER_CAPACITY")
+                                  String selectionMode,
+                                  @Size(max = 500) List<@NotNull UUID> fillOrderLineIds) {
 
     public record SourceRef(@NotNull @Pattern(regexp = "ORDER") String type, @NotNull UUID id) { }
 }

@@ -74,7 +74,7 @@ class StockOperationsIntegrationTest {
         sku = new Sku("MOVE-" + UUID.randomUUID().toString().substring(0, 8));
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
         manager = tx.execute(s -> ReferenceRows.user(entityManager));
-        // The demo sofa is explicitly untracked. A test that uses lots needs its own canonical
+        // The demo cups are untracked (lot UNTRACED). A test that uses lots needs its own canonical
         // LOT item, rather than violating that live policy or disabling policy enforcement.
         tx.executeWithoutResult(
                 s -> {

@@ -88,10 +88,11 @@ class CartonCheckServiceTest {
             mock(com.stockflow.order.api.OrderReservations.class);
     private final PickLists pickLists = mock(PickLists.class);
     private final ForeignCartonReports foreignCartons = mock(ForeignCartonReports.class);
+    private final PaymentDueReports paymentDueReports = mock(PaymentDueReports.class);
     private final CartonCheckService service = new CartonCheckService(picks, packs, mock(PackageJpaRepository.class),
             shipments, store, orders, measures, payments, identities, mock(WarehouseService.class), timeline,
             Clock.fixed(NOW, ZoneOffset.UTC), loadPlans, planVehicles, labelledCartons, pickLines, orderReservations,
-            pickLists, foreignCartons);
+            pickLists, foreignCartons, paymentDueReports);
 
     private final UUID worker = UUID.randomUUID();
     private final UUID otherWorker = UUID.randomUUID();
@@ -234,6 +235,12 @@ class CartonCheckServiceTest {
             assertThat(done.paymentDue().amount()).isEqualByComparingTo("150000");
             assertThat(done.paymentDue().currency()).isEqualTo("VND");
             assertThat(done.shipmentId()).isNotNull();
+            // RTM-PAYNOTIFY: the warehouse managers and the order's Sales are told, once for this shipment
+            org.mockito.Mockito.verify(paymentDueReports).report(org.mockito.ArgumentMatchers.eq(orderId),
+                    any(), org.mockito.ArgumentMatchers.eq(done.shipmentId()), any(),
+                    org.mockito.ArgumentMatchers.eq(WAREHOUSE),
+                    org.mockito.ArgumentMatchers.argThat(a -> a.compareTo(new BigDecimal("150000")) == 0),
+                    org.mockito.ArgumentMatchers.eq("VND"), any());
         }
 
         @Test
@@ -260,6 +267,7 @@ class CartonCheckServiceTest {
 
             assertThat(done.paymentDue()).isNull();
             assertThat(done.shipmentId()).isNotNull();
+            org.mockito.Mockito.verifyNoInteractions(paymentDueReports);
         }
     }
 

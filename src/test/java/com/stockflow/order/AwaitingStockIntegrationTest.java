@@ -447,7 +447,7 @@ class AwaitingStockIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
-                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, DemoData.CUSTOMER_ID, DemoData.PRODUCT_SOFA);
+                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, DemoData.CUSTOMER_ID, DemoData.PRODUCT_CUP);
             jdbc.update("""
                     INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at,
                                                         artifact_manifest)
@@ -462,8 +462,8 @@ class AwaitingStockIntegrationTest {
                     DemoData.CUSTOMER_ID, UUID.randomUUID());
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, design_snapshot_id,
-                                                     design_checksum) VALUES (?, ?, 'SOFA-3S-GREY', 10, 2000, 'VND', ?, ?)""",
-                    Identifiers.newId(), order, snapshot, "a".repeat(64));
+                                                     design_checksum) VALUES (?, ?, ?, 10, 2000, 'VND', ?, ?)""",
+                    Identifiers.newId(), order, DemoData.BLANK_CUP, snapshot, "a".repeat(64));
         });
 
         assertThatThrownBy(() -> releases.release(order, hcm, coordinator))
@@ -480,7 +480,7 @@ class AwaitingStockIntegrationTest {
         ProductionOrder printing = sent(drawUp(orderId, 1));
         ProductionOrder drawn = drawUp(orderId, 2);
         ProductionOrder five = sent(productionOrders.edit(drawn.id(), drawn.version(), new ProductionOrder.Draft(
-                drawn.producerId(), drawn.needByDate(), null, null, true, null,
+                drawn.producerId(), drawn.needByDate(), null, true, null,
                 Map.of(drawn.lines().getFirst().orderLineId(), new ProductionOrder.LineEdit(5, null)))));
         ProductionOrder draft = drawUp(orderId, 2);
         assertThat(draft.lines()).singleElement().extracting(ProductionOrder.Line::cartons).isEqualTo(3);

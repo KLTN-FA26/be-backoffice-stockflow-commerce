@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class SkuReservationTest {
 
-    private static final Sku SKU = new Sku("SOFA-3S-GREY");
+    private static final Sku SKU = new Sku("LY-GIAY-DEMO-12OZ-XANH");
     private static final Instant NOW = Instant.parse("2026-10-17T03:00:00Z");
 
     private static SkuReservation hold(int quantity, int available) {
@@ -148,7 +148,7 @@ class SkuReservationTest {
         var oldReceipt = carton(bin, null, "2025-01-01T00:00:00Z");
         var newReceipt = carton(bin, null, "2025-06-01T00:00:00Z");
 
-        var plan = StockAllocator.plan("SOFA", java.util.List.of(newReceipt, late, oldReceipt, early),
+        var plan = StockAllocator.plan("LY-GIAY-DEMO-12OZ-XANH", java.util.List.of(newReceipt, late, oldReceipt, early),
                 Quantity.of(20));
 
         assertThat(plan.lines()).extracting(StockAllocator.AllocationLine::stockItemId).containsExactly(

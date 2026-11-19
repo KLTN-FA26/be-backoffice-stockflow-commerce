@@ -12,7 +12,7 @@ import java.sql.SQLException;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * V20261204005100 on the real upgrade path (WF04 G8, kltn-docs 07 §4.5 step 13). It adds {@code fulfillment.pick.cancelled_at}
+ * V20261207012100 on the real upgrade path (WF04 G8, kltn-docs 07 §4.5 step 13). It adds {@code fulfillment.pick.cancelled_at}
  * and backfills it on the tasks already cancelled, from the last write of the row (its cancellation saved it), or from its
  * creation when it was never written again. A task that is not cancelled keeps it null. Then {@code ck_pick_cancelled_at}
  * (cancelled exactly when it has the time) is added: the backfilled rows must pass it.
@@ -22,8 +22,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class PickCancelledAtMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261203000300";
-    private static final String MIGRATION = "20261204005100";
+    private static final String BEFORE = "20261207011200";
+    private static final String MIGRATION = "20261207012100";
     private static final String CUSTOMER = "00000000-0000-4000-8000-00000000e0a0";
     private static final String WAREHOUSE = "00000000-0000-4000-8000-00000000e0c1";
 

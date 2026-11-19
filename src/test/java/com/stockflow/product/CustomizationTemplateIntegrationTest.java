@@ -503,8 +503,8 @@ class CustomizationTemplateIntegrationTest {
     private String publish(UUID product, String variantSku) {
         tx.executeWithoutResult(s -> {
             jdbc.update("INSERT INTO product.product_categories (id, product_id, category_id, is_primary) "
-                    + "VALUES (?, ?, md5('demo:cat:SOFA')::uuid, TRUE) ON CONFLICT DO NOTHING", UUID.randomUUID(),
-                    product);
+                    + "VALUES (?, ?, md5('demo:wf02:category:LY_GIAY')::uuid, TRUE) ON CONFLICT DO NOTHING",
+                    UUID.randomUUID(), product);
             jdbc.update("UPDATE product.variants SET status = 'ACTIVE' WHERE product_id = ?", product);
             jdbc.update("""
                     INSERT INTO product.media (id, variant_id, url, is_published, published_at, published_by, created_by)

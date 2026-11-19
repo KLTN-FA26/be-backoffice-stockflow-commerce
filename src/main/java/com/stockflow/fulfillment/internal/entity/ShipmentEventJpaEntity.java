@@ -55,4 +55,14 @@ public class ShipmentEventJpaEntity extends BaseEntity {
     public Instant getOccurredAt() { return occurredAt; }
     public String getNote() { return note; }
     public UUID getRecordedBy() { return recordedBy; }
+    public String getSource() { return source; }
+
+    /** The carrier event a webhook step came from: the key is {@code <event id>:<status>} (one row per step). */
+    public UUID getCarrierEvent() {
+        if (carrierEventId == null) {
+            return null;
+        }
+        int colon = carrierEventId.indexOf(':');
+        return UUID.fromString(colon < 0 ? carrierEventId : carrierEventId.substring(0, colon));
+    }
 }

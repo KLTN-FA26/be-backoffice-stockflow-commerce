@@ -179,7 +179,7 @@ class FulfillmentServiceImplTest {
     private static final UUID HN = UUID.randomUUID();
 
     private OrderSummary orderIn(OrderStatus status, UUID warehouse) {
-        var line = new OrderSummary.LineSummary(UUID.randomUUID(), "SOFA-3S-GREY", 2,
+        var line = new OrderSummary.LineSummary(UUID.randomUUID(), "LY-GIAY-DEMO-12OZ-XANH", 2,
                 Money.vnd(100_000), Money.vnd(200_000), List.of());
         return new OrderSummary(UUID.randomUUID(), "SO-20261014-0001", UUID.randomUUID(), status,
                 Money.vnd(200_000), List.of(line), now.minusSeconds(600), null, null, null, null, null, null, null,
@@ -233,7 +233,7 @@ class FulfillmentServiceImplTest {
     void aConfirmedOrderNotYetReleasedIsSentToReleaseFirst() {
         // G3-2 (kltn-docs 17 BR-02): only a released order - its warehouse chosen - enters fulfillment.
         var order = orderIn(OrderStatus.CONFIRMED, null);
-        holdsAt(order, "HN-A01-1-A=SOFA-3S-GREY");
+        holdsAt(order, "HN-A01-1-A=LY-GIAY-DEMO-12OZ-XANH");
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
         when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
 
@@ -249,7 +249,7 @@ class FulfillmentServiceImplTest {
     void aReleasedOrderStartsPickingInTheSameTransaction() {
         var order = orderIn(OrderStatus.READY_TO_FULFILL, HN);
         UUID picker = UUID.randomUUID();
-        holdsAt(order, "HN-A01-1-A=SOFA-3S-GREY", "HN-A01-2-B=SOFA-3S-GREY");
+        holdsAt(order, "HN-A01-1-A=LY-GIAY-DEMO-12OZ-XANH", "HN-A01-2-B=LY-GIAY-DEMO-12OZ-XANH");
         assignable(HN, picker);
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
         when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
@@ -288,7 +288,7 @@ class FulfillmentServiceImplTest {
         // its line planned short, and the order goes on picking once the line is reallocated.
         var order = heldAfterRelease(com.stockflow.order.api.HoldReason.INVENTORY);
         UUID picker = UUID.randomUUID();
-        holdsAt(order, "HN-A01-1-A=SOFA-3S-GREY");
+        holdsAt(order, "HN-A01-1-A=LY-GIAY-DEMO-12OZ-XANH");
         assignable(HN, picker);
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
         when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
@@ -306,7 +306,7 @@ class FulfillmentServiceImplTest {
     void anOrderHeldForAnotherReasonGetsNoTask() {
         // 17 BR-03: any other hold stops the warehouse.
         var order = heldAfterRelease(com.stockflow.order.api.HoldReason.ADDRESS);
-        holdsAt(order, "HN-A01-1-A=SOFA-3S-GREY");
+        holdsAt(order, "HN-A01-1-A=LY-GIAY-DEMO-12OZ-XANH");
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
         when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
 
@@ -321,7 +321,7 @@ class FulfillmentServiceImplTest {
     void aReleasedOrderIsPickedInItsOwnWarehouse() {
         var order = orderIn(OrderStatus.READY_TO_FULFILL, HCM);
         UUID picker = UUID.randomUUID();
-        holdsAt(order, "HCM-A01-1-A=SOFA-3S-GREY");
+        holdsAt(order, "HCM-A01-1-A=LY-GIAY-DEMO-12OZ-XANH");
         assignable(HCM, picker);
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
         when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
@@ -348,14 +348,14 @@ class FulfillmentServiceImplTest {
     @Test
     void holdsOutsideTheWarehouseTheOrderWasReleasedFromAreRefused() {
         var order = orderIn(OrderStatus.READY_TO_FULFILL, HCM);
-        holdsAt(order, "HCM-A01-1-A=SOFA-3S-GREY", "HN-B01-1-A=TABLE-OAK-160");
+        holdsAt(order, "HCM-A01-1-A=LY-GIAY-DEMO-12OZ-XANH", "HN-B01-1-A=LY-GIAY-DEMO-12OZ-DO");
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
         when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
 
         var thrown = refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), unlimitedManager()));
 
         assertThat(thrown.errorCode()).isEqualTo(ErrorCode.FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE);
-        assertThat(thrown.getMessage()).contains("TABLE-OAK-160").doesNotContain("SOFA-3S-GREY");
+        assertThat(thrown.getMessage()).contains("LY-GIAY-DEMO-12OZ-DO").doesNotContain("LY-GIAY-DEMO-12OZ-XANH");
         verify(picks, never()).save(any());
         verify(picks, never()).saveAndFlush(any());
     }
@@ -375,7 +375,7 @@ class FulfillmentServiceImplTest {
     void anAssigneeOfAnotherWarehouseIsRefusedOnTheAssignedUserIdField() {
         var order = orderIn(OrderStatus.READY_TO_FULFILL, HCM);
         UUID inHn = UUID.randomUUID();
-        holdsAt(order, "HCM-A01-1-A=SOFA-3S-GREY");
+        holdsAt(order, "HCM-A01-1-A=LY-GIAY-DEMO-12OZ-XANH");
         assignable(HCM, UUID.randomUUID());
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
         when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
@@ -395,7 +395,7 @@ class FulfillmentServiceImplTest {
     @Test
     void aManagerCannotOpenATaskInAWarehouseTheyAreNotAssignedTo() {
         var order = orderIn(OrderStatus.READY_TO_FULFILL, HN);
-        holdsAt(order, "HN-A01-1-A=SOFA-3S-GREY");
+        holdsAt(order, "HN-A01-1-A=LY-GIAY-DEMO-12OZ-XANH");
         assignable(HN, UUID.randomUUID());
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
         when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
@@ -743,7 +743,7 @@ class FulfillmentServiceImplTest {
     /** A released order of HCM, its holds in HCM, one assignable picker, ready for {@code createTask}. */
     private OrderSummary releasedOrder(UUID picker) {
         var order = orderIn(OrderStatus.READY_TO_FULFILL, HCM);
-        holdsAt(order, "HCM-A01-1-A=SOFA-3S-GREY");
+        holdsAt(order, "HCM-A01-1-A=LY-GIAY-DEMO-12OZ-XANH");
         assignable(HCM, picker);
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
         when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());

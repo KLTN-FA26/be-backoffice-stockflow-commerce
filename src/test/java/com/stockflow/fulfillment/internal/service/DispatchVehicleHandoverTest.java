@@ -86,6 +86,7 @@ class DispatchVehicleHandoverTest {
                     mock(jakarta.persistence.EntityManager.class, org.mockito.Mockito.RETURNS_DEEP_STUBS)),
             mock(com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository.class),
             mock(com.stockflow.fulfillment.internal.repository.CarrierBookingJpaRepository.class),
+            mock(VehicleRelayout.class), org.springframework.transaction.support.TransactionOperations.withoutTransaction(),
             Clock.fixed(NOW, ZoneOffset.UTC));
 
     private final CurrentUser actor = FulfillmentFixtures.user();

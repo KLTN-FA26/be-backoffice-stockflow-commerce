@@ -21,8 +21,11 @@ public class ShipmentPodFileJpaEntity extends BaseEntity {
     @Column(name = "file_name", nullable = false, length = 255, updatable = false) private String fileName;
     @Column(name = "content_type", nullable = false, length = 100, updatable = false) private String contentType;
     @Column(name = "size_bytes", nullable = false, updatable = false) private long sizeBytes;
-    @Column(name = "uploaded_by", nullable = false, updatable = false) private UUID uploadedBy;
+    /** Who uploaded it; null for one the carrier's webhook sent ({@link #carrierEventId}). */
+    @Column(name = "uploaded_by", updatable = false) private UUID uploadedBy;
     @Column(name = "uploaded_at", nullable = false, updatable = false) private Instant uploadedAt;
+    /** The carrier event whose proof of delivery it is (09 §4.5 step 7); null for one a person uploaded. */
+    @Column(name = "carrier_event_id", updatable = false) private UUID carrierEventId;
 
     protected ShipmentPodFileJpaEntity() {
     }
@@ -39,6 +42,17 @@ public class ShipmentPodFileJpaEntity extends BaseEntity {
         this.uploadedAt = uploadedAt;
     }
 
+    /** A proof of delivery the carrier's webhook sent with event {@code carrierEventId}: uploaded by nobody. */
+    public static ShipmentPodFileJpaEntity fromCarrier(UUID id, UUID shipmentId, String storageKey, String fileName,
+                                                       String contentType, long sizeBytes, Instant at,
+                                                       UUID carrierEventId) {
+        ShipmentPodFileJpaEntity row = new ShipmentPodFileJpaEntity(id, shipmentId, storageKey, fileName, contentType,
+                sizeBytes, null, at);
+        row.carrierEventId = java.util.Objects.requireNonNull(carrierEventId, "carrierEventId");
+        return row;
+    }
+
+    public UUID getCarrierEventId() { return carrierEventId; }
     public UUID getShipmentId() { return shipmentId; }
     public String getStorageKey() { return storageKey; }
     public String getFileName() { return fileName; }

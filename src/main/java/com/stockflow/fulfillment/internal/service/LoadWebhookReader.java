@@ -24,6 +24,9 @@ import java.util.Map;
  *                                              applies to every shipment on the load (BR-26)
  *   "waybillNo", "vehiclePlate", "driverName", "driverPhone": WAYBILL
  *   "failureReason": the carrier's own words, DELIVERY_FAILED (mapped by the carrier's table, E22)
+ *   "podUrl":       optional with DELIVERED: an https address the proof of delivery (a PDF or a photo of the
+ *                   signed paper) is fetched from and kept with each shipment the event delivers (09 §4.3 step 2,
+ *                   §4.5 step 7; BR-28: optional). Ignored with any other type.
  * }
  * </pre>
  * Field lengths are the load's own; anything longer is refused rather than cut, a carrier's number or plate being
@@ -63,9 +66,29 @@ final class LoadWebhookReader {
         if (kind == CarrierEventKind.WAYBILL && waybill == null) {
             throw new CarrierWebhookUnreadable("waybillNo: required with WAYBILL");
         }
+        String podUrl = kind == CarrierEventKind.DELIVERED ? podUrl(text(body, "podUrl", POD_URL_MAX, false)) : null;
         return new CarrierReport(kind, loadCode, null, text(body, "shipmentCode", 48, false), reportedAt, waybill,
                 text(body, "vehiclePlate", 20, false), text(body, "driverName", 120, false),
-                text(body, "driverPhone", 32, false), text(body, "failureReason", 500, false));
+                text(body, "driverPhone", 32, false), text(body, "failureReason", 500, false), podUrl);
+    }
+
+    /** Longer than any address a file host gives; a longer one is refused with the event, not cut. */
+    static final int POD_URL_MAX = 2048;
+
+    /** An absolute https address with a host, or the event is unreadable: a proof is never fetched in clear text. */
+    private static String podUrl(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        try {
+            java.net.URI uri = new java.net.URI(raw);
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null || uri.getUserInfo() != null) {
+                throw new CarrierWebhookUnreadable("podUrl: an https address");
+            }
+            return uri.toString();
+        } catch (java.net.URISyntaxException notAnAddress) {
+            throw new CarrierWebhookUnreadable("podUrl: an https address");
+        }
     }
 
     private static String text(JsonNode body, String field, int max, boolean required) {

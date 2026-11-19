@@ -1,5 +1,5 @@
 -- =============================================================================
--- Adversarial checks: a task has a cancellation time exactly while it is cancelled (V20261204005100,
+-- Adversarial checks: a task has a cancellation time exactly while it is cancelled (V20261207012100,
 -- WF04 G8, kltn-docs 07 section 4.5 step 13). Needs the demo seed (HCM, the demo customer). Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on

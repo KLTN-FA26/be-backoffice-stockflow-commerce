@@ -40,12 +40,34 @@ public final class DemoData {
     /** Warehouse {@code HCM}, the only warehouse with a map. */
     public static final UUID WAREHOUSE_HCM = demoId("demo:wh:HCM");
 
-    /** The demo sofa, a published product; its default variant is {@code SOFA-3S-GREY}. Since C1 a design
-     *  draft's product is a foreign key, so a test needs a real one. */
-    public static final UUID PRODUCT_SOFA = demoId("demo:product:SOFA-3S");
-    /** Zone A (sofas): shelves A01 and A02. */
+    /**
+     * The printable cup, a published product (V20261124000600): its blank is {@link #BLANK_CUP} and the demo
+     * customer's own SKUs are drawn on it. Since C1 a design draft's product is a foreign key, so a test needs a
+     * real one.
+     */
+    public static final UUID PRODUCT_CUP = demoId("demo:wf02:product:LY-GIAY-DEMO");
+    /**
+     * The printable paper box {@code HOP-GIAY-DEMO} (V20261206000100), the second published product: two template
+     * variants on the axes COLOR and MATERIAL, with no stock.
+     */
+    public static final UUID PRODUCT_BOX = demoId("demo:cups:product:HOP-GIAY-DEMO");
+    /** The cup's blank, the ordinary variant the customer SKUs are drawn on; it holds no stock. */
+    public static final String BLANK_CUP = "LY-GIAY-DEMO-12OZ";
+    /**
+     * The demo customer's cup in free stock (V20261206000100): 1,000 cups a carton of 60 x 40 x 50 cm, 8.6 kg;
+     * 25 cartons in {@code HCM-A01-2-B} and 8 in {@code HCM-A02-1-A}, lot {@code UNTRACED}, AVAILABLE.
+     */
+    public static final String SKU_STOCKED = "LY-GIAY-DEMO-12OZ-XANH";
+    /**
+     * The demo customer's second cup (V20261206000100): 500 cups a carton of 70 x 45 x 55 cm, 9.5 kg, not rotatable;
+     * 12 cartons in {@code HCM-B01-1-A} (lot {@code LOT-2026-03}, AVAILABLE) and 30 in {@code HCM-QC01}
+     * (lot {@code LOT-2026-04}, QUARANTINE).
+     */
+    public static final String SKU_QUARANTINED = "LY-GIAY-DEMO-12OZ-DO";
+
+    /** Zone A: shelves A01 and A02, where {@link #SKU_STOCKED} stands. */
     public static final UUID ZONE_HCM_A = demoId("demo:zone:HCM:A");
-    /** Zone B (tables): shelf B01. */
+    /** Zone B: shelf B01, where the available cartons of {@link #SKU_QUARANTINED} stand. */
     public static final UUID ZONE_HCM_B = demoId("demo:zone:HCM:B");
     /** The north wall, (0, 0)-(60, 0). */
     public static final UUID WALL_HCM_NORTH = demoId("demo:wall:HCM-N");

@@ -57,7 +57,7 @@ import static org.mockito.Mockito.when;
 class PickConsumptionServiceTest {
 
     private static final Instant NOW = Instant.parse("2026-10-14T03:00:00Z");
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
+    private static final Sku CUP = new Sku("LY-GIAY-DEMO-12OZ-XANH");
     private static final LocationId BIN = new LocationId("HCM-A01-2-B");
     private static final LocationId OTHER_BIN = new LocationId("HCM-A02-1-A");
     private static final UUID PICKER = UUID.randomUUID();
@@ -157,7 +157,7 @@ class PickConsumptionServiceTest {
                 UUID.randomUUID(), Quantity.of(held), NOW.minusSeconds(3600), null, status,
                 status == ReservationStatus.RELEASED ? ReleaseReason.ORDER_CANCELLED : null,
                 status == ReservationStatus.HELD ? null : NOW.minusSeconds(60));
-        StockItem item = new StockItem(StockItemId.newId(), SOFA, location, "LOT-1", Quantity.of(onHand), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400));
+        StockItem item = new StockItem(StockItemId.newId(), CUP, location, "LOT-1", Quantity.of(onHand), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400));
         when(stockItems.findByReservationIdForUpdate(ReservationId.of(reservationId))).thenReturn(Optional.of(item));
         when(stockItems.findByIdForUpdate(item.id())).thenReturn(Optional.of(item));
         return item;
@@ -176,7 +176,8 @@ class PickConsumptionServiceTest {
 
             ConsumedPick consumed = service.consumeForPick(hold, line, PICKER);
 
-            assertThat(consumed).isEqualTo(new ConsumedPick(hold, "SOFA-3S-GREY", "HCM-A01-2-B", "LOT-1", 3, false));
+            assertThat(consumed).isEqualTo(new ConsumedPick(hold, "LY-GIAY-DEMO-12OZ-XANH", "HCM-A01-2-B", "LOT-1", 3,
+                    false));
             assertThat(item.onHand()).isEqualTo(Quantity.of(7));
             assertThat(item.findReservation(ReservationId.of(hold)).orElseThrow().status())
                     .isEqualTo(ReservationStatus.CONSUMED);
@@ -193,7 +194,7 @@ class PickConsumptionServiceTest {
                 assertThat(row.actorId()).isEqualTo(PICKER);
             });
             verify(publisher).publishEvent(new StockDeducted(
-                    item.findReservation(ReservationId.of(hold)).orElseThrow().orderId(), "SOFA-3S-GREY",
+                    item.findReservation(ReservationId.of(hold)).orElseThrow().orderId(), "LY-GIAY-DEMO-12OZ-XANH",
                     "HCM-A01-2-B", 3));
         }
 
@@ -287,7 +288,7 @@ class PickConsumptionServiceTest {
             UUID holdId = UUID.randomUUID();
             Reservation hold = new Reservation(ReservationId.of(holdId), UUID.randomUUID(), UUID.randomUUID(),
                     UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
-            StockItem item = new StockItem(StockItemId.newId(), SOFA, new LocationId("HCM-PRD01"), "LOT-1",
+            StockItem item = new StockItem(StockItemId.newId(), CUP, new LocationId("HCM-PRD01"), "LOT-1",
                     Quantity.of(2), StockStatus.IN_PRODUCTION, List.of(hold), 0L,
                     NOW.minusSeconds(86_400));
             when(stockItems.findByReservationIdForUpdate(ReservationId.of(holdId))).thenReturn(Optional.of(item));
@@ -309,7 +310,7 @@ class PickConsumptionServiceTest {
             Reservation hold = new Reservation(ReservationId.of(holdId), UUID.randomUUID(), UUID.randomUUID(),
                     UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
             var carton = new com.stockflow.inventory.internal.domain.StockPackageId(UUID.randomUUID());
-            StockItem item = new StockItem(StockItemId.newId(), SOFA, BIN, "LOT-1", Quantity.of(4), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400), carton);
+            StockItem item = new StockItem(StockItemId.newId(), CUP, BIN, "LOT-1", Quantity.of(4), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400), carton);
             when(stockItems.findIdByReservationId(ReservationId.of(holdId))).thenReturn(Optional.of(item.id()));
             when(stockItems.findById(item.id())).thenReturn(Optional.of(item));
             when(cycleCounts.findHolding(any())).thenReturn(Optional.empty());
@@ -362,7 +363,7 @@ class PickConsumptionServiceTest {
             StockPackage carton = new StockPackage(id, LPN, UUID.randomUUID(), UUID.randomUUID(), received, received,
                     bin, consumed ? StockPackageStatus.CONSUMED : StockPackageStatus.IN_STOCK, null,
                     consumed ? NOW.minusSeconds(60) : null, 0L);
-            StockItem row = new StockItem(StockItemId.newId(), SOFA, bin, "LOT-1",
+            StockItem row = new StockItem(StockItemId.newId(), CUP, bin, "LOT-1",
                     consumed ? Quantity.ZERO : Quantity.of(received), rowStatus, List.of(reservation), 0L,
                     NOW.minusSeconds(86_400), null, id);
             when(stockItems.findIdByReservationId(ReservationId.of(hold))).thenReturn(Optional.of(row.id()));
@@ -405,7 +406,7 @@ class PickConsumptionServiceTest {
                 assertThat(row.toStockPackage()).as("the ledger names the carton").isEqualTo(picked.carton().id());
                 assertThat(row.fromStockPackage()).isNull();
             });
-            verify(policies).lock("SOFA-3S-GREY");
+            verify(policies).lock("LY-GIAY-DEMO-12OZ-XANH");
         }
 
         @Test
@@ -420,7 +421,7 @@ class PickConsumptionServiceTest {
             assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.IN_STOCK);
             assertThat(picked.row().location()).as("the row follows its carton").isEqualTo(OTHER_BIN);
             assertThat(picked.row().onHand()).isEqualTo(Quantity.of(3));
-            assertThat(picked.row().sku()).isEqualTo(SOFA);
+            assertThat(picked.row().sku()).isEqualTo(CUP);
             assertThat(picked.row().lotNumber()).isEqualTo("LOT-1");
             assertThat(saved).isEmpty();
             assertThat(ledgerRows).singleElement().satisfies(row -> {
@@ -459,7 +460,7 @@ class PickConsumptionServiceTest {
                 assertThat(row.toStockPackage()).isEqualTo(picked.carton().id());
             });
             var order = org.mockito.Mockito.inOrder(policies, stockPackages, stockItems);
-            order.verify(policies).lock("SOFA-3S-GREY");
+            order.verify(policies).lock("LY-GIAY-DEMO-12OZ-XANH");
             order.verify(stockPackages).findAllByIdForUpdate(any());
             order.verify(stockItems).findByIdForUpdate(picked.row().id());
         }
@@ -562,7 +563,7 @@ class PickConsumptionServiceTest {
             service.putBack(command(UUID.randomUUID(), hold, BIN));
 
             var order = org.mockito.Mockito.inOrder(policies, stockPackages, stockItems);
-            order.verify(policies).lock("SOFA-3S-GREY");
+            order.verify(policies).lock("LY-GIAY-DEMO-12OZ-XANH");
             order.verify(stockPackages).findAllByIdForUpdate(any());
             order.verify(stockItems).findByIdForUpdate(picked.row().id());
             // The carton is saved before the row, so it stands at its new bin when the ledger line names it there
@@ -729,7 +730,7 @@ class PickConsumptionServiceTest {
             StockPackageId id = new StockPackageId(UUID.randomUUID());
             StockPackage carton = new StockPackage(id, LPN, UUID.randomUUID(), UUID.randomUUID(), count, count, bin,
                     StockPackageStatus.IN_STOCK, null, null, 0L);
-            StockItem row = new StockItem(StockItemId.newId(), SOFA, bin, "LOT-1",
+            StockItem row = new StockItem(StockItemId.newId(), CUP, bin, "LOT-1",
                     Quantity.of(count), rowStatus, List.of(reservation), 0L, NOW.minusSeconds(86_400), null, id);
             when(stockItems.findIdByReservationId(ReservationId.of(hold))).thenReturn(Optional.of(row.id()));
             when(stockItems.findById(row.id())).thenReturn(Optional.of(row));
@@ -753,7 +754,7 @@ class PickConsumptionServiceTest {
 
             StagedPick staged = service.stage(stageCommand(line, held.hold()));
 
-            assertThat(staged).isEqualTo(new StagedPick(held.hold(), LPN, "SOFA-3S-GREY", 6, BIN.code(),
+            assertThat(staged).isEqualTo(new StagedPick(held.hold(), LPN, "LY-GIAY-DEMO-12OZ-XANH", 6, BIN.code(),
                     staging.code(), false));
             assertThat(held.carton().location()).isEqualTo(staging);
             assertThat(held.carton().status()).isEqualTo(StockPackageStatus.IN_STOCK);
@@ -782,7 +783,7 @@ class PickConsumptionServiceTest {
             service.stage(stageCommand(UUID.randomUUID(), held.hold()));
 
             var order = org.mockito.Mockito.inOrder(policies, stockPackages, stockItems);
-            order.verify(policies).lock("SOFA-3S-GREY");
+            order.verify(policies).lock("LY-GIAY-DEMO-12OZ-XANH");
             order.verify(stockPackages).findAllByIdForUpdate(any());
             order.verify(stockItems).findByIdForUpdate(held.row().id());
         }
@@ -908,8 +909,8 @@ class PickConsumptionServiceTest {
 
             ConsumedPick consumed = service.consumeStaged(held.hold(), line, PICKER);
 
-            assertThat(consumed).isEqualTo(new ConsumedPick(held.hold(), "SOFA-3S-GREY", staging.code(), "LOT-1", 6,
-                    false));
+            assertThat(consumed).isEqualTo(new ConsumedPick(held.hold(), "LY-GIAY-DEMO-12OZ-XANH", staging.code(),
+                    "LOT-1", 6, false));
             assertThat(held.row().onHand()).isEqualTo(Quantity.ZERO);
             assertThat(held.row().findReservation(ReservationId.of(held.hold())).orElseThrow().status())
                     .isEqualTo(ReservationStatus.CONSUMED);

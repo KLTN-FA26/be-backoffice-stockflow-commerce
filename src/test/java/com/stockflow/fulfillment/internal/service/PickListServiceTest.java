@@ -75,7 +75,8 @@ class PickListServiceTest {
             mock(com.stockflow.fulfillment.internal.repository.PackageJpaRepository.class);
     private final com.stockflow.order.api.PrePicking prePicking = mock(com.stockflow.order.api.PrePicking.class);
     private final PickListService service = new PickListService(picks, pickLines, orders, inventory, itemControls,
-            consumption, warehouses, Clock.fixed(NOW, ZoneOffset.UTC), orderReservations, packs, packages, prePicking);
+            consumption, warehouses, Clock.fixed(NOW, ZoneOffset.UTC), orderReservations, packs, packages,
+            mock(com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository.class), prePicking);
 
     private final UUID picker = UUID.randomUUID();
     private final CurrentUser actor = new CurrentUser(picker, "picker",

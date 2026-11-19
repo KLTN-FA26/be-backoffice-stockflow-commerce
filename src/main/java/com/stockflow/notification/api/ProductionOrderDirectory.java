@@ -38,4 +38,11 @@ public interface ProductionOrderDirectory {
      * cancelled, or it lacks nothing of them (a surplus carton: no replacement is drawn up, step 54).
      */
     Optional<ShortSalesOrder> shortSalesOrder(UUID productionOrderId);
+
+    /**
+     * The slip the production order was sent with, as a PDF to attach to the message that sends it: the stored bytes,
+     * checked against the digest recorded at approval. Empty when it has no slip, or the stored one no longer matches
+     * (the producer is then sent the links only - never a slip other than the one approved).
+     */
+    Optional<byte[]> slipPdf(UUID productionOrderId);
 }

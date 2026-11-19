@@ -20,10 +20,20 @@ import java.util.Objects;
  * @param driverName     the driver's name it gives, or null
  * @param driverPhone    the driver's phone it gives, or null
  * @param failureWording the carrier's own words for a failed delivery or a cancel, or null
+ * @param podUrl         where the carrier keeps the proof of delivery of a delivery it reports (09 §4.5 step 1, step
+ *                       7: "Giao thành công (kèm POD nếu có)"), an https address; null when it sent none
  */
 public record CarrierReport(CarrierEventKind kind, String reference, Integer stop, String shipmentCode,
                             Instant reportedAt, String waybillNo, String vehiclePlate, String driverName,
-                            String driverPhone, String failureWording) {
+                            String driverPhone, String failureWording, String podUrl) {
+
+    /** A report with no proof of delivery. */
+    public CarrierReport(CarrierEventKind kind, String reference, Integer stop, String shipmentCode,
+                         Instant reportedAt, String waybillNo, String vehiclePlate, String driverName,
+                         String driverPhone, String failureWording) {
+        this(kind, reference, stop, shipmentCode, reportedAt, waybillNo, vehiclePlate, driverName, driverPhone,
+                failureWording, null);
+    }
 
     public CarrierReport {
         Objects.requireNonNull(kind, "kind");
@@ -37,7 +47,7 @@ public record CarrierReport(CarrierEventKind kind, String reference, Integer sto
 
     /** A report about the order or the load as a whole. */
     public static CarrierReport of(CarrierEventKind kind, String reference, Instant reportedAt) {
-        return new CarrierReport(kind, reference, null, null, reportedAt, null, null, null, null, null);
+        return new CarrierReport(kind, reference, null, null, reportedAt, null, null, null, null, null, null);
     }
 
     /** Whether it names one shipment, by its drop-off or its code. */

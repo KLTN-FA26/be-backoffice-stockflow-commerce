@@ -78,6 +78,13 @@ public class PickLineJpaEntity extends BaseEntity {
     /** 4C-5: the staging area it was moved to. */
     @Column(name = "staged_location_code", length = 64)
     private String stagedLocationCode;
+    /**
+     * The removed line this line replaces (07 §4.4 step 10 for a carton removed at the check station or out of a
+     * shipment cancelled before dispatch; V20261207010700): the removed line is replaced once, whatever other lines of
+     * its order line still lack.
+     */
+    @Column(name = "replaces_line_id")
+    private UUID replacesLineId;
 
     protected PickLineJpaEntity() {
     }
@@ -137,6 +144,12 @@ public class PickLineJpaEntity extends BaseEntity {
         this.stagedLocationCode = stagedLocationCode;
     }
 
+    /** This line was allocated to replace the removed line {@code removedLineId}; set once, when it is planned. */
+    public void replaces(UUID removedLineId) {
+        this.replacesLineId = removedLineId;
+    }
+
+    public UUID getReplacesLineId() { return replacesLineId; }
     public Instant getStagedAt() { return stagedAt; }
     public String getStagedLocationCode() { return stagedLocationCode; }
 

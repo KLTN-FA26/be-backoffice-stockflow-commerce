@@ -479,8 +479,8 @@ class ProductHistoryAndRemovalIntegrationTest {
         products.discontinue(discontinued.productId(), "end", discontinued.version());
 
         Map<String, Purchasability> verdicts = products.purchasability(List.of(drafted.code(), pending.code(), active.code(),
-                blockedVariant.code(), suspended.code(), discontinued.code(), "SOFA-3S-GREY", " " + active.code().toLowerCase(Locale.ROOT),
-                "NO-SUCH-SKU"));
+                blockedVariant.code(), suspended.code(), discontinued.code(), DemoData.BLANK_CUP,
+                " " + active.code().toLowerCase(Locale.ROOT), "NO-SUCH-SKU"));
 
         assertThat(verdicts).containsOnly(
                 Map.entry(drafted.code(), Purchasability.PRODUCT_NOT_APPROVED),
@@ -489,7 +489,7 @@ class ProductHistoryAndRemovalIntegrationTest {
                 Map.entry(blockedVariant.code(), Purchasability.VARIANT_NOT_ACTIVE),
                 Map.entry(suspended.code(), Purchasability.PRODUCT_INACTIVE),
                 Map.entry(discontinued.code(), Purchasability.PRODUCT_DISCONTINUED),
-                Map.entry("SOFA-3S-GREY", Purchasability.PURCHASABLE),   // PUBLISHED demo product
+                Map.entry(DemoData.BLANK_CUP, Purchasability.PURCHASABLE),   // PUBLISHED demo product
                 Map.entry("NO-SUCH-SKU", Purchasability.VARIANT_NOT_ACTIVE));
         assertThat(products.purchasability(List.of())).isEmpty();
         // Resuming makes it purchasable again.

@@ -18,7 +18,7 @@ class LoadEstimateWebMapper {
         List<LoadEstimates.Source> sources = r.sources().stream()
                 .map(s -> new LoadEstimates.Source(LoadEstimates.SourceType.valueOf(s.type()), s.id())).toList();
         return new LoadEstimates.CreateEstimate(sources, r.warehouseId(), r.vehicleTypeIds() == null ? List.of() : r.vehicleTypeIds(),
-                r.selectionMode() == null ? null : SelectionMode.valueOf(r.selectionMode()));
+                r.selectionMode() == null ? null : SelectionMode.valueOf(r.selectionMode()), r.fillOrderLineIds());
     }
 
     LoadEstimateResponse toResponse(LoadEstimates.LoadEstimateView v) {
@@ -30,7 +30,8 @@ class LoadEstimateWebMapper {
     LoadEstimates.TrialEstimate toCommand(TrialLoadEstimateRequest r) {
         List<LoadEstimates.TrialLine> lines = r.lines().stream()
                 .map(l -> new LoadEstimates.TrialLine(l.name(), l.group(), l.lengthMm(), l.widthMm(), l.heightMm(),
-                        l.quantity(), l.rotatable() == null || l.rotatable()))
+                        l.quantity(), l.totalWeightKg(), l.rotatable() == null || l.rotatable(),
+                        Boolean.TRUE.equals(l.fill())))
                 .toList();
         return new LoadEstimates.TrialEstimate(lines, r.vehicleTypeIds() == null ? List.of() : r.vehicleTypeIds(),
                 r.selectionMode() == null ? null : SelectionMode.valueOf(r.selectionMode()));

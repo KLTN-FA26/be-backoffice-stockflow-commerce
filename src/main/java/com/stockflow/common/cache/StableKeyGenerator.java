@@ -26,7 +26,7 @@ import java.util.StringJoiner;
  *       removes the whole category.</li>
  * </ul>
  *
- * <p>The generated key looks like {@code ProductQueryService.findBySku(SOFA-3S-GREY)} — long
+ * <p>The generated key looks like {@code ProductQueryService.findBySku(LY-GIAY-DEMO-12OZ-XANH)} — long
  * enough to read in {@code redis-cli}, which pays for itself the first time someone has to work out
  * why a value is stale.</p>
  *

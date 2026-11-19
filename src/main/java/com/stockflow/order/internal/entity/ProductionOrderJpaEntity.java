@@ -8,7 +8,6 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.UUID;
@@ -54,12 +53,6 @@ public class ProductionOrderJpaEntity extends BaseEntity {
 
     @Column(name = "sample_waiver_reason", length = 500)
     private String sampleWaiverReason;
-
-    @Column(name = "unit_price", precision = 19, scale = 4)
-    private BigDecimal unitPrice;
-
-    @Column(name = "currency", nullable = false, updatable = false, length = 3)
-    private String currency;
 
     @Column(name = "note", length = 500)
     private String note;
@@ -111,20 +104,19 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     }
 
     public ProductionOrderJpaEntity(UUID id, String code, UUID salesOrderId, UUID deliveryBatchId, UUID customerId,
-                                    boolean sampleRequiredByDefault, String currency, UUID drawnUpBy) {
+                                    boolean sampleRequiredByDefault, UUID drawnUpBy) {
         super(id);
         this.code = code;
         this.salesOrderId = salesOrderId;
         this.deliveryBatchId = deliveryBatchId;
         this.customerId = customerId;
         this.sampleRequiredByDefault = sampleRequiredByDefault;
-        this.currency = currency;
         this.drawnUpBy = drawnUpBy;
     }
 
     /** Everything that moves after it was drawn up. */
     public void apply(UUID producerId, UUID receivingWarehouseId, LocalDate needByDate, ProductionOrderStatus status,
-                      boolean sampleApprovalRequired, String sampleWaiverReason, BigDecimal unitPrice, String note,
+                      boolean sampleApprovalRequired, String sampleWaiverReason, String note,
                       Instant submittedAt, UUID approvedBy, Instant approvedAt, String returnedReason, Instant sentAt,
                       Instant productionStartedAt, UUID cancelledBy, Instant cancelledAt, String cancellationReason,
                       UUID closedBy, Instant closedAt, String closingReason) {
@@ -134,7 +126,6 @@ public class ProductionOrderJpaEntity extends BaseEntity {
         this.status = status;
         this.sampleApprovalRequired = sampleApprovalRequired;
         this.sampleWaiverReason = sampleWaiverReason;
-        this.unitPrice = unitPrice;
         this.note = note;
         this.submittedAt = submittedAt;
         this.approvedBy = approvedBy;
@@ -166,8 +157,6 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     public boolean isSampleApprovalRequired() { return sampleApprovalRequired; }
     public boolean isSampleRequiredByDefault() { return sampleRequiredByDefault; }
     public String getSampleWaiverReason() { return sampleWaiverReason; }
-    public BigDecimal getUnitPrice() { return unitPrice; }
-    public String getCurrency() { return currency; }
     public String getNote() { return note; }
     public UUID getDrawnUpBy() { return drawnUpBy; }
     public Instant getSubmittedAt() { return submittedAt; }
