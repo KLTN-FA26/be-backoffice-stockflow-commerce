@@ -42,7 +42,7 @@ stockflow:
       bank-bin: ${COMPANY_BANK_BIN:970000}   # not a bank's BIN: the demo VietQR code names no real bank
   # Obviously not a real company (4B-4, WF-05 E1): demo values so a contract and an invoice can be drawn up here.
   seller:
-    name: ${SELLER_NAME:DEMO STOCKFLOW CO LTD}
+    name: ${SELLER_NAME:CÔNG TY TNHH STOCKFLOW}
     tax-code: ${SELLER_TAX_CODE:0000000000}
     address: ${SELLER_ADDRESS:1 Demo Street, Ho Chi Minh City}
     representative: ${SELLER_REPRESENTATIVE:Demo Director}

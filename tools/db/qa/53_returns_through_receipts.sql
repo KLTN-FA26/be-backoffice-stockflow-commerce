@@ -58,7 +58,7 @@ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------------------------------------
--- Fixtures: an order of HCM with a line of 10 sofas; a return of 6 of them, approved for 4 and awaiting its goods, by
+-- Fixtures: an order of HCM with a line of 10 cups; a return of 6 of them, approved for 4 and awaiting its goods, by
 -- a Sales who opened it (the editor) and another who approved it (the approver). A CLOSED return receipt against it,
 -- written with triggers off (what the receipt went through is QA 52's subject).
 -- ---------------------------------------------------------------------------------------------
@@ -67,13 +67,13 @@ INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, 
 VALUES (md5('qa53:o1')::uuid, 'SO-QA53-O1', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'PICKING',
         1000, 'VND', NOW(), NOW(), md5('demo:wh:HCM')::uuid);
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-VALUES (md5('qa53:o1:l')::uuid, md5('qa53:o1')::uuid, 'SOFA-3S-GREY', 10, 100, 'VND');
+VALUES (md5('qa53:o1:l')::uuid, md5('qa53:o1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 10, 100, 'VND');
 INSERT INTO ordering.return_request (id, rma_number, order_id, order_number, customer_id, request_id, channel, requested_by,
                                      requested_resolution, status, reason_code, requested_at)
 VALUES (md5('qa53:r1')::uuid, 'RMA-QA53-1', md5('qa53:o1')::uuid, 'SO-QA53-O1', 'c0000000-0000-4000-8000-000000000001',
         gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid, 'REFUND', 'REQUESTED', 'DAMAGED_IN_TRANSIT', NOW());
 INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity)
-VALUES (md5('qa53:r1:l')::uuid, md5('qa53:r1')::uuid, md5('qa53:o1:l')::uuid, 'SOFA-3S-GREY', FALSE, 100, 6);
+VALUES (md5('qa53:r1:l')::uuid, md5('qa53:r1')::uuid, md5('qa53:o1:l')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', FALSE, 100, 6);
 UPDATE ordering.return_request_line SET approved_quantity = 4 WHERE id = md5('qa53:r1:l')::uuid;
 UPDATE ordering.return_request SET status = 'AWAITING_RETURN', decided_by = md5('demo:user:approver')::uuid, decided_at = NOW(),
        return_required = TRUE, return_deadline = NOW() + INTERVAL '14 days' WHERE id = md5('qa53:r1')::uuid;
@@ -143,6 +143,9 @@ SELECT pg_temp.expect_fail_by('RQ4 the same receipt a second parcel', 'pk_return
             NOW()) $q$);
 SELECT pg_temp.expect_fail_by('RQ5 a parcel rewritten', 'append-only', $q$
     UPDATE ordering.return_request_receipt SET parcel = 3 WHERE goods_receipt_id = md5('qa53:g')::uuid $q$);
+SELECT pg_temp.expect_fail_by('RQ6 a return with a parcel back is withdrawn: its goods would stay unrefunded',
+    'it is not withdrawn - mark its goods complete', $q$
+    UPDATE ordering.return_request SET status = 'CANCELLED' WHERE id = md5('qa53:r1')::uuid $q$);
 
 \echo '--- the refund: units that came back, adding up to the settlement (17 §4.10 step 40)'
 SELECT pg_temp.expect_fail_by('RF1 more units refunded than came back', 'ck_return_request_line_refund', $q$
@@ -209,7 +212,7 @@ SELECT pg_temp.expect_fail_by('QE4b a return line that received fewer than nothi
             gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid, 'REFUND', 'REQUESTED', 'PRINT_DEFECT', NOW());
     INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity,
                                               received_quantity)
-    VALUES (md5('qa53:r2:l')::uuid, md5('qa53:r2')::uuid, md5('qa53:o1:l')::uuid, 'SOFA-3S-GREY', FALSE, 100, 2, -1) $q$);
+    VALUES (md5('qa53:r2:l')::uuid, md5('qa53:r2')::uuid, md5('qa53:o1:l')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', FALSE, 100, 2, -1) $q$);
 SELECT pg_temp.expect_ok('QE4c ... and nothing received is fine', $q$
     INSERT INTO ordering.return_request (id, rma_number, order_id, order_number, customer_id, request_id, channel, requested_by,
                                          requested_resolution, status, reason_code, requested_at)
@@ -217,7 +220,7 @@ SELECT pg_temp.expect_ok('QE4c ... and nothing received is fine', $q$
             gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid, 'REFUND', 'REQUESTED', 'PRINT_DEFECT', NOW());
     INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity,
                                               received_quantity)
-    VALUES (md5('qa53:r3:l')::uuid, md5('qa53:r3')::uuid, md5('qa53:o1:l')::uuid, 'SOFA-3S-GREY', FALSE, 100, 2, 0) $q$);
+    VALUES (md5('qa53:r3:l')::uuid, md5('qa53:r3')::uuid, md5('qa53:o1:l')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', FALSE, 100, 2, 0) $q$);
 SELECT pg_temp.expect_true('QE5 no QC, parcel, credit, replacement or withdrawal column is left on a return',
     (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'ordering' AND table_name = 'return_request'
         AND column_name IN ('inspected_by', 'inspected_at', 'inspection_note', 'receipt_note', 'parcel_count',

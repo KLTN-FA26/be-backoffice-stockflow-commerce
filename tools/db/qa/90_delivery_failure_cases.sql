@@ -48,7 +48,7 @@ CREATE FUNCTION pg_temp.open_case(case_key TEXT, shipment_key TEXT, receipt_key 
 $$;
 
 -- Fixtures, written with triggers and foreign keys off (how an order gets shipments and a receipt its cartons is not
--- this file's subject): order O with one line of 8 sofas and a second line; its shipments S1 (came back, REFUSED), S2
+-- this file's subject): order O with one line of 8 cups and a second line; its shipments S1 (came back, REFUSED), S2
 -- (came back, LOST), S3 (DELIVERED) and S4 (came back, its receipt still a DRAFT), each carrying 2 of the first line;
 -- closed return receipts R1 (of S1) and R2 (of S2), the draft R4 (of S4); another order O2 with a returned shipment
 -- and its closed receipt.
@@ -60,9 +60,9 @@ VALUES (md5('qa90:o')::uuid, 'SO-QA90-O1', 'c0000000-0000-4000-8000-000000000001
        (md5('qa90:o2')::uuid, 'SO-QA90-O2', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'DELIVERED', 1000,
         'VND', NOW(), NOW(), md5('demo:wh:HCM')::uuid, NOW(), NOW());
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-VALUES (md5('qa90:o:l1')::uuid, md5('qa90:o')::uuid, 'SOFA-3S-GREY', 8, 100, 'VND'),
-       (md5('qa90:o:l2')::uuid, md5('qa90:o')::uuid, 'TABLE-OAK-160', 2, 100, 'VND'),
-       (md5('qa90:o2:l1')::uuid, md5('qa90:o2')::uuid, 'SOFA-3S-GREY', 2, 100, 'VND');
+VALUES (md5('qa90:o:l1')::uuid, md5('qa90:o')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 8, 100, 'VND'),
+       (md5('qa90:o:l2')::uuid, md5('qa90:o')::uuid, 'LY-GIAY-DEMO-12OZ-DO', 2, 100, 'VND'),
+       (md5('qa90:o2:l1')::uuid, md5('qa90:o2')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 2, 100, 'VND');
 INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at, outcome_at, failure_reason)
 VALUES (md5('qa90:s1')::uuid, md5('qa90:o')::uuid, 'RETURNED', 200, NOW(), NOW(), 'REFUSED'),
        (md5('qa90:s2')::uuid, md5('qa90:o')::uuid, 'RETURNED', 200, NOW(), NOW(), 'LOST'),
@@ -124,12 +124,12 @@ SELECT pg_temp.expect_fail('DF12 a case deleted', $q$
 \echo '--- the cartons that came back are a copy written once'
 SELECT pg_temp.expect_ok('DF13 the cartons of the case', $q$
     INSERT INTO ordering.delivery_failure_case_carton (case_id, lpn, sku, lot_number, quantity, condition)
-    VALUES (md5('qa90:c1')::uuid, 'QA90-LPN-1', 'SOFA-3S-GREY', 'LOT-1', 2, 'dented') $q$);
+    VALUES (md5('qa90:c1')::uuid, 'QA90-LPN-1', 'LY-GIAY-DEMO-12OZ-XANH', 'LOT-1', 2, 'dented') $q$);
 SELECT pg_temp.expect_fail('DF14 a carton''s condition rewritten', $q$
     UPDATE ordering.delivery_failure_case_carton SET condition = NULL WHERE case_id = md5('qa90:c1')::uuid $q$);
 SELECT pg_temp.expect_fail('DF15 a carton of nothing', $q$
     INSERT INTO ordering.delivery_failure_case_carton (case_id, lpn, sku, quantity)
-    VALUES (md5('qa90:c1')::uuid, 'QA90-LPN-2', 'SOFA-3S-GREY', 0) $q$);
+    VALUES (md5('qa90:c1')::uuid, 'QA90-LPN-2', 'LY-GIAY-DEMO-12OZ-XANH', 0) $q$);
 
 \echo '--- deliver again: the customer pays the trip they made fail, and only that trip'
 SELECT pg_temp.expect_fail('DF16 OPEN straight to REDELIVERED', $q$

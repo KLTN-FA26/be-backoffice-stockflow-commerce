@@ -37,8 +37,8 @@ class ProductModuleTest {
     @Test
     @DisplayName("product starts and answers through its api with the other modules absent")
     void bootsInIsolation() {
-        assertThat(product.containsSku(DemoData.PRODUCT_SOFA, "SOFA-3S-GREY")).isTrue();
-        assertThat(product.containsSku(DemoData.PRODUCT_SOFA, "NO-SUCH-SKU")).isFalse();
+        assertThat(product.containsSku(DemoData.PRODUCT_CUP, DemoData.SKU_STOCKED)).isTrue();
+        assertThat(product.containsSku(DemoData.PRODUCT_CUP, "NO-SUCH-SKU")).isFalse();
     }
 
     /** The negative half: a module product has no business with is genuinely not in this context. */

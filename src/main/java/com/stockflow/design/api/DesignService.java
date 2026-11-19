@@ -1,5 +1,6 @@
 package com.stockflow.design.api;
 
+import java.util.List;
 import java.util.UUID;
 /** Cross-module verification of customer-confirmed, immutable design content. */
 public interface DesignService {
@@ -27,5 +28,18 @@ public interface DesignService {
 
     /** A short-lived link to one file of the bundle, after checking that file and the bundle's checksum. */
     FulfillmentArtifact fulfillmentDownload(UUID snapshotId, String expectedChecksum, DesignArtifactRole role);
+
+    /**
+     * The customer's original images the confirmed layout places, from the database alone, by asset id. None for a
+     * snapshot of the staff workflow or one confirmed before images were frozen with the layout.
+     */
+    List<ConfirmedAsset> confirmedAssets(UUID snapshotId);
+
+    /**
+     * A short-lived link to one of {@link #confirmedAssets}, after checking that image and the bundle's checksum as
+     * {@link #fulfillmentDownload} checks a file: {@code CONFLICT} when either changed, {@code NOT_FOUND} when the
+     * design places no such image.
+     */
+    FulfillmentAsset assetDownload(UUID snapshotId, String expectedChecksum, UUID assetId);
 
 }

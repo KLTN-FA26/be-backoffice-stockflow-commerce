@@ -9,6 +9,7 @@ import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.common.storage.DownloadLink;
 import com.stockflow.common.storage.FileCategory;
 import com.stockflow.common.storage.FileTransfers;
+import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.IncomingFiles;
 import com.stockflow.common.storage.PreparedFiles;
 import com.stockflow.common.storage.StagedUploads;
@@ -44,6 +45,7 @@ import java.util.UUID;
 public class ShipmentPodFiles {
 
     /** A file as a shipment lists it; the bytes come from {@link #downloadLink}. */
+    /** @param uploadedBy who uploaded it; null for one the carrier's webhook sent */
     public record PodFile(UUID id, UUID shipmentId, String fileName, String contentType, long sizeBytes,
                           UUID uploadedBy, Instant uploadedAt) {
     }
@@ -104,17 +106,57 @@ public class ShipmentPodFiles {
             StoredFile stored = prepared.single().file();
             return tx.execute(status -> {
                 requireAttachable(shipmentId);
-                // The documents category also takes Word and Excel; a proof of delivery is a PDF or a photo of the paper.
-                if (!"application/pdf".equals(stored.contentType())
-                        && (stored.contentType() == null || !stored.contentType().startsWith("image/"))) {
-                    throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A proof of delivery is a PDF or an image");
-                }
+                requireProofType(stored);
                 ShipmentPodFileJpaEntity saved = files.saveAndFlush(new ShipmentPodFileJpaEntity(Identifiers.newId(),
                         shipmentId, stored.key(), stored.originalName(), stored.contentType(), stored.sizeBytes(), by,
                         clock.instant()));
                 prepared.adopt();
                 return view(saved);
             });
+        }
+    }
+
+    /**
+     * Keeps the proof of delivery a carrier's webhook sent with event {@code carrierEventId} (09 §4.5 step 7), as an
+     * uploaded one is kept - checked, scanned, stored - uploaded by nobody. Not transactional itself; called after the
+     * event was applied, with no caller in scope. Kept already for this event, or the shipment no longer delivered (a
+     * correction since): nothing is stored.
+     *
+     * @return whether it was kept
+     * @throws BusinessException {@code VALIDATION_FAILED} for a file that is not a PDF or an image
+     */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public boolean keepFromCarrier(UUID shipmentId, UUID carrierEventId, FileUpload file) {
+        if (Boolean.FALSE.equals(tx.execute(status -> deliveredWithout(shipmentId, carrierEventId)))) {
+            return false;
+        }
+        try (PreparedFiles prepared = IncomingFiles.sent(List.of(file)).prepare(FileCategory.DOCUMENT, transfers,
+                staged)) {
+            StoredFile stored = prepared.single().file();
+            requireProofType(stored);
+            return Boolean.TRUE.equals(tx.execute(status -> {
+                if (!deliveredWithout(shipmentId, carrierEventId)) {
+                    return false;
+                }
+                files.saveAndFlush(ShipmentPodFileJpaEntity.fromCarrier(Identifiers.newId(), shipmentId, stored.key(),
+                        stored.originalName(), stored.contentType(), stored.sizeBytes(), clock.instant(),
+                        carrierEventId));
+                prepared.adopt();
+                return true;
+            }));
+        }
+    }
+
+    private boolean deliveredWithout(UUID shipmentId, UUID carrierEventId) {
+        return shipments.findById(shipmentId).filter(s -> s.getStatus() == ShipmentStatus.DELIVERED).isPresent()
+                && !files.existsByCarrierEventIdAndShipmentId(carrierEventId, shipmentId);
+    }
+
+    /** The documents category also takes Word and Excel; a proof of delivery is a PDF or a photo of the paper. */
+    private static void requireProofType(StoredFile stored) {
+        if (!"application/pdf".equals(stored.contentType())
+                && (stored.contentType() == null || !stored.contentType().startsWith("image/"))) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A proof of delivery is a PDF or an image");
         }
     }
 

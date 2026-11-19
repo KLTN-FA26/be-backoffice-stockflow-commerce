@@ -86,7 +86,21 @@ public final class EInvoiceFixtures {
                 s.agreementFileKey(), s.xmlFileKey(), s.pdfFileKey(), s.rejectionCode(), s.rejectionMessage(),
                 s.submittedAt(), s.submittedBy(), s.issuedAt(), s.voidedAt(), s.voidedBy(), s.voidReason(),
                 s.version(), s.correctionBasis(), s.agreementNumber(), s.agreementDate(), s.returnRequestId(),
-                s.listedInvoiceIds());
+                s.listedInvoiceIds(), s.deliveryFailedAt());
+    }
+
+    /** The same invoice with no warnings: a draft drawn up before the rule that would flag it existed. */
+    public static EInvoice.Snapshot withoutWarnings(EInvoice.Snapshot s) {
+        return new EInvoice.Snapshot(s.id(), s.code(), s.type(), s.status(), s.adjusted(), s.orderId(), s.orderNumber(),
+                s.contractNumber(), s.shipmentId(), s.shipmentCode(), s.deliveryBatchId(), s.customerId(),
+                s.originalEInvoiceId(), s.provider(), s.attempt(), s.transactionId(), s.templateCode(), s.symbol(),
+                s.invoiceNumber(), s.taxAuthorityCode(), s.lookupCode(), s.issueDate(), s.issueDueAt(),
+                s.dueWarnedAt(), s.signedAt(), s.seller(), s.buyer(), s.currency(), s.paymentMethod(), s.lines(),
+                s.subtotal(), s.taxTotal(), s.grandTotal(), s.amountInWords(), java.util.Set.of(),
+                s.adjustmentReason(), s.agreementFileKey(), s.xmlFileKey(), s.pdfFileKey(), s.rejectionCode(),
+                s.rejectionMessage(), s.submittedAt(), s.submittedBy(), s.issuedAt(), s.voidedAt(), s.voidedBy(),
+                s.voidReason(), s.version(), s.correctionBasis(), s.agreementNumber(), s.agreementDate(),
+                s.returnRequestId(), s.listedInvoiceIds(), s.deliveryFailedAt());
     }
 
     // ---- corrections (WF-05 E4; TT 91 Điều 10) --------------------------------------------------------------------

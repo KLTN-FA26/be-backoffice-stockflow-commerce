@@ -15,6 +15,8 @@ import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.ResourceBundle;
 
 /**
  * The shipping label of one outbound carton (team plan 4C-6; kltn-docs 08 §4.3 step 6), stuck next to the carton's LPN
@@ -26,8 +28,10 @@ import java.util.List;
  * reprint goes up a version and voids the one before (08 BR-08).
  *
  * <p>Drawn with the primitives of {@link CodeLabelSheet} ({@link LabelDrawing}, {@link LabelFonts}): the same vector
- * barcodes and the same embedded fonts that draw Vietnamese names and addresses. Captions are English, as everything
- * the code writes; names and addresses are printed as the order has them. Knows nothing about persistence: callers
+ * barcodes and the same embedded fonts that draw Vietnamese names and addresses. Captions are bilingual, Vietnamese
+ * first (owner decision RTM-LABELLANG, 2026-11-19: bilingual Vietnamese - English): the warehouse and the carrier's crew read
+ * Vietnamese, the English half keeps the usual parcel wording. Each half comes from its message bundle
+ * ({@code label.shipping.*}), so no Vietnamese lives in this class. Names and addresses are printed as the order has them. Knows nothing about persistence: callers
  * render after the read-only transaction that chose the cartons has ended.</p>
  */
 public final class ShippingLabelSheet {
@@ -39,6 +43,21 @@ public final class ShippingLabelSheet {
     private static final double BARCODE_HEIGHT_MM = 20;
     private static final double RULE_MM = 0.3;
     private static final float LINE_SPACING = 1.3f;
+
+    // Captions, Vietnamese / English (RTM-LABELLANG), from the message bundles: label.shipping.* of messages_vi and of
+    // messages, printed "<vi> / <en>".
+    private static final ResourceBundle VI = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+    private static final ResourceBundle EN = ResourceBundle.getBundle("i18n.messages", Locale.ROOT);
+    static final String ORDER = caption("order");
+    static final String LABEL_VERSION = "%s  ·  " + caption("version") + " v%d";
+    static final String SHIP_TO = caption("ship-to");
+    static final String FROM = caption("from");
+    static final String SKU = caption("sku") + "  ";
+    static final String QUANTITY = caption("quantity") + "  %d";
+    static final String WEIGHT = caption("weight") + "  %s kg";
+    static final String DIM_WEIGHT = caption("dim-weight") + "  %s kg";
+    static final String SIZE = caption("size") + "  %s x %s x %s cm";
+    static final String DO_NOT_ROTATE = caption("do-not-rotate");
 
     /**
      * One carton's label. {@code lpn} is [A-Z0-9-], what both symbols carry; every other text is free and made drawable
@@ -54,6 +73,10 @@ public final class ShippingLabelSheet {
     }
 
     private ShippingLabelSheet() {
+    }
+
+    private static String caption(String key) {
+        return VI.getString("label.shipping." + key) + " / " + EN.getString("label.shipping." + key);
     }
 
     /**
@@ -106,32 +129,32 @@ public final class ShippingLabelSheet {
             // The order and which print this is, beside the QR code of the LPN.
             double textWidth = width - QR_SIDE_MM - 2;
             LabelDrawing.qr(out, cell, label.lpn(), left + width - QR_SIDE_MM, y, QR_SIDE_MM);
-            line(regular, 7, "ORDER", textWidth);
+            line(regular, 7, ORDER, textWidth);
             fitted(bold, 15, 9, label.orderNumber(), textWidth);
-            line(regular, 7, "%s  ·  label v%d".formatted(label.labelCode(), label.labelVersion()), textWidth);
+            line(regular, 7, LABEL_VERSION.formatted(label.labelCode(), label.labelVersion()), textWidth);
             y = Math.max(y, PADDING_MM + QR_SIDE_MM) + 1.5;
             rule();
 
-            line(bold, 8, "SHIP TO", width);
+            line(bold, 8, SHIP_TO, width);
             line(bold, 11, label.recipientName(), width);
             line(regular, 9, label.recipientPhone(), width);
             wrapped(regular, 9, label.deliveryAddress(), width, 4);
             rule();
 
-            line(bold, 7, "FROM / RETURN TO", width);
+            line(bold, 7, FROM, width);
             line(regular, 8, label.senderName(), width);
             wrapped(regular, 8, label.senderAddress(), width, 2);
             rule();
 
-            line(bold, 11, "SKU  " + nullToEmpty(label.sku()), width);
-            line(regular, 9, "QTY  %d".formatted(label.quantity()), width);
-            line(regular, 9, "WEIGHT  %s kg    DIM. WEIGHT  %s kg".formatted(plain(label.weightKg()),
-                    plain(label.dimWeightKg())), width);
-            line(regular, 9, "SIZE  %s x %s x %s cm".formatted(plain(label.lengthCm()), plain(label.widthCm()),
+            line(bold, 11, SKU + nullToEmpty(label.sku()), width);
+            line(regular, 9, QUANTITY.formatted(label.quantity()), width);
+            line(regular, 9, WEIGHT.formatted(plain(label.weightKg())), width);
+            line(regular, 9, DIM_WEIGHT.formatted(plain(label.dimWeightKg())), width);
+            line(regular, 9, SIZE.formatted(plain(label.lengthCm()), plain(label.widthCm()),
                     plain(label.heightCm())), width);
             if (!label.rotatable()) {
                 y += 1.5;
-                box("DO NOT ROTATE");
+                box(DO_NOT_ROTATE);
             }
 
             // The LPN across the bottom: what every later scan reads.
@@ -203,7 +226,7 @@ public final class ShippingLabelSheet {
 
         private void box(String text) throws IOException {
             float size = 12;
-            double textWidth = LabelDrawing.widthMm(bold, text, size);
+            double textWidth = LabelDrawing.widthMm(bold, fonts.drawable(text), size);
             double height = LabelDrawing.millimetres(size * LINE_SPACING) + 2;
             double boxWidth = textWidth + 6;
             cell.rect(out, left, y, boxWidth, RULE_MM * 2);
@@ -211,7 +234,8 @@ public final class ShippingLabelSheet {
             cell.rect(out, left, y, RULE_MM * 2, height);
             cell.rect(out, left + boxWidth, y, RULE_MM * 2, height + RULE_MM * 2);
             out.fill();
-            LabelDrawing.text(out, cell, bold, size, text, left + 3, y + 1 + LabelDrawing.ascentMm(bold, size));
+            LabelDrawing.text(out, cell, bold, size, fonts.drawable(text), left + 3,
+                    y + 1 + LabelDrawing.ascentMm(bold, size));
             y += height + 2;
         }
 

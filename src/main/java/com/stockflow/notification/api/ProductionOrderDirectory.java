@@ -30,4 +30,11 @@ public interface ProductionOrderDirectory {
      * being told to stop. Empty when there is no such production order.
      */
     Optional<ProductionOrderMail> stop(UUID productionOrderId);
+
+    /**
+     * The slip the production order was sent with, as a PDF to attach to the message that sends it: the stored bytes,
+     * checked against the digest recorded at approval. Empty when it has no slip, or the stored one no longer matches
+     * (the producer is then sent the links only - never a slip other than the one approved).
+     */
+    Optional<byte[]> slipPdf(UUID productionOrderId);
 }

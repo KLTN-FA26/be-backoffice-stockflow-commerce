@@ -174,7 +174,7 @@ class CustomerOrderPortalIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
-                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, customerA, DemoData.PRODUCT_SOFA);
+                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, customerA, DemoData.PRODUCT_CUP);
             jdbc.update("""
                     INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at,
                                                         artifact_manifest)
@@ -188,11 +188,11 @@ class CustomerOrderPortalIntegrationTest {
                     order, orderNumber(), customerA, UUID.randomUUID(), DemoData.WAREHOUSE_HCM, staffUser);
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, design_snapshot_id,
-                                                     design_checksum) VALUES (?, ?, 'SOFA-3S-GREY', 10, 2000, 'VND', ?, ?)""",
-                    printLine, order, snapshot, "a".repeat(64));
+                                                     design_checksum) VALUES (?, ?, ?, 10, 2000, 'VND', ?, ?)""",
+                    printLine, order, DemoData.BLANK_CUP, snapshot, "a".repeat(64));
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-                    VALUES (?, ?, 'TABLE-OAK-160', 1, 10000, 'VND')""", stockLine, order);
+                    VALUES (?, ?, ?, 1, 10000, 'VND')""", stockLine, order, DemoData.SKU_STOCKED);
         });
         return new UUID[] {order, printLine, stockLine};
     }
@@ -207,7 +207,7 @@ class CustomerOrderPortalIntegrationTest {
                     order, orderNumber(), customerA, UUID.randomUUID());
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-                    VALUES (?, ?, 'TABLE-OAK-160', 1, 1000, 'VND')""", Identifiers.newId(), order);
+                    VALUES (?, ?, ?, 1, 1000, 'VND')""", Identifiers.newId(), order, DemoData.SKU_STOCKED);
         });
         return order;
     }

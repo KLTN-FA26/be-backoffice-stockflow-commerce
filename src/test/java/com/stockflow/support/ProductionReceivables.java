@@ -265,7 +265,7 @@ public class ProductionReceivables {
         UUID manager = tx.execute(s -> ReferenceRows.user(entityManager));
         ProductionOrder draft = productionOrders.drawUp(orderId, 1, producer().id(), coordinator);
         ProductionOrder waived = productionOrders.edit(draft.id(), draft.version(), new ProductionOrder.Draft(
-                draft.producerId(), draft.needByDate(), draft.unitPrice(), draft.note(), false,
+                draft.producerId(), draft.needByDate(), draft.note(), false,
                 "The customer approved the same print on paper", null));
         ProductionOrder pending = productionOrders.submit(waived.id(), waived.version(), coordinator);
         ProductionOrder approved = productionOrders.approve(pending.id(), pending.version(), manager);

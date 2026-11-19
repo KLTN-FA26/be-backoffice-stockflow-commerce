@@ -33,9 +33,9 @@ class SampleRoundsTest {
         ProductionOrder order = ProductionOrder.drawUp("PRD-20261109-0007", UUID.randomUUID(), UUID.randomUUID(),
                 CUSTOMER, UUID.randomUUID(), UUID.randomUUID(), LocalDate.of(2026, 12, 1), true,
                 List.of(new ProductionOrder.Line(UUID.randomUUID(), UUID.randomUUID(), "CUP-12OZ-ACME", 8, 50,
-                        UUID.randomUUID(), "a".repeat(64), null, 0)), "VND", COORDINATOR, NOW);
+                        UUID.randomUUID(), "a".repeat(64), null, 0)), COORDINATOR, NOW);
         if (!sample) {
-            order.edit(new ProductionOrder.Draft(order.producerId(), order.needByDate(), null, null, false,
+            order.edit(new ProductionOrder.Draft(order.producerId(), order.needByDate(), null, false,
                     "re-run of a tested design", null), java.util.Map.of());
         }
         order.submit(COORDINATOR, NOW);

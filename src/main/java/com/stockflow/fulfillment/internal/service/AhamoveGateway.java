@@ -8,6 +8,7 @@ import com.stockflow.common.http.RestClientFactory;
 import com.stockflow.fulfillment.internal.domain.CarrierApiEnvironment;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -44,6 +45,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * when it has none.</p>
  */
 @Component
+@ConditionalOnProperty(prefix = "stockflow.fulfillment.ahamove", name = "mode", havingValue = "live",
+        matchIfMissing = true)
 class AhamoveGateway implements CarrierBookingGateway {
 
     static final String SERVICE = "ahamove";

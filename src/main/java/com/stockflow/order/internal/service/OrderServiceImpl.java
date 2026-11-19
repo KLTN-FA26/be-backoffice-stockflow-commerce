@@ -905,6 +905,25 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     @Override
+    public OrderSummary correctShipmentFailureReason(UUID orderId, UUID shipmentId,
+                                                     com.stockflow.order.api.DeliveryFailureReason reason,
+                                                     String note) {
+        Order order = lockOrder(orderId);
+        // The case of the returned goods is opened with the shipment's reason and keeps it (tg_delivery_failure_case):
+        // Sales decide on it - a failed trip charged or claimed from the carrier - so it does not move under them.
+        if (deliveryFailures.findByShipment(shipmentId).isPresent()) {
+            throw new BusinessException(ErrorCode.SHIPMENT_FAILURE_REASON_LOCKED, ("The goods of shipment %s of order %s "
+                    + "were received back and their case opened: its failure reason stays").formatted(shipmentId,
+                    order.orderNumber()));
+        }
+        if (!order.correctShipmentFailureReason(shipmentId, reason, note)) {
+            return toSummary(order);
+        }
+        log.info("Order {}: failure reason of shipment {} corrected to {}", order.orderNumber(), shipmentId, reason);
+        return saved(order);
+    }
+
+    @Override
     public OrderSummary correctShipmentToFailed(UUID orderId, UUID shipmentId,
                                                 com.stockflow.order.api.DeliveryFailureReason reason, String note,
                                                 Instant at, UUID by) {
@@ -939,23 +958,22 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         if (!order.recordShipmentReturned(shipmentId, at, by)) {
             return toSummary(order);
         }
-        // WF-05 fix plan, sections 2-3: the order is held for the failed delivery from here. The hold is on record as
-        // any hold is (one open at a time, uk_order_active_hold); one raised earlier for another reason gives way to
-        // it - that decision comes first. A hold is resolved by a person (ck_order_hold_resolution), so when the
-        // carrier's report brought the shipment back (no actor) the earlier row stays open, and Sales' decision on the
-        // failed delivery puts the record straight ({@link #resolveHoldRow}).
-        var open = holds.findFirstByOrderIdAndResolvedAtIsNullOrderByRaisedAtDesc(orderId);
-        boolean superseded = open.isPresent() && !DELIVERY_FAILED_HOLD.equals(open.get().getReason()) && by != null;
-        if (superseded) {
-            open.get().resolve(by, "Superseded: a shipment came back; the order is held for the failed delivery", at);
-            holds.saveAndFlush(open.get());
+        // RTM-RETURNED (owner 18-19/11; kltn-docs 09 §4.3 step 4, 17 §5.1): the order is no longer held for Sales to
+        // deliver again (the WF-05 "deliver again after the return" decision is gone - a new order sends the goods
+        // again). The shipment's units were closed: the installments owe less by them, money paid above that is to be
+        // refunded (4B-9, as a closure of the rest), and the refund recorded moves the order on (followRefunds).
+        BigDecimal closed = order.closedByReturn();
+        if (closed.signum() > 0) {
+            remainderClosures.save(new OrderRemainderClosureJpaEntity(Identifiers.newId(), orderId,
+                    order.lastClosureId(), CancellationReasonCode.DELIVERY_FAILED.name(),
+                    "Returned shipment " + shipmentId, by, at));
+            if (order.paidByContract()) {
+                paymentService.settleRemainderClosure(new com.stockflow.payment.api.SettleRemainderClosureCommand(
+                        orderId, order.lastClosureId(), closed, null, null, null, by, at, HandedOverBatches.of(order)));
+            }
         }
-        if (open.isEmpty() || superseded) {
-            holds.save(new OrderHoldJpaEntity(Identifiers.newId(), orderId, DELIVERY_FAILED_HOLD, at,
-                    order.holdNote(), by));
-        }
-        log.info("Order {}: shipment {} returned, order {} for {}", order.orderNumber(), shipmentId, order.status(),
-                order.holdReason());
+        log.info("Order {}: shipment {} returned, {} {} closed; order {}", order.orderNumber(), shipmentId, closed,
+                order.total().currency(), order.status());
         return saved(order);
     }
 

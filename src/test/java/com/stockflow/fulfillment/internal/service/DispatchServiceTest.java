@@ -87,6 +87,7 @@ class DispatchServiceTest {
     private final DispatchService service = new DispatchService(loads, members, loaded, store, numbers, shipments, locks,
             packages, packageLines, picks, carriers, timeline, context, orders, warehouses, identities, planVehicles,
             leftBehind, new Waybills(loads, waybillChanges, mock(jakarta.persistence.EntityManager.class, org.mockito.Mockito.RETURNS_DEEP_STUBS)), waybillChanges, mock(com.stockflow.fulfillment.internal.repository.CarrierBookingJpaRepository.class),
+            mock(VehicleRelayout.class), org.springframework.transaction.support.TransactionOperations.withoutTransaction(),
             Clock.fixed(NOW, ZoneOffset.UTC));
 
     private final CurrentUser actor = FulfillmentFixtures.user();

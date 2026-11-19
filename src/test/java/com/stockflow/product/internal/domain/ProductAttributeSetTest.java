@@ -40,8 +40,8 @@ class ProductAttributeSetTest {
     private final UUID OZ16 = value(CAPACITY, "16OZ");
     private final UUID CLEAR = colorValue(COLOR, "CLEAR");
     private final UUID PET = value(MATERIAL, "PET");
-    private final UUID FABRIC = value(MATERIAL, "FABRIC");
-    private final UUID OAK = value(MATERIAL, "OAK");
+    private final UUID KRAFT = value(MATERIAL, "KRAFT");
+    private final UUID BAMBOO = value(MATERIAL, "BAMBOO");
     private final UUID LID = value(FEATURES, "LID");
     private final UUID STRAW = value(FEATURES, "STRAW");
 
@@ -181,7 +181,7 @@ class ProductAttributeSetTest {
         // SELECT / COLOR: exactly one value
         set.replaceDescriptives(List.of(sel(MATERIAL, PET)), d, ids());
         assertThat(set.descriptives().getFirst().values()).hasSize(1);
-        assertCode(() -> set.replaceDescriptives(List.of(sel(MATERIAL, PET, FABRIC)), d, ids()), VALIDATION_FAILED);
+        assertCode(() -> set.replaceDescriptives(List.of(sel(MATERIAL, PET, KRAFT)), d, ids()), VALIDATION_FAILED);
         assertCode(() -> set.replaceDescriptives(List.of(sel(MATERIAL)), d, ids()), VALIDATION_FAILED);
         set.replaceDescriptives(List.of(sel(COLOR, CLEAR)), d, ids());
         // MULTISELECT: one or more
@@ -221,7 +221,7 @@ class ProductAttributeSetTest {
     void descriptiveRulesAboutAttributeIdentity() {
         var d = dictionary();
         var set = draft();
-        assertCode(() -> set.replaceDescriptives(List.of(sel(MATERIAL, PET), sel(MATERIAL, FABRIC)), d, ids()), VALIDATION_FAILED);
+        assertCode(() -> set.replaceDescriptives(List.of(sel(MATERIAL, PET), sel(MATERIAL, KRAFT)), d, ids()), VALIDATION_FAILED);
         assertCode(() -> set.replaceDescriptives(List.of(sel(attribute("GHOST", AttributeDataType.SELECT))), d, ids()),
                 ErrorCode.ATTRIBUTE_NOT_FOUND);
     }
@@ -238,7 +238,7 @@ class ProductAttributeSetTest {
 
         var withDescriptives = new ProductAttributeSet(Identifiers.newId(), ProductStatus.DRAFT, List.of(), List.of(
                 new DescriptiveAttribute(Identifiers.newId(), MATERIAL.id(), 0,
-                        List.of(new DescriptiveValue(Identifiers.newId(), FABRIC, null, null, null))),
+                        List.of(new DescriptiveValue(Identifiers.newId(), KRAFT, null, null, null))),
                 new DescriptiveAttribute(Identifiers.newId(), NOTE.id(), 1,
                         List.of(new DescriptiveValue(Identifiers.newId(), null, "old", null, null))),
                 new DescriptiveAttribute(Identifiers.newId(), FEATURES.id(), 2,
@@ -248,12 +248,12 @@ class ProductAttributeSetTest {
         UUID lidRow = withDescriptives.descriptives().get(2).values().getFirst().id();
         UUID materialId = withDescriptives.descriptives().get(0).id();
         withDescriptives.replaceDescriptives(List.of(
-                sel(MATERIAL, OAK),
+                sel(MATERIAL, BAMBOO),
                 new DescriptiveSpec(NOTE.id(), 1, List.of(), "new", null, null),
                 new DescriptiveSpec(FEATURES.id(), 2, List.of(LID, STRAW), null, null, null)), dictionary(), ids());
         assertThat(withDescriptives.descriptives().get(0).id()).isEqualTo(materialId);
         assertThat(withDescriptives.descriptives().get(0).values().getFirst().id()).isEqualTo(selectRow);
-        assertThat(withDescriptives.descriptives().get(0).values().getFirst().valueId()).isEqualTo(OAK);
+        assertThat(withDescriptives.descriptives().get(0).values().getFirst().valueId()).isEqualTo(BAMBOO);
         assertThat(withDescriptives.descriptives().get(1).values().getFirst().id()).isEqualTo(textRow);
         assertThat(withDescriptives.descriptives().get(1).values().getFirst().text()).isEqualTo("new");
         assertThat(withDescriptives.descriptives().get(2).values().getFirst().id()).isEqualTo(lidRow);

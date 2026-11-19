@@ -306,7 +306,7 @@ class EInvoiceIntegrationTest {
                 BigDecimal.valueOf(400_000)));
         assertThat(draft.amountInWords()).isEqualTo(standard.compareTo(new BigDecimal("8")) == 0
                 ? "Bốn trăm ba mươi hai nghìn đồng" : "Bốn trăm bốn mươi nghìn đồng");
-        assertThat(draft.seller().name()).as("stockflow.seller.*").isEqualTo("DEMO STOCKFLOW CO LTD");
+        assertThat(draft.seller().name()).as("stockflow.seller.*").isEqualTo("CÔNG TY TNHH STOCKFLOW");
         assertThat(draft.seller().taxCode()).isEqualTo("0000000000");
         assertThat(draft.buyer().name()).isEqualTo("Test customer");
         assertThat(draft.buyer().taxCode()).isEqualTo(taxCode);
@@ -982,7 +982,14 @@ class EInvoiceIntegrationTest {
         assertThat(queries.get(untouched.draft().id()).status()).isEqualTo(EInvoiceStatus.DRAFT);
     }
 
+    /**
+     * The shipment's delivery corrected to a failure on the order's side, and the step as fulfillment publishes it. The
+     * listener reads the shipment as it is now (a failure heard after the shipment was corrected back changes nothing),
+     * so the correction itself must have happened.
+     */
     private ShipmentStatusChanged correction(Delivered delivered) {
+        tx.executeWithoutResult(s -> orders.correctShipmentToFailed(delivered.orderId(), delivered.shipmentId(),
+                com.stockflow.order.api.DeliveryFailureReason.CUSTOMER_ABSENT, null, Instant.now(), staff));
         return new ShipmentStatusChanged(UUID.randomUUID(), delivered.shipmentId(), "S", delivered.orderId(),
                 delivered.orderNumber(), customer, DemoData.WAREHOUSE_HCM, "DELIVERED", "DELIVERY_FAILED",
                 "CUSTOMER_ABSENT", 1, "Truck Co", null, staff, Instant.now());
@@ -1113,9 +1120,16 @@ class EInvoiceIntegrationTest {
     }
 
     @Test
-    @DisplayName("automatic issuing: on, a complete draft is issued by the job; a flagged one waits for the accountant")
+    @DisplayName("automatic issuing: on, a complete draft is issued by the job; a flagged one waits for the accountant, "
+            + "and so does one drawn up before the rule that flags it (WF-05 review, defect 4)")
     void automaticIssuing() {
         EInvoice.Snapshot complete = delivered(1).draft();
+        buyer(taxCode, null);
+        EInvoice.Snapshot drawnBeforeTheRule = delivered(1).draft();
+        assertThat(drawnBeforeTheRule.warnings()).containsExactly(EInvoice.Warning.BUYER_EMAIL_MISSING);
+        // As a draft drawn up before HĐ-8 made a missing e-mail a warning was stored: with none.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE invoicing.einvoice SET warnings = NULL WHERE id = ?",
+                drawnBeforeTheRule.id()));
         buyer(null, null);
         EInvoice.Snapshot flagged = delivered(1).draft();
         assertThat(flagged.warnings()).isNotEmpty();
@@ -1142,6 +1156,10 @@ class EInvoiceIntegrationTest {
         assertThat(queries.get(flagged.id()).status()).as("something to look at: left to the accountant")
                 .isEqualTo(EInvoiceStatus.DRAFT);
         assertThat(calls(flagged.id())).isEmpty();
+        EInvoice.Snapshot heldBack = queries.get(drawnBeforeTheRule.id());
+        assertThat(heldBack.status()).as("checked again before it was sent").isEqualTo(EInvoiceStatus.DRAFT);
+        assertThat(heldBack.warnings()).containsExactly(EInvoice.Warning.BUYER_EMAIL_MISSING);
+        assertThat(calls(drawnBeforeTheRule.id())).isEmpty();
     }
 
     @Test

@@ -132,6 +132,11 @@ final class OrderPersistenceMapper {
         entity.applyClosedAmount(order.closedAmount());
         entity.applyFulfilmentStarted(order.fulfilmentStartedAt());
         entity.applyFirstLabeled(order.firstLabeledAt());
+        // Written only when Sales changed it (WF04 G2): the row's own values are what the snapshot was read from, and
+        // writing them back normalised would touch an address tg_order_label_lock keeps after the first label.
+        if (!java.util.Objects.equals(toDomain(entity.getShippingAddress()), order.shippingAddress())) {
+            entity.applyShippingAddress(toEntity(order.shippingAddress()));
+        }
         entity.applyLifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(), order.shippedAt(),
                 order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(), order.refundedAt(),
                 order.closedAt());

@@ -90,6 +90,7 @@ class CustomerEInvoicePortalIntegrationTest {
     @Autowired OrderService orders;
     @Autowired EInvoiceIssuance issuance;
     @Autowired EInvoiceQueryService queries;
+    @Autowired com.stockflow.invoicing.internal.service.EInvoiceCorrections corrections;
     @Autowired com.stockflow.inventory.api.InventoryService inventory;
     @Autowired ApplicationContext context;
     @Autowired TransactionTemplate tx;
@@ -230,6 +231,108 @@ class CustomerEInvoicePortalIntegrationTest {
                 .andExpect(jsonPath("$.data.items.length()").value(1))
                 .andExpect(jsonPath("$.data.items[0].id").value(theirs.id().toString())));
         assertThat(theirPage.toString()).doesNotContain(first.id().toString(), second.id().toString());
+    }
+
+    /** The one item of {@code page} with {@code id}. */
+    private static JsonNode item(JsonNode page, UUID id) {
+        return StreamSupport.stream(page.at("/data/items").spliterator(), false)
+                .filter(candidate -> candidate.path("id").asText().equals(id.toString()))
+                .findFirst().orElseThrow(() -> new AssertionError(id + " is not on the page"));
+    }
+
+    /** A replacement of {@code original} renaming its goods, agreed in writing, still a draft. */
+    private EInvoice.Snapshot agreedReplacement(EInvoice.Snapshot original) throws Exception {
+        EInvoice.Snapshot draft = corrections.replace(new com.stockflow.invoicing.internal.service.EInvoiceCorrections
+                .Replace(original.id(), "sai ten hang", null, List.of(
+                new com.stockflow.invoicing.internal.service.EInvoiceCorrections.LineChange(
+                        original.lines().getFirst().id(), null, null, null, "Ly giay in logo (ten dung)"))));
+        java.io.ByteArrayOutputStream pdf = new java.io.ByteArrayOutputStream();
+        try (org.apache.pdfbox.pdmodel.PDDocument document = new org.apache.pdfbox.pdmodel.PDDocument()) {
+            document.addPage(new org.apache.pdfbox.pdmodel.PDPage());
+            document.save(pdf);
+        }
+        byte[] bytes = pdf.toByteArray();
+        return corrections.attachAgreement(draft.id(), draft.version(), "BB-01/2026",
+                java.time.LocalDate.now(ConfirmedOrders.VIETNAM), new com.stockflow.common.storage.FileUpload(
+                        "bien-ban.pdf", "application/pdf", bytes.length, new java.io.ByteArrayInputStream(bytes)));
+    }
+
+    @Test
+    @DisplayName("orderId narrows the list to one of the customer's orders; another customer's order, or none, is an "
+            + "empty page and not an error")
+    void theListByOrder() throws Exception {
+        Portal mine = portalCustomer();
+        Portal other = portalCustomer();
+        EInvoice.Snapshot first = issued(mine, 2);
+        EInvoice.Snapshot second = issued(mine, 1);
+        EInvoice.Snapshot theirs = issued(other, 1);
+
+        http.asCustomer(mine.account(), get(MINE).param("orderId", first.orderId().toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(first.id().toString()))
+                .andExpect(jsonPath("$.data.totalElements").value(1));
+        http.asCustomer(mine.account(), get(MINE).param("orderId", second.orderId().toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(second.id().toString()));
+        // Another customer's order reads exactly as an order with no invoice: no row, no error, nothing of theirs.
+        for (UUID foreign : List.of(theirs.orderId(), UUID.randomUUID())) {
+            String answer = http.asCustomer(mine.account(), get(MINE).param("orderId", foreign.toString()))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.items.length()").value(0))
+                    .andExpect(jsonPath("$.data.totalElements").value(0))
+                    .andReturn().getResponse().getContentAsString();
+            assertThat(answer).doesNotContain(theirs.id().toString(), theirs.orderNumber());
+        }
+        // Its owner reads it by the same id.
+        http.asCustomer(other.account(), get(MINE).param("orderId", theirs.orderId().toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].id").value(theirs.id().toString()));
+        // Without it, the whole list, as before.
+        http.asCustomer(mine.account(), get(MINE)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(2));
+    }
+
+    @Test
+    @DisplayName("a replaced invoice names its issued replacement and the replacement names it; a replacement still a "
+            + "draft or at the provider is named by nothing")
+    void theReplacementChain() throws Exception {
+        Portal mine = portalCustomer();
+        EInvoice.Snapshot original = issued(mine, 2);
+        EInvoice.Snapshot unrelated = issued(mine, 1);
+
+        EInvoice.Snapshot replacement = agreedReplacement(original);
+        JsonNode drafted = body(http.asCustomer(mine.account(), get(MINE)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(2)));
+        assertThat(item(drafted, original.id()).path("status").asText()).isEqualTo("ISSUED");
+        assertThat(item(drafted, original.id()).has("replacedBy")).as("a draft replaces nothing yet").isFalse();
+        assertThat(drafted.toString()).doesNotContain(replacement.id().toString(), replacement.code());
+
+        EInvoice.Snapshot issuedReplacement = FirstSend.issue(issuance, queries, replacement.id(),
+                replacement.version(), accountant);
+        assertThat(issuedReplacement.status()).isEqualTo(EInvoiceStatus.ISSUED);
+
+        JsonNode page = body(http.asCustomer(mine.account(), get(MINE)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(3)));
+        JsonNode replaced = item(page, original.id());
+        assertThat(replaced.path("status").asText()).isEqualTo("REPLACED");
+        assertThat(replaced.at("/replacedBy/id").asText()).isEqualTo(replacement.id().toString());
+        assertThat(replaced.at("/replacedBy/code").asText()).isEqualTo(replacement.code());
+        assertThat(replaced.has("replaces")).isFalse();
+        JsonNode standing = item(page, replacement.id());
+        assertThat(standing.path("type").asText()).isEqualTo("REPLACEMENT");
+        assertThat(standing.at("/replaces/id").asText()).isEqualTo(original.id().toString());
+        assertThat(standing.at("/replaces/code").asText()).isEqualTo(original.code());
+        assertThat(standing.has("replacedBy")).isFalse();
+        assertThat(item(page, unrelated.id()).has("replaces")).isFalse();
+        assertThat(item(page, unrelated.id()).has("replacedBy")).isFalse();
+        // The links come with the order filter too.
+        http.asCustomer(mine.account(), get(MINE).param("orderId", original.orderId().toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(2))
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + original.id() + "')].replacedBy.id")
+                        .value(replacement.id().toString()));
     }
 
     @Test

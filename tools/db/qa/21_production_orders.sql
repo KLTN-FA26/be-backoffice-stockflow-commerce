@@ -1,6 +1,6 @@
 -- =============================================================================
 -- Adversarial checks + happy paths: production orders (V20261108002700, team plan 4A-2; kltn-docs 17 §4.3, §5.3,
--- BR-05, BR-06, BR-23, BR-24). Needs the demo seed (demo.editor draws up, demo.approver approves). Rolled back at
+-- BR-05, BR-06, BR-23, BR-24; no price since V20261207000100). Needs the demo seed (demo.editor draws up, demo.approver approves). Rolled back at
 -- the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
@@ -162,6 +162,13 @@ SELECT pg_temp.expect_fail('PO9a its note changed once submitted (B33)', $q$
     UPDATE ordering.production_order SET note = 'one more thing' WHERE id = md5('qa21:po1')::uuid $q$);
 SELECT pg_temp.expect_fail('PO9b returned to draft without a reason (BR-23)', $q$
     UPDATE ordering.production_order SET status = 'DRAFT' WHERE id = md5('qa21:po1')::uuid $q$);
+-- V20261207000100: a production order carries no money. The expect_ok updates around here (PO8, PO12) also prove the
+-- rewritten check_production_order() no longer reads the dropped unit_price - the old body would fail on every UPDATE.
+SELECT pg_temp.expect_true('PO9c no price: unit_price and currency are gone (owner, 2026-11-19)', NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'ordering' AND table_name = 'production_order' AND column_name IN ('unit_price', 'currency')));
+SELECT pg_temp.expect_fail('PO9d a price written to it', $q$
+    UPDATE ordering.production_order SET unit_price = 1000 WHERE id = md5('qa21:po1')::uuid $q$);
 SELECT pg_temp.expect_fail('PO10 its lines changed once submitted', $q$
     UPDATE ordering.production_order_line SET cartons = 9 WHERE production_order_id = md5('qa21:po1')::uuid $q$);
 SELECT pg_temp.expect_fail('PO11 approved by the one who drew it up', $q$

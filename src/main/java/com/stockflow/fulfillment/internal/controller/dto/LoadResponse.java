@@ -10,6 +10,8 @@ import java.util.UUID;
 /**
  * A load with its manifest: the shipments on it, their parcels and which are on the vehicle (kltn-docs 09 §4.2).
  *
+ * @param warehouseName        the load's warehouse (the dispatch warehouse the booking slip names); null only if the
+ *                             warehouse can no longer be read
  * @param expectedPackageCount the sealed parcels of the shipments on the manifest
  * @param loadedPackageCount   of those, scanned onto the vehicle
  * @param version              send it back with the handover
@@ -29,7 +31,8 @@ import java.util.UUID;
  *                             off with nothing left to carry - {@code cancelReason} "auto-cancelled: ..."): the
  *                             booking made with the carrier outside the system still exists - cancel it there
  */
-public record LoadResponse(UUID loadId, String code, UUID warehouseId, String status, UUID carrierId,
+public record LoadResponse(UUID loadId, String code, UUID warehouseId, String warehouseName, String status,
+                           UUID carrierId,
                            String carrierCode, String carrierName, String vehiclePlate, String driverName,
                            String driverPhone, Instant loadingStartedAt, UUID loadingStartedBy, Instant dispatchedAt,
                            UUID dispatchedBy, String dispatchedByName, String carrierRepresentative,

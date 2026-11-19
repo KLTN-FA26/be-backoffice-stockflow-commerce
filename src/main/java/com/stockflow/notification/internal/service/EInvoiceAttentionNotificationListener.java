@@ -75,14 +75,17 @@ class EInvoiceAttentionNotificationListener {
             case DELIVERY_FAILED_AFTER_SUBMISSION -> "delivery-failed";
             case SIGNATURE_INVALID -> "signature-invalid";
             case DELIVERY_FAILED_REVERSAL_DRAWN_UP -> "delivery-reversal";
+            case DELIVERY_FAILED_AWAITING_PROVIDER -> "delivery-failed-awaiting";
         };
         String key = "inbox.einvoice." + kind;
         String body = event.cause() == EInvoiceNeedsAttention.Cause.REJECTED
                 ? texts.getString(key + ".body").formatted(event.code(), event.orderNumber(),
                         event.rejectionCode() == null ? "-" : event.rejectionCode(), due)
                 : texts.getString(key + ".body").formatted(event.code(), event.orderNumber(), sent, due);
-        // Stuck still resolves itself when the provider answers; refused and unknown do not, whoever waits.
+        // Stuck, and a failed delivery's invoice at the provider, still resolve themselves when the provider answers;
+        // refused and unknown do not, whoever waits.
         InboxSeverity severity = event.cause() == EInvoiceNeedsAttention.Cause.STUCK_SUBMITTING
+                || event.cause() == EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_AWAITING_PROVIDER
                 ? InboxSeverity.WARN : InboxSeverity.CRITICAL;
         return new InboxMessage(CATEGORY, severity, texts.getString(key + ".title").formatted(event.code()),
                 body.length() <= InboxMessage.BODY_MAX ? body : body.substring(0, InboxMessage.BODY_MAX),

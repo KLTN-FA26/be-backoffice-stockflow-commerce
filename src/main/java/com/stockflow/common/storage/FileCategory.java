@@ -121,10 +121,12 @@ public enum FileCategory {
 
     /**
      * A file of waybill numbers imported from the system's template, and the extract of it kept with a warehouse's loads
-     * (3-3; kltn-docs 09 §4.4 step 4, QD-17: CSV UTF-8). A category of its own: CSV has no signature to check, so it is
-     * not let into a category whose every other type is checked.
+     * (3-3; kltn-docs 09 §4.4 step 4, QD-17: CSV UTF-8; also an Excel workbook, .xlsx, read as the same table). A
+     * category of its own: CSV has no signature to check, so it is not let into a category whose every other type is
+     * checked.
      */
-    WAYBILL_IMPORT("waybill-imports", 2 * 1024 * 1024, Set.of("text/csv")),
+    WAYBILL_IMPORT("waybill-imports", 2 * 1024 * 1024,
+            Set.of("text/csv", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
 
     /**
      * An issued e-invoice as the provider returned it (WF-05 E2; kltn-docs 21 §1): the XML, which is the invoice in

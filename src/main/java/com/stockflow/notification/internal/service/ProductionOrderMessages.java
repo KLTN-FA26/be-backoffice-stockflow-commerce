@@ -1,12 +1,14 @@
 package com.stockflow.notification.internal.service;
 
 import com.stockflow.common.security.SignedLinks;
+import com.stockflow.notification.api.ProductionOrderDirectory;
 import com.stockflow.notification.api.ProductionOrderMail;
 import com.stockflow.notification.internal.domain.Email;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -24,6 +26,11 @@ import java.util.ResourceBundle;
  * live until {@link ProductionOrderMail#filesAvailableUntil()}: never stored, never logged - {@link Email#toString()}
  * prints sizes only. A deployment that has no public address configured gets a message saying the coordinator sends
  * the files, rather than links nobody can open.</p>
+ *
+ * <p>The order itself goes with its slip attached (owner, 2026-11-19): a print shop has the paper in hand without
+ * following a link, the very bytes approved - {@link ProductionOrderDirectory#slipPdf} checks them against the digest
+ * recorded at approval. A slip that cannot be read, or no longer matches, does not hold the order back: the message
+ * goes with its links and says nothing is attached. No price is written: prices are agreed outside the system.</p>
  */
 @Component
 class ProductionOrderMessages {
@@ -50,12 +57,16 @@ class ProductionOrderMessages {
     private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("dd/MM/yyyy");
     private static final DateTimeFormatter MOMENT = DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy").withZone(VIETNAM);
 
+    private static final Logger log = LoggerFactory.getLogger(ProductionOrderMessages.class);
+
     private final EmailProperties properties;
     private final SignedLinks links;
+    private final ProductionOrderDirectory directory;
 
-    ProductionOrderMessages(EmailProperties properties, SignedLinks links) {
+    ProductionOrderMessages(EmailProperties properties, SignedLinks links, ProductionOrderDirectory directory) {
         this.properties = properties;
         this.links = links;
+        this.directory = directory;
     }
 
     /**
@@ -67,9 +78,10 @@ class ProductionOrderMessages {
         List<String> text = new ArrayList<>();
         text.add(t.getString("production-order.mail.greeting").formatted(mail.producerName()));
         text.add("");
+        List<Email.Attachment> attachments = kind == Kind.SENT ? slip(mail) : List.of();
         String subject = switch (kind) {
             case SENT -> {
-                sent(t, mail, text);
+                sent(t, mail, !attachments.isEmpty(), text);
                 yield t.getString("production-order.mail.sent.subject").formatted(mail.code(),
                         DAY.format(mail.needByDate()));
             }
@@ -89,21 +101,34 @@ class ProductionOrderMessages {
         text.add("");
         text.add(t.getString("production-order.mail.signature"));
         return new Email(properties.from(), List.of(mail.producerEmail()), replyTo, subject, String.join("\n", text),
-                null, reference, kind.template);
+                null, reference, kind.template, attachments);
     }
 
-    private void sent(ResourceBundle t, ProductionOrderMail mail, List<String> text) {
-        text.add(t.getString("production-order.mail.sent.intro").formatted(mail.code()));
+    /** The slip as an attachment, or none when it cannot be read or no longer matches what was approved. */
+    private List<Email.Attachment> slip(ProductionOrderMail mail) {
+        if (mail.slip() == null) {
+            return List.of();
+        }
+        try {
+            return directory.slipPdf(mail.productionOrderId())
+                    .map(pdf -> List.of(new Email.Attachment(mail.slip().name(), "application/pdf", pdf)))
+                    .orElse(List.of());
+        } catch (RuntimeException unreadable) {
+            log.warn("Production order {}: its slip could not be read ({}); sent with links only", mail.code(),
+                    unreadable.getClass().getSimpleName());
+            return List.of();
+        }
+    }
+
+    private void sent(ResourceBundle t, ProductionOrderMail mail, boolean slipAttached, List<String> text) {
+        text.add(t.getString(slipAttached ? "production-order.mail.sent.intro" : "production-order.mail.sent.intro.links")
+                .formatted(mail.code()));
         text.add("");
         text.add(t.getString("production-order.mail.warehouse").formatted(mail.warehouseName(),
                 orDash(mail.warehouseAddress())));
         text.add(t.getString("production-order.mail.needBy").formatted(DAY.format(mail.needByDate())));
         text.add(t.getString(mail.sampleApprovalRequired() ? "production-order.mail.sample.required"
                 : "production-order.mail.sample.notRequired"));
-        if (mail.unitPrice() != null) {
-            text.add(t.getString("production-order.mail.unitPrice").formatted(amount(mail.unitPrice()),
-                    mail.currency()));
-        }
         if (mail.note() != null) {
             text.add(t.getString("production-order.mail.note").formatted(mail.note()));
         }
@@ -132,7 +157,10 @@ class ProductionOrderMessages {
         text.add(t.getString("production-order.mail.sample.closing"));
     }
 
-    /** The slip (when {@code withSlip}) and each line's print file, as links that work until the stated time. */
+    /**
+     * The slip (when {@code withSlip}), each line's print file and the customer's original images, as links that work
+     * until the stated time.
+     */
     private void files(ResourceBundle t, ProductionOrderMail mail, boolean withSlip, List<String> text) {
         if (!links.available()) {
             text.add(t.getString("production-order.mail.links.unavailable"));
@@ -147,13 +175,36 @@ class ProductionOrderMessages {
                 text.add(t.getString("production-order.mail.printFile").formatted(line.sku(),
                         links.url(line.printFile().downloadPath(), until)));
             }
+            for (ProductionOrderMail.File original : line.originals()) {
+                text.add(t.getString("production-order.mail.original").formatted(line.sku(), printable(original.name()),
+                        links.url(original.downloadPath(), until)));
+            }
         }
         text.add(t.getString("production-order.mail.links.until").formatted(MOMENT.format(until)));
     }
 
-    private static String amount(BigDecimal value) {
-        return value.stripTrailingZeros().toPlainString();
+    /**
+     * A file name the customer chose, fit for one line of the producer's e-mail: line breaks and other control or
+     * separator characters become spaces and it is cut at {@value #NAME_LIMIT} characters. Every other value in the
+     * mail comes from staff; this one does not, and a name carrying line breaks could append text - a "corrected" link -
+     * that the producer would read as the company's own.
+     */
+    static String printable(String name) {
+        if (name == null) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder(Math.min(name.length(), NAME_LIMIT));
+        name.codePoints().forEach(c -> {
+            int type = Character.getType(c);
+            boolean breaks = Character.isISOControl(c) || type == Character.LINE_SEPARATOR
+                    || type == Character.PARAGRAPH_SEPARATOR || type == Character.FORMAT;
+            out.appendCodePoint(breaks ? ' ' : c);
+        });
+        String single = out.toString().replaceAll(" {2,}", " ").strip();
+        return single.length() <= NAME_LIMIT ? single : single.substring(0, NAME_LIMIT) + "…";
     }
+
+    private static final int NAME_LIMIT = 120;
 
     private static String orDash(String value) {
         return value == null || value.isBlank() ? "-" : value;

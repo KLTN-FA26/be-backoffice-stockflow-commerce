@@ -157,6 +157,12 @@ services:
       # Changing the key breaks every link already mailed (staff re-send them from the production order).
       STOCKFLOW_PUBLIC_BASE_URL: ${STOCKFLOW_PUBLIC_BASE_URL-https://api.${DOMAIN}}
       STOCKFLOW_LINKS_KEY: ${STOCKFLOW_LINKS_KEY:-}
+      # The PDF/X output intent stamped into an approved print file (FE request 2026-11-18 BE-3). Unset or blank: the
+      # ICC profile bundled in the image, ISO Coated v2 (ECI) under FOGRA39 - the one the storefront embeds. A printer's
+      # own profile is a path inside the container (mount it) with its condition identifier, which is then required.
+      DESIGN_PRINT_ICC_PROFILE: ${DESIGN_PRINT_ICC_PROFILE:-classpath:print/icc/ISOcoated_v2_eci.icc}
+      DESIGN_PRINT_OUTPUT_CONDITION: ${DESIGN_PRINT_OUTPUT_CONDITION:-}
+      DESIGN_PRINT_OUTPUT_INFO: ${DESIGN_PRINT_OUTPUT_INFO:-}
       # Off until the customer mail phase of the business documents: no customer order mail, staff and producer
       # mail and the portal invitation unchanged. Never true on a server holding copies of real customers.
       CUSTOMER_EMAIL_ENABLED: ${CUSTOMER_EMAIL_ENABLED:-false}
@@ -180,10 +186,11 @@ services:
       COMPANY_BANK_BIN: ${COMPANY_BANK_BIN:-}
       # The seller on sales contracts and e-invoices (4B-4, WF-05 E1): the company's name, tax code and registered
       # address, its legal representative and their title, as on its business registration. This compose runs the dev
-      # profile, so an unset or blank value falls back to an obviously made-up company and the server keeps working
-      # (the fallback is spelled out here because a blank passed through would override the profile's own default).
+      # profile, so an unset or blank value falls back to a placeholder company and the server keeps working (the
+      # fallback is spelled out here because a blank passed through would override the profile's own default). The name
+      # has no "demo" wording: it is printed on the production order slip a capstone shows (owner, 2026-11-19).
       # A deployment in the prod profile sets all five: there the application refuses to start without them.
-      SELLER_NAME: ${SELLER_NAME:-DEMO STOCKFLOW CO LTD}
+      SELLER_NAME: ${SELLER_NAME:-CÔNG TY TNHH STOCKFLOW}
       SELLER_TAX_CODE: ${SELLER_TAX_CODE:-0000000000}
       SELLER_ADDRESS: ${SELLER_ADDRESS:-1 Demo Street, Ho Chi Minh City}
       SELLER_REPRESENTATIVE: ${SELLER_REPRESENTATIVE:-Demo Director}

@@ -828,8 +828,8 @@ class Order:
             shipping_warehouse_chosen_by=U[by])
         commit()
 
-    def production(self, key, seq, producer, when, path, sample=False, waiver=None, price=None):
-        return ProductionOrder(self, key, seq, producer, when, path, sample, waiver, price)
+    def production(self, key, seq, producer, when, path, sample=False, waiver=None):
+        return ProductionOrder(self, key, seq, producer, when, path, sample, waiver)
 
     def hold(self, when):
         """Sales holds, at the shipping warehouse, the whole cartons each batch not released yet still lacks, as many
@@ -963,7 +963,7 @@ class ProductionOrder:
     """A production order for one delivery batch, at one producer (kltn-docs 17 §4.3, §5.3): drawn up as a DRAFT and
     moved only along ordering.production_order_status_transition."""
 
-    def __init__(self, o, key, seq, producer, when, path, sample, waiver, price):
+    def __init__(self, o, key, seq, producer, when, path, sample, waiver):
         self.o, self.key = o, key
         self.id = uid("po:" + key)
         self.code = next_no("PRD", when.date(), "PRD-{d}-{n:04d}")
@@ -976,7 +976,7 @@ class ProductionOrder:
             receiving_warehouse_id=WID[o.p], need_by_date=self.batch["start"] - timedelta(days=3), status="DRAFT",
             sample_approval_required=sample, sample_required_by_default=True,
             sample_waiver_reason=None if sample else (waiver or "Mẫu in đã được khách duyệt ở đơn trước"),
-            unit_price=price, currency="VND", note=f"Đợt {seq} của {o.contract_number}", drawn_up_by=U["dieuphoi"])
+            note=f"Đợt {seq} của {o.contract_number}", drawn_up_by=U["dieuphoi"])
         self.lines = []
         for ln, n in zip(o.lines, self.batch["cartons"]):
             if not n:
@@ -1899,8 +1899,8 @@ o.confirm(T(11, 4, 10, 30))
 o.ship_from(T(11, 4, 11))
 old = o.production("S4:0", 1, "INCU", T(11, 5, 9), [])
 old.cancel(T(11, 5, 15), "Xưởng ngừng hợp tác, chuyển sang In Bao Bì Sài Gòn")
-o.production("S4:1", 1, "INSG", T(11, 6, 9), ["PENDING_APPROVAL"], price=320)
-o.production("S4:2", 2, "INSG", T(11, 8, 9), [], price=320)
+o.production("S4:1", 1, "INSG", T(11, 6, 9), ["PENDING_APPROVAL"])
+o.production("S4:2", 2, "INSG", T(11, 8, 9), [])
 
 section("12. orders before production: draft, contract sent, payment pending, cancelled")
 # ---- cancelled after signing, before printing: the deposit settled back and refunded (15 §4.6, BR-14)

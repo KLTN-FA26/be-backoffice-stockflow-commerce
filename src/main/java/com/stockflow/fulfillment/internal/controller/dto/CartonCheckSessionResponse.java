@@ -43,7 +43,9 @@ public record CartonCheckSessionResponse(UUID taskId, UUID orderId, String order
      * @param status       {@code TO_CHECK}, {@code CHECKED}, {@code LABELED} or {@code REMOVED}
      * @param labelVersion 0 before its first label; a reprint goes up one and voids the old label (08 BR-08)
      * @param dimWeightKg  volumetric weight, length x width x height / the configured divisor (08 BR-09)
-     * @param removalReason {@code DAMAGED} or {@code ORDER_CANCELLED} for a removed carton
+     * @param removalReason {@code DAMAGED}, {@code ORDER_CANCELLED}, {@code REMAINDER_CLOSED} or
+     *                      {@code SHIPMENT_CANCELLED} (good, out of a shipment cancelled before dispatch) for a removed
+     *                      carton
      */
     public record Carton(UUID packageId, int packageNo, String labelCode, String lpn, UUID pickLineId,
                          UUID orderLineId, String sku, String lotNumber, int quantity, String status,

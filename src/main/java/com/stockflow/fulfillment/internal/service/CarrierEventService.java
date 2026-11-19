@@ -61,7 +61,7 @@ import java.util.stream.Collectors;
  * carrier's word came.</p>
  */
 @Service
-class CarrierEventService implements CarrierEvents {
+class CarrierEventService implements CarrierEvents, FakeAhamoveCallbacks {
 
     /** A RECEIVED call younger than this is still being handled, not stranded. */
     static final Duration STILL_HANDLED = Duration.ofMinutes(5);
@@ -83,6 +83,7 @@ class CarrierEventService implements CarrierEvents {
     private final ObjectMapper json;
     private final TransactionOperations tx;
     private final Clock clock;
+    private final boolean fake;
 
     @SuppressWarnings("java:S107")
     CarrierEventService(CarrierEventJpaRepository events, CarrierJpaRepository carriers, DispatchLoadJpaRepository loads,
@@ -102,6 +103,7 @@ class CarrierEventService implements CarrierEvents {
         this.json = json;
         this.tx = tx;
         this.clock = clock;
+        this.fake = ahamove.fake();
     }
 
     // ------------------------------------------------------------------ receiving
@@ -119,7 +121,27 @@ class CarrierEventService implements CarrierEvents {
             log.warn("Carrier webhook for unknown carrier '{}' refused ({} bytes)", kept, body == null ? 0 : body.length);
             return new Receipt(null, CarrierEventResult.INVALID_SIGNATURE.name(), false, false);
         }
-        String refusal = refusal(carrier, header, remoteAddress, body);
+        return handle(carrier, kept, now, refusal(carrier, header, remoteAddress, body), body);
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public Receipt receiveFromFake(String carrierCode, byte[] body) {
+        if (!fake) {
+            throw new IllegalStateException("receiveFromFake is for stockflow.fulfillment.ahamove.mode=fake only");
+        }
+        Instant now = clock.instant();
+        CarrierJpaEntity carrier = tx.execute(s -> carriers.findByCode(carrierCode).orElse(null));
+        if (carrier == null || !CarrierConnectionType.API_BOOKING.name().equals(carrier.getConnectionType())) {
+            return new Receipt(null, CarrierEventResult.INVALID_SIGNATURE.name(), false, false);
+        }
+        String refusal = carrier.isWebhookEnabled() ? null
+                : "Carrier %s does not take webhooks now".formatted(carrier.getCode());
+        return handle(carrier, carrier.getCode(), now, refusal, body);
+    }
+
+    /** Everything after the credential has been judged: keep the call, then match and apply it. */
+    private Receipt handle(CarrierJpaEntity carrier, String kept, Instant now, String refusal, byte[] body) {
         UUID eventId = Identifiers.newId();
         // A refused call is kept as its size, digest and first characters: enough to recognise, too little to fill the
         // log with what anyone can send.

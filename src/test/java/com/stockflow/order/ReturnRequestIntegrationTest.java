@@ -685,6 +685,14 @@ class ReturnRequestIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT received_quantity FROM ordering.return_request_line WHERE "
                 + "return_request_id = ?", Integer.class, request.id())).isEqualTo(50);
         assertThat(statusOf(d.orderId())).isEqualTo(OrderStatus.RETURN_REQUESTED);
+        // Review defect: withdrawn now, Monday's 50 would sit in quarantine unrefunded and the order go back to DELIVERED.
+        assertThat(code(catchThrowable(() -> returns.cancel(request.id(), null, "the customer gave up", sales.userId()))))
+                .as("not withdrawn once a parcel is in").isEqualTo(ErrorCode.RETURN_GOODS_PARTLY_RECEIVED);
+        assertThat(catchThrowable(() -> jdbc.update("UPDATE ordering.return_request SET status = 'CANCELLED' WHERE id = ?",
+                request.id()))).as("nor by hand in the database")
+                .hasMessageContaining("it is not withdrawn - mark its goods complete");
+        assertThat(returnStatus(request.id())).isEqualTo(ReturnStatus.AWAITING_RETURN);
+        assertThat(statusOf(d.orderId())).isEqualTo(OrderStatus.RETURN_REQUESTED);
 
         var thursday = asHcmClerk(() -> returnReceipts.create(new ReturnReceiptService.Create(null, request.id(),
                 QUARANTINE, null), clerk));

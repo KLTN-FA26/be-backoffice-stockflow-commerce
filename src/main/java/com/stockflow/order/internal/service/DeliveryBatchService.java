@@ -221,7 +221,8 @@ public class DeliveryBatchService {
         DeliveryBatch previous = null;
         for (DeliveryBatch batch : sorted(contract)) {
             if (!released.contains(batch.id())) {
-                if (previous != null && shippedUnits(order, previous.id(), false) < unitsOf(previous, lines)) {
+                // RTM-RETURNED: a shipment of the previous batch that came back counts - its units were closed.
+                if (previous != null && handedOverUnits(order, previous.id()) < unitsOf(previous, lines)) {
                     throw new BusinessException(ErrorCode.DELIVERY_BATCH_NOT_NEXT, ("Delivery batch %d of order %s is "
                             + "released once batch %d is handed over").formatted(batch.seq(), order.orderNumber(),
                             previous.seq()));
@@ -502,6 +503,12 @@ public class DeliveryBatchService {
     }
 
     /** Units of the batch's shipments: handed over (not returned), or delivered only. */
+    /** The units of the batch's shipments, those that came back included (their units are closed, RTM-RETURNED). */
+    private static int handedOverUnits(Order order, UUID batchId) {
+        return order.shipments().stream().filter(s -> batchId.equals(s.deliveryBatchId()))
+                .mapToInt(s -> s.quantities().values().stream().mapToInt(Integer::intValue).sum()).sum();
+    }
+
     private static int shippedUnits(Order order, UUID batchId, boolean deliveredOnly) {
         return order.shipments().stream().filter(s -> batchId.equals(s.deliveryBatchId()))
                 .filter(s -> deliveredOnly ? s.status() == OrderShipmentStatus.DELIVERED

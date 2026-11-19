@@ -64,6 +64,31 @@ class ShipmentTest {
     }
 
     @Test
+    @DisplayName("09B G12: the failure reason of a failed or returned shipment is corrected - not its status or timeline; "
+            + "OTHER needs a note; the same again changes nothing; a shipment with no failure has nothing to correct")
+    void failureReasonCorrected() {
+        Shipment shipment = ready();
+        shipment.handOver(LOAD, CARRIER, false, PACKER, NOW);
+        assertThat(((BusinessException) catchThrowable(() -> shipment.correctFailureReason(
+                DeliveryFailureReason.REFUSED, null, COORDINATOR))).errorCode())
+                .isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
+        shipment.carrierFailed(DeliveryFailureReason.OTHER, "hãng báo hoàn hàng", NOW);
+        shipment.carrierReturned(NOW);
+        shipment.pullRecorded();
+
+        assertThat(((BusinessException) catchThrowable(() -> shipment.correctFailureReason(
+                DeliveryFailureReason.OTHER, " ", COORDINATOR))).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> shipment.correctFailureReason(DeliveryFailureReason.REFUSED, null, null))
+                .isInstanceOf(NullPointerException.class);
+        assertThat(shipment.correctFailureReason(DeliveryFailureReason.REFUSED, null, COORDINATOR)).isTrue();
+        assertThat(shipment.correctFailureReason(DeliveryFailureReason.REFUSED, null, COORDINATOR)).isFalse();
+        assertThat(shipment.status()).isEqualTo(ShipmentStatus.RETURNED);
+        assertThat(shipment.failureReason()).isEqualTo(DeliveryFailureReason.REFUSED);
+        assertThat(shipment.failureNote()).isNull();
+        assertThat(shipment.pullRecorded()).isEmpty();
+    }
+
+    @Test
     @DisplayName("failed then returned; OTHER needs a note; an outcome needs who recorded it")
     void returnedAndRules() {
         Shipment shipment = ready();
@@ -160,5 +185,53 @@ class ShipmentTest {
         assertThat(((BusinessException) left).errorCode()).isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
         assertThatThrownBy(() -> ftl.splitOff(UUID.randomUUID(), "X", UUID.randomUUID(), 1, 0, null, PACKER, NOW))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    private static ErrorCode refusedWith(Runnable step) {
+        return ((BusinessException) catchThrowable(step::run)).errorCode();
+    }
+
+    @Test
+    @DisplayName("a delivery time a person gives is not in the future and not before the handover (09 §4.3 step 2)")
+    void deliveryTimeBounds() {
+        Instant now = NOW.plusSeconds(7200);
+        Shipment shipment = ready();
+        shipment.handOver(LOAD, CARRIER, false, PACKER, NOW);
+
+        assertThat(refusedWith(() -> shipment.recordDelivered(COORDINATOR, now.plusSeconds(1), now)))
+                .isEqualTo(ErrorCode.SHIPMENT_DELIVERY_TIME_IN_FUTURE);
+        assertThat(refusedWith(() -> shipment.recordDelivered(COORDINATOR, NOW.minusSeconds(1), now)))
+                .isEqualTo(ErrorCode.SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER);
+        assertThat(shipment.status()).isEqualTo(ShipmentStatus.HANDED_OVER);
+        assertThat(shipment.recordDelivered(COORDINATOR, NOW, now)).isTrue();
+        assertThat(shipment.snapshot().outcomeAt()).isEqualTo(NOW);
+    }
+
+    @Test
+    @DisplayName("a retry that delivers is dated after the failure it follows, not before it")
+    void aRetryComesAfterTheFailure() {
+        Instant now = NOW.plusSeconds(7200);
+        Shipment shipment = ready();
+        shipment.handOver(LOAD, CARRIER, false, PACKER, NOW);
+        shipment.recordFailed(DeliveryFailureReason.CUSTOMER_ABSENT, null, COORDINATOR, NOW.plusSeconds(3600));
+
+        assertThat(refusedWith(() -> shipment.recordDelivered(COORDINATOR, NOW.plusSeconds(3599), now)))
+                .isEqualTo(ErrorCode.SHIPMENT_DELIVERY_TIME_BEFORE_FAILURE);
+        assertThat(shipment.status()).isEqualTo(ShipmentStatus.DELIVERY_FAILED);
+        assertThat(shipment.recordDelivered(COORDINATOR, NOW.plusSeconds(3600), now)).isTrue();
+    }
+
+    @Test
+    @DisplayName("a correction to delivered may predate the failure it undoes but not the handover")
+    void aCorrectionIsBoundedByTheHandoverOnly() {
+        Instant now = NOW.plusSeconds(7200);
+        Shipment shipment = ready();
+        shipment.handOver(LOAD, CARRIER, false, PACKER, NOW);
+        shipment.recordFailed(DeliveryFailureReason.CUSTOMER_ABSENT, null, COORDINATOR, NOW.plusSeconds(3600));
+
+        assertThat(refusedWith(() -> shipment.correctOutcome(ShipmentStatus.DELIVERED, null, null, COORDINATOR,
+                NOW.minusSeconds(1), now))).isEqualTo(ErrorCode.SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER);
+        assertThat(shipment.correctOutcome(ShipmentStatus.DELIVERED, null, null, COORDINATOR,
+                NOW.plusSeconds(60), now)).isTrue();
     }
 }

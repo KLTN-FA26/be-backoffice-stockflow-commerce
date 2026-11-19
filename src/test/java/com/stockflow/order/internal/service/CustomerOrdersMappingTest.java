@@ -29,8 +29,8 @@ class CustomerOrdersMappingTest {
     private static final UUID DESIGN = UUID.randomUUID();
 
     private static OrderSummary.LineSummary line(UUID id, int quantity, UUID design) {
-        return new OrderSummary.LineSummary(id, "SOFA-3S-GREY", quantity, Money.vnd(1000), Money.vnd(1000L * quantity),
-                List.of(), design, design == null ? null : "a".repeat(64));
+        return new OrderSummary.LineSummary(id, "LY-GIAY-DEMO-12OZ-XANH", quantity, Money.vnd(1000),
+                Money.vnd(1000L * quantity), List.of(), design, design == null ? null : "a".repeat(64));
     }
 
     private static CustomerOrders.Production production(OrderSummary.LineSummary line, OrderStatus status) {
@@ -91,7 +91,11 @@ class CustomerOrdersMappingTest {
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.PARTIALLY_FULFILLED)).isEqualTo(StatusGroup.PREPARING);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.PACKED)).isEqualTo(StatusGroup.PREPARING);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.DELIVERY_FAILED)).isEqualTo(StatusGroup.SHIPPING);
-        assertThat(CustomerOrdersService.statusGroup(OrderStatus.RETURN_REQUESTED)).isEqualTo(StatusGroup.RETURNED);
+        assertThat(CustomerOrdersService.statusGroup(OrderStatus.RETURN_REQUESTED))
+                .as("a return being decided is its own group: nothing came back yet")
+                .isEqualTo(StatusGroup.RETURN_REQUESTED);
+        assertThat(CustomerOrdersService.deliveryState(OrderStatus.RETURN_REQUESTED))
+                .as("the goods are still with the customer").isEqualTo(DeliveryState.DELIVERED);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.REFUNDED)).isEqualTo(StatusGroup.RETURNED);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.PARTIALLY_REFUNDED)).isEqualTo(StatusGroup.RETURNED);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.CLOSED)).isEqualTo(StatusGroup.DELIVERED);

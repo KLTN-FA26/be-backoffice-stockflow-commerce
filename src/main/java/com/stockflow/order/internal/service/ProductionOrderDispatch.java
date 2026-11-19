@@ -1,6 +1,7 @@
 package com.stockflow.order.internal.service;
 
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.config.SellerProperties;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -18,12 +19,12 @@ import com.stockflow.common.storage.PreparedFiles;
 import com.stockflow.contracts.ProductionOrderSampleApproved;
 import com.stockflow.contracts.ProductionOrderSent;
 import com.stockflow.contracts.ProductionOrderStopped;
-import com.stockflow.customer.api.CustomerService;
-import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.design.api.DesignArtifactRole;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.design.api.FulfillmentArtifact;
+import com.stockflow.design.api.FulfillmentAsset;
 import com.stockflow.identity.api.IdentityService;
+import com.stockflow.identity.api.StaffUser;
 import com.stockflow.inventory.api.PackagingRequest;
 import com.stockflow.inventory.api.PackagingSpec;
 import com.stockflow.inventory.api.PackagingSpecResolver;
@@ -32,9 +33,6 @@ import com.stockflow.notification.api.DeliveryAttemptSummary;
 import com.stockflow.notification.api.NotificationService;
 import com.stockflow.notification.api.ProductionOrderMail;
 import com.stockflow.notification.api.ProductionOrderResends;
-import com.stockflow.order.internal.domain.DeliveryBatch;
-import com.stockflow.order.internal.domain.OrderId;
-import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.Producer;
 import com.stockflow.order.internal.domain.ProducerRepository;
 import com.stockflow.order.internal.domain.ProductionOrder;
@@ -85,9 +83,10 @@ import java.util.UUID;
  *       transaction, once the production order is SENT, the slip is recorded and {@link ProductionOrderSent} published
  *       ({@link #sent}). The approval re-checks the version it read, so the slip is of the production order as
  *       approved; when the transaction fails, the stored file goes with it.</li>
- *   <li><b>The producer is told</b> by notification, through the producer's channel: e-mailed with links to the slip
- *       and the print files, or nothing for a producer the coordinator hands the slip. What the message says is read
- *       when it is written ({@link #mail}, behind {@code notification.api.ProductionOrderDirectory}).</li>
+ *   <li><b>The producer is told</b> by notification, through the producer's channel: e-mailed with links to the slip,
+ *       the print files and the customer's original images, or nothing for a producer the coordinator hands the slip.
+ *       What the message says is read when it is written ({@link #mail}, behind
+ *       {@code notification.api.ProductionOrderDirectory}).</li>
  *   <li><b>"Sample approved, print the batch"</b> ({@link #sampleApproved}, called by 4A-4) and <b>"stop"</b>
  *       ({@link #stopped}: a sent production order cancelled or closed) go the same way.</li>
  *   <li><b>The links</b> work for {@code stockflow.order.production-order.file-links-valid-for} and are checked again on
@@ -137,9 +136,8 @@ public class ProductionOrderDispatch {
     private final ProductionOrderRepository productionOrders;
     private final ProductionOrderSlipRepository slips;
     private final ProducerRepository producers;
-    private final OrderRepository orders;
     private final SalesContractRepository contracts;
-    private final CustomerService customers;
+    private final SellerProperties seller;
     private final IdentityService identity;
     private final WarehouseService warehouses;
     private final CustomerSkus customerSkus;
@@ -158,8 +156,8 @@ public class ProductionOrderDispatch {
     private final TransactionTemplate readOnly;
 
     ProductionOrderDispatch(ProductionOrderRepository productionOrders, ProductionOrderSlipRepository slips,
-                            ProducerRepository producers, OrderRepository orders, SalesContractRepository contracts,
-                            CustomerService customers, IdentityService identity, WarehouseService warehouses,
+                            ProducerRepository producers, SalesContractRepository contracts,
+                            SellerProperties seller, IdentityService identity, WarehouseService warehouses,
                             CustomerSkus customerSkus, PackagingSpecResolver packaging, DesignService designs,
                             NotificationService notifications, ProductionOrderResends resends,
                             ProductionOrderSlipDocument document,
@@ -171,9 +169,8 @@ public class ProductionOrderDispatch {
         this.productionOrders = productionOrders;
         this.slips = slips;
         this.producers = producers;
-        this.orders = orders;
         this.contracts = contracts;
-        this.customers = customers;
+        this.seller = seller;
         this.identity = identity;
         this.warehouses = warehouses;
         this.customerSkus = customerSkus;
@@ -205,18 +202,24 @@ public class ProductionOrderDispatch {
         return FILES + productionOrderId + "/print-files/" + designSnapshotId;
     }
 
+    /** The route serving one of the customer's original images of one of a production order's designs. */
+    public static String originalPath(UUID productionOrderId, UUID designSnapshotId, UUID assetId) {
+        return printFilePath(productionOrderId, designSnapshotId) + "/originals/" + assetId;
+    }
+
     // ---- sending ----------------------------------------------------------------------------------------------------
 
     /**
-     * Draws the slip of {@code production} as {@code approver} approves it at {@code at}, and stores it. Not
-     * transactional: called before the approval's transaction, with no lock held.
+     * Draws the slip of {@code production} as it is approved at {@code at}, and stores it. Not transactional: called
+     * before the approval's transaction, with no lock held. The slip names who drew the order up, for questions, not
+     * who approved it: the approval is recorded in the system, and the slip needs no signature.
      *
      * @return the stored slip; close it when the approval is done - it deletes the file unless the approval adopted it
      */
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
-    public PreparedSlip prepareSlip(ProductionOrder production, UUID approver, Instant at) {
+    public PreparedSlip prepareSlip(ProductionOrder production, Instant at) {
         // Read in one short read-only transaction - the aggregates are mapped inside it - then drawn and stored outside.
-        Slip facts = readOnly.execute(status -> slipFacts(production, approver, at));
+        Slip facts = readOnly.execute(status -> slipFacts(production, at));
         byte[] pdf = document.render(facts.facts());
         PreparedFiles stored = files.prepare(FileCategory.DOCUMENT, new FileUpload(
                 ProductionOrderSlip.fileName(production.code()), "application/pdf", pdf.length,
@@ -229,18 +232,20 @@ public class ProductionOrderDispatch {
     private record Slip(ProductionOrderSlipDocument.Facts facts, BigDecimal volumeM3) {
     }
 
-    private Slip slipFacts(ProductionOrder production, UUID approver, Instant at) {
+    private Slip slipFacts(ProductionOrder production, Instant at) {
         Map<String, PackagingSpec.CartonSpec> sizes = cartonSizes(production);
         Producer producer = producers.findById(production.producerId()).orElseThrow(() -> new BusinessException(
                 ErrorCode.PRODUCER_NOT_FOUND, "No producer " + production.producerId()));
         Optional<WarehouseView> warehouse = warehouses.findWarehouse(production.receivingWarehouseId());
-        String orderNumber = orders.findById(new OrderId(production.salesOrderId()))
-                .map(order -> order.orderNumber().toString()).orElse("-");
-        DeliveryBatch batch = contracts.findLiveByOrderId(production.salesOrderId()).map(SalesContract::schedule)
-                .flatMap(schedule -> schedule.stream().filter(b -> b.id().equals(production.deliveryBatchId()))
-                        .findFirst())
-                .orElseThrow(() -> new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED,
-                        "Production order %s: its delivery batch is gone".formatted(production.code())));
+        // The slip no longer prints the delivery batch (design 2026-11-19), but approving a production order whose
+        // batch is gone from the live contract is still refused, as it was when the slip printed its window.
+        boolean batchLive = contracts.findLiveByOrderId(production.salesOrderId()).map(SalesContract::schedule)
+                .map(schedule -> schedule.stream().anyMatch(b -> b.id().equals(production.deliveryBatchId())))
+                .orElse(false);
+        if (!batchLive) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED,
+                    "Production order %s: its delivery batch is gone".formatted(production.code()));
+        }
         List<ProductionOrderSlipDocument.SlipLine> lines = new ArrayList<>();
         Map<String, String> names = names(production);
         for (ProductionOrder.Line line : production.lines()) {
@@ -248,14 +253,13 @@ public class ProductionOrderDispatch {
                     line.unitsPerCarton(), line.totalUnits(), size(sizes.get(line.sku())), line.packingRequirements(),
                     line.designSnapshotId(), line.printFileChecksum()));
         }
-        return new Slip(new ProductionOrderSlipDocument.Facts(production.code(), at, producer.code(),
-                producer.name(), contact(producer), orderNumber,
-                customers.findById(production.customerId()).map(CustomerSummary::fullName).orElse(null), batch.seq(),
-                batch.windowStart(), batch.windowEnd(),
+        var coordinator = identity.user(production.drawnUpBy());
+        return new Slip(new ProductionOrderSlipDocument.Facts(production.code(), at, seller.name(), producer.code(),
+                producer.name(), contact(producer),
                 warehouse.map(WarehouseView::name).orElse(production.receivingWarehouseId().toString()),
                 warehouse.map(WarehouseView::address).orElse(null), production.needByDate(),
-                production.sampleApprovalRequired(), production.unitPrice(), production.currency(), production.note(),
-                person(production.drawnUpBy()), person(approver), lines), volume(production,
+                production.sampleApprovalRequired(), production.note(), person(coordinator), coordinator.email(),
+                lines), volume(production,
                 occupancy.cartonVolumesM3(production.lines().stream().map(ProductionOrder.Line::sku).toList())));
     }
 
@@ -377,7 +381,8 @@ public class ProductionOrderDispatch {
                     new ProductionOrderMail.Line(line.sku(), names.get(line.sku()), line.cartons(),
                             line.unitsPerCarton(), line.totalUnits(), size(sizes.get(line.sku())),
                             line.packingRequirements(), new ProductionOrderMail.File(line.sku() + " print file",
-                            printFilePath(id, line.designSnapshotId())))).toList();
+                            printFilePath(id, line.designSnapshotId())), originals(id, line.designSnapshotId())))
+                    .toList();
             ProductionOrderMail.File slip = slips.find(id).map(found -> new ProductionOrderMail.File(
                     ProductionOrderSlip.fileName(production.code()), slipPath(id))).orElse(null);
             String stopReason = switch (production.status()) {
@@ -389,9 +394,14 @@ public class ProductionOrderDispatch {
                     producer.email(), production.drawnUpBy(), production.status().name(), production.needByDate(),
                     warehouse.map(WarehouseView::name).orElse(production.receivingWarehouseId().toString()),
                     warehouse.map(WarehouseView::address).orElse(null), production.sampleApprovalRequired(),
-                    production.unitPrice(), production.currency(), production.note(), stopReason, lines, slip,
-                    issuedAt.plus(linksValidFor));
+                    production.note(), stopReason, lines, slip, issuedAt.plus(linksValidFor));
         });
+    }
+
+    /** A link route for each original image the design places, named as the customer uploaded it. */
+    private List<ProductionOrderMail.File> originals(UUID id, UUID designSnapshotId) {
+        return designs.confirmedAssets(designSnapshotId).stream().map(asset -> new ProductionOrderMail.File(
+                asset.originalName(), originalPath(id, designSnapshotId, asset.assetId()))).toList();
     }
 
     /**
@@ -409,8 +419,29 @@ public class ProductionOrderDispatch {
             };
             return new ProductionOrderMail(id, production.code(), producer.name(), producer.channel().name(),
                     producer.email(), production.drawnUpBy(), production.status().name(), production.needByDate(),
-                    null, null, production.sampleApprovalRequired(), null, null, null, stopReason, List.of(), null,
-                    null);
+                    null, null, production.sampleApprovalRequired(), null, stopReason, List.of(), null, null);
+        });
+    }
+
+    /**
+     * The slip as sent, to attach to the message that sends it (for {@code notification.api.ProductionOrderDirectory}):
+     * the stored bytes, hashed and compared with the digest recorded at approval, as a link checks them on every use.
+     * Empty when there is no slip or the stored one changed - the producer then gets the links, which refuse it too.
+     */
+    @Transactional(readOnly = true)
+    public Optional<byte[]> slipPdf(UUID id) {
+        return slips.find(id).flatMap(slip -> {
+            byte[] pdf;
+            try (InputStream in = storage.download(slip.storageKey())) {
+                pdf = in.readAllBytes();
+            } catch (IOException unreadable) {
+                throw new UncheckedIOException("Could not read the slip of production order " + id, unreadable);
+            }
+            if (!slip.sha256().equals(Checksums.sha256Hex(pdf))) {
+                log.error("Production order {}: the stored slip no longer matches what was sent; not attached", id);
+                return Optional.empty();
+            }
+            return Optional.of(pdf);
         });
     }
 
@@ -457,6 +488,38 @@ public class ProductionOrderDispatch {
             throw refused;
         }
         log.info("Production order {}: print file of design {} handed out by link", production.code(),
+                designSnapshotId);
+        return new DownloadLink(file.url(), file.expiresAt());
+    }
+
+    /**
+     * One of the customer's original images of one of the production order's designs, by a link its producer was sent
+     * (kltn-docs 12 §3, FE request 2026-11-18 BE-6): checked as {@link #openPrintFile} checks the print file - the
+     * signature, the production order still open, the design one of its lines', the image still the approved one and
+     * the bundle still adding up to the line's checksum; then a presigned URL of minutes.
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_LINK_INVALID}; {@code PRODUCTION_ORDER_LINK_EXPIRED};
+     *         {@code PRINT_FILE_MISMATCH}; {@code NOT_FOUND} when the design places no such image
+     */
+    @Transactional(readOnly = true)
+    public DownloadLink openOriginal(UUID id, UUID designSnapshotId, UUID assetId, long expires, String signature) {
+        ProductionOrder production = linked(originalPath(id, designSnapshotId, assetId), id, expires, signature);
+        ProductionOrder.Line line = production.lines().stream()
+                .filter(candidate -> candidate.designSnapshotId().equals(designSnapshotId)).findFirst()
+                .orElseThrow(() -> invalidLink("not a design of production order " + production.code()));
+        FulfillmentAsset file;
+        try {
+            file = designs.assetDownload(designSnapshotId, line.printFileChecksum(), assetId);
+        } catch (BusinessException refused) {
+            if (refused.errorCode() == ErrorCode.CONFLICT) {
+                log.error("Production order {}: the original images of design {} no longer match what was approved",
+                        production.code(), designSnapshotId);
+                throw new BusinessException(ErrorCode.PRINT_FILE_MISMATCH, ("Production order %s: the print files "
+                        + "no longer match what was approved").formatted(production.code()));
+            }
+            throw refused;
+        }
+        log.info("Production order {}: original image {} of design {} handed out by link", production.code(), assetId,
                 designSnapshotId);
         return new DownloadLink(file.url(), file.expiresAt());
     }
@@ -583,8 +646,7 @@ public class ProductionOrderDispatch {
     }
 
     /** A staff member's name as the slip prints it: an account named on a production order exists (its foreign key). */
-    private String person(UUID userId) {
-        var user = identity.user(userId);
+    private static String person(StaffUser user) {
         return user.fullName() == null || user.fullName().isBlank() ? user.username() : user.fullName();
     }
 

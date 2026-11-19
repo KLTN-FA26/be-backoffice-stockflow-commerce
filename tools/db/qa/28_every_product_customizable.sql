@@ -35,10 +35,14 @@ END $$;
 
 SELECT pg_temp.expect_true('PK1 no product is STANDARD, the demo ones included',
     NOT EXISTS (SELECT 1 FROM product.products WHERE kind <> 'CUSTOMIZABLE'));
-SELECT pg_temp.expect_true('PK2 the demo sofa was converted by the migration (its version moved)',
-    (SELECT kind = 'CUSTOMIZABLE' AND version >= 1 FROM product.products WHERE code = 'SOFA-3S'));
+-- PK2 checked that the migration converted the demo furniture (its version moved); the furniture left the demo with
+-- V20261206000100, and no demo product was ever STANDARD since. What is left to see is that the two demo products, the
+-- cup and the box, are there and CUSTOMIZABLE.
+SELECT pg_temp.expect_true('PK2 the demo cup and box are CUSTOMIZABLE',
+    (SELECT count(*) = 2 AND bool_and(kind = 'CUSTOMIZABLE') FROM product.products
+      WHERE code IN ('LY-GIAY-DEMO', 'HOP-GIAY-DEMO')));
 SELECT pg_temp.expect_fail('PK3 a product changed to STANDARD', $q$
-    UPDATE product.products SET kind = 'STANDARD' WHERE code = 'SOFA-3S' $q$);
+    UPDATE product.products SET kind = 'STANDARD' WHERE code = 'HOP-GIAY-DEMO' $q$);
 SELECT pg_temp.expect_fail('PK4 a product inserted as STANDARD', $q$
     INSERT INTO product.products (id, code, name, slug, status, kind, version, created_at)
     VALUES (gen_random_uuid(), 'QA28STD', 'QA standard', 'qa28-std', 'DRAFT', 'STANDARD', 0, NOW()) $q$);

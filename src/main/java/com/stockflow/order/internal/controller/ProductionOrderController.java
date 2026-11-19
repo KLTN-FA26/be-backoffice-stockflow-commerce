@@ -19,7 +19,6 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -35,7 +34,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
@@ -84,7 +82,6 @@ class ProductionOrderController {
     record EditRequest(@NotNull(message = "version is required") Long version,
                        @NotNull(message = "producerId is required") UUID producerId,
                        @NotNull(message = "needByDate is required") LocalDate needByDate,
-                       @DecimalMin(value = "0", message = "unitPrice is not negative") BigDecimal unitPrice,
                        @Size(max = 500, message = "note is at most 500 characters") String note,
                        @Schema(description = "BR-24: turned off while on by default, it needs sampleWaiverReason")
                        boolean sampleApprovalRequired,
@@ -142,8 +139,8 @@ class ProductionOrderController {
     record ProductionOrderResponse(UUID id, String code, UUID salesOrderId, UUID deliveryBatchId, UUID customerId,
                                    UUID producerId, UUID receivingWarehouseId, LocalDate needByDate,
                                    ProductionOrderStatus status, boolean sampleApprovalRequired,
-                                   boolean sampleRequiredByDefault, String sampleWaiverReason, BigDecimal unitPrice,
-                                   String currency, String note, UUID drawnUpBy, Instant submittedAt, UUID approvedBy,
+                                   boolean sampleRequiredByDefault, String sampleWaiverReason, String note,
+                                   UUID drawnUpBy, Instant submittedAt, UUID approvedBy,
                                    Instant approvedAt, String returnedReason, Instant sentAt,
                                    Instant productionStartedAt,
                                    @Schema(description = "4A-4: the producer's expected completion day, from ACCEPTED on")
@@ -163,8 +160,8 @@ class ProductionOrderController {
                                           WarehouseCapacityService.ProductionOrderCapacity capacity) {
             return new ProductionOrderResponse(p.id(), p.code(), p.salesOrderId(), p.deliveryBatchId(),
                     p.customerId(), p.producerId(), p.receivingWarehouseId(), p.needByDate(), p.status(),
-                    p.sampleApprovalRequired(), p.sampleRequiredByDefault(), p.sampleWaiverReason(), p.unitPrice(),
-                    p.currency(), p.note(), p.drawnUpBy(), p.submittedAt(), p.approvedBy(), p.approvedAt(),
+                    p.sampleApprovalRequired(), p.sampleRequiredByDefault(), p.sampleWaiverReason(),
+                    p.note(), p.drawnUpBy(), p.submittedAt(), p.approvedBy(), p.approvedAt(),
                     p.returnedReason(), p.sentAt(), p.productionStartedAt(), p.expectedCompletionDate(),
                     p.cancelledAt(), p.cancellationReason(), p.closedAt(), p.closingReason(), true, capacity,
                     p.lines().stream().map(l -> new LineResponse(l.id(), l.orderLineId(), l.sku(), l.cartons(),
@@ -233,7 +230,7 @@ class ProductionOrderController {
     }
 
     @PutMapping("/{id}")
-    @Operation(summary = "Edit a draft production order (producer, need-by date, price, note, sample flag, lines)")
+    @Operation(summary = "Edit a draft production order (producer, need-by date, note, sample flag, lines)")
     @RequiresPermission(resource = OrderResources.PRODUCTION_ORDERS, action = Action.UPDATE, scope = DataScope.ALL)
     public ApiResponse<ProductionOrderResponse> edit(@PathVariable UUID id, @Valid @RequestBody EditRequest request,
                                                      @AuthenticatedUser CurrentUser user) {
@@ -244,7 +241,7 @@ class ProductionOrderController {
                     new ProductionOrder.LineEdit(line.cartons(), line.packingRequirements())));
         }
         return ApiResponse.ok(respond(productionOrders.edit(id, request.version(),
-                new ProductionOrder.Draft(request.producerId(), request.needByDate(), request.unitPrice(),
+                new ProductionOrder.Draft(request.producerId(), request.needByDate(),
                         request.note(), request.sampleApprovalRequired(), request.sampleWaiverReason(), lines)), null));
     }
 

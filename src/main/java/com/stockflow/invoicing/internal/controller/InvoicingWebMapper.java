@@ -18,6 +18,7 @@ import com.stockflow.invoicing.internal.domain.InvoiceParty;
 import com.stockflow.invoicing.internal.domain.ProviderAccounts;
 import com.stockflow.invoicing.internal.domain.ProviderCallLog;
 import com.stockflow.invoicing.internal.domain.TaxRateTotal;
+import com.stockflow.invoicing.internal.service.EInvoiceQueryService;
 import com.stockflow.invoicing.internal.service.EInvoiceSettingsService;
 import com.stockflow.invoicing.internal.service.InvoiceXmlSignature;
 
@@ -66,7 +67,7 @@ final class InvoicingWebMapper {
                 s.correctionBasis() != null && s.correctionBasis().requiresAgreement(),
                 s.agreementFileKey() == null ? null
                         : new EInvoiceResponse.Agreement(s.agreementNumber(), s.agreementDate()),
-                s.returnRequestId(), s.listedInvoiceIds(), earlierPending);
+                s.returnRequestId(), s.listedInvoiceIds(), earlierPending, s.deliveryFailedAt());
     }
 
     static EInvoiceListItemResponse toResponse(EInvoiceQueries.Listing row, Instant now) {
@@ -80,10 +81,18 @@ final class InvoicingWebMapper {
     }
 
     /** The row as its buyer sees it: nothing of the seller's work on the invoice. */
-    static CustomerEInvoiceResponse toCustomerResponse(EInvoiceQueries.Listing row) {
+    static CustomerEInvoiceResponse toCustomerResponse(EInvoiceQueryService.IssuedInvoice issued) {
+        EInvoiceQueries.Listing row = issued.invoice();
+        EInvoiceQueries.Replacements links = issued.replacements() == null ? EInvoiceQueries.Replacements.NONE
+                : issued.replacements();
         return new CustomerEInvoiceResponse(row.id(), row.type().name(), row.status().name(), row.adjusted(),
                 row.orderId(), row.orderNumber(), row.shipmentCode(), row.issueDate(), row.templateCode(),
-                row.symbol(), row.invoiceNumber(), row.subtotal(), row.taxTotal(), row.grandTotal(), row.issuedAt());
+                row.symbol(), row.invoiceNumber(), row.subtotal(), row.taxTotal(), row.grandTotal(), row.issuedAt(),
+                reference(links.replaces()), reference(links.replacedBy()));
+    }
+
+    private static CustomerEInvoiceResponse.Reference reference(EInvoiceQueries.Reference reference) {
+        return reference == null ? null : new CustomerEInvoiceResponse.Reference(reference.id(), reference.code());
     }
 
     static EInvoiceRegisterEntryResponse toResponse(EInvoiceQueries.RegisterEntry entry) {

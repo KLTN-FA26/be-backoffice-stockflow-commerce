@@ -338,8 +338,8 @@ class SkuReservationAllocationIntegrationTest {
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO inventory.stock_reservation (id, stock_item_id, sku, order_id, root_request_id, request_id,
                                                          quantity, reserved_at, status)
-                VALUES (?, ?, 'SOFA-3S-GREY', ?, ?, ?, 1, NOW(), 'HELD')""", Identifiers.newId(),
-                rows.get("HCM-A01-1-A").get(0), order, UUID.randomUUID(), UUID.randomUUID())))
+                VALUES (?, ?, ?, ?, ?, ?, 1, NOW(), 'HELD')""", Identifiers.newId(),
+                rows.get("HCM-A01-1-A").get(0), DemoData.SKU_QUARANTINED, order, UUID.randomUUID(), UUID.randomUUID())))
                 .as("a hold on a stock row holds that row's SKU").isInstanceOf(DataIntegrityViolationException.class);
     }
 

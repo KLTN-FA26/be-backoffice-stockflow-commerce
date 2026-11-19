@@ -26,7 +26,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * kltn-docs 06 BR-04 (decided 2026-11-05): a bin, a shelf, an area or a warehouse goes {@code INACTIVE} only once no
- * carton stands there; {@code BLOCKED} stays allowed with cartons in place.
+ * carton stands there; {@code BLOCKED} and {@code MAINTENANCE} stay allowed with cartons in place. Every kind of storage
+ * area counts, not only quarantine: a carton waiting in staging or overflow is still stock (SCRUM-668).
  *
  * <p>Demo {@code HCM}: 25 cartons in bin {@code HCM-A01-2-B} (level 2 of shelf A01, level 1 empty), 30 in area
  * {@code QC01}, 75 in all; bin {@code HCM-A01-1-A} is empty. Every test rolls back.</p>
@@ -90,6 +91,34 @@ class PlaceDeactivationIntegrationTest {
         assertThat(binStatus(FULL_BIN, 2, LocationStatus.BLOCKED).status()).isEqualTo(LocationStatus.BLOCKED);
         assertThat(refusal(() -> binStatus(FULL_BIN, 2, LocationStatus.INACTIVE)).errorCode())
                 .isEqualTo(ErrorCode.LOCATION_HOLDS_CARTONS);
+    }
+
+    @Test
+    @DisplayName("MAINTENANCE is allowed on a bin with cartons, and it still cannot go INACTIVE from there")
+    void maintenanceWithCartons() {
+        assertThat(binStatus(FULL_BIN, 2, LocationStatus.MAINTENANCE).status()).isEqualTo(LocationStatus.MAINTENANCE);
+        assertThat(locationStatus(FULL_BIN)).isEqualTo("MAINTENANCE");
+
+        assertThat(refusal(() -> binStatus(FULL_BIN, 2, LocationStatus.INACTIVE)).errorCode())
+                .isEqualTo(ErrorCode.LOCATION_HOLDS_CARTONS);
+        assertThat(locationStatus(FULL_BIN)).isEqualTo("MAINTENANCE");
+    }
+
+    @Test
+    @DisplayName("a carton in a staging or an overflow area keeps that area on the layout")
+    void stagingAndOverflowAreas() {
+        String sku = fixtureSku();
+        for (String area : List.of("STG01", "OVF01")) {
+            String code = "HCM-" + area;
+            String lpn = CartonRows.stock(jdbc, sku, code, 1, 10, "LOT-1", Instant.now()).getFirst().lpn();
+
+            BusinessException refused = refusal(() -> areas.changeAreaStatus(DemoData.area(area),
+                    LocationStatus.INACTIVE));
+
+            assertThat(refused.errorCode()).isEqualTo(ErrorCode.LOCATION_HOLDS_CARTONS);
+            assertThat(refused.getMessage()).contains(lpn);
+            assertThat(locationStatus(code)).isEqualTo("ACTIVE");
+        }
     }
 
     @Test

@@ -17,6 +17,7 @@ import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.product.internal.service.ProductVariantService;
 import com.stockflow.product.internal.service.SkuUnitService;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
@@ -251,7 +252,7 @@ class InventoryItemMasterDataIntegrationTest {
         // BR-11: only a unit of the variant's own inventory item.
         UUID otherItemsBase = jdbc.queryForObject("""
                 SELECT c.id FROM inventory.uom_conversions c JOIN inventory.inventory_items i ON i.id = c.inventory_item_id
-                WHERE i.sku = 'SOFA-3S-GREY' AND c.is_base""", UUID.class);
+                WHERE i.sku = ? AND c.is_base""", UUID.class, DemoData.SKU_STOCKED);
         assertCode(() -> units.addSalesUnit(productId, variantId, otherItemsBase), ErrorCode.UOM_CONVERSION_NOT_FOUND);
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO product.variant_sales_units (id, variant_id, uom_conversion_id) VALUES (?, ?, ?)""",

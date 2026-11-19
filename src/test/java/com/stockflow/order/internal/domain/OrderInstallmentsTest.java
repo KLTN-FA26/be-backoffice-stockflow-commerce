@@ -56,7 +56,7 @@ class OrderInstallmentsTest {
     @DisplayName("an order whose contract is not signed yet is never confirmed by installments")
     void unsignedOrderIsNotConfirmedByInstallments() {
         Order order = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 9), 8), UUID.randomUUID(), UUID.randomUUID(),
-                List.of(Order.line(new Sku("SOFA-3S-GREY"), 1, Money.vnd(1_000_000), null)), NOW);
+                List.of(Order.line(new Sku("LY-GIAY-DEMO-12OZ-XANH"), 1, Money.vnd(1_000_000), null)), NOW);
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
         order.sendContract(SALES, NOW);
         assertThat(order.confirmByInstallments(NOW)).isFalse();

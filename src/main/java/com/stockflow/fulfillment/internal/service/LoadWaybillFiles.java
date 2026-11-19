@@ -37,8 +37,8 @@ import java.util.UUID;
  * or a photo of a paper waybill.
  *
  * <p>Checked, scanned and stored as every upload is - through the backend or straight to the object store - with no
- * transaction held while that happens; a short transaction then records it, if the load is still live or left. A
- * cancelled load takes no new file: its booking is history.</p>
+ * transaction held while that happens; a short transaction then records it, if the load is booked, loading or left. A
+ * load with no carrier booked yet, or cancelled, takes no file ({@code LOAD_NOT_BOOKED}).</p>
  */
 @Service
 @Transactional
@@ -138,11 +138,16 @@ public class LoadWaybillFiles {
         return load;
     }
 
+    /**
+     * A waybill file is the carrier's document of a booked vehicle (09 §4.4: the waybill is filled in only for a load
+     * booked with a carrier and not cancelled; RTM-WAYBILLFILE, 18/11 "chặn tới khi đã đặt xe"): refused while the load
+     * is PLANNED - no carrier yet - and once it is CANCELLED.
+     */
     private void requireAttachable(UUID loadId) {
         DispatchLoadJpaEntity load = requireLoad(loadId);
-        if (load.getStatus() == LoadStatus.CANCELLED) {
-            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION,
-                    "Load %s is cancelled: its waybill files are history".formatted(load.getCode()));
+        if (load.getStatus() == LoadStatus.PLANNED || load.getStatus() == LoadStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.LOAD_NOT_BOOKED, ("Load %s is %s: a waybill file is attached once a "
+                    + "carrier is booked for it").formatted(load.getCode(), load.getStatus()));
         }
     }
 

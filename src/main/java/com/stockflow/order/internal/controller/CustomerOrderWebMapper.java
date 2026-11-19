@@ -32,9 +32,12 @@ final class CustomerOrderWebMapper {
                                 : detail.cancellationRequest().reasonCode().name(),
                         detail.cancellationRequest().note(), detail.cancellationRequest().requestedAt(),
                         detail.cancellationRequest().decidedAt(), detail.cancellationRequest().decisionNote()),
-                detail.shipments().stream().map(s -> new CustomerOrderDetailResponse.Shipment(s.shipmentCode(),
+                detail.shipments().stream().map(s -> new CustomerOrderDetailResponse.Shipment(s.shipmentId(), s.shipmentCode(),
                         s.status().name(), s.packageCount(), s.carrierName(), s.handedOverAt(),
-                        s.outcomeAt(), s.failureReason() == null ? null : s.failureReason().name())).toList(),
+                        s.outcomeAt(), s.failureReason() == null ? null : s.failureReason().name(),
+                        s.lines().stream().map(line -> new CustomerOrderDetailResponse.ShipmentLine(
+                                line.orderLineId(), line.sku(), line.quantity(), line.returnableQuantity()))
+                                .toList())).toList(),
                 detail.charges().netTotal(), detail.charges().taxTotal(),
                 detail.charges().fees().stream().map(fee -> new CustomerOrderDetailResponse.Fee(fee.kind(), fee.sku(),
                         fee.amount(), fee.taxRate(), fee.taxAmount())).toList());
