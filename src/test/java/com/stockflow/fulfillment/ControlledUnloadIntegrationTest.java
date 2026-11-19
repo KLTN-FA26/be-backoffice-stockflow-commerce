@@ -396,7 +396,7 @@ class ControlledUnloadIntegrationTest {
             + "by the manager without a scan (overridden, who, when, note); then the replacement is loaded and both "
             + "sign - the plan is DISPATCHED. Never a reopening")
     void oneVehicleBackToPlannedWithTheSameLayout() throws Exception {
-        CartonStationSupport.giveSofaCartonsAWeight(tx, jdbc, "1200");   // a 2.5 t truck takes two of them (4300 mm = two cartons end to end, 2400 kg): four cartons, two trucks
+        CartonStationSupport.giveHeavyCartons(tx, jdbc, DemoData.SKU_STOCKED, new BigDecimal("1200"));   // a 2.5 t truck takes two of them (4300 mm = two cartons end to end, 2400 kg): four cartons, two trucks
         OrderSummary order = ftlOrder(4);
         UUID shipment = packed(order)[0];
         JsonNode plan = confirmed(List.of(shipment), truck2t5);
@@ -641,7 +641,7 @@ class ControlledUnloadIntegrationTest {
             + "parcels still to scan off; the shipment is no candidate and no new plan takes it (PACKAGE_UNLOAD_PENDING) "
             + "until every parcel is off, then it can be planned again; calling it off again changes nothing")
     void wholePlanCancelledAtOnce() throws Exception {
-        CartonStationSupport.giveSofaCartonsAWeight(tx, jdbc, "1200");   // a 2.5 t truck takes two of them (4300 mm = two cartons end to end, 2400 kg): four cartons, two trucks
+        CartonStationSupport.giveHeavyCartons(tx, jdbc, DemoData.SKU_STOCKED, new BigDecimal("1200"));   // a 2.5 t truck takes two of them (4300 mm = two cartons end to end, 2400 kg): four cartons, two trucks
         UUID shipment = packed(ftlOrder(4))[0];
         JsonNode plan = confirmed(List.of(shipment), truck2t5);
         String v1 = loadOf(plan, 1);

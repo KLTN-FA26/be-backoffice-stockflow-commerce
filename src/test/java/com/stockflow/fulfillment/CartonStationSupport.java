@@ -2,11 +2,13 @@ package com.stockflow.fulfillment;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.stockflow.support.DemoData;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
 
@@ -33,31 +35,32 @@ final class CartonStationSupport {
     private CartonStationSupport() { }
 
     /**
-     * The size and full weight the carton spec of the demo SKUs declares: a sofa carton as the repack tests measured
-     * its box (215 x 95 x 90 cm, 52.5 kg), a table carton a flat one.
+     * The size and full weight the carton spec of the replacement demo SKUs declares: the big carton the load tests were
+     * measured with (215 x 95 x 90 cm, 52.5 kg), on both stocked cup SKUs.
      */
     static void giveCartonsASize(TransactionTemplate tx, JdbcTemplate jdbc) {
         tx.executeWithoutResult(s -> {
-            size(jdbc, "SOFA-3S-GREY", "215", "95", "90", "52.5");
-            size(jdbc, "TABLE-OAK-160", "165", "95", "20", "38");
+            size(jdbc, DemoData.SKU_STOCKED, "215", "95", "90", "52.5");
+            size(jdbc, DemoData.SKU_QUARANTINED, "215", "95", "90", "52.5");
         });
     }
 
     /**
-     * A heavy sofa carton (say 1 200 kg): a 2.5 t truck (4 300 mm inside, a sofa carton is 2 150 mm long) carries two of
-     * them by weight and by length - not three - so a shipment of four cartons needs two trucks with two cartons each.
-     * (A sofa carton is too long for two to stand side by side in a 1.25 t truck, which carries one: four trucks.)
+     * Heavy cartons (say 1 200 kg): a 2.5 t truck (4 300 mm inside, a carton is 2 150 mm long once
+     * {@link #giveCartonsASize} has run) carries two of them by weight and by length - not three - so a shipment of four
+     * cartons needs two trucks with two cartons each. (A carton this long is too long for two to stand side by side in a
+     * 1.25 t truck, which carries one: four trucks.)
      */
-    static void giveSofaCartonsAWeight(TransactionTemplate tx, JdbcTemplate jdbc, String kg) {
+    static void giveHeavyCartons(TransactionTemplate tx, JdbcTemplate jdbc, String sku, BigDecimal kg) {
         tx.executeWithoutResult(s -> jdbc.update("""
-                UPDATE inventory.uom_conversions u SET weight_kg = ?::numeric
+                UPDATE inventory.uom_conversions u SET weight_kg = ?
                   FROM inventory.inventory_items i
-                 WHERE i.id = u.inventory_item_id AND i.sku = 'SOFA-3S-GREY' AND NOT u.is_base AND u.active""", kg));
+                 WHERE i.id = u.inventory_item_id AND i.sku = ? AND NOT u.is_base AND u.active""", kg, sku));
     }
 
     /**
-     * The carton spec of the SKU declares no size, for a test of unmeasured cartons (the demo data measures the sofa and
-     * table cartons since V20261128000100, but declares no weight on them).
+     * The carton spec of the SKU declares no size, for a test of unmeasured cartons (the demo data measures the cup
+     * cartons, V20261206000100).
      */
     static void clearCartonSize(TransactionTemplate tx, JdbcTemplate jdbc, String sku) {
         tx.executeWithoutResult(s -> jdbc.update("""
