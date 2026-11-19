@@ -131,6 +131,10 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/production-order-files/{id}/print-files/{designSnapshotId}",
                     "public: a producer's link to a print file of its production order; the signed link is the "
                             + "authorisation, the file's recorded digest checked before it is handed out (permitAll for GET, 4A-3)"),
+            Map.entry("GET /api/v1/production-order-files/{id}/print-files/{designSnapshotId}/originals/{assetId}",
+                    "public: a producer's link to a customer's original image of a design of its production order; the "
+                            + "signed link is the authorisation, the image's recorded digest checked before it is handed "
+                            + "out (permitAll for GET, FE request 2026-11-18 BE-6)"),
             Map.entry("GET /api/v1/catalog/categories",
                     "any signed-in user: the storefront category navigation, visible categories only (SCRUM-171)"),
             Map.entry("GET /api/v1/catalog/products", "any signed-in user: published storefront catalog, no private data"),
@@ -204,6 +208,8 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}", "fulfillment-load-plans:READ"),
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/layouts", "fulfillment-load-plans:READ"),
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/vehicles/{seq}/layout", "fulfillment-load-plans:READ"),
+            Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/vehicles/{seq}/loading-sheet.pdf",
+                    "fulfillment-load-plans:READ"),
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/reconciliation", "fulfillment-load-plans:READ"),
             Map.entry("POST /api/v1/fulfillment/load-plans", "fulfillment-load-plans:CREATE"),
             Map.entry("PUT /api/v1/fulfillment/load-plans/{loadPlanId}/inputs", "fulfillment-load-plans:UPDATE"),

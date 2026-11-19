@@ -132,7 +132,10 @@ class ProductionOrderMessages {
         text.add(t.getString("production-order.mail.sample.closing"));
     }
 
-    /** The slip (when {@code withSlip}) and each line's print file, as links that work until the stated time. */
+    /**
+     * The slip (when {@code withSlip}), each line's print file and the customer's original images, as links that work
+     * until the stated time.
+     */
     private void files(ResourceBundle t, ProductionOrderMail mail, boolean withSlip, List<String> text) {
         if (!links.available()) {
             text.add(t.getString("production-order.mail.links.unavailable"));
@@ -147,9 +150,36 @@ class ProductionOrderMessages {
                 text.add(t.getString("production-order.mail.printFile").formatted(line.sku(),
                         links.url(line.printFile().downloadPath(), until)));
             }
+            for (ProductionOrderMail.File original : line.originals()) {
+                text.add(t.getString("production-order.mail.original").formatted(line.sku(), printable(original.name()),
+                        links.url(original.downloadPath(), until)));
+            }
         }
         text.add(t.getString("production-order.mail.links.until").formatted(MOMENT.format(until)));
     }
+
+    /**
+     * A file name the customer chose, fit for one line of the producer's e-mail: line breaks and other control or
+     * separator characters become spaces and it is cut at {@value #NAME_LIMIT} characters. Every other value in the
+     * mail comes from staff; this one does not, and a name carrying line breaks could append text - a "corrected" link -
+     * that the producer would read as the company's own.
+     */
+    static String printable(String name) {
+        if (name == null) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder(Math.min(name.length(), NAME_LIMIT));
+        name.codePoints().forEach(c -> {
+            int type = Character.getType(c);
+            boolean breaks = Character.isISOControl(c) || type == Character.LINE_SEPARATOR
+                    || type == Character.PARAGRAPH_SEPARATOR || type == Character.FORMAT;
+            out.appendCodePoint(breaks ? ' ' : c);
+        });
+        String single = out.toString().replaceAll(" {2,}", " ").strip();
+        return single.length() <= NAME_LIMIT ? single : single.substring(0, NAME_LIMIT) + "…";
+    }
+
+    private static final int NAME_LIMIT = 120;
 
     private static String amount(BigDecimal value) {
         return value.stripTrailingZeros().toPlainString();

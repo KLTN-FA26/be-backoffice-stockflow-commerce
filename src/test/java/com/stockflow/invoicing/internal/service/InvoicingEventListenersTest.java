@@ -30,6 +30,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -58,13 +59,14 @@ class InvoicingEventListenersTest {
                 "DELIVERED", "DELIVERY_FAILED", "NOT_RECEIVED", 3, "Carrier", null, UUID.randomUUID(), AT);
 
         @Test
-        @DisplayName("E0 M1: an invoice already at the provider is not voided - the accountants are told it needs an "
-                + "adjustment")
-        void anInvoiceAtTheProviderIsRaised() {
+        @DisplayName("WF-05 HĐ-3: an invoice still at the provider is not voided - the accountants are told it is "
+                + "settled when the provider answers")
+        void anInvoiceAtTheProviderWaitsForItsAnswer() {
             when(drafts.voidForCorrectedDelivery(corrected.orderId(), corrected.shipmentId()))
-                    .thenReturn(EInvoiceDrafts.CorrectionOutcome.LEFT_FOR_ADJUSTMENT);
+                    .thenReturn(EInvoiceDrafts.CorrectionOutcome.AWAITING_PROVIDER);
             EInvoice submitted = EInvoiceFixtures.in(EInvoiceStatus.SUBMITTING);
-            when(invoices.findLiveOriginalOfShipment(corrected.shipmentId())).thenReturn(Optional.of(submitted));
+            when(invoices.findUnsettledDeliveryFailedOfShipment(corrected.shipmentId()))
+                    .thenReturn(java.util.List.of(submitted));
 
             listener.on(corrected);
 
@@ -72,7 +74,83 @@ class InvoicingEventListenersTest {
             verify(events).publishEvent(published.capture());
             assertThat(published.getValue().einvoiceId()).isEqualTo(submitted.snapshot().id());
             assertThat(published.getValue().cause())
+                    .isEqualTo(EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_AWAITING_PROVIDER);
+        }
+
+        @Test
+        @DisplayName("review finding 5: a failure corrected back to delivered takes the marks back; any other step of "
+                + "a shipment is not a correction and touches nothing")
+        void aFailureCorrectedBackTakesTheMarksBack() {
+            ShipmentStatusChanged restored = new ShipmentStatusChanged(UUID.randomUUID(), corrected.shipmentId(),
+                    corrected.shipmentCode(), corrected.orderId(), corrected.orderNumber(), UUID.randomUUID(),
+                    UUID.randomUUID(), "DELIVERY_FAILED", "DELIVERED", null, 3, "Carrier", null, UUID.randomUUID(), AT);
+            when(drafts.restoreDelivered(corrected.orderId(), corrected.shipmentId())).thenReturn(1);
+
+            listener.on(restored);
+            listener.on(new ShipmentStatusChanged(UUID.randomUUID(), corrected.shipmentId(), corrected.shipmentCode(),
+                    corrected.orderId(), corrected.orderNumber(), UUID.randomUUID(), UUID.randomUUID(), "HANDED_OVER",
+                    "DELIVERED", null, 3, "Carrier", null, UUID.randomUUID(), AT));
+
+            verify(drafts, times(1)).restoreDelivered(corrected.orderId(), corrected.shipmentId());
+            verify(drafts, never()).voidForCorrectedDelivery(any(), any());
+            verifyNoInteractions(events);
+        }
+
+        @Test
+        @DisplayName("E0 M1: an issued invoice that is being corrected already is the accountant's to adjust by hand")
+        void anInvoiceBeingCorrectedIsRaised() {
+            when(drafts.voidForCorrectedDelivery(corrected.orderId(), corrected.shipmentId()))
+                    .thenReturn(EInvoiceDrafts.CorrectionOutcome.LEFT_FOR_ADJUSTMENT);
+            when(drafts.reverseForCorrectedDelivery(corrected.orderId(), corrected.shipmentId()))
+                    .thenReturn(Optional.empty());
+            EInvoice issued = EInvoiceFixtures.in(EInvoiceStatus.ISSUED);
+            when(invoices.findLiveOriginalOfShipment(corrected.shipmentId())).thenReturn(Optional.of(issued));
+
+            listener.on(corrected);
+
+            var published = ArgumentCaptor.forClass(EInvoiceNeedsAttention.class);
+            verify(events).publishEvent(published.capture());
+            assertThat(published.getValue().einvoiceId()).isEqualTo(issued.snapshot().id());
+            assertThat(published.getValue().cause())
                     .isEqualTo(EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_AFTER_SUBMISSION);
+        }
+
+        @Test
+        @DisplayName("WF-05 HĐ-3: the provider's answer settled, the shipment delivered again meanwhile is drawn up "
+                + "anew; not delivered again, nothing is drawn up; a draw-up refused is told")
+        void theAnswerIsSettledAndTheRedeliveryDrawnUp() {
+            UUID invoiceId = UUID.randomUUID();
+            UUID order = corrected.orderId();
+            UUID shipment = corrected.shipmentId();
+            EInvoice.Snapshot redrawn = EInvoiceFixtures.draft().snapshot();
+            when(drafts.settleCorrectedDelivery(invoiceId)).thenReturn(new EInvoiceDrafts.Settled(
+                    EInvoiceDrafts.Settlement.REVERSED, order, shipment, true));
+            when(drafts.drawUp(order, shipment)).thenReturn(new EInvoiceDrafts.DrawnUp(redrawn, true));
+
+            listener.on(new DeliveryFailedInvoiceAnswered(invoiceId));
+            verify(drafts).drawUp(order, shipment);
+
+            UUID waiting = UUID.randomUUID();
+            when(drafts.settleCorrectedDelivery(waiting)).thenReturn(new EInvoiceDrafts.Settled(
+                    EInvoiceDrafts.Settlement.WAITING, order, shipment, true));
+            listener.on(new DeliveryFailedInvoiceAnswered(waiting));
+            UUID voided = UUID.randomUUID();
+            when(drafts.settleCorrectedDelivery(voided)).thenReturn(new EInvoiceDrafts.Settled(
+                    EInvoiceDrafts.Settlement.VOIDED, order, shipment, false));
+            listener.on(new DeliveryFailedInvoiceAnswered(voided));
+            verify(drafts, times(1)).drawUp(order, shipment);
+            verifyNoInteractions(events);
+
+            UUID refused = UUID.randomUUID();
+            when(drafts.settleCorrectedDelivery(refused)).thenReturn(new EInvoiceDrafts.Settled(
+                    EInvoiceDrafts.Settlement.VOIDED, order, shipment, true));
+            when(drafts.drawUp(order, shipment)).thenThrow(new BusinessException(ErrorCode.EINVOICE_DELIVERY_TIME_MISSING));
+            when(invoices.findById(refused)).thenReturn(Optional.of(EInvoiceFixtures.in(EInvoiceStatus.VOIDED_DRAFT)));
+            listener.on(new DeliveryFailedInvoiceAnswered(refused));
+            var failed = ArgumentCaptor.forClass(EInvoiceDraftFailed.class);
+            verify(events).publishEvent(failed.capture());
+            assertThat(failed.getValue().shipmentId()).isEqualTo(shipment);
+            assertThat(failed.getValue().reasonCode()).isEqualTo("EINVOICE_DELIVERY_TIME_MISSING");
         }
 
         @Test

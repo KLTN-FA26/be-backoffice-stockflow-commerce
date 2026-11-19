@@ -96,6 +96,14 @@ public final class EInvoice {
          */
         TAX_RATE_NOT_ON_CONTRACT,
         /**
+         * Found just before the automatic issuing (WF-05 review, defect 4): a line's rate is not the one a draft drawn
+         * up now for the same delivery would carry - the draft was drawn up before a rate period that covers its day was
+         * entered (the NĐ 174 reduction, V20261201000200), or the rates changed since. Warnings are worked out when a
+         * draft is drawn up, so a draft older than a rule would otherwise be issued as the rule never existed. The
+         * accountant voids it and draws it up again, or issues it as it is having checked why.
+         */
+        TAX_RATE_OUT_OF_DATE,
+        /**
          * A line (not a note) is at 0%, and the invoice is not issued ({@code EINVOICE_TAX_EXEMPT_NOT_SUPPORTED}). No
          * tax class here is zero-rated: 0.00 is the rate {@code ordering.tax_rate} keeps for EXEMPT - goods not subject
          * to VAT ("không chịu thuế", KCT) - and an invoice saying 0% would declare zero-rated goods, which is another
@@ -143,6 +151,11 @@ public final class EInvoice {
      * Everything an invoice is, as it is stored: what the persistence adapter reads an invoice from and writes it to.
      * A plain carrier - the rules are the aggregate's, and {@link EInvoice#restore} trusts a snapshot only because the
      * database holds the same rules.
+     *
+     * <p>{@code deliveryFailedAt} (WF-05 HĐ-3) is carried for reading only: the mark is written and taken back in SQL
+     * by {@link EInvoiceRepository#markDeliveryFailed} and {@link EInvoiceRepository#clearDeliveryFailed}, guarded by
+     * {@code tg_einvoice_delivery_failed}, and nothing the aggregate does changes it. It is here so that every answer
+     * built from a snapshot can show it; null for a new invoice and for one never marked.</p>
      */
     public record Snapshot(UUID id, String code, EInvoiceType type, EInvoiceStatus status, boolean adjusted,
                            UUID orderId, String orderNumber, String contractNumber, UUID shipmentId,
@@ -156,7 +169,8 @@ public final class EInvoice {
                            String pdfFileKey, String rejectionCode, String rejectionMessage, Instant submittedAt,
                            UUID submittedBy, Instant issuedAt, Instant voidedAt, UUID voidedBy, String voidReason,
                            long version, CorrectionBasis correctionBasis, String agreementNumber,
-                           LocalDate agreementDate, UUID returnRequestId, List<UUID> listedInvoiceIds) {
+                           LocalDate agreementDate, UUID returnRequestId, List<UUID> listedInvoiceIds,
+                           Instant deliveryFailedAt) {
 
         public Snapshot {
             listedInvoiceIds = listedInvoiceIds == null ? List.of() : List.copyOf(listedInvoiceIds);
@@ -181,7 +195,7 @@ public final class EInvoice {
                     seller, buyer, currency, paymentMethod, lines, subtotal, taxTotal, grandTotal, amountInWords,
                     warnings, adjustmentReason, agreementFileKey, xmlFileKey, pdfFileKey, rejectionCode,
                     rejectionMessage, submittedAt, submittedBy, issuedAt, voidedAt, voidedBy, voidReason, version,
-                    null, null, null, null, List.of());
+                    null, null, null, null, List.of(), null);
         }
     }
 
@@ -249,6 +263,8 @@ public final class EInvoice {
     private final CorrectionBasis correctionBasis;
     private final UUID returnRequestId;
     private final List<UUID> listedInvoiceIds;
+    /** Read only: see {@link Snapshot}. */
+    private final Instant deliveryFailedAt;
     private String xmlFileKey;
     private String pdfFileKey;
     private String rejectionCode;
@@ -307,6 +323,7 @@ public final class EInvoice {
         this.correctionBasis = s.correctionBasis();
         this.returnRequestId = s.returnRequestId();
         this.listedInvoiceIds = s.listedInvoiceIds();
+        this.deliveryFailedAt = s.deliveryFailedAt();
         this.xmlFileKey = s.xmlFileKey();
         this.pdfFileKey = s.pdfFileKey();
         this.rejectionCode = s.rejectionCode();
@@ -385,27 +402,32 @@ public final class EInvoice {
     }
 
     /**
-     * Draws up the reduction of a whole issued original whose delivery was corrected to a failure, as a draft
+     * Draws up the reduction of a whole issued invoice - the original, or the replacement standing for the shipment -
+     * whose delivery was corrected to a failure, as a draft
      * ({@link CorrectionBasis#DELIVERY_FAILED}; kltn-docs 21 §4.4, 09 §4.3 step 5; WF-05 HĐ-3): every line of the
      * invoice taken off at its own quantity, price and rate, so that the two together come to nothing - each line's tax
      * is rounded the same way below zero as above it ({@link EInvoiceLine#vat}).
      *
-     * <p>Only an original that nothing corrects yet: an adjustment already drawn up of it, issued or not, or a
-     * replacement, would leave the full reduction either reducing it below nothing or reducing the wrong invoice. Such
-     * an invoice is the accountant's to bring to nothing by hand. Whether to reduce at all is the caller's to decide -
+     * <p>Only an invoice of a shipment that nothing corrects yet: an adjustment already drawn up of it, issued or not, or
+     * a replacement, would leave the full reduction either reducing it below nothing or reducing the wrong invoice.
+     * Such an invoice is the accountant's to bring to nothing by hand. Whether to reduce at all is the caller's to decide -
      * the delivery is what was corrected, not the invoice.</p>
      *
      * @param original read under its lock
      * @throws BusinessException {@code EINVOICE_NOT_IN_FORCE} unless it is issued; {@code
-     *         EINVOICE_CORRECTION_NOT_APPLICABLE} for anything but an original of a shipment that nothing corrects
+     *         EINVOICE_CORRECTION_NOT_APPLICABLE} for an adjustment, or an invoice of no shipment or that something
+     *         corrects
      */
     public static EInvoice drawUpDeliveryReversal(UUID id, String code, EInvoice original, String reason,
                                                   LocalDate issueDate, Corrections corrections) {
         requireCorrectable(original);
-        if (original.type != EInvoiceType.ORIGINAL || original.shipmentId == null || original.adjusted
+        // A replacement in force stands for its shipment as an original does, and only an ERROR of it is replaced
+        // again rather than adjusted (TT 91 Điều 10 khoản 6 điểm a): its reduction for a failed delivery is an
+        // adjustment like the original's.
+        if (original.shipmentId == null || original.adjusted
                 || corrections.liveAdjustment() || corrections.liveReplacement()) {
             throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE, ("Invoice %s is not an "
-                    + "original of a delivery that nothing corrects yet: it is reduced by hand").formatted(original.code));
+                    + "invoice of a delivery that nothing corrects yet: it is reduced by hand").formatted(original.code));
         }
         List<EInvoiceLine> lines = new ArrayList<>();
         for (EInvoiceLine line : original.lines) {
@@ -572,7 +594,7 @@ public final class EInvoice {
                 issueDate, IssueDeadline.of(issueDate), null, null, original.seller, buyer, VND, BANK_TRANSFER, lines,
                 totals.net(), totals.tax(), totals.total(), VietnameseAmountInWords.of(totals.total()), warnings,
                 reason.strip(), null, null, null, null, null, null, null, null, null, null, null, 0, basis, null, null,
-                returnRequestId, listed));
+                returnRequestId, listed, null));
     }
 
     /** {@link Warning#BUYER_PROFILE_INCOMPLETE} and {@link Warning#BUYER_EMAIL_MISSING}, as the buyer is now. */
@@ -598,6 +620,44 @@ public final class EInvoice {
     }
 
     // ---- corrections on a draft ---------------------------------------------------------------------------------
+
+    /**
+     * The warnings of a draft worked out again just before the automatic issuing sends it (WF-05 review, defect 4):
+     * what drawing it up decides - the buyer's gaps, a line at 0% - as the draft stands now, and the rate facts the
+     * caller found by comparing it with a draft drawn up now for the same delivery. Warnings are decided when a draft
+     * is drawn up and the automatic issuing takes only drafts without any, so a draft drawn up before a rule existed
+     * (the e-mail warning, the VAT reduction period) would be issued as if it never did. Only adds: a warning the
+     * accountant has not dealt with stays.
+     *
+     * @return the warnings added now; empty when the draft may still be issued automatically
+     * @throws BusinessException {@code EINVOICE_NOT_DRAFT}
+     */
+    public Set<Warning> recheckBeforeAutomaticIssue(boolean rateOutOfDate, boolean rateDiffersFromContract,
+                                                    boolean rateNotOnContract) {
+        requireDraft("check before issuing");
+        Set<Warning> found = EnumSet.noneOf(Warning.class);
+        if (!buyer.completeBuyer()) {
+            found.add(Warning.BUYER_PROFILE_INCOMPLETE);
+        }
+        if (buyer.email() == null) {
+            found.add(Warning.BUYER_EMAIL_MISSING);
+        }
+        if (atZeroRate(lines)) {
+            found.add(Warning.TAX_EXEMPT_NOT_SUPPORTED);
+        }
+        if (rateOutOfDate) {
+            found.add(Warning.TAX_RATE_OUT_OF_DATE);
+        }
+        if (rateDiffersFromContract) {
+            found.add(Warning.TAX_RATE_DIFFERS_FROM_CONTRACT);
+        }
+        if (rateNotOnContract) {
+            found.add(Warning.TAX_RATE_NOT_ON_CONTRACT);
+        }
+        found.removeAll(warnings);
+        warnings.addAll(found);
+        return found;
+    }
 
     /**
      * The buyer as the invoice is to name it: refreshed from the customer's profile, or corrected by the accountant.
@@ -890,7 +950,8 @@ public final class EInvoice {
                 signedAt, seller, buyer, currency, paymentMethod, List.copyOf(lines), subtotal, taxTotal, grandTotal,
                 amountInWords, Set.copyOf(warnings), adjustmentReason, agreementFileKey, xmlFileKey, pdfFileKey,
                 rejectionCode, rejectionMessage, submittedAt, submittedBy, issuedAt, voidedAt, voidedBy, voidReason,
-                version, correctionBasis, agreementNumber, agreementDate, returnRequestId, listedInvoiceIds);
+                version, correctionBasis, agreementNumber, agreementDate, returnRequestId, listedInvoiceIds,
+                deliveryFailedAt);
     }
 
     public UUID id() { return id; }

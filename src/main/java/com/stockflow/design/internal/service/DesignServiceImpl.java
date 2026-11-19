@@ -5,12 +5,15 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.storage.Checksums;
 import com.stockflow.common.storage.FileStorage;
 import com.stockflow.common.storage.StorageException;
+import com.stockflow.design.api.ConfirmedAsset;
 import com.stockflow.design.api.ConfirmedDesign;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.design.api.DesignArtifactRole;
 import com.stockflow.design.api.DesignVerification;
 import com.stockflow.design.api.FulfillmentArtifact;
+import com.stockflow.design.api.FulfillmentAsset;
 import com.stockflow.design.internal.domain.DesignSnapshotArtifact;
+import com.stockflow.design.internal.domain.DesignSnapshotAsset;
 import com.stockflow.design.internal.entity.DesignSnapshotJpaEntity;
 import com.stockflow.design.internal.repository.DesignDraftJpaRepository;
 import com.stockflow.design.internal.repository.DesignSnapshotJpaRepository;
@@ -143,6 +146,41 @@ class DesignServiceImpl implements DesignService {
                 : files.downloadLink(item.storageKey(), item.originalName());
         return new FulfillmentArtifact(item.artifactId(), item.role(), item.originalName(), item.contentType(),
                 item.sizeBytes(), item.checksum(), link.url(), link.expiresAt());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<ConfirmedAsset> confirmedAssets(UUID snapshotId) {
+        var snapshot = snapshots.findById(snapshotId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        return assetsOf(snapshot).stream().map(asset -> new ConfirmedAsset(asset.assetId(), asset.originalName(),
+                asset.contentType(), asset.sizeBytes(), asset.checksum())).toList();
+    }
+
+    /**
+     * The one image asked for, checked as {@link #fulfillmentDownload} checks a file: the order's checksum is the
+     * snapshot's, the recorded snapshot still adds up to it - images included - and the store's digest of the image is
+     * the one frozen at approval. Saved under the name the customer uploaded it with.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public FulfillmentAsset assetDownload(UUID snapshotId, String expectedChecksum, UUID assetId) {
+        var snapshot = snapshots.findById(snapshotId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        requireSha256(expectedChecksum);
+        DesignSnapshotAsset asset = assetsOf(snapshot).stream().filter(image -> image.assetId().equals(assetId))
+                .findFirst().orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
+                        "The confirmed design places no image " + assetId));
+        if (!expectedChecksum.equals(snapshot.getChecksum()) || !recordedManifestAddsUp(snapshot)
+                || !asset.checksum().equals(storedDigest(asset.storageKey(), false))) {
+            throw new BusinessException(ErrorCode.CONFLICT, "Design integrity verification failed");
+        }
+        var link = files.downloadLink(asset.storageKey(), asset.originalName());
+        return new FulfillmentAsset(asset.assetId(), asset.originalName(), asset.contentType(), asset.sizeBytes(),
+                asset.checksum(), link.url(), link.expiresAt());
+    }
+
+    /** The images a snapshot froze: none for one of the staff workflow, or one approved before images were kept. */
+    private static List<DesignSnapshotAsset> assetsOf(DesignSnapshotJpaEntity snapshot) {
+        return snapshot.getAssets() == null ? List.of() : snapshot.getAssets();
     }
 
     /**

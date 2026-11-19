@@ -27,7 +27,8 @@ public record CustomerOrderDetailResponse(
 
         @Schema(example = "UNDER_REVIEW", description = "What the customer reads: AWAITING_CONTRACT, AWAITING_PAYMENT, "
                 + "UNDER_REVIEW, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION (legacy), PREPARING, SHIPPING, DELIVERED, "
-                + "CANCELLED or RETURNED")
+                + "RETURN_REQUESTED (a return is being decided; the goods are still the customer's), CANCELLED or "
+                + "RETURNED (goods came back, or the order was settled by a return). Parse tolerantly: more may come")
         String statusGroup,
 
         @Schema(example = "AWAITING_CREDIT_APPROVAL", description = "Set only while the order is ON_HOLD: "
@@ -87,6 +88,10 @@ public record CustomerOrderDetailResponse(
 
     @Schema(name = "CustomerOrderShipment")
     public record Shipment(
+            @Schema(description = "WF-05 TH-1: the id a return of this shipment's goods names (POST /api/v1/returns, "
+                    + "shipmentId) - required when the order was delivered in more than one shipment. Null only for "
+                    + "an order whose goods left as a whole with no shipment recorded; its return names none")
+            UUID shipmentId,
             @Schema(example = "SO-20261021-000123-S1", description = "Null for a shipment recorded before 2026-10-21")
             String shipmentCode,
             @Schema(example = "HANDED_OVER", description = "HANDED_OVER (with the carrier), DELIVERED, DELIVERY_FAILED or "
@@ -101,7 +106,30 @@ public record CustomerOrderDetailResponse(
             Instant outcomeAt,
             @Schema(example = "CUSTOMER_ABSENT", description = "Why a delivery failed: CUSTOMER_ABSENT, REFUSED, "
                     + "WRONG_ADDRESS, LOST, DAMAGED or OTHER; stays after a retry delivered it")
-            String failureReason) {
+            String failureReason,
+            @Schema(description = "WF-05 TH-1: what this shipment carried, line by line, and how much of each line a "
+                    + "return opened now against this shipment (POST /api/v1/returns with this shipmentId) may claim. "
+                    + "For the shipment made up from an order that left as a whole: the order's lines")
+            List<ShipmentLine> lines) {
+    }
+
+    @Schema(name = "CustomerOrderShipmentLine")
+    public record ShipmentLine(
+            @Schema(description = "The order line (lines[].lineId), as a return's lines[].orderLineId names it")
+            UUID orderLineId,
+            String sku,
+            @Schema(description = "Units of the line this shipment carried")
+            int quantity,
+            @Schema(description = "The most units of the line a return opened now against this shipment may claim: "
+                    + "what the shipment delivered less what the shipment's other returns (and the line's returns in "
+                    + "all) still claim - rejected, cancelled and expired returns claim nothing. The bound the return "
+                    + "itself enforces (RETURN_QUANTITY_EXCEEDED). 0 means none can be claimed now: the shipment is "
+                    + "not delivered, its return window has closed, the order takes no more returns on the portal, the "
+                    + "account is not active (RETURN_CUSTOMER_NOT_ACTIVE), a "
+                    + "return of this line is already open on this shipment (RETURN_LINE_ALREADY_OPEN), or every unit "
+                    + "is claimed. Above 0 is a ceiling, not a promise: a line printed to the customer's design "
+                    + "(designSnapshotId set) still comes back only for a named defect")
+            int returnableQuantity) {
     }
 
     @Schema(name = "CustomerOrderCancellationRequest")

@@ -48,6 +48,11 @@ import java.util.function.Function;
  * <p>A template and its {@code .glb} are saved together, multipart, on the same paths as the JSON forms (selected by
  * {@code Content-Type}): the back office generates the measurements from the file, so there is deliberately no endpoint
  * that replaces the file alone.</p>
+ *
+ * <p>No {@code DELETE} action: a template is never deleted - designs and snapshots name it (B39) - only deactivated, an
+ * {@code UPDATE}. The baseline still seeds {@code product-customization-templates:DELETE} and grants it to two roles;
+ * an undeclared grant is shown by no matrix and guards nothing, so the row is left as it is rather than migrated away.
+ * </p>
  */
 @RestController
 @RequestMapping("/api/v1/products/{productId}/variants/{variantId}/customization-templates")
@@ -58,7 +63,7 @@ import java.util.function.Function;
         label = "Customization templates",
         route = "/admin/products",
         apiPath = "/api/v1/products/{productId}/variants/{variantId}/customization-templates",
-        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.DELETE})
+        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE})
 class CustomizationTemplateController {
 
     /** What every save says about the model file; shared by the create and update descriptions. */

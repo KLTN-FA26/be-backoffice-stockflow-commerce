@@ -886,6 +886,132 @@ class ReturnRequestTest {
         }
     }
 
+    // ---- WF-05 TH-1: what the customer's order detail shows returnable --------------------------------------------------
+
+    @Nested
+    @DisplayName("WF-05 TH-1: what each delivery may still be claimed for is what opening allows")
+    class Claimable {
+
+        private int returnable(ReturnRequest.Claimable claimable, UUID shipment, UUID line) {
+            return claimable.of(shipment).stream().filter(l -> l.orderLineId().equals(line)).findFirst().orElseThrow()
+                    .returnable();
+        }
+
+        /** Opens {@code cups} of the printed line on {@code shipment} with the claims {@code taken} as they stand. */
+        private ReturnRequest openWith(Order order, UUID shipment, int cups, ReturnClaims taken, Instant at) {
+            return ReturnRequest.open("RMA-20261022-0201", UUID.randomUUID(), order, shipment, ReturnChannel.PORTAL,
+                    ReturnReason.PRINT_DEFECT, "Mực in bị lem", ReturnResolution.REFUND,
+                    List.of(new ReturnRequest.Claim(PRINTED_LINE, cups)), taken.inAll(), taken.onShipment(shipment),
+                    taken.openOn(shipment), CUSTOMER, at, POLICY, null);
+        }
+
+        @Test
+        @DisplayName("each shipment's lines with what it carried; a line partly claimed by a closed return keeps the "
+                + "rest, and exactly that rest is what opening accepts")
+        void partlyClaimed() {
+            Order order = inTwoShipments(OrderStatus.PARTIALLY_FULFILLED, DELIVERED, OrderShipmentStatus.HANDED_OVER);
+            // A resolved return refunded 15 cups of shipment 1; a rejected one of the lids claims nothing any more.
+            ReturnClaims taken = ReturnClaims.of(List.of(new ReturnClaims.Claim(SHIPMENT_1, PRINTED_LINE, 15, false),
+                    new ReturnClaims.Claim(SHIPMENT_1, STOCK_LINE, 0, false)));
+
+            ReturnRequest.Claimable claimable = ReturnRequest.claimable(order, taken, NOW, POLICY);
+
+            assertThat(claimable.of(SHIPMENT_1)).extracting(ReturnRequest.ClaimableLine::sku,
+                    ReturnRequest.ClaimableLine::quantity).containsExactlyInAnyOrder(
+                    org.assertj.core.groups.Tuple.tuple("CUP-12OZ", 60), org.assertj.core.groups.Tuple.tuple("LID-90", 40));
+            assertThat(returnable(claimable, SHIPMENT_1, PRINTED_LINE)).isEqualTo(45);
+            assertThat(returnable(claimable, SHIPMENT_1, STOCK_LINE)).isEqualTo(40);
+            assertThat(code(catchThrowable(() -> openWith(order, SHIPMENT_1, 46, taken, NOW))))
+                    .isEqualTo(ErrorCode.RETURN_QUANTITY_EXCEEDED);
+            assertThat(openWith(order, SHIPMENT_1, 45, taken, NOW).status()).isEqualTo(ReturnStatus.REQUESTED);
+            // Shipment 2 is still with the carrier: its 40 cups are listed, none returnable.
+            assertThat(claimable.of(SHIPMENT_2)).singleElement().satisfies(line -> {
+                assertThat(line.quantity()).isEqualTo(40);
+                assertThat(line.returnable()).isZero();
+            });
+            assertThat(claimable.wholeOrder()).as("an order with shipments is not claimed as a whole").isEmpty();
+            assertThat(claimable.of(UUID.randomUUID())).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a line with a return open on that shipment is 0 (RETURN_LINE_ALREADY_OPEN), on the other "
+                + "shipment it is not; the line's total across deliveries bounds each shipment too")
+        void openAndInAll() {
+            Order order = inTwoShipments(OrderStatus.DELIVERED, DELIVERED, OrderShipmentStatus.DELIVERED);
+            ReturnClaims open = ReturnClaims.of(List.of(new ReturnClaims.Claim(SHIPMENT_1, PRINTED_LINE, 10, true)));
+
+            ReturnRequest.Claimable claimable = ReturnRequest.claimable(order, open, NOW, POLICY);
+
+            assertThat(returnable(claimable, SHIPMENT_1, PRINTED_LINE)).isZero();
+            assertThat(code(catchThrowable(() -> openWith(order, SHIPMENT_1, 1, open, NOW))))
+                    .isEqualTo(ErrorCode.RETURN_LINE_ALREADY_OPEN);
+            assertThat(returnable(claimable, SHIPMENT_1, STOCK_LINE)).as("only the line is busy").isEqualTo(40);
+            assertThat(returnable(claimable, SHIPMENT_2, PRINTED_LINE)).isEqualTo(40);
+
+            // A return from before per-shipment claims names no shipment: it still counts against the line in all.
+            ReturnClaims legacy = ReturnClaims.of(List.of(new ReturnClaims.Claim(null, PRINTED_LINE, 70, false)));
+            ReturnRequest.Claimable bounded = ReturnRequest.claimable(order, legacy, NOW, POLICY);
+            assertThat(returnable(bounded, SHIPMENT_1, PRINTED_LINE)).as("100 delivered, 70 claimed").isEqualTo(30);
+            assertThat(returnable(bounded, SHIPMENT_2, PRINTED_LINE)).isEqualTo(30);
+            assertThat(code(catchThrowable(() -> openWith(order, SHIPMENT_1, 31, legacy, NOW))))
+                    .isEqualTo(ErrorCode.RETURN_QUANTITY_EXCEEDED);
+        }
+
+        @Test
+        @DisplayName("a closed window is 0 for every line of that shipment only, and the contract's longer period opens "
+                + "it again")
+        void windowPerShipment() {
+            Order order = inTwoShipments(OrderStatus.DELIVERED, DELIVERED, OrderShipmentStatus.DELIVERED);
+            Instant day8 = Instant.parse("2026-10-28T03:00:00Z");
+
+            ReturnRequest.Claimable late = ReturnRequest.claimable(order, ReturnClaims.NONE, day8, POLICY);
+
+            assertThat(late.of(SHIPMENT_1)).allSatisfy(line -> assertThat(line.returnable()).isZero());
+            assertThat(code(catchThrowable(() -> openWith(order, SHIPMENT_1, 1, ReturnClaims.NONE, day8))))
+                    .isEqualTo(ErrorCode.RETURN_WINDOW_CLOSED);
+            assertThat(returnable(late, SHIPMENT_2, PRINTED_LINE)).as("delivered a day later").isEqualTo(40);
+            assertThat(returnable(ReturnRequest.claimable(order, ReturnClaims.NONE, day8, POLICY.withWindowDays(14)),
+                    SHIPMENT_1, PRINTED_LINE)).isEqualTo(60);
+        }
+
+        @Test
+        @DisplayName("an order delivered without shipments is one delivery of its lines, cancelled units left out; a "
+                + "completed, closed, refunded or cancelled order takes no portal return")
+        void wholeOrder() {
+            ReturnClaims taken = ReturnClaims.of(List.of(new ReturnClaims.Claim(null, PRINTED_LINE, 30, false)));
+
+            ReturnRequest.Claimable claimable = ReturnRequest.claimable(order(OrderStatus.DELIVERED), taken, NOW,
+                    POLICY);
+
+            assertThat(claimable.byShipment()).isEmpty();
+            assertThat(claimable.of(null)).extracting(ReturnRequest.ClaimableLine::quantity,
+                    ReturnRequest.ClaimableLine::returnable).containsExactly(
+                    org.assertj.core.groups.Tuple.tuple(100, 70), org.assertj.core.groups.Tuple.tuple(40, 40));
+            for (OrderStatus status : List.of(OrderStatus.COMPLETED, OrderStatus.CLOSED, OrderStatus.REFUNDED,
+                    OrderStatus.CANCELLED)) {
+                assertThat(ReturnRequest.claimable(order(status), taken, NOW, POLICY).of(null)).as(status.name())
+                        .allSatisfy(line -> assertThat(line.returnable()).isZero());
+            }
+        }
+
+        @Test
+        @DisplayName("what a return line claims is counted as far as the return got: requested, approved, refunded; "
+                + "nothing once rejected")
+        void claimsCountAsFarAsTheReturnGot() {
+            ReturnLine line = line(misprinted(25), PRINTED_LINE);
+            assertThat(ReturnClaims.Claim.of(SHIPMENT_1, ReturnStatus.REQUESTED, line))
+                    .isEqualTo(new ReturnClaims.Claim(SHIPMENT_1, PRINTED_LINE, 25, true));
+            assertThat(ReturnClaims.Claim.of(SHIPMENT_1, ReturnStatus.REJECTED, line))
+                    .isEqualTo(new ReturnClaims.Claim(SHIPMENT_1, PRINTED_LINE, 0, false));
+            ReturnClaims claims = ReturnClaims.of(List.of(ReturnClaims.Claim.of(SHIPMENT_1, ReturnStatus.REQUESTED,
+                    line), new ReturnClaims.Claim(SHIPMENT_2, PRINTED_LINE, 5, false)));
+            assertThat(claims.inAll()).containsEntry(PRINTED_LINE, 30);
+            assertThat(claims.onShipment(SHIPMENT_1)).containsEntry(PRINTED_LINE, 25);
+            assertThat(claims.openOn(SHIPMENT_1)).containsExactly(PRINTED_LINE);
+            assertThat(claims.openOn(SHIPMENT_2)).isEmpty();
+        }
+    }
+
     // ---- WF-05 TH-4: what came back is what was counted -----------------------------------------------------------------
 
     @Nested
@@ -1048,6 +1174,43 @@ class ReturnRequestTest {
             });
             assertThat(request.pullDomainEvents()).noneMatch(event -> event instanceof OrderEvent.ReturnChanged changed
                     && changed.payload() instanceof ReturnClosed);
+        }
+
+        @Test
+        @DisplayName("review defect: a return with a parcel back is not withdrawn - by the customer or by Sales - and "
+                + "stays awaiting its goods, to be marked complete; one with nothing back is withdrawn as before")
+        void noWithdrawalOncePartIsBack() {
+            ReturnRequest request = awaiting(6);
+            request.goodsReceived(RECEIPT, "GR-RET-1", "HCM-QUA01",
+                    List.of(new ReturnRequest.ReturnedCarton("CUP-12OZ", 4)), WAREHOUSE, NOW);
+            request.pullTransitions();
+            request.pullDomainEvents();
+            assertThat(code(catchThrowable(() -> request.cancel(CUSTOMER, LATER, "changed my mind", true))))
+                    .isEqualTo(ErrorCode.RETURN_GOODS_PARTLY_RECEIVED);
+            assertThat(code(catchThrowable(() -> request.cancel(SALES, LATER, null, false))))
+                    .isEqualTo(ErrorCode.RETURN_GOODS_PARTLY_RECEIVED);
+            assertThat(request.status()).isEqualTo(ReturnStatus.AWAITING_RETURN);
+            assertThat(request.cancelledBy()).isNull();
+            assertThat(request.closedAt()).isNull();
+            assertThat(request.pullTransitions()).isEmpty();
+            assertThat(request.pullDomainEvents()).isEmpty();
+
+            request.markGoodsComplete(SALES, LATER, null);
+            assertThat(request.status()).isEqualTo(ReturnStatus.RECEIVED);
+            assertThat(line(request, PRINTED_LINE).receivedQuantity()).isEqualTo(4);
+
+            ReturnRequest restored = awaiting(6).restoreParcels(List.of(
+                    new ReturnParcel(SECOND, 1, "GR-RET-2", "HCM-QUA01", WAREHOUSE, NOW)));
+            assertThat(code(catchThrowable(() -> restored.cancel(SALES, LATER, null, false))))
+                    .as("a parcel as stored counts the same").isEqualTo(ErrorCode.RETURN_GOODS_PARTLY_RECEIVED);
+
+            ReturnRequest nothingBack = awaiting(6);
+            nothingBack.cancel(CUSTOMER, LATER, null, true);
+            assertThat(nothingBack.status()).isEqualTo(ReturnStatus.CANCELLED);
+            nothingBack.goodsReceived(SECOND, "GR-RET-2", "HCM-QUA01",
+                    List.of(new ReturnRequest.ReturnedCarton("CUP-12OZ", 6)), WAREHOUSE, LATER);
+            assertThat(nothingBack.status()).as("a parcel on its way when it was withdrawn still brings it back")
+                    .isEqualTo(ReturnStatus.RECEIVED);
         }
     }
 

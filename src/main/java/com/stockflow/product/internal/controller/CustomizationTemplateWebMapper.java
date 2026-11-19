@@ -1,7 +1,5 @@
 package com.stockflow.product.internal.controller;
 
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
 import com.stockflow.product.api.BagModel;
 import com.stockflow.product.api.CupModel;
 import com.stockflow.product.api.PrintArea;
@@ -62,9 +60,11 @@ class CustomizationTemplateWebMapper {
                     required(m.bottomDiameterMm(), "bottomDiameterMm"), required(m.heightMm(), "heightMm"),
                     orZero(m.rimMm()), orZero(m.seamMm()), orZero(m.bandTopOffsetMm()),
                     orZero(m.bandBottomOffsetMm()), m.material());
-            case BagModel.KIND -> new BagModel(required(m.widthMm(), "widthMm"), required(m.gussetMm(), "gussetMm"),
-                    required(m.heightMm(), "heightMm"), orZero(m.topFoldMm()), m.handle(), m.material());
-            default -> throw new BusinessException(ErrorCode.PRINT_CONFIG_INVALID,
+            // A bag's glue flap and bottom fold, left out, take the model's defaults: BagModel keeps them in one place.
+            case BagModel.KIND -> BagModel.withDefaults(required(m.widthMm(), "widthMm"),
+                    required(m.gussetMm(), "gussetMm"), required(m.heightMm(), "heightMm"), orZero(m.topFoldMm()),
+                    m.glueFlapMm(), m.bottomFoldMm(), m.handle(), m.material());
+            default -> throw PrintConfigRules.invalid("model.kind", "OneOf",
                     "The model kind is parametric-cup or parametric-bag");
         };
     }
@@ -73,9 +73,10 @@ class CustomizationTemplateWebMapper {
         return switch (model) {
             case CupModel cup -> new CustomizationTemplateResponse.Model(cup.kind(), cup.topDiameterMm(),
                     cup.bottomDiameterMm(), cup.heightMm(), cup.rimMm(), cup.seamMm(), cup.bandTopOffsetMm(),
-                    cup.bandBottomOffsetMm(), null, null, null, null, cup.material());
+                    cup.bandBottomOffsetMm(), null, null, null, null, null, null, cup.material());
             case BagModel bag -> new CustomizationTemplateResponse.Model(bag.kind(), null, null, bag.heightMm(), null,
-                    null, null, null, bag.widthMm(), bag.gussetMm(), bag.topFoldMm(), bag.handle(), bag.material());
+                    null, null, null, bag.widthMm(), bag.gussetMm(), bag.topFoldMm(), bag.glueFlapMm(),
+                    bag.bottomFoldMm(), bag.handle(), bag.material());
         };
     }
 
@@ -93,7 +94,7 @@ class CustomizationTemplateWebMapper {
 
     private static double required(Double value, String field) {
         if (value == null) {
-            throw new BusinessException(ErrorCode.PRINT_CONFIG_INVALID, "The model needs " + field);
+            throw PrintConfigRules.invalid("model." + field, "NotNull", "The model needs " + field);
         }
         return value;
     }

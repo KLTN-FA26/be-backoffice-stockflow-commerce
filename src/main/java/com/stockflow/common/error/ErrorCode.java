@@ -469,6 +469,11 @@ public enum ErrorCode {
      * the provider can still be working on it and the provider, asked now, has no record of it.
      */
     EINVOICE_WITHDRAWAL_REFUSED("The e-invoice cannot be taken back from the provider: it is too recent, or the provider may hold it", 409),
+    /**
+     * HĐ-1: an invoice whose last attempt was refused on the provider's processing report alone - its look-up never
+     * confirmed anything - is sent again under a new transaction only once the provider can no longer be working on
+     * the old one and, asked again, does not show it issued or in progress. Sent sooner, both could become invoices.
+     */
     /** WF-05 E3+E4: the provider in use writes every invoice as an original, so a correction sent to it would be a second invoice. */
     EINVOICE_PROVIDER_CANNOT_CORRECT("The e-invoice provider in use cannot issue adjustments or replacements yet; the correction is kept as a draft", 409),
     /**
@@ -550,6 +555,12 @@ public enum ErrorCode {
     RETURN_REASON_NOT_ACCEPTED("Returns are accepted for defects and delivery faults only", 409),
     /** 03 §12: the return's status has no such step. */
     RETURN_INVALID_TRANSITION("This return cannot do that in its current status", 409),
+    /**
+     * WF-05 TH-3: a parcel of the return's goods is already in the warehouse, so the return is not withdrawn - that
+     * would leave those goods in quarantine with nothing refunded. Sales mark the goods complete instead.
+     */
+    RETURN_GOODS_PARTLY_RECEIVED("Some goods of this return are already back; it can no longer be withdrawn - mark "
+            + "its goods complete instead", 409),
     /** A defect is approved on evidence: at least one photo of the problem. */
     RETURN_EVIDENCE_REQUIRED("Add at least one photo of the problem before the return is approved", 409),
     RETURN_EVIDENCE_LIMIT_REACHED("This return has as many photos as it may hold", 409),
@@ -796,6 +807,12 @@ public enum ErrorCode {
     CARTON_SPEC_UNMEASURED("The SKU's carton spec has no size or weight: no shipping label can print", 422),
     /** Docs 09 §5: the shipment's status does not allow the step. */
     SHIPMENT_STATE_CONFLICT("The shipment cannot do that in its current status", 409),
+    /** Docs 09 §4.3 step 2: the delivery time a manager records is when the carrier delivered, so never in the future. */
+    SHIPMENT_DELIVERY_TIME_IN_FUTURE("The delivery time cannot be in the future", 422),
+    /** Docs 09 §4.3 step 2: a shipment cannot be delivered before it was handed over to the carrier. */
+    SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER("The delivery time cannot be before the shipment was handed over", 422),
+    /** Docs 09 §4.3 step 3: a retried delivery comes after the failure it follows. */
+    SHIPMENT_DELIVERY_TIME_BEFORE_FAILURE("The delivery time cannot be before the failed delivery it follows", 422),
     // ---- G4-2a loading and handover (kltn-docs 09 §4.1, §5): 404 / 400 / 409 kept together with the flow
     /** G4-2a: a load (manifest) of a warehouse outside the caller's scope is OUT_OF_DATA_SCOPE, not this. */
     LOAD_NOT_FOUND("Load not found", 404),
@@ -965,7 +982,8 @@ public enum ErrorCode {
     DESIGN_FILES_OUTDATED("Render the design's files again from its current layout", 409),
     /**
      * The print file of a design being approved is not what the press needs: not a PDF, or not one page per print
-     * area of the bleed box's size (kltn-docs 12 BR-09: the approval is refused and the design stays pending).
+     * area (a bag: one page, its flat sheet) whose BleedBox is the bleed box's size and whose TrimBox, if declared, is
+     * the trim (kltn-docs 12 BR-09: the approval is refused and the design stays pending).
      */
     DESIGN_PRINT_FILE_INVALID("The design's print file does not fit its template", 409),
     /** A design holds at most 100 images (Design Studio plan 2F-4). */

@@ -10,11 +10,15 @@ import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderStatusChange;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.internal.domain.CreditChecks;
+import com.stockflow.order.internal.domain.OrderId;
+import com.stockflow.order.internal.domain.OrderRepository;
+import com.stockflow.order.internal.domain.ReturnRequest;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
@@ -56,10 +60,17 @@ class CustomerOrdersService implements CustomerOrders {
     private final OrderService orders;
     private final CreditChecks creditChecks;
     private final com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests;
+    private final OrderRepository orderRepository;
+    private final ReturnAllowances returnAllowances;
+    private final Clock clock;
 
     CustomerOrdersService(OrderSearchRepository search, OrderService orders, CreditChecks creditChecks,
-                          com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests) {
+                          com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests,
+                          OrderRepository orderRepository, ReturnAllowances returnAllowances, Clock clock) {
         this.cancellationRequests = cancellationRequests;
+        this.orderRepository = orderRepository;
+        this.returnAllowances = returnAllowances;
+        this.clock = clock;
         this.search = search;
         this.orders = orders;
         this.creditChecks = creditChecks;
@@ -119,7 +130,21 @@ class CustomerOrdersService implements CustomerOrders {
                         .map(r -> new CancellationRequestView(r.status().name(), r.reasonCode(), r.note(),
                                 r.requestedAt(), r.decidedAt(), r.decisionNote()))
                         .orElse(null),
-                shipments(summary), charges(summary));
+                shipments(summary, claimable(summary)), charges(summary));
+    }
+
+    /**
+     * What each shipment's lines may still be claimed for. Read only for an order that shows a shipment: the aggregate
+     * (two statements) and what its returns claim (one, for every shipment and line at once) are not worth reading for
+     * an order nothing of which has left.
+     */
+    private ReturnRequest.Claimable claimable(OrderSummary summary) {
+        if (shipments(summary, ReturnRequest.Claimable.NONE).isEmpty()) {
+            return ReturnRequest.Claimable.NONE;
+        }
+        return orderRepository.findById(new OrderId(summary.orderId()))
+                .map(order -> returnAllowances.claimable(order, clock.instant()))
+                .orElse(ReturnRequest.Claimable.NONE);
     }
 
     /**
@@ -127,8 +152,12 @@ class CustomerOrdersService implements CustomerOrders {
      * order whose goods left as a whole, with no shipment recorded on it (before G4-2a, or a parcel packed before
      * parcels recorded their contents), shows one shipment made from the order's own milestones: no number, carrier or
      * parcel count, because the order never learnt them.
+     *
+     * <p>Each carries its lines from {@code claimable} (WF-05 TH-1): what it carried and what a return of it may still
+     * claim - the made-up shipment the lines of the order as a whole, which is what a return of such an order claims.
+     * </p>
      */
-    static List<Shipment> shipments(OrderSummary summary) {
+    static List<Shipment> shipments(OrderSummary summary, ReturnRequest.Claimable claimable) {
         var lifecycle = summary.lifecycle();
         if (lifecycle == null) {
             return List.of();
@@ -136,22 +165,27 @@ class CustomerOrdersService implements CustomerOrders {
         if (lifecycle.shipments().isEmpty()) {
             com.stockflow.order.api.OrderShipmentStatus whole = wholeOrderShipmentStatus(summary.status());
             return whole == null || lifecycle.shippedAt() == null ? List.of()
-                    : List.of(new Shipment(null, whole, 0, null, lifecycle.shippedAt(),
+                    : List.of(new Shipment(null, null, whole, 0, null, lifecycle.shippedAt(),
                     whole == com.stockflow.order.api.OrderShipmentStatus.HANDED_OVER ? null
                             : whole == com.stockflow.order.api.OrderShipmentStatus.DELIVERED ? lifecycle.deliveredAt()
                             : null,
-                    lifecycle.deliveryFailureReason()));
+                    lifecycle.deliveryFailureReason(), lines(claimable.of(null))));
         }
         return lifecycle.shipments().stream()
                 .sorted(java.util.Comparator.comparing(OrderSummary.Shipment::handedOverAt))
                 .map(s -> {
                     var carriage = s.carriage();
-                    return new Shipment(carriage == null ? null : carriage.shipmentCode(), s.status(),
+                    return new Shipment(s.shipmentId(), carriage == null ? null : carriage.shipmentCode(), s.status(),
                             carriage == null ? 0 : carriage.packageCount(),
                             carriage == null ? null : carriage.carrierName(), s.handedOverAt(), s.outcomeAt(),
-                            s.failureReason());
+                            s.failureReason(), lines(claimable.of(s.shipmentId())));
                 })
                 .toList();
+    }
+
+    private static List<ShipmentLine> lines(List<ReturnRequest.ClaimableLine> claimable) {
+        return claimable.stream().map(line -> new ShipmentLine(line.orderLineId(), line.sku(), line.quantity(),
+                line.returnable())).toList();
     }
 
     /**
@@ -196,11 +230,13 @@ class CustomerOrdersService implements CustomerOrders {
             case READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED -> StatusGroup.PREPARING;
             case SHIPPED, DELIVERY_FAILED -> StatusGroup.SHIPPING;
             case DELIVERED, COMPLETED -> StatusGroup.DELIVERED;
+            // A return is being decided: the goods are still the customer's, nothing came back yet.
+            case RETURN_REQUESTED -> StatusGroup.RETURN_REQUESTED;
             // Closed after a refund (never completed) is a return; closed after completion a delivery.
             case CLOSED -> lifecycle != null && lifecycle.completedAt() == null ? StatusGroup.RETURNED
                     : StatusGroup.DELIVERED;
             case CANCELLED -> StatusGroup.CANCELLED;
-            case RETURN_REQUESTED, RETURNED, REFUNDED, PARTIALLY_REFUNDED -> StatusGroup.RETURNED;
+            case RETURNED, REFUNDED, PARTIALLY_REFUNDED -> StatusGroup.RETURNED;
         };
     }
 
