@@ -1000,7 +1000,12 @@ public class ShippingWarehouseService {
         List<BatchCoverage> batches = new ArrayList<>();
         SalesContract contract = contracts.findLiveByOrderId(order.id().value()).orElse(null);
         Map<UUID, Map<UUID, Integer>> byBatch = contract == null ? Map.of() : heldByBatch(order);
-        if (contract != null && !byBatch.isEmpty()) {
+        // A released order's batches count what each holds, none included: the holds of cartons removed after the pick
+        // (at the check station, or with a cancelled shipment - RTM-RTDCANCEL) left their batch and are short there,
+        // though the line still lists them, picked (CONSUMED).
+        boolean perBatch = contract != null
+                && (!byBatch.isEmpty() || !batchRecords.releasesOf(order.id().value()).isEmpty());
+        if (perBatch) {
             // 4B-8: each batch counts the holds taken for it - picked ones too, so a batch on its way stays covered.
             Map<UUID, OrderLine> byId = linesById(order);
             for (DeliveryBatch batch : contract.schedule().stream()
@@ -1032,7 +1037,7 @@ public class ShippingWarehouseService {
                         batchLines.stream().allMatch(l -> l.shortCartons() == 0), batchLines));
             }
         }
-        if (contract != null && !byBatch.isEmpty()) {
+        if (perBatch) {
             perLine = perLineFromBatches(perLine, batches);
         }
         List<LineCoverage> lineCover = perLine;

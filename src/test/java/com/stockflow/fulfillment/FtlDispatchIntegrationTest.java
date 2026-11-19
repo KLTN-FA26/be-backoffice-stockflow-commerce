@@ -3144,6 +3144,7 @@ class FtlDispatchIntegrationTest {
         assertThat(held.lifecycle().holdReason()).isEqualTo(HoldReason.INVENTORY);
         assertThat(batchHolds(order)).as("17 §5.5: the batch no longer counts either carton - it lacks both again")
                 .isZero();
+        assertLineCover(order, 0, 2);
 
         // The put-back queue: the damaged carton for quarantine, the good one for a bin.
         JsonNode queue = data(oc(get(BASE + "/put-backs").param("warehouseId", HCM.toString()).param("size", "200"))
