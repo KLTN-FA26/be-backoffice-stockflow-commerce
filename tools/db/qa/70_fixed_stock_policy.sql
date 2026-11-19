@@ -2,8 +2,7 @@
 -- Adversarial checks + happy paths: one stock policy for every SKU (V20261115000100, team plan 5-5; kltn-docs 01
 -- BR-17, 03 BR-03): lot-tracked, no serial numbers, first in first out by the day of receipt. Before it the checks of
 -- inventory.enforce_sku_policy ran only for an item someone had "configured", so most items were checked by nothing.
--- Needs the demo seed (its two cups: the furniture that stood for an item never configured and one that was left the
--- demo with V20261206000100, and no item carries the flag any more, FP16). Rolled back at the end.
+-- Needs the demo seed (two cups, stocked in lots and cartons, none carrying a policy flag: FP16); rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;

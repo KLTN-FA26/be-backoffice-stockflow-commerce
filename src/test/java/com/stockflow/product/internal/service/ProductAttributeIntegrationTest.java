@@ -185,7 +185,7 @@ class ProductAttributeIntegrationTest {
     }
 
     @Test
-    void removingTheBoxsUsedOptionIsRefused() {
+    void removingTheBoxesUsedOptionIsRefused() {
         // GREY left out: a variant of the box is grey.
         assertThat(errorOf(() -> service.replaceAxes(PRODUCT_BOX,
                 List.of(axis(COLOR, 0, BLUE), axis(MATERIAL, 1, PAPER))))).isEqualTo(ErrorCode.ATTRIBUTE_IN_USE);

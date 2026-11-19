@@ -18,7 +18,7 @@ public record StockItemResponse(
         @Schema(description = "Stock item identifier")
         UUID id,
 
-        @Schema(example = "SOFA-3S-GREY")
+        @Schema(example = "LY-GIAY-DEMO-12OZ-XANH")
         String sku,
 
         @Schema(description = "Bin code", example = "HCM-A-01-02-B")

@@ -576,7 +576,7 @@ class PermissionMatrixTest {
             UUID victimQuoteLine = Identifiers.newId();
             jdbc.update("""
                     INSERT INTO ordering.quote_line (id, quote_id, line_no, blank_sku, design_snapshot_id, quantity)
-                    VALUES (?, ?, 1, 'LY-GIAY-DEMO-12OZ-XANH', ?, 1)""", victimQuoteLine, victimQuote, snapshot);
+                    VALUES (?, ?, 1, ?, ?, 1)""", victimQuoteLine, victimQuote, DemoData.BLANK_CUP, snapshot);
             jdbc.update("INSERT INTO ordering.quote_price_tier (quote_line_id, min_quantity, unit_price) VALUES (?, 1, 1000)",
                     victimQuoteLine);
         });
