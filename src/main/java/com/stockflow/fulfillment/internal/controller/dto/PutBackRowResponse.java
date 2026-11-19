@@ -1,6 +1,7 @@
 package com.stockflow.fulfillment.internal.controller.dto;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -13,8 +14,10 @@ import java.util.UUID;
  * @param fromLocationCode where it was picked from: the natural bin to put it back on
  * @param quarantine       removed at the check station as damaged: it goes into a QUARANTINE area of the warehouse,
  *                         not onto a bin
+ * @param overflowLocationCodes the warehouse's usable OVERFLOW areas when no bin of it takes the carton (07 BR-12);
+ *                         empty while one does
  */
 public record PutBackRowResponse(UUID taskId, String orderNumber, UUID warehouseId, UUID lineId, String sku,
                                  String lotNumber, String lpn, int pickedQty, String fromLocationCode,
-                                 Instant pickedAt, boolean quarantine) {
+                                 Instant pickedAt, boolean quarantine, List<String> overflowLocationCodes) {
 }

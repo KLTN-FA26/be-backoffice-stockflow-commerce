@@ -14,6 +14,9 @@ public interface PickLineJpaRepository extends BaseJpaRepository<PickLineJpaEnti
 
     List<PickLineJpaEntity> findByPickIdOrderBySequenceNoAscIdAsc(UUID pickId);
 
+    /** The newest short report of a carton (UUIDv7 ids sort by time), whatever became of its line. */
+    Optional<PickLineJpaEntity> findFirstByLpnIgnoreCaseAndShortReasonIsNotNullOrderByIdDesc(String lpn);
+
     Page<PickLineJpaEntity> findByPickId(UUID pickId, Pageable pageable);
 
     /** The one line not CANCELLED that stands on the hold (uk_pick_line_reservation_live); read without a lock. */

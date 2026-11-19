@@ -20,7 +20,8 @@ class FulfillmentWebMapperTest {
 
     private static PickLists.PutBackRow row(boolean quarantine) {
         return new PickLists.PutBackRow(UUID.randomUUID(), "SO-1", UUID.randomUUID(), UUID.randomUUID(), "SOFA", "LOT-1",
-                "LPN-1", 1, "HCM-A01-2-B", Instant.parse("2026-11-13T08:00:00Z"), quarantine);
+                "LPN-1", 1, "HCM-A01-2-B", Instant.parse("2026-11-13T08:00:00Z"), quarantine,
+                quarantine ? java.util.List.of() : java.util.List.of("HCM-OVF01"));
     }
 
     @Test
@@ -33,5 +34,8 @@ class FulfillmentWebMapperTest {
         assertThat(cancelled.quarantine()).isFalse();
         assertThat(damaged.lpn()).isEqualTo("LPN-1");
         assertThat(damaged.fromLocationCode()).isEqualTo("HCM-A01-2-B");
+        assertThat(damaged.overflowLocationCodes()).isEmpty();
+        assertThat(cancelled.overflowLocationCodes()).as("07 BR-12: the OVERFLOW areas reach the screen")
+                .containsExactly("HCM-OVF01");
     }
 }

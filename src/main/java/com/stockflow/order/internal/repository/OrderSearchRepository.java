@@ -48,10 +48,13 @@ public interface OrderSearchRepository {
 
     /**
      * READY_TO_FULFILL orders of {@code warehouseId} (any when null) within the caller's warehouse scope, with no task
-     * yet, and the orders awaiting stock among {@code prePickable} (07 §4.1 step 1), each with its lines; the
+     * yet, the PARTIALLY_FULFILLED ones among {@code awaitingBatchOrders} (07 BR-07: their latest released batch
+     * has none), and the orders awaiting stock among {@code prePickable} (07 §4.1 step 1), each with its lines; the
      * customer's name is left for the service to resolve.
      */
-    Page<com.stockflow.order.api.FulfillmentCandidate> awaitingTask(UUID warehouseId, Collection<UUID> prePickable,
+    Page<com.stockflow.order.api.FulfillmentCandidate> awaitingTask(UUID warehouseId,
+                                                                    Collection<UUID> awaitingBatchOrders,
+                                                                    Collection<UUID> prePickable,
                                                                     Pageable pageable);
 
     /**

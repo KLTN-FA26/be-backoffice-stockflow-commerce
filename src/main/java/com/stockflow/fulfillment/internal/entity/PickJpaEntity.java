@@ -61,6 +61,8 @@ public class PickJpaEntity extends BaseEntity {
     @Column(name = "picked_at") private Instant pickedAt;
     /** Goods already taken off their bins for a cancelled order: someone puts them back (17 BR-03). */
     @Column(name = "needs_put_back", nullable = false) private boolean needsPutBack;
+    /** When the task was cancelled; null while it is not. The put-back queue goes by it (07 §4.5 step 13). */
+    @Column(name = "cancelled_at") private Instant cancelledAt;
     /** 4C-5: where the cartons go; {@code ck_pick_destination}. */
     @Enumerated(EnumType.STRING)
     @Column(name = "destination", nullable = false, length = 16)
@@ -226,14 +228,16 @@ public class PickJpaEntity extends BaseEntity {
      * The order was cancelled (SCRUM-460). Once picking has started, goods may be off their bins, so
      * the pick is flagged for a put-back. Idempotent.
      *
+     * @param now when the task is cancelled: where it stands in the put-back queue (07 §4.5 step 13)
      * @return false when it was already cancelled
      */
-    public boolean cancel() {
+    public boolean cancel(Instant now) {
         if (status == PickStatus.CANCELLED) {
             return false;
         }
         needsPutBack = status != PickStatus.PENDING;
         status = PickStatus.CANCELLED;
+        cancelledAt = java.util.Objects.requireNonNull(now, "now");
         return true;
     }
     public void requireAssigned(UUID actor) {
@@ -268,6 +272,7 @@ public class PickJpaEntity extends BaseEntity {
     public Instant getAssignedAt() { return assignedAt; }
     public Instant getStartedAt() { return startedAt; }
     public Instant getPickedAt() { return pickedAt; }
+    public Instant getCancelledAt() { return cancelledAt; }
     public boolean isNeedsPutBack() { return needsPutBack; }
     public PickDestination getDestination() { return destination; }
     public String getStagingLocationCode() { return stagingLocationCode; }

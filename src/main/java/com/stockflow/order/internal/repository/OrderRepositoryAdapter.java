@@ -313,11 +313,19 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
      */
     @Override
     public Page<com.stockflow.order.api.FulfillmentCandidate> awaitingTask(UUID warehouseId,
+                                                                           Collection<UUID> awaitingBatchOrders,
                                                                            Collection<UUID> prePickable,
                                                                            Pageable pageable) {
-        // createTask's rule (review of #150): READY_TO_FULFILL, and no task yet.
-        Specification<OrderJpaEntity> released = Specification.<OrderJpaEntity>where((root, query, cb) -> cb.and(
-                cb.isNull(root.get("fulfilmentStartedAt")), cb.equal(root.get("status"), OrderStatus.READY_TO_FULFILL)))
+        // createTask's rule (review of #150): READY_TO_FULFILL, and no task yet; or, 07 BR-07, a PARTIALLY_FULFILLED
+        // order whose latest released delivery batch has no task (the caller, fulfillment, names those orders).
+        Specification<OrderJpaEntity> openable = (root, query, cb) -> {
+            var firstTask = cb.and(cb.isNull(root.get("fulfilmentStartedAt")),
+                    cb.equal(root.get("status"), OrderStatus.READY_TO_FULFILL));
+            return awaitingBatchOrders.isEmpty() ? firstTask
+                    : cb.or(firstTask, cb.and(root.get("id").in(awaitingBatchOrders),
+                            cb.equal(root.get("status"), OrderStatus.PARTIALLY_FULFILLED)));
+        };
+        Specification<OrderJpaEntity> released = Specification.<OrderJpaEntity>where(openable)
                 .and(Specs.eq("warehouseId", warehouseId))
                 .and(com.stockflow.common.security.WarehouseScope.warehousesIn("warehouseId"));
         // 07 §4.1 step 1: an order awaiting stock with cartons held for its next batch, no task yet.

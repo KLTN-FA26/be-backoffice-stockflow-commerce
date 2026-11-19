@@ -9,12 +9,15 @@ import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.SalesContractRepository;
+import com.stockflow.order.api.ReleasedBatchOfOrder;
+import com.stockflow.order.internal.domain.DeliveryBatchRecords;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -32,24 +35,34 @@ class FulfillmentCandidateService implements FulfillmentCandidates {
 
     private final OrderSearchRepository search;
     private final CustomerService customers;
+    private final DeliveryBatchRecords batchRecords;
     private final OrderRepository orders;
     private final ShippingWarehouseService shippingWarehouses;
     private final SalesContractRepository contracts;
 
-    FulfillmentCandidateService(OrderSearchRepository search, CustomerService customers, OrderRepository orders,
+    FulfillmentCandidateService(OrderSearchRepository search, CustomerService customers,
+                                DeliveryBatchRecords batchRecords, OrderRepository orders,
                                 ShippingWarehouseService shippingWarehouses, SalesContractRepository contracts) {
         this.search = search;
         this.customers = customers;
+        this.batchRecords = batchRecords;
         this.orders = orders;
         this.shippingWarehouses = shippingWarehouses;
         this.contracts = contracts;
     }
 
     @Override
-    public PageResponse<FulfillmentCandidate> awaitingTask(UUID warehouseId, int page, int size) {
-        // Not released, so last (a null release sorts last): released orders are served first (07 §4.1 step 1).
-        var candidates = search.awaitingTask(warehouseId, prePickable(warehouseId), Pages.of(page, size,
-                FIRST_RELEASED));
+    public List<ReleasedBatchOfOrder> lastReleasedBatches(UUID warehouseId) {
+        return batchRecords.lastReleasePerPartiallyFulfilled(warehouseId);
+    }
+
+    @Override
+    public PageResponse<FulfillmentCandidate> awaitingTask(UUID warehouseId, Collection<UUID> awaitingBatchOrders,
+                                                           int page, int size) {
+        // Orders awaiting stock are not released, so last (a null release sorts last): released orders are served
+        // first (07 §4.1 step 1).
+        var candidates = search.awaitingTask(warehouseId, awaitingBatchOrders, prePickable(warehouseId),
+                Pages.of(page, size, FIRST_RELEASED));
         // One query for every customer on the page (review of #150), not one per row.
         Map<UUID, String> names = customers.fullNames(candidates.getContent().stream()
                 .map(FulfillmentCandidate::customerId).filter(java.util.Objects::nonNull).distinct().toList());

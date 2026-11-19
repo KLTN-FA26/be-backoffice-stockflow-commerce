@@ -89,6 +89,7 @@ class OrderSmallServicesTest {
         private final OrderSearchRepository search = mock(OrderSearchRepository.class);
         private final CustomerService customers = mock(CustomerService.class);
         private final FulfillmentCandidateService service = new FulfillmentCandidateService(search, customers,
+                mock(com.stockflow.order.internal.domain.DeliveryBatchRecords.class),
                 mock(com.stockflow.order.internal.domain.OrderRepository.class), mock(ShippingWarehouseService.class),
                 mock(com.stockflow.order.internal.domain.SalesContractRepository.class));
 
@@ -105,11 +106,11 @@ class OrderSmallServicesTest {
             FulfillmentCandidate first = candidate(a);
             FulfillmentCandidate second = candidate(b);
             FulfillmentCandidate third = candidate(a);
-            when(search.awaitingTask(any(), any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(first,
+            when(search.awaitingTask(any(), any(), any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(first,
                     second, third)));
             when(customers.fullNames(any())).thenReturn(Map.of(a, "Acme", b, "Bravo"));
 
-            PageResponse<FulfillmentCandidate> page = service.awaitingTask(UUID.randomUUID(), 0, 20);
+            PageResponse<FulfillmentCandidate> page = service.awaitingTask(UUID.randomUUID(), List.of(), 0, 20);
 
             assertThat(page.items()).extracting(FulfillmentCandidate::customerName)
                     .containsExactly("Acme", "Bravo", "Acme");
@@ -123,13 +124,13 @@ class OrderSmallServicesTest {
         @Test
         @DisplayName("the page is sorted first released first, the order number breaking ties")
         void firstReleasedFirst() {
-            when(search.awaitingTask(any(), any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of()));
+            when(search.awaitingTask(any(), any(), any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of()));
             when(customers.fullNames(any())).thenReturn(Map.of());
 
-            service.awaitingTask(UUID.randomUUID(), 2, 10);
+            service.awaitingTask(UUID.randomUUID(), List.of(), 2, 10);
 
             ArgumentCaptor<Pageable> pageable = ArgumentCaptor.forClass(Pageable.class);
-            verify(search).awaitingTask(any(), any(), pageable.capture());
+            verify(search).awaitingTask(any(), any(), any(), pageable.capture());
             assertThat(pageable.getValue().getPageNumber()).isEqualTo(2);
             assertThat(pageable.getValue().getPageSize()).isEqualTo(10);
             assertThat(pageable.getValue().getSort().stream().map(o -> o.getProperty() + ":" + o.getDirection()))
@@ -140,12 +141,12 @@ class OrderSmallServicesTest {
         @DisplayName("a customer without a name stays unnamed, and a guest order (no customer) is not looked up")
         void guestsAndUnknownCustomers() {
             UUID known = UUID.randomUUID();
-            when(search.awaitingTask(any(), any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(
+            when(search.awaitingTask(any(), any(), any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(
                     candidate(null), candidate(known))));
             // The real lookup answers with a HashMap once at least one customer was asked for.
             when(customers.fullNames(any())).thenReturn(new java.util.HashMap<>());
 
-            PageResponse<FulfillmentCandidate> page = service.awaitingTask(UUID.randomUUID(), 0, 20);
+            PageResponse<FulfillmentCandidate> page = service.awaitingTask(UUID.randomUUID(), List.of(), 0, 20);
 
             assertThat(page.items()).extracting(FulfillmentCandidate::customerName).containsOnlyNulls();
             ArgumentCaptor<java.util.Collection<UUID>> asked = ArgumentCaptor.forClass(java.util.Collection.class);

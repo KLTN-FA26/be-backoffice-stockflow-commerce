@@ -33,6 +33,13 @@ public interface StockLots {
      */
     UUID openForReceipt(ReceiptLot lot);
 
+    /** The production order a lot belongs to (4A-5), with its code; empty for a lot of any other origin or an unknown one. */
+    java.util.Optional<ProductionLot> productionLotOf(UUID lotId);
+
+    /** A lot opened for a production order: the order, and its code, which numbers the lot. */
+    record ProductionLot(UUID productionOrderId, String productionOrderCode) {
+    }
+
     /**
      * What a receipt knows about the goods it brings in, snapshotted onto the lot. {@code productionOrderId} and
      * {@code productionOrderCode} are set for goods received against a production order (4A-5), null otherwise.

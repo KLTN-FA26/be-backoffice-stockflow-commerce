@@ -764,6 +764,8 @@ public enum ErrorCode {
     /** Docs 07 BR-05: only goods picked for an order cancelled afterwards go back to a bin. */
     PUT_BACK_NOT_REQUIRED("Nothing on this line needs putting back", 409),
     PUT_BACK_LOCATION_INVALID("Put back onto an active bin of the task's warehouse", 409),
+    /** kltn-docs 07 BR-12: a carton goes back into OVERFLOW only when no bin of its warehouse takes it. */
+    PUT_BACK_OVERFLOW_NOT_ALLOWED("A bin can still take this carton; put it back onto a bin", 409),
     /**
      * Kltn-docs 11 BR-09, 20 BR-20 (team plan 4C-5): a staging area holds cartons picked for an order; stock enters it
      * only by picking, and leaves it only when the task moves to dispatch or by the put-back - never by hand.
@@ -983,7 +985,8 @@ public enum ErrorCode {
     DESIGN_FILES_OUTDATED("Render the design's files again from its current layout", 409),
     /**
      * The print file of a design being approved is not what the press needs: not a PDF, or not one page per print
-     * area of the bleed box's size (kltn-docs 12 BR-09: the approval is refused and the design stays pending).
+     * area (a bag: one page, its flat sheet) whose BleedBox is the bleed box's size and whose TrimBox, if declared, is
+     * the trim (kltn-docs 12 BR-09: the approval is refused and the design stays pending).
      */
     DESIGN_PRINT_FILE_INVALID("The design's print file does not fit its template", 409),
     /** A design holds at most 100 images (Design Studio plan 2F-4). */

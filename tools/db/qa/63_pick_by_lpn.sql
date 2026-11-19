@@ -128,8 +128,8 @@ SELECT pg_temp.expect_fail_by('PS9 a task is never SHORT: its lines are', 'ck_pi
     UPDATE fulfillment.pick SET status = 'SHORT' WHERE id = md5('qa63:pick')::uuid $q$);
 SELECT pg_temp.expect_ok('PS10 a task goes PICKING, PICKED, CANCELLED as it did', $q$
     UPDATE fulfillment.pick SET status = 'PICKED', picked_at = NOW() WHERE id = md5('qa63:pick')::uuid;
-    UPDATE fulfillment.pick SET status = 'CANCELLED', needs_put_back = TRUE WHERE id = md5('qa63:pick')::uuid;
-    UPDATE fulfillment.pick SET status = 'PICKING', needs_put_back = FALSE WHERE id = md5('qa63:pick')::uuid $q$);
+    UPDATE fulfillment.pick SET status = 'CANCELLED', needs_put_back = TRUE, cancelled_at = NOW() WHERE id = md5('qa63:pick')::uuid;
+    UPDATE fulfillment.pick SET status = 'PICKING', needs_put_back = FALSE, cancelled_at = NULL WHERE id = md5('qa63:pick')::uuid $q$);
 
 \echo '--- a put-back returns the whole carton the line took (07 BR-05, §4.5 step 14)'
 SELECT pg_temp.expect_ok('PB1 a whole put-back: the line returns all it allocated', pg_temp.line_sql(5, 'PUT_BACK',

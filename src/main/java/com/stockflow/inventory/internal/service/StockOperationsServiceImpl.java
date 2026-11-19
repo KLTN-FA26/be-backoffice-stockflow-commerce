@@ -27,6 +27,7 @@ import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.internal.domain.AdjustmentReason;
 import com.stockflow.inventory.internal.domain.AdjustmentStatus;
 import com.stockflow.inventory.internal.domain.CountSlot;
+import com.stockflow.inventory.internal.domain.CycleCountTrigger;
 import com.stockflow.inventory.internal.domain.AdjustmentDirection;
 import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
@@ -113,6 +114,7 @@ class StockOperationsServiceImpl implements StockOperations {
     private final UomConversionRepository units;
     private final CycleCountRepository countLines;
     private final CartonPlacement placement;
+    private final org.springframework.beans.factory.ObjectProvider<com.stockflow.inventory.spi.ShortReports> shortReports;
     /** Asked whether a carton is on its way into a bin before it is written off (team plan 4D-1). */
     private final com.stockflow.warehouse.api.PutawayTasks putawayTasks;
 
@@ -124,7 +126,10 @@ class StockOperationsServiceImpl implements StockOperations {
                                UomConversionRepository units, SlotsUnderCount underCount,
                                CycleCountRepository countLines, CartonPlacement placement,
                                com.stockflow.warehouse.api.PutawayTasks putawayTasks,
-                               com.stockflow.inventory.internal.domain.WarehouseDirectory warehouses) {
+                               com.stockflow.inventory.internal.domain.WarehouseDirectory warehouses,
+                               org.springframework.beans.factory.ObjectProvider<com.stockflow.inventory.spi.ShortReports>
+                                       shortReports) {
+        this.shortReports = shortReports;
         this.warehouses = warehouses;
         this.placement = placement;
         this.putawayTasks = putawayTasks;
@@ -474,7 +479,7 @@ class StockOperationsServiceImpl implements StockOperations {
                     "%s is %s; only a carton in stock is quarantined".formatted(normal, carton.status()));
         }
         List<StockItemId> rowIds = stockItems.findIdsInStockPackages(List.of(carton.id()));
-        requireNotUnderCount(List.of(carton), rowIds, to);
+        boolean reportedShort = requireNotUnderCountUnlessShortReported(carton, rowIds, to);
         List<StockItem> rows = new ArrayList<>();
         for (StockItemId id : rowIds) {
             rows.add(stockItems.findByIdForUpdate(id).orElseThrow(() ->
@@ -483,6 +488,16 @@ class StockOperationsServiceImpl implements StockOperations {
         List<StockItem> live = rows.stream().filter(row -> row.onHand().value() > 0).toList();
         if (live.isEmpty()) {
             throw new IllegalStateException("Stock package %s is in stock with nothing in it".formatted(normal));
+        }
+        if (reportedShort) {
+            // 07 §4.4 step 9, 20 §4.8: the picker reported the carton short (the blind count it opened holds it) and the
+            // manager quarantines it at once. What the order held on it is a shortage, given up as a short pick is and
+            // announced as a count's shortage is: the line is SHORT already, and is reallocated afterwards.
+            for (StockItem row : rows) {
+                if (!row.reserved().isZero()) {
+                    row.giveUpHoldsOfWrittenOffCarton(actorId, clock.instant());
+                }
+            }
         }
         if (rows.stream().anyMatch(row -> !row.reserved().isZero())) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_HELD,
@@ -521,6 +536,9 @@ class StockOperationsServiceImpl implements StockOperations {
                         .ofLot(row.lotId()).leaving(carton.id()).arriving(carton.id()));
             }
         }
+        if (reportedShort) {
+            rows.forEach(events::publishEventsOf);
+        }
         log.info("Quarantined carton {} ({} x {}) from {} into {}", LogSafe.text(normal), onHand, unit.sku(), from,
                 LogSafe.text(to));
         return view(carton, unit, onHand);
@@ -537,6 +555,39 @@ class StockOperationsServiceImpl implements StockOperations {
                 .map(carton -> view(carton, unitsById.get(carton.uomConversionId()),
                         onHand.getOrDefault(carton.id(), 0)))
                 .toList();
+    }
+
+    /**
+     * {@link #requireNotUnderCount} for a quarantine, with one exception (kltn-docs 07 §4.4 step 9, §4.4 edge "thùng hư
+     * hỏng", decided 2026-11-19): a carton the picker reported DAMAGED is on the blind count that report opened
+     * ({@code SHORT_PICK}, still open), and the manager quarantines it at once instead of waiting for the count to be
+     * submitted. The count goes on for its other cartons; its line follows the carton to the quarantine area as it does
+     * for any whole move. A carton held by another count, a submitted variance or an adjustment still refuses.
+     *
+     * @return whether the carton is on such a count
+     */
+    private boolean requireNotUnderCountUnlessShortReported(StockPackage carton, List<StockItemId> rowIds,
+                                                            LocationId to) {
+        StockItem row = rowIds.stream().map(stockItems::findById).flatMap(Optional::stream).findFirst().orElse(null);
+        if (row == null) {
+            return false;
+        }
+        CountSlot slot = CountSlot.carton(carton.location(), row.sku(), row.lotNumber(), carton.id());
+        String holder = countLines.claim(List.of(slot)).get(slot);
+        if (holder == null) {
+            return false;
+        }
+        boolean shortReport = countLines.findHolding(slot).filter(count -> count.number().equals(holder)
+                && count.trigger() == CycleCountTrigger.SHORT_PICK && count.status().isOpen()).isPresent()
+                // Only a carton the picker found DAMAGED is there to be quarantined; one not found is not (07 §4.4 step 9,
+                // WF04 G7). The reason is on the pick line, which fulfillment answers for.
+                && shortReports.getIfAvailable() != null
+                && shortReports.getObject().latestReasonOf(carton.lpn())
+                        .filter(reason -> reason == com.stockflow.inventory.spi.ShortReports.Reason.DAMAGED).isPresent();
+        if (!shortReport) {
+            requireNotUnderCount(List.of(carton), rowIds, to);
+        }
+        return shortReport;
     }
 
     /**
@@ -1067,9 +1118,32 @@ class StockOperationsServiceImpl implements StockOperations {
             // The holds the write-off gave up, if any: announced after the row is saved.
             events.publishEventsOf(row);
         }
+        announceDamagedProductionCarton(adjustment, changes, approverId, now);
         log.info("Posted adjustment {}: {} {} in carton {} at {}", adjustment.number(), adjustment.quantityDelta(),
                 adjustment.sku(), adjustment.stockPackageId().value(), adjustment.location());
         return toSummary(saved);
+    }
+
+    /**
+     * kltn-docs 20 §4.8 step 3, 17 §4.13 step 51: a {@code DAMAGED} write-off of a carton whose lot is a production
+     * order's is announced, for the Production Coordinator to be told; a carton of any other lot, or any other reason,
+     * is not. One announcement per approved adjustment, after the carton and its row are written.
+     */
+    private void announceDamagedProductionCarton(StockAdjustment adjustment,
+                                                 List<StockPackageContents.RowChange> changes, UUID approverId,
+                                                 Instant now) {
+        if (adjustment.reason() != AdjustmentReason.DAMAGED || adjustment.quantityDelta() >= 0) {
+            return;
+        }
+        changes.stream().map(change -> change.row().lotId()).filter(java.util.Objects::nonNull).distinct().findFirst()
+                .flatMap(lots::productionLotOf).ifPresent(lot -> {
+                    StockPackage carton = stockPackages.findById(adjustment.stockPackageId()).orElseThrow();
+                    UUID warehouseId = locations.warehouseOf(adjustment.location()).orElse(null);
+                    events.publish(new com.stockflow.contracts.ProductionCartonWrittenOffDamaged(Identifiers.newId(),
+                            adjustment.id(), adjustment.number(), adjustment.stockPackageId().value(), carton.lpn(),
+                            adjustment.sku().code(), lot.productionOrderCode(), lot.productionOrderId(), warehouseId,
+                            approverId, now));
+                });
     }
 
     /**
