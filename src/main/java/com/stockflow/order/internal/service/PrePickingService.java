@@ -27,9 +27,10 @@ import java.util.UUID;
  *
  * <p>The batch is deliberately not recorded as released while it is short: holding goes on for the batches not
  * released (17 §4.2 step 3 "hàng nhập về sau ... bù vào đợt sớm nhất còn thiếu"), so the goods that arrive later are
- * held for this batch, not the next one; and payment makes the installment before delivery due when the batch is held
- * in full (15 §4.1 step 2: "Đơn Ready to Fulfill"), not when its first cartons are picked. The release happens, as for
- * any order, once the batch is held in full ({@link OrderReleases}).</p>
+ * held for this batch, not the next one. The release happens, as for any order, once the batch is held in full
+ * ({@link OrderReleases}). The installment before delivery falls due at the first delivery ready (owner decision
+ * SCOPE-PARTIAL-1105; 15 §4.1 step 2): at that release, or earlier when Sales allowed a partial shipment and the part
+ * held goes towards dispatch ({@link #partGoesFirst}) - never when cartons are only picked to the staging area.</p>
  *
  * <p>Lock order: the caller holds the pick's lock; the order row next, then inventory's (SKU locks, reservations,
  * stock rows) - as every write of a task.</p>
