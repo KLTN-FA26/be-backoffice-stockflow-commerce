@@ -208,6 +208,8 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}", "fulfillment-load-plans:READ"),
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/layouts", "fulfillment-load-plans:READ"),
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/vehicles/{seq}/layout", "fulfillment-load-plans:READ"),
+            Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/vehicles/{seq}/loading-sheet.pdf",
+                    "fulfillment-load-plans:READ"),
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/reconciliation", "fulfillment-load-plans:READ"),
             Map.entry("POST /api/v1/fulfillment/load-plans", "fulfillment-load-plans:CREATE"),
             Map.entry("PUT /api/v1/fulfillment/load-plans/{loadPlanId}/inputs", "fulfillment-load-plans:UPDATE"),
