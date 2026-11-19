@@ -675,11 +675,11 @@ class FtlDispatchIntegrationTest {
                 ("\uFEFFMã chuyến,Mã vận đơn,Biển số,Tên tài xế,Điện thoại tài xế\r\n" + csv)
                         .getBytes(java.nio.charset.StandardCharsets.UTF_8));
         return as(user, role, org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                .multipart(BASE + "/waybill-imports" + withWarehouse(user, path)).file(file));
+                .multipart(BASE + "/waybill-imports" + forCaller(user, path)).file(file));
     }
 
     /** The import is made for a warehouse (RTM-WBIMPORT-WH): the caller's own. */
-    private String withWarehouse(UUID user, String path) {
+    private String forCaller(UUID user, String path) {
         return withWarehouse(user.equals(dispatcherElsewhere) ? elsewhereWarehouse : HCM, path);
     }
 
@@ -801,7 +801,7 @@ class FtlDispatchIntegrationTest {
             throws Exception {
         var file = new org.springframework.mock.web.MockMultipartFile("file", name, type, bytes);
         return as(user, role, org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                .multipart(BASE + "/waybill-imports" + withWarehouse(user, path)).file(file));
+                .multipart(BASE + "/waybill-imports" + forCaller(user, path)).file(file));
     }
 
     /** The template's table as a workbook: the heading row, then each line as text cells. */
