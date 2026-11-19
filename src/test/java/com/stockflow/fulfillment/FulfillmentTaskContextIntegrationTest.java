@@ -86,19 +86,19 @@ class FulfillmentTaskContextIntegrationTest {
     private UUID customerUser;
     private final List<UUID> placed = new ArrayList<>();
     private ConfirmedOrders confirmedOrders;
-    /** The demo customer's own sofa (a contract's lines are only ever that, 14 BR-04), with stock at HCM. */
-    private Sku sofa;
-    /** Its carton unit: two sofas, the size the orders and the stock both come in (whole cartons, 4C-2). */
-    private CustomerSkuRows.Issued sofaCarton;
+    /** The demo customer's own cup (a contract's lines are only ever that, 14 BR-04), with stock at HCM. */
+    private Sku cup;
+    /** Its carton unit: two cups, the size the orders and the stock both come in (whole cartons, 4C-2). */
+    private CustomerSkuRows.Issued cupCarton;
     /** Orders inserted as rows by {@link #taskRow}: removed again with their picks. */
     private final List<UUID> rowOrders = new ArrayList<>();
 
     @BeforeEach
     void setUp() {
         confirmedOrders = new ConfirmedOrders(context);
-        sofaCarton = CustomerSkuRows.like(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, "SOFA-3S-GREY", 2);
-        sofa = new Sku(sofaCarton.sku());
-        CustomerSkuRows.stock(jdbc, tx, sofa.code(), 10);
+        cupCarton = CustomerSkuRows.like(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, DemoData.SKU_STOCKED, 2);
+        cup = new Sku(cupCarton.sku());
+        CustomerSkuRows.stock(jdbc, tx, cup.code(), 10);
         hn = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height,
@@ -155,8 +155,8 @@ class FulfillmentTaskContextIntegrationTest {
     }
 
     /**
-     * A confirmed order of the demo customer - one carton of two sofas, its contract paid on signing - shipping from
-     * HCM, its sofas held there, released there (READY_TO_FULFILL).
+     * A confirmed order of the demo customer - one carton of two cups, its contract paid on signing - shipping from
+     * HCM, its cups held there, released there (READY_TO_FULFILL).
      */
     private OrderSummary confirmedOrder() {
         // G3-2 (kltn-docs 17 BR-02): only a released order enters fulfillment.
@@ -166,7 +166,7 @@ class FulfillmentTaskContextIntegrationTest {
     /** Signed and its installment on signing paid: CONFIRMED, no shipping warehouse chosen yet, nothing held. */
     private OrderSummary paidOrder() {
         UUID order = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
-                ConfirmedOrders.Line.cartons(sofaCarton, 1, 12_000_000)).orderId();
+                ConfirmedOrders.Line.cartons(cupCarton, 1, 12_000_000)).orderId();
         placed.add(order);
         return orders.findById(order).orElseThrow();
     }
@@ -263,16 +263,16 @@ class FulfillmentTaskContextIntegrationTest {
     void holdsOutsideTheOrderWarehouse() throws Exception {
         OrderSummary order = paidOrder();
         // 4B-7 (17 §4.2 step 5): a contract's order is released from its shipping warehouse once every carton is held
-        // there. The second warehouse has no sofa, so choosing it holds nothing and the release is refused - before the
+        // there. The second warehouse has no cup, so choosing it holds nothing and the release is refused - before the
         // order is READY_TO_FULFILL, rather than at task creation.
         confirmedOrders.ship(order.orderId(), hn);
         BusinessException refused = (BusinessException) org.assertj.core.api.Assertions.catchThrowable(
                 () -> releases.release(order.orderId(), hn, coordinator));
         assertThat(refused.errorCode()).isEqualTo(ErrorCode.ORDER_STOCK_NOT_HELD);
-        assertThat(refused.getMessage()).contains(sofa.code());
+        assertThat(refused.getMessage()).contains(cup.code());
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
         assertThat(jdbc.queryForList("SELECT status FROM inventory.stock_reservation WHERE order_id = ?",
-                String.class, order.orderId())).as("nothing of the sofa held at the second warehouse").isEmpty();
+                String.class, order.orderId())).as("nothing of the cup held at the second warehouse").isEmpty();
 
         call(post("/api/v1/fulfillment/tasks").header("Authorization", token(coordinator, "SYSTEM_ADMIN"))
                 .contentType("application/json").content(create(order.orderId(), pickerHn)))
@@ -339,7 +339,7 @@ class FulfillmentTaskContextIntegrationTest {
                 .andExpect(jsonPath("$.data.assignedUserName").value("test-" + pickerHcm))
                 .andExpect(jsonPath("$.data.lines.length()").value(1))
                 .andExpect(jsonPath("$.data.lines[0].lineId").value(order.lines().getFirst().lineId().toString()))
-                .andExpect(jsonPath("$.data.lines[0].sku").value(sofa.code()))
+                .andExpect(jsonPath("$.data.lines[0].sku").value(cup.code()))
                 .andExpect(jsonPath("$.data.lines[0].quantity").value(2))
                 .andExpect(jsonPath("$.data.lines[0].printLine").value(false))
                 .andExpect(jsonPath("$.data.lines[0].designSnapshotId").doesNotExist());

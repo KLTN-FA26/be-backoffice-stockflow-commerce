@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.support.ConfirmedOrders;
 import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
@@ -70,7 +69,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "stockflow.fulfillment.carrier-booking-sweep-interval=PT24H"})
 class FakeAhamoveIntegrationTest {
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String BASE = "/api/v1/fulfillment";
     private static final String PLANS = BASE + "/load-plans";
@@ -94,7 +92,6 @@ class FakeAhamoveIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        CartonStationSupport.giveCartonsASize(tx, jdbc);
         coordinator = staff("WAREHOUSE_MANAGER", HCM);
         manager = staff("WAREHOUSE_MANAGER", HCM);
         picker = staff("WAREHOUSE_STAFF", HCM);
@@ -180,18 +177,19 @@ class FakeAhamoveIntegrationTest {
     }
 
     private ConfirmedOrders confirmedOrders;
-    private CustomerSkuRows.Issued sofa;
+    private CustomerSkuRows.Issued cup;
 
     private OrderSummary ftlOrder() {
         if (confirmedOrders == null) {
             confirmedOrders = new ConfirmedOrders(context);
         }
-        if (sofa == null) {
-            sofa = CustomerSkuRows.like(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, SOFA.code(), 2);
+        if (cup == null) {
+            cup = CustomerSkuRows.like(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, DemoData.SKU_STOCKED, 2);
+            CartonStationSupport.giveCartonsASize(tx, jdbc, cup.sku());
         }
-        CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 2);
+        CustomerSkuRows.stock(jdbc, tx, cup.sku(), 2);
         ConfirmedOrders.Signed signed = confirmedOrders.signed(DemoData.CUSTOMER_ID, ConfirmedOrders.paidOnSigning(),
-                ConfirmedOrders.Line.cartons(sofa, 1, 6_000_000));
+                ConfirmedOrders.Line.cartons(cup, 1, 6_000_000));
         return confirmedOrders.release(confirmedOrders.pay(signed).orderId(), HCM, coordinator);
     }
 

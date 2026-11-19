@@ -2,7 +2,6 @@ package com.stockflow.fulfillment;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.order.api.OrderService;
@@ -71,7 +70,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "stockflow.upload-inspection.enabled=false"})
 class ControlledUnloadIntegrationTest {
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
     private static final Duration ASYNC = Duration.ofSeconds(15);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String ORDERS = "/api/v1/orders";
@@ -103,7 +101,6 @@ class ControlledUnloadIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        CartonStationSupport.giveCartonsASize(tx, jdbc);
         coordinator = staff("WAREHOUSE_MANAGER", HCM);
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
@@ -188,20 +185,20 @@ class ControlledUnloadIntegrationTest {
     }
 
     /**
-     * A paid order of {@code sofas} sofas for the customer, released at HCM (every order is a full truckload): a
-     * contract's order, one carton of two pieces per sofa (14 BR-08), its sealed cartons held at HCM and picked one by
+     * A paid order of {@code cartons} cartons for the customer, released at HCM (every order is a full truckload): a
+     * contract's order, one carton of two pieces each (14 BR-08), its sealed cartons held at HCM and picked one by
      * one by their LPN (4C).
      */
-    private OrderSummary ftlOrder(int sofas, UUID customer) throws Exception {
-        return ftlOrder(sofas, customer, ConfirmedOrders.paidOnSigning());
+    private OrderSummary ftlOrder(int cartons, UUID customer) throws Exception {
+        return ftlOrder(cartons, customer, ConfirmedOrders.paidOnSigning());
     }
 
     /** The same, its contract paying as {@code plan} says; the installments on signing are paid. */
-    private OrderSummary ftlOrder(int sofas, UUID customer, List<SalesContracts.Installment> plan) throws Exception {
-        CustomerSkuRows.Issued issued = sofaOf(customer);
-        CustomerSkuRows.stock(jdbc, tx, issued.sku(), 2 * sofas);
+    private OrderSummary ftlOrder(int cartons, UUID customer, List<SalesContracts.Installment> plan) throws Exception {
+        CustomerSkuRows.Issued issued = cupOf(customer);
+        CustomerSkuRows.stock(jdbc, tx, issued.sku(), 2 * cartons);
         ConfirmedOrders.Signed signed = confirmedOrders().signed(customer, plan,
-                ConfirmedOrders.Line.cartons(issued, sofas, 6_000_000));
+                ConfirmedOrders.Line.cartons(issued, cartons, 6_000_000));
         return confirmedOrders().release(confirmedOrders().pay(signed).orderId(), HCM, coordinator);
     }
 
@@ -214,16 +211,23 @@ class ControlledUnloadIntegrationTest {
         return confirmedOrders;
     }
 
-    private final java.util.Map<UUID, CustomerSkuRows.Issued> sofas = new java.util.HashMap<>();
+    private final java.util.Map<UUID, CustomerSkuRows.Issued> cupSkus = new java.util.HashMap<>();
 
-    /** The customer's own sofa, handling like the catalogue's, sold in cartons of two (a contract's lines are only ever the customer's, 14 BR-04). */
-    private CustomerSkuRows.Issued sofaOf(UUID customer) {
-        return sofas.computeIfAbsent(customer,
-                c -> CustomerSkuRows.like(jdbc, tx, entityManager, c, SOFA.code(), 2));
+    /**
+     * The customer's own SKU, handling like the demo cup, sold in cartons of two (a contract's lines are only ever the
+     * customer's, 14 BR-04), its carton the big one the truck maths below were measured with (215 x 95 x 90 cm,
+     * 52.5 kg).
+     */
+    private CustomerSkuRows.Issued cupOf(UUID customer) {
+        return cupSkus.computeIfAbsent(customer, c -> {
+            CustomerSkuRows.Issued issued = CustomerSkuRows.like(jdbc, tx, entityManager, c, DemoData.SKU_STOCKED, 2);
+            CartonStationSupport.giveCartonsASize(tx, jdbc, issued.sku());
+            return issued;
+        });
     }
 
-    private OrderSummary ftlOrder(int sofas) throws Exception {
-        return ftlOrder(sofas, DemoData.CUSTOMER_ID);
+    private OrderSummary ftlOrder(int cartons) throws Exception {
+        return ftlOrder(cartons, DemoData.CUSTOMER_ID);
     }
     /** The order picked and packed at the check station, one shipment of all its cartons. Returns the shipment and task. */
     private UUID[] packed(OrderSummary order) throws Exception {
@@ -396,7 +400,7 @@ class ControlledUnloadIntegrationTest {
             + "by the manager without a scan (overridden, who, when, note); then the replacement is loaded and both "
             + "sign - the plan is DISPATCHED. Never a reopening")
     void oneVehicleBackToPlannedWithTheSameLayout() throws Exception {
-        CartonStationSupport.giveSofaCartonsAWeight(tx, jdbc, "1200");   // a 2.5 t truck takes two of them (4300 mm = two cartons end to end, 2400 kg): four cartons, two trucks
+        CartonStationSupport.giveHeavyCartons(tx, jdbc, cupOf(DemoData.CUSTOMER_ID).sku(), new BigDecimal("1200"));   // a 2.5 t truck takes two of them (4300 mm = two cartons end to end, 2400 kg): four cartons, two trucks
         OrderSummary order = ftlOrder(4);
         UUID shipment = packed(order)[0];
         JsonNode plan = confirmed(List.of(shipment), truck2t5);
@@ -724,7 +728,7 @@ class ControlledUnloadIntegrationTest {
             + "parcels still to scan off; the shipment is no candidate and no new plan takes it (PACKAGE_UNLOAD_PENDING) "
             + "until every parcel is off, then it can be planned again; calling it off again changes nothing")
     void wholePlanCancelledAtOnce() throws Exception {
-        CartonStationSupport.giveSofaCartonsAWeight(tx, jdbc, "1200");   // a 2.5 t truck takes two of them (4300 mm = two cartons end to end, 2400 kg): four cartons, two trucks
+        CartonStationSupport.giveHeavyCartons(tx, jdbc, cupOf(DemoData.CUSTOMER_ID).sku(), new BigDecimal("1200"));   // a 2.5 t truck takes two of them (4300 mm = two cartons end to end, 2400 kg): four cartons, two trucks
         UUID shipment = packed(ftlOrder(4))[0];
         JsonNode plan = confirmed(List.of(shipment), truck2t5);
         String v1 = loadOf(plan, 1);

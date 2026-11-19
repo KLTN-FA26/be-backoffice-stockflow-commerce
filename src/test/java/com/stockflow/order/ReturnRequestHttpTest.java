@@ -79,7 +79,7 @@ class ReturnRequestHttpTest {
                     customerA, UUID.randomUUID(), DemoData.WAREHOUSE_HCM, staff, DemoData.WAREHOUSE_HCM, staff);
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-                    VALUES (?, ?, 'SOFA-3S-GREY', 3, 1000000, 'VND')""", lineOfA, orderOfA);
+                    VALUES (?, ?, ?, 3, 1000000, 'VND')""", lineOfA, orderOfA, DemoData.SKU_STOCKED);
         });
     }
 

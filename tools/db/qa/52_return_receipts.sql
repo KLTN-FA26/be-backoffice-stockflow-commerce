@@ -59,12 +59,12 @@ CREATE FUNCTION pg_temp.scan(receipt_key TEXT, carton_key TEXT, lpn TEXT, lot TE
     SELECT format($f$
         INSERT INTO procurement.goods_receipt_return_cartons (id, receipt_id, stock_package_id, lpn, sku, lot_number,
                                                               quantity, scanned_by)
-        VALUES (gen_random_uuid(), md5(%L)::uuid, md5(%L)::uuid, %L, 'SOFA-3S-GREY', %L, %s,
+        VALUES (gen_random_uuid(), md5(%L)::uuid, md5(%L)::uuid, %L, 'LY-GIAY-DEMO-12OZ-XANH', %L, %s,
                 md5('demo:user:editor')::uuid)$f$, receipt_key, carton_key, lpn, lot, quantity)
 $$;
 
 -- Fixtures, written with triggers and foreign keys off (what the cartons and orders went through before is not this
--- file's subject): two orders of HCM (O1, O2) with a line of sofas each; O1 picked cartons C1 (shipped) and C3 (put
+-- file's subject): two orders of HCM (O1, O2) with a line of cups each; O1 picked cartons C1 (shipped) and C3 (put
 -- back), O2 picked C2; O1's shipment S1 came back (RETURNED), S2 was DELIVERED; O2's shipment S3 came back; O1 has an
 -- approved return request awaiting its goods (RMA1) and one only requested (RMA2). A warehouse of its own (QA52) with
 -- a QUARANTINE area of its own.
@@ -85,29 +85,29 @@ VALUES (md5('qa52:o1')::uuid, 'SO-QA52-O1', 'c0000000-0000-4000-8000-00000000000
        (md5('qa52:o2')::uuid, 'SO-QA52-O2', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'PICKING',
         1000, 'VND', NOW(), NOW(), md5('demo:wh:HCM')::uuid);
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-VALUES (md5('qa52:o1:l')::uuid, md5('qa52:o1')::uuid, 'SOFA-3S-GREY', 8, 100, 'VND'),
-       (md5('qa52:o2:l')::uuid, md5('qa52:o2')::uuid, 'SOFA-3S-GREY', 4, 100, 'VND');
+VALUES (md5('qa52:o1:l')::uuid, md5('qa52:o1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 8, 100, 'VND'),
+       (md5('qa52:o2:l')::uuid, md5('qa52:o2')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 4, 100, 'VND');
 
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-VALUES (md5('qa52:unit')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA52_CTN', 4);
+VALUES (md5('qa52:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA52_CTN', 4);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
                                      location_code, status, closed_at)
-VALUES (md5('qa52:c1')::uuid, 'QA52-LPN-1', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa52:unit')::uuid, 4, 4,
+VALUES (md5('qa52:c1')::uuid, 'QA52-LPN-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa52:unit')::uuid, 4, 4,
         'HCM-A01-1-A', 'CONSUMED', NOW()),
-       (md5('qa52:c2')::uuid, 'QA52-LPN-2', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa52:unit')::uuid, 4, 4,
+       (md5('qa52:c2')::uuid, 'QA52-LPN-2', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa52:unit')::uuid, 4, 4,
         'HCM-A01-1-A', 'CONSUMED', NOW()),
-       (md5('qa52:c3')::uuid, 'QA52-LPN-3', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa52:unit')::uuid, 4, 4,
+       (md5('qa52:c3')::uuid, 'QA52-LPN-3', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa52:unit')::uuid, 4, 4,
         'HCM-A01-1-A', 'CONSUMED', NOW());
 -- Written with triggers off, so the lot is named here: lot_id is NOT NULL since V20261113000300 (4C-3).
 INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)
-VALUES (md5('qa52:lot')::uuid, 'SOFA-3S-GREY', 'PO-QA52-LOT', NOW() - interval '30 days', 'UNTRACED', NOW());
+VALUES (md5('qa52:lot')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'PO-QA52-LOT', NOW() - interval '30 days', 'UNTRACED', NOW());
 INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, lot_id, on_hand, reserved, status, created_at,
                                   received_at, stock_package_id)
-VALUES (md5('qa52:c1:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'PO-QA52-LOT', md5('qa52:lot')::uuid, 0, 0, 'AVAILABLE',
+VALUES (md5('qa52:c1:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'PO-QA52-LOT', md5('qa52:lot')::uuid, 0, 0, 'AVAILABLE',
         NOW(), NOW() - interval '30 days', md5('qa52:c1')::uuid),
-       (md5('qa52:c2:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'PO-QA52-LOT', md5('qa52:lot')::uuid, 0, 0, 'AVAILABLE',
+       (md5('qa52:c2:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'PO-QA52-LOT', md5('qa52:lot')::uuid, 0, 0, 'AVAILABLE',
         NOW(), NOW() - interval '30 days', md5('qa52:c2')::uuid),
-       (md5('qa52:c3:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'PO-QA52-LOT', md5('qa52:lot')::uuid, 0, 0, 'AVAILABLE',
+       (md5('qa52:c3:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'PO-QA52-LOT', md5('qa52:lot')::uuid, 0, 0, 'AVAILABLE',
         NOW(), NOW() - interval '30 days', md5('qa52:c3')::uuid);
 
 INSERT INTO fulfillment.pick (id, order_id, order_number, warehouse_id, status, created_at)
@@ -116,12 +116,12 @@ VALUES (md5('qa52:p1')::uuid, md5('qa52:o1')::uuid, 'SO-QA52-O1', md5('demo:wh:H
 INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, sku, location_code, allocated_qty, picked_qty,
                                    put_back_qty, status, lpn, whole_carton, picked_by, picked_at, put_back_at,
                                    put_back_by, put_back_location_code)
-VALUES (gen_random_uuid(), md5('qa52:p1')::uuid, md5('qa52:o1:l')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 4, 4, 0,
+VALUES (gen_random_uuid(), md5('qa52:p1')::uuid, md5('qa52:o1:l')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 4, 4, 0,
         'PICKED', 'QA52-LPN-1', TRUE, md5('demo:user:editor')::uuid, NOW(), NULL, NULL, NULL),
-       (gen_random_uuid(), md5('qa52:p1')::uuid, md5('qa52:o1:l')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 4, 4, 4,
+       (gen_random_uuid(), md5('qa52:p1')::uuid, md5('qa52:o1:l')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 4, 4, 4,
         'PUT_BACK', 'QA52-LPN-3', TRUE, md5('demo:user:editor')::uuid, NOW(), NOW(), md5('demo:user:editor')::uuid,
         'HCM-A01-1-A'),
-       (gen_random_uuid(), md5('qa52:p2')::uuid, md5('qa52:o2:l')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 4, 4, 0,
+       (gen_random_uuid(), md5('qa52:p2')::uuid, md5('qa52:o2:l')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 4, 4, 0,
         'PICKED', 'QA52-LPN-2', TRUE, md5('demo:user:editor')::uuid, NOW(), NULL, NULL, NULL);
 
 INSERT INTO fulfillment.shipment (id, order_id, status, code, warehouse_id, ready_at, created_at, handed_over_at,
@@ -243,7 +243,7 @@ SELECT pg_temp.expect_fail('RC6 a carton scanned on a purchase receipt',
 SELECT pg_temp.expect_fail('RC7 a carton with a blank condition note', $q$
     INSERT INTO procurement.goods_receipt_return_cartons (id, receipt_id, stock_package_id, lpn, sku, lot_number,
                                                           quantity, condition_note, scanned_by)
-    VALUES (gen_random_uuid(), md5('qa52:r:s1')::uuid, md5('qa52:c1')::uuid, 'QA52-LPN-1', 'SOFA-3S-GREY',
+    VALUES (gen_random_uuid(), md5('qa52:r:s1')::uuid, md5('qa52:c1')::uuid, 'QA52-LPN-1', 'LY-GIAY-DEMO-12OZ-XANH',
             'PO-QA52-LOT', 4, '  ', md5('demo:user:editor')::uuid) $q$);
 SELECT pg_temp.expect_ok('RC8 the shipped carton, with its LPN, count and original lot',
     pg_temp.scan('qa52:r:s1', 'qa52:c1', 'QA52-LPN-1', 'PO-QA52-LOT', 4));
@@ -257,7 +257,7 @@ SELECT pg_temp.expect_fail('RC11 the count of a scanned carton changed', $q$
 SELECT pg_temp.expect_ok('RC12 a carton scanned by mistake removed while the receipt is a draft', $q$
     INSERT INTO procurement.goods_receipt_return_cartons (id, receipt_id, stock_package_id, lpn, sku, lot_number,
                                                           quantity, scanned_by)
-    VALUES (md5('qa52:rc12')::uuid, md5('qa52:r:rma1')::uuid, md5('qa52:c1')::uuid, 'QA52-LPN-1', 'SOFA-3S-GREY',
+    VALUES (md5('qa52:rc12')::uuid, md5('qa52:r:rma1')::uuid, md5('qa52:c1')::uuid, 'QA52-LPN-1', 'LY-GIAY-DEMO-12OZ-XANH',
             'PO-QA52-LOT', 4, md5('demo:user:editor')::uuid);
     DELETE FROM procurement.goods_receipt_return_cartons WHERE id = md5('qa52:rc12')::uuid $q$);
 SELECT pg_temp.expect_true('RC13 a carton scanned with no count is counted whole (V20261201000310)',
@@ -279,7 +279,7 @@ SELECT pg_temp.expect_fail('RL1 a GOODS_RECEIPT line that is not a RECEIPT', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
                                           quantity, from_status, to_status, reference_type, reference_id, occurred_at,
                                           from_stock_package_id, to_stock_package_id)
-    VALUES (gen_random_uuid(), 'MOVE', 'SOFA-3S-GREY', 'PO-QA52-LOT', 'HCM-A01-1-A', 'HCM-QC01', 4, 'AVAILABLE',
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'PO-QA52-LOT', 'HCM-A01-1-A', 'HCM-QC01', 4, 'AVAILABLE',
             'QUARANTINE', 'GOODS_RECEIPT', md5('qa52:r:s1')::uuid, NOW(), md5('qa52:c1')::uuid,
             md5('qa52:c1')::uuid) $q$);
 SELECT pg_temp.expect_fail('RL2 a return received as AVAILABLE stock (it goes into QUARANTINE, out of ATP)', $q$
@@ -288,12 +288,12 @@ SELECT pg_temp.expect_fail('RL2 a return received as AVAILABLE stock (it goes in
     UPDATE inventory.stock_item SET on_hand = 4, location_code = 'HCM-QC01' WHERE id = md5('qa52:c1:row')::uuid;
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, to_location_code, quantity, to_status,
                                           reference_type, reference_id, occurred_at, to_stock_package_id)
-    VALUES (gen_random_uuid(), 'RECEIPT', 'SOFA-3S-GREY', 'PO-QA52-LOT', 'HCM-QC01', 4, 'AVAILABLE', 'GOODS_RECEIPT',
+    VALUES (gen_random_uuid(), 'RECEIPT', 'LY-GIAY-DEMO-12OZ-XANH', 'PO-QA52-LOT', 'HCM-QC01', 4, 'AVAILABLE', 'GOODS_RECEIPT',
             md5('qa52:r:s1')::uuid, NOW(), md5('qa52:c1')::uuid) $q$);
 SELECT pg_temp.expect_fail('RL3 a return received loose, naming no carton', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, to_location_code, quantity, to_status,
                                           reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'RECEIPT', 'SOFA-3S-GREY', 'PO-QA52-LOT', 'HCM-QC01', 4, 'QUARANTINE', 'GOODS_RECEIPT',
+    VALUES (gen_random_uuid(), 'RECEIPT', 'LY-GIAY-DEMO-12OZ-XANH', 'PO-QA52-LOT', 'HCM-QC01', 4, 'QUARANTINE', 'GOODS_RECEIPT',
             md5('qa52:r:s1')::uuid, NOW()) $q$);
 
 \echo '--- DRAFT -> CLOSED with every carton received into its area; never through putaway (03 §5)'
@@ -316,7 +316,7 @@ SELECT pg_temp.expect_fail('RS5 the carton received into another place than the 
      WHERE id = md5('qa52:c1:row')::uuid;
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, to_location_code, quantity, to_status,
                                           reference_type, reference_id, occurred_at, to_stock_package_id)
-    VALUES (gen_random_uuid(), 'RECEIPT', 'SOFA-3S-GREY', 'PO-QA52-LOT', 'HCM-RTV01', 4, 'QUARANTINE', 'GOODS_RECEIPT',
+    VALUES (gen_random_uuid(), 'RECEIPT', 'LY-GIAY-DEMO-12OZ-XANH', 'PO-QA52-LOT', 'HCM-RTV01', 4, 'QUARANTINE', 'GOODS_RECEIPT',
             md5('qa52:r:s1')::uuid, NOW(), md5('qa52:c1')::uuid);
     UPDATE procurement.goods_receipts SET status = 'CLOSED', confirmed_at = now(), closed_at = now(),
            confirmed_by = md5('demo:user:editor')::uuid WHERE id = md5('qa52:r:s1')::uuid $q$);
@@ -329,7 +329,7 @@ SELECT pg_temp.expect_ok('RS6 confirmed: the carton back whole and sealed in HCM
      WHERE id = md5('qa52:c1:row')::uuid;
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, to_location_code, quantity, to_status,
                                           reference_type, reference_id, occurred_at, to_stock_package_id)
-    VALUES (gen_random_uuid(), 'RECEIPT', 'SOFA-3S-GREY', 'PO-QA52-LOT', 'HCM-QC01', 4, 'QUARANTINE', 'GOODS_RECEIPT',
+    VALUES (gen_random_uuid(), 'RECEIPT', 'LY-GIAY-DEMO-12OZ-XANH', 'PO-QA52-LOT', 'HCM-QC01', 4, 'QUARANTINE', 'GOODS_RECEIPT',
             md5('qa52:r:s1')::uuid, NOW(), md5('qa52:c1')::uuid);
     UPDATE procurement.goods_receipts SET status = 'CLOSED', confirmed_at = now(), closed_at = now(),
            confirmed_by = md5('demo:user:editor')::uuid WHERE id = md5('qa52:r:s1')::uuid $q$);
@@ -343,7 +343,7 @@ SELECT pg_temp.expect_true('RS8 no putaway task was opened for the return receip
 SELECT pg_temp.expect_fail('RS9 a second ledger line for the same receipt and carton', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, to_location_code, quantity, to_status,
                                           reference_type, reference_id, occurred_at, to_stock_package_id)
-    VALUES (gen_random_uuid(), 'RECEIPT', 'SOFA-3S-GREY', 'PO-QA52-LOT', 'HCM-QC01', 4, 'QUARANTINE', 'GOODS_RECEIPT',
+    VALUES (gen_random_uuid(), 'RECEIPT', 'LY-GIAY-DEMO-12OZ-XANH', 'PO-QA52-LOT', 'HCM-QC01', 4, 'QUARANTINE', 'GOODS_RECEIPT',
             md5('qa52:r:s1')::uuid, NOW(), md5('qa52:c1')::uuid) $q$);
 SELECT pg_temp.expect_fail('RS10 a carton removed from a closed return receipt', $q$
     DELETE FROM procurement.goods_receipt_return_cartons WHERE receipt_id = md5('qa52:r:s1')::uuid $q$);

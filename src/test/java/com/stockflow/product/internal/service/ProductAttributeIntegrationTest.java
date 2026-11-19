@@ -34,7 +34,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
 
-import static com.stockflow.support.DemoData.PRODUCT_SOFA;
+import static com.stockflow.support.DemoData.PRODUCT_BOX;
 import static com.stockflow.support.DemoData.demoId;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
@@ -48,11 +48,11 @@ class ProductAttributeIntegrationTest {
 
     private static final UUID COLOR = demoId("demo:attr:COLOR");
     private static final UUID GREY = demoId("demo:val:COLOR:GREY");
+    private static final UUID BLUE = demoId("demo:cups:attribute-value:COLOR:BLUE");
+    /** The demo's LENGTH has no value since the furniture left (V20261206000100): a test adds the one it needs. */
     private static final UUID LENGTH = demoId("demo:attr:LENGTH");
-    private static final UUID LENGTH_160 = demoId("demo:val:LENGTH:160");
     private static final UUID MATERIAL = demoId("demo:attr:MATERIAL");
-    private static final UUID FABRIC = demoId("demo:val:MATERIAL:FABRIC");
-    private static final UUID OAK = demoId("demo:val:MATERIAL:OAK");
+    private static final UUID PAPER = demoId("demo:cups:attribute-value:MATERIAL:PAPER");
 
     @Autowired ProductAttributeService service;
     @Autowired ProductService products;
@@ -98,9 +98,16 @@ class ProductAttributeIntegrationTest {
         return new DescriptiveSpec(attribute, order, List.of(value), null, null, null);
     }
 
-    private UUID addBlue() {
-        return dictionary.addValue(COLOR, "BLUE", new AttributeValueDetails("Xanh", null, "#0000FF", 1)).values()
-                .stream().filter(v -> v.code().equals("BLUE")).findFirst().orElseThrow().id();
+    /** A length of 160 cm, rolled back with the test. */
+    private UUID addLength160() {
+        return dictionary.addValue(LENGTH, "160", new AttributeValueDetails("160 cm", new java.math.BigDecimal("160"),
+                null, 0)).values().stream().filter(v -> v.code().equals("160")).findFirst().orElseThrow().id();
+    }
+
+    /** A second material next to the demo's PAPER, rolled back with the test. */
+    private UUID addKraft() {
+        return dictionary.addValue(MATERIAL, "KRAFT", new AttributeValueDetails("Giấy kraft", null, null, 1)).values()
+                .stream().filter(v -> v.code().equals("KRAFT")).findFirst().orElseThrow().id();
     }
 
     private UUID addColor(String code, int sortOrder) {
@@ -128,21 +135,18 @@ class ProductAttributeIntegrationTest {
     }
 
     @Test
-    void getShowsTheDemoSofa() {
-        ProductAttributesView view = service.get(PRODUCT_SOFA);
+    void getShowsTheDemoBox() {
+        ProductAttributesView view = service.get(PRODUCT_BOX);
 
-        assertThat(view.productId()).isEqualTo(PRODUCT_SOFA);
-        assertThat(view.axes()).singleElement().satisfies(a -> {
-            assertThat(a.code()).isEqualTo("COLOR");
-            assertThat(a.options()).extracting(OptionView::code, OptionView::usedByVariant)
-                    .containsExactly(tuple("GREY", true));
-            assertThat(a.options().getFirst().hexColor()).isEqualTo("#8A8A8A");
-        });
-        assertThat(view.descriptives()).singleElement().satisfies(d -> {
-            assertThat(d.code()).isEqualTo("MATERIAL");
-            assertThat(d.values()).extracting(ValueRef::code).containsExactly("FABRIC");
-            assertThat(d.text()).isNull();
-        });
+        assertThat(view.productId()).isEqualTo(PRODUCT_BOX);
+        assertThat(view.axes()).extracting(AxisView::code).containsExactly("COLOR", "MATERIAL");
+        assertThat(view.axes().getFirst().options()).extracting(OptionView::code, OptionView::usedByVariant)
+                .containsExactly(tuple("GREY", true), tuple("BLUE", true));
+        assertThat(view.axes().getFirst().options()).extracting(OptionView::hexColor)
+                .containsExactly("#8A8A8A", "#2F6FD0");
+        assertThat(view.axes().get(1).options()).extracting(OptionView::code, OptionView::usedByVariant)
+                .containsExactly(tuple("PAPER", true));
+        assertThat(view.descriptives()).isEmpty();
     }
 
     @Test
@@ -150,8 +154,8 @@ class ProductAttributeIntegrationTest {
         UUID product = draftProduct();
         assertThat(service.get(product).axes()).isEmpty();
 
-        service.replaceAxes(product, List.of(axis(COLOR, 0, GREY), axis(LENGTH, 1, LENGTH_160)));
-        service.replaceDescriptives(product, List.of(select(MATERIAL, 0, OAK)));
+        service.replaceAxes(product, List.of(axis(COLOR, 0, GREY), axis(LENGTH, 1, addLength160())));
+        service.replaceDescriptives(product, List.of(select(MATERIAL, 0, PAPER)));
         entityManager.flush();
         entityManager.clear();
 
@@ -162,26 +166,29 @@ class ProductAttributeIntegrationTest {
         assertThat(view.axes()).flatExtracting(AxisView::options).extracting(OptionView::usedByVariant)
                 .containsOnly(false);
         assertThat(view.descriptives()).extracting(DescriptiveView::code).containsExactly("MATERIAL");
-        assertThat(view.descriptives().getFirst().values()).extracting(ValueRef::code).containsExactly("OAK");
+        assertThat(view.descriptives().getFirst().values()).extracting(ValueRef::code).containsExactly("PAPER");
     }
 
     @Test
-    void theSofaCanGainAnOptionButNotAnAxis() {
-        UUID blue = addBlue();
+    void theBoxCanGainAnOptionButNotAnAxis() {
+        UUID red = addColor("ZZ_RED", 2);
 
-        ProductAttributesView grown = service.replaceAxes(PRODUCT_SOFA, List.of(axis(COLOR, 0, GREY, blue)));
-        assertThat(grown.axes().getFirst().options()).extracting(OptionView::code).containsExactlyInAnyOrder("GREY", "BLUE");
+        ProductAttributesView grown = service.replaceAxes(PRODUCT_BOX,
+                List.of(axis(COLOR, 0, GREY, BLUE, red), axis(MATERIAL, 1, PAPER)));
+        assertThat(grown.axes().getFirst().options()).extracting(OptionView::code)
+                .containsExactlyInAnyOrder("GREY", "BLUE", "ZZ_RED");
 
-        assertThat(errorOf(() -> service.replaceAxes(PRODUCT_SOFA,
-                List.of(axis(COLOR, 0, GREY), axis(LENGTH, 1, LENGTH_160))))).isEqualTo(ErrorCode.PRODUCT_AXES_LOCKED);
+        UUID length = addLength160();
+        assertThat(errorOf(() -> service.replaceAxes(PRODUCT_BOX,
+                List.of(axis(COLOR, 0, GREY, BLUE), axis(MATERIAL, 1, PAPER), axis(LENGTH, 2, length)))))
+                .isEqualTo(ErrorCode.PRODUCT_AXES_LOCKED);
     }
 
     @Test
-    void removingTheSofasUsedOptionIsRefused() {
-        UUID blue = addBlue();
-
-        assertThat(errorOf(() -> service.replaceAxes(PRODUCT_SOFA, List.of(axis(COLOR, 0, blue)))))
-                .isEqualTo(ErrorCode.ATTRIBUTE_IN_USE);
+    void removingTheBoxesUsedOptionIsRefused() {
+        // GREY left out: a variant of the box is grey.
+        assertThat(errorOf(() -> service.replaceAxes(PRODUCT_BOX,
+                List.of(axis(COLOR, 0, BLUE), axis(MATERIAL, 1, PAPER))))).isEqualTo(ErrorCode.ATTRIBUTE_IN_USE);
     }
 
     @Test
@@ -194,7 +201,7 @@ class ProductAttributeIntegrationTest {
         UUID product = draftProduct();
         assertThat(errorOf(() -> service.replaceAxes(product, List.of(axis(UUID.randomUUID(), 0, GREY)))))
                 .isEqualTo(ErrorCode.ATTRIBUTE_NOT_FOUND);
-        assertThat(errorOf(() -> service.replaceDescriptives(product, List.of(select(UUID.randomUUID(), 0, FABRIC)))))
+        assertThat(errorOf(() -> service.replaceDescriptives(product, List.of(select(UUID.randomUUID(), 0, PAPER)))))
                 .isEqualTo(ErrorCode.ATTRIBUTE_NOT_FOUND);
     }
 
@@ -203,7 +210,7 @@ class ProductAttributeIntegrationTest {
         UUID product = draftProduct();
         products.submit(product, user);
 
-        assertThat(errorOf(() -> service.replaceDescriptives(product, List.of(select(MATERIAL, 0, FABRIC)))))
+        assertThat(errorOf(() -> service.replaceDescriptives(product, List.of(select(MATERIAL, 0, PAPER)))))
                 .isEqualTo(ErrorCode.INVALID_PRODUCT_STATUS_TRANSITION);
         assertThat(errorOf(() -> service.replaceAxes(product, List.of(axis(COLOR, 0, GREY)))))
                 .isEqualTo(ErrorCode.INVALID_PRODUCT_STATUS_TRANSITION);
@@ -219,16 +226,16 @@ class ProductAttributeIntegrationTest {
     @Test
     void aChangedSetIsWrittenToTheHistoryAndAnUnchangedOneIsNot() {
         UUID product = draftProduct();
-        UUID blue = addBlue();
+        UUID kraft = addKraft();
 
         service.replaceAxes(product, List.of(axis(COLOR, 0, GREY)));
         service.replaceAxes(product, List.of(axis(COLOR, 0, GREY)));
-        service.replaceAxes(product, List.of(axis(COLOR, 0, blue, GREY)));
+        service.replaceAxes(product, List.of(axis(COLOR, 0, BLUE, GREY)));
         // The same axes again, the options in another order: nothing changed.
-        service.replaceAxes(product, List.of(axis(COLOR, 0, GREY, blue)));
-        service.replaceDescriptives(product, List.of(select(MATERIAL, 0, OAK)));
-        service.replaceDescriptives(product, List.of(select(MATERIAL, 0, OAK)));
-        service.replaceDescriptives(product, List.of(select(MATERIAL, 0, FABRIC)));
+        service.replaceAxes(product, List.of(axis(COLOR, 0, GREY, BLUE)));
+        service.replaceDescriptives(product, List.of(select(MATERIAL, 0, PAPER)));
+        service.replaceDescriptives(product, List.of(select(MATERIAL, 0, PAPER)));
+        service.replaceDescriptives(product, List.of(select(MATERIAL, 0, kraft)));
 
         assertThat(updates(product)).containsExactly("axes", "axes", "descriptiveAttributes", "descriptiveAttributes");
     }

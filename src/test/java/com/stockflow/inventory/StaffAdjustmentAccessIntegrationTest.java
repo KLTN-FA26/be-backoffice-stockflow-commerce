@@ -7,6 +7,7 @@ import com.stockflow.common.security.Role;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
 import org.junit.jupiter.api.BeforeEach;
@@ -92,8 +93,8 @@ class StaffAdjustmentAccessIntegrationTest {
         // path (InventoryService.requestAdjustment without an LPN) is refused before its lot is looked at.
         for (String lot : new String[] {null, "  ", "L-ANY"}) {
             BusinessException refused = org.assertj.core.api.Assertions.catchThrowableOfType(BusinessException.class,
-                    () -> inventory.requestAdjustment(new RequestAdjustmentCommand("HCM-A01-1-B", new Sku("SOFA-3S-GREY"),
-                            lot, -1, StockAdjustmentReason.DAMAGED, null, clerk)));
+                    () -> inventory.requestAdjustment(new RequestAdjustmentCommand("HCM-A01-1-B",
+                            new Sku(DemoData.SKU_STOCKED), lot, -1, StockAdjustmentReason.DAMAGED, null, clerk)));
             org.assertj.core.api.Assertions.assertThat(refused).as("lot %s", lot).isNotNull();
             org.assertj.core.api.Assertions.assertThat(refused.errorCode()).isEqualTo(ErrorCode.STOCK_NOT_IN_CARTON);
         }

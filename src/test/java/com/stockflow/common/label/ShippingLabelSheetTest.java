@@ -28,7 +28,7 @@ class ShippingLabelSheetTest {
     private final LabelFonts fonts = new LabelFonts();
 
     private static ShippingLabel label(String lpn, String address, boolean rotatable) {
-        return new ShippingLabel("SO-20261113-0001", lpn, "SO-20261113-0001-C1", 1, "SOFA-3S-GREY", 1,
+        return new ShippingLabel("SO-20261113-0001", lpn, "SO-20261113-0001-C1", 1, "LY-GIAY-DEMO-12OZ-XANH", 1,
                 new BigDecimal("52.500"), new BigDecimal("306.375"), new BigDecimal("215"), new BigDecimal("95"),
                 new BigDecimal("90"), rotatable, "Nguyen Van An", "0900000001", address, "Kho TP.HCM",
                 "1 Đường Số 7, Quận 7, TP.HCM");
@@ -98,7 +98,8 @@ class ShippingLabelSheetTest {
         byte[] pdf = ShippingLabelSheet.render(fonts, List.of(label("LPN-20261113-000001")));
         String text = text(pdf, 1);
         assertThat(text).contains("SO-20261113-0001").contains("SO-20261113-0001-C1").contains("nhãn / label v1")
-                .contains("Nguyen Van An").contains("0900000001").contains("MÃ HÀNG / SKU  SOFA-3S-GREY").contains("SL / QTY  1")
+                .contains("Nguyen Van An").contains("0900000001").contains("MÃ HÀNG / SKU  LY-GIAY-DEMO-12OZ-XANH")
+                .contains("SL / QTY  1")
                 .contains("52.5 kg").contains("306.375 kg").contains("215 x 95 x 90 cm")
                 .contains("ĐƠN HÀNG / ORDER").contains("GIAO ĐẾN / SHIP TO").contains("NGƯỜI GỬI / FROM – RETURN TO")
                 .contains("KHỐI LƯỢNG / WEIGHT  52.5 kg").contains("KL QUY ĐỔI / DIM. WEIGHT  306.375 kg")

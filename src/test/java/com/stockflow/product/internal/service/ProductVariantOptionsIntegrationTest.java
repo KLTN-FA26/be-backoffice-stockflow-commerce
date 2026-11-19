@@ -574,11 +574,11 @@ class ProductVariantOptionsIntegrationTest {
         variants.generate(small, null);
 
         UUID cap20 = value(capacity, "20OZ", "20 oz", 3, null);
-        UUID blue = value(color, "BLUE", "Blue", 3, "#0000FF");
+        UUID navy = value(color, "NAVY", "Navy", 3, "#000080");   // the demo has a BLUE (V20261206000100)
         UUID green = value(color, "GREEN", "Green", 4, "#00FF00");
         UUID large = product("CUP-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase());
         attributesOfProduct.replaceAxes(large, List.of(new AxisSpec(capacity, 0, List.of(cap12, cap16, cap20)),
-                new AxisSpec(color, 1, List.of(clear, red, blue, green))));
+                new AxisSpec(color, 1, List.of(clear, red, navy, green))));
         variants.generate(large, null);
         entityManager.flush();
         entityManager.clear();

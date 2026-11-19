@@ -69,8 +69,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * Sales reads it and a quote starts from it; the customer never sees it, and checkout never charges it.
  *
  * <p>Since 5-3 (13 BR-04, D14) it is the only price there is: the storefront shows none, and there is no base or group
- * price. Checkout - until 5-2 removes it - charges a stock variant (the demo's published SOFA-3S-GREY) only a price of
- * the customer's own kept from before 4B-2.</p>
+ * price. Checkout - until 5-2 removes it - charges a stock variant (the demo cup's published blank LY-GIAY-DEMO-12OZ)
+ * only a price of the customer's own kept from before 4B-2.</p>
  */
 @IntegrationTest
 @AutoConfigureMockMvc

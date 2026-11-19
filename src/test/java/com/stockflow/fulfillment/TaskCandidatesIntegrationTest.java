@@ -140,7 +140,7 @@ class TaskCandidatesIntegrationTest {
             for (int quantity : quantities) {
                 jdbc.update("""
                         INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-                        VALUES (?, ?, 'SOFA-3S-GREY', ?, 10, 'VND')""", Identifiers.newId(), order, quantity);
+                        VALUES (?, ?, ?, ?, 10, 'VND')""", Identifiers.newId(), order, DemoData.SKU_STOCKED, quantity);
             }
         });
         return order;
@@ -153,7 +153,7 @@ class TaskCandidatesIntegrationTest {
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, design_snapshot_id,
                                                  design_checksum)
-                VALUES (?, ?, 'SOFA-3S-GREY', ?, 10, 'VND', ?, ?)""", Identifiers.newId(), order, quantity,
+                VALUES (?, ?, ?, ?, 10, 'VND', ?, ?)""", Identifiers.newId(), order, DemoData.SKU_STOCKED, quantity,
                 design.snapshotId(), design.checksum()));
     }
 
@@ -216,7 +216,7 @@ class TaskCandidatesIntegrationTest {
                     .andExpect(jsonPath("$.data.items[0].lineCount").value(2))
                     .andExpect(jsonPath("$.data.items[0].totalQuantity").value(7))
                     .andExpect(jsonPath("$.data.items[0].lines", hasSize(2)))
-                    .andExpect(jsonPath("$.data.items[0].lines[0].sku").value("SOFA-3S-GREY"))
+                    .andExpect(jsonPath("$.data.items[0].lines[0].sku").value(DemoData.SKU_STOCKED))
                     .andExpect(jsonPath("$.data.items[0].lines[0].printed").value(false));
         }
         // The sales order list is the manager's too, but limited to their warehouses' orders (OrderWarehouseVisibilityHttpTest).

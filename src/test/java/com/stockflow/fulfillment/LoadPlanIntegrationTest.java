@@ -2,7 +2,6 @@ package com.stockflow.fulfillment;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.order.api.OrderService;
@@ -82,7 +81,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "stockflow.upload-inspection.enabled=false"})
 class LoadPlanIntegrationTest {
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
     private static final Duration ASYNC = Duration.ofSeconds(15);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String ORDERS = "/api/v1/orders";
@@ -113,7 +111,6 @@ class LoadPlanIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        CartonStationSupport.giveCartonsASize(tx, jdbc);
         parts = new CartonStationSupport.Parts(this::packer, tx, jdbc, json);
         coordinator = staff("WAREHOUSE_MANAGER", HCM);
         sales = staff("SALES_STAFF");
@@ -190,20 +187,20 @@ class LoadPlanIntegrationTest {
     }
 
     /**
-     * A paid order of {@code sofas} sofas for the customer, released at HCM (every order is a full truckload): a
-     * contract's order, one carton of two pieces per sofa (14 BR-08), its sealed cartons held at HCM and picked one by
+     * A paid order of {@code cartons} cartons for the customer, released at HCM (every order is a full truckload): a
+     * contract's order, one carton of two pieces each (14 BR-08), its sealed cartons held at HCM and picked one by
      * one by their LPN (4C).
      */
-    private OrderSummary ftlOrder(int sofas, UUID customer) throws Exception {
-        return ftlOrder(sofas, customer, ConfirmedOrders.paidOnSigning());
+    private OrderSummary ftlOrder(int cartons, UUID customer) throws Exception {
+        return ftlOrder(cartons, customer, ConfirmedOrders.paidOnSigning());
     }
 
     /** The same, its contract paying as {@code plan} says; the installments on signing are paid. */
-    private OrderSummary ftlOrder(int sofas, UUID customer, List<SalesContracts.Installment> plan) throws Exception {
-        CustomerSkuRows.Issued issued = sofaOf(customer);
-        CustomerSkuRows.stock(jdbc, tx, issued.sku(), 2 * sofas);
+    private OrderSummary ftlOrder(int cartons, UUID customer, List<SalesContracts.Installment> plan) throws Exception {
+        CustomerSkuRows.Issued issued = cupOf(customer);
+        CustomerSkuRows.stock(jdbc, tx, issued.sku(), 2 * cartons);
         ConfirmedOrders.Signed signed = confirmedOrders().signed(customer, plan,
-                ConfirmedOrders.Line.cartons(issued, sofas, 6_000_000));
+                ConfirmedOrders.Line.cartons(issued, cartons, 6_000_000));
         return confirmedOrders().release(confirmedOrders().pay(signed).orderId(), HCM, coordinator);
     }
 
@@ -216,16 +213,22 @@ class LoadPlanIntegrationTest {
         return confirmedOrders;
     }
 
-    private final java.util.Map<UUID, CustomerSkuRows.Issued> sofas = new java.util.HashMap<>();
+    private final java.util.Map<UUID, CustomerSkuRows.Issued> cupSkus = new java.util.HashMap<>();
 
-    /** The customer's own sofa, handling like the catalogue's, sold in cartons of two (a contract's lines are only ever the customer's, 14 BR-04). */
-    private CustomerSkuRows.Issued sofaOf(UUID customer) {
-        return sofas.computeIfAbsent(customer,
-                c -> CustomerSkuRows.like(jdbc, tx, entityManager, c, SOFA.code(), 2));
+    /**
+     * The customer's own SKU, handling like the demo cup, sold in cartons of two (a contract's lines are only ever the
+     * customer's, 14 BR-04), its carton the big one the layouts below were measured with (215 x 95 x 90 cm, 52.5 kg).
+     */
+    private CustomerSkuRows.Issued cupOf(UUID customer) {
+        return cupSkus.computeIfAbsent(customer, c -> {
+            CustomerSkuRows.Issued issued = CustomerSkuRows.like(jdbc, tx, entityManager, c, DemoData.SKU_STOCKED, 2);
+            CartonStationSupport.giveCartonsASize(tx, jdbc, issued.sku());
+            return issued;
+        });
     }
 
-    private OrderSummary ftlOrder(int sofas) throws Exception {
-        return ftlOrder(sofas, DemoData.CUSTOMER_ID);
+    private OrderSummary ftlOrder(int cartons) throws Exception {
+        return ftlOrder(cartons, DemoData.CUSTOMER_ID);
     }
     /** The order picked and packed at the check station, one shipment of all its cartons. Returns the shipment and task. */
     private UUID[] packed(OrderSummary order) throws Exception {
@@ -299,7 +302,7 @@ class LoadPlanIntegrationTest {
             + "confirmation → BR-13 → CONFIRMED with a PLANNED dispatch load, the left-behind carton free again → "
             + "piece check → reopened (load cancelled, LP-11) → BR-14 once a vehicle loads → cancelled")
     void theWholeFlow() throws Exception {
-        // Every shipping carton is a picked LPN carton of one sofa (4C-6, 4C-7): order A has two, order B one.
+        // Every shipping carton is a picked LPN carton (4C-6, 4C-7): order A has two, order B one.
         OrderSummary orderA = ftlOrder(2);
         OrderSummary orderB = ftlOrder(1);
         // The coordinator's advisory estimate of order A before packing (PR EST); order B has none.
@@ -317,10 +320,10 @@ class LoadPlanIntegrationTest {
         assertThat(byShipment).containsKeys(shipmentA.toString(), shipmentB.toString());
         assertThat(byShipment.get(shipmentA.toString()).path("packageCount").asInt()).isEqualTo(2);
         assertThat(byShipment.get(shipmentA.toString()).path("allowPartialShipment").asBoolean()).isFalse();
-        JsonNode sofaCarton = byShipment.get(shipmentB.toString()).path("packages").get(0);
-        assertThat(sofaCarton.path("lengthMm").asInt()).isEqualTo(2150);
-        assertThat(sofaCarton.path("widthMm").asInt()).isEqualTo(950);
-        assertThat(sofaCarton.path("heightMm").asInt()).isEqualTo(900);
+        JsonNode bigCarton = byShipment.get(shipmentB.toString()).path("packages").get(0);
+        assertThat(bigCarton.path("lengthMm").asInt()).isEqualTo(2150);
+        assertThat(bigCarton.path("widthMm").asInt()).isEqualTo(950);
+        assertThat(bigCarton.path("heightMm").asInt()).isEqualTo(900);
 
         // A plan, idempotent by its request id.
         UUID requestId = UUID.randomUUID();
@@ -387,27 +390,27 @@ class LoadPlanIntegrationTest {
         assertThat(cartonsOfA).hasSize(2);
         assertThat(carton).isNotNull();
 
-        // A known floor layout: order A's two sofas side by side, order B's carton behind them.
-        String sofa1 = box(cartonsOfA.get(0), 0, 0, 0, 950, 900, 2150);
-        String sofa2 = box(cartonsOfA.get(1), 950, 0, 0, 950, 900, 2150);
+        // A known floor layout: order A's two cartons side by side, order B's carton behind them.
+        String carton1 = box(cartonsOfA.get(0), 0, 0, 0, 950, 900, 2150);
+        String carton2 = box(cartonsOfA.get(1), 950, 0, 0, 950, 900, 2150);
         String cartonOnFloor = box(carton, 0, 0, 2150, 950, 900, 2150);
         String cartonFloating = box(carton, 0, 10, 2150, 950, 900, 2150);
 
         // BR-11: a box 10 mm in the air is UNSUPPORTED - refused, nothing changed.
         JsonNode refused = body(dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan,
-                List.of(sofa1, sofa2, cartonFloating), List.of())))
+                List.of(carton1, carton2, cartonFloating), List.of())))
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.errorCode").value("PLACEMENT_RULE_VIOLATION")));
         assertThat(codes(refused)).containsKey(carton + ":UNSUPPORTED");
         // Every package exactly once.
-        dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan, List.of(sofa1, sofa2), List.of())))
+        dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan, List.of(carton1, carton2), List.of())))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
         assertThat(data(dispatch(get(PLANS + "/" + id)).andExpect(status().isOk())).path("version").asLong())
                 .as("nothing changed").isEqualTo(plan.path("version").asLong());
 
         // A valid edit: the carton of order B goes to the tray (MANUAL).
         JsonNode edited = data(dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan,
-                List.of(sofa1, sofa2), List.of(carton)))).andExpect(status().isOk()));
+                List.of(carton1, carton2), List.of(carton)))).andExpect(status().isOk()));
         assertThat(edited.path("version").asLong()).isGreaterThan(plan.path("version").asLong());
         assertThat(edited.path("unplacedCount").asInt()).isEqualTo(1);
         String cartonId = carton;
@@ -417,7 +420,7 @@ class LoadPlanIntegrationTest {
                     assertThat(p.path("vehicleSeq").isNumber()).isFalse();
                 });
         // A stale version is refused.
-        dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan, List.of(sofa1, sofa2, cartonOnFloor),
+        dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan, List.of(carton1, carton2, cartonOnFloor),
                 List.of()))).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("OPTIMISTIC_LOCK"));
         plan = edited;
@@ -430,7 +433,7 @@ class LoadPlanIntegrationTest {
 
         // Back to the floor layout with the carton on the tray.
         plan = data(dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan,
-                List.of(sofa1, sofa2), List.of(carton)))).andExpect(status().isOk()));
+                List.of(carton1, carton2), List.of(carton)))).andExpect(status().isOk()));
 
         // LP-4: order B does not allow partial shipments - acknowledging or confirming its left-behind carton is 409.
         dispatch(body(post(PLANS + "/" + id + "/unplaced-acknowledgement"), version(plan)))
@@ -469,7 +472,7 @@ class LoadPlanIntegrationTest {
                 .satisfies(c -> assertThat(c.path("packageCount").asInt()).isEqualTo(1));
         assertThat(again).noneMatch(c -> c.path("shipmentId").asText().equals(shipmentA.toString()));
         // BR-14: locked.
-        dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan, List.of(sofa1, sofa2), List.of())))
+        dispatch(body(put(PLANS + "/" + id + "/placements"), edit(plan, List.of(carton1, carton2), List.of())))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_PLAN_TRANSITION"));
 
@@ -694,7 +697,7 @@ class LoadPlanIntegrationTest {
         OrderSummary order = ftlOrder(2);
         tx.executeWithoutResult(s -> jdbc.update(
                 "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
-        // Packed in two shipments while Sales allowed it: one sofa, then the other.
+        // Packed in two shipments while Sales allowed it: one carton, then the other.
         UUID task = UUID.fromString(data(oc(body(post(BASE + "/tasks"), "{\"orderId\":\"" + order.orderId()
                 + "\",\"assignedUserId\":\"" + picker + "\"}")).andExpect(status().isCreated())).path("taskId").asText());
         packer(post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
@@ -780,7 +783,7 @@ class LoadPlanIntegrationTest {
     }
 
     @Test
-    @DisplayName("what fits no vehicle type is unplaced with its reason (a sofa on a pickup is TOO_LARGE); a PLANNED "
+    @DisplayName("what fits no vehicle type is unplaced with its reason (a big carton on a pickup is TOO_LARGE); a PLANNED "
             + "plan whose inputs change goes back to DRAFT with no vehicle")
     void unplacedReasonsAndInputs() throws Exception {
         UUID shipment = packed(ftlOrder(1))[0];

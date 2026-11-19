@@ -10,6 +10,7 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
 import com.stockflow.procurement.internal.service.ReturnReceiptService;
 import com.stockflow.procurement.internal.service.ReturnReceiptService.ReturnReceiptView;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -46,7 +47,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 @Import(PostgresContainer.class)
 class ReturnReceiptIntegrationTest {
 
-    private static final String SKU = "SOFA-3S-GREY";
+    /** A carton of the test's own cup holds 1,000, as the demo's stocked cup does. */
+    private static final int PER_CARTON = 1000;
     private static final String QUARANTINE = "HCM-QC01";
 
     @Autowired ReturnReceiptService receipts;
@@ -57,17 +59,23 @@ class ReturnReceiptIntegrationTest {
 
     private UUID staff;
     private UUID customer;
+    /**
+     * The customer's own cup, handled like the demo's stocked cup: its cartons come back into quarantine, so it is the
+     * test's own SKU and not the demo's, whose stock other test classes read.
+     */
+    private String sku;
 
     @BeforeEach
     void setUp() {
         staff = tx.execute(s -> ReferenceRows.user(entityManager));
         customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        sku = CustomerSkuRows.like(jdbc, tx, entityManager, customer, DemoData.SKU_STOCKED, PER_CARTON).sku();
     }
 
     // ---- fixtures --------------------------------------------------------------------------------------------
 
     private UUID deliveredOrder() {
-        UUID order = tx.execute(s -> ReferenceRows.orderWithLine(entityManager, SKU, "DELIVERED", customer, staff,
+        UUID order = tx.execute(s -> ReferenceRows.orderWithLine(entityManager, sku, "DELIVERED", customer, staff,
                 DemoData.WAREHOUSE_HCM));
         tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET warehouse_id = ? WHERE id = ?",
                 DemoData.WAREHOUSE_HCM, order));
@@ -76,7 +84,7 @@ class ReturnReceiptIntegrationTest {
 
     private ShippedCartons.Shipped shipped(UUID order, int cartons, String lot, String shipmentStatus) {
         UUID line = jdbc.queryForObject("SELECT id FROM ordering.order_line WHERE order_id = ?", UUID.class, order);
-        return ShippedCartons.ship(jdbc, tx, order, line, SKU, cartons, 4, lot, shipmentStatus, staff);
+        return ShippedCartons.ship(jdbc, tx, order, line, sku, cartons, PER_CARTON, lot, shipmentStatus, staff);
     }
 
     private <T> T asHcmStaff(Supplier<T> call) {
@@ -123,7 +131,7 @@ class ReturnReceiptIntegrationTest {
         ShippedCartons.Shipped shipped = shipped(order, 3, "LOT-RTO-" + order.toString().substring(0, 8), "RETURNED");
         String lot = jdbc.queryForObject("SELECT lot_number FROM inventory.stock_item WHERE stock_package_id = ?",
                 String.class, shipped.cartons().getFirst().id());
-        int atpBefore = inventory.availableToPromise(new Sku(SKU));
+        int atpBefore = inventory.availableToPromise(new Sku(sku));
         assertThat(shipped.cartons()).allSatisfy(c -> assertThat(carton(c.lpn()).get("package_status")).isEqualTo("CONSUMED"));
 
         ReturnReceiptView draft = openForShipment(shipped);
@@ -163,7 +171,7 @@ class ReturnReceiptIntegrationTest {
         }
         assertThat(carton(shipped.lpns().get(2)).get("package_status")).as("not on the receipt: still out")
                 .isEqualTo("CONSUMED");
-        assertThat(inventory.availableToPromise(new Sku(SKU))).as("returned goods are not sold until released")
+        assertThat(inventory.availableToPromise(new Sku(sku))).as("returned goods are not sold until released")
                 .isEqualTo(atpBefore);
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM inventory.stock_movement WHERE reference_type = 'GOODS_RECEIPT' AND reference_id = ?
@@ -269,7 +277,7 @@ class ReturnReceiptIntegrationTest {
                 otherOrder);
         String again = first.lpns().getFirst();
         // It came back, went into stock and was picked, labelled and shipped for another order (a later pick of the LPN).
-        ShippedCartons.shipAgain(jdbc, tx, again, otherOrder, otherLine, SKU, staff);
+        ShippedCartons.shipAgain(jdbc, tx, again, otherOrder, otherLine, sku, staff);
 
         ReturnReceiptView draft = openForShipment(first);
         assertThat(code(catchThrowable(() -> scan(draft.id(), again)))).isEqualTo(ErrorCode.RETURN_CARTON_NOT_OF_SOURCE);

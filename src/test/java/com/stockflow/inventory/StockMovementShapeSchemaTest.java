@@ -23,7 +23,7 @@ class StockMovementShapeSchemaTest {
 
     private static final String BIN = "HCM-A01-1-A";
     private static final String OTHER_BIN = "HCM-A01-1-B";
-    private static final String SKU = "SOFA-3S-GREY";
+    private static final String SKU = "LY-GIAY-DEMO-12OZ-XANH";
     private static final String INSERT = "INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code,"
             + " to_location_code, quantity, reference_type, reference_id, occurred_at)"
             + " VALUES (gen_random_uuid(), ?, ?, ?, ?, 1, ?, gen_random_uuid(), NOW())";

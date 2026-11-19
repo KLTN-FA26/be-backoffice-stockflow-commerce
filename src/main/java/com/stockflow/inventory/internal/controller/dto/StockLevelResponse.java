@@ -6,7 +6,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 @Schema(name = "StockLevel", description = "Stock of one SKU in one warehouse, summed over its locations")
 public record StockLevelResponse(
 
-        @Schema(example = "SOFA-3S-GREY")
+        @Schema(example = "LY-GIAY-DEMO-12OZ-XANH")
         String sku,
 
         @Schema(description = "Warehouse code, the prefix of every location code in it", example = "HN")

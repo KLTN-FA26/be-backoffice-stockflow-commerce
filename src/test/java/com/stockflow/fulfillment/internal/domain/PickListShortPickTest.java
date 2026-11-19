@@ -27,6 +27,8 @@ class PickListShortPickTest {
 
     private static final UUID HCM = UUID.randomUUID();
     private static final UUID HN = UUID.randomUUID();
+    /** The demo customer's cups (V20261206000100); here only names. */
+    private static final String CUP_BLUE = "LY-GIAY-DEMO-12OZ-XANH";
 
     private static ErrorCode refusal(ThrowableAssert.ThrowingCallable call) {
         Throwable thrown = catchThrowable(call);
@@ -41,7 +43,7 @@ class PickListShortPickTest {
     @Test
     @DisplayName("a short report takes the whole carton off the line, records the reason, picks nothing")
     void reportShort() {
-        PickLine line = open("SOFA", "HCM-A01-1-A", 5, LPN);
+        PickLine line = open(CUP_BLUE, "HCM-A01-1-A", 5, LPN);
         PickList list = picking(line);
 
         PickList.Confirmation outcome = list.reportShort(line.id(), "hcm-a01-1-a", ShortPickReason.NOT_FOUND);
@@ -61,13 +63,13 @@ class PickListShortPickTest {
     @DisplayName("both reasons are accepted, and a reason is not optional")
     void reasons() {
         for (ShortPickReason reason : ShortPickReason.values()) {
-            PickLine line = open("SOFA", "HCM-A01-1-A", 5, LPN);
+            PickLine line = open(CUP_BLUE, "HCM-A01-1-A", 5, LPN);
             picking(line).reportShort(line.id(), "HCM-A01-1-A", reason);
             assertThat(line.shortReason()).isEqualTo(reason);
         }
         assertThat(ShortPickReason.values()).containsExactlyInAnyOrder(ShortPickReason.NOT_FOUND, ShortPickReason.DAMAGED);
 
-        PickLine line = open("SOFA", "HCM-A01-1-A", 5, LPN);
+        PickLine line = open(CUP_BLUE, "HCM-A01-1-A", 5, LPN);
         PickList list = picking(line);
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> list.reportShort(line.id(), "HCM-A01-1-A", null))
                 .isInstanceOf(NullPointerException.class);
@@ -77,7 +79,7 @@ class PickListShortPickTest {
     @Test
     @DisplayName("the same report again - same bin, same reason - is answered with the line as it is")
     void repeatIsAnAnswer() {
-        PickLine line = open("SOFA", "HCM-A01-1-A", 5, LPN);
+        PickLine line = open(CUP_BLUE, "HCM-A01-1-A", 5, LPN);
         PickList list = picking(line);
         list.reportShort(line.id(), "HCM-A01-1-A", ShortPickReason.DAMAGED);
 
@@ -88,7 +90,7 @@ class PickListShortPickTest {
     @Test
     @DisplayName("another reason, or another bin, on a SHORT line is PICK_LINE_NOT_OPEN and changes nothing")
     void anotherReasonIsRefused() {
-        PickLine line = open("SOFA", "HCM-A01-1-A", 5, LPN);
+        PickLine line = open(CUP_BLUE, "HCM-A01-1-A", 5, LPN);
         PickList list = picking(line);
         list.reportShort(line.id(), "HCM-A01-1-A", ShortPickReason.NOT_FOUND);
 
@@ -102,7 +104,7 @@ class PickListShortPickTest {
     @Test
     @DisplayName("BE-14: the wrong bin of a short report names the right one in details.expectedLocationCode")
     void reportShortWrongBinCarriesTheExpectedBin() {
-        PickLine line = open("SOFA", "HCM-A01-1-A", 5, LPN);
+        PickLine line = open(CUP_BLUE, "HCM-A01-1-A", 5, LPN);
         PickList list = picking(line);
 
         BusinessException thrown = (BusinessException) catchThrowable(
@@ -115,7 +117,7 @@ class PickListShortPickTest {
     @Test
     @DisplayName("a short report needs the line's bin, an open line with a carton, a picking task and a known line")
     void reportShortRefusals() {
-        PickLine line = open("SOFA", "HCM-A01-1-A", 5, LPN);
+        PickLine line = open(CUP_BLUE, "HCM-A01-1-A", 5, LPN);
         PickList list = picking(line);
         assertThat(refusal(() -> list.reportShort(line.id(), "HCM-A01-1-B", ShortPickReason.NOT_FOUND)))
                 .isEqualTo(ErrorCode.PICK_LOCATION_MISMATCH);
@@ -124,13 +126,13 @@ class PickListShortPickTest {
         assertThat(refusal(() -> list.reportShort(UUID.randomUUID(), "HCM-A01-1-A", ShortPickReason.NOT_FOUND)))
                 .isEqualTo(ErrorCode.NOT_FOUND);
         PickList pending = new PickList(UUID.randomUUID(), HCM, PickStatus.PENDING, false,
-                List.of(open("SOFA", "X-1", 1, LPN)));
+                List.of(open(CUP_BLUE, "X-1", 1, LPN)));
         assertThat(refusal(() -> pending.reportShort(pending.lines().get(0).id(), "X-1", ShortPickReason.NOT_FOUND)))
                 .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
-        PickLine picked = PickLineFixtures.picked("SOFA", "HCM-A01-1-A", 2, OTHER_LPN);
+        PickLine picked = PickLineFixtures.picked(CUP_BLUE, "HCM-A01-1-A", 2, OTHER_LPN);
         assertThat(refusal(() -> picking(picked).reportShort(picked.id(), "HCM-A01-1-A", ShortPickReason.NOT_FOUND)))
                 .as("a picked carton is not short").isEqualTo(ErrorCode.PICK_LINE_NOT_OPEN);
-        PickLine history = PickLineFixtures.line("SOFA", "HCM-A01-1-A", 2, 0, PickLineStatus.OPEN, 0, null, null);
+        PickLine history = PickLineFixtures.line(CUP_BLUE, "HCM-A01-1-A", 2, 0, PickLineStatus.OPEN, 0, null, null);
         assertThat(refusal(() -> picking(history).reportShort(history.id(), "HCM-A01-1-A", ShortPickReason.NOT_FOUND)))
                 .as("a line with no carton to report").isEqualTo(ErrorCode.PICK_LINE_NOT_OPEN);
         assertThat(line.status()).isEqualTo(PickLineStatus.OPEN);
@@ -139,19 +141,19 @@ class PickListShortPickTest {
     @Test
     @DisplayName("reallocated: the short line is superseded and new lines follow it; the task completes once they are picked")
     void replaceShort() {
-        PickLine shortLine = open("SOFA", "HCM-A01-1-A", 4, LPN);
-        PickLine other = open("SOFA", "HCM-A02-1-A", 1, OTHER_LPN);
+        PickLine shortLine = open(CUP_BLUE, "HCM-A01-1-A", 4, LPN);
+        PickLine other = open(CUP_BLUE, "HCM-A02-1-A", 1, OTHER_LPN);
         PickList list = picking(shortLine, other);
         assertThat(refusal(() -> list.replaceShort(shortLine.id(), List.of(), UUID::randomUUID)))
                 .as("only a SHORT line is reallocated").isEqualTo(ErrorCode.PICK_LINE_NOT_OPEN);
         list.reportShort(shortLine.id(), "HCM-A01-1-A", ShortPickReason.NOT_FOUND);
 
-        assertThat(refusal(() -> list.replaceShort(shortLine.id(), List.of(hold(UUID.randomUUID(), "SOFA",
+        assertThat(refusal(() -> list.replaceShort(shortLine.id(), List.of(hold(UUID.randomUUID(), CUP_BLUE,
                 "HN-A01-1-A", HN, 4, "LPN-HN")), UUID::randomUUID)))
                 .isEqualTo(ErrorCode.FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE);
         List<PickLine> added = list.replaceShort(shortLine.id(), List.of(
-                hold(UUID.randomUUID(), "SOFA", "HCM-B01-1-A", HCM, 3, "LPN-B1"),
-                hold(UUID.randomUUID(), "SOFA", "HCM-B01-1-B", HCM, 1, "LPN-B2")), UUID::randomUUID);
+                hold(UUID.randomUUID(), CUP_BLUE, "HCM-B01-1-A", HCM, 3, "LPN-B1"),
+                hold(UUID.randomUUID(), CUP_BLUE, "HCM-B01-1-B", HCM, 1, "LPN-B2")), UUID::randomUUID);
 
         assertThat(shortLine.status()).isEqualTo(PickLineStatus.CANCELLED);
         assertThat(shortLine.shortQty()).as("the shortfall stays on record").isEqualTo(4);
@@ -175,12 +177,12 @@ class PickListShortPickTest {
     @Test
     @DisplayName("a reallocation to a loose hold is refused: a line is a carton")
     void reallocationToALooseHoldIsRefused() {
-        PickLine shortLine = open("SOFA", "HCM-A01-1-A", 4, LPN);
+        PickLine shortLine = open(CUP_BLUE, "HCM-A01-1-A", 4, LPN);
         PickList list = picking(shortLine);
         list.reportShort(shortLine.id(), "HCM-A01-1-A", ShortPickReason.DAMAGED);
 
         assertThat(refusal(() -> list.replaceShort(shortLine.id(),
-                List.of(hold(UUID.randomUUID(), "SOFA", "HCM-B01-1-A", HCM, 4, null)), UUID::randomUUID)))
+                List.of(hold(UUID.randomUUID(), CUP_BLUE, "HCM-B01-1-A", HCM, 4, null)), UUID::randomUUID)))
                 .isEqualTo(ErrorCode.PICK_HOLD_NOT_IN_CARTON);
         assertThat(shortLine.status()).as("nothing changed").isEqualTo(PickLineStatus.SHORT);
         assertThat(list.lines()).hasSize(1);
@@ -190,13 +192,13 @@ class PickListShortPickTest {
     @DisplayName("rehydration: a short reason belongs only to a line short of its whole carton, SHORT or reallocated")
     void rehydrationRule() {
         // short_qty = allocated_qty and status SHORT/CANCELLED, as ck_pick_line_short_reason says
-        PickLineFixtures.line("SOFA", "HCM-A01-1-A", 5, 0, PickLineStatus.SHORT, 5, ShortPickReason.NOT_FOUND, LPN);
-        PickLineFixtures.line("SOFA", "HCM-A01-1-A", 5, 0, PickLineStatus.CANCELLED, 5, ShortPickReason.DAMAGED, LPN);
+        PickLineFixtures.line(CUP_BLUE, "HCM-A01-1-A", 5, 0, PickLineStatus.SHORT, 5, ShortPickReason.NOT_FOUND, LPN);
+        PickLineFixtures.line(CUP_BLUE, "HCM-A01-1-A", 5, 0, PickLineStatus.CANCELLED, 5, ShortPickReason.DAMAGED, LPN);
         for (Object[] bad : new Object[][] {
                 {PickLineStatus.SHORT, 3},          // a part of the carton
                 {PickLineStatus.OPEN, 0},           // not short at all
                 {PickLineStatus.PICKED, 0}}) {
-            org.assertj.core.api.Assertions.assertThatThrownBy(() -> PickLineFixtures.line("SOFA", "HCM-A01-1-A", 5,
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> PickLineFixtures.line(CUP_BLUE, "HCM-A01-1-A", 5,
                             (PickLineStatus) bad[0] == PickLineStatus.PICKED ? 5 : 0, (PickLineStatus) bad[0],
                             (Integer) bad[1], ShortPickReason.NOT_FOUND, LPN))
                     .as(String.valueOf(bad[0]))
