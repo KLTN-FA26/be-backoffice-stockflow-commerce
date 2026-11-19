@@ -366,21 +366,12 @@ class LoadPlanIntegrationTest {
         dispatch(get(PLANS + "/" + id + "/vehicles/2/layout")).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_VEHICLE_NOT_FOUND"));
 
-        // The vehicle's loading sheet PDF (09 §4.2 step 5): a real PDF with the vehicle, the totals and every carton's
-        // LPN with its order, from the stored placements; an unconfirmed plan says so, and there is no dispatch load yet.
-        String sheet = pdfText(dispatch(get(PLANS + "/" + id + "/vehicles/1/loading-sheet.pdf"))
-                .andExpect(status().isOk()).andExpect(content().contentType(MediaType.APPLICATION_PDF))
-                .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString(
-                        "loading-sheet-" + plan.path("code").asText() + "-xe1.pdf")))
-                .andReturn().getResponse().getContentAsByteArray());
-        assertThat(sheet).contains("PHIẾU XẾP HÀNG", plan.path("code").asText(), "TRUCK-5T", "TỔNG KẾT: 3 kiện",
-                "Lấp đầy thể tích", "Lấp đầy khối lượng", "Kế hoạch chưa chốt", "Chưa có (kế hoạch chưa chốt)",
-                orderA.orderNumber(), orderB.orderNumber(), "Trang 1/1");
-        layout.path("boxes").forEach(box -> assertThat(sheet).contains(box.path("label").asText()));
-        dispatch(get(PLANS + "/" + id + "/vehicles/2/loading-sheet.pdf")).andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_VEHICLE_NOT_FOUND"));
-        dispatch(get(PLANS + "/" + UUID.randomUUID() + "/vehicles/1/loading-sheet.pdf")).andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_NOT_FOUND"));
+        // The loading sheet PDF is final only once the plan is confirmed (09 §4.2 step 5, §5.3): while it is PLANNED the
+        // vehicle can still be edited and recalculated, so the PDF is refused; a plan that does not exist is 404.
+        dispatch(get(PLANS + "/" + id + "/vehicles/1/loading-sheet.pdf")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_PLAN_TRANSITION"));
+        dispatch(get(PLANS + "/" + UUID.randomUUID() + "/vehicles/1/loading-sheet.pdf"))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_NOT_FOUND"));
 
         // Which carton is which: order A's two, order B's one (the plan lists every shipment's cartons).
         List<String> cartonsOfA = new ArrayList<>();
@@ -482,11 +473,22 @@ class LoadPlanIntegrationTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_PLAN_TRANSITION"));
 
-        // Confirmed: the sheet now carries the vehicle's dispatch load and has no "not confirmed" note.
+        // Confirmed: the sheet is a real PDF (content type, file name) with the vehicle, its dispatch load, the totals and
+        // every placed carton's label with its order, from the stored placements.
+        JsonNode confirmedLayout = data(dispatch(get(PLANS + "/" + id + "/vehicles/1/layout"))
+                .andExpect(status().isOk()));
         String confirmedSheet = pdfText(dispatch(get(PLANS + "/" + id + "/vehicles/1/loading-sheet.pdf"))
-                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray());
-        assertThat(confirmedSheet).contains((String) load.get("code"), "TỔNG KẾT: 2 kiện")
-                .doesNotContain("Kế hoạch chưa chốt");
+                .andExpect(status().isOk()).andExpect(content().contentType(MediaType.APPLICATION_PDF))
+                .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString(
+                        "loading-sheet-" + plan.path("code").asText() + "-vehicle1.pdf")))
+                .andReturn().getResponse().getContentAsByteArray());
+        assertThat(confirmedSheet).contains("PHIẾU XẾP HÀNG", plan.path("code").asText(), (String) load.get("code"),
+                "TRUCK-5T", "TỔNG KẾT: 2 kiện", "Lấp đầy thể tích", "Lấp đầy khối lượng", "Trang 1/1",
+                orderA.orderNumber());
+        assertThat(confirmedLayout.path("boxes")).hasSize(2);
+        confirmedLayout.path("boxes").forEach(box -> assertThat(confirmedSheet).contains(box.path("label").asText()));
+        dispatch(get(PLANS + "/" + id + "/vehicles/2/loading-sheet.pdf")).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_VEHICLE_NOT_FOUND"));
 
         // The piece check: in = placed + unplaced, per shipment and order.
         JsonNode check = data(dispatch(get(PLANS + "/" + id + "/reconciliation")).andExpect(status().isOk()));
@@ -823,8 +825,8 @@ class LoadPlanIntegrationTest {
                 .andExpect(status().isForbidden());
         as(sales, "SALES_STAFF", get(url + "/vehicles/1/loading-sheet.pdf")).andExpect(status().isForbidden());
         as(customerUser, "CUSTOMER", get(url + "/vehicles/1/loading-sheet.pdf")).andExpect(status().isForbidden());
-        oc(get(url + "/vehicles/1/loading-sheet.pdf")).andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_VEHICLE_NOT_FOUND"));
+        oc(get(url + "/vehicles/1/loading-sheet.pdf")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_PLAN_TRANSITION"));
         as(dispatcherElsewhere, "WAREHOUSE_STAFF", body(post(url + "/cancellation"), reason(plan, "x")))
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
         as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(BASE + "/load-plan-candidates?warehouseId=" + HCM))

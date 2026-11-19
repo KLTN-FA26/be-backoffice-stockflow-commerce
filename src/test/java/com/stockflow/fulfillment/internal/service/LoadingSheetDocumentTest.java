@@ -74,7 +74,7 @@ class LoadingSheetDocumentTest {
     }
 
     private LoadingSheetDocument.Facts booked(Layout layout) {
-        return new LoadingSheetDocument.Facts("LP-20261117-0004", "CONFIRMED", "Xe tải 5 tấn", "Kho Hồ Chí Minh",
+        return new LoadingSheetDocument.Facts("LP-20261117-0004", "Xe tải 5 tấn", "Kho Hồ Chí Minh",
                 "LD-20261117-0006", "Xe tải Thăng Long", "WB-778899", "51C-246.80", "Nguyễn Văn Tài", "0912345678",
                 layout, orders(layout), PRINTED);
     }
@@ -125,24 +125,13 @@ class LoadingSheetDocumentTest {
     }
 
     @Test
-    @DisplayName("not booked and not confirmed: the booking is dashes, the load says none, a note says the plan is "
-            + "not confirmed")
+    @DisplayName("not booked yet: the load and the booking are dashes or 'no load', the vehicle type falls back to its code")
     void beforeBooking() throws Exception {
-        LoadingSheetDocument.Facts facts = new LoadingSheetDocument.Facts("LP-20261117-0004", "PLANNED", null, null,
-                null, null, null, null, null, null, truck(2), Map.of(), PRINTED);
+        LoadingSheetDocument.Facts facts = new LoadingSheetDocument.Facts("LP-20261117-0004", null, null, null, null,
+                null, null, null, null, truck(2), Map.of(), PRINTED);
         String text = text(document.render(facts));
-        assertThat(text).contains("Chưa có (kế hoạch chưa chốt)", "Kế hoạch chưa chốt: sơ đồ xếp có thể còn thay đổi.",
-                "Hãng vận chuyển —", "Mã vận đơn —", "Biển số —", "Tài xế —");
-        // The vehicle type falls back to its code, the warehouse to a dash.
-        assertThat(text).contains("Loại xe TRUCK-5T", "Kho xuất —");
-    }
-
-    @Test
-    @DisplayName("a cancelled plan says so on the sheet")
-    void cancelled() throws Exception {
-        LoadingSheetDocument.Facts facts = new LoadingSheetDocument.Facts("LP-1", "CANCELLED", null, null, null, null,
-                null, null, null, null, truck(1), Map.of(), PRINTED);
-        assertThat(text(document.render(facts))).contains("Kế hoạch đã huỷ: không dùng phiếu này để xếp hàng.");
+        assertThat(text).contains("Mã chuyến Chưa có chuyến", "Hãng vận chuyển —", "Mã vận đơn —", "Biển số —",
+                "Tài xế —", "Loại xe TRUCK-5T", "Kho xuất —");
     }
 
     @Test
@@ -265,7 +254,7 @@ class LoadingSheetDocumentTest {
     @DisplayName("a name with a tab or an emoji and a very long carrier name still print: nothing throws, the text "
             + "is cut inside its column")
     void awkwardText() throws Exception {
-        LoadingSheetDocument.Facts facts = new LoadingSheetDocument.Facts("LP-1", "CONFIRMED", "Xe\t5 tấn 🚚",
+        LoadingSheetDocument.Facts facts = new LoadingSheetDocument.Facts("LP-1", "Xe\t5 tấn 🚚",
                 "Kho " + "Hồ Chí Minh ".repeat(20), "LD-1", "Công ty vận tải ".repeat(15), "WB-1", "51C-1", "Tài xế 😀",
                 null, truck(2), Map.of(), PRINTED);
         byte[] pdf = document.render(facts);

@@ -1,5 +1,6 @@
 package com.stockflow.fulfillment.internal.service;
 
+import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.label.LabelFonts;
 import com.stockflow.fulfillment.internal.domain.loadplanning.Layout;
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -18,7 +19,6 @@ import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.text.NumberFormat;
 import java.time.Instant;
-import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -29,9 +29,9 @@ import java.util.ResourceBundle;
 import java.util.TreeMap;
 
 /**
- * The loading sheet of one vehicle of a load plan as a PDF (kltn-docs 09 §4.2 step 5 "xuất PDF sơ đồ xếp cho từng xe",
- * §3 Output "phiếu đặt xe" and "sơ đồ xếp xuất PDF"): what the dispatcher sends the carrier and what the loaders read
- * at the dock.
+ * The loading sheet of one vehicle of a load plan as a PDF (kltn-docs 09 §4.2 step 5, the loading diagram exported per
+ * vehicle, and §3 Output, the booking slip and the diagram as PDF): what the dispatcher sends the carrier and what the
+ * loaders read at the dock.
  *
  * <p>Page one is the vehicle - plan, dispatch load, vehicle type, warehouse, carrier and waybill when booked, plate and
  * driver - its totals (packages, volume and weight against the inside and the payload, as bars and percentages) and a
@@ -40,8 +40,8 @@ import java.util.TreeMap;
  * loading order, flowing over as many A4 pages as it needs, with the page number on every page.</p>
  *
  * <p>Axes are the planner's ({@link Layout}): {@code x} across (from the left wall), {@code y} up, {@code z} along the
- * length from the front wall to the door. The sheet calls them R (rộng), C (cao) and D (dài) as the screens and labels
- * do. Captions are Vietnamese (the bundle's), drawn in the embedded Noto Sans of the labels, so every diacritic prints;
+ * length from the front wall to the door. The sheet calls them D (length), R (width) and C (height), the letters the screens and
+ * labels use. Captions are Vietnamese (the bundle's), drawn in the embedded Noto Sans of the labels, so every diacritic prints;
  * free text is made drawable by {@link LabelFonts#drawable}. Knows nothing about persistence: what it shows is given.</p>
  */
 @Component
@@ -50,17 +50,15 @@ class LoadingSheetDocument {
     /**
      * Everything the sheet says besides the layout; a text that is not known (no dispatch load yet, not booked) is null.
      *
-     * @param planStatus  the plan's status name; a plan not yet confirmed or cancelled gets a note
      * @param orderByRef  the order number of each carton, by the layout box's {@code ref}
      * @param loadCode    the vehicle's dispatch load; null while the plan is not confirmed
      */
-    record Facts(String planCode, String planStatus, String vehicleType, String warehouse, String loadCode,
+    record Facts(String planCode, String vehicleType, String warehouse, String loadCode,
                  String carrier, String waybill, String plate, String driver, String driverPhone, Layout layout,
                  Map<String, String> orderByRef, Instant printedAt) {
     }
 
-    private static final ZoneId VIETNAM = ZoneId.of("Asia/Ho_Chi_Minh");
-    private static final DateTimeFormatter MOMENT = DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy").withZone(VIETNAM);
+    private static final DateTimeFormatter MOMENT = DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy").withZone(BusinessCalendar.ZONE);
     private static final Locale VI = Locale.forLanguageTag("vi");
 
     private static final float MARGIN = 36;
@@ -224,17 +222,6 @@ class LoadingSheetDocument {
                     percent(usedM3, innerM3));
             bar(t.getString("loading-sheet.pdf.weight").formatted(number.format(layout.usedWeightKg()),
                     number.format(layout.maxPayloadKg())), percent(layout.usedWeightKg(), layout.maxPayloadKg()));
-            if (facts.planStatus() != null) {
-                String note = switch (facts.planStatus()) {
-                    case "DRAFT", "PLANNED" -> t.getString("loading-sheet.pdf.note.unconfirmed");
-                    case "CANCELLED" -> t.getString("loading-sheet.pdf.note.cancelled");
-                    default -> null;
-                };
-                if (note != null) {
-                    text(bold, 8.5f, note, MARGIN, y - 9, BAR_HIGH);
-                    y -= 14;
-                }
-            }
             y -= 2;
             rule();
         }
