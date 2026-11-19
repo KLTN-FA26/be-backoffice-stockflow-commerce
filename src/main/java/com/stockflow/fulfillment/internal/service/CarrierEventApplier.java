@@ -508,8 +508,7 @@ class CarrierEventApplier {
 
     /**
      * The carrier cancelled the order before the pickup: the booking is cancelled and the dispatchers told; the load is
-     * PLANNED again (09 §4.5) - or, while parcels were on board the loading vehicle, stays as it is and goes to the error
-     * list too (RTM-LOADCANCEL2-1119 open): the truck at the dock has no order any more, so it cannot leave on it.
+     * PLANNED again (09 §4.5), the parcels already on a loading truck to be scanned off first (RTM-LOADCANCEL2).
      */
     private Outcome cancelled(CarrierJpaEntity carrier, Matched m, Instant at) {
         Dispatching.CarrierCancel done = dispatching.carrierOrderCancelled(m.loadId(), m.bookingId(), at);
@@ -521,11 +520,8 @@ class CarrierEventApplier {
                 m.warehouseId(), carrier.getCode(), m.carrierOrderId(), at));
         String wording = m.report().failureWording();
         String said = wording == null ? "" : ": " + wording;
-        return done == Dispatching.CarrierCancel.UNBOOKED
-                ? new Outcome(CarrierEventResult.APPLIED, "The carrier cancelled the order" + said
-                        + "; the load is PLANNED again")
-                : new Outcome(CarrierEventResult.NEEDS_REVIEW, "The carrier cancelled the order" + said + " while load "
-                        + m.loadCode() + " was loading: it cannot leave on that order - unload it or book again");
+        return new Outcome(CarrierEventResult.APPLIED, "The carrier cancelled the order" + said
+                + "; the load is PLANNED again");
     }
 
     /** Milestones and outcomes are a vehicle that left's (09 §4.5 step 7); before that, the error list's. */

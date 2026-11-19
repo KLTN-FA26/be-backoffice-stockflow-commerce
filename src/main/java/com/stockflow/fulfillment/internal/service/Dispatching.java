@@ -280,18 +280,16 @@ public interface Dispatching {
     enum CarrierCancel {
         /** The booking CANCELLED and the load back to PLANNED, to be booked again. */
         UNBOOKED,
-        /** The booking CANCELLED while parcels were on board the loading vehicle: the load cannot leave on that order. */
-        CANCELLED_WHILE_LOADING,
         /** The booking was no longer held: nothing changed. */
         NOT_HELD
     }
 
     /**
      * The carrier cancelled the order {@code bookingId} before the pickup (09 §4.5: "chuyến chưa ký bàn giao → về
-     * Planned, xoá thông tin đặt xe, báo Dispatch Staff"; RTM-LOADCANCEL): the booking CANCELLED and the load back to
-     * PLANNED - booked, or loading with nothing on board yet. Loading with parcels on board, the load stays as it is and
-     * its handover is refused, the order being gone (what becomes of those parcels is open, RTM-LOADCANCEL2-1119). The
-     * caller tells the dispatchers. Once the vehicle left, {@code INVALID_LOAD_TRANSITION}.
+     * Planned, xoá thông tin đặt xe, báo Dispatch Staff"; RTM-LOADCANCEL, RTM-LOADCANCEL2): the booking CANCELLED and the
+     * load back to PLANNED with the same layout; parcels already scanned onto the truck are to be scanned off back to the
+     * dispatch area before it is booked again. The caller tells the dispatchers. Once the vehicle left,
+     * {@code INVALID_LOAD_TRANSITION}.
      */
     CarrierCancel carrierOrderCancelled(UUID loadId, UUID bookingId, Instant at);
 

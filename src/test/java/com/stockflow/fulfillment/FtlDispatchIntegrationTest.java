@@ -1243,9 +1243,9 @@ class FtlDispatchIntegrationTest {
     }
 
     @Test
-    @DisplayName("RTM-LOADCANCEL (09 §4.5): Ahamove cancels the order while the vehicle is loading - nothing on board, "
-            + "the load is PLANNED again with its booking cleared; with parcels on board it stays LOADING and the event "
-            + "goes to the error list (what becomes of those parcels is open, RTM-LOADCANCEL2-1119)")
+    @DisplayName("RTM-LOADCANCEL / RTM-LOADCANCEL2 (09 §4.5): Ahamove cancels the order while the vehicle is loading - "
+            + "the load is PLANNED again with its booking cleared and the same layout; parcels already on board are "
+            + "taken off the count and must be scanned off back to the dispatch area before the vehicle is booked again")
     void ahamoveCancelsTheOrderWhileLoading() throws Exception {
         UUID manager = staff("WAREHOUSE_MANAGER", HCM);
         UUID aha = apiCarrier(manager);
@@ -1272,10 +1272,31 @@ class FtlDispatchIntegrationTest {
         dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha + "\"}"))
                 .andExpect(status().isOk());
         loadAndScan(loadId);
+        List<String> onBoard = labels(load(loadId));
+        assertThat(load(loadId).path("loadedPackageCount").asInt()).isEqualTo(onBoard.size());
         ahamoveSays("AHA-L2", "CANCELLED");
         aha(code, ahamove("AHA-L2", "CANCELLED", "", "\"cancel_time\":1800001900,\"cancel_by_user\":false", ""))
-                .andExpect(jsonPath("$.data.result").value("NEEDS_REVIEW"));
-        assertThat(load(loadId).path("status").asText()).isEqualTo("LOADING");
+                .andExpect(jsonPath("$.data.result").value("APPLIED"));
+        JsonNode back = load(loadId);
+        assertThat(back.path("status").asText()).isEqualTo("PLANNED");
+        assertThat(back.path("loadedPackageCount").asInt()).isZero();
+        List<String> pending = new ArrayList<>();
+        back.path("pendingUnloads").forEach(u -> pending.add(u.path("labelCode").asText()));
+        assertThat(pending).containsExactlyInAnyOrderElementsOf(onBoard);
+        // Booked again only once every parcel is scanned off the old truck.
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha + "\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("LOAD_UNLOAD_PENDING"));
+        for (String label : onBoard) {
+            dispatch(body(post(LOADS + "/" + loadId + "/unloads"), "{\"packageCode\":\"" + label + "\"}"))
+                    .andExpect(status().isOk());
+        }
+        org.mockito.Mockito.when(carrierGateway.place(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenReturn(new com.stockflow.fulfillment.internal.service
+                .CarrierBookingGateway.Placed("AHA-L3", null));
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha + "\"}"))
+                .andExpect(status().isOk());
+        loadAndScan(loadId);
+        assertThat(load(loadId).path("loadedPackageCount").asInt()).isEqualTo(onBoard.size());
     }
 
     @Test
