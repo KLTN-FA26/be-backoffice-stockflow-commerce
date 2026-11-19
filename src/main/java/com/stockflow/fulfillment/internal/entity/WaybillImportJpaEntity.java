@@ -24,12 +24,14 @@ public class WaybillImportJpaEntity extends BaseEntity {
     @Column(name = "rows_total", nullable = false, updatable = false) private int rowsTotal;
     @Column(name = "rows_applied", nullable = false, updatable = false) private int rowsApplied;
     @Column(name = "rows_rejected", nullable = false, updatable = false) private int rowsRejected;
+    /** The warehouse chosen for the import (RTM-WBIMPORT-WH); null on imports made before it was asked. */
+    @Column(name = "warehouse_id", updatable = false) private UUID warehouseId;
 
     protected WaybillImportJpaEntity() {
     }
 
     public WaybillImportJpaEntity(UUID id, String fileName, String storageKey, UUID uploadedBy, Instant uploadedAt,
-                                  int rowsTotal, int rowsApplied, int rowsRejected) {
+                                  int rowsTotal, int rowsApplied, int rowsRejected, UUID warehouseId) {
         super(id);
         this.fileName = fileName.length() <= 255 ? fileName : fileName.substring(0, 255);
         this.storageKey = storageKey;
@@ -38,6 +40,7 @@ public class WaybillImportJpaEntity extends BaseEntity {
         this.rowsTotal = rowsTotal;
         this.rowsApplied = rowsApplied;
         this.rowsRejected = rowsRejected;
+        this.warehouseId = warehouseId;
     }
 
     public String getFileName() { return fileName; }
@@ -47,4 +50,5 @@ public class WaybillImportJpaEntity extends BaseEntity {
     public int getRowsTotal() { return rowsTotal; }
     public int getRowsApplied() { return rowsApplied; }
     public int getRowsRejected() { return rowsRejected; }
+    public UUID getWarehouseId() { return warehouseId; }
 }

@@ -6,7 +6,9 @@ import java.util.Set;
 
 /**
  * The system's file template for importing waybill numbers (kltn-docs 09 §4.4 "Nhập hàng loạt từ file"; QD-17: CSV,
- * UTF-8 with a byte-order mark, read and written by {@link ImportCsv}).
+ * UTF-8 with a byte-order mark, read and written by {@link ImportCsv}). The same table is also read from an Excel
+ * workbook (.xlsx, {@link ImportXlsx}): the format is found from the file's bytes, never from its name or the type the
+ * browser declared, and the lines and problems of a workbook are those of the CSV of the same data.
  *
  * <p>Five columns in this order: the internal load code, the waybill number (both required), the vehicle plate, the
  * driver's name and phone (optional; left blank, the load keeps what it has). The first line is the heading and is not
@@ -25,7 +27,27 @@ public final class WaybillImportFile {
     /** Physical lines read at all, blank ones included: a file of nothing but line breaks is not read to the end. */
     static final int MAX_LINES = MAX_ROWS * 10;
 
+    /** The content type a CSV import is kept under. */
+    public static final String CSV_TYPE = "text/csv";
+    /** The content type an Excel workbook import is kept under. */
+    public static final String XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
     private WaybillImportFile() {
+    }
+
+    /** True when {@code bytes} are an Excel workbook (an .xlsx) rather than CSV text. */
+    public static boolean isXlsx(byte[] bytes) {
+        return ImportXlsx.looksLike(bytes);
+    }
+
+    /** {@link #XLSX_TYPE} for a workbook, {@link #CSV_TYPE} for anything else (which is read as CSV). */
+    public static String contentType(byte[] bytes) {
+        return isXlsx(bytes) ? XLSX_TYPE : CSV_TYPE;
+    }
+
+    private static List<ImportCsv.CsvLine> table(byte[] bytes) {
+        return ImportXlsx.claims(bytes) ? ImportXlsx.read(bytes, MAX_BYTES, MAX_LINES)
+                : ImportCsv.read(bytes, MAX_BYTES, MAX_LINES);
     }
 
     /**
@@ -52,11 +74,12 @@ public final class WaybillImportFile {
     /**
      * The data lines of {@code bytes}; blank lines are skipped.
      *
-     * @throws ImportCsv.Malformed for a file over {@value #MAX_BYTES} bytes, not UTF-8, holding a NUL, with no heading
-     *         or no data line, over {@value #MAX_ROWS} data lines, or with a quote left open
+     * @throws ImportCsv.Malformed for a file over {@value #MAX_BYTES} bytes, neither UTF-8 text nor a readable .xlsx
+     *         workbook (encrypted, an old .xls, corrupt), holding a NUL, with no heading or no data line, over
+     *         {@value #MAX_ROWS} data lines, or with a quote left open
      */
     public static List<Row> parse(byte[] bytes) {
-        List<ImportCsv.CsvLine> records = ImportCsv.read(bytes, MAX_BYTES, MAX_LINES);
+        List<ImportCsv.CsvLine> records = table(bytes);
         List<Row> rows = new ArrayList<>();
         for (int i = 1; i < records.size(); i++) {
             ImportCsv.CsvLine record = records.get(i);
@@ -74,12 +97,13 @@ public final class WaybillImportFile {
 
     /**
      * The heading and only the data lines numbered {@code lines}, as a template file of their own (3-3: the extract of
-     * one warehouse's lines, kept with that warehouse's loads so no load shows another warehouse's lines).
+     * one warehouse's lines, kept with that warehouse's loads so no load shows another warehouse's lines), in the
+     * format of the file it comes from (a workbook gives a workbook).
      *
      * @throws ImportCsv.Malformed as {@link #parse}
      */
     public static byte[] extract(byte[] bytes, Set<Integer> lines) {
-        List<ImportCsv.CsvLine> records = ImportCsv.read(bytes, MAX_BYTES, MAX_LINES);
+        List<ImportCsv.CsvLine> records = table(bytes);
         List<List<String>> kept = new ArrayList<>();
         kept.add(records.get(0).cells());
         for (int i = 1; i < records.size(); i++) {
@@ -87,6 +111,6 @@ public final class WaybillImportFile {
                 kept.add(records.get(i).cells());
             }
         }
-        return ImportCsv.write(kept);
+        return isXlsx(bytes) ? ImportXlsx.write(kept) : ImportCsv.write(kept);
     }
 }

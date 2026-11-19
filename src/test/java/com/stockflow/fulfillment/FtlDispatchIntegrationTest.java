@@ -125,6 +125,7 @@ class FtlDispatchIntegrationTest {
     private UUID sales;
     private UUID picker;
     private UUID dispatcher;
+    private UUID elsewhereWarehouse;
     private UUID dispatcherElsewhere;
     private UUID truck5t;
     private UUID truck1t25;
@@ -139,8 +140,8 @@ class FtlDispatchIntegrationTest {
         sales = staff("SALES_STAFF");
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
-        UUID elsewhere = tx.execute(s -> otherWarehouse());
-        dispatcherElsewhere = staff("WAREHOUSE_STAFF", elsewhere);
+        elsewhereWarehouse = tx.execute(s -> otherWarehouse());
+        dispatcherElsewhere = staff("WAREHOUSE_STAFF", elsewhereWarehouse);
         truck5t = jdbc.queryForObject("SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-5T'", UUID.class);
         truck1t25 = jdbc.queryForObject("SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-1T25'",
                 UUID.class);
@@ -677,7 +678,16 @@ class FtlDispatchIntegrationTest {
                 ("\uFEFFMã chuyến,Mã vận đơn,Biển số,Tên tài xế,Điện thoại tài xế\r\n" + csv)
                         .getBytes(java.nio.charset.StandardCharsets.UTF_8));
         return as(user, role, org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                .multipart(BASE + "/waybill-imports" + path).file(file));
+                .multipart(BASE + "/waybill-imports" + forCaller(user, path)).file(file));
+    }
+
+    /** The import is made for a warehouse (RTM-WBIMPORT-WH): the caller's own. */
+    private String forCaller(UUID user, String path) {
+        return withWarehouse(user.equals(dispatcherElsewhere) ? elsewhereWarehouse : HCM, path);
+    }
+
+    private static String withWarehouse(UUID warehouse, String path) {
+        return path + (path.contains("?") ? "&" : "?") + "warehouseId=" + warehouse;
     }
 
     /** A vehicle of its own plan, booked with {@code carrier} and no waybill number: its load. */
@@ -717,6 +727,31 @@ class FtlDispatchIntegrationTest {
         assertThat(preview.path("lines").get(3).path("problem").asText()).isEqualTo("MISSING_FIELDS");
         assertThat(load(first.path("loadId").asText()).has("waybillNo")
                 && !load(first.path("loadId").asText()).path("waybillNo").isNull()).isFalse();
+        // The warehouse is chosen when importing (RTM-WBIMPORT-WH): required, known, one the caller is assigned to.
+        var csvFile = new org.springframework.mock.web.MockMultipartFile("file", "van-don.csv", "text/csv",
+                ("a,b\r\n" + one + "," + number + "\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        dispatch(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/waybill-imports/preview").file(csvFile)).andExpect(status().isBadRequest());
+        dispatch(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/waybill-imports/preview" + withWarehouse(UUID.randomUUID(), "")).file(csvFile))
+                .andExpect(status().isNotFound());
+        dispatch(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/waybill-imports/preview" + withWarehouse(elsewhereWarehouse, "")).file(csvFile))
+                .andExpect(status().isForbidden());
+        // A load of another warehouse than the chosen one: the same reason in the preview and after the import.
+        JsonNode otherPreview = data(importing(dispatcherElsewhere, "WAREHOUSE_STAFF", "/preview", csv)
+                .andExpect(status().isOk()));
+        JsonNode otherApplied = data(importing(dispatcherElsewhere, "WAREHOUSE_STAFF", "", csv)
+                .andExpect(status().isCreated()));
+        assertThat(otherPreview.path("lines").get(0).path("problem").asText()).isEqualTo("LOAD_OUT_OF_SCOPE");
+        assertThat(otherApplied.path("lines").get(0).path("problem").asText())
+                .isEqualTo(otherPreview.path("lines").get(0).path("problem").asText());
+        // The picker offers only the caller's own warehouses (RTM-WBIMPORT-WH).
+        assertThat(data(dispatch(get(BASE + "/waybill-imports/warehouses")).andExpect(status().isOk()))
+                .findValuesAsText("warehouseId")).containsExactly(HCM.toString());
+        assertThat(data(as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(BASE + "/waybill-imports/warehouses"))
+                .andExpect(status().isOk())).findValuesAsText("warehouseId"))
+                .containsExactly(elsewhereWarehouse.toString());
         // Another warehouse's dispatcher sees the same lines refused as out of scope, not the loads.
         JsonNode elsewhere = data(importing(dispatcherElsewhere, "WAREHOUSE_STAFF", "/preview", csv)
                 .andExpect(status().isOk()));
@@ -727,6 +762,8 @@ class FtlDispatchIntegrationTest {
         String importId = imported.path("importId").asText();
         assertThat(imported.path("rowsApplied").asInt()).isEqualTo(1);
         assertThat(imported.path("rowsRejected").asInt()).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT warehouse_id FROM fulfillment.waybill_import WHERE id = ?::uuid",
+                UUID.class, importId)).isEqualTo(HCM);
         JsonNode now = load(first.path("loadId").asText());
         assertThat(now.path("waybillNo").asText()).isEqualTo(number);
         assertThat(now.path("vehiclePlate").asText()).isEqualTo("51C-111.11");
@@ -775,6 +812,108 @@ class FtlDispatchIntegrationTest {
                 .andReturn().getResponse().getContentAsByteArray();
         assertThat(template[0]).isEqualTo((byte) 0xEF);
         assertThat(new String(template, java.nio.charset.StandardCharsets.UTF_8).split(",")).hasSize(5);
+    }
+
+    private ResultActions importingFile(UUID user, String role, String path, String name, String type, byte[] bytes)
+            throws Exception {
+        var file = new org.springframework.mock.web.MockMultipartFile("file", name, type, bytes);
+        return as(user, role, org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/waybill-imports" + forCaller(user, path)).file(file));
+    }
+
+    /** The template's table as a workbook: the heading row, then each line as text cells. */
+    private static byte[] workbookOf(String[]... lines) throws java.io.IOException {
+        try (var workbook = new org.apache.poi.xssf.usermodel.XSSFWorkbook();
+             var out = new java.io.ByteArrayOutputStream()) {
+            var sheet = workbook.createSheet("Nhập");
+            String[] all = {"Mã chuyến", "Mã vận đơn", "Biển số", "Tên tài xế", "Điện thoại tài xế"};
+            var heading = sheet.createRow(0);
+            for (int c = 0; c < all.length; c++) {
+                heading.createCell(c).setCellValue(all[c]);
+            }
+            for (int r = 0; r < lines.length; r++) {
+                var row = sheet.createRow(r + 1);
+                for (int c = 0; c < lines[r].length; c++) {
+                    if (lines[r][c] != null) {
+                        row.createCell(c).setCellValue(lines[r][c]);
+                    }
+                }
+            }
+            workbook.write(out);
+            return out.toByteArray();
+        }
+    }
+
+    @Test
+    @DisplayName("an .xlsx workbook of the template's table gives the same preview and result as its CSV, is kept as "
+            + "the load's waybill file as it is (a workbook), and a file that is neither is refused whole")
+    void waybillNumbersFromAWorkbook() throws Exception {
+        JsonNode first = bookedWithoutNumber(ghn);
+        JsonNode second = bookedWithoutNumber(ghn);
+        String one = first.path("code").asText();
+        String two = second.path("code").asText();
+        String other = historyLoad("51C-HELD-X");
+        String held = jdbc.queryForObject("SELECT waybill_no FROM fulfillment.dispatch_load WHERE id = ?::uuid",
+                String.class, other);
+        String number = "WB-XLS-" + first.path("loadId").asText();
+        String[][] lines = {{one, number, "51C-222.22", "Tài", "0900"}, {two, held}, {"LD-NOPE", number + "-X"},
+                {"", number + "-Y"}};
+        String csv = one + "," + number + ",51C-222.22,Tài,0900\r\n" + two + "," + held + "\r\n"
+                + "LD-NOPE," + number + "-X\r\n" + "," + number + "-Y\r\n";
+        byte[] xlsx = workbookOf(lines);
+        String xlsxType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+        // The same lines, outcomes and problems whichever the format - even when the browser declares another type or
+        // the name says another.
+        JsonNode fromCsv = data(importing(dispatcher, "WAREHOUSE_STAFF", "/preview", csv).andExpect(status().isOk()));
+        JsonNode fromXlsx = data(importingFile(dispatcher, "WAREHOUSE_STAFF", "/preview", "van-don.xlsx", xlsxType,
+                xlsx).andExpect(status().isOk()));
+        JsonNode renamed = data(importingFile(dispatcher, "WAREHOUSE_STAFF", "/preview", "van-don.csv",
+                "application/vnd.ms-excel", xlsx).andExpect(status().isOk()));
+        assertThat(fromXlsx.path("lines")).isEqualTo(fromCsv.path("lines"));
+        assertThat(renamed.path("lines")).isEqualTo(fromCsv.path("lines"));
+        assertThat(fromXlsx.path("rowsTotal").asInt()).isEqualTo(4);
+        assertThat(fromXlsx.path("rowsApplied").asInt()).isEqualTo(1);
+        assertThat(fromXlsx.path("lines").findValuesAsText("outcome")).containsExactly("NEW", "ERROR", "ERROR",
+                "ERROR");
+        assertThat(fromXlsx.path("lines").get(1).path("problem").asText()).isEqualTo("DUPLICATE_IN_CARRIER");
+        assertThat(fromXlsx.path("lines").get(3).path("problem").asText()).isEqualTo("MISSING_FIELDS");
+
+        JsonNode imported = data(importingFile(dispatcher, "WAREHOUSE_STAFF", "", "van-don.xlsx", xlsxType, xlsx)
+                .andExpect(status().isCreated()));
+        assertThat(imported.path("rowsApplied").asInt()).isEqualTo(1);
+        assertThat(imported.path("rowsRejected").asInt()).isEqualTo(3);
+        JsonNode now = load(first.path("loadId").asText());
+        assertThat(now.path("waybillNo").asText()).isEqualTo(number);
+        assertThat(now.path("vehiclePlate").asText()).isEqualTo("51C-222.22");
+        assertThat(now.path("driverName").asText()).isEqualTo("Tài");
+        // The booking slip names the load's warehouse (kltn-docs 09 §3 Output: kho xuất): by name, not by id alone.
+        assertThat(now.path("warehouseName").asText()).isEqualTo(jdbc.queryForObject(
+                "SELECT w.name FROM fulfillment.dispatch_load l JOIN warehouse.warehouse w ON w.id = l.warehouse_id "
+                        + "WHERE l.id = ?::uuid", String.class, first.path("loadId").asText()));
+        // The workbook itself is the load's waybill file, a workbook still.
+        assertThat(data(dispatch(get(LOADS + "/" + first.path("loadId").asText() + "/waybill-files"))
+                .andExpect(status().isOk()))).singleElement().satisfies(f -> {
+                    assertThat(f.path("contentType").asText()).isEqualTo(xlsxType);
+                    assertThat(f.path("fileName").asText()).isEqualTo("van-don.xlsx");
+                });
+        assertThat(jdbc.queryForObject("SELECT storage_key FROM fulfillment.waybill_import WHERE id = ?::uuid",
+                String.class, imported.path("importId").asText())).endsWith(".xlsx");
+
+        // Neither a workbook nor the template's text: refused whole, in either format's name.
+        importingFile(dispatcher, "WAREHOUSE_STAFF", "/preview", "van-don.xlsx", xlsxType, onePagePdf())
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("WAYBILL_IMPORT_INVALID_FILE"));
+        importingFile(dispatcher, "WAREHOUSE_STAFF", "", "van-don.csv", "text/csv",
+                new byte[] {'P', 'K', 3, 4, 0, 0, 0, 0}).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("WAYBILL_IMPORT_INVALID_FILE"));
+        importingFile(dispatcher, "WAREHOUSE_STAFF", "/preview", "van-don.xlsx", xlsxType, workbookOf())
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("WAYBILL_IMPORT_INVALID_FILE"));
+        // Without the permission to import, neither format is read.
+        sales(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/waybill-imports/preview" + withWarehouse(HCM, "")).file(new org.springframework.mock.web.MockMultipartFile(
+                        "file", "van-don.xlsx", xlsxType, xlsx))).andExpect(status().isForbidden());
     }
 
     // ---- booking through the carrier's API (3-4; 09 §4.2 step 6, BR-29, E24) -------------------
