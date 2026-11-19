@@ -382,6 +382,8 @@ class PermissionMatrixTest {
                     Role.SYSTEM_ADMIN)),
             // 4B-7, kltn-docs 17 §4.2 step 2: Sales chooses the shipping warehouse; those who follow the order read it.
             Map.entry("sales-order-shipping-warehouses:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            // WF04 G2 (V20261204006100; kltn-docs 17 §2, §3 "Khách / Sale ... đổi địa chỉ"): Sales change the address.
+            Map.entry("sales-order-addresses:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("sales-order-shipping-warehouses:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
                     Role.WAREHOUSE_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             // 4A-2, kltn-docs 17 §4.3, BR-23: the coordinator draws production orders up, the Sales Manager approves.

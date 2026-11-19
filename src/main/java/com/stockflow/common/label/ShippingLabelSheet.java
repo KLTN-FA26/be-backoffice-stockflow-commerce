@@ -15,6 +15,8 @@ import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.ResourceBundle;
 
 /**
  * The shipping label of one outbound carton (team plan 4C-6; kltn-docs 08 §4.3 step 6), stuck next to the carton's LPN
@@ -27,9 +29,9 @@ import java.util.List;
  *
  * <p>Drawn with the primitives of {@link CodeLabelSheet} ({@link LabelDrawing}, {@link LabelFonts}): the same vector
  * barcodes and the same embedded fonts that draw Vietnamese names and addresses. Captions are bilingual, Vietnamese
- * first (owner decision RTM-LABELLANG, 2026-11-19: "Song ngữ Việt – Anh"): the warehouse and the carrier's crew read
- * Vietnamese, the English half keeps the usual parcel wording. They are printed text, not code, which is why this class
- * holds Vietnamese. Names and addresses are printed as the order has them. Knows nothing about persistence: callers
+ * first (owner decision RTM-LABELLANG, 2026-11-19: bilingual Vietnamese - English): the warehouse and the carrier's crew read
+ * Vietnamese, the English half keeps the usual parcel wording. Each half comes from its message bundle
+ * ({@code label.shipping.*}), so no Vietnamese lives in this class. Names and addresses are printed as the order has them. Knows nothing about persistence: callers
  * render after the read-only transaction that chose the cartons has ended.</p>
  */
 public final class ShippingLabelSheet {
@@ -42,17 +44,20 @@ public final class ShippingLabelSheet {
     private static final double RULE_MM = 0.3;
     private static final float LINE_SPACING = 1.3f;
 
-    // Captions, Vietnamese / English (RTM-LABELLANG).
-    static final String ORDER = "ĐƠN HÀNG / ORDER";
-    static final String LABEL_VERSION = "%s  ·  nhãn / label v%d";
-    static final String SHIP_TO = "GIAO ĐẾN / SHIP TO";
-    static final String FROM = "NGƯỜI GỬI / FROM – RETURN TO";
-    static final String SKU = "MÃ HÀNG / SKU  ";
-    static final String QUANTITY = "SL / QTY  %d";
-    static final String WEIGHT = "KHỐI LƯỢNG / WEIGHT  %s kg";
-    static final String DIM_WEIGHT = "KL QUY ĐỔI / DIM. WEIGHT  %s kg";
-    static final String SIZE = "KÍCH THƯỚC / SIZE  %s x %s x %s cm";
-    static final String DO_NOT_ROTATE = "KHÔNG XOAY / DO NOT ROTATE";
+    // Captions, Vietnamese / English (RTM-LABELLANG), from the message bundles: label.shipping.* of messages_vi and of
+    // messages, printed "<vi> / <en>".
+    private static final ResourceBundle VI = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+    private static final ResourceBundle EN = ResourceBundle.getBundle("i18n.messages", Locale.ROOT);
+    static final String ORDER = caption("order");
+    static final String LABEL_VERSION = "%s  ·  " + caption("version") + " v%d";
+    static final String SHIP_TO = caption("ship-to");
+    static final String FROM = caption("from");
+    static final String SKU = caption("sku") + "  ";
+    static final String QUANTITY = caption("quantity") + "  %d";
+    static final String WEIGHT = caption("weight") + "  %s kg";
+    static final String DIM_WEIGHT = caption("dim-weight") + "  %s kg";
+    static final String SIZE = caption("size") + "  %s x %s x %s cm";
+    static final String DO_NOT_ROTATE = caption("do-not-rotate");
 
     /**
      * One carton's label. {@code lpn} is [A-Z0-9-], what both symbols carry; every other text is free and made drawable
@@ -68,6 +73,10 @@ public final class ShippingLabelSheet {
     }
 
     private ShippingLabelSheet() {
+    }
+
+    private static String caption(String key) {
+        return VI.getString("label.shipping." + key) + " / " + EN.getString("label.shipping." + key);
     }
 
     /**
