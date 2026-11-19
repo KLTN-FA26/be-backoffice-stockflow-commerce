@@ -107,9 +107,9 @@ stockflow:
   seller:
     name: ${SELLER_NAME:CÔNG TY TNHH STOCKFLOW}
     tax-code: ${SELLER_TAX_CODE:0000000000}
-    address: ${SELLER_ADDRESS:1 Demo Street, Ho Chi Minh City}
-    representative: ${SELLER_REPRESENTATIVE:Demo Director}
-    representative-title: ${SELLER_REPRESENTATIVE_TITLE:Director}
+    address: ${SELLER_ADDRESS:Số 1 Đường Demo, Phường Bến Nghé, TP. Hồ Chí Minh}
+    representative: ${SELLER_REPRESENTATIVE:Nguyễn Văn Demo}
+    representative-title: ${SELLER_REPRESENTATIVE_TITLE:Giám đốc}
   security:
     # ON. A server never runs with security off — that is what the `local` profile is for, and it
     # must never leave a laptop.
