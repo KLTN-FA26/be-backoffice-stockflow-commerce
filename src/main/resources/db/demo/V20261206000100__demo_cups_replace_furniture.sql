@@ -272,7 +272,7 @@ SELECT md5('demo:cups:opening-ledger:' || lpn)::uuid, 'RECEIPT', sku, lot_number
   FROM c_carton;
 
 -- ---------------------------------------------------------------------------------------------
--- 5. The furniture's catalogue leaves: units, items, media, variants, axes, products, categories, values
+-- 5. The furniture's catalogue leaves: units, items, media, variants, axes, products, brand, categories, values
 -- ---------------------------------------------------------------------------------------------
 CREATE TEMP TABLE c_furniture_product (code TEXT PRIMARY KEY) ON COMMIT DROP;
 INSERT INTO c_furniture_product VALUES ('SOFA-3S'), ('TABLE-OAK');
@@ -319,6 +319,11 @@ ALTER TABLE product.products DISABLE TRIGGER tg_products_delete_draft_only;
 DELETE FROM product.products WHERE code IN (SELECT code FROM c_furniture_product);
 ALTER TABLE product.products ENABLE TRIGGER tg_products_delete_draft_only;
 
+-- The furniture's brand: nothing else carries it (the cups and the box have none), and it named a real store.
+DELETE FROM product.brands b
+ WHERE b.code = 'NHAXINH'
+   AND NOT EXISTS (SELECT 1 FROM product.products p WHERE p.brand_id = b.id);
+
 DELETE FROM product.category_attributes a
  USING product.categories c
  WHERE c.id = a.category_id AND c.code IN ('LIVING', 'DINING', 'SOFA', 'TABLE');
@@ -350,6 +355,7 @@ BEGIN
          WHERE sku LIKE 'SOFA-3S%' OR sku LIKE 'TABLE-OAK%'
         UNION ALL SELECT 'variant ' || sku FROM product.variants WHERE sku LIKE 'SOFA-3S%' OR sku LIKE 'TABLE-OAK%'
         UNION ALL SELECT 'product ' || code FROM product.products WHERE code LIKE 'SOFA-3S%' OR code LIKE 'TABLE-OAK%'
+        UNION ALL SELECT 'brand ' || code FROM product.brands WHERE code = 'NHAXINH'
         UNION ALL SELECT 'category ' || code FROM product.categories WHERE code IN ('LIVING', 'DINING', 'SOFA', 'TABLE')
         UNION ALL SELECT 'attribute value ' || code FROM product.attribute_values WHERE code IN ('OAK', 'FABRIC', '160')
         UNION ALL SELECT 'media ' || id FROM product.media WHERE url LIKE '%SOFA-3S%' OR url LIKE '%TABLE-OAK%'

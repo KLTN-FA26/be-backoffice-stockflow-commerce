@@ -166,6 +166,7 @@ class DemoDataIntegrationTest {
                      + (SELECT count(*) FROM product.variants WHERE sku LIKE 'SOFA-3S%' OR sku LIKE 'TABLE-OAK%')
                      + (SELECT count(*) FROM product.products WHERE code LIKE 'SOFA-3S%' OR code LIKE 'TABLE-OAK%')
                      + (SELECT count(*) FROM inventory.stock_movement WHERE sku LIKE 'SOFA-3S%' OR sku LIKE 'TABLE-OAK%')
+                     + (SELECT count(*) FROM product.brands WHERE code = 'NHAXINH')
                 """, Long.class)).as("rows naming the furniture").isZero();
 
         assertThat(jdbc.queryForList(
