@@ -2493,8 +2493,6 @@ Table ordering.production_order [headercolor: #C0392B] {
   sample_approval_required   boolean [not null]
   sample_required_by_default boolean [not null]
   sample_waiver_reason       varchar(500)
-  unit_price                 decimal(19,4)
-  currency                   varchar(3) [not null, default: 'VND']
   note                       varchar(500)
   drawn_up_by                uuid [not null]
   submitted_at               timestamptz
