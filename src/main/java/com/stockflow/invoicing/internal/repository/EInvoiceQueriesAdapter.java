@@ -113,19 +113,77 @@ class EInvoiceQueriesAdapter implements EInvoiceQueries {
     }
 
     @Override
-    public List<Listing> issuedTo(UUID customerId, int offset, int limit) {
-        return jdbc.query("SELECT " + LIST_COLUMNS + " FROM invoicing.einvoice " + """
-                WHERE customer_id = ? AND status IN ('ISSUED', 'REPLACED')
+    public List<Listing> issuedTo(UUID customerId, UUID orderId, int offset, int limit) {
+        List<Object> arguments = new ArrayList<>(List.of(customerId));
+        String byOrder = byOrder(orderId, arguments);
+        arguments.add(limit);
+        arguments.add(offset);
+        return jdbc.query("SELECT " + LIST_COLUMNS + " FROM invoicing.einvoice WHERE customer_id = ?"
+                + " AND status IN ('ISSUED', 'REPLACED')" + byOrder + " " + """
                 ORDER BY issue_date DESC, issued_at DESC, id
-                LIMIT ? OFFSET ?""", LISTING, customerId, limit, offset);
+                LIMIT ? OFFSET ?""", LISTING, arguments.toArray());
+    }
+
+    /**
+     * The order as one more predicate under the customer's, never instead of it: another customer's order finds
+     * nothing. Added only when asked, so the plan of the unfiltered list is the one it always was
+     * ({@code ix_einvoice_order} serves the filtered one).
+     */
+    private static String byOrder(UUID orderId, List<Object> arguments) {
+        if (orderId == null) {
+            return "";
+        }
+        arguments.add(orderId);
+        return " AND order_id = ?";
     }
 
     @Override
-    public long countIssuedTo(UUID customerId) {
-        Long count = jdbc.queryForObject("""
-                SELECT count(*) FROM invoicing.einvoice
-                 WHERE customer_id = ? AND status IN ('ISSUED', 'REPLACED')""", Long.class, customerId);
+    public long countIssuedTo(UUID customerId, UUID orderId) {
+        List<Object> arguments = new ArrayList<>(List.of(customerId));
+        Long count = jdbc.queryForObject("SELECT count(*) FROM invoicing.einvoice WHERE customer_id = ?"
+                + " AND status IN ('ISSUED', 'REPLACED')" + byOrder(orderId, arguments), Long.class,
+                arguments.toArray());
         return count == null ? 0 : count;
+    }
+
+    @Override
+    public Map<UUID, Replacements> replacementsOf(UUID customerId, java.util.Collection<UUID> invoiceIds) {
+        if (invoiceIds.isEmpty()) {
+            return Map.of();
+        }
+        // One statement for the page. Both sides are held to what the portal lists - the customer's own, ISSUED or
+        // REPLACED - so a replacement still a draft or at the provider is never named (ix_einvoice_original serves the
+        // look-up of the replacement). An original is replaced at most once: a REPLACED invoice is no longer in force
+        // and tg_einvoice_original_in_force refuses a second replacement of it; LIMIT 1 only keeps that an assumption
+        // the statement does not depend on.
+        Map<UUID, Replacements> links = new HashMap<>();
+        jdbc.query("""
+                SELECT i.id, o.id AS replaces_id, o.code AS replaces_code, r.id AS replaced_by_id,
+                       r.code AS replaced_by_code
+                  FROM invoicing.einvoice i
+                  LEFT JOIN invoicing.einvoice o
+                         ON i.type = 'REPLACEMENT' AND o.id = i.original_einvoice_id AND o.customer_id = i.customer_id
+                        AND o.status IN ('ISSUED', 'REPLACED')
+                  LEFT JOIN LATERAL (SELECT x.id, x.code FROM invoicing.einvoice x
+                                      WHERE x.original_einvoice_id = i.id AND x.type = 'REPLACEMENT'
+                                        AND x.customer_id = i.customer_id AND x.status IN ('ISSUED', 'REPLACED')
+                                      ORDER BY x.issued_at, x.id
+                                      LIMIT 1) r ON TRUE
+                 WHERE i.id = ANY (?) AND i.customer_id = ?
+                   AND (o.id IS NOT NULL OR r.id IS NOT NULL)""",
+                ps -> {
+                    ps.setArray(1, ps.getConnection().createArrayOf("uuid", invoiceIds.toArray()));
+                    ps.setObject(2, customerId);
+                },
+                row -> {
+                    UUID replacesId = row.getObject("replaces_id", UUID.class);
+                    UUID replacedById = row.getObject("replaced_by_id", UUID.class);
+                    links.put(row.getObject("id", UUID.class), new Replacements(
+                            replacesId == null ? null : new Reference(replacesId, row.getString("replaces_code")),
+                            replacedById == null ? null
+                                    : new Reference(replacedById, row.getString("replaced_by_code"))));
+                });
+        return links;
     }
 
     @Override

@@ -86,7 +86,7 @@ public final class EInvoiceFixtures {
                 s.agreementFileKey(), s.xmlFileKey(), s.pdfFileKey(), s.rejectionCode(), s.rejectionMessage(),
                 s.submittedAt(), s.submittedBy(), s.issuedAt(), s.voidedAt(), s.voidedBy(), s.voidReason(),
                 s.version(), s.correctionBasis(), s.agreementNumber(), s.agreementDate(), s.returnRequestId(),
-                s.listedInvoiceIds());
+                s.listedInvoiceIds(), s.deliveryFailedAt());
     }
 
     /** The same invoice with no warnings: a draft drawn up before the rule that would flag it existed. */
@@ -100,7 +100,7 @@ public final class EInvoiceFixtures {
                 s.adjustmentReason(), s.agreementFileKey(), s.xmlFileKey(), s.pdfFileKey(), s.rejectionCode(),
                 s.rejectionMessage(), s.submittedAt(), s.submittedBy(), s.issuedAt(), s.voidedAt(), s.voidedBy(),
                 s.voidReason(), s.version(), s.correctionBasis(), s.agreementNumber(), s.agreementDate(),
-                s.returnRequestId(), s.listedInvoiceIds());
+                s.returnRequestId(), s.listedInvoiceIds(), s.deliveryFailedAt());
     }
 
     // ---- corrections (WF-05 E4; TT 91 Điều 10) --------------------------------------------------------------------

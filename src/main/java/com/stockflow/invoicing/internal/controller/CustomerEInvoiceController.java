@@ -59,13 +59,17 @@ class CustomerEInvoiceController {
     }
 
     @GetMapping
-    @Operation(summary = "The e-invoices issued to the signed-in customer, the newest invoice date first")
+    @Operation(summary = "The e-invoices issued to the signed-in customer, the newest invoice date first; orderId "
+            + "narrows it to one of the customer's orders (another customer's order id, or an unknown one, gives an "
+            + "empty page). Each carries the invoice it replaces and the issued one that replaced it")
     @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.READ, scope = DataScope.OWN)
     public ApiResponse<PageResponse<CustomerEInvoiceResponse>> list(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) UUID orderId,
             @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(queries.issuedTo(ownCustomerId(user), page, size == null ? Pages.DEFAULT_PAGE_SIZE : size)
+        return ApiResponse.ok(queries.issuedTo(ownCustomerId(user), orderId, page,
+                        size == null ? Pages.DEFAULT_PAGE_SIZE : size)
                 .map(InvoicingWebMapper::toCustomerResponse));
     }
 

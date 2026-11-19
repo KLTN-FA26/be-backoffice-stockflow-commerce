@@ -19,6 +19,7 @@ import com.stockflow.order.internal.domain.ReturnRequest;
 import com.stockflow.order.internal.domain.ReturnResolution;
 import com.stockflow.order.internal.domain.ReturnStatus;
 import com.stockflow.order.internal.domain.WindowChangeReason;
+import com.stockflow.order.internal.service.CustomerOrders;
 import com.stockflow.order.internal.service.DeliveryBatchService;
 import com.stockflow.order.internal.service.OrderReleases;
 import com.stockflow.order.internal.service.ReturnRequestService;
@@ -96,6 +97,7 @@ class Wf05ReturnPerDeliveryIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
+    @Autowired CustomerOrders customerOrders;
 
     private ConfirmedOrders confirmedOrders;
     private UUID customer;
@@ -235,6 +237,13 @@ class Wf05ReturnPerDeliveryIntegrationTest {
                 String.class, returnId));
     }
 
+    /** What the customer's order detail shows of shipment {@code shipment}'s line: carried, still returnable. */
+    private CustomerOrders.ShipmentLine shown(UUID shipment) {
+        return customerOrders.myOrder(customer, orderId).shipments().stream()
+                .filter(s -> shipment.equals(s.shipmentId())).findFirst().orElseThrow()
+                .lines().stream().filter(line -> line.orderLineId().equals(lineId)).findFirst().orElseThrow();
+    }
+
     private EInvoice.Snapshot issuedInvoiceOf(UUID shipment) {
         Await.until("the draft e-invoice of shipment " + shipment, ASYNC, () -> jdbc.queryForObject(
                 "SELECT count(*) FROM invoicing.einvoice WHERE shipment_id = ? AND type = 'ORIGINAL'", Long.class,
@@ -257,8 +266,11 @@ class Wf05ReturnPerDeliveryIntegrationTest {
         EInvoice.Snapshot firstInvoice = issuedInvoiceOf(first);
 
         // Bounded by what shipment 1 delivered (100), one open return per line and shipment, and the database again.
+        assertThat(shown(first)).as("the customer is shown the same bound")
+                .isEqualTo(new CustomerOrders.ShipmentLine(lineId, sku.sku(), 100, 100));
         assertThat(code(catchThrowable(() -> open(first, 101)))).isEqualTo(ErrorCode.RETURN_QUANTITY_EXCEEDED);
         ReturnRequest request = approved(first, 50);
+        assertThat(shown(first).returnableQuantity()).as("a return of the line is open on shipment 1").isZero();
         assertThat(request.shipmentId()).isEqualTo(first);
         assertThat(status()).as("a return moves no status while batches are still to come")
                 .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
@@ -302,13 +314,21 @@ class Wf05ReturnPerDeliveryIntegrationTest {
         assertThat(reduced(2)).as("batch 1's installment").isEqualByComparingTo("88000");
         assertThat(reduced(3)).as("batch 2's installment").isEqualByComparingTo("0");
         assertThat(status()).as("resolved, still nothing moves").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        // Closed, the return claims the 40 refunded, not the 50 approved: 60 of shipment 1's line are left, and opening
+        // agrees to the unit.
+        assertThat(shown(first).returnableQuantity()).isEqualTo(60);
+        assertThat(code(catchThrowable(() -> open(first, 61)))).isEqualTo(ErrorCode.RETURN_QUANTITY_EXCEEDED);
         Await.until("the adjustment of shipment 1's invoice", ASYNC, () -> jdbc.queryForObject("""
                 SELECT count(*) FROM invoicing.einvoice WHERE type = 'ADJUSTMENT' AND original_einvoice_id = ?""",
                 Long.class, firstInvoice.id()) == 1);
 
         // Batch 2 goes out as if nothing happened; delivered, the order is DELIVERED and stays so.
         UUID second = batchTwoHandedOver();
+        assertThat(shown(second)).as("with the carrier: listed, nothing to return yet")
+                .isEqualTo(new CustomerOrders.ShipmentLine(lineId, sku.sku(), 100, 0));
         assertThat(orders.recordShipmentDelivered(orderId, second, staff).status()).isEqualTo(OrderStatus.DELIVERED);
+        assertThat(shown(second).returnableQuantity()).as("delivered: its own 100, the line's 160 left in all")
+                .isEqualTo(100);
         Await.until("the second delivery handled", ASYNC, () -> jdbc.queryForObject(
                 "SELECT count(*) FROM invoicing.einvoice WHERE shipment_id = ? AND type = 'ORIGINAL'", Long.class,
                 second) == 1);
@@ -368,6 +388,11 @@ class Wf05ReturnPerDeliveryIntegrationTest {
         assertThat(orders.recordShipmentDelivered(orderId, second, staff).status()).isEqualTo(OrderStatus.DELIVERED);
 
         Await.until("the order follows its open return", ASYNC, () -> status() == OrderStatus.RETURN_REQUESTED);
+        assertThat(customerOrders.myOrder(customer, orderId).statusGroup())
+                .as("the customer reads a return being decided, not goods returned")
+                .isEqualTo(CustomerOrders.StatusGroup.RETURN_REQUESTED);
+        assertThat(shown(first).returnableQuantity()).isZero();
+        assertThat(shown(second).returnableQuantity()).isEqualTo(100);
         // Shipment 2's goods are claimed on their own: naming no shipment is refused once there are two.
         assertThat(code(catchThrowable(() -> open(null, 1)))).isEqualTo(ErrorCode.RETURN_SHIPMENT_REQUIRED);
         assertThat(open(second, 5).shipmentId()).isEqualTo(second);
