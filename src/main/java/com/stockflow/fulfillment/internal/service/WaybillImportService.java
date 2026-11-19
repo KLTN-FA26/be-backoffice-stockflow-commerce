@@ -18,6 +18,7 @@ import com.stockflow.common.storage.IncomingFiles;
 import com.stockflow.common.storage.PreparedFiles;
 import com.stockflow.common.storage.StagedUploads;
 import com.stockflow.common.storage.StoredFile;
+import com.stockflow.warehouse.api.WarehouseService;
 import com.stockflow.fulfillment.internal.domain.CarrierConnectionType;
 import com.stockflow.fulfillment.internal.domain.DispatchLoad;
 import com.stockflow.fulfillment.internal.domain.ImportCsv;
@@ -86,6 +87,7 @@ class WaybillImportService implements WaybillImports {
     private final FileTransfers transfers;
     private final StagedUploads staged;
     private final Messages messages;
+    private final WarehouseService warehouses;
     private final TransactionOperations tx;
     private final Clock clock;
 
@@ -93,7 +95,8 @@ class WaybillImportService implements WaybillImports {
     WaybillImportService(DispatchLoadJpaRepository loads, DispatchLoadStore store, CarrierJpaRepository carriers,
                          WaybillImportJpaRepository imports, WaybillImportRowJpaRepository importRows,
                          LoadWaybillFileJpaRepository waybillFiles, Waybills waybills, FileTransfers transfers,
-                         StagedUploads staged, Messages messages, TransactionOperations tx, Clock clock) {
+                         StagedUploads staged, Messages messages, WarehouseService warehouses,
+                         TransactionOperations tx, Clock clock) {
         this.loads = loads;
         this.store = store;
         this.carriers = carriers;
@@ -104,6 +107,7 @@ class WaybillImportService implements WaybillImports {
         this.transfers = transfers;
         this.staged = staged;
         this.messages = messages;
+        this.warehouses = warehouses;
         this.tx = tx;
         this.clock = clock;
     }
@@ -121,11 +125,12 @@ class WaybillImportService implements WaybillImports {
 
     @Override
     @Transactional(readOnly = true)
-    public Preview preview(byte[] file, CurrentUser actor) {
+    public Preview preview(byte[] file, UUID warehouseId, CurrentUser actor) {
+        requireWarehouse(warehouseId);
         List<WaybillImportFile.Row> rows = parse(file);
         Set<String> codes = codes(rows);
         List<WaybillImportCheck.Verdict> verdicts = check(rows, codes.isEmpty() ? List.of()
-                : loads.findByCodeIn(codes), null);
+                : loads.findByCodeIn(codes), warehouseId, null);
         int applicable = (int) verdicts.stream().filter(WaybillImportCheck.Verdict::applies).count();
         return new Preview(rows.size(), applicable, rows.size() - applicable,
                 verdicts.stream().map(WaybillImportService::line).toList());
@@ -134,10 +139,12 @@ class WaybillImportService implements WaybillImports {
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "waybill-import", resourceId = "#result?.id()")
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    public ImportView importFile(byte[] file, String fileName, Set<Integer> overwriteLines, CurrentUser actor) {
+    public ImportView importFile(byte[] file, String fileName, UUID warehouseId, Set<Integer> overwriteLines,
+                                 CurrentUser actor) {
         if (actor == null || actor.userId() == null) {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
+        requireWarehouse(warehouseId);
         List<WaybillImportFile.Row> rows = parse(file);
         // What the file is comes from its bytes: a workbook named .csv, or text named .xlsx, is read as what it is.
         String type = WaybillImportFile.contentType(file);
@@ -148,7 +155,7 @@ class WaybillImportService implements WaybillImports {
         // A load never changes warehouse, so which warehouse each line is of can be read before the transaction.
         List<DispatchLoadJpaRepository.LoadPlace> places = tx.execute(s -> codes.isEmpty() ? List.of()
                 : loads.placesOfCodes(codes));
-        Map<String, UUID> warehouseOf = places.stream().filter(pl -> visible(restriction, pl.getWarehouseId()))
+        Map<String, UUID> warehouseOf = places.stream().filter(pl -> warehouseId.equals(pl.getWarehouseId()) && visible(restriction, pl.getWarehouseId()))
                 .collect(Collectors.toMap(DispatchLoadJpaRepository.LoadPlace::getCode,
                         DispatchLoadJpaRepository.LoadPlace::getWarehouseId));
         // The file itself goes with the import; a load gets it whole only if every line is of the load's warehouse,
@@ -183,7 +190,8 @@ class WaybillImportService implements WaybillImports {
             }
             Set<Integer> confirmed = overwriteLines == null ? Set.of() : Set.copyOf(overwriteLines);
             ImportView view = tx.execute(status -> {
-                ImportView applied = apply(rows, places, restriction, original, fileOf, name, type, confirmed, actor);
+                ImportView applied = apply(rows, places, restriction, warehouseId, original, fileOf, name, type, confirmed,
+                        actor);
                 prepared.adopt();
                 return applied;
             });
@@ -197,11 +205,11 @@ class WaybillImportService implements WaybillImports {
      * check again, apply the valid lines, record the import.
      */
     private ImportView apply(List<WaybillImportFile.Row> rows, List<DispatchLoadJpaRepository.LoadPlace> places,
-                             Optional<AssignedWarehouses> restriction, StoredFile original,
+                             Optional<AssignedWarehouses> restriction, UUID warehouseId, StoredFile original,
                              Map<UUID, StoredFile> fileOf, String name, String type, Set<Integer> confirmed,
                              CurrentUser actor) {
         List<DispatchLoadJpaEntity> locked = new ArrayList<>();
-        places.stream().filter(pl -> visible(restriction, pl.getWarehouseId()))
+        places.stream().filter(pl -> warehouseId.equals(pl.getWarehouseId()) && visible(restriction, pl.getWarehouseId()))
                 .map(DispatchLoadJpaRepository.LoadPlace::getId).sorted()
                 .forEach(id -> loads.lockById(id).ifPresent(locked::add));
         Map<UUID, DispatchLoadJpaEntity> byId = locked.stream()
@@ -216,7 +224,7 @@ class WaybillImportService implements WaybillImports {
             }
         }
         waybills.lock(numbers);
-        List<WaybillImportCheck.Verdict> verdicts = check(rows, locked, confirmed);
+        List<WaybillImportCheck.Verdict> verdicts = check(rows, locked, warehouseId, confirmed);
         Instant now = clock.instant();
         UUID importId = Identifiers.newId();
         int applied = 0;
@@ -241,7 +249,7 @@ class WaybillImportService implements WaybillImports {
             }
         }
         WaybillImportJpaEntity record = imports.saveAndFlush(new WaybillImportJpaEntity(importId, name,
-                original.key(), actor.userId(), now, rows.size(), applied, rows.size() - applied));
+                original.key(), actor.userId(), now, rows.size(), applied, rows.size() - applied, warehouseId));
         importRows.saveAll(verdicts.stream().map(v -> new WaybillImportRowJpaEntity(Identifiers.newId(), importId,
                 v.row().line(), v.row().loadCode(), v.row().waybillNo(), v.row().vehiclePlate(), v.row().driverName(),
                 v.row().driverPhone(), v.load() == null ? null : v.load().loadId(), v.outcome().name(),
@@ -288,6 +296,14 @@ class WaybillImportService implements WaybillImports {
 
     // ------------------------------------------------------------------ internals
 
+    /** The chosen warehouse exists and is one the caller is assigned to (RTM-WBIMPORT-WH). */
+    private void requireWarehouse(UUID warehouseId) {
+        if (warehouseId == null || warehouses.findWarehouse(warehouseId).isEmpty()) {
+            throw new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND);
+        }
+        WarehouseScope.requireWarehouse(warehouseId);
+    }
+
     private static List<WaybillImportFile.Row> parse(byte[] file) {
         try {
             return WaybillImportFile.parse(file);
@@ -306,7 +322,8 @@ class WaybillImportService implements WaybillImports {
      * another warehouse is not named.
      */
     private List<WaybillImportCheck.Verdict> check(List<WaybillImportFile.Row> rows,
-                                                   Collection<DispatchLoadJpaEntity> found, Set<Integer> confirmed) {
+                                                   Collection<DispatchLoadJpaEntity> found, UUID warehouseId,
+                                                   Set<Integer> confirmed) {
         Optional<AssignedWarehouses> restriction = WarehouseScope.restriction();
         Map<UUID, CarrierJpaEntity> carrierById = found.stream().map(DispatchLoadJpaEntity::getCarrierId)
                 .filter(Objects::nonNull).distinct().collect(Collectors.collectingAndThen(Collectors.toSet(),
@@ -318,7 +335,8 @@ class WaybillImportService implements WaybillImports {
             facts.put(l.getCode(), new WaybillImportCheck.LoadFacts(l.getId(), l.getCode(), l.getStatus(),
                     l.getCarrierId(), carrier != null
                     && CarrierConnectionType.API_BOOKING.name().equals(carrier.getConnectionType()),
-                    l.getWaybillNo(), visible(restriction, l.getWarehouseId())));
+                    l.getWaybillNo(), warehouseId.equals(l.getWarehouseId())
+                    && visible(restriction, l.getWarehouseId())));
         }
         Set<String> numbers = rows.stream().map(WaybillImportFile.Row::waybillNo).filter(Objects::nonNull)
                 .collect(Collectors.toSet());

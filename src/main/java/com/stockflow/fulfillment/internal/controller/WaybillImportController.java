@@ -68,11 +68,13 @@ class WaybillImportController {
 
     @PostMapping(path = "/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @Operation(summary = "Check each line of a file (CSV UTF-8 or an .xlsx workbook, the template's table) against the "
-            + "loads it names; nothing is written. 400 WAYBILL_IMPORT_INVALID_FILE")
+            + "loads it names, of the chosen warehouse only (warehouseId, required); nothing is written. 400 "
+            + "WAYBILL_IMPORT_INVALID_FILE, 404 WAREHOUSE_NOT_FOUND")
     @RequiresPermission(resource = FulfillmentResources.WAYBILL_IMPORTS, action = Action.CREATE)
     public ApiResponse<WaybillImportResponse> preview(@RequestPart("file") MultipartFile file,
+                                                      @RequestParam UUID warehouseId,
                                                       @AuthenticatedUser CurrentUser actor) {
-        WaybillImports.Preview preview = imports.preview(read(file), actor);
+        WaybillImports.Preview preview = imports.preview(read(file), warehouseId, actor);
         return ApiResponse.ok(new WaybillImportResponse(null, file.getOriginalFilename(), actor.userId(), null,
                 preview.rowsTotal(), preview.rowsApplicable(), preview.rowsRejected(),
                 preview.lines().stream().map(WaybillImportController::toResponse).toList()));
@@ -86,10 +88,11 @@ class WaybillImportController {
             + "WAYBILL_IMPORT_INVALID_FILE")
     @RequiresPermission(resource = FulfillmentResources.WAYBILL_IMPORTS, action = Action.CREATE)
     public ApiResponse<WaybillImportResponse> importFile(@RequestPart("file") MultipartFile file,
+            @RequestParam UUID warehouseId,
             @RequestParam(required = false) java.util.Set<Integer> overwriteLines,
             @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(toResponse(imports.importFile(read(file), file.getOriginalFilename(), overwriteLines,
-                actor)));
+        return ApiResponse.ok(toResponse(imports.importFile(read(file), file.getOriginalFilename(), warehouseId,
+                overwriteLines, actor)));
     }
 
     @GetMapping

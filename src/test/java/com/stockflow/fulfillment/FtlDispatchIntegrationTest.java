@@ -122,6 +122,7 @@ class FtlDispatchIntegrationTest {
     private UUID sales;
     private UUID picker;
     private UUID dispatcher;
+    private UUID elsewhereWarehouse;
     private UUID dispatcherElsewhere;
     private UUID truck5t;
     private UUID truck1t25;
@@ -136,8 +137,8 @@ class FtlDispatchIntegrationTest {
         sales = staff("SALES_STAFF");
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
-        UUID elsewhere = tx.execute(s -> otherWarehouse());
-        dispatcherElsewhere = staff("WAREHOUSE_STAFF", elsewhere);
+        elsewhereWarehouse = tx.execute(s -> otherWarehouse());
+        dispatcherElsewhere = staff("WAREHOUSE_STAFF", elsewhereWarehouse);
         truck5t = jdbc.queryForObject("SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-5T'", UUID.class);
         truck1t25 = jdbc.queryForObject("SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-1T25'",
                 UUID.class);
@@ -674,7 +675,16 @@ class FtlDispatchIntegrationTest {
                 ("\uFEFFMã chuyến,Mã vận đơn,Biển số,Tên tài xế,Điện thoại tài xế\r\n" + csv)
                         .getBytes(java.nio.charset.StandardCharsets.UTF_8));
         return as(user, role, org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                .multipart(BASE + "/waybill-imports" + path).file(file));
+                .multipart(BASE + "/waybill-imports" + withWarehouse(user, path)).file(file));
+    }
+
+    /** The import is made for a warehouse (RTM-WBIMPORT-WH): the caller's own. */
+    private String withWarehouse(UUID user, String path) {
+        return withWarehouse(user.equals(dispatcherElsewhere) ? elsewhereWarehouse : HCM, path);
+    }
+
+    private static String withWarehouse(UUID warehouse, String path) {
+        return path + (path.contains("?") ? "&" : "?") + "warehouseId=" + warehouse;
     }
 
     /** A vehicle of its own plan, booked with {@code carrier} and no waybill number: its load. */
@@ -714,6 +724,17 @@ class FtlDispatchIntegrationTest {
         assertThat(preview.path("lines").get(3).path("problem").asText()).isEqualTo("MISSING_FIELDS");
         assertThat(load(first.path("loadId").asText()).has("waybillNo")
                 && !load(first.path("loadId").asText()).path("waybillNo").isNull()).isFalse();
+        // The warehouse is chosen when importing (RTM-WBIMPORT-WH): required, known, one the caller is assigned to.
+        var csvFile = new org.springframework.mock.web.MockMultipartFile("file", "van-don.csv", "text/csv",
+                ("a,b\r\n" + one + "," + number + "\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        dispatch(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/waybill-imports/preview").file(csvFile)).andExpect(status().isBadRequest());
+        dispatch(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/waybill-imports/preview" + withWarehouse(UUID.randomUUID(), "")).file(csvFile))
+                .andExpect(status().isNotFound());
+        dispatch(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/waybill-imports/preview" + withWarehouse(elsewhereWarehouse, "")).file(csvFile))
+                .andExpect(status().isForbidden());
         // Another warehouse's dispatcher sees the same lines refused as out of scope, not the loads.
         JsonNode elsewhere = data(importing(dispatcherElsewhere, "WAREHOUSE_STAFF", "/preview", csv)
                 .andExpect(status().isOk()));
@@ -724,6 +745,8 @@ class FtlDispatchIntegrationTest {
         String importId = imported.path("importId").asText();
         assertThat(imported.path("rowsApplied").asInt()).isEqualTo(1);
         assertThat(imported.path("rowsRejected").asInt()).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT warehouse_id FROM fulfillment.waybill_import WHERE id = ?::uuid",
+                UUID.class, importId)).isEqualTo(HCM);
         JsonNode now = load(first.path("loadId").asText());
         assertThat(now.path("waybillNo").asText()).isEqualTo(number);
         assertThat(now.path("vehiclePlate").asText()).isEqualTo("51C-111.11");
@@ -778,7 +801,7 @@ class FtlDispatchIntegrationTest {
             throws Exception {
         var file = new org.springframework.mock.web.MockMultipartFile("file", name, type, bytes);
         return as(user, role, org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                .multipart(BASE + "/waybill-imports" + path).file(file));
+                .multipart(BASE + "/waybill-imports" + withWarehouse(user, path)).file(file));
     }
 
     /** The template's table as a workbook: the heading row, then each line as text cells. */
@@ -872,7 +895,7 @@ class FtlDispatchIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("WAYBILL_IMPORT_INVALID_FILE"));
         // Without the permission to import, neither format is read.
         sales(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                .multipart(BASE + "/waybill-imports/preview").file(new org.springframework.mock.web.MockMultipartFile(
+                .multipart(BASE + "/waybill-imports/preview" + withWarehouse(HCM, "")).file(new org.springframework.mock.web.MockMultipartFile(
                         "file", "van-don.xlsx", xlsxType, xlsx))).andExpect(status().isForbidden());
     }
 
