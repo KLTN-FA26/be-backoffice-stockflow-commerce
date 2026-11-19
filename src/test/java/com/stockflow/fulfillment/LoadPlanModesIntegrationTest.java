@@ -28,6 +28,7 @@ import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -83,8 +84,6 @@ class LoadPlanModesIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        CartonStationSupport.giveCartonsASize(tx, jdbc);
-        CartonStationSupport.giveSofaCartonsAWeight(tx, jdbc, "1200");
         manager = staff("WAREHOUSE_MANAGER", HCM);
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
@@ -136,9 +135,23 @@ class LoadPlanModesIntegrationTest {
         return request.contentType("application/json").content(content);
     }
 
-    /** The customer's own SKU handling like the catalogue's {@code like}, in cartons of two pieces. */
-    private CustomerSkuRows.Issued sku(String like) {
-        return skus.computeIfAbsent(like, l -> CustomerSkuRows.like(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, l, 2));
+    /**
+     * The customer's own SKU, handling like the demo cup, in cartons of two pieces, its carton measured as this class was
+     * written for: {@code SOFA-3S-GREY} the big carton (215 x 95 x 90 cm) weighing 1 200 kg, {@code TABLE-OAK-160} a
+     * flat one (165 x 95 x 20 cm, 38 kg). The demo SKUs themselves are never changed (CartonStationSupport).
+     */
+    private CustomerSkuRows.Issued sku(String kind) {
+        return skus.computeIfAbsent(kind, k -> {
+            CustomerSkuRows.Issued issued = CustomerSkuRows.like(jdbc, tx, entityManager, DemoData.CUSTOMER_ID,
+                    DemoData.SKU_STOCKED, 2);
+            if (k.equals("SOFA-3S-GREY")) {
+                CartonStationSupport.giveCartonsASize(tx, jdbc, issued.sku());
+                CartonStationSupport.giveHeavyCartons(tx, jdbc, issued.sku(), new BigDecimal("1200"));
+            } else {
+                CartonStationSupport.correctCartonSize(tx, jdbc, issued.sku(), "165", "95", "20", "38");
+            }
+            return issued;
+        });
     }
 
     /** A paid order released at HCM: {@code sofas} sofa cartons and {@code tables} table cartons, two lines. */
