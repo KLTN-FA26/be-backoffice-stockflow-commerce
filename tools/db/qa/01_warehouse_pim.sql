@@ -116,56 +116,71 @@ SELECT pg_temp.expect_fail('W17 storage location in a warehouse that does not ex
 INSERT INTO product.attributes (id, code, name, data_type) VALUES (md5('qa:attr:NOTE')::uuid, 'NOTE', 'Ghi chú', 'TEXT');
 INSERT INTO product.attribute_values (id, attribute_id, code, label, hex_color)
 VALUES (md5('qa:val:BEIGE')::uuid, md5('demo:attr:COLOR')::uuid, 'BEIGE', 'Be', '#D8C8A8');
+-- The demo box has its axes, COLOR and MATERIAL; no demo product has a DESCRIPTIVE attribute any more (the furniture's
+-- MATERIAL was one), so the cup gets one here, with a value, to try the descriptive rules on: rolled back with the rest.
+INSERT INTO product.attribute_values (id, attribute_id, code, label)
+VALUES (md5('qa:val:KRAFT')::uuid, md5('demo:attr:MATERIAL')::uuid, 'KRAFT', 'Giấy kraft');
+INSERT INTO product.product_attributes (id, product_id, attribute_id, role)
+VALUES (md5('qa:pa:LY-GIAY-DEMO:MATERIAL')::uuid, md5('demo:wf02:product:LY-GIAY-DEMO')::uuid,
+        md5('demo:attr:MATERIAL')::uuid, 'DESCRIPTIVE');
+INSERT INTO product.product_descriptive_values (id, product_attribute_id, attribute_value_id)
+VALUES (md5('qa:pd:LY-GIAY-DEMO:PAPER')::uuid, md5('qa:pa:LY-GIAY-DEMO:MATERIAL')::uuid,
+        md5('demo:cups:attribute-value:MATERIAL:PAPER')::uuid);
 
 SELECT pg_temp.expect_fail('P1 variant axis on a TEXT attribute', $q$
     INSERT INTO product.product_attributes (id, product_id, attribute_id, role)
-    VALUES (gen_random_uuid(), md5('demo:product:SOFA-3S')::uuid, md5('qa:attr:NOTE')::uuid, 'VARIANT_AXIS') $q$);
+    VALUES (gen_random_uuid(), md5('demo:cups:product:HOP-GIAY-DEMO')::uuid, md5('qa:attr:NOTE')::uuid, 'VARIANT_AXIS') $q$);
 SELECT pg_temp.expect_fail('P2 a MATERIAL value offered on the COLOR axis', $q$
     INSERT INTO product.product_attribute_options (id, product_attribute_id, attribute_value_id)
-    VALUES (gen_random_uuid(), md5('demo:pa:SOFA-3S:COLOR')::uuid, md5('demo:val:MATERIAL:OAK')::uuid) $q$);
+    VALUES (gen_random_uuid(), md5('demo:cups:product-attribute:HOP-GIAY-DEMO:COLOR')::uuid, md5('qa:val:KRAFT')::uuid) $q$);
 SELECT pg_temp.expect_fail('P3 option offered on a DESCRIPTIVE attribute', $q$
     INSERT INTO product.product_attribute_options (id, product_attribute_id, attribute_value_id)
-    VALUES (gen_random_uuid(), md5('demo:pa:SOFA-3S:MATERIAL')::uuid, md5('demo:val:MATERIAL:OAK')::uuid) $q$);
+    VALUES (gen_random_uuid(), md5('qa:pa:LY-GIAY-DEMO:MATERIAL')::uuid, md5('qa:val:KRAFT')::uuid) $q$);
 SELECT pg_temp.expect_fail('P4 variant takes an option of another product (QA case A1)', $q$
     INSERT INTO product.variant_attribute_values (id, variant_id, product_attribute_option_id)
-    VALUES (gen_random_uuid(), md5('demo:variant:SOFA-3S-GREY')::uuid, md5('demo:po:TABLE-OAK:160')::uuid) $q$);
+    VALUES (gen_random_uuid(), md5('demo:wf02:variant:LY-GIAY-DEMO-12OZ')::uuid,
+            md5('demo:cups:option:HOP-GIAY-DEMO:COLOR:BLUE')::uuid) $q$);
 SELECT pg_temp.expect_fail('P5 variant takes two options on one axis', $q$
     INSERT INTO product.product_attribute_options (id, product_attribute_id, attribute_value_id)
-    VALUES (md5('qa:po:beige')::uuid, md5('demo:pa:SOFA-3S:COLOR')::uuid, md5('qa:val:BEIGE')::uuid);
+    VALUES (md5('qa:po:beige')::uuid, md5('demo:cups:product-attribute:HOP-GIAY-DEMO:COLOR')::uuid, md5('qa:val:BEIGE')::uuid);
     INSERT INTO product.variant_attribute_values (id, variant_id, product_attribute_option_id)
-    VALUES (gen_random_uuid(), md5('demo:variant:SOFA-3S-GREY')::uuid, md5('qa:po:beige')::uuid) $q$);
+    VALUES (gen_random_uuid(), md5('demo:cups:variant:HOP-GIAY-DEMO-GREY-PAPER')::uuid, md5('qa:po:beige')::uuid) $q$);
 SELECT pg_temp.expect_fail('P6 a second value for a single SELECT attribute', $q$
     INSERT INTO product.product_descriptive_values (id, product_attribute_id, attribute_value_id)
-    VALUES (gen_random_uuid(), md5('demo:pa:SOFA-3S:MATERIAL')::uuid, md5('demo:val:MATERIAL:OAK')::uuid) $q$);
+    VALUES (gen_random_uuid(), md5('qa:pa:LY-GIAY-DEMO:MATERIAL')::uuid, md5('qa:val:KRAFT')::uuid) $q$);
 SELECT pg_temp.expect_fail('P7 free text on a SELECT attribute', $q$
-    DELETE FROM product.product_descriptive_values WHERE id = md5('demo:pd:SOFA-3S:FABRIC')::uuid;
+    DELETE FROM product.product_descriptive_values WHERE id = md5('qa:pd:LY-GIAY-DEMO:PAPER')::uuid;
     INSERT INTO product.product_descriptive_values (id, product_attribute_id, value_text)
-    VALUES (gen_random_uuid(), md5('demo:pa:SOFA-3S:MATERIAL')::uuid, 'Vải') $q$);
+    VALUES (gen_random_uuid(), md5('qa:pa:LY-GIAY-DEMO:MATERIAL')::uuid, 'Giấy') $q$);
 SELECT pg_temp.expect_fail('P8 descriptive value with two value columns', $q$
     INSERT INTO product.product_descriptive_values (id, product_attribute_id, value_text, value_number)
-    VALUES (gen_random_uuid(), md5('demo:pa:SOFA-3S:MATERIAL')::uuid, 'x', 1) $q$);
+    VALUES (gen_random_uuid(), md5('qa:pa:LY-GIAY-DEMO:MATERIAL')::uuid, 'x', 1) $q$);
 SELECT pg_temp.expect_fail('P9 approved by the submitter (BR-PRD-003)', $q$
-    UPDATE product.products SET approved_by = submitted_by WHERE code = 'SOFA-3S' $q$);
+    UPDATE product.products SET approved_by = submitted_by WHERE code = 'HOP-GIAY-DEMO' $q$);
 SELECT pg_temp.expect_fail('P10 PUBLISHED without published_at', $q$
-    UPDATE product.products SET published_at = NULL WHERE code = 'SOFA-3S' $q$);
+    UPDATE product.products SET published_at = NULL WHERE code = 'HOP-GIAY-DEMO' $q$);
 SELECT pg_temp.expect_fail('P11 a second primary category', $q$
     INSERT INTO product.product_categories (id, product_id, category_id, is_primary)
-    VALUES (gen_random_uuid(), md5('demo:product:SOFA-3S')::uuid, md5('demo:cat:LIVING')::uuid, TRUE) $q$);
+    VALUES (gen_random_uuid(), md5('demo:cups:product:HOP-GIAY-DEMO')::uuid, md5('demo:wf02:category:LY_GIAY')::uuid,
+            TRUE) $q$);
 SELECT pg_temp.expect_fail('P12 a second default variant', $q$
     INSERT INTO product.variants (id, product_id, sku, name, is_default, attribute_signature)
-    VALUES (gen_random_uuid(), md5('demo:product:SOFA-3S')::uuid, 'SOFA-3S-BEIGE', 'x', TRUE, 'COLOR=BEIGE') $q$);
+    VALUES (gen_random_uuid(), md5('demo:cups:product:HOP-GIAY-DEMO')::uuid, 'HOP-GIAY-DEMO-BEIGE-PAPER', 'x', TRUE,
+            'COLOR=BEIGE;MATERIAL=PAPER') $q$);
 SELECT pg_temp.expect_fail('P13 two variants with the same combination', $q$
     INSERT INTO product.variants (id, product_id, sku, name, attribute_signature)
-    VALUES (gen_random_uuid(), md5('demo:product:SOFA-3S')::uuid, 'SOFA-3S-GREY2', 'x', 'COLOR=GREY') $q$);
+    VALUES (gen_random_uuid(), md5('demo:cups:product:HOP-GIAY-DEMO')::uuid, 'HOP-GIAY-DEMO-GREY-PAPER2', 'x',
+            'COLOR=GREY;MATERIAL=PAPER') $q$);
 SELECT pg_temp.expect_fail('P14 sku renamed on an ACTIVE variant (docs 01 BR-01)', $q$
-    UPDATE product.variants SET sku = 'SOFA-3S-GRAY' WHERE sku = 'SOFA-3S-GREY' $q$);
+    UPDATE product.variants SET sku = 'HOP-GIAY-DEMO-GRAY-PAPER' WHERE sku = 'HOP-GIAY-DEMO-GREY-PAPER' $q$);
 SELECT pg_temp.expect_ok('P15 sku renamed while still DRAFT', $q$
     INSERT INTO product.variants (id, product_id, sku, name, attribute_signature)
-    VALUES (md5('qa:variant:draft')::uuid, md5('demo:product:SOFA-3S')::uuid, 'SOFA-3S-BEIGE', 'x', 'COLOR=BEIGE');
-    UPDATE product.variants SET sku = 'SOFA-3S-BE' WHERE id = md5('qa:variant:draft')::uuid $q$);
+    VALUES (md5('qa:variant:draft')::uuid, md5('demo:cups:product:HOP-GIAY-DEMO')::uuid, 'HOP-GIAY-DEMO-BEIGE-PAPER', 'x',
+            'COLOR=BEIGE;MATERIAL=PAPER');
+    UPDATE product.variants SET sku = 'HOP-GIAY-DEMO-BE-PAPER' WHERE id = md5('qa:variant:draft')::uuid $q$);
 -- 5-9: every product is CUSTOMIZABLE, so there is no STANDARD product to refuse a template on: the kind itself is refused.
 SELECT pg_temp.expect_fail('P16 a product cannot be STANDARD', $q$
-    UPDATE product.products SET kind = 'STANDARD' WHERE id = md5('demo:product:SOFA-3S')::uuid $q$);
+    UPDATE product.products SET kind = 'STANDARD' WHERE id = md5('demo:cups:product:HOP-GIAY-DEMO')::uuid $q$);
 SELECT pg_temp.expect_fail('P16b a product inserted as STANDARD', $q$
     INSERT INTO product.products (id, code, name, slug, status, kind, version, created_at)
     VALUES (gen_random_uuid(), 'QASTD', 'QA standard', 'qa-std', 'DRAFT', 'STANDARD', 0, NOW()) $q$);
@@ -347,48 +362,60 @@ SELECT pg_temp.expect_ok('P16am an open request and a closed one of one project'
     INSERT INTO design.design_project_quote_request (id, project_id, requested_by, created_at)
     SELECT gen_random_uuid(), md5('qa:project:CUP')::uuid, u.id, NOW()
     FROM identity.app_user u ORDER BY u.id LIMIT 1 $q$);
+-- The demo categories are two roots (LY_GIAY, HOP_GIAY): a child of the cups, to move its parent under.
+INSERT INTO product.categories (id, parent_id, code, name, slug, path, depth)
+VALUES (md5('qa:cat:LY_GIAY_12OZ')::uuid, md5('demo:wf02:category:LY_GIAY')::uuid, 'LY_GIAY_12OZ', 'Ly giấy 12 oz',
+        'ly-giay-12oz', '/LY_GIAY/LY_GIAY_12OZ', 1);
 SELECT pg_temp.expect_fail('P17 category path not under its parent', $q$
     INSERT INTO product.categories (id, parent_id, code, name, slug, path, depth)
-    VALUES (gen_random_uuid(), md5('demo:cat:LIVING')::uuid, 'CHAIR', 'Ghế', 'ghe', '/DINING/CHAIR', 1) $q$);
+    VALUES (gen_random_uuid(), md5('demo:wf02:category:LY_GIAY')::uuid, 'LY_GIAY_16OZ', 'Ly giấy 16 oz', 'ly-giay-16oz',
+            '/HOP_GIAY/LY_GIAY_16OZ', 1) $q$);
 SELECT pg_temp.expect_fail('P18 category moved under its own child', $q$
-    UPDATE product.categories SET parent_id = md5('demo:cat:SOFA')::uuid, depth = 2, path = '/LIVING/SOFA/LIVING'
-     WHERE code = 'LIVING' $q$);
+    UPDATE product.categories SET parent_id = md5('qa:cat:LY_GIAY_12OZ')::uuid, depth = 2,
+           path = '/LY_GIAY/LY_GIAY_12OZ/LY_GIAY'
+     WHERE code = 'LY_GIAY' $q$);
 SELECT pg_temp.expect_fail('P19 stored media without its file metadata', $q$
-    INSERT INTO product.media (id, variant_id, storage_key) VALUES (gen_random_uuid(), md5('demo:variant:SOFA-3S-GREY')::uuid, 'k/1.png') $q$);
+    INSERT INTO product.media (id, variant_id, storage_key)
+    VALUES (gen_random_uuid(), md5('demo:cups:variant:HOP-GIAY-DEMO-GREY-PAPER')::uuid, 'k/1.png') $q$);
 SELECT pg_temp.expect_fail('P20 inventory item for a sku that is no variant', $q$
     INSERT INTO inventory.inventory_items (id, sku) VALUES (gen_random_uuid(), 'NO-SUCH-SKU') $q$);
 -- P21 (expiry tracked without lots) went with expiry tracking (team plan 5-1, V20261111000300).
 SELECT pg_temp.expect_fail('P22 inventory item sku changed',
-    $q$ UPDATE inventory.inventory_items SET sku = 'SOFA-3S-BE' WHERE sku = 'SOFA-3S-GREY' $q$);
+    $q$ UPDATE inventory.inventory_items SET sku = 'LY-GIAY-DEMO-12OZ-XA' WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH' $q$);
 SELECT pg_temp.expect_fail('P23 variant deleted while it has an inventory item',
-    $q$ DELETE FROM product.variants WHERE sku = 'SOFA-3S-GREY' $q$);
+    $q$ DELETE FROM product.media WHERE variant_id = md5('demo:cups:variant:HOP-GIAY-DEMO-BLUE-PAPER')::uuid;
+        DELETE FROM product.variant_attribute_values
+         WHERE variant_id = md5('demo:cups:variant:HOP-GIAY-DEMO-BLUE-PAPER')::uuid;
+        DELETE FROM product.variants WHERE sku = 'HOP-GIAY-DEMO-BLUE-PAPER' $q$);
 
 \echo '--- product follow-ups (V20261014001100, SCRUM-461)'
 SELECT pg_temp.expect_fail('P24 DISCONTINUED without a reason (docs 01 §5.1)', $q$
-    UPDATE product.products SET status = 'DISCONTINUED', discontinued_at = NOW() WHERE code = 'SOFA-3S' $q$);
+    UPDATE product.products SET status = 'DISCONTINUED', discontinued_at = NOW() WHERE code = 'HOP-GIAY-DEMO' $q$);
 SELECT pg_temp.expect_fail('P24 DISCONTINUED with a blank reason', $q$
-    UPDATE product.products SET status = 'DISCONTINUED', discontinued_at = NOW(), discontinue_reason = '  ' WHERE code = 'SOFA-3S' $q$);
+    UPDATE product.products SET status = 'DISCONTINUED', discontinued_at = NOW(), discontinue_reason = '  ' WHERE code = 'HOP-GIAY-DEMO' $q$);
 SELECT pg_temp.expect_ok('P24 DISCONTINUED with a reason', $q$
     UPDATE product.products SET status = 'DISCONTINUED', discontinued_at = NOW(), discontinue_reason = 'QA: end of line'
-     WHERE code = 'TABLE-OAK' $q$);
+     WHERE code = 'LY-GIAY-DEMO' $q$);
 SELECT pg_temp.expect_fail('P25 PENDING_APPROVAL without a brand (docs 01 §3)', $q$
     INSERT INTO product.products (id, code, name, slug, status, submitted_by, submitted_at)
     VALUES (md5('qa:product:nobrand')::uuid, 'QA-NOBRAND', 'x', 'qa-nobrand', 'PENDING_APPROVAL',
             md5('demo:user:editor')::uuid, NOW()) $q$);
+-- The demo carries no brand (the cups and the box have none): one of the QA's own.
 SELECT pg_temp.expect_ok('P25 PENDING_APPROVAL with a brand; a DRAFT needs none', $q$
+    INSERT INTO product.brands (id, code, name, slug) VALUES (md5('qa:brand:QA')::uuid, 'QA-BRAND', 'QA', 'qa-brand');
     INSERT INTO product.products (id, code, name, slug, status, brand_id, submitted_by, submitted_at)
     VALUES (md5('qa:product:brand')::uuid, 'QA-BRAND', 'x', 'qa-brand', 'PENDING_APPROVAL',
-            md5('demo:brand:NHAXINH')::uuid, md5('demo:user:editor')::uuid, NOW());
+            md5('qa:brand:QA')::uuid, md5('demo:user:editor')::uuid, NOW());
     INSERT INTO product.products (id, code, name, slug) VALUES (md5('qa:product:draft')::uuid, 'QA-DRAFT', 'x', 'qa-draft') $q$);
 SELECT pg_temp.expect_fail('P26 INACTIVE without suspended_at', $q$
-    UPDATE product.products SET status = 'INACTIVE', suspend_reason = 'QA' WHERE code = 'SOFA-3S' $q$);
+    UPDATE product.products SET status = 'INACTIVE', suspend_reason = 'QA' WHERE code = 'HOP-GIAY-DEMO' $q$);
 SELECT pg_temp.expect_fail('P26 INACTIVE without a reason', $q$
-    UPDATE product.products SET status = 'INACTIVE', suspended_at = NOW() WHERE code = 'SOFA-3S' $q$);
+    UPDATE product.products SET status = 'INACTIVE', suspended_at = NOW() WHERE code = 'HOP-GIAY-DEMO' $q$);
 SELECT pg_temp.expect_fail('P26 INACTIVE on a product nobody approved', $q$
     UPDATE product.products SET status = 'INACTIVE', suspended_at = NOW(), suspend_reason = 'QA' WHERE id = md5('qa:product:draft')::uuid $q$);
 SELECT pg_temp.expect_ok('P26 INACTIVE with when and why', $q$
     UPDATE product.products SET status = 'INACTIVE', suspended_at = NOW(), suspend_reason = 'QA: supplier recall'
-     WHERE code = 'SOFA-3S' $q$);
+     WHERE code = 'HOP-GIAY-DEMO' $q$);
 SELECT pg_temp.expect_ok('P27 a change log row is written', $q$
     INSERT INTO product.product_change_log (id, product_id, change_type, reason)
     VALUES (md5('qa:changelog:1')::uuid, md5('qa:product:draft')::uuid, 'CREATED', NULL) $q$);
@@ -406,7 +433,7 @@ SELECT pg_temp.expect_fail('P27 a product status the product cannot have', $q$
 SELECT pg_temp.expect_fail('P28 a product waiting for approval is deleted (docs 01 BR-02)', $q$
     DELETE FROM product.products WHERE id = md5('qa:product:brand')::uuid $q$);
 SELECT pg_temp.expect_fail('P28 a PUBLISHED product is deleted', $q$
-    DELETE FROM product.products WHERE code = 'SOFA-3S' $q$);
+    DELETE FROM product.products WHERE code = 'HOP-GIAY-DEMO' $q$);
 SELECT pg_temp.expect_ok('P28 a DRAFT product with history is deleted with it (cascade through append-only)', $q$
     DELETE FROM product.products WHERE id = md5('qa:product:draft')::uuid $q$);
 

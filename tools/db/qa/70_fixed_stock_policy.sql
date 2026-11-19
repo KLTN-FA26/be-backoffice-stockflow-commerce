@@ -2,7 +2,8 @@
 -- Adversarial checks + happy paths: one stock policy for every SKU (V20261115000100, team plan 5-5; kltn-docs 01
 -- BR-17, 03 BR-03): lot-tracked, no serial numbers, first in first out by the day of receipt. Before it the checks of
 -- inventory.enforce_sku_policy ran only for an item someone had "configured", so most items were checked by nothing.
--- Needs the demo seed (the demo sofa, never configured, and the oak table, which was). Rolled back at the end.
+-- Needs the demo seed (its two cups: the furniture that stood for an item never configured and one that was left the
+-- demo with V20261206000100, and no item carries the flag any more, FP16). Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -42,35 +43,35 @@ BEGIN
 END $$;
 
 \echo '--- live stock carries a lot: every SKU, configured or not'
-SELECT pg_temp.expect_fail_like('FP1 live stock of the demo sofa (never configured) with no lot', 'needs a lot number', $q$
+SELECT pg_temp.expect_fail_like('FP1 live stock of the blue demo cup with no lot', 'needs a lot number', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at)
-    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A01-1-A', 5, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour') $q$);
-SELECT pg_temp.expect_fail_like('FP2 live stock of the oak table (configured before) with no lot', 'needs a lot number', $q$
+    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 5, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour') $q$);
+SELECT pg_temp.expect_fail_like('FP2 live stock of the red demo cup with no lot', 'needs a lot number', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at)
-    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 5, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour') $q$);
+    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-DO', 'HCM-A01-1-A', 5, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour') $q$);
 SELECT pg_temp.expect_fail_like('FP3 a blank lot is no lot', 'needs a lot number', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
-    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A01-1-A', '   ', 5, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour') $q$);
+    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', '   ', 5, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour') $q$);
 -- A row at zero needs one too: lot_number is NOT NULL for every row since V20261113000300 (4C-3, 20 BR-22), which the
 -- trigger's "nothing is on hand" allowance of 5-5 no longer reaches.
 SELECT pg_temp.expect_fail_like('FP4 a row at zero with no lot', 'lot_number', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at)
-    VALUES (md5('qa70:zero')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-B', 0, 0, 'AVAILABLE', NOW(), NOW() - interval '2 hour') $q$);
+    VALUES (md5('qa70:zero')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-B', 0, 0, 'AVAILABLE', NOW(), NOW() - interval '2 hour') $q$);
 -- One carton of 5 for each SKU: live stock sits in a carton (ck_stock_item_whole_cartons).
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-SELECT md5('qa70:u:' || i.sku)::uuid, i.id, 'QA_QA70', 5 FROM inventory.inventory_items i WHERE i.sku IN ('SOFA-3S-GREY', 'TABLE-OAK-160');
+SELECT md5('qa70:u:' || i.sku)::uuid, i.id, 'QA_QA70', 5 FROM inventory.inventory_items i WHERE i.sku IN ('LY-GIAY-DEMO-12OZ-XANH', 'LY-GIAY-DEMO-12OZ-DO');
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
-SELECT md5('qa70:p:' || i.sku)::uuid, 'QA-QA70-' || left(i.sku, 4), i.id, md5('qa70:u:' || i.sku)::uuid, 5, 5, 'HCM-A01-1-A', 'IN_STOCK'
-  FROM inventory.inventory_items i WHERE i.sku IN ('SOFA-3S-GREY', 'TABLE-OAK-160');
+SELECT md5('qa70:p:' || i.sku)::uuid, 'QA-QA70-' || replace(i.sku, 'LY-GIAY-DEMO-12OZ-', ''), i.id, md5('qa70:u:' || i.sku)::uuid, 5, 5, 'HCM-A01-1-A', 'IN_STOCK'
+  FROM inventory.inventory_items i WHERE i.sku IN ('LY-GIAY-DEMO-12OZ-XANH', 'LY-GIAY-DEMO-12OZ-DO');
 SELECT pg_temp.expect_ok('FP6 live stock with its lot, of either SKU', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (md5('qa70:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'QA70-LOT', 5, 0, 'AVAILABLE', NOW(),
-            NOW() - interval '1 hour', md5('qa70:p:SOFA-3S-GREY')::uuid),
-           (md5('qa70:row2')::uuid, 'TABLE-OAK-160', 'HCM-A01-1-A', 'QA70-LOT', 5, 0, 'AVAILABLE', NOW(),
-            NOW() - interval '1 hour', md5('qa70:p:TABLE-OAK-160')::uuid) $q$);
+    VALUES (md5('qa70:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'QA70-LOT', 5, 0, 'AVAILABLE', NOW(),
+            NOW() - interval '1 hour', md5('qa70:p:LY-GIAY-DEMO-12OZ-XANH')::uuid),
+           (md5('qa70:row2')::uuid, 'LY-GIAY-DEMO-12OZ-DO', 'HCM-A01-1-A', 'QA70-LOT', 5, 0, 'AVAILABLE', NOW(),
+            NOW() - interval '1 hour', md5('qa70:p:LY-GIAY-DEMO-12OZ-DO')::uuid) $q$);
 SELECT pg_temp.expect_fail_like('FP7 a receipt time in the future', 'Invalid receipt date', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
-    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A01-1-A', 'QA70-FUT', 1, 0, 'AVAILABLE', NOW(), NOW() + interval '1 day') $q$);
+    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'QA70-FUT', 1, 0, 'AVAILABLE', NOW(), NOW() + interval '1 day') $q$);
 
 \echo '--- a row keeps its identity; a layer is raised only by the application naming it'
 SELECT pg_temp.expect_fail_like('FP8 the lot of a row changed in place', 'identity is immutable', $q$
@@ -78,7 +79,7 @@ SELECT pg_temp.expect_fail_like('FP8 the lot of a row changed in place', 'identi
 SELECT pg_temp.expect_fail_like('FP9 the receipt time of a row changed in place', 'identity is immutable', $q$
     UPDATE inventory.stock_item SET received_at = received_at - interval '1 day' WHERE id = md5('qa70:row')::uuid $q$);
 SELECT pg_temp.expect_fail_like('FP10 the SKU of a row changed in place', 'identity is immutable', $q$
-    UPDATE inventory.stock_item SET sku = 'TABLE-OAK-160' WHERE id = md5('qa70:row')::uuid $q$);
+    UPDATE inventory.stock_item SET sku = 'LY-GIAY-DEMO-12OZ-DO' WHERE id = md5('qa70:row')::uuid $q$);
 SELECT pg_temp.expect_fail_like('FP11 a layer raised in place (first in, first out: new units are a new layer)',
     'new receipt layer', $q$
     UPDATE inventory.stock_item SET on_hand = on_hand + 1 WHERE id = md5('qa70:row')::uuid $q$);

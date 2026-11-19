@@ -128,16 +128,16 @@ SELECT pg_temp.expect_true('P2 no role holds a grant of a permission that is gon
 \echo '--- the rewritten functions run'
 -- A SQL function naming a table that is not there fails only when it is called.
 SELECT pg_temp.expect_true('F1 item_in_use runs and is true for an item with stock', $c$
-    inventory.item_in_use(md5('demo:item:SOFA-3S-GREY')::uuid, 'SOFA-3S-GREY') $c$);
+    inventory.item_in_use((SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'LY-GIAY-DEMO-12OZ-XANH') $c$);
 SELECT pg_temp.expect_true('F2 unit_in_use runs', $c$
     NOT inventory.unit_in_use(gen_random_uuid()) $c$);
 
--- Fixtures: a carton of 10 sofas (its own unit code: the demo sofa already has the CARTON of one that 4C-1 made); a production order of 5 cartons of them at HCM, SENT with no sample to approve first;
+-- Fixtures: a carton of 10 blue cups (its own unit code: the demo cup already has its THUNG of 1,000); a production order of 5 cartons of them at HCM, SENT with no sample to approve first;
 -- a DRAFT receipt against it, registered with it (as 22_production_receipts.sql does). The production order's own rows are
 -- written with the row triggers off: its rules are 21_production_orders.sql's.
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg)
-VALUES (md5('qa61:carton')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'CARTON10', 10, 60, 40, 50, 12),
-       (md5('qa61:old')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'OLDCTN', 10, NULL, NULL, NULL, NULL);
+VALUES (md5('qa61:carton')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'CARTON10', 10, 60, 40, 50, 12),
+       (md5('qa61:old')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'OLDCTN', 10, NULL, NULL, NULL, NULL);
 UPDATE inventory.uom_conversions SET active = FALSE WHERE id = md5('qa61:old')::uuid;
 SET LOCAL session_replication_role = replica;
 INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, customer_id, producer_id,
@@ -148,7 +148,7 @@ VALUES (md5('qa61:prod')::uuid, 'PRD-20261109-6101', md5('qa61:so')::uuid, md5('
         FALSE, md5('demo:user:editor')::uuid, NOW(), md5('demo:user:approver')::uuid, NOW(), NOW());
 INSERT INTO ordering.production_order_line (id, production_order_id, order_line_id, sku, cartons, units_per_carton,
                                             design_snapshot_id, print_file_checksum)
-VALUES (md5('qa61:prod:line')::uuid, md5('qa61:prod')::uuid, md5('qa61:ol')::uuid, 'SOFA-3S-GREY', 5, 10,
+VALUES (md5('qa61:prod:line')::uuid, md5('qa61:prod')::uuid, md5('qa61:ol')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 5, 10,
         md5('qa61:snap')::uuid, repeat('d', 64));
 -- An item nothing but a production order line names.
 INSERT INTO product.products (id, code, name, slug, status, kind, tax_class, version, created_at)
@@ -220,18 +220,18 @@ SELECT pg_temp.expect_fail_like('L2 a line without a lot, written with the row t
     SET LOCAL session_replication_role = replica;
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id,
                                                  received_qty, lot_number, uom_conversion_id)
-    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
             md5('demo:loc:HCM-RCV01')::uuid, 10, NULL, md5('qa61:carton')::uuid) $q$);
 SELECT pg_temp.expect_fail_like('L3 a line without a unit, written with the row triggers off', 'uom_conversion_id', $q$
     SET LOCAL session_replication_role = replica;
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id,
                                                  received_qty, lot_number, uom_conversion_id)
-    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
             md5('demo:loc:HCM-RCV01')::uuid, 10, 'PRD-20261109-6101', NULL) $q$);
 SELECT pg_temp.expect_fail_like('L4 a line in a lot of its own on a production receipt (BR-03)', 'the lot is production order', $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id,
                                                  received_qty, lot_number, uom_conversion_id)
-    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
             md5('demo:loc:HCM-RCV01')::uuid, 10, 'LOT-A', md5('qa61:carton')::uuid) $q$);
 -- The expiry column goes with 5-1 (V20261111000300); the check reads it through to_jsonb either way.
 DO $$
@@ -241,7 +241,7 @@ BEGIN
         PERFORM pg_temp.expect_fail_like('L5 a production line with an expiry date (BR-06)', 'no expiry date', $q$
             INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id,
                                                          location_id, received_qty, lot_number, uom_conversion_id, expiry_date)
-            VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+            VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
                     md5('demo:loc:HCM-RCV01')::uuid, 10, 'PRD-20261109-6101', md5('qa61:carton')::uuid, CURRENT_DATE + 365) $q$);
     ELSE
         RAISE NOTICE 'ok    L5 (expiry_date is gone: nothing to try)';
@@ -251,23 +251,23 @@ SELECT pg_temp.expect_fail_like('L6 a line that names no production order line (
 $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, inventory_item_id, location_id, received_qty, lot_number,
                                                  uom_conversion_id)
-    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, md5('demo:loc:HCM-RCV01')::uuid,
+    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('demo:loc:HCM-RCV01')::uuid,
             10, 'PRD-20261109-6101', md5('qa61:carton')::uuid) $q$);
 SELECT pg_temp.expect_fail_like('L7 a line in a retired unit takes nothing new (no purchase order line to excuse it)', 'is retired', $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id,
                                                  received_qty, lot_number, uom_conversion_id)
-    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
             md5('demo:loc:HCM-RCV01')::uuid, 10, 'PRD-20261109-6101', md5('qa61:old')::uuid) $q$);
 SELECT pg_temp.expect_fail_like('L8 a line in a unit of another item', 'cartons holding', $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id,
                                                  received_qty, lot_number, uom_conversion_id)
-    SELECT gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+    SELECT gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
            md5('demo:loc:HCM-RCV01')::uuid, 10, 'PRD-20261109-6101', u.id
-      FROM inventory.uom_conversions u WHERE u.inventory_item_id = md5('demo:item:TABLE-OAK-160')::uuid AND u.is_base $q$);
+      FROM inventory.uom_conversions u WHERE u.inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-DO') AND u.is_base $q$);
 SELECT pg_temp.expect_ok('L9 a whole carton of the production order line, in its lot', $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id,
                                                  received_qty, lot_number, uom_conversion_id)
-    VALUES (md5('qa61:l1')::uuid, md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+    VALUES (md5('qa61:l1')::uuid, md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
             md5('demo:loc:HCM-RCV01')::uuid, 20, 'PRD-20261109-6101', md5('qa61:carton')::uuid) $q$);
 SELECT pg_temp.expect_true('L10 unit_in_use sees the receipt line''s unit', $c$ inventory.unit_in_use(md5('qa61:carton')::uuid) $c$);
 
@@ -284,7 +284,7 @@ SELECT pg_temp.expect_fail_like('L13 a posted line moved to another unit', 'BR-0
 SELECT pg_temp.expect_fail_like('L14 a line added to a posted receipt', 'BR-05', $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id,
                                                  received_qty, lot_number, uom_conversion_id)
-    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
             md5('demo:loc:HCM-RCV01')::uuid, 10, 'PRD-20261109-6101', md5('qa61:carton')::uuid) $q$);
 SELECT pg_temp.expect_ok('L15 a posted line''s note is still editable', $q$
     UPDATE procurement.goods_receipt_lines SET note = 'checked twice' WHERE id = md5('qa61:l1')::uuid $q$);

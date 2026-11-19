@@ -1,6 +1,6 @@
 -- =============================================================================
 -- Adversarial checks + happy paths: no stock alerts, no expiry, FIFO only (V20261111000300, team plan 5-1; kltn-docs
--- 20 BR-13, 03 BR-06, 01 BR-17). Needs the demo seed (the lot-tracked oak table, the sofa, a supplier). Rolled back at
+-- 20 BR-13, 03 BR-06, 01 BR-17). Needs the demo seed (the two demo cups, the red one in lots, and a supplier). Rolled back at
 -- the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
@@ -69,14 +69,14 @@ SELECT pg_temp.expect_true('AE6b no in-app message of a stock alert is left, lin
 SELECT pg_temp.expect_true('AE7 the carton view still answers, without an expiry',
     (SELECT count(*) FROM inventory.stock_package_balance) >= 0);
 SELECT pg_temp.expect_fail('AE8 a threshold written to an item', $q$
-    UPDATE inventory.inventory_items SET reorder_point = 5 WHERE sku = 'SOFA-3S-GREY' $q$);
+    UPDATE inventory.inventory_items SET reorder_point = 5 WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH' $q$);
 
 \echo '--- EXPIRED is read only (StockStatus.EXPIRED, AdjustmentReason.EXPIRED)'
 -- A carton of 3 for the rows below: a stock row with units must sit in one (ck_stock_item_whole_cartons).
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-VALUES (md5('qa42:u')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA_QA42', 3);
+VALUES (md5('qa42:u')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_QA42', 3);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
-VALUES (md5('qa42:p')::uuid, 'QA-QA42-1', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa42:u')::uuid, 3, 3, 'HCM-QC01', 'IN_STOCK');
+VALUES (md5('qa42:p')::uuid, 'QA-QA42-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa42:u')::uuid, 3, 3, 'HCM-QC01', 'IN_STOCK');
 CREATE FUNCTION pg_temp.expect_fail_by(label TEXT, rule TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     BEGIN
@@ -94,14 +94,14 @@ BEGIN
 END $$;
 SELECT pg_temp.expect_fail_by('AE10 a new stock row EXPIRED (in a carton, so the carton rule is not what refuses it)', 'cannot become EXPIRED', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-QC01', 'QA-LOT', 1, 0, 'EXPIRED', NOW(), NOW(), md5('qa42:p')::uuid) $q$);
+    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-QC01', 'QA-LOT', 1, 0, 'EXPIRED', NOW(), NOW(), md5('qa42:p')::uuid) $q$);
 SELECT pg_temp.expect_fail('AE11 stock on hand turned EXPIRED', $q$
     UPDATE inventory.stock_item SET status = 'EXPIRED'
      WHERE id = (SELECT id FROM inventory.stock_item WHERE status = 'AVAILABLE' AND reserved = 0 ORDER BY id LIMIT 1) $q$);
 -- A row the old sweep left EXPIRED, made here by switching the guard off for one statement.
 ALTER TABLE inventory.stock_item DISABLE TRIGGER tg_stock_item_no_new_expired;
 INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
-VALUES (md5('qa42:expired')::uuid, 'SOFA-3S-GREY', 'HCM-QC01', 'QA-LOT', 3, 0, 'EXPIRED', NOW(), NOW() - interval '1 day', md5('qa42:p')::uuid);
+VALUES (md5('qa42:expired')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-QC01', 'QA-LOT', 3, 0, 'EXPIRED', NOW(), NOW() - interval '1 day', md5('qa42:p')::uuid);
 SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;
 ALTER TABLE inventory.stock_item ENABLE TRIGGER tg_stock_item_no_new_expired;
@@ -114,15 +114,15 @@ SELECT pg_temp.expect_fail('AE14 ... but not come back to it', $q$
     UPDATE inventory.stock_item SET status = 'EXPIRED' WHERE id = md5('qa42:expired')::uuid $q$);
 SELECT pg_temp.expect_fail('AE15 a new adjustment for EXPIRED stock', $q$
     INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by)
-    VALUES (gen_random_uuid(), 'ADJ-QA42-1', 'HCM-QC01', 'SOFA-3S-GREY', -1, 'EXPIRED', md5('demo:user:editor')::uuid) $q$);
+    VALUES (gen_random_uuid(), 'ADJ-QA42-1', 'HCM-QC01', 'LY-GIAY-DEMO-12OZ-XANH', -1, 'EXPIRED', md5('demo:user:editor')::uuid) $q$);
 SELECT pg_temp.expect_ok('AE16 an adjustment for DAMAGED stock', $q$
     INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by)
-    VALUES (md5('qa42:adj')::uuid, 'ADJ-QA42-2', 'HCM-QC01', 'SOFA-3S-GREY', -1, 'DAMAGED', md5('demo:user:editor')::uuid) $q$);
+    VALUES (md5('qa42:adj')::uuid, 'ADJ-QA42-2', 'HCM-QC01', 'LY-GIAY-DEMO-12OZ-XANH', -1, 'DAMAGED', md5('demo:user:editor')::uuid) $q$);
 SELECT pg_temp.expect_fail('AE17 an adjustment changed to EXPIRED afterwards', $q$
     UPDATE inventory.stock_adjustment SET reason_code = 'EXPIRED' WHERE id = md5('qa42:adj')::uuid $q$);
 ALTER TABLE inventory.stock_adjustment DISABLE TRIGGER tg_stock_adjustment_no_new_expired;
 INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by)
-VALUES (md5('qa42:adj:old')::uuid, 'ADJ-QA42-3', 'HCM-QC01', 'SOFA-3S-GREY', -1, 'EXPIRED', md5('demo:user:editor')::uuid);
+VALUES (md5('qa42:adj:old')::uuid, 'ADJ-QA42-3', 'HCM-QC01', 'LY-GIAY-DEMO-12OZ-XANH', -1, 'EXPIRED', md5('demo:user:editor')::uuid);
 ALTER TABLE inventory.stock_adjustment ENABLE TRIGGER tg_stock_adjustment_no_new_expired;
 SELECT pg_temp.expect_ok('AE18 an EXPIRED adjustment recorded before is still decided', $q$
     UPDATE inventory.stock_adjustment SET status = 'REJECTED', decided_by = md5('demo:user:approver')::uuid,
@@ -135,27 +135,26 @@ SET LOCAL session_replication_role = replica;
 INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, received_at, received_by, receipt_type)
 VALUES (md5('qa42:gr')::uuid, 'GR-QA42-1', md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid, 'PURCHASE');
 SET LOCAL session_replication_role = origin;
-SELECT pg_temp.expect_ok('AE20 a receipt opens a lot of the table', $q$
+SELECT pg_temp.expect_ok('AE20 a receipt opens a lot of the red cup', $q$
     INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, goods_receipt_id)
-    VALUES (md5('qa42:lot:1')::uuid, 'TABLE-OAK-160', 'LOT-QA42', NOW(), 'GOODS_RECEIPT', md5('qa42:gr')::uuid) $q$);
+    VALUES (md5('qa42:lot:1')::uuid, 'LY-GIAY-DEMO-12OZ-DO', 'LOT-QA42', NOW(), 'GOODS_RECEIPT', md5('qa42:gr')::uuid) $q$);
 SELECT pg_temp.expect_fail('AE21 the same receipt opening a second lot of that number (the expiry no longer tells them apart)', $q$
     INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, goods_receipt_id)
-    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'LOT-QA42', NOW(), 'GOODS_RECEIPT', md5('qa42:gr')::uuid) $q$);
+    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-DO', 'LOT-QA42', NOW(), 'GOODS_RECEIPT', md5('qa42:gr')::uuid) $q$);
 SELECT pg_temp.expect_ok('AE22 another lot number on the same receipt', $q$
     INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, goods_receipt_id)
-    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'LOT-QA42-B', NOW(), 'GOODS_RECEIPT', md5('qa42:gr')::uuid) $q$);
--- Two cartons of one oak table each (a row with units must sit in a carton).
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-SELECT md5('qa42:uo')::uuid, i.id, 'QA_QA42O', 1 FROM inventory.inventory_items i WHERE i.sku = 'TABLE-OAK-160';
+    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-DO', 'LOT-QA42-B', NOW(), 'GOODS_RECEIPT', md5('qa42:gr')::uuid) $q$);
+-- Two cartons of the red cup in its own carton unit, 500 cups each (a row with units must sit in a carton).
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
-SELECT md5('qa42:po:' || k)::uuid, 'QA-QA42-OAK-' || k, i.id, md5('qa42:uo')::uuid, 1, 1, loc, 'IN_STOCK'
-  FROM inventory.inventory_items i, (VALUES ('1', 'HCM-QC01'), ('2', 'HCM-RCV01')) v(k, loc) WHERE i.sku = 'TABLE-OAK-160';
+SELECT md5('qa42:po:' || k)::uuid, 'QA-QA42-DO-' || k, u.inventory_item_id, u.id, u.factor, u.factor, loc, 'IN_STOCK'
+  FROM inventory.uom_conversions u, (VALUES ('1', 'HCM-QC01'), ('2', 'HCM-RCV01')) v(k, loc)
+ WHERE u.id = md5('demo:cups:unit:LY-GIAY-DEMO-12OZ-DO')::uuid;
 SELECT pg_temp.expect_ok('AE23 a stock row without a lot id finds the untraced lot of its SKU, number and receipt time', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (md5('qa42:row:1')::uuid, 'TABLE-OAK-160', 'HCM-QC01', 'LOT-QA42-U', 1, 0, 'QUARANTINE', NOW(),
+    VALUES (md5('qa42:row:1')::uuid, 'LY-GIAY-DEMO-12OZ-DO', 'HCM-QC01', 'LOT-QA42-U', 500, 0, 'QUARANTINE', NOW(),
             '2026-01-02 03:04:05+00', md5('qa42:po:1')::uuid);
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (md5('qa42:row:2')::uuid, 'TABLE-OAK-160', 'HCM-RCV01', 'LOT-QA42-U', 1, 0, 'INBOUND', NOW(),
+    VALUES (md5('qa42:row:2')::uuid, 'LY-GIAY-DEMO-12OZ-DO', 'HCM-RCV01', 'LOT-QA42-U', 500, 0, 'INBOUND', NOW(),
             '2026-01-02 03:04:05+00', md5('qa42:po:2')::uuid) $q$);
 SELECT pg_temp.expect_true('AE24 ... the same lot for both rows, an UNTRACED one',
     (SELECT count(DISTINCT lot_id) FROM inventory.stock_item WHERE id IN (md5('qa42:row:1')::uuid, md5('qa42:row:2')::uuid)) = 1
@@ -165,11 +164,11 @@ SELECT pg_temp.expect_fail('AE25 a stock row put in a lot of another lot number'
     UPDATE inventory.stock_item SET lot_id = md5('qa42:lot:1')::uuid WHERE id = md5('qa42:row:1')::uuid $q$);
 SELECT pg_temp.expect_fail('AE26 a stock row received in the future (the receipt-time rule stays)', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
-    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-QC01', 'LOT-QA42-F', 1, 0, 'QUARANTINE', NOW(),
+    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-DO', 'HCM-QC01', 'LOT-QA42-F', 1, 0, 'QUARANTINE', NOW(),
             clock_timestamp() + interval '1 hour') $q$);
 SELECT pg_temp.expect_fail('AE27 a SKU stocked without a lot (the policy rule stays, and holds for every SKU since 5-5)', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at)
-    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-QC01', 1, 0, 'QUARANTINE', NOW(), NOW()) $q$);
+    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-DO', 'HCM-QC01', 1, 0, 'QUARANTINE', NOW(), NOW()) $q$);
 
 -- Receiving records no expiry (03 BR-06): a receipt line has no expiry column to fill, and every line names its lot
 -- (QA 70, V20261115000100); the lines themselves are only ever of a production order (QA 22, QA 61).
