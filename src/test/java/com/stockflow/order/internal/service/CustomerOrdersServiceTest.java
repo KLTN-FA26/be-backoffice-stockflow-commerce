@@ -46,8 +46,11 @@ class CustomerOrdersServiceTest {
     private final OrderService orders = mock(OrderService.class);
     private final CreditChecks creditChecks = mock(CreditChecks.class);
     private final CancellationRequestRepository requests = mock(CancellationRequestRepository.class);
-    private final CustomerOrdersService service =
-            new CustomerOrdersService(search, orders, creditChecks, requests);
+    private final com.stockflow.order.internal.domain.OrderRepository orderRepository =
+            mock(com.stockflow.order.internal.domain.OrderRepository.class);
+    private final ReturnAllowances allowances = mock(ReturnAllowances.class);
+    private final CustomerOrdersService service = new CustomerOrdersService(search, orders, creditChecks, requests,
+            orderRepository, allowances, java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC));
 
     private CustomerOrders.Query query(LocalDate from, LocalDate to) {
         return new CustomerOrders.Query(0, 20, List.of(OrderStatus.CONFIRMED), "SO-1", from, to, null);
@@ -174,6 +177,8 @@ class CustomerOrdersServiceTest {
                     .satisfies(entry -> assertThat(entry.status()).isEqualTo(OrderStatus.READY_TO_FULFILL));
             assertThat(detail.cancellationRequest()).isNull();
             assertThat(detail.shipments()).isEmpty();
+            verify(orderRepository, never()).findById(any());
+            verify(allowances, never()).claimable(any(), any());
         }
 
         @Test
@@ -315,8 +320,75 @@ class CustomerOrdersServiceTest {
                             NOW, NOW.plusSeconds(600), null, List.of(), null)),
                     true, NOW, NOW));
 
-            assertThat(CustomerOrdersService.shipments(summary)).extracting(CustomerOrders.Shipment::shipmentId)
-                    .containsExactly(first, second);
+            assertThat(CustomerOrdersService.shipments(summary, com.stockflow.order.internal.domain.ReturnRequest
+                    .Claimable.NONE)).extracting(CustomerOrders.Shipment::shipmentId).containsExactly(first, second);
+        }
+
+        @Test
+        @DisplayName("each shipment carries its own lines with what a return of it may still claim; the shipment made "
+                + "up for an order that left as a whole carries the order's lines")
+        void eachShipmentCarriesItsLines() {
+            UUID first = UUID.randomUUID();
+            UUID second = UUID.randomUUID();
+            UUID cups = UUID.randomUUID();
+            UUID lids = UUID.randomUUID();
+            OrderSummary summary = mock(OrderSummary.class);
+            when(summary.lifecycle()).thenReturn(new OrderSummary.Lifecycle(null, null, null, null, NOW, NOW, null,
+                    null, null, null, null, List.of(), List.of(
+                    new OrderSummary.Shipment(first, com.stockflow.order.api.OrderShipmentStatus.DELIVERED, null,
+                            NOW, NOW.plusSeconds(600), null, List.of(), null),
+                    new OrderSummary.Shipment(second, com.stockflow.order.api.OrderShipmentStatus.HANDED_OVER, null,
+                            NOW.plusSeconds(3_600), null, null, List.of(), null)),
+                    true, NOW, NOW));
+            var claimable = new com.stockflow.order.internal.domain.ReturnRequest.Claimable(Map.of(
+                    first, List.of(new com.stockflow.order.internal.domain.ReturnRequest.ClaimableLine(cups, "CUP-12OZ",
+                                    60, 45),
+                            new com.stockflow.order.internal.domain.ReturnRequest.ClaimableLine(lids, "LID-90", 40, 0)),
+                    second, List.of(new com.stockflow.order.internal.domain.ReturnRequest.ClaimableLine(cups,
+                            "CUP-12OZ", 40, 0))), List.of());
+
+            List<CustomerOrders.Shipment> shipments = CustomerOrdersService.shipments(summary, claimable);
+
+            assertThat(shipments.get(0).lines()).containsExactly(new CustomerOrders.ShipmentLine(cups, "CUP-12OZ", 60, 45),
+                    new CustomerOrders.ShipmentLine(lids, "LID-90", 40, 0));
+            assertThat(shipments.get(1).lines()).containsExactly(new CustomerOrders.ShipmentLine(cups, "CUP-12OZ", 40,
+                    0));
+
+            OrderSummary whole = mock(OrderSummary.class);
+            when(whole.status()).thenReturn(OrderStatus.DELIVERED);
+            when(whole.lifecycle()).thenReturn(new OrderSummary.Lifecycle(null, null, null, null, NOW, NOW, null,
+                    null, null, null, null, List.of(), List.of(), false, NOW, NOW));
+            var asAWhole = new com.stockflow.order.internal.domain.ReturnRequest.Claimable(Map.of(), List.of(
+                    new com.stockflow.order.internal.domain.ReturnRequest.ClaimableLine(cups, "CUP-12OZ", 100, 70)));
+            assertThat(CustomerOrdersService.shipments(whole, asAWhole)).singleElement().satisfies(shipment -> {
+                assertThat(shipment.shipmentId()).isNull();
+                assertThat(shipment.lines()).containsExactly(new CustomerOrders.ShipmentLine(cups, "CUP-12OZ", 100, 70));
+            });
+        }
+
+        @Test
+        @DisplayName("the detail reads the lines from the order and its returns once, for a delivered order")
+        void theDetailReadsTheLines() {
+            Order order = OrderFixtures.released();
+            OrderSummary real = OrderFixtures.summaryOf(order);
+            OrderSummary summary = org.mockito.Mockito.spy(real);
+            UUID line = real.lines().getFirst().lineId();
+            when(summary.status()).thenReturn(OrderStatus.DELIVERED);
+            when(summary.lifecycle()).thenReturn(new OrderSummary.Lifecycle(null, null, null, null, NOW, NOW, null,
+                    null, null, null, null, List.of(), List.of(), false, NOW, NOW));
+            when(orders.findById(order.id().value())).thenReturn(Optional.of(summary));
+            when(orders.history(order.id().value())).thenReturn(List.of());
+            when(requests.latestOf(order.id().value())).thenReturn(Optional.empty());
+            when(orderRepository.findById(order.id())).thenReturn(Optional.of(order));
+            when(allowances.claimable(order, NOW)).thenReturn(new com.stockflow.order.internal.domain.ReturnRequest
+                    .Claimable(Map.of(), List.of(new com.stockflow.order.internal.domain.ReturnRequest.ClaimableLine(
+                    line, "CUP-12OZ", 10, 7))));
+
+            CustomerOrders.Detail detail = service.myOrder(order.customerId(), order.id().value());
+
+            assertThat(detail.shipments()).singleElement().satisfies(shipment -> assertThat(shipment.lines())
+                    .containsExactly(new CustomerOrders.ShipmentLine(line, "CUP-12OZ", 10, 7)));
+            verify(allowances).claimable(order, NOW);
         }
     }
 }

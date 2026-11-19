@@ -26,6 +26,12 @@ import java.util.UUID;
  * {@code EARLIER_INVOICE_PENDING} too. A warning only: issuing is refused ({@code EINVOICE_OLDER_DRAFT_PENDING}) only
  * while the earlier invoice is at the provider. Null when nothing waits, when no series is in use for the draft's
  * year, on an invoice that is not a draft, and in the answers of the other operations.</p>
+ *
+ * <p>{@code deliveryFailedAt} (WF-05 HĐ-3): when the delivery this invoice was at the provider for was corrected to a
+ * failure. Once the provider answers, an issued one is reduced in full ({@code correctionBasis} DELIVERY_FAILED on the
+ * reduction) and a refused one is voided rather than sent again. Null on an invoice never marked - every adjustment,
+ * and every invoice from before the mark existed - and again once the mark is taken back because the shipment turned
+ * out delivered after all.</p>
  */
 public record EInvoiceResponse(UUID id, String code, String type, String status, boolean adjusted, UUID orderId,
                                String orderNumber, String contractNumber, UUID shipmentId, String shipmentCode,
@@ -39,7 +45,7 @@ public record EInvoiceResponse(UUID id, String code, String type, String status,
                                Instant voidedAt, String voidReason, boolean hasFiles, long version,
                                String correctionBasis, String correctionReason, boolean agreementRequired,
                                Agreement agreement, UUID returnRequestId, List<UUID> listedInvoiceIds,
-                               String earlierPendingInvoice) {
+                               String earlierPendingInvoice, Instant deliveryFailedAt) {
 
     public record Agreement(String number, LocalDate date) {
     }

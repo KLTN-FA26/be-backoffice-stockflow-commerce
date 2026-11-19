@@ -329,26 +329,25 @@ public final class ReturnRequest extends AggregateRoot {
                 throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
                         "Claim at least one unit of %s".formatted(line.sku().code()));
             }
-            if (openElsewhere != null && openElsewhere.contains(line.id())) {
+            LineAllowance allowance = LineAllowance.of(line, shipment, claimedElsewhere, claimedOnShipment,
+                    openElsewhere);
+            if (allowance.alreadyOpen()) {
                 throw new BusinessException(ErrorCode.RETURN_LINE_ALREADY_OPEN,
                         "Line %s of order %s already has an open return".formatted(line.sku().code(),
                                 order.orderNumber()));
             }
-            int delivered = line.quantity() - line.cancelledQuantity();
-            int claimed = claimedElsewhere == null ? 0 : claimedElsewhere.getOrDefault(line.id(), 0);
-            if (claim.quantity() > delivered - claimed) {
+            if (claim.quantity() > allowance.delivered() - allowance.claimed()) {
                 throw new BusinessException(ErrorCode.RETURN_QUANTITY_EXCEEDED,
                         "%s: %d unit(s) delivered, %d already claimed by other returns; %d cannot be returned"
-                                .formatted(line.sku().code(), delivered, claimed, claim.quantity()));
+                                .formatted(line.sku().code(), allowance.delivered(), allowance.claimed(),
+                                        claim.quantity()));
             }
-            if (shipment != null) {
-                int onShipment = shipment.quantities().getOrDefault(line.id(), 0);
-                int claimedThere = claimedOnShipment == null ? 0 : claimedOnShipment.getOrDefault(line.id(), 0);
-                if (claim.quantity() > onShipment - claimedThere) {
-                    throw new BusinessException(ErrorCode.RETURN_QUANTITY_EXCEEDED, ("%s: %d unit(s) delivered on "
-                            + "this shipment, %d already claimed by its other returns; %d cannot be returned")
-                            .formatted(line.sku().code(), onShipment, claimedThere, claim.quantity()));
-                }
+            if (allowance.onShipment() != null
+                    && claim.quantity() > allowance.onShipment() - allowance.claimedOnShipment()) {
+                throw new BusinessException(ErrorCode.RETURN_QUANTITY_EXCEEDED, ("%s: %d unit(s) delivered on "
+                        + "this shipment, %d already claimed by its other returns; %d cannot be returned")
+                        .formatted(line.sku().code(), allowance.onShipment(), allowance.claimedOnShipment(),
+                                claim.quantity()));
             }
             if (!reason.isNamedFault() && line.printedToCustomerDesign()) {
                 throw new BusinessException(ErrorCode.RETURN_CUSTOM_ITEM_NOT_DEFECTIVE, ("%s was printed to the "
@@ -389,6 +388,19 @@ public final class ReturnRequest extends AggregateRoot {
      */
     private static void requireReturnable(Order order, OrderShipment shipment, Instant now, ReturnPolicy policy,
                                           ReturnChannel channel, String override) {
+        BusinessException refusal = returnRefusal(order, shipment, now, policy, channel, override);
+        if (refusal != null) {
+            throw refusal;
+        }
+    }
+
+    /**
+     * {@link #requireReturnable} as an answer rather than a throw: the refusal opening a return of {@code shipment}
+     * would meet, or null when the delivery is returnable now. Shared by {@link #claimable}, so what the customer is
+     * shown as returnable is decided by the very rule that decides the claim.
+     */
+    private static BusinessException returnRefusal(Order order, OrderShipment shipment, Instant now,
+                                                   ReturnPolicy policy, ReturnChannel channel, String override) {
         OrderStatus status = order.status();
         boolean sales = channel == ReturnChannel.BACK_OFFICE;
         BusinessException notDelivered = new BusinessException(ErrorCode.RETURN_ORDER_NOT_DELIVERED,
@@ -414,23 +426,152 @@ public final class ReturnRequest extends AggregateRoot {
                  RETURNED -> notDelivered;
         };
         if (refusal != null) {
-            throw refusal;
+            return refusal;
         }
         // Điều 318: the period runs from the delivery the goods came on.
         Instant deliveredAt = shipment != null ? shipment.outcomeAt() : order.deliveredAt();
         if (deliveredAt == null) {
-            throw new BusinessException(ErrorCode.RETURN_ORDER_NOT_DELIVERED,
+            return new BusinessException(ErrorCode.RETURN_ORDER_NOT_DELIVERED,
                     "Order %s has no delivery recorded".formatted(order.orderNumber()));
         }
         if (override == null && !policy.windowClosesAt(deliveredAt).isAfter(now)) {
-            throw windowClosed(order, policy, sales);
+            return windowClosed(order, policy, sales);
         }
+        return null;
     }
 
     private static BusinessException windowClosed(Order order, ReturnPolicy policy, boolean sales) {
         return new BusinessException(ErrorCode.RETURN_WINDOW_CLOSED,
                 "Order %s was delivered more than %d day(s) ago (BR-RMA-001)%s".formatted(order.orderNumber(),
                         policy.window().toDays(), sales ? "; say why to accept a late claim" : ""));
+    }
+
+    /**
+     * How many units of one order line a new return on one delivery may claim, by the bounds {@link #open} enforces:
+     * what the line delivered in all less what every other return of it claims, and - against a shipment - what that
+     * shipment delivered of it less what the shipment's other returns claim; none while a return of the line is open
+     * on the same delivery ({@code RETURN_LINE_ALREADY_OPEN}).
+     *
+     * @param delivered         the line's units, less those cancelled
+     * @param claimed           the units every other return of the line claims, whatever delivery
+     * @param onShipment        the units the shipment delivered of the line; null against an order delivered without
+     *                          shipments, where the line's own total is the only bound
+     * @param claimedOnShipment the units the shipment's other returns claim of the line
+     * @param alreadyOpen       a return of the line is still open on the same delivery
+     */
+    record LineAllowance(int delivered, int claimed, Integer onShipment, int claimedOnShipment,
+                         boolean alreadyOpen) {
+
+        static LineAllowance of(OrderLine line, OrderShipment shipment, Map<UUID, Integer> claimedElsewhere,
+                                Map<UUID, Integer> claimedOnShipment, Set<UUID> openElsewhere) {
+            return new LineAllowance(line.quantity() - line.cancelledQuantity(),
+                    claimedElsewhere == null ? 0 : claimedElsewhere.getOrDefault(line.id(), 0),
+                    shipment == null ? null : shipment.quantities().getOrDefault(line.id(), 0),
+                    claimedOnShipment == null ? 0 : claimedOnShipment.getOrDefault(line.id(), 0),
+                    openElsewhere != null && openElsewhere.contains(line.id()));
+        }
+
+        /** The most a new return may claim: 0 while one is open, never below 0. */
+        int returnable() {
+            if (alreadyOpen) {
+                return 0;
+            }
+            int left = delivered - claimed;
+            if (onShipment != null) {
+                left = Math.min(left, onShipment - claimedOnShipment);
+            }
+            return Math.max(0, left);
+        }
+    }
+
+    /**
+     * One line of one delivery, as the customer reads it: what the delivery brought of the order line, and how many of
+     * those units a return opened now on the portal may claim.
+     *
+     * @param quantity   the units of the line the delivery carried (the line less its cancelled units, for an order
+     *                   delivered without shipments)
+     * @param returnable 0 when nothing of it can be claimed now: the delivery is not delivered (yet), its return window
+     *                   has closed, the order takes no return on the portal any more, a return of the line is already
+     *                   open on the delivery, or every unit is claimed
+     */
+    public record ClaimableLine(UUID orderLineId, String sku, int quantity, int returnable) {
+    }
+
+    /**
+     * What each delivery of an order brought, line by line, and what of it is returnable now.
+     *
+     * @param byShipment the lines of each shipment of the order, by shipment id, in the order the shipment lists them
+     * @param wholeOrder the lines of an order delivered without shipments, claimed as a whole; empty for an order that
+     *                   has shipments
+     */
+    public record Claimable(Map<UUID, List<ClaimableLine>> byShipment, List<ClaimableLine> wholeOrder) {
+
+        public static final Claimable NONE = new Claimable(Map.of(), List.of());
+
+        public Claimable {
+            byShipment = byShipment == null ? Map.of() : Map.copyOf(byShipment);
+            wholeOrder = wholeOrder == null ? List.of() : List.copyOf(wholeOrder);
+        }
+
+        /** The lines of shipment {@code shipmentId}; of the order as a whole for null. Empty for one not known. */
+        public List<ClaimableLine> of(UUID shipmentId) {
+            return shipmentId == null ? wholeOrder : byShipment.getOrDefault(shipmentId, List.of());
+        }
+    }
+
+    /**
+     * What each delivery of {@code order} brought and how many units of each line the customer may still claim in a
+     * return of it opened on the portal now - by the rules {@link #open} applies to such a claim, not a copy of them:
+     * the delivery must be delivered and the order returnable on the portal within that delivery's window
+     * ({@link #returnRefusal}, BR-RMA-001; Sales' late claims are theirs, not the portal's), and each line is bounded
+     * by {@link LineAllowance}. The rules that depend on what the claim says are left to it: a line printed to the
+     * customer's design comes back only for a named defect (BR-RMA-002), a change of mind and a short delivery are
+     * refused whatever the line - so a positive figure is the most a claim may ask, not a promise that any reason will
+     * do. The customer's account must also be ACTIVE to open on the portal ({@code RETURN_CUSTOMER_NOT_ACTIVE}); that is
+     * the customer's, not the delivery's: the service that reads this for the portal applies it.
+     *
+     * @param claims what the order's returns already claim ({@code ReturnRequestRepository.claimsOf}), read once
+     * @param policy the order's own return rules (its contract's window, else the configured one)
+     */
+    public static Claimable claimable(Order order, ReturnClaims claims, Instant now, ReturnPolicy policy) {
+        Objects.requireNonNull(order, "order");
+        Objects.requireNonNull(now, "now");
+        Objects.requireNonNull(policy, "policy");
+        ReturnClaims taken = claims == null ? ReturnClaims.NONE : claims;
+        Map<UUID, Integer> inAll = taken.inAll();
+        if (order.shipments().isEmpty()) {
+            boolean returnable = returnRefusal(order, null, now, policy, ReturnChannel.PORTAL, null) == null;
+            Map<UUID, Integer> onOrder = taken.onShipment(null);
+            Set<UUID> open = taken.openOn(null);
+            List<ClaimableLine> lines = new ArrayList<>();
+            for (OrderLine line : order.lines()) {
+                int delivered = line.quantity() - line.cancelledQuantity();
+                if (delivered > 0) {
+                    lines.add(new ClaimableLine(line.id(), line.sku().code(), delivered, !returnable ? 0
+                            : LineAllowance.of(line, null, inAll, onOrder, open).returnable()));
+                }
+            }
+            return new Claimable(Map.of(), lines);
+        }
+        Map<UUID, List<ClaimableLine>> byShipment = new LinkedHashMap<>();
+        for (OrderShipment shipment : order.shipments()) {
+            // RETURN_SHIPMENT_NOT_DELIVERED first, as deliveredShipment refuses it before the order's own rules.
+            boolean returnable = shipment.status() == OrderShipmentStatus.DELIVERED
+                    && returnRefusal(order, shipment, now, policy, ReturnChannel.PORTAL, null) == null;
+            Map<UUID, Integer> onShipment = taken.onShipment(shipment.id());
+            Set<UUID> open = taken.openOn(shipment.id());
+            List<ClaimableLine> lines = new ArrayList<>();
+            shipment.quantities().forEach((lineId, carried) -> {
+                if (carried == null || carried <= 0) {
+                    return;
+                }
+                order.findLine(lineId).ifPresent(line -> lines.add(new ClaimableLine(line.id(), line.sku().code(),
+                        carried, !returnable ? 0
+                        : LineAllowance.of(line, shipment, inAll, onShipment, open).returnable())));
+            });
+            byShipment.put(shipment.id(), lines);
+        }
+        return new Claimable(byShipment, List.of());
     }
 
     // ================================================================================================= evidence
