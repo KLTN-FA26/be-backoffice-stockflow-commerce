@@ -288,4 +288,25 @@ class OrderAwaitingStockTest {
         assertThatThrownBy(() -> order.release(HCM, "HCM", SALES, NOW))
                 .isInstanceOf(InvalidOrderTransitionException.class);
     }
+
+    @Test
+    @DisplayName("SCOPE-PARTIAL-1105: the part held going first tells payment (OrderReleased of the batch); the order "
+            + "stays AWAITING_STOCK, not released - and only when allowed to ship in parts")
+    void partGoingFirstMakesTheInstallmentDue() {
+        Order order = waiting();
+        order.startPrePicking(NOW);
+        UUID batch = UUID.randomUUID();
+        assertThatThrownBy(() -> order.releasePartFirst("HCM", batch, NOW))
+                .isInstanceOf(InvalidOrderTransitionException.class);
+
+        order.decidePartialShipment(true);
+        order.pullDomainEvents();
+        order.releasePartFirst("HCM", batch, NOW);
+
+        assertThat(order.status()).isEqualTo(OrderStatus.AWAITING_STOCK);
+        assertThat(order.releasedAt()).isNull();
+        assertThat(order.pullDomainEvents()).singleElement().isInstanceOfSatisfying(OrderEvent.Released.class,
+                event -> assertThat(event.payload()).isEqualTo(new OrderReleased(order.id().value(), "HCM", NOW,
+                        batch)));
+    }
 }

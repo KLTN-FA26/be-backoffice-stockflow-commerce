@@ -35,6 +35,17 @@ public interface PrePicking {
     boolean topUp(UUID orderId, UUID deliveryBatchId, UUID by);
 
     /**
+     * The part held goes towards dispatch first (17 §4.5 step 18; the task opened to dispatch, or its staged cartons
+     * moved there), Sales having allowed a partial shipment: the first delivery is ready, so the installment before
+     * delivery falls due (owner decision SCOPE-PARTIAL-1105; 15 §4.1 step 2). The order stays AWAITING_STOCK. Locks
+     * the order.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code ORDER_INVALID_TRANSITION} for an order not awaiting
+     *         stock, not picked ahead, or not allowed to ship in parts
+     */
+    void partGoesFirst(UUID orderId, UUID deliveryBatchId);
+
+    /**
      * @param deliveryBatchId the batch the task picks
      * @param warehouseId     the order's shipping warehouse, where the cartons are
      */

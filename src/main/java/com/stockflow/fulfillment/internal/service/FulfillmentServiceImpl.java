@@ -194,6 +194,10 @@ class FulfillmentServiceImpl implements FulfillmentService {
         picks.saveAndFlush(pick);      // the pick row first: its lines' trigger and foreign key look for it
         packs.save(new PackJpaEntity(Identifiers.newId(), pick.getId(), PackStatus.PENDING, null));
         pickLists.planLines(pick, requireOrder(order.orderId()), actor.userId());
+        if (to == PickDestination.DISPATCH) {
+            // SCOPE-PARTIAL-1105: the part held goes straight to dispatch - the first delivery is ready.
+            prePicking.partGoesFirst(order.orderId(), prePick.deliveryBatchId());
+        }
         return toTask(pick, nameOf(assignedUserId), null);
     }
 
@@ -337,6 +341,10 @@ class FulfillmentServiceImpl implements FulfillmentService {
             // its release, the order still waits for the rest; its cartons stay in the staging area.
             throw new BusinessException(ErrorCode.PICK_AWAITING_STOCK_NOT_READY, ("Order %s still awaits stock; task "
                     + "%s stays staged").formatted(pick.getOrderNumber(), taskId));
+        }
+        if (orderStatus == OrderStatus.AWAITING_STOCK) {
+            // SCOPE-PARTIAL-1105: the part held, allowed to go first, moves to dispatch - the first delivery is ready.
+            prePicking.partGoesFirst(pick.getOrderId(), pick.getDeliveryBatchId());
         }
         pickLists.moveStagedLinesToDispatch(pick, actor.userId());
         pick.moveToDispatch(actor.userId(), clock.instant());

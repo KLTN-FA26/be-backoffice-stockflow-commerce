@@ -47,11 +47,14 @@ class PrePickingService implements PrePicking {
     private final OrderReleases releases;
     private final SalesContractRepository contracts;
     private final DeliveryBatchRecords batchRecords;
+    private final OrderEventPublisher events;
     private final Clock clock;
 
     PrePickingService(OrderRepository repository, ShippingWarehouseService shippingWarehouses,
                       OrderStockAllocation allocation, WarehouseDirectory warehouses, OrderReleases releases,
-                      SalesContractRepository contracts, DeliveryBatchRecords batchRecords, Clock clock) {
+                      SalesContractRepository contracts, DeliveryBatchRecords batchRecords,
+                      OrderEventPublisher events, Clock clock) {
+        this.events = events;
         this.repository = repository;
         this.shippingWarehouses = shippingWarehouses;
         this.allocation = allocation;
@@ -118,6 +121,16 @@ class PrePickingService implements PrePicking {
                     allocated);
         }
         return false;
+    }
+
+    @Override
+    public void partGoesFirst(UUID orderId, UUID deliveryBatchId) {
+        Order order = lock(orderId);
+        order.releasePartFirst(warehouseCode(order), deliveryBatchId, clock.instant());
+        repository.save(order);
+        events.publishEventsOf(order);
+        log.info("Order {} (awaiting stock): its part held goes first; the installments before delivery fall due",
+                order.orderNumber());
     }
 
     private Order lock(UUID orderId) {

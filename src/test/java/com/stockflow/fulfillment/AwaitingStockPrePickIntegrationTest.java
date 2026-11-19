@@ -195,8 +195,13 @@ class AwaitingStockPrePickIntegrationTest {
      * sent - AWAITING_STOCK (17 §4.2 step 5).
      */
     private UUID awaitingStockHoldingTwoOfFour() {
+        return awaitingStockHoldingTwoOfFour(ConfirmedOrders.paidOnSigning());
+    }
+
+    /** The same, its contract paying as {@code plan} says; the installments on signing are paid. */
+    private UUID awaitingStockHoldingTwoOfFour(List<com.stockflow.order.internal.service.SalesContracts.Installment> plan) {
         CustomerSkuRows.stock(jdbc, tx, sku.sku(), 2 * sku.unitsPerCarton());
-        UUID orderId = confirmedOrders.pay(confirmedOrders.signed(DemoData.CUSTOMER_ID,
+        UUID orderId = confirmedOrders.pay(confirmedOrders.signed(DemoData.CUSTOMER_ID, plan,
                 ConfirmedOrders.Line.cartons(sku, 4, 6_000_000))).orderId();
         ShippingWarehouseService.Coverage coverage = confirmedOrders.ship(orderId, HCM);
         assertThat(coverage.fullyHeld()).isFalse();
@@ -387,5 +392,57 @@ class AwaitingStockPrePickIntegrationTest {
         CartonStationSupport.labelAll(this::staff, task);
         assertThat(jdbc.queryForObject("SELECT first_labeled_at FROM ordering.customer_order WHERE id = ?",
                 java.sql.Timestamp.class, orderId)).as("08 BR-04: labelled, the order is locked").isNotNull();
+    }
+
+    // ---- SCOPE-PARTIAL-1105: the installment before delivery falls due at the first delivery ready -------------
+
+    /** Half on signing, half before delivery (tied to no batch). */
+    private static List<com.stockflow.order.internal.service.SalesContracts.Installment> halfBeforeDelivery() {
+        return List.of(
+                new com.stockflow.order.internal.service.SalesContracts.Installment("On signing", "ON_SIGNING", null,
+                        new java.math.BigDecimal("50"), 0, null),
+                new com.stockflow.order.internal.service.SalesContracts.Installment("Before delivery",
+                        "BEFORE_DELIVERY", null, new java.math.BigDecimal("50"), null, null));
+    }
+
+    private String beforeDelivery(UUID orderId) {
+        return jdbc.queryForObject("SELECT status FROM payment.installment WHERE order_id = ? "
+                + "AND milestone = 'BEFORE_DELIVERY'", String.class, orderId);
+    }
+
+    @Test
+    @DisplayName("SCOPE-PARTIAL-1105 (15 §4.1 step 2): picked ahead to staging, the installment before delivery is not "
+            + "due; the part held, allowed to go first, moves to dispatch - the first delivery is ready, it falls due")
+    void beforeDeliveryFallsDueWhenThePartHeldMovesToDispatch() throws Exception {
+        UUID orderId = awaitingStockHoldingTwoOfFour(halfBeforeDelivery());
+        WithCurrentUser.call(confirmedOrders.sales(), DataScope.ALL, () -> partialShipments.decide(orderId, true,
+                "The customer takes what is ready", confirmedOrders.sales().userId()));
+
+        UUID task = UUID.fromString(data(createTask(orderId, "STAGING").andExpect(status().isCreated()))
+                .path("taskId").asText());
+        assertThat(pickOpenLines(task)).isEqualTo("STAGED");
+        assertThat(beforeDelivery(orderId)).as("staged only: no delivery is ready yet").isEqualTo("NOT_DUE");
+
+        qlk(post(BASE + "/tasks/" + task + "/dispatch-transfer")).andExpect(status().isOk());
+
+        com.stockflow.support.Await.until("the installment before delivery to fall due", ASYNC,
+                () -> "DUE".equals(beforeDelivery(orderId)));
+        assertThat(orderStatus(orderId)).as("not released: it still awaits stock").isEqualTo(OrderStatus.AWAITING_STOCK);
+        assertThat(releases(orderId)).isZero();
+    }
+
+    @Test
+    @DisplayName("SCOPE-PARTIAL-1105: the part held, allowed to go first, picked straight to dispatch - due at once")
+    void beforeDeliveryFallsDueWhenThePartHeldIsPickedToDispatch() throws Exception {
+        UUID orderId = awaitingStockHoldingTwoOfFour(halfBeforeDelivery());
+        WithCurrentUser.call(confirmedOrders.sales(), DataScope.ALL, () -> partialShipments.decide(orderId, true,
+                "The customer takes what is ready", confirmedOrders.sales().userId()));
+        assertThat(beforeDelivery(orderId)).isEqualTo("NOT_DUE");
+
+        createTask(orderId, "DISPATCH").andExpect(status().isCreated());
+
+        com.stockflow.support.Await.until("the installment before delivery to fall due", ASYNC,
+                () -> "DUE".equals(beforeDelivery(orderId)));
+        assertThat(orderStatus(orderId)).isEqualTo(OrderStatus.AWAITING_STOCK);
     }
 }

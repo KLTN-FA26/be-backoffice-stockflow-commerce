@@ -571,6 +571,25 @@ public final class Order extends AggregateRoot {
     }
 
     /**
+     * The first partial delivery of an order picked before its release goes towards dispatch - its part held, Sales
+     * having allowed a partial shipment (17 §4.5 step 18): owner decision SCOPE-PARTIAL-1105, "đợt BEFORE_DELIVERY đến
+     * hạn ở lần giao đầu tiên sẵn sàng" (15 §4.1 step 2). {@code OrderReleased} names the batch, so payment makes due
+     * what that batch waits for, as at a release; the order stays AWAITING_STOCK and is not released (its batch is
+     * released once held in full). Payment ignores a second notice for an installment already due.
+     *
+     * @throws InvalidOrderTransitionException unless AWAITING_STOCK, picked before its release, allowed in parts
+     */
+    public void releasePartFirst(String warehouseCode, UUID deliveryBatchId, Instant at) {
+        java.util.Objects.requireNonNull(at, "at");
+        if (status != OrderStatus.AWAITING_STOCK || !prePicked() || !allowPartialShipment) {
+            throw new InvalidOrderTransitionException(orderNumber, status,
+                    "only an order awaiting stock, picked ahead and allowed to ship in parts, sends its part held first");
+        }
+        registerEvent(new OrderEvent.Released(new com.stockflow.contracts.OrderReleased(id.value(), warehouseCode, at,
+                deliveryBatchId)));
+    }
+
+    /**
      * Whether the warehouse picks the order before its release (07 §4.1 step 2, 17 §4.4 step 15): a task was opened
      * for the part held while it was AWAITING_STOCK, and its batch was not released since.
      */
