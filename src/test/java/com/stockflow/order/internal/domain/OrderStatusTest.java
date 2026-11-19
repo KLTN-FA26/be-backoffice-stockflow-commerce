@@ -52,7 +52,7 @@ class OrderStatusTest {
             Map.entry(RETURNED, EnumSet.of(REFUNDED, PARTIALLY_REFUNDED)),
             // RETURNED (TT-4): a refund record was voided - the order waits for its refund again.
             Map.entry(REFUNDED, EnumSet.of(CLOSED, RETURN_REQUESTED, RETURNED)),
-            Map.entry(PARTIALLY_REFUNDED, EnumSet.of(CLOSED, RETURN_REQUESTED, RETURNED)),
+            Map.entry(PARTIALLY_REFUNDED, EnumSet.of(CLOSED, RETURN_REQUESTED, RETURNED, PARTIALLY_FULFILLED)),
             Map.entry(COMPLETED, EnumSet.of(CLOSED, RETURN_REQUESTED)),
             Map.entry(CANCELLED, EnumSet.noneOf(OrderStatus.class)),
             Map.entry(CLOSED, EnumSet.noneOf(OrderStatus.class)));

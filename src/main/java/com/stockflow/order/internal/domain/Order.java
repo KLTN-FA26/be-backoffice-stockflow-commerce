@@ -1851,8 +1851,12 @@ public final class Order extends AggregateRoot {
             return false;
         }
         String history = withNote("REFUND_VOIDED", trimmed(reason));
+        // Back to the status it was refunded from: PARTIALLY_FULFILLED for an order part of which came back while the
+        // rest was delivered (RTM-RETURNED-PARTIAL, owner 19/11), RETURNED otherwise.
+        OrderStatus waiting = status == OrderStatus.PARTIALLY_REFUNDED && partlyReturnedAndDone()
+                ? OrderStatus.PARTIALLY_FULFILLED : OrderStatus.RETURNED;
         // The history column holds 500.
-        transitionTo(OrderStatus.RETURNED, by, history.length() > 500 ? history.substring(0, 500) : history, at);
+        transitionTo(waiting, by, history.length() > 500 ? history.substring(0, 500) : history, at);
         return true;
     }
 

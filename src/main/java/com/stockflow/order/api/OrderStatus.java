@@ -288,7 +288,10 @@ public enum OrderStatus {
             // RETURN_REQUESTED: a further claim after a return gave money back (Sales open it, 03 §12), or a late claim
             // Sales accepted after the order completed - until the order closes for good (BR-05), it hears its returns.
             // RETURNED (TT-4): a refund record of a refunded order was voided - it waits for its refund again.
-            case REFUNDED, PARTIALLY_REFUNDED -> target == CLOSED || target == RETURN_REQUESTED || target == RETURNED;
+            case REFUNDED -> target == CLOSED || target == RETURN_REQUESTED || target == RETURNED;
+            // PARTIALLY_FULFILLED: the voided refund was of a part that came back, the rest delivered (RTM-RETURNED-PARTIAL).
+            case PARTIALLY_REFUNDED -> target == CLOSED || target == RETURN_REQUESTED || target == RETURNED
+                    || target == PARTIALLY_FULFILLED;
             case COMPLETED -> target == CLOSED || target == RETURN_REQUESTED;
             case CANCELLED, CLOSED -> false;
         };

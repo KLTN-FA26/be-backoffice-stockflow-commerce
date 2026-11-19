@@ -689,6 +689,11 @@ class OrderLifecycleTest {
             assertThat(order.partlyReturnedAndDone()).isTrue();
             assertThat(order.refunded(false, STAFF, NOW, "refund recorded")).isTrue();
             assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
+            // The refund record voided: back to the status it was refunded from, then forward again (TT-4).
+            assertThat(order.refundReopened(STAFF, NOW, "chuyển khoản bị trả về")).isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+            assertThat(order.refunded(false, STAFF, NOW, "refund recorded again")).isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
         }
 
         @Test
@@ -708,6 +713,8 @@ class OrderLifecycleTest {
             assertThat(order.outstandingUnits()).isZero();
             assertThat(order.refunded(true, STAFF, NOW, "refund recorded")).isTrue();
             assertThat(order.status()).isEqualTo(OrderStatus.REFUNDED);
+            assertThat(order.refundReopened(STAFF, NOW, "void")).isTrue();
+            assertThat(order.status()).as("refunded from RETURNED, back to RETURNED").isEqualTo(OrderStatus.RETURNED);
         }
 
         @Test
