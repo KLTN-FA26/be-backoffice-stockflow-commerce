@@ -171,7 +171,8 @@ VALUES (md5('qa40:lot:do')::uuid, 'LY-GIAY-DEMO-12OZ-DO', 'HCM-A01-1-A', 'LOT-QA
 SELECT pg_temp.expect_true('LC17 a carton it made is never opened: there is no flag to open it with (V20261113000300)',
     NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
                    AND table_name = 'stock_package' AND column_name = 'unopened'));
-SELECT pg_temp.expect_fail('LC18 a demo carton holds more than its standard count', $q$
+SELECT pg_temp.expect_fail_by('LC18 a demo carton holds more than its standard count',
+    'FIFO replenishment requires a new receipt layer', $q$
     UPDATE inventory.stock_item SET on_hand = on_hand + 1
      WHERE stock_package_id = (SELECT id FROM inventory.stock_package WHERE created_by = 'V20261206000100'
                                 ORDER BY lpn LIMIT 1) $q$);
