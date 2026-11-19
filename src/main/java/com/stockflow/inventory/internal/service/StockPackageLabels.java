@@ -7,14 +7,19 @@ import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
+import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.repository.UomConversionRepository;
+import com.stockflow.inventory.spi.PickedNotHandedOver;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -25,6 +30,11 @@ import java.util.stream.Collectors;
  *
  * <p>The label has no item name: it lives in product's schema, which inventory may not read, and the SKU plus
  * the LPN scan say the rest.</p>
+ *
+ * <p>A carton that left stock is closed and has no label to print, with one exception (kltn-docs 03 §4.1 step 4, 08 §6
+ * edge case): a carton picked for an order and still at the warehouse - waiting at the dispatch area for its check, its
+ * shipping label or its handover - is reprinted by its LPN when its LPN label tears or goes missing, so it can be
+ * scanned at the check station. Which consumed cartons those are, fulfillment answers ({@code inventory :: spi}).</p>
  *
  * <p>A read-only transaction that ends before any PDF is drawn, so no connection is held while 500 labels render.
  * Every query here is one per kind of fact, never one per carton.</p>
@@ -37,10 +47,14 @@ public class StockPackageLabels {
 
     private final StockPackageRepository stockPackages;
     private final UomConversionRepository units;
+    /** Fulfillment's answer to which consumed cartons are picked and not handed over yet; absent in a module test. */
+    private final ObjectProvider<PickedNotHandedOver> picked;
 
-    public StockPackageLabels(StockPackageRepository stockPackages, UomConversionRepository units) {
+    public StockPackageLabels(StockPackageRepository stockPackages, UomConversionRepository units,
+                              ObjectProvider<PickedNotHandedOver> picked) {
         this.stockPackages = stockPackages;
         this.units = units;
+        this.picked = picked;
     }
 
     /**
@@ -50,7 +64,8 @@ public class StockPackageLabels {
      * @return the labels in LPN order
      * @throws BusinessException {@code STOCK_PACKAGE_LABELS_EMPTY} (nothing chosen, or a line with no live carton),
      *         {@code STOCK_PACKAGE_LABELS_TOO_MANY}, {@code STOCK_PACKAGE_NOT_FOUND} (an unknown LPN),
-     *         {@code INVALID_STOCK_PACKAGE_TRANSITION} (a VOID, CONSUMED or LOST carton has no label to print),
+     *         {@code INVALID_STOCK_PACKAGE_TRANSITION} (a VOID or LOST carton has no label to print, nor a CONSUMED one
+     *         unless it is picked for an order and not handed over yet),
      *         and 403 for a carton in a warehouse the caller is not assigned to
      */
     @Transactional(readOnly = true)
@@ -82,7 +97,8 @@ public class StockPackageLabels {
     /**
      * The named cartons, each checked in the order named: an unknown LPN is {@code STOCK_PACKAGE_NOT_FOUND}; a
      * known one in a warehouse the caller is not assigned to is 403 before anything else is said about it - its
-     * status included, which would tell an outsider that the carton exists and what became of it.
+     * status included, which would tell an outsider that the carton exists and what became of it. A CONSUMED carton is
+     * printed only while it is picked for an order and not handed over yet (03 §4.1 step 4).
      */
     private List<StockPackage> named(List<String> lpns) {
         if (lpns == null || lpns.isEmpty()) {
@@ -96,18 +112,27 @@ public class StockPackageLabels {
         }
         Map<String, StockPackage> found = stockPackages.findByLpns(distinct).stream()
                 .collect(Collectors.toMap(StockPackage::lpn, Function.identity()));
+        Set<String> atDispatch = pickedNotHandedOver(found.values());
         for (String lpn : distinct) {
             StockPackage carton = found.get(lpn);
             if (carton == null) {
                 throw new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No carton " + lpn);
             }
             WarehouseScope.requireLocation(carton.location().code());
-            if (carton.status().isClosed()) {
+            if (carton.status().isClosed() && !atDispatch.contains(lpn)) {
                 throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
                         "%s is %s; a closed carton has no label to print".formatted(lpn, carton.status()));
             }
         }
         return List.copyOf(found.values());
+    }
+
+    /** Of these cartons, the CONSUMED ones picked for an order and not handed over yet; one question for them all. */
+    private Set<String> pickedNotHandedOver(Collection<StockPackage> cartons) {
+        List<String> consumed = cartons.stream().filter(carton -> carton.status() == StockPackageStatus.CONSUMED)
+                .map(StockPackage::lpn).toList();
+        PickedNotHandedOver station = consumed.isEmpty() ? null : picked.getIfAvailable();
+        return station == null ? Set.of() : station.amongst(consumed);
     }
 
     private static BusinessException tooMany(int count) {

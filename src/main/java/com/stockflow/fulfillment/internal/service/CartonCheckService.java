@@ -113,6 +113,8 @@ class CartonCheckService implements CartonChecks {
     /** Holds the order for a removed carton, as a short pick report does. */
     private final PickLists pickLists;
     private final ForeignCartonReports foreignCartons;
+    /** Tells the warehouse managers and the order's Sales of an installment due before delivery still unpaid. */
+    private final PaymentDueReports paymentDueReports;
 
     @SuppressWarnings("java:S107")
     CartonCheckService(PickJpaRepository picks, PackJpaRepository packs, PackageJpaRepository packages,
@@ -122,7 +124,8 @@ class CartonCheckService implements CartonChecks {
                        LoadPlanReleases loadPlans, PlanVehicles planVehicles, LabelledCartons labelledCartons,
                        com.stockflow.fulfillment.internal.repository.PickLineJpaRepository pickLines,
                        com.stockflow.order.api.OrderReservations orderReservations, PickLists pickLists,
-                       ForeignCartonReports foreignCartons) {
+                       ForeignCartonReports foreignCartons, PaymentDueReports paymentDueReports) {
+        this.paymentDueReports = paymentDueReports;
         this.pickLists = pickLists;
         this.foreignCartons = foreignCartons;
         this.labelledCartons = labelledCartons;
@@ -431,7 +434,13 @@ class CartonCheckService implements CartonChecks {
         store.save(check, ctx.pack());
         log.info("Order {}: shipment {} ready to dispatch, {} carton(s){}", ctx.pick().getOrderNumber(),
                 shipment.code(), shipment.packageCount(), completion.partial() ? ", part of the order" : "");
-        return new Completed(shipment.id(), after, paymentDue(after));
+        PaymentDue due = paymentDue(after);
+        if (due != null) {
+            // 08 §4.4 step 9, §2 (RTM-PAYNOTIFY): a warning on the answer, and the managers and Sales told in-app.
+            paymentDueReports.report(ctx.order().orderId(), ctx.order().orderNumber(), shipment.id(), shipment.code(),
+                    ctx.pick().getWarehouseId(), due.amount(), due.currency(), now);
+        }
+        return new Completed(shipment.id(), after, due);
     }
 
     /**

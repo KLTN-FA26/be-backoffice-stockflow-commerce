@@ -1,5 +1,6 @@
 package com.stockflow.fulfillment.internal.domain;
 
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 
@@ -175,7 +176,42 @@ public final class Shipment {
 
     /** The carrier reported it delivered, on the first try or a retry (09 §4.3 step 1-2); recorded by a person. */
     public boolean recordDelivered(UUID by, Instant at) {
-        return delivered(recorder(by), at);
+        return recordDelivered(by, at, at);
+    }
+
+    /**
+     * As {@link #recordDelivered(UUID, Instant)} where a person gives the delivery time ({@code at}, the carrier's time):
+     * never after {@code now}, never before the handover and, for a retry, never before the failure it follows
+     * (09 §4.3 step 2-3). The same outcome again changes nothing.
+     */
+    public boolean recordDelivered(UUID by, Instant at, Instant now) {
+        recorder(by);
+        if (status != ShipmentStatus.DELIVERED && status.canTransitionTo(ShipmentStatus.DELIVERED)) {
+            requireDeliveryTime(at, now, status == ShipmentStatus.DELIVERY_FAILED);
+        }
+        return delivered(by, at);
+    }
+
+    /**
+     * A delivery time a person enters (09 §4.3 step 2): not in the future, not before the shipment was handed over, and
+     * a retry after a recorded failure not before that failure.
+     */
+    private void requireDeliveryTime(Instant at, Instant now, boolean afterFailure) {
+        if (at.isAfter(now)) {
+            throw new BusinessException(ErrorCode.SHIPMENT_DELIVERY_TIME_IN_FUTURE,
+                    "Delivery time %s is after now (%s)".formatted(at, now),
+                    List.of(FieldError.of("deliveredAt", "must not be in the future")));
+        }
+        if (handedOverAt != null && at.isBefore(handedOverAt)) {
+            throw new BusinessException(ErrorCode.SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER,
+                    "Delivery time %s is before shipment %s was handed over (%s)".formatted(at, code, handedOverAt),
+                    List.of(FieldError.of("deliveredAt", "must not be before the handover")));
+        }
+        if (afterFailure && outcomeAt != null && at.isBefore(outcomeAt)) {
+            throw new BusinessException(ErrorCode.SHIPMENT_DELIVERY_TIME_BEFORE_FAILURE,
+                    "Delivery time %s is before the failed delivery of shipment %s (%s)".formatted(at, code, outcomeAt),
+                    List.of(FieldError.of("deliveredAt", "must not be before the failed delivery")));
+        }
     }
 
     /** The carrier could not deliver it (09 §4.3 step 2); OTHER needs a note. Recorded by a person. */
@@ -215,12 +251,14 @@ public final class Shipment {
      * @throws BusinessException {@code SHIPMENT_STATE_CONFLICT} for a shipment with neither outcome
      */
     public boolean correctOutcome(ShipmentStatus target, DeliveryFailureReason reason, String note, UUID by,
-                                  Instant at) {
+                                  Instant at, Instant now) {
         recorder(by);
         if (status == target) {
             return false;
         }
         if (target == ShipmentStatus.DELIVERED && status == ShipmentStatus.DELIVERY_FAILED) {
+            // The failure was the carrier's mistake: the delivery may predate it, but not the handover.
+            requireDeliveryTime(at, now, false);
             return delivered(by, at);
         }
         if (target != ShipmentStatus.DELIVERY_FAILED || status != ShipmentStatus.DELIVERED) {

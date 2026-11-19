@@ -50,7 +50,7 @@ public interface Dispatching {
     record LoadShipment(UUID shipmentId, String code, UUID orderId, String orderNumber, UUID taskId, String status,
                         int packageCount, int loadedCount, List<LoadParcel> packages) { }
 
-    record LoadDetail(UUID loadId, String code, UUID warehouseId, String status, UUID carrierId,
+    record LoadDetail(UUID loadId, String code, UUID warehouseId, String warehouseName, String status, UUID carrierId,
                       String carrierCode, String carrierName, String vehiclePlate, String driverName,
                       String driverPhone, Instant loadingStartedAt, UUID loadingStartedBy, Instant dispatchedAt,
                       UUID dispatchedBy, String dispatchedByName, String carrierRepresentative, String signatureRef,
@@ -67,7 +67,8 @@ public interface Dispatching {
         }
 
         /** Without handover warnings: every answer but the start of loading. */
-        public LoadDetail(UUID loadId, String code, UUID warehouseId, String status, UUID carrierId,
+        public LoadDetail(UUID loadId, String code, UUID warehouseId, String warehouseName, String status,
+                          UUID carrierId,
                           String carrierCode, String carrierName, String vehiclePlate, String driverName,
                           String driverPhone, Instant loadingStartedAt, UUID loadingStartedBy, Instant dispatchedAt,
                           UUID dispatchedBy, String dispatchedByName, String carrierRepresentative, String signatureRef,
@@ -78,7 +79,7 @@ public interface Dispatching {
                           List<PendingUnload> pendingUnloads, boolean carrierBookingToCancel, String cancelReasonCode,
                           UUID replacementLoadId, String replacementLoadCode, String waybillNo,
                           String carrierConnectionType, CarrierBookingView carrierBooking) {
-            this(loadId, code, warehouseId, status, carrierId, carrierCode, carrierName, vehiclePlate, driverName,
+            this(loadId, code, warehouseId, warehouseName, status, carrierId, carrierCode, carrierName, vehiclePlate, driverName,
                     driverPhone, loadingStartedAt, loadingStartedBy, dispatchedAt, dispatchedBy, dispatchedByName,
                     carrierRepresentative, signatureRef, handoverNote, cancelledAt, cancelReason, shipmentCount,
                     expectedPackageCount, loadedPackageCount, version, shipments, loadPlanId, loadPlanCode, vehicleSeq,
@@ -89,7 +90,7 @@ public interface Dispatching {
 
         /** The same load with the warnings the start of loading found. */
         public LoadDetail withHandoverWarnings(List<HandoverWarning> warnings) {
-            return new LoadDetail(loadId, code, warehouseId, status, carrierId, carrierCode, carrierName, vehiclePlate,
+            return new LoadDetail(loadId, code, warehouseId, warehouseName, status, carrierId, carrierCode, carrierName, vehiclePlate,
                     driverName, driverPhone, loadingStartedAt, loadingStartedBy, dispatchedAt, dispatchedBy,
                     dispatchedByName, carrierRepresentative, signatureRef, handoverNote, cancelledAt, cancelReason,
                     shipmentCount, expectedPackageCount, loadedPackageCount, version, shipments, loadPlanId,

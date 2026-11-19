@@ -38,7 +38,15 @@ public interface CustomerOrders {
         AWAITING_STOCK,
         /** Legacy: an order released with lines printed in house; no order enters IN_PRODUCTION any more. */
         IN_PRODUCTION,
-        PREPARING, SHIPPING, DELIVERED, CANCELLED, RETURNED
+        PREPARING, SHIPPING, DELIVERED,
+        /**
+         * RETURN_REQUESTED ("Đang yêu cầu trả hàng"): a return of the delivered goods is being decided. Apart from
+         * RETURNED so the customer is not told goods came back that are still with them.
+         */
+        RETURN_REQUESTED,
+        CANCELLED,
+        /** Goods came back, or the order was settled or closed by a return (RETURNED, REFUNDED, PARTIALLY_REFUNDED). */
+        RETURNED
     }
 
     /**
@@ -130,11 +138,27 @@ public interface CustomerOrders {
      *                      the one shipment made up from the order's milestones, which a return needs no id for
      * @param shipmentCode  null for a shipment recorded before G4-2a (as are packageCount 0 and the carrier)
      * @param failureReason set once a delivery failed (kept after a retry delivered it, as the history does)
+     * @param lines         what the shipment carried, line by line, and what of it a return may still claim
      */
     record Shipment(UUID shipmentId, String shipmentCode, com.stockflow.order.api.OrderShipmentStatus status,
                     int packageCount,
                     String carrierName, Instant handedOverAt, Instant outcomeAt,
-                    com.stockflow.order.api.DeliveryFailureReason failureReason) {
+                    com.stockflow.order.api.DeliveryFailureReason failureReason, List<ShipmentLine> lines) {
+
+        public Shipment {
+            lines = lines == null ? List.of() : List.copyOf(lines);
+        }
+    }
+
+    /**
+     * One order line of one shipment (WF-05 TH-1): the units the shipment carried, and how many of them a return the
+     * customer opens on the portal now against that shipment may claim - from the rule opening the return applies
+     * ({@code ReturnRequest.claimable}), so the portal bounds its form by it instead of keeping a copy.
+     *
+     * @param returnableQuantity 0 when none can be claimed now: not delivered, the window closed, a return of the line
+     *                           already open on the shipment, or every unit claimed by other returns
+     */
+    record ShipmentLine(UUID orderLineId, String sku, int quantity, int returnableQuantity) {
     }
 
     /**

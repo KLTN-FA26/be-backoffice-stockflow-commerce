@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.OrderCancelled;
+import com.stockflow.customer.api.CustomerService;
+import com.stockflow.customer.api.SaveAddressCommand;
 import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
@@ -111,6 +113,7 @@ class FtlDispatchIntegrationTest {
     @MockitoBean com.stockflow.fulfillment.internal.service.CarrierBookingGateway carrierGateway;
     @Autowired com.stockflow.fulfillment.internal.service.CarrierBookingSweeper bookingSweeper;
     @Autowired OrderService orders;
+    @Autowired CustomerService customers;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
@@ -122,6 +125,7 @@ class FtlDispatchIntegrationTest {
     private UUID sales;
     private UUID picker;
     private UUID dispatcher;
+    private UUID elsewhereWarehouse;
     private UUID dispatcherElsewhere;
     private UUID truck5t;
     private UUID truck1t25;
@@ -136,8 +140,8 @@ class FtlDispatchIntegrationTest {
         sales = staff("SALES_STAFF");
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
-        UUID elsewhere = tx.execute(s -> otherWarehouse());
-        dispatcherElsewhere = staff("WAREHOUSE_STAFF", elsewhere);
+        elsewhereWarehouse = tx.execute(s -> otherWarehouse());
+        dispatcherElsewhere = staff("WAREHOUSE_STAFF", elsewhereWarehouse);
         truck5t = jdbc.queryForObject("SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-5T'", UUID.class);
         truck1t25 = jdbc.queryForObject("SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-1T25'",
                 UUID.class);
@@ -674,7 +678,16 @@ class FtlDispatchIntegrationTest {
                 ("\uFEFFMã chuyến,Mã vận đơn,Biển số,Tên tài xế,Điện thoại tài xế\r\n" + csv)
                         .getBytes(java.nio.charset.StandardCharsets.UTF_8));
         return as(user, role, org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                .multipart(BASE + "/waybill-imports" + path).file(file));
+                .multipart(BASE + "/waybill-imports" + forCaller(user, path)).file(file));
+    }
+
+    /** The import is made for a warehouse (RTM-WBIMPORT-WH): the caller's own. */
+    private String forCaller(UUID user, String path) {
+        return withWarehouse(user.equals(dispatcherElsewhere) ? elsewhereWarehouse : HCM, path);
+    }
+
+    private static String withWarehouse(UUID warehouse, String path) {
+        return path + (path.contains("?") ? "&" : "?") + "warehouseId=" + warehouse;
     }
 
     /** A vehicle of its own plan, booked with {@code carrier} and no waybill number: its load. */
@@ -714,6 +727,31 @@ class FtlDispatchIntegrationTest {
         assertThat(preview.path("lines").get(3).path("problem").asText()).isEqualTo("MISSING_FIELDS");
         assertThat(load(first.path("loadId").asText()).has("waybillNo")
                 && !load(first.path("loadId").asText()).path("waybillNo").isNull()).isFalse();
+        // The warehouse is chosen when importing (RTM-WBIMPORT-WH): required, known, one the caller is assigned to.
+        var csvFile = new org.springframework.mock.web.MockMultipartFile("file", "van-don.csv", "text/csv",
+                ("a,b\r\n" + one + "," + number + "\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        dispatch(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/waybill-imports/preview").file(csvFile)).andExpect(status().isBadRequest());
+        dispatch(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/waybill-imports/preview" + withWarehouse(UUID.randomUUID(), "")).file(csvFile))
+                .andExpect(status().isNotFound());
+        dispatch(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/waybill-imports/preview" + withWarehouse(elsewhereWarehouse, "")).file(csvFile))
+                .andExpect(status().isForbidden());
+        // A load of another warehouse than the chosen one: the same reason in the preview and after the import.
+        JsonNode otherPreview = data(importing(dispatcherElsewhere, "WAREHOUSE_STAFF", "/preview", csv)
+                .andExpect(status().isOk()));
+        JsonNode otherApplied = data(importing(dispatcherElsewhere, "WAREHOUSE_STAFF", "", csv)
+                .andExpect(status().isCreated()));
+        assertThat(otherPreview.path("lines").get(0).path("problem").asText()).isEqualTo("LOAD_OUT_OF_SCOPE");
+        assertThat(otherApplied.path("lines").get(0).path("problem").asText())
+                .isEqualTo(otherPreview.path("lines").get(0).path("problem").asText());
+        // The picker offers only the caller's own warehouses (RTM-WBIMPORT-WH).
+        assertThat(data(dispatch(get(BASE + "/waybill-imports/warehouses")).andExpect(status().isOk()))
+                .findValuesAsText("warehouseId")).containsExactly(HCM.toString());
+        assertThat(data(as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(BASE + "/waybill-imports/warehouses"))
+                .andExpect(status().isOk())).findValuesAsText("warehouseId"))
+                .containsExactly(elsewhereWarehouse.toString());
         // Another warehouse's dispatcher sees the same lines refused as out of scope, not the loads.
         JsonNode elsewhere = data(importing(dispatcherElsewhere, "WAREHOUSE_STAFF", "/preview", csv)
                 .andExpect(status().isOk()));
@@ -724,6 +762,8 @@ class FtlDispatchIntegrationTest {
         String importId = imported.path("importId").asText();
         assertThat(imported.path("rowsApplied").asInt()).isEqualTo(1);
         assertThat(imported.path("rowsRejected").asInt()).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT warehouse_id FROM fulfillment.waybill_import WHERE id = ?::uuid",
+                UUID.class, importId)).isEqualTo(HCM);
         JsonNode now = load(first.path("loadId").asText());
         assertThat(now.path("waybillNo").asText()).isEqualTo(number);
         assertThat(now.path("vehiclePlate").asText()).isEqualTo("51C-111.11");
@@ -772,6 +812,108 @@ class FtlDispatchIntegrationTest {
                 .andReturn().getResponse().getContentAsByteArray();
         assertThat(template[0]).isEqualTo((byte) 0xEF);
         assertThat(new String(template, java.nio.charset.StandardCharsets.UTF_8).split(",")).hasSize(5);
+    }
+
+    private ResultActions importingFile(UUID user, String role, String path, String name, String type, byte[] bytes)
+            throws Exception {
+        var file = new org.springframework.mock.web.MockMultipartFile("file", name, type, bytes);
+        return as(user, role, org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/waybill-imports" + forCaller(user, path)).file(file));
+    }
+
+    /** The template's table as a workbook: the heading row, then each line as text cells. */
+    private static byte[] workbookOf(String[]... lines) throws java.io.IOException {
+        try (var workbook = new org.apache.poi.xssf.usermodel.XSSFWorkbook();
+             var out = new java.io.ByteArrayOutputStream()) {
+            var sheet = workbook.createSheet("Nhập");
+            String[] all = {"Mã chuyến", "Mã vận đơn", "Biển số", "Tên tài xế", "Điện thoại tài xế"};
+            var heading = sheet.createRow(0);
+            for (int c = 0; c < all.length; c++) {
+                heading.createCell(c).setCellValue(all[c]);
+            }
+            for (int r = 0; r < lines.length; r++) {
+                var row = sheet.createRow(r + 1);
+                for (int c = 0; c < lines[r].length; c++) {
+                    if (lines[r][c] != null) {
+                        row.createCell(c).setCellValue(lines[r][c]);
+                    }
+                }
+            }
+            workbook.write(out);
+            return out.toByteArray();
+        }
+    }
+
+    @Test
+    @DisplayName("an .xlsx workbook of the template's table gives the same preview and result as its CSV, is kept as "
+            + "the load's waybill file as it is (a workbook), and a file that is neither is refused whole")
+    void waybillNumbersFromAWorkbook() throws Exception {
+        JsonNode first = bookedWithoutNumber(ghn);
+        JsonNode second = bookedWithoutNumber(ghn);
+        String one = first.path("code").asText();
+        String two = second.path("code").asText();
+        String other = historyLoad("51C-HELD-X");
+        String held = jdbc.queryForObject("SELECT waybill_no FROM fulfillment.dispatch_load WHERE id = ?::uuid",
+                String.class, other);
+        String number = "WB-XLS-" + first.path("loadId").asText();
+        String[][] lines = {{one, number, "51C-222.22", "Tài", "0900"}, {two, held}, {"LD-NOPE", number + "-X"},
+                {"", number + "-Y"}};
+        String csv = one + "," + number + ",51C-222.22,Tài,0900\r\n" + two + "," + held + "\r\n"
+                + "LD-NOPE," + number + "-X\r\n" + "," + number + "-Y\r\n";
+        byte[] xlsx = workbookOf(lines);
+        String xlsxType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+        // The same lines, outcomes and problems whichever the format - even when the browser declares another type or
+        // the name says another.
+        JsonNode fromCsv = data(importing(dispatcher, "WAREHOUSE_STAFF", "/preview", csv).andExpect(status().isOk()));
+        JsonNode fromXlsx = data(importingFile(dispatcher, "WAREHOUSE_STAFF", "/preview", "van-don.xlsx", xlsxType,
+                xlsx).andExpect(status().isOk()));
+        JsonNode renamed = data(importingFile(dispatcher, "WAREHOUSE_STAFF", "/preview", "van-don.csv",
+                "application/vnd.ms-excel", xlsx).andExpect(status().isOk()));
+        assertThat(fromXlsx.path("lines")).isEqualTo(fromCsv.path("lines"));
+        assertThat(renamed.path("lines")).isEqualTo(fromCsv.path("lines"));
+        assertThat(fromXlsx.path("rowsTotal").asInt()).isEqualTo(4);
+        assertThat(fromXlsx.path("rowsApplied").asInt()).isEqualTo(1);
+        assertThat(fromXlsx.path("lines").findValuesAsText("outcome")).containsExactly("NEW", "ERROR", "ERROR",
+                "ERROR");
+        assertThat(fromXlsx.path("lines").get(1).path("problem").asText()).isEqualTo("DUPLICATE_IN_CARRIER");
+        assertThat(fromXlsx.path("lines").get(3).path("problem").asText()).isEqualTo("MISSING_FIELDS");
+
+        JsonNode imported = data(importingFile(dispatcher, "WAREHOUSE_STAFF", "", "van-don.xlsx", xlsxType, xlsx)
+                .andExpect(status().isCreated()));
+        assertThat(imported.path("rowsApplied").asInt()).isEqualTo(1);
+        assertThat(imported.path("rowsRejected").asInt()).isEqualTo(3);
+        JsonNode now = load(first.path("loadId").asText());
+        assertThat(now.path("waybillNo").asText()).isEqualTo(number);
+        assertThat(now.path("vehiclePlate").asText()).isEqualTo("51C-222.22");
+        assertThat(now.path("driverName").asText()).isEqualTo("Tài");
+        // The booking slip names the load's warehouse (kltn-docs 09 §3 Output: kho xuất): by name, not by id alone.
+        assertThat(now.path("warehouseName").asText()).isEqualTo(jdbc.queryForObject(
+                "SELECT w.name FROM fulfillment.dispatch_load l JOIN warehouse.warehouse w ON w.id = l.warehouse_id "
+                        + "WHERE l.id = ?::uuid", String.class, first.path("loadId").asText()));
+        // The workbook itself is the load's waybill file, a workbook still.
+        assertThat(data(dispatch(get(LOADS + "/" + first.path("loadId").asText() + "/waybill-files"))
+                .andExpect(status().isOk()))).singleElement().satisfies(f -> {
+                    assertThat(f.path("contentType").asText()).isEqualTo(xlsxType);
+                    assertThat(f.path("fileName").asText()).isEqualTo("van-don.xlsx");
+                });
+        assertThat(jdbc.queryForObject("SELECT storage_key FROM fulfillment.waybill_import WHERE id = ?::uuid",
+                String.class, imported.path("importId").asText())).endsWith(".xlsx");
+
+        // Neither a workbook nor the template's text: refused whole, in either format's name.
+        importingFile(dispatcher, "WAREHOUSE_STAFF", "/preview", "van-don.xlsx", xlsxType, onePagePdf())
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("WAYBILL_IMPORT_INVALID_FILE"));
+        importingFile(dispatcher, "WAREHOUSE_STAFF", "", "van-don.csv", "text/csv",
+                new byte[] {'P', 'K', 3, 4, 0, 0, 0, 0}).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("WAYBILL_IMPORT_INVALID_FILE"));
+        importingFile(dispatcher, "WAREHOUSE_STAFF", "/preview", "van-don.xlsx", xlsxType, workbookOf())
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("WAYBILL_IMPORT_INVALID_FILE"));
+        // Without the permission to import, neither format is read.
+        sales(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(BASE + "/waybill-imports/preview" + withWarehouse(HCM, "")).file(new org.springframework.mock.web.MockMultipartFile(
+                        "file", "van-don.xlsx", xlsxType, xlsx))).andExpect(status().isForbidden());
     }
 
     // ---- booking through the carrier's API (3-4; 09 §4.2 step 6, BR-29, E24) -------------------
@@ -2098,6 +2240,95 @@ class FtlDispatchIntegrationTest {
         Await.until("each vehicle told", ASYNC, () -> jdbc.queryForObject("SELECT count(*) FROM "
                 + "notification.user_notification WHERE recipient_id = ? AND category = 'ORDER_SHIPPING'", Long.class,
                 mine[1]) == 2);
+    }
+
+    @Test
+    @DisplayName("09 §4.3 step 2: the warehouse manager enters the delivery time the carrier reported - not in the future, "
+            + "not before the handover - and it is the shipment's, the order's and the draft "
+            + "invoice's date; a correction back to delivered takes one too; none given = now")
+    void theDeliveryTimeIsEnteredByHand() throws Exception {
+        OrderSummary order = ftlOrder(1);
+        UUID orderId = order.orderId();
+        UUID shipment = packed(order, false)[0];
+        String load = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        loadAll(load, ghn);
+        handOver(load).andExpect(status().isOk());
+        Instant handedOver = jdbc.queryForObject("SELECT handed_over_at FROM fulfillment.shipment WHERE id = ?",
+                java.sql.Timestamp.class, shipment).toInstant();
+        String outcome = BASE + "/shipments/" + shipment + "/delivery-outcome";
+
+        oc(body(post(outcome), "{\"outcome\":\"DELIVERED\",\"deliveredAt\":\"" + Instant.now().plusSeconds(3600)
+                + "\"}")).andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("SHIPMENT_DELIVERY_TIME_IN_FUTURE"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("deliveredAt"));
+        oc(body(post(outcome), "{\"outcome\":\"DELIVERED\",\"deliveredAt\":\"" + handedOver.minusSeconds(3600)
+                + "\"}")).andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("deliveredAt"));
+        oc(body(post(outcome), "{\"outcome\":\"DELIVERY_FAILED\",\"failureReason\":\"LOST\",\"deliveredAt\":\""
+                + Instant.now().minusSeconds(60) + "\"}")).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("deliveredAt"));
+        assertThat(shipmentStatus(shipment)).as("nothing was recorded").isEqualTo("HANDED_OVER");
+
+        // A moment between the handover and now: the whole span a delivery time may take.
+        Thread.sleep(2_500);
+        Instant deliveredAt = handedOver.plusSeconds(1).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        assertThat(deliveredAt).isAfter(handedOver).isBefore(Instant.now());
+        oc(body(post(outcome), "{\"outcome\":\"DELIVERED\",\"deliveredAt\":\"" + deliveredAt + "\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.shipment.status").value("DELIVERED"))
+                .andExpect(jsonPath("$.data.shipment.outcomeAt").value(org.hamcrest.Matchers
+                        .startsWith(deliveredAt.toString().replace("Z", ""))));
+        assertThat(jdbc.queryForObject("SELECT outcome_at FROM fulfillment.shipment WHERE id = ?",
+                java.sql.Timestamp.class, shipment).toInstant()).isEqualTo(deliveredAt);
+        assertThat(jdbc.queryForObject("SELECT occurred_at FROM fulfillment.shipment_event WHERE shipment_id = ? "
+                + "AND status = 'DELIVERED'", java.sql.Timestamp.class, shipment).toInstant()).isEqualTo(deliveredAt);
+        assertThat(orders.findById(orderId).orElseThrow().lifecycle().deliveredAt()).isEqualTo(deliveredAt);
+        Await.until("the draft invoice drawn up", ASYNC, () -> jdbc.queryForObject(
+                "SELECT count(*) FROM invoicing.einvoice WHERE shipment_id = ?", Long.class, shipment) == 1);
+        assertThat(jdbc.queryForObject("SELECT issue_date FROM invoicing.einvoice WHERE shipment_id = ?",
+                java.sql.Date.class, shipment).toLocalDate()).as("the invoice is dated the delivery day")
+                .isEqualTo(com.stockflow.common.domain.BusinessCalendar.date(deliveredAt));
+
+        // The manager corrects it to a failure and, once the customer found the goods, back to a delivery of an earlier
+        // time. A correction to a failure takes no delivery time.
+        String correction = BASE + "/shipments/" + shipment + "/delivery-outcome-correction";
+        oc(body(post(correction), "{\"outcome\":\"DELIVERY_FAILED\",\"failureReason\":\"CUSTOMER_ABSENT\","
+                + "\"reason\":\"nothing arrived\",\"deliveredAt\":\"" + deliveredAt + "\"}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.fieldErrors[0].field").value("deliveredAt"));
+        oc(body(post(correction), "{\"outcome\":\"DELIVERY_FAILED\",\"failureReason\":\"CUSTOMER_ABSENT\","
+                + "\"reason\":\"nothing arrived\"}")).andExpect(status().isOk());
+        Instant foundAt = handedOver.plusSeconds(2).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        oc(body(post(correction), "{\"outcome\":\"DELIVERED\",\"reason\":\"found\",\"deliveredAt\":\""
+                + Instant.now().plusSeconds(3600) + "\"}")).andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("SHIPMENT_DELIVERY_TIME_IN_FUTURE"));
+        oc(body(post(correction), "{\"outcome\":\"DELIVERED\",\"reason\":\"found\",\"deliveredAt\":\""
+                + handedOver.minusSeconds(60) + "\"}")).andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER"));
+        oc(body(post(correction), "{\"outcome\":\"DELIVERED\",\"reason\":\"found\",\"deliveredAt\":\""
+                + foundAt + "\"}")).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT outcome_at FROM fulfillment.shipment WHERE id = ?",
+                java.sql.Timestamp.class, shipment).toInstant()).isEqualTo(foundAt);
+        assertThat(orders.findById(orderId).orElseThrow().lifecycle().deliveredAt()).isEqualTo(foundAt);
+        assertThat(jdbc.queryForObject("SELECT corrected_at FROM fulfillment.delivery_outcome_correction WHERE "
+                + "shipment_id = ? AND to_status = 'DELIVERED'", java.sql.Timestamp.class, shipment).toInstant())
+                .as("the correction itself is dated when it was made, not by the delivery time").isAfter(foundAt);
+    }
+
+    @Test
+    @DisplayName("09 §4.3 step 2: a delivery recorded without a time is dated now, as before")
+    void aDeliveryWithoutATimeIsDatedNow() throws Exception {
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        String load = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        loadAll(load, ghn);
+        handOver(load).andExpect(status().isOk());
+        Instant before = Instant.now();
+
+        oc(body(post(BASE + "/shipments/" + shipment + "/delivery-outcome"), "{\"outcome\":\"DELIVERED\"}"))
+                .andExpect(status().isOk());
+
+        assertThat(jdbc.queryForObject("SELECT outcome_at FROM fulfillment.shipment WHERE id = ?",
+                java.sql.Timestamp.class, shipment).toInstant()).isBetween(before.minusSeconds(1),
+                Instant.now().plusSeconds(1));
     }
 
     @Test
@@ -4383,6 +4614,95 @@ class FtlDispatchIntegrationTest {
                 cancelled, order.orderId(), code + "-X", HCM));
         dispatch(get(BASE + "/shipments/" + cancelled + "/delivery-note")).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("SHIPMENT_STATE_CONFLICT"));
+    }
+
+    @Test
+    @DisplayName("WF04 G2 (17 §4.7 steps 23-24, BR-16; 08 BR-04, §6 'Địa chỉ giao không hợp lệ'): Sales hold the order "
+            + "ADDRESS, change its delivery address to another of the customer's and release it; the change is in the "
+            + "order's history; once a carton is labelled the address no longer changes (409 ORDER_ADDRESS_LOCKED)")
+    void salesChangeTheDeliveryAddressUntilTheFirstLabel() throws Exception {
+        OrderSummary order = ftlOrder(1);
+        UUID firstAddress = jdbc.queryForObject("SELECT id FROM customer.address WHERE customer_id = ? AND type = "
+                + "'SHIPPING' ORDER BY is_default DESC, created_at LIMIT 1", UUID.class, order.customerId());
+        UUID corrected = customers.addAddress(order.customerId(), sales, true, new SaveAddressCommand("SHIPPING",
+                "Kho Đa Kao", "0907654321", "9 Hai Bà Trưng", null, "26737", "Phường Đa Kao", "79", "TP. Hồ Chí Minh",
+                "VN", null, false, null)).addressId();
+        String path = ORDERS + "/" + order.orderId() + "/shipping-address";
+        String toCorrected = "{\"shippingAddressId\":\"" + corrected + "\"}";
+
+        // Sales' to change: not the warehouse's; an address not the customer's is not found.
+        packer(body(put(path), toCorrected)).andExpect(status().isForbidden());
+        sales(body(put(path), "{\"shippingAddressId\":\"" + UUID.randomUUID() + "\"}"))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("ADDRESS_NOT_FOUND"));
+
+        // 08 §6: caught before the first label - held ADDRESS, corrected, released.
+        sales(body(post(ORDERS + "/" + order.orderId() + "/hold"), "{\"reasonCode\":\"ADDRESS\","
+                + "\"note\":\"Sai phường\"}")).andExpect(status().isOk());
+        sales(body(put(path), toCorrected)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("ON_HOLD"))
+                .andExpect(jsonPath("$.data.shippingAddress.line1").value("9 Hai Bà Trưng"))
+                .andExpect(jsonPath("$.data.shippingAddress.recipientName").value("Kho Đa Kao"));
+        sales(body(post(ORDERS + "/" + order.orderId() + "/hold/resolution"),
+                "{\"note\":\"Khách xác nhận địa chỉ mới\"}")).andExpect(status().isOk());
+        // The same address again changes nothing and records nothing.
+        sales(body(put(path), toCorrected)).andExpect(status().isOk());
+
+        JsonNode history = data(sales(get(ORDERS + "/" + order.orderId() + "/history")).andExpect(status().isOk()));
+        List<JsonNode> changes = new ArrayList<>();
+        history.forEach(entry -> {
+            if ("ADDRESS_CHANGE".equals(entry.path("type").asText())) {
+                changes.add(entry);
+            }
+        });
+        assertThat(changes).singleElement().satisfies(change -> {
+            assertThat(change.path("newAddress").path("line1").asText()).isEqualTo("9 Hai Bà Trưng");
+            assertThat(change.path("previousAddress").path("line1").asText()).isNotEqualTo("9 Hai Bà Trưng");
+            assertThat(change.path("actorId").asText()).isEqualTo(sales.toString());
+        });
+
+        // 08 BR-04: the first carton labelled locks it; the label carries the corrected address.
+        UUID task = picked(order);
+        CartonStationSupport.startAndScanAll(this::packer, jdbc, task);
+        CartonStationSupport.labelAll(this::packer, task);
+        sales(body(put(path), "{\"shippingAddressId\":\"" + firstAddress + "\"}")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("ORDER_ADDRESS_LOCKED"));
+        assertThat(jdbc.queryForObject("SELECT shipping_line1 FROM ordering.customer_order WHERE id = ?", String.class,
+                order.orderId())).isEqualTo("9 Hai Bà Trưng");
+    }
+
+    private ResultActions reprintLpnLabel(UUID user, String role, String lpn) throws Exception {
+        return as(user, role, body(post("/api/v1/inventory/stock-packages/labels"), "{\"format\":\"THERMAL_ROLL\","
+                + "\"lpns\":[\"" + lpn + "\"]}").accept(MediaType.APPLICATION_PDF, MediaType.APPLICATION_JSON));
+    }
+
+    @Test
+    @DisplayName("WF04 G1 (03 §4.1 step 4, 08 §6 'Nhãn LPN rách'): a carton picked for the order (CONSUMED at dispatch) "
+            + "has its LPN label printed again by its LPN - before its check and while labelled in a shipment waiting "
+            + "for its load - and no longer once that shipment is handed over")
+    void aPickedCartonsLpnLabelIsPrintedAgainUntilHandover() throws Exception {
+        OrderSummary order = ftlOrder(1);
+        UUID task = picked(order);
+        String lpn = CartonStationSupport.pickedLpns(jdbc, task).getFirst();
+        assertThat(jdbc.queryForObject("SELECT status FROM inventory.stock_package WHERE lpn = ?", String.class, lpn))
+                .isEqualTo("CONSUMED");
+
+        // At the dispatch area, not checked yet: the warehouse staff reprint it, then scan it at the station.
+        reprintLpnLabel(picker, "WAREHOUSE_STAFF", lpn).andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.APPLICATION_PDF));
+        // Checked, labelled and completed: its shipment waits at dispatch for its load - still the order's, still here.
+        UUID shipment = CartonStationSupport.ship(this::packer, jdbc, json, task, null);
+        assertThat(shipmentStatus(shipment)).isEqualTo("READY_TO_DISPATCH");
+        reprintLpnLabel(coordinator, "WAREHOUSE_MANAGER", lpn).andExpect(status().isOk());
+        // Another warehouse's clerk is refused before anything is said about the carton.
+        reprintLpnLabel(dispatcherElsewhere, "WAREHOUSE_STAFF", lpn).andExpect(status().isForbidden());
+
+        // Handed over: the carton left with the carrier, there is no LPN label to print any more.
+        String loadId = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        book(loadId, ghn, "51C-135.79");
+        loadAndSign(loadId, "51C-135.79");
+        assertThat(shipmentStatus(shipment)).isEqualTo("HANDED_OVER");
+        reprintLpnLabel(picker, "WAREHOUSE_STAFF", lpn).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INVALID_STOCK_PACKAGE_TRANSITION"));
     }
 
     private static String pdfText(byte[] pdf) throws Exception {

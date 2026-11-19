@@ -44,10 +44,37 @@ public interface EInvoiceQueries {
      * A page of the invoices issued to one customer, the newest invoice date first: what the customer sees on the
      * portal. Issued ones only - ISSUED, and REPLACED so the customer still finds the invoice a replacement names; a
      * draft, a refused or a voided invoice is the seller's working paper and never the customer's.
+     *
+     * @param orderId only the invoices of this order; null for every order. The customer stays the bound that counts:
+     *                another customer's order id finds nothing, exactly as an order with no invoice yet does
      */
-    List<Listing> issuedTo(UUID customerId, int offset, int limit);
+    List<Listing> issuedTo(UUID customerId, UUID orderId, int offset, int limit);
 
-    long countIssuedTo(UUID customerId);
+    long countIssuedTo(UUID customerId, UUID orderId);
+
+    /** An invoice named by another one: its id and its code. */
+    record Reference(UUID id, String code) {
+    }
+
+    /**
+     * How an issued invoice stands in a replacement chain, as its buyer may read it (TT 91 Điều 10).
+     *
+     * @param replaces   the invoice this replacement replaces; null on anything but a replacement
+     * @param replacedBy the issued invoice that replaced this one - itself possibly replaced again since, the chain
+     *                   followed one link at a time; null while no replacement of it has been issued, a draft or one at
+     *                   the provider included
+     */
+    record Replacements(Reference replaces, Reference replacedBy) {
+
+        public static final Replacements NONE = new Replacements(null, null);
+    }
+
+    /**
+     * The replacement links of those of {@code invoiceIds} issued to {@code customerId}, in one statement for a page of
+     * them. Only invoices the customer may see are named - ISSUED or REPLACED, and its own - so a replacement still a
+     * draft, refused or at the provider is not one. An id without a link has no entry.
+     */
+    java.util.Map<UUID, Replacements> replacementsOf(UUID customerId, java.util.Collection<UUID> invoiceIds);
 
     /**
      * The one invoice issued to {@code customerId}; empty for a draft, for another customer's invoice and for no

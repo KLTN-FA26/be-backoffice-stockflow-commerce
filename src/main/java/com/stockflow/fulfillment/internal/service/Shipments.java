@@ -52,8 +52,14 @@ public interface Shipments {
      * @param outcome       DELIVERED, DELIVERY_FAILED or RETURNED
      * @param failureReason with DELIVERY_FAILED: CUSTOMER_ABSENT, REFUSED, WRONG_ADDRESS, LOST, DAMAGED or OTHER
      * @param note          required with OTHER; staff only, never shown to the customer
+     * @param deliveredAt   only with DELIVERED: when the carrier delivered it; null = now
      */
-    record Outcome(String outcome, String failureReason, String note) { }
+    record Outcome(String outcome, String failureReason, String note, Instant deliveredAt) {
+
+        public Outcome(String outcome, String failureReason, String note) {
+            this(outcome, failureReason, note, null);
+        }
+    }
 
     /** Newest first; every filter optional ({@code search}: shipment code). */
     PageResponse<ShipmentRow> list(UUID warehouseId, String status, UUID orderId, UUID carrierId, String search,
@@ -64,10 +70,13 @@ public interface Shipments {
 
     /**
      * What the carrier reported (09 §4.3): HANDED_OVER → DELIVERED / DELIVERY_FAILED; DELIVERY_FAILED → DELIVERED (a
-     * retry) / RETURNED. The same outcome again changes nothing.
+     * retry) / RETURNED. The same outcome again changes nothing. A delivery is dated {@code deliveredAt} when given
+     * (the carrier's time, which dates the order's delivery and the draft invoice), else now.
      *
      * @throws com.stockflow.common.error.BusinessException {@code SHIPMENT_STATE_CONFLICT} along any other edge;
-     *         {@code VALIDATION_FAILED} (no reason, OTHER without a note); {@code SHIPMENT_NOT_FOUND}
+     *         {@code VALIDATION_FAILED} (no reason, OTHER without a note, a delivery time with another outcome);
+     *         {@code SHIPMENT_DELIVERY_TIME_IN_FUTURE}; {@code SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER};
+     *         {@code SHIPMENT_NOT_FOUND}
      */
     ShipmentDetail recordOutcome(UUID shipmentId, Outcome outcome, CurrentUser actor);
 
@@ -78,8 +87,14 @@ public interface Shipments {
      * @param failureReason required with DELIVERY_FAILED
      * @param note          required with OTHER
      * @param reason        why the carrier's report was wrong; required
+     * @param deliveredAt   only when correcting to DELIVERED: when it was delivered; null = now
      */
-    record Correction(String outcome, String failureReason, String note, String reason) { }
+    record Correction(String outcome, String failureReason, String note, String reason, Instant deliveredAt) {
+
+        public Correction(String outcome, String failureReason, String note, String reason) {
+            this(outcome, failureReason, note, reason, null);
+        }
+    }
 
     /**
      * Corrects an outcome the carrier reported wrongly: DELIVERED ↔ DELIVERY_FAILED while the order is not completed,

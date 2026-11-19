@@ -151,6 +151,11 @@ public final class EInvoice {
      * Everything an invoice is, as it is stored: what the persistence adapter reads an invoice from and writes it to.
      * A plain carrier - the rules are the aggregate's, and {@link EInvoice#restore} trusts a snapshot only because the
      * database holds the same rules.
+     *
+     * <p>{@code deliveryFailedAt} (WF-05 HĐ-3) is carried for reading only: the mark is written and taken back in SQL
+     * by {@link EInvoiceRepository#markDeliveryFailed} and {@link EInvoiceRepository#clearDeliveryFailed}, guarded by
+     * {@code tg_einvoice_delivery_failed}, and nothing the aggregate does changes it. It is here so that every answer
+     * built from a snapshot can show it; null for a new invoice and for one never marked.</p>
      */
     public record Snapshot(UUID id, String code, EInvoiceType type, EInvoiceStatus status, boolean adjusted,
                            UUID orderId, String orderNumber, String contractNumber, UUID shipmentId,
@@ -164,7 +169,8 @@ public final class EInvoice {
                            String pdfFileKey, String rejectionCode, String rejectionMessage, Instant submittedAt,
                            UUID submittedBy, Instant issuedAt, Instant voidedAt, UUID voidedBy, String voidReason,
                            long version, CorrectionBasis correctionBasis, String agreementNumber,
-                           LocalDate agreementDate, UUID returnRequestId, List<UUID> listedInvoiceIds) {
+                           LocalDate agreementDate, UUID returnRequestId, List<UUID> listedInvoiceIds,
+                           Instant deliveryFailedAt) {
 
         public Snapshot {
             listedInvoiceIds = listedInvoiceIds == null ? List.of() : List.copyOf(listedInvoiceIds);
@@ -189,7 +195,7 @@ public final class EInvoice {
                     seller, buyer, currency, paymentMethod, lines, subtotal, taxTotal, grandTotal, amountInWords,
                     warnings, adjustmentReason, agreementFileKey, xmlFileKey, pdfFileKey, rejectionCode,
                     rejectionMessage, submittedAt, submittedBy, issuedAt, voidedAt, voidedBy, voidReason, version,
-                    null, null, null, null, List.of());
+                    null, null, null, null, List.of(), null);
         }
     }
 
@@ -257,6 +263,8 @@ public final class EInvoice {
     private final CorrectionBasis correctionBasis;
     private final UUID returnRequestId;
     private final List<UUID> listedInvoiceIds;
+    /** Read only: see {@link Snapshot}. */
+    private final Instant deliveryFailedAt;
     private String xmlFileKey;
     private String pdfFileKey;
     private String rejectionCode;
@@ -315,6 +323,7 @@ public final class EInvoice {
         this.correctionBasis = s.correctionBasis();
         this.returnRequestId = s.returnRequestId();
         this.listedInvoiceIds = s.listedInvoiceIds();
+        this.deliveryFailedAt = s.deliveryFailedAt();
         this.xmlFileKey = s.xmlFileKey();
         this.pdfFileKey = s.pdfFileKey();
         this.rejectionCode = s.rejectionCode();
@@ -585,7 +594,7 @@ public final class EInvoice {
                 issueDate, IssueDeadline.of(issueDate), null, null, original.seller, buyer, VND, BANK_TRANSFER, lines,
                 totals.net(), totals.tax(), totals.total(), VietnameseAmountInWords.of(totals.total()), warnings,
                 reason.strip(), null, null, null, null, null, null, null, null, null, null, null, 0, basis, null, null,
-                returnRequestId, listed));
+                returnRequestId, listed, null));
     }
 
     /** {@link Warning#BUYER_PROFILE_INCOMPLETE} and {@link Warning#BUYER_EMAIL_MISSING}, as the buyer is now. */
@@ -941,7 +950,8 @@ public final class EInvoice {
                 signedAt, seller, buyer, currency, paymentMethod, List.copyOf(lines), subtotal, taxTotal, grandTotal,
                 amountInWords, Set.copyOf(warnings), adjustmentReason, agreementFileKey, xmlFileKey, pdfFileKey,
                 rejectionCode, rejectionMessage, submittedAt, submittedBy, issuedAt, voidedAt, voidedBy, voidReason,
-                version, correctionBasis, agreementNumber, agreementDate, returnRequestId, listedInvoiceIds);
+                version, correctionBasis, agreementNumber, agreementDate, returnRequestId, listedInvoiceIds,
+                deliveryFailedAt);
     }
 
     public UUID id() { return id; }

@@ -52,7 +52,7 @@ final class EInvoicePersistenceMapper {
                 e.getXmlFileKey(), e.getPdfFileKey(), e.getRejectionCode(), e.getRejectionMessage(),
                 e.getSubmittedAt(), e.getSubmittedBy(), e.getIssuedAt(), e.getVoidedAt(), e.getVoidedBy(),
                 e.getVoidReason(), e.getVersion(), e.getCorrectionBasis(), e.getAgreementNumber(),
-                e.getAgreementDate(), e.getReturnRequestId(), listed));
+                e.getAgreementDate(), e.getReturnRequestId(), listed, e.getDeliveryFailedAt()));
     }
 
     /** Codes in the enum's order, comma-separated; null for none, so the column says "nothing to look at" plainly. */

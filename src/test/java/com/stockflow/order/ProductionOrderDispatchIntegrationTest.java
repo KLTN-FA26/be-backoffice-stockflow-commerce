@@ -1,9 +1,11 @@
 package com.stockflow.order;
 
+import com.stockflow.common.config.SellerProperties;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.storage.Checksums;
 import com.stockflow.common.storage.FileCategory;
 import com.stockflow.contracts.ProductionOrderSent;
+import com.stockflow.notification.api.ProductionOrderDirectory;
 import com.stockflow.notification.internal.domain.Email;
 import com.stockflow.order.internal.domain.Producer;
 import com.stockflow.order.internal.domain.ProductionOrder;
@@ -55,8 +57,19 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixtures {
 
     @Autowired ProductionSampleService samples;
+    @Autowired SellerProperties seller;
+    @Autowired ProductionOrderDirectory directory;
 
     // ---- scenarios --------------------------------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("the demo producers a slip names carry no demo wording (a capstone's papers must read as real)")
+    void demoProducersHavePlainNames() {
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.producer WHERE code LIKE 'DEMO-%'"
+                + " OR name ILIKE '%(demo)%'", Long.class)).isZero();
+        assertThat(jdbc.queryForList("SELECT code FROM ordering.producer WHERE code IN ('INDN', 'INLX')", String.class))
+                .containsExactlyInAnyOrder("INDN", "INLX");
+    }
 
     @Test
     @DisplayName("17 §4.3 step 7: approved, so sent - the slip kept, one e-mail to the producer, the warehouse told")
@@ -71,17 +84,28 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
         assertThat(slip.get("sha256")).as("the digest is the stored object's").isEqualTo(Checksums.sha256Hex(pdf));
         assertThat(slip.get("size_bytes")).isEqualTo((long) pdf.length);
         try (PDDocument doc = Loader.loadPDF(pdf)) {
-            assertThat(new PDFTextStripper().getText(doc)).contains("PHIẾU ĐƠN SẢN XUẤT", sent.code(), sku.sku(),
-                    "Dispatch Test Co", "Xưởng in thử", "Chị Lan - 0909123456 - " + producerEmail,
-                    "Warehouse " + a.code(), "7 Kho Street", "12 x 50 cái/thùng = 600 cái", "600 x 400 x 350 mm",
-                    sku.snapshotId().toString(), sku.checksum());
+            String text = new PDFTextStripper().getText(doc);
+            assertThat(text).contains("PHIẾU ĐẶT HÀNG SẢN XUẤT", sent.code(), seller.name(),
+                    "CẦN HÀNG TRƯỚC NGÀY", "Xưởng in thử", "Chị Lan - 0909123456 - " + producerEmail,
+                    "Warehouse " + a.code(), "7 Kho Street", "Thùng 600 x 400 x 350 mm");
+            assertThat(text.replaceAll("\\s+", "")).as("codes may wrap in their column")
+                    .contains(sku.sku(), sku.snapshotId().toString(), sku.checksum());
+            assertThat(text).as("a production paper: no customer, no money")
+                    .doesNotContain("Dispatch Test Co", "Đơn giá", "VND");
         }
 
         Email email = awaitMail(sent.code());
         assertThat(email.to()).containsExactly(producerEmail);
         assertThat(email.idempotencyKey()).isEqualTo("production-order:" + sent.id() + ":sent");
         assertThat(email.text()).contains("/api/v1/production-order-files/" + sent.id() + "/slip?expires=",
-                "/print-files/" + sku.snapshotId() + "?expires=");
+                "/print-files/" + sku.snapshotId() + "?expires=", "đính kèm")
+                .as("the e-mail names no price either (the fixture's order has one)").doesNotContain("Đơn giá");
+        assertThat(email.attachments()).as("the very slip that was stored, attached").singleElement()
+                .satisfies(attachment -> {
+                    assertThat(attachment.name()).isEqualTo(sent.code() + ".pdf");
+                    assertThat(attachment.contentType()).isEqualTo("application/pdf");
+                    assertThat(attachment.content()).isEqualTo(pdf);
+                });
         Await.until("the delivery is recorded", ASYNC, () -> !deliveries(sent.id(), "sent").isEmpty());
         assertThat(deliveries(sent.id(), "sent")).singleElement().satisfies(row -> {
             assertThat(row).containsEntry("status", "SENT").containsEntry("recipient", producerEmail)
@@ -188,6 +212,7 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
         assertThatThrownBy(() -> dispatch.slipLink(sent.id())).as("staff are refused the changed slip too")
                 .extracting(ProductionOrderDispatchIntegrationTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_SLIP_MISMATCH);
+        assertThat(directory.slipPdf(sent.id())).as("nor is a changed slip attached to a message").isEmpty();
     }
 
     /** An ACTIVE user assigned to warehouse A whose only role holds just the given permissions (none: a bare role). */
@@ -368,7 +393,7 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
     void unadoptedSlipIsDeleted() throws Exception {
         ProductionOrder pending = pending(producer);
         String key;
-        try (ProductionOrderDispatch.PreparedSlip slip = dispatch.prepareSlip(reread(pending.id()), approver,
+        try (ProductionOrderDispatch.PreparedSlip slip = dispatch.prepareSlip(reread(pending.id()),
                 Instant.now())) {
             key = slip.storageKey();
             assertThat(storage.exists(key)).isTrue();
