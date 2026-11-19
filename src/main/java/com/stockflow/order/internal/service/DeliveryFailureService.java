@@ -49,9 +49,8 @@ import java.util.UUID;
  *   no receipt yet (goods lost, or not received) ─▶ cancel without a case                 ({@link #cancelWithoutCase})
  * </pre>
  *
- * <p>The order is held from the shipment's outcome, not from the receipt: the customer is owed the goods from the
- * moment they failed to arrive, and the receipt - which needs the shipment RETURNED - only tells Sales what came back
- * and in what state. Nothing here refunds by default: the goods are the customer's own SKU, sold to nobody else.</p>
+ * <p>The order follows the shipment's outcome, not the receipt (RTM-RETURNED): the units that came back are closed when
+ * the shipment is RETURNED and the money settled then; the receipt only records what came back and in what state.</p>
  *
  * <p>Locks: the order's row first, every time, then what payment and inventory lock inside their own calls (orders,
  * then installments; SKU advisory locks, sorted). A case is written only under its order's lock.</p>
@@ -63,9 +62,7 @@ public class DeliveryFailureService {
     private static final Logger log = LoggerFactory.getLogger(DeliveryFailureService.class);
 
     /** The decision note of a case whose goods came back after the rest of the order was closed. */
-    static final String CLOSED_BEFORE_RECEIVED = "Closed with the rest of the order before its goods were received back";
-
-    /** What Sales send to deliver again: why, and what the failed trip is charged at when the customer made it fail. */
+    static final String CLOSED_BEFORE_RECEIVED = "Closed when the shipment came back; the goods are a record of the return";
 
     /** What Sales send to cancel what was not delivered: why, and the fee agreed for the goods already made. */
     public record Cancel(String note, CancellationFee agreedFee) {
@@ -158,24 +155,15 @@ public class DeliveryFailureService {
                         .map(c -> new DeliveryFailureCase.Carton(c.lpn(), c.sku(), c.lotNumber(), c.quantity(),
                                 c.condition())).toList(),
                 event.receivedAt().truncatedTo(ChronoUnit.MICROS));
-        if (!order.owesUnitsOf(shipment.id())) {
-            // ck_delivery_failure_case_* and the trigger allow a case to be born OPEN only: it is opened, then closed.
-            // It holds nothing, so whether its units are whole cartons does not matter.
-            failure = cases.save(failure);
-            failure.cancel(CLOSED_BEFORE_RECEIVED, event.receivedBy(), failure.openedAt());
-            cases.save(failure);
-            log.info("Order {}: the goods of shipment {} came back on receipt {} after the rest was closed; its case is "
-                    + "cancelled", order.orderNumber(), shipment.id(), event.receiptNumber());
-            return;
-        }
-        Map<UUID, Integer> unitsPerCarton = new java.util.HashMap<>();
-        order.lines().forEach(line -> unitsPerCarton.put(line.id(),
-                line.unitsPerCarton() == null || line.unitsPerCarton() < 1 ? 1 : line.unitsPerCarton()));
-        failure.requireWholeCartons(unitsPerCarton);
+        // RTM-RETURNED: the shipment's units were closed when it came back - nothing of it is owed again, whatever else of
+        // the line a later delivery batch still carries - so its case is a record of what came back, closed at once.
+        // ck_delivery_failure_case_* and the trigger allow a case to be born OPEN only: it is opened, then closed. It
+        // holds nothing, so whether its units are whole cartons does not matter.
+        failure = cases.save(failure);
+        failure.cancel(CLOSED_BEFORE_RECEIVED, event.receivedBy(), failure.openedAt());
         cases.save(failure);
-        log.info("Order {}: delivery failure case opened for shipment {} ({}), {} carton(s) back on receipt {}",
-                order.orderNumber(), shipment.id(), failure.failureReason(), failure.cartons().size(),
-                event.receiptNumber());
+        log.info("Order {}: the goods of shipment {} came back on receipt {}; its case records them, closed",
+                order.orderNumber(), shipment.id(), event.receiptNumber());
     }
 
     // ------------------------------------------------------------------ deciding

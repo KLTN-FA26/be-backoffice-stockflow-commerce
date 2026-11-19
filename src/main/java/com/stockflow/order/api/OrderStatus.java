@@ -70,12 +70,12 @@ import java.util.stream.Collectors;
  * {@code PARTIALLY_FULFILLED}) and left back to the status it was entered from, or to {@code CANCELLED}; a credit hold
  * (an order placed over its limit) is decided through credit approval instead.</p>
  *
- * <p><b>A shipment that comes back</b> (WF-05 fix plan, sections 2-3; 09 §4.3 step 3). The order no longer follows a
- * returned shipment to {@code RETURNED} or {@code PARTIALLY_FULFILLED} by itself: it goes {@code ON_HOLD} for
- * {@code DELIVERY_FAILED} - from {@code SHIPPED} and {@code DELIVERY_FAILED} too - and waits there for Sales to decide
- * its delivery failure case. Decided, it is {@code PARTIALLY_FULFILLED} (the goods are owed a delivery again, or are
- * closed with the rest); {@code RETURNED} is reached only when Sales cancelled everything that was not delivered and
- * nothing of the order was.</p>
+ * <p><b>A shipment that comes back</b> (RTM-RETURNED, owner 18-19/11; kltn-docs 09 §4.3 step 4, 17 §5.1). Its units are
+ * closed - the goods are sent again only on a new order - and their money settled on the installments. The order
+ * follows its shipments: {@code RETURNED} when nothing of it was delivered, {@code PARTIALLY_FULFILLED} while other
+ * shipments arrived, and from there {@code REFUNDED} / {@code PARTIALLY_REFUNDED} once the refund is recorded -
+ * {@code PARTIALLY_FULFILLED} straight to {@code PARTIALLY_REFUNDED}, never through {@code RETURNED} (docs PR #42). The
+ * WF-05 hold for Sales to deliver again is gone.</p>
  *
  * <p><b>Cancellation</b> stops at the first completed package (decision 2026-10-17, BR-ORD-004): {@code PACKED} and
  * later go through a return. There is no {@code PAYMENT_FAILED}: a B2B bank transfer has no failure to report (G3-Q2).</p>
