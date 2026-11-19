@@ -245,7 +245,7 @@ SELECT pg_temp.expect_fail_by('PE5 a PICKING task changes its staging area', 'on
 SELECT pg_temp.expect_ok('PE6 a PICKING task changes its status as it did (the trigger is for the three columns only)', $q$
     UPDATE fulfillment.pick SET started_at = NOW() WHERE id = md5('qa64:pick')::uuid $q$);
 SELECT pg_temp.expect_fail_by('PE7 a CANCELLED task is no exception', 'only while it is PENDING', $q$
-    UPDATE fulfillment.pick SET status = 'CANCELLED', needs_put_back = TRUE WHERE id = md5('qa64:pick')::uuid;
+    UPDATE fulfillment.pick SET status = 'CANCELLED', needs_put_back = TRUE, cancelled_at = NOW() WHERE id = md5('qa64:pick')::uuid;
     UPDATE fulfillment.pick SET assigned_user_id = md5('demo:user:approver')::uuid WHERE id = md5('qa64:pick')::uuid $q$);
 
 \echo '--- the lines: STAGED is picked in full, by someone, and not deducted (07 section 4.2 step 5)'

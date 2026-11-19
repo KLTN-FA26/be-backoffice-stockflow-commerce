@@ -14,7 +14,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * V20261204005100 on the real upgrade path (WF04 G8, kltn-docs 07 §4.5 step 13). It adds {@code fulfillment.pick.cancelled_at}
  * and backfills it on the tasks already cancelled, from the last write of the row (its cancellation saved it), or from its
- * creation when it was never written again. A task that is not cancelled keeps it null.
+ * creation when it was never written again. A task that is not cancelled keeps it null. Then {@code ck_pick_cancelled_at}
+ * (cancelled exactly when it has the time) is added: the backfilled rows must pass it.
  *
  * <p>The rows are written with triggers off ({@code session_replication_role = replica}): what is tested is the migration
  * on rows the old schema accepted. How the queue reads the column is {@code PutBackQueueIntegrationTest}'s.</p>
@@ -47,6 +48,13 @@ class PickCancelledAtMigrationUpgradeTest {
                                 "SO-UPG-P4:PENDING:-");
                 assertThat(RawSql.number(db, "SELECT count(*) FROM fulfillment.pick WHERE status = 'CANCELLED' "
                         + "AND cancelled_at IS NULL")).isZero();
+                // The rule the rows had to satisfy once backfilled: validated on them, and holding from now on.
+                assertThat(RawSql.texts(db, "SELECT convalidated::text FROM pg_constraint WHERE conname = "
+                        + "'ck_pick_cancelled_at'")).containsExactly("true");
+                RawSql.refusedBy(db, "ck_pick_cancelled_at", "a cancelled task without its cancellation time",
+                        "UPDATE fulfillment.pick SET cancelled_at = NULL WHERE order_number = 'SO-UPG-P1'");
+                RawSql.refusedBy(db, "ck_pick_cancelled_at", "a cancellation time on a task not cancelled",
+                        "UPDATE fulfillment.pick SET cancelled_at = NOW() WHERE order_number = 'SO-UPG-P3'");
             }
         }
     }
