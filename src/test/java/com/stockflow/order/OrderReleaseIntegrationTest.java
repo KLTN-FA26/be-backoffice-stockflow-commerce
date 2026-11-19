@@ -40,7 +40,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @org.springframework.test.context.TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
 class OrderReleaseIntegrationTest {
 
-    private static final String CUP = "SOFA-3S-GREY";   // any demo SKU with an inventory item
+    /** A print line names the cup's blank with the customer's design: the legacy shape of a print line (QD-16). */
+    private static final String CUP = DemoData.BLANK_CUP;
 
     @Autowired OrderReleases releases;
     @Autowired JdbcTemplate jdbc;
@@ -66,7 +67,7 @@ class OrderReleaseIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
-                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, DemoData.CUSTOMER_ID, DemoData.PRODUCT_SOFA);
+                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, DemoData.CUSTOMER_ID, DemoData.PRODUCT_CUP);
             jdbc.update("""
                     INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at,
                                                         artifact_manifest)
@@ -93,7 +94,7 @@ class OrderReleaseIntegrationTest {
                     printLine, order, CUP, design, "a".repeat(64));
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-                    VALUES (?, ?, 'TABLE-OAK-160', 1, 10000, 'VND')""", Identifiers.newId(), order);
+                    VALUES (?, ?, ?, 1, 10000, 'VND')""", Identifiers.newId(), order, DemoData.SKU_QUARANTINED);
         });
         return new UUID[] {order, printLine};
     }

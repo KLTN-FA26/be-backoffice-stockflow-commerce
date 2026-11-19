@@ -369,7 +369,7 @@ class ChatCardsIntegrationTest {
                 INSERT INTO design.design_draft (id, customer_id, product_id, owner_user_id, status, created_at,
                     current_artifacts, name)
                 VALUES (?, ?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb, 'Coc logo xanh')""", design, who.customer(),
-                DemoData.PRODUCT_SOFA, who.account()));
+                DemoData.PRODUCT_CUP, who.account()));
         return design;
     }
 

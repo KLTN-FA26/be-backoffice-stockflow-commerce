@@ -41,12 +41,6 @@ public final class DemoData {
     public static final UUID WAREHOUSE_HCM = demoId("demo:wh:HCM");
 
     /**
-     * The demo sofa: removed with the furniture (V20261206000100); tests move off it in a later task. Its row no
-     * longer exists - use {@link #PRODUCT_CUP} or {@link #PRODUCT_BOX}.
-     */
-    public static final UUID PRODUCT_SOFA = demoId("demo:product:SOFA-3S");
-
-    /**
      * The printable cup, a published product (V20261124000600): its blank is {@link #BLANK_CUP} and the demo
      * customer's own SKUs are drawn on it. Since C1 a design draft's product is a foreign key, so a test needs a
      * real one.

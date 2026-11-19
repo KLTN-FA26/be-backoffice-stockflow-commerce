@@ -1,6 +1,8 @@
 package com.stockflow;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.hamcrest.Matchers.empty;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -9,6 +11,7 @@ import com.stockflow.catalog.internal.service.CatalogCommerceService;
 import com.stockflow.catalog.internal.service.CatalogProjectionListener;
 import com.stockflow.common.security.ActiveSessionCheck;
 import com.stockflow.common.security.SessionValidator;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.RedisContainer;
 
@@ -42,6 +45,10 @@ import java.util.concurrent.TimeUnit;
 @TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000"})
 @DirtiesContext
 class CatalogProjectionStartupIntegrationTest {
+    /** The demo box's two variants (V20261206000100). */
+    private static final String BOX_GREY = "HOP-GIAY-DEMO-GREY-PAPER";
+    private static final String BOX_BLUE = "HOP-GIAY-DEMO-BLUE-PAPER";
+
     @TestConfiguration(proxyBeanMethods = false)
     static class StartupDatabase {
         /**
@@ -92,24 +99,25 @@ class CatalogProjectionStartupIntegrationTest {
         String initialSeo = null; // the demo products carry no SEO title
         mvc.perform(get("/api/v1/catalog/products")).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/v1/catalog/products").header("Authorization", auth))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(3))
-                .andExpect(jsonPath("$.data.items.length()").value(3));
-        assertSofa(auth, initialSeo);
-        mvc.perform(get("/api/v1/catalog/products/ban-an-go-soi").header("Authorization", auth))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.variants[0].sku").value("TABLE-OAK-160"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(2))
+                .andExpect(jsonPath("$.data.items.length()").value(2));
+        assertBox(auth, initialSeo);
+        mvc.perform(get("/api/v1/catalog/products/ly-giay-demo").header("Authorization", auth))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.variants[0].sku").value(DemoData.BLANK_CUP))
                 .andExpect(jsonPath("$.data.variants[0].price").doesNotExist());
         for (String role : List.of("SALES_MANAGER", "SALES_STAFF", "WAREHOUSE_STAFF",
                 "WAREHOUSE_MANAGER")) {
             String signedIn = authorization(role);
             mvc.perform(get("/api/v1/catalog/products").header("Authorization", signedIn))
-                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(3));
-            assertSofa(signedIn, initialSeo);
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(2));
+            assertBox(signedIn, initialSeo);
         }
         mvc.perform(get("/api/v1/catalog/products/private-draft").header("Authorization", auth))
                 .andExpect(status().isNotFound());
         mvc.perform(get("/api/v1/catalog/products/private-approved").header("Authorization", auth))
                 .andExpect(status().isNotFound());
-        assertThat(jdbc.queryForObject("select count(*) from catalog.product_listing", Long.class)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("select count(*) from catalog.product_listing", Long.class)).isEqualTo(2);
+        // The cup's blank and the box's two variants; the customers' own cups are not on the catalogue.
         assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(3);
 
         var source = jdbc.queryForList("select * from product.products order by id");
@@ -151,43 +159,43 @@ class CatalogProjectionStartupIntegrationTest {
         assertThat(jdbc.queryForList("select * from product.products order by id")).isEqualTo(source);
         assertThat(jdbc.queryForList("select * from catalog.product_listing order by product_id")).isEqualTo(listings);
         assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(3);
-        assertSofa(auth, initialSeo);
+        assertBox(auth, initialSeo);
 
         // Partial projection loss at the same revision must also be detected.
-        tx.executeWithoutResult(s -> jdbc.update("delete from catalog.catalog_entry where sku='SOFA-3S-GREY'"));
+        tx.executeWithoutResult(s -> jdbc.update("delete from catalog.catalog_entry where sku=?", BOX_GREY));
         listener.retry();
-        assertSofa(auth, initialSeo);
+        assertBox(auth, initialSeo);
         assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(3);
 
         tx.executeWithoutResult(s -> {
-            jdbc.update("delete from catalog.catalog_entry where sku='SOFA-3S-GREY'");
-            jdbc.update("delete from catalog.product_listing where slug='sofa-3-cho'");
+            jdbc.update("delete from catalog.catalog_entry where sku=?", BOX_GREY);
+            jdbc.update("delete from catalog.product_listing where slug='hop-giay-demo'");
         });
         listener.retry();
-        assertSofa(auth, initialSeo);
+        assertBox(auth, initialSeo);
         assertThat(jdbc.queryForList("select * from product.products order by id")).isEqualTo(source);
 
-        UUID sofa = jdbc.queryForObject("select id from product.products where code='SOFA-3S'", UUID.class);
-        commerce.unpublish(sofa);
+        UUID box = DemoData.PRODUCT_BOX;
+        commerce.unpublish(box);
         listener.rebuildPublished();
-        mvc.perform(get("/api/v1/catalog/products/sofa-3-cho").header("Authorization", auth))
+        mvc.perform(get("/api/v1/catalog/products/hop-giay-demo").header("Authorization", auth))
                 .andExpect(status().isNotFound());
-        commerce.publish(sofa);
-        var listing = commerce.get(sofa);
-        commerce.edit(sofa, listing.revision(), "sofa-3-cho", "New source SEO", "New source description");
+        commerce.publish(box);
+        var listing = commerce.get(box);
+        commerce.edit(box, listing.revision(), "hop-giay-demo", "New source SEO", "New source description");
         listener.rebuildPublished();
-        assertSofa(auth, "New source SEO");
-        assertThat(jdbc.queryForObject("select slug from product.products where id=?", String.class, sofa))
-                .isEqualTo("sofa-3-cho");
+        assertBox(auth, "New source SEO");
+        assertThat(jdbc.queryForObject("select slug from product.products where id=?", String.class, box))
+                .isEqualTo("hop-giay-demo");
     }
 
-    /** The sofa's page: no price and no stock indicator on its variant (kltn-docs 13 BR-04, BR-11; 5-3). */
-    private void assertSofa(String auth, String seo) throws Exception {
-        var result = mvc.perform(get("/api/v1/catalog/products/sofa-3-cho").header("Authorization", auth))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.slug").value("sofa-3-cho"))
-                .andExpect(jsonPath("$.data.variants[0].sku").value("SOFA-3S-GREY"))
-                .andExpect(jsonPath("$.data.variants[0].price").doesNotExist())
-                .andExpect(jsonPath("$.data.variants[0].availability").doesNotExist());
+    /** The box's page: both variants, no price and no stock indicator on either (kltn-docs 13 BR-04, BR-11; 5-3). */
+    private void assertBox(String auth, String seo) throws Exception {
+        var result = mvc.perform(get("/api/v1/catalog/products/hop-giay-demo").header("Authorization", auth))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.slug").value("hop-giay-demo"))
+                .andExpect(jsonPath("$.data.variants[*].sku").value(containsInAnyOrder(BOX_GREY, BOX_BLUE)))
+                .andExpect(jsonPath("$.data.variants[*].price").value(empty()))
+                .andExpect(jsonPath("$.data.variants[*].availability").value(empty()));
         if (seo == null) result.andExpect(jsonPath("$.data.seoTitle").doesNotExist());
         else result.andExpect(jsonPath("$.data.seoTitle").value(seo));
     }
