@@ -40,11 +40,12 @@ class PickCancelledAtMigrationUpgradeTest {
                 assertThat(result.migrations).extracting(m -> m.version).containsExactly(MIGRATION);
 
                 assertThat(RawSql.texts(db, "SELECT order_number || ':' || status || ':' || "
-                        + "coalesce(cancelled_at::text, '-') FROM fulfillment.pick WHERE order_number LIKE 'SO-UPG-P%' "
+                        + "coalesce(to_char(cancelled_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'), '-') "
+                        + "FROM fulfillment.pick WHERE order_number LIKE 'SO-UPG-P%' "
                         + "ORDER BY order_number"))
                         .as("a cancelled task takes its last write, else its creation; the others are not touched")
-                        .containsExactly("SO-UPG-P1:CANCELLED:2026-11-10 08:00:00+00",
-                                "SO-UPG-P2:CANCELLED:2026-11-09 07:00:00+00", "SO-UPG-P3:PICKING:-",
+                        .containsExactly("SO-UPG-P1:CANCELLED:2026-11-10 08:00:00",
+                                "SO-UPG-P2:CANCELLED:2026-11-09 07:00:00", "SO-UPG-P3:PICKING:-",
                                 "SO-UPG-P4:PENDING:-");
                 assertThat(RawSql.number(db, "SELECT count(*) FROM fulfillment.pick WHERE status = 'CANCELLED' "
                         + "AND cancelled_at IS NULL")).isZero();
