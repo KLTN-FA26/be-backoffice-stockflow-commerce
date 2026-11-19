@@ -48,7 +48,8 @@ class LoadEstimateController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "Estimate how an order's remaining units load (advisory; synchronous within the solver "
-            + "budget) and make it the source's current estimate. CONFIRMED needs warehouseId. Lines without size or "
+            + "budget) and make it the source's current estimate. The order must have its shipping warehouse "
+            + "(409 LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN). Lines without size or "
             + "weight are listed in missing (incomplete=true). 400 VALIDATION_FAILED, 404, 409 LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE / VEHICLE_TYPE_INACTIVE, 422 "
             + "LOAD_ESTIMATE_PACKAGING_MISSING when no line resolves (field inventoryItems[<itemId>] per line) / "
             + "LOAD_ESTIMATE_TOO_MANY_CARTONS")

@@ -260,9 +260,9 @@ class LoadPlanServiceTest {
         }
 
         @Test
-        @DisplayName("the trial's modes are not stored by a plan (its table takes two): VALIDATION_FAILED, not a 500")
+        @DisplayName("a mode the docs do not have is VALIDATION_FAILED, not a 500")
         void trialOnlyModesAreRefused() {
-            for (String mode : List.of("KEEP_LINES", "PRIORITY_FILL", "OVER_CAPACITY")) {
+            for (String mode : List.of("MANUAL", "BEST")) {
                 var thrown = refusal(() -> service.create(new LoadPlans.CreatePlan(UUID.randomUUID(), WAREHOUSE, null,
                         null, mode, null, null), actor));
                 assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);

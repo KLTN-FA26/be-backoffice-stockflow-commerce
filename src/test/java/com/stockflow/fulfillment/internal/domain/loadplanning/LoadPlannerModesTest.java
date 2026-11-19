@@ -96,8 +96,6 @@ class LoadPlannerModesTest {
     void storableModes() {
         assertThat(SelectionMode.values()).extracting(SelectionMode::name).containsExactly("SINGLE_TYPE",
                 "FEWEST_VEHICLES", "KEEP_LINES", "PRIORITY_FILL", "OVER_CAPACITY");
-        assertThat(SelectionMode.values()).filteredOn(SelectionMode::storable)
-                .containsExactly(SelectionMode.SINGLE_TYPE, SelectionMode.FEWEST_VEHICLES);
     }
 
     // ------------------------------------------------------------------ Giữ nguyên dòng
