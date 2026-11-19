@@ -949,6 +949,24 @@ public enum ErrorCode {
      */
     LOAD_PLAN_VEHICLE_SHARES_ORDER("This vehicle carries parcels of an order that also left on another "
             + "vehicle: it cannot be dropped from the plan", 409),
+    /** 09 §4.4 (RTM-WAYBILLFILE): a waybill file is attached to a load booked with a carrier, not cancelled. */
+    LOAD_NOT_BOOKED("This load has no carrier booked: a waybill file is attached once the vehicle is booked", 409),
+    /** 09 BR-16: a booked load changes carrier only through a cancelled booking (with its reason) and a new one. */
+    LOAD_CARRIER_CHANGE_NEEDS_CANCEL("This load is booked with another carrier: cancel that booking first", 409),
+    /**
+     * 09 §4.2 step 9, BR-09, BR-14: a shipment taken off a vehicle under a controlled cancel goes whole - one with
+     * parcels on another vehicle of the plan would be left half in it.
+     */
+    LOAD_REMOVAL_SPLITS_SHIPMENT("This shipment also has parcels on another vehicle of the plan: it cannot be taken "
+            + "off this one alone", 409),
+    /** 09 §4.2 step 9, BR-14: the vehicle recalculated for the parcels it keeps could not place every one of them. */
+    LOAD_PLAN_RELAYOUT_INCOMPLETE("The parcels left on this vehicle could not all be placed again", 409),
+    /**
+     * 09 edge "hoàn hàng khi còn Handed Over": the failure reason is corrected until the goods are received back and
+     * their delivery failure case is opened on it (the case keeps the reason it was opened with).
+     */
+    SHIPMENT_FAILURE_REASON_LOCKED("The returned goods were received and their case opened: the failure reason no "
+            + "longer changes", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

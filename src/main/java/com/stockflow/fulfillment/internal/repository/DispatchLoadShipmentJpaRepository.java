@@ -15,5 +15,8 @@ public interface DispatchLoadShipmentJpaRepository extends BaseJpaRepository<Dis
     /** The open-or-dispatched manifests the shipments are on now (at most one each). */
     List<DispatchLoadShipmentJpaEntity> findByShipmentIdInAndActiveTrue(Collection<UUID> shipmentIds);
 
+    /** Every manifest the shipments were ever on, taken off or not. */
+    List<DispatchLoadShipmentJpaEntity> findByShipmentIdIn(Collection<UUID> shipmentIds);
+
     List<DispatchLoadShipmentJpaEntity> findByLoadIdInAndActiveTrue(Collection<UUID> loadIds);
 }

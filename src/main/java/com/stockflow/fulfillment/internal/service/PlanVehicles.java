@@ -6,6 +6,8 @@ import com.stockflow.fulfillment.internal.domain.DispatchLoad;
 import com.stockflow.fulfillment.internal.domain.LoadPlan;
 import com.stockflow.fulfillment.internal.domain.LoadPlanStatus;
 import com.stockflow.fulfillment.internal.domain.LoadStatus;
+import com.stockflow.fulfillment.internal.domain.loadplanning.CargoPackage;
+import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanResult;
 import com.stockflow.fulfillment.internal.entity.CarrierBookingJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadPackageJpaEntity;
@@ -220,6 +222,24 @@ class PlanVehicles {
         log.info("Vehicle {} of load plan {} dropped from the plan: {} parcel(s) wait for a new plan",
                 ctx.vehicle().seq(), plan.code(), released.size());
         return completeIfDispatched(ctx.header(), plan, at);
+    }
+
+    /**
+     * 09 §4.2 step 9, BR-14: the shipments taken off the vehicle of {@code ctx} as it is called off under control leave
+     * the plan ({@code REMOVED_FROM_VEHICLE}) and the vehicle keeps {@code relayout}, the layout recalculated for the
+     * parcels it kept - or, keeping none, leaves the plan. The plan's row is locked by the caller.
+     *
+     * @return the parcels released
+     */
+    Set<UUID> removeFromVehicle(PlanOfLoad ctx, Set<UUID> shipmentIds, LoadPlanResult relayout,
+                                Map<UUID, CargoPackage> cartons, Instant at) {
+        LoadPlan plan = ctx.plan();
+        Set<UUID> released = plan.removeFromVehicle(ctx.vehicle().seq(), shipmentIds, relayout, cartons, at);
+        planStore.save(plan, ctx.header(), at);
+        log.info("Vehicle {} of load plan {}: {} parcel(s) of {} shipment(s) taken off and released from the plan{}",
+                ctx.vehicle().seq(), plan.code(), released.size(), shipmentIds.size(),
+                relayout == null ? "; nothing kept, the vehicle leaves the plan" : "; layout recalculated");
+        return released;
     }
 
     /**

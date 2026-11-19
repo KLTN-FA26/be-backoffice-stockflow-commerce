@@ -579,6 +579,89 @@ class ControlledUnloadIntegrationTest {
 
     // ---- review of #228, B1 ---------------------------------------------------------------------
 
+    private static String takingOff(UUID... shipments) {
+        return "{\"reasonCode\":\"KHAC\",\"note\":\"the order owes its installment before delivery\","
+                + "\"removedShipmentIds\":" + ids(List.of(shipments)) + "}";
+    }
+
+    private List<String> releaseReasons(JsonNode plan, UUID shipment) {
+        return jdbc.queryForList("SELECT coalesce(release_reason, 'ACTIVE') FROM fulfillment.load_plan_package WHERE "
+                + "load_plan_id = ?::uuid AND shipment_id = ?", String.class, plan.path("loadPlanId").asText(), shipment);
+    }
+
+    @Test
+    @DisplayName("09 §4.2 step 9, BR-14 (09B G5, 09A-159): a truck being loaded carries an order that may not leave yet "
+            + "- the manager calls it off under control and takes that order's shipment off: its parcels leave the plan "
+            + "(REMOVED_FROM_VEHICLE), still locked until scanned off, then free for another plan; the new load carries "
+            + "the other order alone on a layout recalculated for this vehicle. A shipment not on the vehicle is 400")
+    void aShipmentTakenOffTheVehicleLeavesThePlan() throws Exception {
+        UUID kept = packed(ftlOrder(2))[0];
+        UUID unpaid = packed(ftlOrder(1))[0];
+        JsonNode plan = confirmed(List.of(kept, unpaid), truck5t);
+        assertThat(plan.path("vehicles")).hasSize(1);
+        String planId = plan.path("loadPlanId").asText();
+        String v1 = loadOf(plan, 1);
+        loadAll(v1, ghn);
+        List<String> everything = labels(load(v1));
+        assertThat(everything).hasSize(3);
+
+        cancelVehicle(v1, takingOff(UUID.randomUUID())).andExpect(status().isBadRequest());
+        assertThat(load(v1).path("status").asText()).isEqualTo("LOADING");
+
+        JsonNode result = data(cancelVehicle(v1, takingOff(unpaid)).andExpect(status().isOk()));
+        JsonNode cancelled = result.path("cancelled");
+        JsonNode replacement = result.path("replacement");
+        assertThat(cancelled.path("status").asText()).isEqualTo("CANCELLED");
+        assertThat(pendingLabels(cancelled)).as("every parcel on the truck is scanned off, the unpaid ones too")
+                .containsExactlyInAnyOrderElementsOf(everything);
+        assertThat(replacement.path("status").asText()).isEqualTo("PLANNED");
+        assertThat(replacement.path("vehicleSeq").asInt()).isEqualTo(1);
+        assertThat(replacement.path("shipments")).singleElement()
+                .satisfies(s -> assertThat(s.path("shipmentId").asText()).isEqualTo(kept.toString()));
+        assertThat(labels(replacement)).hasSize(2);
+
+        assertThat(releaseReasons(plan, unpaid)).containsOnly("REMOVED_FROM_VEHICLE");
+        assertThat(releaseReasons(plan, kept)).containsOnly("ACTIVE");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.load_placement p JOIN "
+                + "fulfillment.load_plan_vehicle v ON v.id = p.load_plan_vehicle_id WHERE v.load_plan_id = ?::uuid "
+                + "AND v.seq = 1", Integer.class, planId)).isEqualTo(2);
+        assertThat(planOf(plan).path("status").asText()).isEqualTo("CONFIRMED");
+
+        // Locked until scanned off - then waiting for another plan.
+        List<String> offTheTruck = everything.stream().filter(l -> !labels(replacement).contains(l)).toList();
+        assertThat(offTheTruck).hasSize(1);
+        dispatch(body(post(PLANS), "{\"requestId\":\"" + UUID.randomUUID() + "\",\"warehouseId\":\"" + HCM
+                + "\",\"shipmentIds\":" + ids(List.of(unpaid)) + ",\"vehicleTypeIds\":[\"" + truck5t
+                + "\"],\"selectionMode\":\"SINGLE_TYPE\"}")).andExpect(status().isConflict());
+        for (String label : everything) {
+            scanOff(v1, label).andExpect(status().isOk());
+        }
+        assertThat(plan(List.of(unpaid), truck5t).path("loadPlanId").asText()).isNotBlank();
+        assertThat(shipmentStatus(unpaid)).isEqualTo("READY_TO_DISPATCH");
+    }
+
+    @Test
+    @DisplayName("09 §4.2 step 9, BR-14 (09B G5): every shipment of a vehicle taken off - the vehicle leaves the plan, no "
+            + "new load is made, and the plan, its other vehicle gone, is DISPATCHED")
+    void everyShipmentTakenOffLeavesNoReplacement() throws Exception {
+        UUID shipmentA = packed(ftlOrder(1))[0];
+        UUID shipmentB = packed(ftlOrder(1))[0];
+        JsonNode plan = confirmed(List.of(shipmentA, shipmentB), truck1t25);
+        assertThat(plan.path("vehicles")).hasSize(2);
+        String vA = loadCarrying(plan, shipmentA);
+        String vB = loadCarrying(plan, shipmentB);
+        loadAll(vA, ghn);
+        loadAll(vB, ghtk);
+        handOver(vB).andExpect(status().isOk());
+
+        JsonNode result = data(cancelVehicle(vA, takingOff(shipmentA)).andExpect(status().isOk()));
+        assertThat(result.hasNonNull("replacement")).isFalse();
+        assertThat(releaseReasons(plan, shipmentA)).containsOnly("REMOVED_FROM_VEHICLE");
+        assertThat(jdbc.queryForObject("SELECT active FROM fulfillment.load_plan_vehicle WHERE id = (SELECT "
+                + "load_plan_vehicle_id FROM fulfillment.dispatch_load WHERE id = ?::uuid)", Boolean.class, vA)).isFalse();
+        assertThat(planStatus(plan)).isEqualTo("DISPATCHED");
+    }
+
     @Test
     @DisplayName("B1: a vehicle whose only order was cancelled while it loads (its parcels still to scan off) is called off "
             + "under control after the other vehicle left: no empty replacement is opened, the plan no longer waits for "

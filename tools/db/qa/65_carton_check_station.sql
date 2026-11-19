@@ -299,9 +299,12 @@ SELECT pg_temp.expect_fail_by('D3 REMOVED without removed_at', 'ck_package_remov
     UPDATE fulfillment.package SET status = 'REMOVED', removal_reason = 'ORDER_CANCELLED' WHERE id = md5('qa65:pkg:2')::uuid $q$);
 SELECT pg_temp.expect_fail_by('D4 DAMAGED without who removed it', 'ck_package_removed', $q$
     UPDATE fulfillment.package SET status = 'REMOVED', removed_at = NOW(), removal_reason = 'DAMAGED' WHERE id = md5('qa65:pkg:2')::uuid $q$);
-SELECT pg_temp.expect_fail_by('D5 a reason outside DAMAGED, ORDER_CANCELLED and REMAINDER_CLOSED', 'ck_package_removed', $q$
+SELECT pg_temp.expect_fail_by('D5 a reason outside DAMAGED, ORDER_CANCELLED, REMAINDER_CLOSED and SHIPMENT_CANCELLED', 'ck_package_removed', $q$
     UPDATE fulfillment.package SET status = 'REMOVED', removed_at = NOW(), removed_by = md5('demo:user:editor')::uuid,
            removal_reason = 'LOST' WHERE id = md5('qa65:pkg:2')::uuid $q$);
+SELECT pg_temp.expect_fail_by('D5b SHIPMENT_CANCELLED without who cancelled it (RTM-RTDCANCEL)', 'ck_package_removed', $q$
+    UPDATE fulfillment.package SET status = 'REMOVED', removed_at = NOW(), removal_reason = 'SHIPMENT_CANCELLED'
+     WHERE id = md5('qa65:pkg:2')::uuid $q$);
 SELECT pg_temp.expect_fail_by('D6 a blank removal note', 'ck_package_removed', $q$
     UPDATE fulfillment.package SET status = 'REMOVED', removed_at = NOW(), removed_by = md5('demo:user:editor')::uuid,
            removal_reason = 'DAMAGED', removal_note = '   ' WHERE id = md5('qa65:pkg:2')::uuid $q$);

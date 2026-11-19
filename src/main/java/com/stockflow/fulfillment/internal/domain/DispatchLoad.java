@@ -353,8 +353,8 @@ public final class DispatchLoad {
 
     /**
      * The vehicle was booked with a carrier outside the system and is recorded here (09 §4.2 step 5 assumption: plate
-     * and driver may be known now or at the signature): PLANNED → VEHICLE_BOOKED. Booked again before loading: the
-     * booking's details are replaced; the same details again change nothing.
+     * and driver may be known now or at the signature): PLANNED → VEHICLE_BOOKED. Booked again before loading, with the
+     * same carrier (BR-16): the booking's details are replaced; the same details again change nothing.
      *
      * @return whether it changed the load
      */
@@ -365,9 +365,10 @@ public final class DispatchLoad {
     /**
      * {@link #book(UUID, String, String, String, UUID, Instant)}, with the waybill number when the carrier gave it at
      * booking (09 §4.2 step 6: "nhập biển số / tài xế / mã vận đơn nếu đã có"). Left null, the number the load has is
-     * kept while the carrier stays the same and dropped when it changes: a number is one carrier's.
+     * kept. Booked again, it is with the same carrier: BR-16 changes the carrier only through a cancelled booking.
      *
-     * @throws BusinessException {@code VALIDATION_FAILED} for a malformed number
+     * @throws BusinessException {@code VALIDATION_FAILED} for a malformed number; {@code LOAD_CARRIER_CHANGE_NEEDS_CANCEL}
+     *         for another carrier while one is booked
      */
     public boolean book(UUID carrier, String plate, String driver, String phone, String waybill, UUID by,
                         Instant at) {
@@ -375,6 +376,12 @@ public final class DispatchLoad {
         if (status != LoadStatus.PLANNED && status != LoadStatus.VEHICLE_BOOKED) {
             throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION,
                     "Load %s is %s; a vehicle is booked before loading starts".formatted(code, status));
+        }
+        requireNothingToUnload("be booked again");
+        if (status == LoadStatus.VEHICLE_BOOKED && !carrier.equals(carrierId)) {
+            // BR-16: the carrier is changed only by cancelling the booking, with its reason, and booking again.
+            throw new BusinessException(ErrorCode.LOAD_CARRIER_CHANGE_NEEDS_CANCEL, ("Load %s is booked with another "
+                    + "carrier: cancel that booking, saying why, then book the new one (09 BR-16)").formatted(code));
         }
         String number = waybill == null ? (carrier.equals(carrierId) ? waybillNo : null) : waybill(waybill);
         if (status == LoadStatus.VEHICLE_BOOKED && carrier.equals(carrierId)
@@ -565,6 +572,47 @@ public final class DispatchLoad {
         bookingCancelReason = why;
         status = LoadStatus.PLANNED;
         return true;
+    }
+
+    /**
+     * The carrier cancelled its order before the pickup (09 §4.5 table "Đơn bị huỷ (trước khi lấy hàng)": a load not
+     * signed for goes back to PLANNED, its booking cleared, the history kept by the caller; RTM-LOADCANCEL 18/11). From
+     * VEHICLE_BOOKED, or from LOADING (RTM-LOADCANCEL2, 19/11): the load keeps its manifest and its plan's layout, the
+     * parcels scanned on are taken off the count (none loaded any more) and are to be scanned off back to the dispatch
+     * area ({@link #confirmUnload}) before the vehicle is booked again.
+     *
+     * @return whether it changed the load
+     * @throws BusinessException {@code INVALID_LOAD_TRANSITION} in any other status
+     */
+    public boolean carrierCancelledBooking(String reason, Instant at) {
+        if (status == LoadStatus.LOADING) {
+            String why = Objects.requireNonNullElse(trimmed(reason), "The carrier cancelled the order");
+            for (Loaded parcel : List.copyOf(loaded.values())) {
+                if (parcel.active()) {
+                    loaded.put(parcel.packageId(), unloaded(parcel, null, at));
+                    Unload earlier = unloads.get(parcel.packageId());
+                    if (earlier == null || !earlier.pending()) {
+                        unloads.put(parcel.packageId(), new Unload(parcel.packageId(), parcel.shipmentId(), why, at,
+                                null, null));
+                    }
+                }
+            }
+            status = LoadStatus.VEHICLE_BOOKED;
+            loadingStartedAt = null;
+            loadingStartedBy = null;
+        }
+        return cancelBooking(reason, null, at);
+    }
+
+    /**
+     * RTM-LOADCANCEL2: parcels left on a truck whose order the carrier cancelled are scanned off back to the dispatch
+     * area first ({@code LOAD_UNLOAD_PENDING}).
+     */
+    private void requireNothingToUnload(String what) {
+        if (status.isOpen() && !pendingUnloads().isEmpty()) {
+            throw new BusinessException(ErrorCode.LOAD_UNLOAD_PENDING, ("Load %s still has %d parcel(s) to scan off "
+                    + "the vehicle before it can %s").formatted(code, pendingUnloads().size(), what));
+        }
     }
 
     /** The booked vehicle arrived and loading starts (BR-14: its plan is locked from now on). LOADING already: no-op. */

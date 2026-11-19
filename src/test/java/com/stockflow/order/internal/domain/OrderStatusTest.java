@@ -38,7 +38,9 @@ class OrderStatusTest {
             Map.entry(IN_PRODUCTION, EnumSet.of(READY_TO_FULFILL, PARTIALLY_FULFILLED, ON_HOLD, CANCELLED)),
             Map.entry(READY_TO_FULFILL, EnumSet.of(PICKING, PACKED, PARTIALLY_FULFILLED, ON_HOLD, CANCELLED)),
             Map.entry(PICKING, EnumSet.of(PACKED, PARTIALLY_FULFILLED, ON_HOLD, CANCELLED)),
-            Map.entry(PARTIALLY_FULFILLED, EnumSet.of(PACKED, SHIPPED, DELIVERY_FAILED, DELIVERED, RETURNED, ON_HOLD)),
+            // PARTIALLY_REFUNDED: a shipment came back while the others arrived, its part refunded (RTM-RETURNED-PARTIAL).
+            Map.entry(PARTIALLY_FULFILLED, EnumSet.of(PACKED, SHIPPED, DELIVERY_FAILED, DELIVERED, RETURNED, ON_HOLD,
+                    PARTIALLY_REFUNDED)),
             Map.entry(PACKED, EnumSet.of(SHIPPED, PARTIALLY_FULFILLED, ON_HOLD)),
             Map.entry(ON_HOLD, EnumSet.of(CONFIRMED, PENDING_PAYMENT, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
                     PICKING, PARTIALLY_FULFILLED, PACKED, CANCELLED)),
@@ -50,7 +52,7 @@ class OrderStatusTest {
             Map.entry(RETURNED, EnumSet.of(REFUNDED, PARTIALLY_REFUNDED)),
             // RETURNED (TT-4): a refund record was voided - the order waits for its refund again.
             Map.entry(REFUNDED, EnumSet.of(CLOSED, RETURN_REQUESTED, RETURNED)),
-            Map.entry(PARTIALLY_REFUNDED, EnumSet.of(CLOSED, RETURN_REQUESTED, RETURNED)),
+            Map.entry(PARTIALLY_REFUNDED, EnumSet.of(CLOSED, RETURN_REQUESTED, RETURNED, PARTIALLY_FULFILLED)),
             Map.entry(COMPLETED, EnumSet.of(CLOSED, RETURN_REQUESTED)),
             Map.entry(CANCELLED, EnumSet.noneOf(OrderStatus.class)),
             Map.entry(CLOSED, EnumSet.noneOf(OrderStatus.class)));

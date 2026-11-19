@@ -804,6 +804,14 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.ORDER_CANCELLED,
                     "Order %s is cancelled; none of its cartons is labelled".formatted(orderNumber));
         }
+        if (firstLabeledAt != null && (status == OrderStatus.PACKED
+                || status == OrderStatus.ON_HOLD && holdReason == HoldReason.INVENTORY)) {
+            // RTM-RTDCANCEL (owner 2026-11-19; 09 §5.1, 08 §5.1): a shipment of the packed order was cancelled before
+            // dispatch and its replacement cartons are labelled in the reopened check, while the order waits on the
+            // shortage hold that cancellation put on it (or once it is PACKED again). The order was locked by its first
+            // label already; this one changes nothing. Which held order may be labelled at all is the station's call.
+            return false;
+        }
         if (status == OrderStatus.ON_HOLD) {
             throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, ("Order %s is on hold (%s); its cartons are "
                     + "labelled once the hold is resolved").formatted(orderNumber, holdReason));
@@ -1355,6 +1363,42 @@ public final class Order extends AggregateRoot {
         return true;
     }
 
+    /**
+     * The real reason a shipment's delivery failed, as the warehouse manager learnt it (09 edge "hoàn hàng khi còn
+     * Handed Over"): the shipment's reason and note change; an order waiting on that failure shows the reason of its
+     * failed shipments again. OTHER needs a note.
+     *
+     * @return whether this changed the order
+     * @throws BusinessException {@code ORDER_SHIPMENT_INVALID_TRANSITION} for a shipment neither failed nor returned
+     */
+    public boolean correctShipmentFailureReason(UUID shipmentId, DeliveryFailureReason reason, String note) {
+        java.util.Objects.requireNonNull(reason, "reason");
+        String trimmed = trimmed(note);
+        if (reason == DeliveryFailureReason.OTHER && trimmed == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A failure for another reason says what it was");
+        }
+        if (!requireShipment(shipmentId).correctFailureReason(reason, trimmed)) {
+            return false;
+        }
+        if (status == OrderStatus.DELIVERY_FAILED) {
+            this.deliveryFailureReason = shipments.stream()
+                    .filter(s -> s.status() == OrderShipmentStatus.DELIVERY_FAILED)
+                    .map(OrderShipment::failureReason).findFirst().orElse(deliveryFailureReason);
+        }
+        return true;
+    }
+
+    /**
+     * RTM-RETURNED-PARTIAL: nothing more is coming of the order - every unit shipped or closed - and its shipments all
+     * have their last outcome, some delivered and some come back.
+     */
+    public boolean partlyReturnedAndDone() {
+        return outstandingUnits() == 0
+                && shipments.stream().anyMatch(OrderShipment::isReturned)
+                && shipments.stream().anyMatch(s -> s.status() == OrderShipmentStatus.DELIVERED)
+                && shipments.stream().allMatch(s -> s.isReturned() || s.status() == OrderShipmentStatus.DELIVERED);
+    }
+
     /** The carrier could not deliver one shipment (09 §4.3 step 2). OTHER needs a note. */
     public boolean recordShipmentDeliveryFailed(UUID shipmentId, DeliveryFailureReason reason, String note, Instant at,
                                                 UUID by) {
@@ -1386,16 +1430,37 @@ public final class Order extends AggregateRoot {
         if (!shipment.returned(at, by)) {
             return false;
         }
-        String why = shipment.failureReason() == null ? null : shipment.failureReason().name();
-        if (status != OrderStatus.ON_HOLD) {
-            transitionTo(OrderStatus.ON_HOLD, by, withNote(HoldReason.DELIVERY_FAILED.name(), why), at);
-        }
-        this.holdReason = HoldReason.DELIVERY_FAILED;
-        this.statusBeforeHold = OrderStatus.PARTIALLY_FULFILLED;
-        this.holdNote = why;
-        // ck_order_delivery_failure: the reason is the order's only while it is DELIVERY_FAILED; the shipment keeps it.
-        this.deliveryFailureReason = null;
+        // RTM-RETURNED (owner 18-19/11, kltn-docs 09 §4.3 step 4, 17 §5.1): the goods that came back are not delivered
+        // again on this order - to send them again Sales make a new order - so the shipment's units are closed now and
+        // their money is settled by payment (the caller); the order follows its shipments: RETURNED when nothing of it
+        // was delivered, PARTIALLY_FULFILLED while other shipments arrived (RTM-RETURNED-PARTIAL).
+        closedByReturn = closeUnitsOf(shipment);
+        this.lastClosureId = UUID.randomUUID();
+        followShipments(ShipmentChange.RETURNED, at, by,
+                shipment.failureReason() == null ? "RETURNED" : "RETURNED_" + shipment.failureReason().name());
         return true;
+    }
+
+    /** What the last shipment that came back closed, for payment to settle (RTM-RETURNED); not persisted. */
+    private BigDecimal closedByReturn = BigDecimal.ZERO;
+
+    public BigDecimal closedByReturn() {
+        return closedByReturn;
+    }
+
+    /** The units a shipment carried, closed on their lines; their gross value. */
+    private BigDecimal closeUnitsOf(OrderShipment shipment) {
+        Money closed = Money.zero(total().currency());
+        for (OrderLine line : lines) {
+            int units = Math.min(shipment.quantityOf(line.id()),
+                    line.quantity() - line.cancelledQuantity() - shippedUnits(line.id(), false));
+            if (units > 0) {
+                int open = line.quantity() - line.cancelledQuantity();
+                line.closeUnits(units);
+                closed = closed.plus(line.grossBetween(open - units, open));
+            }
+        }
+        return closed.amount();
     }
 
     /**
@@ -1551,7 +1616,10 @@ public final class Order extends AggregateRoot {
         } else if (shipments.stream().anyMatch(s -> s.status() == OrderShipmentStatus.DELIVERY_FAILED)) {
             target = OrderStatus.DELIVERY_FAILED;
         } else if (shipments.stream().anyMatch(s -> s.status() == OrderShipmentStatus.DELIVERED)) {
-            target = OrderStatus.DELIVERED;
+            // RTM-RETURNED-PARTIAL (owner 19/11): a shipment came back while the others arrived - the order is partly
+            // fulfilled, its returned part refunded (then PARTIALLY_REFUNDED), never DELIVERED as a whole.
+            target = shipments.stream().anyMatch(OrderShipment::isReturned) ? OrderStatus.PARTIALLY_FULFILLED
+                    : OrderStatus.DELIVERED;
         } else {
             target = OrderStatus.RETURNED;
         }
@@ -1798,6 +1866,12 @@ public final class Order extends AggregateRoot {
      * @return whether this changed the order
      */
     public boolean refunded(boolean full, UUID by, Instant at, String reason) {
+        if (status == OrderStatus.PARTIALLY_FULFILLED && partlyReturnedAndDone()) {
+            // RTM-RETURNED-PARTIAL (owner 19/11; 17 §5.1 edge added by docs PR #42): the part that came back is refunded.
+            transitionTo(OrderStatus.PARTIALLY_REFUNDED, by, reason, at);
+            this.refundedAt = at;
+            return true;
+        }
         if (status != OrderStatus.RETURNED) {
             return false;
         }
@@ -1828,8 +1902,12 @@ public final class Order extends AggregateRoot {
             return false;
         }
         String history = withNote("REFUND_VOIDED", trimmed(reason));
+        // Back to the status it was refunded from: PARTIALLY_FULFILLED for an order part of which came back while the
+        // rest was delivered (RTM-RETURNED-PARTIAL, owner 19/11), RETURNED otherwise.
+        OrderStatus waiting = status == OrderStatus.PARTIALLY_REFUNDED && partlyReturnedAndDone()
+                ? OrderStatus.PARTIALLY_FULFILLED : OrderStatus.RETURNED;
         // The history column holds 500.
-        transitionTo(OrderStatus.RETURNED, by, history.length() > 500 ? history.substring(0, 500) : history, at);
+        transitionTo(waiting, by, history.length() > 500 ? history.substring(0, 500) : history, at);
         return true;
     }
 

@@ -278,6 +278,34 @@ public final class Shipment {
         return true;
     }
 
+    /**
+     * The warehouse manager learnt the real reason the delivery failed (09 edge "hoàn hàng khi còn Handed Over ... Quản
+     * lý kho sửa lý do thất bại nếu biết lý do thật"; E21: a return the carrier reported first is recorded OTHER): the
+     * reason and note of a failed or returned shipment change, its status and timeline do not. OTHER needs a note.
+     *
+     * @return whether it changed anything (false: that reason and note are the ones recorded)
+     * @throws BusinessException {@code SHIPMENT_STATE_CONFLICT} for a shipment neither failed nor returned
+     */
+    public boolean correctFailureReason(DeliveryFailureReason reason, String note, UUID by) {
+        recorder(by);
+        Objects.requireNonNull(reason, "reason");
+        if ((status != ShipmentStatus.DELIVERY_FAILED && status != ShipmentStatus.RETURNED) || failureReason == null) {
+            throw new BusinessException(ErrorCode.SHIPMENT_STATE_CONFLICT, ("Shipment %s is %s: only a failed or "
+                    + "returned delivery has a failure reason to correct").formatted(code, status));
+        }
+        if (reason == DeliveryFailureReason.OTHER && (note == null || note.isBlank())) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A failure for another reason says what it was");
+        }
+        if (reason == failureReason && Objects.equals(note, failureNote)) {
+            return false;
+        }
+        failureReason = reason;
+        failureNote = note;
+        return true;
+    }
+
+    public String failureNote() { return failureNote; }
+
     private boolean delivered(UUID by, Instant at) {
         if (!move(ShipmentStatus.DELIVERED)) {
             return false;

@@ -90,6 +90,21 @@ public final class FulfillmentPermissions {
      */
     public static final String DELIVERY_OUTCOMES = "fulfillment-delivery-outcomes";
 
+    /**
+     * READ: an order's proofs of delivery and the waybill files of the vehicles that carried it, which Sales sends a
+     * customer who asks in the chat (kltn-docs 09 §2, §7 row 16; V20261206010100). Sales staff, Sales Manager and the
+     * system admin; never the customer (BR-05).
+     */
+    public static final String DELIVERY_DOCUMENTS = "fulfillment-delivery-documents";
+
+    /**
+     * UPDATE: cancel a shipment waiting for dispatch, with a reason and the cartons that are damaged - the order is
+     * held for stock, the cartons go to quarantine or back onto a bin, and replacements are reallocated, picked and
+     * checked into a new shipment (kltn-docs 09 §5.1 "Cancelled", 08 §5.1; RTM-RTDCANCEL; V20261206010600). Warehouse
+     * manager and system admin.
+     */
+    public static final String SHIPMENT_CANCELLATIONS = "fulfillment-shipment-cancellations";
+
     private FulfillmentPermissions() {
     }
 }

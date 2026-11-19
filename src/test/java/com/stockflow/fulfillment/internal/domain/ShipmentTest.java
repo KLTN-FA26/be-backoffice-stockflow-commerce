@@ -64,6 +64,31 @@ class ShipmentTest {
     }
 
     @Test
+    @DisplayName("09B G12: the failure reason of a failed or returned shipment is corrected - not its status or timeline; "
+            + "OTHER needs a note; the same again changes nothing; a shipment with no failure has nothing to correct")
+    void failureReasonCorrected() {
+        Shipment shipment = ready();
+        shipment.handOver(LOAD, CARRIER, false, PACKER, NOW);
+        assertThat(((BusinessException) catchThrowable(() -> shipment.correctFailureReason(
+                DeliveryFailureReason.REFUSED, null, COORDINATOR))).errorCode())
+                .isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
+        shipment.carrierFailed(DeliveryFailureReason.OTHER, "hãng báo hoàn hàng", NOW);
+        shipment.carrierReturned(NOW);
+        shipment.pullRecorded();
+
+        assertThat(((BusinessException) catchThrowable(() -> shipment.correctFailureReason(
+                DeliveryFailureReason.OTHER, " ", COORDINATOR))).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> shipment.correctFailureReason(DeliveryFailureReason.REFUSED, null, null))
+                .isInstanceOf(NullPointerException.class);
+        assertThat(shipment.correctFailureReason(DeliveryFailureReason.REFUSED, null, COORDINATOR)).isTrue();
+        assertThat(shipment.correctFailureReason(DeliveryFailureReason.REFUSED, null, COORDINATOR)).isFalse();
+        assertThat(shipment.status()).isEqualTo(ShipmentStatus.RETURNED);
+        assertThat(shipment.failureReason()).isEqualTo(DeliveryFailureReason.REFUSED);
+        assertThat(shipment.failureNote()).isNull();
+        assertThat(shipment.pullRecorded()).isEmpty();
+    }
+
+    @Test
     @DisplayName("failed then returned; OTHER needs a note; an outcome needs who recorded it")
     void returnedAndRules() {
         Shipment shipment = ready();

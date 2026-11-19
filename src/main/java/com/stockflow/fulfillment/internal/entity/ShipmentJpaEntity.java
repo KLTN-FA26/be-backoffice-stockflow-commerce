@@ -108,6 +108,7 @@ public class ShipmentJpaEntity extends BaseEntity {
     public ShipmentStatus getStatus() { return status; }
     public Instant getReadyAt() { return readyAt; }
     public UUID getReadyBy() { return readyBy; }
+    public UUID getOutcomeBy() { return outcomeBy; }
     public UUID getCarrierId() { return carrierId; }
     public UUID getLoadId() { return loadId; }
     public boolean isWholeOrderHandover() { return wholeOrderHandover; }
