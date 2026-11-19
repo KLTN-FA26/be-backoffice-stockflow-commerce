@@ -47,9 +47,9 @@ stockflow:
   seller:
     name: ${SELLER_NAME:CÔNG TY TNHH STOCKFLOW}
     tax-code: ${SELLER_TAX_CODE:0000000000}
-    address: ${SELLER_ADDRESS:1 Demo Street, Ho Chi Minh City}
-    representative: ${SELLER_REPRESENTATIVE:Demo Director}
-    representative-title: ${SELLER_REPRESENTATIVE_TITLE:Director}
+    address: ${SELLER_ADDRESS:Số 1 Đường Demo, Phường Bến Nghé, TP. Hồ Chí Minh}
+    representative: ${SELLER_REPRESENTATIVE:Nguyễn Văn Demo}
+    representative-title: ${SELLER_REPRESENTATIVE_TITLE:Giám đốc}
   customer:
     # The Next.js customer portal on its default dev port (SCRUM-451); mail goes to Mailpit.
     portal-activation-url: ${PORTAL_ACTIVATION_URL:http://localhost:3000/portal/activate}

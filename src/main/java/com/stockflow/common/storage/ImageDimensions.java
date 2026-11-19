@@ -60,7 +60,7 @@ public final class ImageDimensions {
              InputStream metadata = new BufferedInputStream(Files.newInputStream(file))) {
             return measure(input, metadata);
         } catch (IOException ex) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image is damaged or unreadable");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image is damaged or unreadable").localized("refusal.image.unreadable");
         }
     }
 
@@ -69,14 +69,14 @@ public final class ImageDimensions {
         try (ImageInputStream input = new MemoryCacheImageInputStream(new ByteArrayInputStream(bytes))) {
             return measure(input, new ByteArrayInputStream(bytes));
         } catch (IOException ex) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image is damaged or unreadable");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image is damaged or unreadable").localized("refusal.image.unreadable");
         }
     }
 
     private static Size measure(ImageInputStream input, InputStream metadata) throws IOException {
         var readers = ImageIO.getImageReaders(input);
         if (!readers.hasNext()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image cannot be decoded");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image cannot be decoded").localized("refusal.image.unreadable");
         }
         var reader = readers.next();
         int width;
@@ -86,15 +86,15 @@ public final class ImageDimensions {
             width = reader.getWidth(0);
             height = reader.getHeight(0);
         } catch (RuntimeException ex) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image is damaged or unreadable");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image is damaged or unreadable").localized("refusal.image.unreadable");
         } finally {
             reader.dispose();
         }
         if (width < 1 || height < 1) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image has no pixels");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image has no pixels").localized("refusal.image.unreadable");
         }
         if ((long) width * height > MAX_PIXELS) {
-            throw new BusinessException(ErrorCode.PAYLOAD_TOO_LARGE, "Image exceeds the 40 megapixel limit");
+            throw new BusinessException(ErrorCode.PAYLOAD_TOO_LARGE, "Image exceeds the 40 megapixel limit").localized("refusal.image.tooManyPixels", 40);
         }
         return orientation(metadata) >= 5 ? new Size(height, width) : new Size(width, height);
     }
@@ -114,7 +114,7 @@ public final class ImageDimensions {
             return orientation == null || orientation < 1 || orientation > 8 ? 1 : orientation;
         } catch (com.drew.imaging.ImageProcessingException | RuntimeException ex) {
             // A crafted metadata block can throw anything from deep in the reader: still the file's fault, a 400.
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image metadata cannot be decoded");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image metadata cannot be decoded").localized("refusal.image.unreadable");
         }
     }
 }
