@@ -125,10 +125,14 @@ public interface CustomerOrders {
      * One shipment of the order as the customer reads it (G4-2a, kltn-docs 09 BR-05): from its handover to the carrier
      * on. Who handed it over or recorded its outcome, the note on a failure, the money it carries: none of it is here.
      *
+     * @param shipmentId    the shipment a return is opened against (WF-05 TH-1): an order delivered in several needs it
+     *                      named ({@code RETURN_SHIPMENT_REQUIRED}), and this is where the customer reads it. Null for
+     *                      the one shipment made up from the order's milestones, which a return needs no id for
      * @param shipmentCode  null for a shipment recorded before G4-2a (as are packageCount 0 and the carrier)
      * @param failureReason set once a delivery failed (kept after a retry delivered it, as the history does)
      */
-    record Shipment(String shipmentCode, com.stockflow.order.api.OrderShipmentStatus status, int packageCount,
+    record Shipment(UUID shipmentId, String shipmentCode, com.stockflow.order.api.OrderShipmentStatus status,
+                    int packageCount,
                     String carrierName, Instant handedOverAt, Instant outcomeAt,
                     com.stockflow.order.api.DeliveryFailureReason failureReason) {
     }

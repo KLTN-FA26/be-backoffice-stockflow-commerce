@@ -39,7 +39,8 @@ public record CatalogCustomizationResponse(UUID productId, String kind, List<Tem
     /** The parametric model; only the fields of its {@code kind} are present. */
     public record Model(String kind, Double topDiameterMm, Double bottomDiameterMm, Double heightMm, Double rimMm,
                         Double seamMm, Double bandTopOffsetMm, Double bandBottomOffsetMm, Double widthMm,
-                        Double gussetMm, Double topFoldMm, String handle, String material) {
+                        Double gussetMm, Double topFoldMm, Double glueFlapMm, Double bottomFoldMm, String handle,
+                        String material) {
     }
 
     /** A print area; its size is the trimmed area's flat bounding box (the bleed lies outside it). */

@@ -19,7 +19,8 @@ import java.util.UUID;
 
 /**
  * The links a producer is e-mailed with its production order (4A-3, kltn-docs 17 §4.3 step 7: the slip, and the print
- * files "with a checksum checked on download"). A producer holds no account: the link itself - signed, time-limited
+ * files "with a checksum checked on download" - the print file of each design and the customer's original images it
+ * was laid out from, kltn-docs 12 §3). A producer holds no account: the link itself - signed, time-limited
  * ({@code SignedLinks}) - is the credential, so these routes are open to anyone (permitAll, GET and HEAD) and everything is
  * checked by the service on each use: the signature, the production order still open, the file's recorded digest
  * still the approved one (the object store's digest metadata, not a fresh hash of the bytes).
@@ -57,6 +58,18 @@ class ProductionOrderFileController {
     public ResponseEntity<Void> printFile(@PathVariable UUID id, @PathVariable UUID designSnapshotId,
                                           @RequestParam long expires, @RequestParam String signature) {
         return redirect(dispatch.openPrintFile(id, designSnapshotId, expires, signature));
+    }
+
+    @GetMapping("/print-files/{designSnapshotId}/originals/{assetId}")
+    @RateLimit(limit = 60, perSeconds = 60, key = RateLimit.Key.IP, bucket = "production-order-files")
+    @Operation(summary = "One of the customer's original images of a design of the production order, by the signed "
+            + "link its producer was e-mailed, after checking it against the approved design: 302 to a presigned URL. "
+            + "403 PRODUCTION_ORDER_LINK_INVALID, 410 PRODUCTION_ORDER_LINK_EXPIRED, 409 PRINT_FILE_MISMATCH, "
+            + "404 NOT_FOUND")
+    public ResponseEntity<Void> original(@PathVariable UUID id, @PathVariable UUID designSnapshotId,
+                                         @PathVariable UUID assetId, @RequestParam long expires,
+                                         @RequestParam String signature) {
+        return redirect(dispatch.openOriginal(id, designSnapshotId, assetId, expires, signature));
     }
 
     private static ResponseEntity<Void> redirect(DownloadLink link) {

@@ -295,4 +295,28 @@ class CustomerOrdersServiceTest {
             });
         }
     }
+
+    @Nested
+    @DisplayName("WF-05 TH-1: the shipments a return is opened against")
+    class Shipments {
+
+        @Test
+        @DisplayName("an order delivered in two shipments shows each one's id, oldest first: the portal names it when "
+                + "the customer opens a return (RETURN_SHIPMENT_REQUIRED otherwise)")
+        void eachShipmentCarriesItsId() {
+            UUID first = UUID.randomUUID();
+            UUID second = UUID.randomUUID();
+            OrderSummary summary = mock(OrderSummary.class);
+            when(summary.lifecycle()).thenReturn(new OrderSummary.Lifecycle(null, null, null, null, NOW, NOW, null,
+                    null, null, null, null, List.of(), List.of(
+                    new OrderSummary.Shipment(second, com.stockflow.order.api.OrderShipmentStatus.DELIVERED, null,
+                            NOW.plusSeconds(3_600), NOW.plusSeconds(7_200), null, List.of(), null),
+                    new OrderSummary.Shipment(first, com.stockflow.order.api.OrderShipmentStatus.DELIVERED, null,
+                            NOW, NOW.plusSeconds(600), null, List.of(), null)),
+                    true, NOW, NOW));
+
+            assertThat(CustomerOrdersService.shipments(summary)).extracting(CustomerOrders.Shipment::shipmentId)
+                    .containsExactly(first, second);
+        }
+    }
 }

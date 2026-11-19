@@ -87,6 +87,10 @@ public record CustomerOrderDetailResponse(
 
     @Schema(name = "CustomerOrderShipment")
     public record Shipment(
+            @Schema(description = "WF-05 TH-1: the id a return of this shipment's goods names (POST /api/v1/returns, "
+                    + "shipmentId) - required when the order was delivered in more than one shipment. Null only for "
+                    + "an order whose goods left as a whole with no shipment recorded; its return names none")
+            UUID shipmentId,
             @Schema(example = "SO-20261021-000123-S1", description = "Null for a shipment recorded before 2026-10-21")
             String shipmentCode,
             @Schema(example = "HANDED_OVER", description = "HANDED_OVER (with the carrier), DELIVERED, DELIVERY_FAILED or "

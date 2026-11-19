@@ -526,6 +526,8 @@ class DispatchHandoverIntegrationTest {
         String mine = as(customerUser, "CUSTOMER", get("/api/v1/orders/me/" + order.orderId()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.deliveryState").value("IN_TRANSIT"))
+                // WF-05 TH-1: the id a return of these goods names, once the order was delivered in several.
+                .andExpect(jsonPath("$.data.shipments[0].shipmentId").value(shipment.toString()))
                 .andExpect(jsonPath("$.data.shipments[0].status").value("HANDED_OVER"))
                 .andExpect(jsonPath("$.data.shipments[0].packageCount").value(2))
                 .andExpect(jsonPath("$.data.shipments[0].carrierName").value("Xe tải Nhanh"))
@@ -835,6 +837,7 @@ class DispatchHandoverIntegrationTest {
         assertThat(shipped.lifecycle().shipments()).isEmpty();
         as(customerUser, "CUSTOMER", get("/api/v1/orders/me/" + order.orderId())).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.shipments.length()").value(1))
+                .andExpect(jsonPath("$.data.shipments[0].shipmentId").doesNotExist())
                 .andExpect(jsonPath("$.data.shipments[0].status").value("HANDED_OVER"));
 
         outcome(shipment, "{\"outcome\":\"DELIVERY_FAILED\",\"failureReason\":\"CUSTOMER_ABSENT\"}")

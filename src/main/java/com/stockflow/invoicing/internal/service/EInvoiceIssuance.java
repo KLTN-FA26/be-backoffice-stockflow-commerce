@@ -95,6 +95,41 @@ import java.util.function.Supplier;
  * the look-up finds nothing, or it was sent before its provider's handle was kept - is taken back by the accountant
  * ({@link #withdraw}): REJECTED with {@link EInvoice#WITHDRAWN_CODE} and the accountant's reason, reopened and issued
  * again under a new transaction like any refused invoice.</p>
+ *
+ * <p>For that way out to open, the invoice's last send has to age past {@code stockflow.invoicing.withdraw-after}. A
+ * transaction the provider has no record of was sent again every quiet period (SePay: ten minutes) for as long as it
+ * stayed so, which kept its last send forever recent: no withdrawal, and every later-dated invoice of its series held
+ * back behind it ({@code EINVOICE_OLDER_DRAFT_PENDING}). So the reconciliation sends a transaction again by itself only
+ * within {@code stockflow.invoicing.auto-resend-for} of its submission (an hour); afterwards it only asks. A provider
+ * that took the request in has answered by then - issued, refused or still working - and one that has not is the
+ * accountant's: told after {@code stuck-after} (half an hour, before the resending stops), able to withdraw it
+ * {@code withdraw-after} after its last send. The price is an outage longer than that hour: an invoice nobody could
+ * send is not sent again on its own once the provider is back, and waits for the accountant's withdrawal.</p>
+ *
+ * <p>An invoice the provider keeps calling "still working" ({@code PENDING}) has no such exit: the provider says it
+ * is working on it, and may yet issue it. One it keeps calling "cannot say" ({@code UNKNOWN}) has a later one: the
+ * accountant, having asked the provider (SePay's portal or support), may take it back once nothing was sent under it
+ * for {@code withdraw-unknown-after} (a day) - see {@link #withdraw}. Without it, an answer that never comes would hold
+ * the invoice, and every later-dated one of its series, for good.</p>
+ *
+ * <h2>A refusal nobody confirmed is recorded only once it is settled (HĐ-1)</h2>
+ *
+ * <p>Some refusals are the provider's report of its processing, with its look-up finding nothing either way (SePay's
+ * tracking {@code Failed}: {@link EInvoiceProvider#refusalUnconfirmedByLookup}). Telling such a refusal from "the
+ * result is not known yet" rests on the provider's words, and words change; a provider still settling the result with
+ * the body that numbers invoices may yet issue that attempt. So the reconciliation does not record it while the
+ * provider could still be working on the transaction - {@code withdraw-after} since its last send, as for a withdrawal:
+ * until then the invoice stays SUBMITTING and is only asked about (nothing is sent: a "refused" transaction is not
+ * resent), and an attempt the provider issues meanwhile is recorded ISSUED as any other. Only the refusal the provider
+ * still reports after that is recorded REJECTED.</p>
+ *
+ * <p>The guard sits where the refusal is recorded rather than where an invoice is sent again, because a REJECTED
+ * invoice has several ways forward - reopened and issued again, voided and drawn up afresh (then issued automatically
+ * as attempt 0), voided by a failed delivery - and every one of them must be able to trust that the old attempt will
+ * not become an invoice. Recorded only when settled, REJECTED means the same thing wherever it is read. The price is a
+ * refusal that is real waiting up to {@code withdraw-after} before the accountant sees it; the stuck notice
+ * ({@code stuck-after}) tells them meanwhile, and a withdrawal is refused during the wait (the provider does not say it
+ * has no record of the transaction), which is right: it is the same question the wait answers.</p>
  */
 @Service
 public class EInvoiceIssuance {
@@ -219,15 +254,19 @@ public class EInvoiceIssuance {
      * new transaction is issued too. Each of the conditions below closes a way for that to happen; all of them hold, or
      * nothing changes:</p>
      * <ol>
-     *   <li><b>The provider, asked now, has no record of the transaction</b> ({@code NOT_FOUND}). It holds it, is still
-     *       working on it ({@code PENDING} - SePay's tracking says {@code Pending} while it retries), cannot confirm what
-     *       became of it (SePay's "chưa xác nhận được kết quả", {@code UNKNOWN}), or does not answer: refused. ISSUED and
-     *       REJECTED are what "check again" ({@link #reconcile}) records, and are refused here too.</li>
+     *   <li><b>The provider, asked now, has no record of the transaction</b> ({@code NOT_FOUND}) - or, the one exception,
+     *       says it cannot confirm what became of it (SePay's "chưa xác nhận được kết quả", {@code UNKNOWN}) and nothing
+     *       was sent under it for {@code stockflow.invoicing.withdraw-unknown-after} (a day by default). It holds it, is
+     *       still working on it ({@code PENDING} - SePay's tracking says {@code Pending} while it retries), says
+     *       {@code UNKNOWN} sooner, or does not answer: refused. ISSUED and REJECTED are what "check again"
+     *       ({@link #reconcile}) records, and are refused here too.</li>
      *   <li><b>Nothing was sent under it for longer than the provider can still be working on it</b>
      *       ({@code stockflow.invoicing.withdraw-after}, three hours by default): longer than SePay's own retries of a
      *       request it took in ("up to 2 hours", its tracking documentation), than every provider's quiet period
      *       ({@link EInvoiceProvider.Resubmission}), and than the provider lease. A send still on its way could be taken
-     *       in after the look-up said "not found"; no send is that old.</li>
+     *       in after the look-up said "not found"; no send is that old. That time does come: the reconciliation stops
+     *       sending the transaction again by itself {@code stockflow.invoicing.auto-resend-for} after it was
+     *       submitted, so the last send stops moving.</li>
      *   <li><b>Under the invoice's provider lease</b>: no reconciliation sends the transaction between the look-up and the
      *       refusal being recorded, and once REJECTED nothing is sent under it again
      *       ({@link EInvoiceIssuanceSteps#aboutToSend} checks the invoice still waits for that transaction).</li>
@@ -236,8 +275,12 @@ public class EInvoiceIssuance {
      *       {@code EINVOICE_DOCUMENT_EXISTED}), not a second invoice of ours.</li>
      * </ol>
      * <p>What is left is a provider that holds a request out of sight for longer than the configured time and issues it
-     * afterwards - against its own documentation; the reason recorded is the accountant's account of having checked on
-     * the provider's portal.</p>
+     * afterwards - against its own documentation; and, through the {@code UNKNOWN} exception, a provider that holds an
+     * unconfirmed result for more than {@code withdraw-unknown-after} and confirms it as issued afterwards. That second
+     * risk is taken on purpose: without it an invoice SePay never settles stays SUBMITTING for good and holds back every
+     * later-dated invoice of its series, which is a certain breach of the issuing deadline against a possible duplicate.
+     * The reason recorded is the accountant's account of having checked on the provider's portal or with its support,
+     * and should say what they found.</p>
      *
      * @param reason why, as the accountant states it after checking the provider's portal; required, at most 500
      * @throws BusinessException {@code EINVOICE_NOT_FOUND}; {@code OPTIMISTIC_LOCK}; {@code VALIDATION_FAILED} without a
@@ -283,14 +326,23 @@ public class EInvoiceIssuance {
                 throw new BusinessException(ErrorCode.EINVOICE_PROVIDER_UNAVAILABLE,
                         "The provider did not say whether it holds invoice %s".formatted(invoice.code()));
             }
-            if (result.state() != ResultState.NOT_FOUND) {
+            boolean unknownLongEnough = result.state() == ResultState.UNKNOWN && lastSent != null
+                    && Duration.between(lastSent, now).compareTo(properties.withdrawUnknownAfter()) >= 0;
+            if (result.state() == ResultState.UNKNOWN && !unknownLongEnough) {
+                throw new BusinessException(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED, ("Invoice %s: the provider cannot "
+                        + "say what became of it; it may be taken back from %s, after checking with the provider")
+                        .formatted(invoice.code(), lastSent == null ? "-"
+                                : lastSent.plus(properties.withdrawUnknownAfter())));
+            }
+            if (result.state() != ResultState.NOT_FOUND && !unknownLongEnough) {
                 throw new BusinessException(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED, ("Invoice %s: the provider does not "
                         + "say it has no record of it (%s%s); check it again instead").formatted(invoice.code(),
                         result.state(), result.errorCode() == null ? "" : ", " + result.errorCode()));
             }
             steps.rejected(id, invoice.transactionId(), EInvoice.WITHDRAWN_CODE, reason.strip());
-            log.warn("E-invoice {} (transaction {}) was taken back from {} by {}: the provider has no record of it",
-                    LogSafe.text(invoice.code()), LogSafe.text(invoice.transactionId()), invoice.provider(), by);
+            log.warn("E-invoice {} (transaction {}) was taken back from {} by {}: the provider {}",
+                    LogSafe.text(invoice.code()), LogSafe.text(invoice.transactionId()), invoice.provider(), by,
+                    unknownLongEnough ? "still cannot say what became of it" : "has no record of it");
         } finally {
             release(id, holder);
         }
@@ -338,6 +390,32 @@ public class EInvoiceIssuance {
         }
     }
 
+    /** Whether the reconciliation has sent this transaction again by itself for as long as it may. */
+    private boolean autoResendOver(EInvoice.Snapshot invoice, Instant now) {
+        return invoice.submittedAt() != null
+                && !now.isBefore(invoice.submittedAt().plus(properties.autoResendFor()));
+    }
+
+    /**
+     * Whether a refusal the provider reports may be recorded now: always, unless it is one its look-up did not stand
+     * behind and the transaction was last sent less than {@code withdraw-after} ago (class javadoc, "A refusal nobody
+     * confirmed is recorded only once it is settled"). Then it is asked about again on the next reconciliation.
+     */
+    private boolean refusalSettled(EInvoiceProvider provider, EInvoice.Snapshot invoice, Result result) {
+        if (!provider.refusalUnconfirmedByLookup(result.errorCode())) {
+            return true;
+        }
+        Instant lastSent = steps.lastSent(invoice.id(), invoice.transactionId()).orElse(invoice.submittedAt());
+        if (lastSent == null || !clock.instant().isBefore(lastSent.plus(properties.withdrawAfter()))) {
+            return true;
+        }
+        log.info("E-invoice {} (transaction {}): refused on the provider's processing report alone ({}); not recorded "
+                + "before {}, the provider may still issue it", LogSafe.text(invoice.code()),
+                LogSafe.text(invoice.transactionId()), LogSafe.text(result.errorCode()),
+                lastSent.plus(properties.withdrawAfter()));
+        return false;
+    }
+
     /** Gives the lease up; when that fails, it runs out on its own. */
     private void release(UUID id, UUID holder) {
         try {
@@ -373,6 +451,21 @@ public class EInvoiceIssuance {
                                 LogSafe.text(transaction));
                     }
                     return steps.get(id);
+                }
+                if (steps.markedDeliveryFailed(id)) {
+                    // Its delivery was corrected to a failure (WF-05 HĐ-3): sending it now could issue an invoice for
+                    // goods nobody received. Only asked about; unknown to the provider, the accountant withdraws it,
+                    // and the refusal that records is settled by voiding it (EInvoiceDrafts.settleCorrectedDelivery).
+                    log.debug("E-invoice {}: unknown to the provider, and its delivery failed; asked, not sent",
+                            LogSafe.text(invoice.code()));
+                    return invoice;
+                }
+                if (lastSent != null && autoResendOver(invoice, now)) {
+                    // Sent again for long enough: from here on only asked about, so that its last send ages and the
+                    // accountant can take it back (class javadoc, "The way out of SUBMITTING").
+                    log.debug("E-invoice {}: unknown to the provider past the automatic resending; asked, not sent",
+                            LogSafe.text(invoice.code()));
+                    return invoice;
                 }
                 if (!provider.resubmission().allowedAt(invoice.submittedAt(), lastSent, now)) {
                     // The provider may still be working on what was last sent: sending now races it. Asked again later.
@@ -417,7 +510,11 @@ public class EInvoiceIssuance {
                             () -> provider.download(transaction), answer -> Outcome.DOWNLOADED, answer -> null);
                     steps.issued(id, transaction, result, documents);
                 }
-                case REJECTED -> steps.rejected(id, transaction, result.errorCode(), result.message());
+                case REJECTED -> {
+                    if (refusalSettled(provider, invoice, result)) {
+                        steps.rejected(id, transaction, result.errorCode(), result.message());
+                    }
+                }
                 // Nothing to record yet for either: asked again on the next reconciliation.
                 case PENDING -> { }
                 case NOT_FOUND -> { }
