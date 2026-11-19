@@ -114,7 +114,7 @@ public class ImageRenditions {
         try (var input = image.open()) {
             var readers = ImageIO.getImageReaders(input);
             if (!readers.hasNext()) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image cannot be decoded");
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image cannot be decoded").localized("refusal.image.unreadable");
             }
             var reader = readers.next();
             try {
@@ -122,7 +122,7 @@ public class ImageRenditions {
                 int width = reader.getWidth(0);
                 int height = reader.getHeight(0);
                 if (width < 1 || height < 1 || (long) width * height > MAX_PIXELS) {
-                    throw new BusinessException(ErrorCode.PAYLOAD_TOO_LARGE, "Image exceeds the 25 megapixel decode limit");
+                    throw new BusinessException(ErrorCode.PAYLOAD_TOO_LARGE, "Image exceeds the 25 megapixel decode limit").localized("refusal.image.tooManyPixels", 25);
                 }
                 var param = reader.getDefaultReadParam();
                 int step = subsamplingStep(width, height, largest);
@@ -143,7 +143,7 @@ public class ImageRenditions {
             if (ex instanceof BusinessException business) {
                 throw business;
             }
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image is damaged or unreadable");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image is damaged or unreadable").localized("refusal.image.unreadable");
         } finally {
             decoders.release();
         }
@@ -152,11 +152,11 @@ public class ImageRenditions {
     private void acquire() {
         try {
             if (!decoders.tryAcquire(WAIT_FOR_DECODER.toMillis(), TimeUnit.MILLISECONDS)) {
-                throw new BusinessException(ErrorCode.RATE_LIMITED, "Image processing is busy; retry later");
+                throw new BusinessException(ErrorCode.RATE_LIMITED, "Image processing is busy; retry later").localized("refusal.upload.busy");
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
-            throw new BusinessException(ErrorCode.RATE_LIMITED, "Image processing is busy; retry later");
+            throw new BusinessException(ErrorCode.RATE_LIMITED, "Image processing is busy; retry later").localized("refusal.upload.busy");
         }
     }
 
