@@ -13,9 +13,10 @@ import java.util.UUID;
  * Estimate how a source loads before it is packed (SCRUM-287 PR EST; advisory, LP2-1).
  *
  * @param sources        exactly one for now: {@code {type: ORDER, id}}
- * @param warehouseId    required for a CONFIRMED order (estimated in the release dialog, before it has a warehouse):
- *                       the warehouse it is about to be released to; for a released order leave it out (or send its
- *                       own)
+ * @param warehouseId    optional, and never a choice: the estimate is of the order's own shipping warehouse - the one
+ *                       it was released to, or the one Sales chose while it is CONFIRMED (09 §4.0 step 1, RTM-ESTWH).
+ *                       An order with none chosen yet is refused (409 LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN) whatever
+ *                       is sent here; a value other than the order's is refused (400 WarehouseMismatch)
  * @param vehicleTypeIds the vehicle types the plan may use; empty or absent: every active type
  * @param selectionMode  SINGLE_TYPE ("Một loại", the default), FEWEST_VEHICLES ("Ít xe nhất"), KEEP_LINES ("Giữ
  *                       nguyên dòng"), PRIORITY_FILL ("Ưu tiên + hàng chèn") or OVER_CAPACITY ("Vượt sức chứa");

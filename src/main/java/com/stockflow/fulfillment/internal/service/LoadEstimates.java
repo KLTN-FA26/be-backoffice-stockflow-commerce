@@ -34,8 +34,8 @@ public interface LoadEstimates {
 
     /**
      * @param sources        what to estimate; one source per estimate for now
-     * @param warehouseId    required for a CONFIRMED order (not released yet: the warehouse the release dialog is about
-     *                       to send it to); for a released order its own warehouse is used and a different one refused
+     * @param warehouseId    optional: if given, it must be the order's own shipping warehouse (released to, or chosen by
+     *                       Sales while CONFIRMED); it never chooses one - an order with none is refused (09 §4.0 step 1)
      * @param vehicleTypeIds the vehicle types the plan may use; empty: every active type
      * @param selectionMode  null: SINGLE_TYPE (docs 09 §3 default "Một loại")
      * @param fillOrderLineIds the order's lines that are filler cargo ("hàng chèn"; PRIORITY_FILL only, owner answer
