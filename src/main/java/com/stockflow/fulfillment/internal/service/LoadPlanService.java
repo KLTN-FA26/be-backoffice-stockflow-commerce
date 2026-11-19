@@ -1104,16 +1104,25 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         return out;
     }
 
+    /**
+     * A plan stores its mode, and only the two its table takes ({@link SelectionMode#storable()}); the other modes are
+     * the trial estimate's (WF4-TRIAL-EST) and are refused here like an unknown word, not left to the database check.
+     */
     private static SelectionMode mode(String raw) {
         if (raw == null || raw.isBlank()) {
             return SelectionMode.SINGLE_TYPE;
         }
+        SelectionMode mode;
         try {
-            return SelectionMode.valueOf(raw.trim().toUpperCase(Locale.ROOT));
+            mode = SelectionMode.valueOf(raw.trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException e) {
+            mode = null;
+        }
+        if (mode == null || !mode.storable()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Invalid selection mode",
                     List.of(new FieldError("selectionMode", "SINGLE_TYPE or FEWEST_VEHICLES", "LOAD_PLAN_MODE_INVALID")));
         }
+        return mode;
     }
 
     private static LoadPlanStatus status(String raw) {
