@@ -25,8 +25,8 @@ class OrderTest {
 
     private static Order draftWithTwoLines() {
         return Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
-                Order.line(new Sku("SOFA-3S-GREY"), 2, Money.vnd(12_000_000), null),
-                Order.line(new Sku("TABLE-OAK-160"), 1, Money.vnd(8_000_000), null)), NOW);
+                Order.line(new Sku("LY-GIAY-DEMO-12OZ-XANH"), 2, Money.vnd(12_000_000), null),
+                Order.line(new Sku("LY-GIAY-DEMO-12OZ-DO"), 1, Money.vnd(8_000_000), null)), NOW);
     }
 
     private static final UUID STAFF = UUID.randomUUID();
@@ -266,7 +266,7 @@ class OrderTest {
     @DisplayName("delivered from SHIPPED, announced with its total - and none of the money ledger's fields (4B-10)")
     void delivery() {
         Order order = new Order(OrderId.newId(), NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
-                Order.line(new Sku("SOFA-3S-GREY"), 1, Money.vnd(12_000_000), null)), OrderStatus.SHIPPED, NOW, null, 0L);
+                Order.line(new Sku("LY-GIAY-DEMO-12OZ-XANH"), 1, Money.vnd(12_000_000), null)), OrderStatus.SHIPPED, NOW, null, 0L);
 
         order.markDelivered(NOW);
 
