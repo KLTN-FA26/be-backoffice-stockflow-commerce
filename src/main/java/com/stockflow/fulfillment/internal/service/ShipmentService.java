@@ -144,7 +144,7 @@ class ShipmentService implements Shipments {
         ShipmentStatus target = outcome(outcome.outcome());
         Instant now = clock.instant();
         // A delivery is dated by the time the carrier gave (09 §4.3 step 2); everything else happens now.
-        Instant at = target == ShipmentStatus.DELIVERED ? deliveryTime(outcome.deliveredAt(), row, now) : now;
+        Instant at = target == ShipmentStatus.DELIVERED && outcome.deliveredAt() != null ? outcome.deliveredAt() : now;
         if (target != ShipmentStatus.DELIVERED && outcome.deliveredAt() != null) {
             throw deliveryTimeOnlyWithDelivery();
         }
@@ -152,7 +152,7 @@ class ShipmentService implements Shipments {
         String note = outcome.note() == null || outcome.note().isBlank() ? null : outcome.note().trim();
         DeliveryFailureReason reason = null;
         boolean changed = switch (target) {
-            case DELIVERED -> shipment.recordDelivered(by, at);
+            case DELIVERED -> shipment.recordDelivered(by, at, now);
             case DELIVERY_FAILED -> {
                 reason = reason(outcome.failureReason());
                 yield shipment.recordFailed(reason, note, by, at);
@@ -202,14 +202,14 @@ class ShipmentService implements Shipments {
             throw deliveryTimeOnlyWithDelivery();
         }
         // Corrected to a delivery: dated by the time it was delivered; the correction itself is dated now.
-        Instant at = target == ShipmentStatus.DELIVERED ? deliveryTime(correction.deliveredAt(), row, now) : now;
+        Instant at = target == ShipmentStatus.DELIVERED && correction.deliveredAt() != null ? correction.deliveredAt() : now;
         UUID by = actor.userId();
         if (target == ShipmentStatus.DELIVERY_FAILED && before == ShipmentStatus.DELIVERED && !knownToOrder(row)) {
             // Left as the whole order before shipments were recorded: its delivery is the order's own, not a shipment's.
             throw new BusinessException(ErrorCode.SHIPMENT_STATE_CONFLICT, ("Shipment %s left as the whole order before "
                     + "shipments were recorded: its delivery cannot be corrected here").formatted(row.getCode()));
         }
-        if (!shipment.correctOutcome(target, reason, note, by, at)) {
+        if (!shipment.correctOutcome(target, reason, note, by, at, now)) {
             return detail(row);
         }
         // The order follows in this transaction: a delivery taken back, or a failure that was a delivery after all.
@@ -273,29 +273,6 @@ class ShipmentService implements Shipments {
         log.info("Shipment {}: {} -> {} as its carrier reported (order now {})", row.getCode(), before, target,
                 order == null ? "?" : order.status());
         return true;
-    }
-
-    /**
-     * When a delivery a person records took place (09 §4.3 step 2: the delivery time is what the carrier reported, and it
-     * dates the draft invoice): the time given, or now when none is. Never in the future, and never before the shipment
-     * was handed over to the carrier.
-     */
-    private static Instant deliveryTime(Instant given, ShipmentJpaEntity row, Instant now) {
-        if (given == null) {
-            return now;
-        }
-        if (given.isAfter(now)) {
-            throw new BusinessException(ErrorCode.SHIPMENT_DELIVERY_TIME_IN_FUTURE,
-                    "Delivery time %s is after now (%s)".formatted(given, now),
-                    List.of(FieldError.of("deliveredAt", "must not be in the future")));
-        }
-        if (row.getHandedOverAt() != null && given.isBefore(row.getHandedOverAt())) {
-            throw new BusinessException(ErrorCode.SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER,
-                    "Delivery time %s is before shipment %s was handed over (%s)".formatted(given, row.getCode(),
-                            row.getHandedOverAt()),
-                    List.of(FieldError.of("deliveredAt", "must not be before the handover")));
-        }
-        return given;
     }
 
     private static BusinessException deliveryTimeOnlyWithDelivery() {

@@ -161,4 +161,52 @@ class ShipmentTest {
         assertThatThrownBy(() -> ftl.splitOff(UUID.randomUUID(), "X", UUID.randomUUID(), 1, 0, null, PACKER, NOW))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    private static ErrorCode refusedWith(Runnable step) {
+        return ((BusinessException) catchThrowable(step::run)).errorCode();
+    }
+
+    @Test
+    @DisplayName("a delivery time a person gives is not in the future and not before the handover (09 §4.3 step 2)")
+    void deliveryTimeBounds() {
+        Instant now = NOW.plusSeconds(7200);
+        Shipment shipment = ready();
+        shipment.handOver(LOAD, CARRIER, false, PACKER, NOW);
+
+        assertThat(refusedWith(() -> shipment.recordDelivered(COORDINATOR, now.plusSeconds(1), now)))
+                .isEqualTo(ErrorCode.SHIPMENT_DELIVERY_TIME_IN_FUTURE);
+        assertThat(refusedWith(() -> shipment.recordDelivered(COORDINATOR, NOW.minusSeconds(1), now)))
+                .isEqualTo(ErrorCode.SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER);
+        assertThat(shipment.status()).isEqualTo(ShipmentStatus.HANDED_OVER);
+        assertThat(shipment.recordDelivered(COORDINATOR, NOW, now)).isTrue();
+        assertThat(shipment.snapshot().outcomeAt()).isEqualTo(NOW);
+    }
+
+    @Test
+    @DisplayName("a retry that delivers is dated after the failure it follows, not before it")
+    void aRetryComesAfterTheFailure() {
+        Instant now = NOW.plusSeconds(7200);
+        Shipment shipment = ready();
+        shipment.handOver(LOAD, CARRIER, false, PACKER, NOW);
+        shipment.recordFailed(DeliveryFailureReason.CUSTOMER_ABSENT, null, COORDINATOR, NOW.plusSeconds(3600));
+
+        assertThat(refusedWith(() -> shipment.recordDelivered(COORDINATOR, NOW.plusSeconds(3599), now)))
+                .isEqualTo(ErrorCode.SHIPMENT_DELIVERY_TIME_BEFORE_FAILURE);
+        assertThat(shipment.status()).isEqualTo(ShipmentStatus.DELIVERY_FAILED);
+        assertThat(shipment.recordDelivered(COORDINATOR, NOW.plusSeconds(3600), now)).isTrue();
+    }
+
+    @Test
+    @DisplayName("a correction to delivered may predate the failure it undoes but not the handover")
+    void aCorrectionIsBoundedByTheHandoverOnly() {
+        Instant now = NOW.plusSeconds(7200);
+        Shipment shipment = ready();
+        shipment.handOver(LOAD, CARRIER, false, PACKER, NOW);
+        shipment.recordFailed(DeliveryFailureReason.CUSTOMER_ABSENT, null, COORDINATOR, NOW.plusSeconds(3600));
+
+        assertThat(refusedWith(() -> shipment.correctOutcome(ShipmentStatus.DELIVERED, null, null, COORDINATOR,
+                NOW.minusSeconds(1), now))).isEqualTo(ErrorCode.SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER);
+        assertThat(shipment.correctOutcome(ShipmentStatus.DELIVERED, null, null, COORDINATOR,
+                NOW.plusSeconds(60), now)).isTrue();
+    }
 }

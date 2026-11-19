@@ -544,6 +544,20 @@ class ShipmentServiceTest {
         }
 
         @Test
+        @DisplayName("a retry dated before the failure it follows is SHIPMENT_DELIVERY_TIME_BEFORE_FAILURE")
+        void aRetryBeforeTheFailure() {
+            ShipmentJpaEntity row = handedOver(ShipmentStatus.DELIVERY_FAILED);
+
+            BusinessException thrown = refusal(() -> service.recordOutcome(row.getId(),
+                    new Shipments.Outcome("DELIVERED", null, null, handedOverAt.plusSeconds(30)), actor));
+
+            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.SHIPMENT_DELIVERY_TIME_BEFORE_FAILURE);
+            assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("deliveredAt");
+            assertThat(row.getStatus()).isEqualTo(ShipmentStatus.DELIVERY_FAILED);
+            verifyNoInteractions(orders, timeline);
+        }
+
+        @Test
         @DisplayName("a correction to delivered takes the time for the shipment and the order; the correction is dated now")
         void aCorrectionToDelivered() {
             ShipmentJpaEntity row = handedOver(ShipmentStatus.DELIVERY_FAILED);
