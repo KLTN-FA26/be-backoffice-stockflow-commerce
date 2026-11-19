@@ -217,7 +217,9 @@ class QuoteService implements Quotes {
         Instant now = clock.instant();
         requireNewWorkFor(quote.customerId());
         if (quote.statusAt(now) == QuoteStatus.EXPIRED) {
-            throw new BusinessException(ErrorCode.QUOTE_EXPIRED, "Quote " + quote.quoteNumber() + " has expired");
+            throw new BusinessException(ErrorCode.QUOTE_EXPIRED, "Quote " + quote.quoteNumber() + " has expired")
+                    .localized("refusal.quote.expired", quote.quoteNumber(),
+                            Quote.VALID_UNTIL.format(quote.offer().validUntil()));
         }
         requireCustomerSkus(quote, "accepted");
         requireActiveSkus(quote.quoteNumber(), quote.offer());
@@ -279,7 +281,7 @@ class QuoteService implements Quotes {
         if (!stopped) {
             throw new BusinessException(ErrorCode.INVALID_QUOTE_TRANSITION,
                     "Quote %s is accepted and every SKU on it is active: convert it into its order".formatted(
-                            quote.quoteNumber()));
+                            quote.quoteNumber())).localized("refusal.quote.acceptedAllActive", quote.quoteNumber());
         }
     }
 
@@ -296,7 +298,8 @@ class QuoteService implements Quotes {
         if (quote.status() != QuoteStatus.ACCEPTED) {
             throw new BusinessException(ErrorCode.INVALID_QUOTE_TRANSITION,
                     "Quote %s is %s; only an accepted quote becomes an order".formatted(quote.quoteNumber(),
-                            quote.status()));
+                            quote.status())).localized("refusal.quote.convertNotAccepted", quote.quoteNumber(),
+                            quote.status());
         }
         requireCustomerSkus(quote, "converted");
         requireActiveSkus(quote.quoteNumber(), quote.offer(), "cancel the quote with its reason and send a new one with "
@@ -371,7 +374,8 @@ class QuoteService implements Quotes {
         Quote quote = lockVisible(user, quoteId);
         if (quote.status() == QuoteStatus.CANCELLED) {
             throw new BusinessException(ErrorCode.INVALID_QUOTE_TRANSITION, "Quote %s was withdrawn: %s".formatted(
-                    quote.quoteNumber(), quote.cancellationReason()));
+                    quote.quoteNumber(), quote.cancellationReason()))
+                    .localized("refusal.quote.withdrawn", quote.quoteNumber(), quote.cancellationReason());
         }
         requireVersion(quote, version);
         return quote;
@@ -388,7 +392,8 @@ class QuoteService implements Quotes {
         long current = search.findRow(quote.id()).orElseThrow().version();
         if (current != expected) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
-                    "Quote %s changed since version %d (now %d)".formatted(quote.quoteNumber(), expected, current));
+                    "Quote %s changed since version %d (now %d)".formatted(quote.quoteNumber(), expected, current))
+                    .localized("refusal.quote.changed", quote.quoteNumber());
         }
     }
 
@@ -406,7 +411,8 @@ class QuoteService implements Quotes {
     /** The answer is the customer's own (03 §18 "Customer (portal)"); staff do not answer for them. */
     private void requireCustomerAnswer(CurrentUser user) {
         if (portalCustomer(user).isEmpty()) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "Only the customer answers their quote");
+            throw new BusinessException(ErrorCode.FORBIDDEN, "Only the customer answers their quote")
+                    .localized("refusal.quote.customerAnswers");
         }
     }
 
@@ -426,7 +432,8 @@ class QuoteService implements Quotes {
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND)).status();
         if (!"ACTIVE".equals(status)) {
             throw new BusinessException(ErrorCode.CUSTOMER_NOT_ACTIVE,
-                    "Customer " + customerId + " is " + status + "; quotes are for ACTIVE customers (BR-ORD-007)");
+                    "Customer " + customerId + " is " + status + "; quotes are for ACTIVE customers (BR-ORD-007)")
+                    .localized("refusal.quote.customerNotActive", status);
         }
     }
 
@@ -446,20 +453,26 @@ class QuoteService implements Quotes {
                 lines.stream().map(line -> line.sku().code()).toList());
         List<FieldError> errors = new ArrayList<>();
         List<String> named = new ArrayList<>();
+        List<String> stopped = new ArrayList<>();
         for (int i = 0; i < lines.size(); i++) {
             QuoteLine line = lines.get(i);
             String sku = line.sku().code();
             Purchasability verdict = verdicts.get(sku.toUpperCase(java.util.Locale.ROOT));
             if (verdict != null && !verdict.isPurchasable()) {
-                errors.add(new FieldError("lines[" + i + "].sku",
-                        "SKU %s on line %d is no longer active".formatted(sku, line.lineNo()), verdict.name()));
+                errors.add(FieldError.localized("lines[" + i + "].sku",
+                        "SKU %s on line %d is no longer active".formatted(sku, line.lineNo()), verdict.name(),
+                        "refusal.quote.skuInactiveLine", sku, line.lineNo()));
                 named.add("line %d (%s, %s)".formatted(line.lineNo(), sku, verdict));
+                stopped.add(sku);
             }
         }
         if (!errors.isEmpty()) {
+            // What Sales does next reads as it was asked: an accepted quote is cancelled, any other revised.
+            String key = next.startsWith("cancel") ? "refusal.quote.skuInactive.cancel" : "refusal.quote.skuInactive.revise";
             throw new BusinessException(ErrorCode.SKU_NOT_SELLABLE, "%s holds a SKU that is no longer active: %s; "
                     .formatted(quoteNumber == null ? "The quote" : "Quote " + quoteNumber, String.join(", ", named))
-                    + next, errors);
+                    + next, errors, Map.of(), key, quoteNumber == null ? "" : " " + quoteNumber,
+                    String.join(", ", stopped));
         }
     }
 
@@ -479,10 +492,12 @@ class QuoteService implements Quotes {
     private Quote.Offer offer(UUID customerId, Draft draft) {
         Objects.requireNonNull(draft, "draft");
         if (draft.lines() == null || draft.lines().isEmpty()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote needs at least one line");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote needs at least one line")
+                    .localized("refusal.quote.noLine");
         }
         if (draft.validUntil() == null || !draft.validUntil().isAfter(clock.instant())) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote is valid until a moment still ahead");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote is valid until a moment still ahead")
+                    .localized("refusal.quote.validUntilPast");
         }
         List<String> skus = draft.lines().stream().map(line -> new Sku(line.sku()).code()).toList();
         requireOwnSkus(customerId, skus);
@@ -513,7 +528,7 @@ class QuoteService implements Quotes {
         List<com.stockflow.order.internal.domain.QuoteFee> fees = fees(draft.fees(), lines, classes, rates);
         if (draft.requestedDeliveryDate() != null && draft.requestedDeliveryDate().isBefore(today())) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "The requested delivery date cannot be in the past");
+                    "The requested delivery date cannot be in the past").localized("refusal.quote.requestedDatePast");
         }
         return new Quote.Offer(draft.validUntil().truncatedTo(java.time.temporal.ChronoUnit.MICROS), draft.terms(),
                 draft.requestedDeliveryDate(), lines, fees);
@@ -537,7 +552,8 @@ class QuoteService implements Quotes {
                 .toList();
         if (!missing.isEmpty()) {
             throw new BusinessException(ErrorCode.QUOTE_PLATE_FEE_MISSING, ("Quote %s: %s produced for the first time "
-                    + "without a plate fee; edit the quote to add it").formatted(quote.quoteNumber(), missing));
+                    + "without a plate fee; edit the quote to add it").formatted(quote.quoteNumber(), missing))
+                    .localized("refusal.quote.plateFeeMissing", quote.quoteNumber(), String.join(", ", missing));
         }
     }
 
@@ -558,12 +574,14 @@ class QuoteService implements Quotes {
             Fee fee = given.get(i);
             String field = "fees[" + i + "]";
             if (fee == null || fee.kind() == null) {
-                errors.add(new FieldError(field + ".kind", "PLATE_FEE or SHIPPING_FEE", "NotNull"));
+                errors.add(FieldError.localized(field + ".kind", "PLATE_FEE or SHIPPING_FEE", "NotNull",
+                        "refusal.quote.feeKind"));
                 continue;
             }
             if (fee.kind() == com.stockflow.order.api.FeeKind.SHIPPING_FEE) {
                 if (shipping != null || fee.amount() == null) {
-                    errors.add(new FieldError(field, "one shipping fee at most, with its amount", "SHIPPING_FEE"));
+                    errors.add(FieldError.localized(field, "one shipping fee at most, with its amount",
+                            "SHIPPING_FEE", "refusal.quote.shippingFeeOneWithAmount"));
                     continue;
                 }
                 shipping = feeAmount(field, fee.amount(), errors);
@@ -571,18 +589,21 @@ class QuoteService implements Quotes {
             }
             String sku = fee.sku() == null ? null : new Sku(fee.sku()).code();
             if (sku == null || !skus.contains(sku)) {
-                errors.add(new FieldError(field + ".sku", "a plate fee is for a SKU on the quote", "PLATE_FEE"));
+                errors.add(FieldError.localized(field + ".sku", "a plate fee is for a SKU on the quote", "PLATE_FEE",
+                        "refusal.quote.plateFeeSku"));
             } else if (produced.contains(sku)) {
-                errors.add(new FieldError(field + ".sku", "%s was produced before: a reorder has no plate fee (14 BR-17)"
-                        .formatted(sku), "PLATE_FEE"));
+                errors.add(FieldError.localized(field + ".sku", "%s was produced before: a reorder has no plate fee "
+                        .formatted(sku) + "(14 BR-17)", "PLATE_FEE", "refusal.quote.plateFeeReorder", sku));
             } else if (plates.containsKey(sku)) {
-                errors.add(new FieldError(field + ".sku", "one plate fee per SKU", "PLATE_FEE"));
+                errors.add(FieldError.localized(field + ".sku", "one plate fee per SKU", "PLATE_FEE",
+                        "refusal.quote.onePlateFee", sku));
             } else {
                 plates.put(sku, fee.amount() == null ? null : feeAmount(field, fee.amount(), errors));
             }
         }
         if (!errors.isEmpty()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Invalid fee lines", errors);
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Invalid fee lines", errors, Map.of(),
+                    "refusal.quote.feeLinesInvalid");
         }
         List<com.stockflow.order.internal.domain.QuoteFee> fees = new ArrayList<>();
         for (String sku : skus) {
@@ -604,7 +625,8 @@ class QuoteService implements Quotes {
     /** A fee as entered: whole VND, checked before {@code Money} would round 100.5 to 101 without a word. */
     private static com.stockflow.common.domain.Money feeAmount(String field, BigDecimal amount, List<FieldError> errors) {
         if (amount.signum() < 0 || amount.stripTrailingZeros().scale() > 0) {
-            errors.add(new FieldError(field + ".amount", "a whole VND amount, 0 or more", "Digits"));
+            errors.add(FieldError.localized(field + ".amount", "a whole VND amount, 0 or more", "Digits",
+                    "refusal.quote.feeAmount"));
             return null;
         }
         return new com.stockflow.common.domain.Money(amount, com.stockflow.common.domain.Money.VND);
@@ -619,15 +641,18 @@ class QuoteService implements Quotes {
         customerSkus.requireVisibleTo(skus, customerId);
         Map<String, UUID> owners = customerSkus.ownersOf(skus);
         List<FieldError> errors = new ArrayList<>();
+        List<String> foreign = new ArrayList<>();
         for (int i = 0; i < skus.size(); i++) {
             if (!customerId.equals(owners.get(skus.get(i)))) {
-                errors.add(new FieldError("lines[" + i + "].sku", "%s is not a SKU of this customer"
-                        .formatted(skus.get(i)), "CUSTOMER_SKU_REQUIRED"));
+                errors.add(FieldError.localized("lines[" + i + "].sku", "%s is not a SKU of this customer"
+                        .formatted(skus.get(i)), "CUSTOMER_SKU_REQUIRED", "refusal.quote.notCustomerSku", skus.get(i)));
+                foreign.add(skus.get(i));
             }
         }
         if (!errors.isEmpty()) {
             throw new BusinessException(ErrorCode.CUSTOMER_SKU_REQUIRED, "A quote line is one of the customer's own "
-                    + "SKUs: " + String.join(", ", errors.stream().map(FieldError::message).toList()), errors);
+                    + "SKUs: " + String.join(", ", errors.stream().map(FieldError::message).toList()), errors,
+                    Map.of(), "refusal.quote.customerSkuRequired", String.join(", ", foreign));
         }
     }
 
@@ -639,7 +664,8 @@ class QuoteService implements Quotes {
         if (quote.offer().legacy()) {
             throw new BusinessException(ErrorCode.QUOTE_LINES_LEGACY, ("Quote %s was drafted on blanks and designs, "
                     + "before the customer's own SKUs: it is not %s. Revise a draft onto the customer's SKUs, or draft "
-                    + "a new quote").formatted(quote.quoteNumber(), verb));
+                    + "a new quote").formatted(quote.quoteNumber(), verb))
+                    .localized("refusal.quote.legacy", quote.quoteNumber());
         }
         requireOwnSkus(quote.customerId(), quote.offer().lines().stream().map(line -> line.sku().code()).toList());
     }
@@ -659,7 +685,8 @@ class QuoteService implements Quotes {
         }
         if (!missing.isEmpty()) {
             throw new BusinessException(ErrorCode.CARTON_SPEC_MISSING, ("%s has no single carton unit (01 BR-03): set "
-                    + "its carton specification").formatted(String.join(", ", missing)));
+                    + "its carton specification").formatted(String.join(", ", missing)))
+                    .localized("refusal.quote.cartonSpecMissing", String.join(", ", missing));
         }
         return cartons;
     }
@@ -685,11 +712,12 @@ class QuoteService implements Quotes {
     private List<PriceTier> defaultTiers(UUID customerId, Sku sku, int cartons) {
         PriceSchedule schedule = ownPrice(customerId, sku.code()).orElseThrow(() -> new BusinessException(
                 ErrorCode.VALIDATION_FAILED, "The customer has no price of its own for " + sku.code()
-                        + "; enter the line's price tiers"));
+                        + "; enter the line's price tiers").localized("refusal.quote.noOwnPrice", sku.code()));
         if (cartons < schedule.moq()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "%d cartons of %s is below the customer's price minimum of %d cartons; enter the negotiated price "
-                            .formatted(cartons, sku.code(), schedule.moq()) + "tiers");
+                            .formatted(cartons, sku.code(), schedule.moq()) + "tiers")
+                    .localized("refusal.quote.belowOwnPriceMinimum", cartons, sku.code(), schedule.moq());
         }
         return schedule.tiers().stream()
                 .map(t -> PriceTier.of(t.minQuantity(), t.unitPrice().amount())).toList();

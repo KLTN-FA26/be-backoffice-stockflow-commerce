@@ -77,7 +77,9 @@ final class ReturnWebMapper {
                 new ReturnRequestResponse.Review(r.decidedBy(), r.decidedAt(), r.decisionNote(), r.rejectionReason(),
                         r.returnRequired(), r.returnDeadline()),
                 new ReturnRequestResponse.Receipt(r.receivedBy(), r.receivedAt(), r.receivingLocation(),
-                        r.goodsReceiptId()),
+                        r.goodsReceiptId(), r.parcels().stream().map(p -> new ReturnRequestResponse.Parcel(p.parcel(),
+                        p.goodsReceiptId(), p.receiptNumber(), p.locationCode(), p.receivedBy(), p.receivedAt()))
+                        .toList()),
                 new ReturnRequestResponse.Resolution(r.moneyMode() == null ? null : r.moneyMode().name(),
                         r.settlementAmount(), r.proposedBy(), r.proposedAt(), r.resolutionNote(), r.settledBy(),
                         r.settledAt(), r.money().offset(), r.money().refunded(), r.vatAdjustmentRequired()),
@@ -127,14 +129,14 @@ final class ReturnWebMapper {
         return new ReturnRequestRowResponse(i.id(), i.rmaNumber(), i.orderId(), i.orderNumber(), i.customerId(),
                 i.status().name(), i.reason().name(), i.requestedResolution().name(), i.channel(), i.requestedAt(),
                 i.returnDeadline(), decided ? i.settlementAmount() : null, decided ? i.refundedAmount() : null,
-                decided ? i.offsetAmount() : null, i.currency(), false, i.closedAt(), i.version());
+                decided ? i.offsetAmount() : null, i.currency(), false, i.closedAt(), i.version(), i.shipmentId());
     }
 
     static ReturnRequestRowResponse toRow(ReturnRequestQueries.Item i) {
         return new ReturnRequestRowResponse(i.id(), i.rmaNumber(), i.orderId(), i.orderNumber(), i.customerId(),
                 i.status().name(), i.reason().name(), i.requestedResolution().name(), i.channel(), i.requestedAt(),
                 i.returnDeadline(), i.settlementAmount(), i.refundedAmount(), i.offsetAmount(), i.currency(),
-                i.vatAdjustmentRequired(), i.closedAt(), i.version());
+                i.vatAdjustmentRequired(), i.closedAt(), i.version(), i.shipmentId());
     }
 
     private static ReturnRequestResponse.Line toLine(ReturnLine l) {

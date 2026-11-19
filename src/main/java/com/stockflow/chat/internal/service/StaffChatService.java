@@ -244,7 +244,7 @@ public class StaffChatService {
     public ChatConversationView attachContext(CurrentUser user, UUID conversationId, ContextRef ref) {
         Actor staff = callers.staff(user);
         if (ref == null) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Name the document: a kind and an id");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Name the document: a kind and an id").localized("refusal.chat.contextIncomplete");
         }
         Conversation c = writer.lock(conversationId);
         contexts.requireOwnedBy(ref, c.customerId(), false);
@@ -328,7 +328,7 @@ public class StaffChatService {
                 .filter(account -> account.length() >= 6 && digits.contains(account))
                 .ifPresent(account -> {
                     throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Send the transfer details card instead"
-                            + " of typing the account number (16 BR-06)");
+                            + " of typing the account number (16 BR-06)").localized("refusal.chat.transferCardOnly");
                 });
     }
 
@@ -359,12 +359,12 @@ public class StaffChatService {
         Set<UUID> named = new LinkedHashSet<>(mentions);
         named.remove(null);
         if (named.size() > MAX_MENTIONS) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A note mentions at most " + MAX_MENTIONS);
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A note mentions at most " + MAX_MENTIONS).localized("refusal.chat.mentionsMax", MAX_MENTIONS);
         }
         Map<UUID, String> known = agents.names(named);
         for (UUID id : named) {
             if (!known.containsKey(id) || customers.findByUserId(id).isPresent()) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only staff are mentioned in a note");
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only staff are mentioned in a note").localized("refusal.chat.mentionStaffOnly");
             }
         }
         return Set.copyOf(named);

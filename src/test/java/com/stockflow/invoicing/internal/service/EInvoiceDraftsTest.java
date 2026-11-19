@@ -8,12 +8,15 @@ import com.stockflow.customer.api.CustomerLegalProfile;
 import com.stockflow.customer.api.CustomerLegalProfiles;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
+import com.stockflow.contracts.EInvoiceNeedsAttention;
+import com.stockflow.invoicing.internal.domain.CorrectionBasis;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceFixtures;
 import com.stockflow.invoicing.internal.domain.EInvoiceLine;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
 import com.stockflow.invoicing.internal.domain.FeeAllocation;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
+import com.stockflow.invoicing.internal.domain.EInvoiceType;
 import com.stockflow.order.api.DeliveredShipment;
 import com.stockflow.order.api.DeliveredShipments;
 import com.stockflow.order.api.FeeKind;
@@ -36,8 +39,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -64,13 +70,15 @@ class EInvoiceDraftsTest {
     private final SellerProperties seller = new SellerProperties("CONG TY TNHH BAO BI", "0312345678",
             "1 Le Loi, P. Ben Nghe, TP HCM", "Nguyen Van A", "Giam doc");
     private final Clock clock = Clock.fixed(DELIVERED_AT.plusSeconds(60), ZoneOffset.UTC);
+    private final org.springframework.context.ApplicationEventPublisher events =
+            mock(org.springframework.context.ApplicationEventPublisher.class);
     private EInvoiceDrafts drafts;
     /** The invoices "in the database": what a later draft of the same order sees. */
     private final List<EInvoice> saved = new java.util.ArrayList<>();
 
     @BeforeEach
     void setUp() {
-        drafts = new EInvoiceDrafts(invoices, shipments, legalProfiles, customers, seller, clock);
+        drafts = new EInvoiceDrafts(invoices, shipments, legalProfiles, customers, seller, events, clock);
         when(invoices.findLiveOriginalOfShipment(any())).thenReturn(Optional.empty());
         when(invoices.nextCode(any())).thenReturn("EINV-20261112-0001");
         when(invoices.save(any())).thenAnswer(call -> {
@@ -371,6 +379,34 @@ class EInvoiceDraftsTest {
         assertThat(invoice.buyer().email()).as("the contact e-mail: the invoice e-mail's default")
                 .isEqualTo("lien.he@trasua.example.com");
         assertThat(invoice.warnings()).containsExactly(EInvoice.Warning.BUYER_PROFILE_INCOMPLETE);
+        verify(events).publishEvent(new com.stockflow.contracts.EInvoiceBuyerIncomplete(invoice.id(), invoice.code(),
+                invoice.orderId(), invoice.orderNumber(), CUSTOMER,
+                List.of(com.stockflow.contracts.EInvoiceBuyerIncomplete.Missing.TAX_CODE,
+                        com.stockflow.contracts.EInvoiceBuyerIncomplete.Missing.ADDRESS)));
+    }
+
+    @Test
+    @DisplayName("HĐ-8: a buyer without an invoice e-mail is flagged on its own, and Sales are told what is missing")
+    void aBuyerWithoutInvoiceEmail() {
+        when(legalProfiles.legalProfile(CUSTOMER)).thenReturn(Optional.of(new CustomerLegalProfile(CUSTOMER,
+                "Cong ty Tra Sua", "0398765432", "12 Nguyen Hue, TP HCM", "Tran Van B", "Giam doc", null, null,
+                3)));
+
+        EInvoice.Snapshot invoice = drawUp(shipment(UUID.randomUUID(), 20, 5));
+
+        assertThat(invoice.buyer().email()).isNull();
+        assertThat(invoice.warnings()).containsExactly(EInvoice.Warning.BUYER_EMAIL_MISSING);
+        verify(events).publishEvent(new com.stockflow.contracts.EInvoiceBuyerIncomplete(invoice.id(), invoice.code(),
+                invoice.orderId(), invoice.orderNumber(), CUSTOMER,
+                List.of(com.stockflow.contracts.EInvoiceBuyerIncomplete.Missing.EMAIL)));
+    }
+
+    @Test
+    @DisplayName("a complete buyer tells Sales nothing")
+    void aCompleteBuyerTellsNobody() {
+        drawUp(shipment(UUID.randomUUID(), 20, 5));
+
+        verify(events, never()).publishEvent(any(Object.class));
     }
 
     @Test
@@ -410,7 +446,7 @@ class EInvoiceDraftsTest {
 
         when(shipments.find(ORDER, shipmentId)).thenReturn(Optional.of(shipment(shipmentId, 1, 0)));
         EInvoiceDrafts noSeller = new EInvoiceDrafts(invoices, shipments, legalProfiles, customers,
-                new SellerProperties("CONG TY", " ", "1 Le Loi", "A", "Giam doc"), clock);
+                new SellerProperties("CONG TY", " ", "1 Le Loi", "A", "Giam doc"), events, clock);
         assertThatThrownBy(() -> noSeller.drawUp(ORDER, shipmentId)).extracting(EInvoiceDraftsTest::code)
                 .isEqualTo(ErrorCode.SELLER_PROFILE_UNAVAILABLE);
         verify(invoices, never()).save(any());
@@ -490,7 +526,8 @@ class EInvoiceDraftsTest {
     }
 
     @Test
-    @DisplayName("21 §4.5: a delivery corrected to a failure voids the shipment's draft - never an invoice at the provider")
+    @DisplayName("21 §4.5: a delivery corrected to a failure voids the shipment's draft - an invoice at the provider is "
+            + "marked to be settled when it answers, an issued one left for its reduction")
     void aCorrectedDeliveryVoidsTheDraft() {
         UUID noInvoice = UUID.randomUUID();
         assertThat(drafts.voidForCorrectedDelivery(ORDER, noInvoice)).isEqualTo(EInvoiceDrafts.CorrectionOutcome.NO_INVOICE);
@@ -506,15 +543,255 @@ class EInvoiceDraftsTest {
             assertThat(invoice.snapshot().voidedBy()).as("the system's doing").isNull();
             assertThat(invoice.snapshot().voidReason()).contains("corrected to a failure");
         }
-        for (EInvoiceStatus sent : new EInvoiceStatus[] {EInvoiceStatus.SUBMITTING, EInvoiceStatus.ISSUED}) {
-            EInvoice invoice = EInvoiceFixtures.in(sent);
-            when(invoices.findLiveOriginalOfShipment(invoice.shipmentId())).thenReturn(Optional.of(invoice));
-            when(invoices.findByIdForUpdate(invoice.id())).thenReturn(Optional.of(invoice));
+        EInvoice atProvider = EInvoiceFixtures.in(EInvoiceStatus.SUBMITTING);
+        when(invoices.findLiveOriginalOfShipment(atProvider.shipmentId())).thenReturn(Optional.of(atProvider));
+        when(invoices.findByIdForUpdate(atProvider.id())).thenReturn(Optional.of(atProvider));
+        assertThat(drafts.voidForCorrectedDelivery(atProvider.orderId(), atProvider.shipmentId()))
+                .isEqualTo(EInvoiceDrafts.CorrectionOutcome.AWAITING_PROVIDER);
+        assertThat(atProvider.status()).as("it may exist in law: never voided").isEqualTo(EInvoiceStatus.SUBMITTING);
+        verify(invoices).markDeliveryFailed(atProvider.id(), clock.instant());
 
-            assertThat(drafts.voidForCorrectedDelivery(invoice.orderId(), invoice.shipmentId())).as("%s", sent)
-                    .isEqualTo(EInvoiceDrafts.CorrectionOutcome.LEFT_FOR_ADJUSTMENT);
-            assertThat(invoice.status()).as("it may exist in law: never voided").isEqualTo(sent);
-        }
+        EInvoice issued = EInvoiceFixtures.in(EInvoiceStatus.ISSUED);
+        when(invoices.findLiveOriginalOfShipment(issued.shipmentId())).thenReturn(Optional.of(issued));
+        when(invoices.findByIdForUpdate(issued.id())).thenReturn(Optional.of(issued));
+        assertThat(drafts.voidForCorrectedDelivery(issued.orderId(), issued.shipmentId()))
+                .isEqualTo(EInvoiceDrafts.CorrectionOutcome.LEFT_FOR_ADJUSTMENT);
+        assertThat(issued.status()).isEqualTo(EInvoiceStatus.ISSUED);
+        verify(invoices, never()).markDeliveryFailed(eq(issued.id()), any());
+    }
+
+    @Test
+    @DisplayName("WF-05 HĐ-3: an invoice marked while at the provider is reduced in full once issued, voided once "
+            + "refused, and left alone while it waits or when it was never marked")
+    void anAnswerForAFailedDeliveryIsSettled() {
+        when(invoices.correctionsOf(any())).thenReturn(EInvoice.Corrections.NONE);
+
+        EInvoice issued = EInvoiceFixtures.in(EInvoiceStatus.ISSUED);
+        UUID shipment = issued.snapshot().shipmentId();
+        when(invoices.findById(issued.id())).thenReturn(Optional.of(issued));
+        when(invoices.findByIdForUpdate(issued.id())).thenReturn(Optional.of(issued));
+        when(invoices.findLiveOriginalOfShipment(shipment)).thenReturn(Optional.of(issued));
+        when(invoices.deliveryFailed(issued.id())).thenReturn(true);
+
+        EInvoiceDrafts.Settled settled = drafts.settleCorrectedDelivery(issued.id());
+        assertThat(settled.settlement()).isEqualTo(EInvoiceDrafts.Settlement.REVERSED);
+        assertThat(settled.released()).isTrue();
+        assertThat(settled.deliveredAgain()).as("the shipment is not delivered now").isFalse();
+        EInvoice reversal = saved.stream().filter(i -> i.type() == EInvoiceType.ADJUSTMENT).findFirst().orElseThrow();
+        assertThat(reversal.snapshot().correctionBasis()).isEqualTo(CorrectionBasis.DELIVERY_FAILED);
+        assertThat(reversal.snapshot().originalEInvoiceId()).isEqualTo(issued.id());
+        verify(invoices).markReversed(issued.id(), clock.instant());
+        verify(events).publishEvent(argThat((Object e) -> e instanceof EInvoiceNeedsAttention attention
+                && attention.cause() == EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_REVERSAL_DRAWN_UP
+                && attention.einvoiceId().equals(reversal.id())));
+
+        EInvoice refused = EInvoiceFixtures.in(EInvoiceStatus.REJECTED);
+        when(invoices.findById(refused.id())).thenReturn(Optional.of(refused));
+        when(invoices.findByIdForUpdate(refused.id())).thenReturn(Optional.of(refused));
+        when(invoices.deliveryFailed(refused.id())).thenReturn(true);
+        EInvoiceDrafts.Settled voided = drafts.settleCorrectedDelivery(refused.id());
+        assertThat(voided.settlement()).isEqualTo(EInvoiceDrafts.Settlement.VOIDED);
+        assertThat(voided.deliveredAgain()).isFalse();
+        assertThat(refused.status()).as("never corrected and sent again").isEqualTo(EInvoiceStatus.VOIDED_DRAFT);
+        assertThat(drafts.settleCorrectedDelivery(refused.id()).settlement()).as("heard again")
+                .isEqualTo(EInvoiceDrafts.Settlement.DONE_BEFORE);
+
+        EInvoice waiting = EInvoiceFixtures.in(EInvoiceStatus.SUBMITTING);
+        when(invoices.findById(waiting.id())).thenReturn(Optional.of(waiting));
+        when(invoices.findByIdForUpdate(waiting.id())).thenReturn(Optional.of(waiting));
+        when(invoices.deliveryFailed(waiting.id())).thenReturn(true);
+        assertThat(drafts.settleCorrectedDelivery(waiting.id()).settlement())
+                .isEqualTo(EInvoiceDrafts.Settlement.WAITING);
+
+        EInvoice unmarked = EInvoiceFixtures.in(EInvoiceStatus.REJECTED);
+        when(invoices.findById(unmarked.id())).thenReturn(Optional.of(unmarked));
+        when(invoices.findByIdForUpdate(unmarked.id())).thenReturn(Optional.of(unmarked));
+        assertThat(drafts.settleCorrectedDelivery(unmarked.id()).settlement())
+                .isEqualTo(EInvoiceDrafts.Settlement.WAITING);
+        assertThat(unmarked.status()).as("a refusal of a delivered shipment is the accountant's to correct")
+                .isEqualTo(EInvoiceStatus.REJECTED);
+    }
+
+    @Test
+    @DisplayName("review finding 5: the shipment delivered after all before the answer was settled - an issued invoice "
+            + "stands (no reduction, nothing drawn up again); a refused one loses its mark and is told as a refusal")
+    void anAnswerForAShipmentDeliveredAfterAllIsKept() {
+        when(invoices.correctionsOf(any())).thenReturn(EInvoice.Corrections.NONE);
+        EInvoice issued = EInvoiceFixtures.in(EInvoiceStatus.ISSUED);
+        UUID shipment = issued.snapshot().shipmentId();
+        when(invoices.findById(issued.id())).thenReturn(Optional.of(issued));
+        when(invoices.findByIdForUpdate(issued.id())).thenReturn(Optional.of(issued));
+        when(invoices.findLiveOriginalOfShipment(shipment)).thenReturn(Optional.of(issued));
+        when(invoices.deliveryFailed(issued.id())).thenReturn(true);
+        when(shipments.find(issued.orderId(), shipment)).thenReturn(Optional.of(shipment(shipment, 20, 0)));
+
+        EInvoiceDrafts.Settled kept = drafts.settleCorrectedDelivery(issued.id());
+        assertThat(kept.settlement()).isEqualTo(EInvoiceDrafts.Settlement.DELIVERED_AFTER_ALL);
+        assertThat(kept.released()).as("nothing to draw up again").isFalse();
+        verify(invoices, never()).markReversed(any(), any());
+        assertThat(saved).as("no reduction").noneMatch(i -> i.type() == EInvoiceType.ADJUSTMENT);
+
+        EInvoice refused = EInvoiceFixtures.in(EInvoiceStatus.REJECTED);
+        when(invoices.findById(refused.id())).thenReturn(Optional.of(refused));
+        when(invoices.findByIdForUpdate(refused.id())).thenReturn(Optional.of(refused));
+        when(invoices.deliveryFailed(refused.id())).thenReturn(true);
+        when(shipments.find(refused.orderId(), refused.snapshot().shipmentId()))
+                .thenReturn(Optional.of(shipment(refused.snapshot().shipmentId(), 20, 0)));
+        assertThat(drafts.settleCorrectedDelivery(refused.id()).settlement())
+                .isEqualTo(EInvoiceDrafts.Settlement.DELIVERED_AFTER_ALL);
+        assertThat(refused.status()).as("corrected and sent again as any refusal").isEqualTo(EInvoiceStatus.REJECTED);
+        verify(invoices).clearDeliveryFailed(refused.id());
+        verify(events).publishEvent(argThat((Object e) -> e instanceof EInvoiceNeedsAttention attention
+                && attention.cause() == EInvoiceNeedsAttention.Cause.REJECTED
+                && attention.einvoiceId().equals(refused.id())));
+    }
+
+    @Test
+    @DisplayName("review finding 5: corrected back to delivered while the provider has the invoice - its mark is "
+            + "taken back; a marked refusal not settled yet is told as a refusal")
+    void aDeliveryRestoredTakesTheMarkBack() {
+        EInvoice atProvider = EInvoiceFixtures.in(EInvoiceStatus.SUBMITTING);
+        EInvoice refused = EInvoiceFixtures.in(EInvoiceStatus.REJECTED);
+        UUID shipment = atProvider.snapshot().shipmentId();
+        when(invoices.findUnsettledDeliveryFailedOfShipment(shipment)).thenReturn(List.of(atProvider, refused));
+        when(invoices.findByIdForUpdate(atProvider.id())).thenReturn(Optional.of(atProvider));
+        when(invoices.findByIdForUpdate(refused.id())).thenReturn(Optional.of(refused));
+        when(invoices.clearDeliveryFailed(any())).thenReturn(true);
+
+        assertThat(drafts.restoreDelivered(atProvider.orderId(), shipment)).isEqualTo(2);
+
+        verify(invoices).clearDeliveryFailed(atProvider.id());
+        verify(invoices).clearDeliveryFailed(refused.id());
+        verify(events, times(1)).publishEvent(any(EInvoiceNeedsAttention.class));
+        verify(events).publishEvent(argThat((Object e) -> e instanceof EInvoiceNeedsAttention attention
+                && attention.einvoiceId().equals(refused.id())));
+    }
+
+    @Test
+    @DisplayName("second review, finding 1: a correction to a failure heard after the shipment was corrected back to "
+            + "delivered changes nothing - its draft is not voided, its invoice not reduced or marked")
+    void aLateFailureOfADeliveredShipmentChangesNothing() {
+        EInvoice draft = EInvoiceFixtures.in(EInvoiceStatus.DRAFT);
+        UUID shipment = draft.snapshot().shipmentId();
+        when(invoices.findLiveOriginalOfShipment(shipment)).thenReturn(Optional.of(draft));
+        when(invoices.findByIdForUpdate(draft.id())).thenReturn(Optional.of(draft));
+        when(shipments.find(draft.orderId(), shipment)).thenReturn(Optional.of(shipment(shipment, 20, 0)));
+
+        assertThat(drafts.voidForCorrectedDelivery(draft.orderId(), shipment))
+                .isEqualTo(EInvoiceDrafts.CorrectionOutcome.NO_INVOICE);
+        assertThat(drafts.reverseForCorrectedDelivery(draft.orderId(), shipment)).isEmpty();
+        assertThat(draft.status()).isEqualTo(EInvoiceStatus.DRAFT);
+        verify(invoices, never()).markDeliveryFailed(any(), any());
+        verify(invoices, never()).markReversed(any(), any());
+    }
+
+    @Test
+    @DisplayName("review finding 4: a replacement of the issued original on its way when the delivery is corrected - "
+            + "drawn up or refused, it is voided and the original left for its reduction; at the provider, it is the "
+            + "one marked")
+    void aReplacementOnItsWayAtTheCorrection() {
+        EInvoice original = EInvoiceFixtures.in(EInvoiceStatus.ISSUED);
+        EInvoice draft = EInvoiceFixtures.replacement(original, 20);
+        when(invoices.findLiveOriginalOfShipment(original.shipmentId())).thenReturn(Optional.of(original));
+        when(invoices.findByIdForUpdate(original.id())).thenReturn(Optional.of(original));
+        when(invoices.findPendingReplacementOf(original.id())).thenReturn(Optional.of(draft));
+        when(invoices.findByIdForUpdate(draft.id())).thenReturn(Optional.of(draft));
+
+        assertThat(drafts.voidForCorrectedDelivery(original.orderId(), original.shipmentId()))
+                .isEqualTo(EInvoiceDrafts.CorrectionOutcome.LEFT_FOR_ADJUSTMENT);
+        assertThat(draft.status()).isEqualTo(EInvoiceStatus.VOIDED_DRAFT);
+        assertThat(original.status()).isEqualTo(EInvoiceStatus.ISSUED);
+
+        EInvoice other = EInvoiceFixtures.in(EInvoiceStatus.ISSUED);
+        EInvoice atProvider = EInvoiceFixtures.agreed(EInvoiceFixtures.replacement(other, 20));
+        atProvider.submit(EInvoiceFixtures.SERIES, null, EInvoiceFixtures.NOW);
+        when(invoices.findLiveOriginalOfShipment(other.shipmentId())).thenReturn(Optional.of(other));
+        when(invoices.findByIdForUpdate(other.id())).thenReturn(Optional.of(other));
+        when(invoices.findPendingReplacementOf(other.id())).thenReturn(Optional.of(atProvider));
+        when(invoices.findByIdForUpdate(atProvider.id())).thenReturn(Optional.of(atProvider));
+
+        assertThat(drafts.voidForCorrectedDelivery(other.orderId(), other.shipmentId()))
+                .isEqualTo(EInvoiceDrafts.CorrectionOutcome.AWAITING_PROVIDER);
+        verify(invoices).markDeliveryFailed(atProvider.id(), clock.instant());
+        verify(invoices, never()).markDeliveryFailed(eq(other.id()), any());
+    }
+
+    @Test
+    @DisplayName("review finding 4: a marked replacement the provider refused is voided, and the original it would "
+            + "have replaced - still in force - reduced in full")
+    void aRefusedReplacementLeavesItsOriginalReduced() {
+        when(invoices.correctionsOf(any())).thenReturn(EInvoice.Corrections.NONE);
+        EInvoice original = EInvoiceFixtures.in(EInvoiceStatus.ISSUED);
+        EInvoice replacement = EInvoiceFixtures.agreed(EInvoiceFixtures.replacement(original, 20));
+        replacement.submit(EInvoiceFixtures.SERIES, null, EInvoiceFixtures.NOW);
+        replacement.rejected("INVALID_BUYER_TAX_CODE", "sai ma so thue");
+        UUID shipment = original.snapshot().shipmentId();
+        when(invoices.findById(replacement.id())).thenReturn(Optional.of(replacement));
+        when(invoices.findByIdForUpdate(replacement.id())).thenReturn(Optional.of(replacement));
+        when(invoices.findByIdForUpdate(original.id())).thenReturn(Optional.of(original));
+        when(invoices.findLiveOriginalOfShipment(shipment)).thenReturn(Optional.of(original));
+        when(invoices.deliveryFailed(replacement.id())).thenReturn(true);
+
+        EInvoiceDrafts.Settled settled = drafts.settleCorrectedDelivery(replacement.id());
+
+        assertThat(settled.settlement()).isEqualTo(EInvoiceDrafts.Settlement.REVERSED);
+        assertThat(replacement.status()).isEqualTo(EInvoiceStatus.VOIDED_DRAFT);
+        EInvoice reversal = saved.stream().filter(i -> i.type() == EInvoiceType.ADJUSTMENT).findFirst().orElseThrow();
+        assertThat(reversal.snapshot().originalEInvoiceId()).isEqualTo(original.id());
+        assertThat(reversal.snapshot().correctionBasis()).isEqualTo(CorrectionBasis.DELIVERY_FAILED);
+        verify(invoices).markReversed(original.id(), clock.instant());
+    }
+
+    @Test
+    @DisplayName("WF-05 review, defect 4: a draft drawn up before a rule existed is checked again just before the "
+            + "automatic issuing - a rate that is no longer the day's, or no e-mail, holds it back with its warning")
+    void theAutomaticIssuingChecksADraftAgain() {
+        UUID shipment = UUID.randomUUID();
+        drawUp(shipment(shipment, 20, 0));
+        EInvoice draft = saved.getLast();
+        when(invoices.findByIdForUpdate(draft.id())).thenReturn(Optional.of(draft));
+
+        assertThat(drafts.recheckForAutomaticIssue(draft.id())).as("nothing changed: sent").isTrue();
+        assertThat(draft.snapshot().warnings()).isEmpty();
+
+        // The reduction to 8% was entered after the draft was drawn up at 10%; the contract said 10%.
+        BigDecimal eight = new BigDecimal("8.00");
+        DeliveredShipment now = shipment(shipment, 20, 0);
+        when(shipments.find(ORDER, shipment)).thenReturn(Optional.of(new DeliveredShipment(now.orderId(),
+                now.orderNumber(), now.customerId(), now.contractNumber(), now.shipmentId(), now.shipmentCode(), null,
+                now.deliveredAt(), now.currency(), now.lines().stream().map(l -> new DeliveredShipment.Line(
+                        l.orderLineId(), l.sku(), l.name(), l.cartons(), l.unitsPerCarton(), l.units(), l.unitPrice(),
+                        eight, l.contractTaxRate())).toList(),
+                now.fees().stream().map(fee -> new DeliveredShipment.Fee(fee.kind(), fee.sku(), fee.amount(), eight,
+                        fee.contractTaxRate())).toList(), now.orderUnits(), now.unitsInShipment())));
+
+        assertThat(drafts.recheckForAutomaticIssue(draft.id())).isFalse();
+        assertThat(draft.snapshot().warnings()).containsExactly(EInvoice.Warning.TAX_RATE_OUT_OF_DATE);
+        verify(invoices, times(2)).save(draft);
+        assertThat(drafts.recheckForAutomaticIssue(draft.id())).as("a draft with a warning is not taken").isFalse();
+
+        // A draft drawn up before the e-mail became a warning (HĐ-8): its buyer has none.
+        UUID other = UUID.randomUUID();
+        when(legalProfiles.legalProfile(CUSTOMER)).thenReturn(Optional.of(new CustomerLegalProfile(CUSTOMER,
+                "Cong ty Tra Sua", "0398765432", "12 Nguyen Hue, TP HCM", "Tran Van B", "Giam doc", null, null, 3)));
+        drawUp(shipment(other, 20, 0));
+        EInvoice noEmail = saved.getLast();
+        EInvoice old = EInvoice.restore(EInvoiceFixtures.withoutWarnings(noEmail.snapshot()));
+        when(invoices.findByIdForUpdate(old.id())).thenReturn(Optional.of(old));
+        assertThat(drafts.recheckForAutomaticIssue(old.id())).isFalse();
+        assertThat(old.snapshot().warnings()).containsExactly(EInvoice.Warning.BUYER_EMAIL_MISSING);
+
+        // Its delivery corrected to a failure since: not sent, left to the correction, nothing stored.
+        UUID failed = UUID.randomUUID();
+        when(legalProfiles.legalProfile(CUSTOMER)).thenReturn(Optional.of(new CustomerLegalProfile(CUSTOMER,
+                "Cong ty Tra Sua", "0398765432", "12 Nguyen Hue, TP HCM", "Tran Van B", "Giam doc",
+                "ke.toan@trasua.example.com", null, 3)));
+        drawUp(shipment(failed, 20, 0));
+        EInvoice orphan = saved.getLast();
+        when(invoices.findByIdForUpdate(orphan.id())).thenReturn(Optional.of(orphan));
+        when(shipments.find(ORDER, failed)).thenReturn(Optional.empty());
+        assertThat(drafts.recheckForAutomaticIssue(orphan.id())).isFalse();
+        assertThat(orphan.snapshot().warnings()).isEmpty();
     }
 
     private static ErrorCode code(Throwable thrown) {

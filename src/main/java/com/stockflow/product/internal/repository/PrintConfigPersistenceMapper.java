@@ -96,6 +96,8 @@ public final class PrintConfigPersistenceMapper {
                 json.put("gussetMm", bag.gussetMm());
                 json.put("heightMm", bag.heightMm());
                 json.put("topFoldMm", bag.topFoldMm());
+                json.put("glueFlapMm", bag.glueFlapMm());
+                json.put("bottomFoldMm", bag.bottomFoldMm());
                 json.put("handle", bag.handle());
                 json.put("material", bag.material());
             }
@@ -112,8 +114,10 @@ public final class PrintConfigPersistenceMapper {
             case CupModel.KIND -> new CupModel(num(json, "topDiameterMm"), num(json, "bottomDiameterMm"),
                     num(json, "heightMm"), num(json, "rimMm"), num(json, "seamMm"), num(json, "bandTopOffsetMm"),
                     num(json, "bandBottomOffsetMm"), (String) json.get("material"));
-            case BagModel.KIND -> new BagModel(num(json, "widthMm"), num(json, "gussetMm"), num(json, "heightMm"),
-                    num(json, "topFoldMm"), (String) json.get("handle"), (String) json.get("material"));
+            // A template stored before the bag had a glue flap and a bottom fold reads with the model's defaults.
+            case BagModel.KIND -> BagModel.withDefaults(num(json, "widthMm"), num(json, "gussetMm"),
+                    num(json, "heightMm"), num(json, "topFoldMm"), optionalNum(json, "glueFlapMm"),
+                    optionalNum(json, "bottomFoldMm"), (String) json.get("handle"), (String) json.get("material"));
             default -> throw new IllegalStateException("Unknown model kind " + json.get("kind"));
         };
     }
@@ -149,6 +153,18 @@ public final class PrintConfigPersistenceMapper {
         Object value = json.get(member);
         if (!(value instanceof Number number)) {
             throw new IllegalStateException("Stored JSON lacks the number " + member);
+        }
+        return number.doubleValue();
+    }
+
+    /** A number the JSON may lack (a member added after rows were written); null when it does. */
+    private static Double optionalNum(Map<String, Object> json, String member) {
+        Object value = json.get(member);
+        if (value == null) {
+            return null;
+        }
+        if (!(value instanceof Number number)) {
+            throw new IllegalStateException("Stored JSON member " + member + " is not a number");
         }
         return number.doubleValue();
     }

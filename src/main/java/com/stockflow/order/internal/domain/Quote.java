@@ -36,6 +36,10 @@ public final class Quote {
     public static final int MAX_CANCELLATION_REASON = 500;
     private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
 
+    /** How a validity is written in a message people read: the business day and time, in Vietnam. */
+    public static final java.time.format.DateTimeFormatter VALID_UNTIL = java.time.format.DateTimeFormatter
+            .ofPattern("dd/MM/yyyy HH:mm").withZone(java.time.ZoneId.of("Asia/Ho_Chi_Minh"));
+
     /**
      * The commercial content Sales edits while the quote is a draft. No payment term or deposit share since 4B-10: how
      * the customer pays is the sales contract's installment plan (15 BR-01).
@@ -62,17 +66,20 @@ public final class Quote {
             Objects.requireNonNull(validUntil, "validUntil");
             terms = terms == null || terms.isBlank() ? null : terms.strip();
             if (terms != null && terms.length() > MAX_TEXT) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Terms are at most " + MAX_TEXT + " characters");
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Terms are at most " + MAX_TEXT + " characters")
+                        .localized("refusal.quote.termsTooLong", MAX_TEXT);
             }
             if (lines == null || lines.isEmpty()) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote needs at least one line");
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote needs at least one line")
+                        .localized("refusal.quote.noLine");
             }
             var numbers = new HashSet<Integer>();
             var quoted = new HashSet<String>();
             boolean legacy = lines.getFirst().legacy();
             for (QuoteLine line : lines) {
                 if (!numbers.add(line.lineNo())) {
-                    throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line " + line.lineNo() + " appears twice");
+                    throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line " + line.lineNo() + " appears twice")
+                            .localized("refusal.quote.lineTwice", line.lineNo());
                 }
                 if (line.legacy() != legacy) {
                     throw new IllegalArgumentException("A quote's lines are all cartons of the customer's SKUs, or all "
@@ -83,7 +90,9 @@ public final class Quote {
                 if (!quoted.add(key)) {
                     throw new BusinessException(ErrorCode.VALIDATION_FAILED, line.legacy()
                             ? "The same design on blank " + line.sku().code() + " is quoted twice"
-                            : "SKU " + line.sku().code() + " is quoted twice; one line per SKU");
+                            : "SKU " + line.sku().code() + " is quoted twice; one line per SKU")
+                            .localized(line.legacy() ? "refusal.quote.legacyDesignTwice" : "refusal.quote.skuTwice",
+                                    line.sku().code());
                 }
             }
             lines = List.copyOf(lines);
@@ -99,21 +108,24 @@ public final class Quote {
                 }
                 if (fee.kind() == com.stockflow.order.api.FeeKind.SHIPPING_FEE) {
                     if (++shipping > 1) {
-                        throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote has one shipping fee at most");
+                        throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote has one shipping fee at most")
+                                .localized("refusal.quote.oneShippingFee");
                     }
                 } else if (!onQuote.contains(fee.sku().code())) {
                     throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                            "A plate fee is for a SKU on the quote, not " + fee.sku().code());
+                            "A plate fee is for a SKU on the quote, not " + fee.sku().code())
+                            .localized("refusal.quote.plateFeeNotOnQuote", fee.sku().code());
                 } else if (!platedSkus.add(fee.sku().code())) {
                     throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                            "SKU " + fee.sku().code() + " has one plate fee at most");
+                            "SKU " + fee.sku().code() + " has one plate fee at most")
+                            .localized("refusal.quote.onePlateFee", fee.sku().code());
                 }
             }
             Map<String, Integer> bySku = quantityBySku(lines, QuoteLine::quantity);
             for (QuoteLine line : lines) {
                 int quantity = bySku.get(line.sku().code());
                 if (line.priced() && quantity < line.moq()) {
-                    throw new BusinessException(ErrorCode.QUOTE_BELOW_MOQ,
+                    throw QuoteLine.belowMoq(line.lineNo(), line.sku().code(), quantity, line.moq(),
                             "Line %d: %d %s of %s on this quote, below its MOQ of %d".formatted(line.lineNo(), quantity,
                                     line.noun(), line.sku().code(), line.moq()));
                 }
@@ -224,32 +236,35 @@ public final class Quote {
             if (!line.priced()) {
                 throw new BusinessException(ErrorCode.QUOTE_NOT_PRICED,
                         "Quote %s line %d has no price yet; enter its tiers before sending".formatted(quoteNumber,
-                                line.lineNo()));
+                                line.lineNo())).localized("refusal.quote.lineNotPriced", quoteNumber, line.lineNo());
             }
         }
         // 14 §4.1 step 3 (4B-3): every fee line has its amount, every line and fee line its VAT rate.
         for (QuoteFee fee : offer.fees()) {
             if (!fee.priced()) {
                 throw new BusinessException(ErrorCode.QUOTE_NOT_PRICED, ("Quote %s: the %s of %s has no amount yet; "
-                        + "enter it before sending").formatted(quoteNumber, fee.kind(), fee.sku().code()));
+                        + "enter it before sending").formatted(quoteNumber, fee.kind(), fee.sku().code()))
+                        .localized("refusal.quote.feeNotPriced", quoteNumber, fee.kind(), fee.sku().code());
             }
         }
         for (QuoteLine line : offer.lines()) {
             if (line.taxRate() == null) {
                 throw new BusinessException(ErrorCode.QUOTE_TAX_CLASS_MISSING, ("Quote %s line %d: the product of %s "
                         + "has no tax class; set it before sending").formatted(quoteNumber, line.lineNo(),
-                        line.sku().code()));
+                        line.sku().code())).localized("refusal.quote.lineTaxClassMissing", quoteNumber, line.lineNo(),
+                        line.sku().code());
             }
         }
         for (QuoteFee fee : offer.fees()) {
             if (fee.taxRate() == null) {
                 throw new BusinessException(ErrorCode.QUOTE_TAX_CLASS_MISSING, ("Quote %s: the product of %s has no "
                         + "tax class, so its plate fee has no VAT rate; set it before sending").formatted(quoteNumber,
-                        fee.sku().code()));
+                        fee.sku().code())).localized("refusal.quote.feeTaxClassMissing", quoteNumber, fee.sku().code());
             }
         }
         if (!offer.validUntil().isAfter(now)) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Quote " + quoteNumber + " would be sent expired");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Quote " + quoteNumber + " would be sent expired")
+                    .localized("refusal.quote.sentExpired", quoteNumber, VALID_UNTIL.format(offer.validUntil()));
         }
         status = QuoteStatus.SENT;
         sentAt = now;
@@ -271,7 +286,8 @@ public final class Quote {
         offer.lines().forEach(line -> known.add(line.id()));
         for (UUID lineId : asked.keySet()) {
             if (!known.contains(lineId)) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line " + lineId + " is not on quote " + quoteNumber);
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line " + lineId + " is not on quote " + quoteNumber)
+                        .localized("refusal.quote.lineNotOnQuote", quoteNumber);
             }
         }
         Map<UUID, Integer> chosen = new HashMap<>();
@@ -279,7 +295,8 @@ public final class Quote {
             int quantity = asked.getOrDefault(line.id(), line.quantity());
             if (quantity < 1) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                        "Line " + line.lineNo() + " needs at least 1 carton");
+                        "Line " + line.lineNo() + " needs at least 1 carton")
+                        .localized("refusal.quote.atLeastOneCarton", line.lineNo());
             }
             chosen.put(line.id(), quantity);
         }
@@ -299,7 +316,8 @@ public final class Quote {
         String text = feedback == null ? "" : feedback.strip();
         if (text.isEmpty() || text.length() > MAX_TEXT) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "Asking for changes must say what to change, in at most " + MAX_TEXT + " characters");
+                    "Asking for changes must say what to change, in at most " + MAX_TEXT + " characters")
+                    .localized("refusal.quote.feedbackRequired", MAX_TEXT);
         }
         requireAnswerable(now, QuoteStatus.CHANGES_REQUESTED);
         status = QuoteStatus.CHANGES_REQUESTED;
@@ -339,7 +357,8 @@ public final class Quote {
         String text = reason == null ? "" : reason.strip();
         if (text.isEmpty() || text.length() > MAX_CANCELLATION_REASON) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "A cancellation must say why, in at most " + MAX_CANCELLATION_REASON + " characters");
+                    "A cancellation must say why, in at most " + MAX_CANCELLATION_REASON + " characters")
+                    .localized("refusal.quote.cancellationReasonRequired", MAX_CANCELLATION_REASON);
         }
         move(QuoteStatus.CANCELLED, "cancel");
         cancellationReason = text;
@@ -360,7 +379,7 @@ public final class Quote {
         if (offer.legacy()) {
             throw new BusinessException(ErrorCode.QUOTE_LINES_LEGACY, ("Quote %s was drafted on blanks and designs, "
                     + "before the customer's own SKUs: it is not %s. Revise a draft onto the customer's SKUs, or draft "
-                    + "a new quote").formatted(quoteNumber, verb));
+                    + "a new quote").formatted(quoteNumber, verb)).localized("refusal.quote.legacy", quoteNumber);
         }
     }
 
@@ -368,7 +387,8 @@ public final class Quote {
         Objects.requireNonNull(now, "now");
         if (status == QuoteStatus.SENT && !now.isBefore(offer.validUntil())) {
             throw new BusinessException(ErrorCode.QUOTE_EXPIRED,
-                    "Quote %s was valid until %s".formatted(quoteNumber, offer.validUntil()));
+                    "Quote %s was valid until %s".formatted(quoteNumber, offer.validUntil()))
+                    .localized("refusal.quote.expired", quoteNumber, VALID_UNTIL.format(offer.validUntil()));
         }
         if (!status.canTransitionTo(target)) {
             throw transition("answer", target);
@@ -390,7 +410,8 @@ public final class Quote {
 
     private BusinessException transition(String verb, QuoteStatus target) {
         return new BusinessException(ErrorCode.INVALID_QUOTE_TRANSITION,
-                "Cannot %s quote %s: it is %s, not a state that leads to %s".formatted(verb, quoteNumber, status, target));
+                "Cannot %s quote %s: it is %s, not a state that leads to %s".formatted(verb, quoteNumber, status, target))
+                .localized("refusal.quote.transition." + verb, quoteNumber, status);
     }
 
     public UUID id() { return id; }

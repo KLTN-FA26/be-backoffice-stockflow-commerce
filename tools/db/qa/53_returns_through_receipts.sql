@@ -119,6 +119,34 @@ SELECT pg_temp.expect_ok('RT5 RECEIVED on the closed receipt, 4 units counted', 
 SELECT pg_temp.expect_fail_by('RT6 the receipt that brought the goods is changed', 'the receipt that brought its goods does not change', $q$
     UPDATE ordering.return_request SET goods_receipt_id = gen_random_uuid() WHERE id = md5('qa53:r1')::uuid $q$);
 
+\echo '--- parcels: every receipt that brought goods of the return, a confirmed return receipt against it (WF-05 TH-3)'
+SELECT pg_temp.expect_fail_by('RQ1 a parcel on a receipt that is not a return receipt (a purchase one)',
+    'a parcel comes back on a confirmed return receipt', $q$
+    INSERT INTO ordering.return_request_receipt (goods_receipt_id, return_request_id, parcel, receipt_number,
+                                                 receiving_location_code, received_by, received_at)
+    VALUES (md5('qa53:g:purchase')::uuid, md5('qa53:r1')::uuid, 1, 'GR-QA53-P', 'HCM-QC01',
+            md5('demo:user:editor')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail_by('RQ2 a parcel numbered 0', 'ck_return_request_receipt_parcel', $q$
+    INSERT INTO ordering.return_request_receipt (goods_receipt_id, return_request_id, parcel, receipt_number,
+                                                 receiving_location_code, received_by, received_at)
+    VALUES (md5('qa53:g')::uuid, md5('qa53:r1')::uuid, 0, 'GR-QA53-C', 'HCM-QC01', md5('demo:user:editor')::uuid,
+            NOW()) $q$);
+SELECT pg_temp.expect_ok('RQ3 the closed receipt is the return''s first parcel', $q$
+    INSERT INTO ordering.return_request_receipt (goods_receipt_id, return_request_id, parcel, receipt_number,
+                                                 receiving_location_code, received_by, received_at)
+    VALUES (md5('qa53:g')::uuid, md5('qa53:r1')::uuid, 1, 'GR-QA53-C', 'HCM-QC01', md5('demo:user:editor')::uuid,
+            NOW()) $q$);
+SELECT pg_temp.expect_fail_by('RQ4 the same receipt a second parcel', 'pk_return_request_receipt', $q$
+    INSERT INTO ordering.return_request_receipt (goods_receipt_id, return_request_id, parcel, receipt_number,
+                                                 receiving_location_code, received_by, received_at)
+    VALUES (md5('qa53:g')::uuid, md5('qa53:r1')::uuid, 2, 'GR-QA53-C', 'HCM-QC01', md5('demo:user:editor')::uuid,
+            NOW()) $q$);
+SELECT pg_temp.expect_fail_by('RQ5 a parcel rewritten', 'append-only', $q$
+    UPDATE ordering.return_request_receipt SET parcel = 3 WHERE goods_receipt_id = md5('qa53:g')::uuid $q$);
+SELECT pg_temp.expect_fail_by('RQ6 a return with a parcel back is withdrawn: its goods would stay unrefunded',
+    'it is not withdrawn - mark its goods complete', $q$
+    UPDATE ordering.return_request SET status = 'CANCELLED' WHERE id = md5('qa53:r1')::uuid $q$);
+
 \echo '--- the refund: units that came back, adding up to the settlement (17 §4.10 step 40)'
 SELECT pg_temp.expect_fail_by('RF1 more units refunded than came back', 'ck_return_request_line_refund', $q$
     UPDATE ordering.return_request_line SET refund_quantity = 5, refund_amount = 500 WHERE id = md5('qa53:r1:l')::uuid $q$);

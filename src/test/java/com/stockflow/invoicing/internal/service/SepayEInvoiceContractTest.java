@@ -27,7 +27,9 @@ import com.stockflow.invoicing.internal.domain.EInvoiceProvider.ResultState;
 import com.stockflow.invoicing.internal.domain.EInvoiceProvider.Submission;
 import com.stockflow.invoicing.internal.domain.EInvoiceProvider.SubmissionOutcome;
 import com.stockflow.invoicing.internal.domain.EInvoiceType;
+import com.stockflow.invoicing.internal.domain.EInvoiceProvider;
 import com.stockflow.invoicing.internal.domain.ProviderAccounts;
+import com.stockflow.invoicing.internal.domain.ProviderCallLog;
 import com.stockflow.invoicing.internal.domain.TaxRateTotal;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -88,6 +90,7 @@ class SepayEInvoiceContractTest {
     private static final String TOKEN = "eyJ-first-token-AAAA";
     private static final String NEXT_TOKEN = "eyJ-second-token-BBBB";
     private static final String PROVIDER_ACCOUNT = "0aea3134-da40-11f0-aef4-52c7e9b4f41b";
+    private static final String TRACKING = "084e179d-d95a-11f0-aef4-52c7e9b4f41b";
     private static final String TRANSACTION = "0193a5b0-7c3e-7d4a-8f10-2a6b9c4d5e6f-1";
     private static final String REFERENCE = SepayEInvoiceProvider.referenceCode(TRANSACTION);
     private static final String TAX_AUTHORITY_CODE = "M1-26-QWERT-00000000589";
@@ -101,6 +104,7 @@ class SepayEInvoiceContractTest {
 
     private final ObjectMapper json = new ObjectMapper();
     private final ProviderAccounts accounts = mock(ProviderAccounts.class);
+    private final ProviderCallLog calls = mock(ProviderCallLog.class);
     private final Clock clock = Clock.fixed(EInvoiceFixtures.NOW, ZoneOffset.UTC);
     private final ListAppender<ILoggingEvent> logged = new ListAppender<>();
     private final List<Throwable> thrown = new ArrayList<>();
@@ -152,6 +156,8 @@ class SepayEInvoiceContractTest {
         Submission submission = provider().submit(invoice(TRANSACTION));
 
         assertThat(submission.outcome()).isEqualTo(SubmissionOutcome.ACCEPTED);
+        assertThat(submission.providerReference()).as("the tracking code, kept to learn a refusal after this")
+                .isEqualTo("create/" + TRACKING);
         LoggedRequest token = only("/v1/token");
         assertThat(token.getHeader("Authorization")).isEqualTo("Basic " + Base64.getEncoder()
                 .encodeToString((CLIENT_ID + ":" + CLIENT_SECRET).getBytes(StandardCharsets.UTF_8)));
@@ -222,15 +228,57 @@ class SepayEInvoiceContractTest {
     }
 
     @Test
-    void aRefusalOfTheAccountIsNotTheInvoicesFaultAndItWaits() {
+    void HD1_aRefusalOfTheAccountRefusesTheInvoiceUnderACodeOfTheCauseNeverWaitsForAnAnswer() {
         signsIn();
         listsTheAccount();
-        sepay.stubFor(post(urlEqualTo("/v1/invoices/create")).willReturn(aResponse().withStatus(500)
-                .withHeader("Content-Type", "application/json")
-                .withBody(error("QUOTA_HAS_BEEN_USERD_UP", "Hết hạn ngạch"))));
+        String[][] causes = {
+                {"500", "QUOTA_HAS_BEEN_USERD_UP", SepayEInvoiceAnswers.QUOTA_EXHAUSTED},
+                {"500", "BILLING_IS_UNPAID", SepayEInvoiceAnswers.BILLING_UNPAID},
+                {"500", "REGISTRATION_NOT_COMPLETE", SepayEInvoiceAnswers.ACCOUNT_NOT_READY},
+                {"422", "REGISTRATION_NOT_TAX_APPROVED", SepayEInvoiceAnswers.ACCOUNT_NOT_READY},
+                {"500", "EINVOICE_ACCOUNT_NOT_FOUND", SepayEInvoiceAnswers.ACCOUNT_NOT_READY}};
+        for (String[] cause : causes) {
+            sepay.stubFor(post(urlEqualTo("/v1/invoices/create")).willReturn(aResponse()
+                    .withStatus(Integer.parseInt(cause[0])).withHeader("Content-Type", "application/json")
+                    .withBody(error(cause[1], "Tài khoản chưa sẵn sàng"))));
 
-        assertThatThrownBy(() -> capture(() -> provider().submit(invoice(TRANSACTION))))
-                .isInstanceOf(ProviderUnavailableException.class).hasMessageContaining("QUOTA_HAS_BEEN_USERD_UP");
+            Submission submission = provider().submit(invoice(TRANSACTION));
+
+            assertThat(submission.outcome()).as(cause[1]).isEqualTo(SubmissionOutcome.REJECTED);
+            assertThat(submission.errorCode()).as(cause[1]).isEqualTo(cause[2]);
+            assertThat(submission.message()).as("SePay's own code is kept in the words").startsWith(cause[1]);
+            assertThat(provider().accountProblem(submission.errorCode())).as(cause[1]).isPresent();
+        }
+        assertThat(provider().accountProblem(SepayEInvoiceAnswers.QUOTA_EXHAUSTED))
+                .contains(EInvoiceProvider.AccountProblem.QUOTA_EXHAUSTED);
+        assertThat(provider().accountProblem("VALIDATION_ERROR")).as("the invoice's own refusal").isEmpty();
+    }
+
+    @Test
+    void HD1_aSeriesWithoutSepaysTemplateCodeIsRefusedBeforeAnythingIsSent() {
+        signsIn();
+        listsTheAccount();
+        when(accounts.providerTemplateCode(SepayEInvoiceProvider.CODE, "1", "C26TSE")).thenReturn(Optional.empty());
+
+        Submission submission = provider().submit(invoice(TRANSACTION));
+
+        assertThat(submission.outcome()).isEqualTo(SubmissionOutcome.REJECTED);
+        assertThat(submission.errorCode()).isEqualTo(SepayEInvoiceAnswers.TEMPLATE_MISSING);
+        sepay.verify(0, postRequestedFor(urlEqualTo("/v1/invoices/create")));
+    }
+
+    @Test
+    void HD1_anAccountListingNoActiveRegistrationRefusesTheInvoice() {
+        signsIn();
+        sepay.stubFor(get(urlPathEqualTo("/v1/provider-accounts")).willReturn(okJson("""
+                {"data": {"items": [{"id": "9d9d9d9d-0000-0000-0000-000000000000", "provider": "matbao",
+                                     "active": false}]}}""")));
+
+        Submission submission = provider().submit(invoice(TRANSACTION));
+
+        assertThat(submission.outcome()).isEqualTo(SubmissionOutcome.REJECTED);
+        assertThat(submission.errorCode()).isEqualTo(SepayEInvoiceAnswers.ACCOUNT_NOT_READY);
+        sepay.verify(0, postRequestedFor(urlEqualTo("/v1/invoices/create")));
     }
 
     @Test
@@ -429,6 +477,168 @@ class SepayEInvoiceContractTest {
     }
 
     @Test
+    void HD1_aSubmissionSepayRefusedAfterTakingItInIsRejectedWithItsWords() {
+        signsIn();
+        notRecorded();
+        tracked("create", "Failed", "Thông tin người mua không hợp lệ: mã số thuế sai");
+
+        Result result = provider().query(TRANSACTION);
+
+        assertThat(result.state()).isEqualTo(ResultState.REJECTED);
+        assertThat(result.errorCode()).isEqualTo(SepayEInvoiceAnswers.ISSUANCE_FAILED);
+        assertThat(result.message()).isEqualTo("Thông tin người mua không hợp lệ: mã số thuế sai");
+        sepay.verify(1, getRequestedFor(urlEqualTo("/v1/invoices/create/check/" + TRACKING)));
+    }
+
+    @Test
+    void HD1_aResultSepayCannotConfirmIsUnknownAndNeverSentAgain() {
+        signsIn();
+        notRecorded();
+        tracked("adjust", "Failed", "Hệ thống chưa xác nhận được kết quả phát hành với nhà cung cấp hóa đơn.");
+
+        Result result = provider().query(TRANSACTION);
+
+        assertThat(result.state()).as("BR-05: never NOT_FOUND, which would be sent again").isEqualTo(ResultState.UNKNOWN);
+        assertThat(result.errorCode()).isEqualTo(SepayEInvoiceAnswers.RESULT_UNCONFIRMED);
+        sepay.verify(1, getRequestedFor(urlEqualTo("/v1/invoices/adjust/check/" + TRACKING)));
+    }
+
+    @Test
+    void HD1_aFailedTrackingWithoutWordsIsNeverTakenForARefusal() {
+        signsIn();
+        notRecorded();
+        tracked("create", "Failed", null);
+
+        assertThat(provider().query(TRANSACTION).state()).isEqualTo(ResultState.UNKNOWN);
+    }
+
+    @Test
+    void HD1_anUnconfirmedTrackingReworded_isStillUnknown() {
+        signsIn();
+        notRecorded();
+        tracked("create", "Failed", "He thong CHUA  XAC NHAN duoc ket qua tu nha cung cap");
+
+        assertThat(provider().query(TRANSACTION).state()).as("never REJECTED: the accountant would issue it again")
+                .isEqualTo(ResultState.UNKNOWN);
+    }
+
+    @Test
+    void HD1_aTrackingRefusalIsOneTheLookUpDidNotStandBehind() {
+        assertThat(provider().refusalUnconfirmedByLookup(SepayEInvoiceAnswers.ISSUANCE_FAILED)).isTrue();
+        assertThat(provider().refusalUnconfirmedByLookup("SEPAY_INVOICE_FAILED")).isFalse();
+        assertThat(provider().refusalUnconfirmedByLookup(SepayEInvoiceAnswers.QUOTA_EXHAUSTED)).isFalse();
+        assertThat(provider().refusalUnconfirmedByLookup(null)).isFalse();
+    }
+
+    @Test
+    void HD1_aSubmissionSepayIsStillRetryingIsPendingThoughTheLookUpDoesNotFindIt() {
+        signsIn();
+        notRecorded();
+        tracked("create", "Pending", "Đang thử lại");
+
+        assertThat(provider().query(TRANSACTION).state()).as("never sent again while SePay retries it")
+                .isEqualTo(ResultState.PENDING);
+    }
+
+    @Test
+    void HD1_aSuccessTheLookUpDoesNotShowYetIsPending() {
+        signsIn();
+        notRecorded();
+        tracked("create", "Success", "Xuất hóa đơn thành công");
+
+        assertThat(provider().query(TRANSACTION).state()).isEqualTo(ResultState.PENDING);
+    }
+
+    @Test
+    void HD1_ASSUMPTION_aLookUpShowingTheInvoiceRefusedOrVoidIsRejected() {
+        signsIn();
+        for (String status : List.of("failed", "rejected", "cancelled", "deleted")) {
+            sepay.stubFor(get(urlEqualTo("/v1/invoices/" + REFERENCE)).willReturn(okJson(found(status, "0"))));
+
+            Result result = provider().query(TRANSACTION);
+
+            assertThat(result.state()).as(status).isEqualTo(ResultState.REJECTED);
+            assertThat(result.errorCode()).isEqualTo("SEPAY_INVOICE_" + status.toUpperCase(java.util.Locale.ROOT));
+        }
+        sepay.verify(0, getRequestedFor(urlPathEqualTo("/v1/invoices/create/check/" + TRACKING)));
+    }
+
+    @Test
+    void HD1_noTrackingCodeKeptLeavesTheLookUpToSay() {
+        signsIn();
+        notRecorded();
+        when(calls.lastProviderReference(SepayEInvoiceProvider.CODE, TRANSACTION)).thenReturn(Optional.empty());
+
+        assertThat(provider().query(TRANSACTION).state()).isEqualTo(ResultState.NOT_FOUND);
+        sepay.verify(0, getRequestedFor(urlPathEqualTo("/v1/invoices/create/check/" + TRACKING)));
+    }
+
+    @Test
+    void HD1_aTrackingReferenceThatIsNotSepaysGoesIntoNoPath() {
+        signsIn();
+        notRecorded();
+        when(calls.lastProviderReference(SepayEInvoiceProvider.CODE, TRANSACTION))
+                .thenReturn(Optional.of("create/../../v1/usage"));
+
+        assertThat(provider().query(TRANSACTION).state()).isEqualTo(ResultState.NOT_FOUND);
+        sepay.verify(0, getRequestedFor(urlEqualTo("/v1/usage")));
+    }
+
+    // ---- the account -----------------------------------------------------------------------------------------------
+
+    @Test
+    void HD1_theQuotaLeftIsSepaysUsage() {
+        signsIn();
+        sepay.stubFor(get(urlEqualTo("/v1/usage")).willReturn(okJson("""
+                {"data": {"quota_remaining": "534"}}""")));
+
+        assertThat(provider().remainingQuota()).hasValue(534);
+        assertThat(provider(new SepayEInvoiceProperties("SANDBOX", null, null, null, sepay.baseUrl(), sepay.baseUrl(),
+                Duration.ofSeconds(2), Duration.ofMinutes(10))).remainingQuota()).as("not configured: not asked")
+                .isEmpty();
+    }
+
+    @Test
+    void HD1_aSeriesIsCheckedAgainstTheAccountsTemplates() {
+        signsIn();
+        sepay.stubFor(get(urlEqualTo("/v1/provider-accounts/" + PROVIDER_ACCOUNT)).willReturn(okJson("""
+                {"success": true, "data": {"id": "%s", "provider": "matbao", "active": true,
+                 "tax_authority_approved_date": "2026-04-20",
+                 "templates": [{"template_code": "1", "invoice_series": "C26TSE",
+                                "invoice_label": "1 - C26TSE - Hóa đơn giá trị gia tăng"},
+                               {"template_code": "2", "invoice_series": "C26TSE",
+                                "invoice_label": "2 - C26TSE - Hóa đơn bán hàng"}]}}""".formatted(PROVIDER_ACCOUNT))));
+        SepayEInvoiceProvider sepayProvider = provider(properties("SANDBOX", PROVIDER_ACCOUNT));
+
+        assertThat(sepayProvider.checkSeries("1", "C26TSE")).isEqualTo(EInvoiceProvider.SeriesCheck.OFFERED);
+        assertThat(sepayProvider.checkSeries("1", "C26TAA")).isEqualTo(EInvoiceProvider.SeriesCheck.NOT_OFFERED);
+        assertThat(sepayProvider.checkSeries("3", "C26TSE")).isEqualTo(EInvoiceProvider.SeriesCheck.NOT_OFFERED);
+
+        when(accounts.find(SepayEInvoiceProvider.CODE)).thenReturn(Optional.of(new ProviderAccounts.Account(
+                UUID.randomUUID(), SepayEInvoiceProvider.CODE, "SANDBOX", null, null, true, false, 0)));
+        EInvoiceProviderAccountService service = new EInvoiceProviderAccountService(accounts,
+                new EInvoiceProviders(List.of(sepayProvider), accounts), mock(SecretCipher.class));
+        assertThatThrownBy(() -> service.useSeries(SepayEInvoiceProvider.CODE, "1", "C26TAA", 2026, "1"))
+                .isInstanceOf(BusinessException.class).extracting(e -> ((BusinessException) e).errorCode())
+                .isEqualTo(ErrorCode.EINVOICE_SERIES_NOT_AT_PROVIDER);
+        verify(accounts, never()).useSeries(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        service.useSeries(SepayEInvoiceProvider.CODE, "1", "C26TSE", 2026, "1");
+        verify(accounts).useSeries(new com.stockflow.invoicing.internal.domain.InvoiceSeries(
+                SepayEInvoiceProvider.CODE, "1", "C26TSE", 2026), "1");
+    }
+
+    @Test
+    void HD6_sepayCannotSendANoticeOfAnInvoiceDrawnUpWrongly() {
+        assertThat(provider().sendsErrorNotices()).isFalse();
+    }
+
+    @Test
+    void HD8_onlyAProductionAccountsDocumentsAreHeldToTheirSignature() {
+        assertThat(provider().signsDocuments()).isFalse();
+        assertThat(provider(properties("PRODUCTION", PROVIDER_ACCOUNT)).signsDocuments()).isTrue();
+    }
+
+    @Test
     void aLookUpWithNoAnswerSaysNothing() {
         signsIn();
         sepay.stubFor(get(urlEqualTo("/v1/invoices/" + REFERENCE)).willReturn(aResponse().withStatus(503)));
@@ -487,7 +697,7 @@ class SepayEInvoiceContractTest {
         SepayEInvoiceProvider withoutKey = provider(new SepayEInvoiceProperties("SANDBOX", null, " ", null,
                 sepay.baseUrl(), sepay.baseUrl(), Duration.ofSeconds(2), Duration.ofMinutes(10)));
         EInvoiceProviderAccountService service = new EInvoiceProviderAccountService(accounts,
-                new EInvoiceProviders(List.of(withoutKey)), cipher);
+                new EInvoiceProviders(List.of(withoutKey), accounts), cipher);
 
         assertThatThrownBy(() -> service.activate(SepayEInvoiceProvider.CODE, 0))
                 .isInstanceOf(BusinessException.class).extracting(e -> ((BusinessException) e).errorCode())
@@ -498,7 +708,7 @@ class SepayEInvoiceContractTest {
         verify(accounts, never()).activate(SepayEInvoiceProvider.CODE, 0);
 
         EInvoiceProviderAccountService withKey = new EInvoiceProviderAccountService(accounts,
-                new EInvoiceProviders(List.of(provider())), cipher);
+                new EInvoiceProviders(List.of(provider()), accounts), cipher);
         withKey.activate(SepayEInvoiceProvider.CODE, 0);
         verify(accounts).activate(SepayEInvoiceProvider.CODE, 0);
     }
@@ -523,7 +733,7 @@ class SepayEInvoiceContractTest {
         HttpClientProperties http = new HttpClientProperties(Duration.ofSeconds(2), Duration.ofSeconds(2));
         SepayEInvoiceClient client = new SepayEInvoiceClient(new RestClientFactory(http), http, properties, json,
                 clock);
-        return new SepayEInvoiceProvider(client, properties, accounts, json, clock);
+        return new SepayEInvoiceProvider(client, properties, accounts, calls, json, clock);
     }
 
     private static InvoiceDocument invoice(String transactionId) {
@@ -550,6 +760,22 @@ class SepayEInvoiceContractTest {
                              "tax_authority_approved_date": "2026-01-02"},
                             {"id": "%s", "provider": "matbao", "active": true,
                              "tax_authority_approved_date": "2026-04-20"}]}}""".formatted(PROVIDER_ACCOUNT))));
+    }
+
+    /** The look-up has no invoice under the reference. */
+    private void notRecorded() {
+        sepay.stubFor(get(urlEqualTo("/v1/invoices/" + REFERENCE)).willReturn(aResponse().withStatus(404)
+                .withHeader("Content-Type", "application/json")
+                .withBody(error("NOT_FOUND", "Không tìm thấy hóa đơn"))));
+    }
+
+    /** The transaction's last submission was taken in under {@link #TRACKING}, and its tracking says {@code status}. */
+    private void tracked(String kind, String status, String message) {
+        when(calls.lastProviderReference(SepayEInvoiceProvider.CODE, TRANSACTION))
+                .thenReturn(Optional.of(kind + "/" + TRACKING));
+        sepay.stubFor(get(urlEqualTo("/v1/invoices/" + kind + "/check/" + TRACKING)).willReturn(okJson("""
+                {"success": true, "data": {"reference_code": "%s", "status": "%s", "message": %s}}""".formatted(
+                REFERENCE, status, message == null ? "null" : "\"" + message + "\""))));
     }
 
     private void issuedWithFiles() {

@@ -41,7 +41,10 @@ public final class BufferedUpload implements AutoCloseable {
                     output.write(bytes, 0, count);
                 }
             }
-            if (size != upload.sizeBytes()) { throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Upload size mismatch"); }
+            if (size != upload.sizeBytes()) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Upload size mismatch")
+                        .localized("refusal.upload.sizeMismatch");
+            }
             return new BufferedUpload(path, HexFormat.of().formatHex(digest.digest()));
         } catch (IOException ex) {
             cleanup(path); throw new StorageException("Could not buffer uploaded file", ex);

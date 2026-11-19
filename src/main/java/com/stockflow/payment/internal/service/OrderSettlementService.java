@@ -83,7 +83,8 @@ public class OrderSettlementService {
         OrderSettlement.Fee fee = command.feeAmount() == null ? OrderSettlement.Fee.none()
                 : new OrderSettlement.Fee(null, command.feeAmount(), command.feeReason(), command.feeDetail());
         OrderSettlement.Outcome outcome = OrderSettlement.closeRemainder(ofOrder, command.closureId(),
-                command.closedAmount(), fee, command.closedBy(), command.closedAt(), day(command.closedAt()));
+                command.closedAmount(), fee, command.closedBy(), command.closedAt(), day(command.closedAt()),
+                command.handedOverBatches());
         OrderSettlement settlement = save(outcome);
         log.info("Order {}: rest closed, {} {} worth; {} taken off {} installment(s), fee {} ({} of it owed), {} to "
                         + "refund", settlement.orderNumber(), settlement.closed(), settlement.currency(),
@@ -103,9 +104,12 @@ public class OrderSettlementService {
         if (ofOrder.isEmpty()) {
             return Optional.empty();
         }
+        // WF-05 TT-5: what earlier settlements made refundable is not refundable again (15 BR-14).
+        java.math.BigDecimal refundableBefore = settlements.ofOrder(command.orderId()).stream()
+                .map(OrderSettlement::refundable).reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
         OrderSettlement.Outcome outcome = OrderSettlement.returned(ofOrder, command.returnRequestId(),
-                command.deliveryBatchId(), command.returnedAmount(), command.settledBy(), command.settledAt(),
-                day(command.settledAt()));
+                command.deliveryBatchId(), command.returnedAmount(), command.handedOverBatches(), refundableBefore,
+                command.settledBy(), command.settledAt(), day(command.settledAt()));
         OrderSettlement settlement = save(outcome);
         log.info("Order {}: goods returned worth {} {}; {} taken off {} installment(s), {} to refund",
                 settlement.orderNumber(), settlement.closed(), settlement.currency(), settlement.reduced(),

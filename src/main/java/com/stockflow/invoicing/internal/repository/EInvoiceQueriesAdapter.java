@@ -142,8 +142,13 @@ class EInvoiceQueriesAdapter implements EInvoiceQueries {
         }
         java.util.Set<UUID> invoiced = new java.util.HashSet<>();
         jdbc.query("""
-                SELECT DISTINCT shipment_id FROM invoicing.einvoice
-                 WHERE shipment_id = ANY (?) AND status = 'ISSUED' AND type <> 'ADJUSTMENT'""",
+                SELECT DISTINCT i.shipment_id FROM invoicing.einvoice i
+                 WHERE i.shipment_id = ANY (?) AND i.status = 'ISSUED' AND i.type <> 'ADJUSTMENT'
+                   AND i.reversed_at IS NULL
+                   AND NOT EXISTS (SELECT 1 FROM invoicing.einvoice r
+                                    WHERE r.shipment_id = i.shipment_id AND r.type = 'ADJUSTMENT'
+                                      AND r.correction_basis = 'DELIVERY_FAILED'
+                                      AND r.status IN ('DRAFT', 'SUBMITTING', 'REJECTED'))""",
                 ps -> ps.setArray(1, ps.getConnection().createArrayOf("uuid", shipmentIds.toArray())),
                 row -> { invoiced.add(row.getObject(1, UUID.class)); });
         return invoiced;

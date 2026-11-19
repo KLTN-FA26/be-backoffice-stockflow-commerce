@@ -423,6 +423,12 @@ public enum ErrorCode {
     EINVOICE_NOT_DRAFT("Only a draft e-invoice can be changed", 409),
     /** WF-05 E2 (21 BR-06; NĐ 254 Phụ lục điểm 4.b): the buyer's name, tax code or address is missing, so the invoice is not issued. */
     EINVOICE_BUYER_PROFILE_INCOMPLETE("The buyer's name, tax code and address are needed before the invoice is issued", 409),
+    /**
+     * HĐ-8, kltn-docs 21 BR-06 and §4.2 step 4: the buyer has no e-mail to receive the invoice, so it is not issued until
+     * Sales records one on the customer and the accountant refreshes the buyer. Apart from the name, tax code and address
+     * because it is the business rule, not the law (legal review WF05-E0 L7: not invoice content), and the client tells
+     * the two apart.
+     */
     /** WF-05 E2 (21 BR-01): the shipment is not delivered, or delivered nothing an invoice can carry. */
     EINVOICE_NOT_INVOICEABLE("This shipment cannot be invoiced: it is not delivered", 409),
     /**
@@ -433,6 +439,11 @@ public enum ErrorCode {
     EINVOICE_DELIVERY_TIME_MISSING("The delivery has no delivery time to date its invoice by; record it first", 409),
     /** WF-05 E2 (TT 91 Điều 4): no invoice series is in use at the provider for the invoice's year. */
     EINVOICE_SERIES_NOT_CONFIGURED("No invoice series is configured for the invoice's year", 409),
+    /**
+     * HĐ-1: the provider does not list this template code and symbol among the account's templates (SePay:
+     * {@code GET /v1/provider-accounts/{id}}, {@code templates}), so every invoice sent under it would be refused.
+     */
+    EINVOICE_SERIES_NOT_AT_PROVIDER("The e-invoice provider does not offer this template code and symbol on the account", 409),
     /**
      * WF-05 E2, HĐ-2 (NĐ 254 Phụ lục điểm 2; TT 91 Điều 10 khoản 6a): an invoice of the same provider and series dated
      * earlier is at the provider and may already hold the next number; sending this one now could give it the lower
@@ -453,8 +464,24 @@ public enum ErrorCode {
     EINVOICE_PROVIDER_ACCOUNT_INCOMPLETE("The e-invoice provider's account is not stored yet", 409),
     /** WF-05 E3: an invoice at the provider is sent as a new transaction only when the provider no longer remembers the old one and confirms it holds no such invoice. */
     EINVOICE_RESUBMISSION_REFUSED("The e-invoice cannot be sent as a new transaction: the provider may hold it", 409),
+    /**
+     * HĐ-1: an invoice stuck at the provider is taken back (to REJECTED, reopenable) only when it has waited longer than
+     * the provider can still be working on it and the provider, asked now, has no record of it.
+     */
+    EINVOICE_WITHDRAWAL_REFUSED("The e-invoice cannot be taken back from the provider: it is too recent, or the provider may hold it", 409),
+    /**
+     * HĐ-1: an invoice whose last attempt was refused on the provider's processing report alone - its look-up never
+     * confirmed anything - is sent again under a new transaction only once the provider can no longer be working on
+     * the old one and, asked again, does not show it issued or in progress. Sent sooner, both could become invoices.
+     */
     /** WF-05 E3+E4: the provider in use writes every invoice as an original, so a correction sent to it would be a second invoice. */
     EINVOICE_PROVIDER_CANNOT_CORRECT("The e-invoice provider in use cannot issue adjustments or replacements yet; the correction is kept as a draft", 409),
+    /**
+     * HĐ-5: an adjustment or replacement goes through the provider that issued the invoice it corrects - only it knows
+     * that invoice - and that provider is no longer usable here (no implementation, no account, or no series in use for
+     * the year).
+     */
+    EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE("The provider that issued the original e-invoice is not usable any more; the correction is not sent to another provider", 409),
     /** WF-05 E4 (TT 91 Điều 10): only an issued invoice still in force is adjusted, replaced or notified as drawn up wrongly. */
     EINVOICE_NOT_IN_FORCE("Only an issued e-invoice that is still in force can be corrected", 409),
     /** WF-05 E4 (TT 91 Điều 10 khoản 6 điểm a): an invoice already adjusted is adjusted again, one replaced is replaced again. */
@@ -469,6 +496,12 @@ public enum ErrorCode {
     EINVOICE_ERROR_NOTICE_NOT_FOUND("Notice of an e-invoice drawn up wrongly not found", 404),
     /** WF-05 E4: a notice of this invoice is still on its way, or the notice asked about is already answered. */
     EINVOICE_ERROR_NOTICE_NOT_SENDABLE("This notice cannot be recorded or sent now: another one of the invoice is still open, or it is already answered", 409),
+    /**
+     * HĐ-6: the provider that issued the invoice has no call for a 04/SS-HĐĐT notice (SePay's API has none; Viettel's
+     * adapter sends none), so the notice is filed on the provider's or the tax authority's portal by hand, and nothing
+     * here records it as sent.
+     */
+    EINVOICE_ERROR_NOTICE_NOT_SUPPORTED("The e-invoice provider cannot send a notice of an invoice drawn up wrongly; file form 04/SS-HDDT on the provider's or the tax authority's portal", 409),
     /**
      * 4B-4, WF-05 E2, BE3-A: stockflow.seller.* is blank in this deployment; no quote PDF, contract or invoice names a
      * seller.
@@ -522,6 +555,12 @@ public enum ErrorCode {
     RETURN_REASON_NOT_ACCEPTED("Returns are accepted for defects and delivery faults only", 409),
     /** 03 §12: the return's status has no such step. */
     RETURN_INVALID_TRANSITION("This return cannot do that in its current status", 409),
+    /**
+     * WF-05 TH-3: a parcel of the return's goods is already in the warehouse, so the return is not withdrawn - that
+     * would leave those goods in quarantine with nothing refunded. Sales mark the goods complete instead.
+     */
+    RETURN_GOODS_PARTLY_RECEIVED("Some goods of this return are already back; it can no longer be withdrawn - mark "
+            + "its goods complete instead", 409),
     /** A defect is approved on evidence: at least one photo of the problem. */
     RETURN_EVIDENCE_REQUIRED("Add at least one photo of the problem before the return is approved", 409),
     RETURN_EVIDENCE_LIMIT_REACHED("This return has as many photos as it may hold", 409),
@@ -535,8 +574,9 @@ public enum ErrorCode {
     /** BR-CUS-003: a customer who is not ACTIVE opens no return themselves. */
     RETURN_CUSTOMER_NOT_ACTIVE("The customer account is not active", 409),
     /**
-     * Team plan 4D-3 (kltn-docs 15 §4.5): a return is refunded against the order's installments; an order paid any
-     * other way (a checkout order of before contracts) has none, and its return is refunded outside the system.
+     * Team plan 4D-3 (kltn-docs 15 §4.5): a return is refunded against the order's installments. An order with none had
+     * nothing paid in the system and is refunded at 0 (WF-05 TH-2); this answers only a refund worth something that
+     * finds no installment to settle against - a defect, never the normal answer.
      */
     RETURN_REFUND_NO_INSTALLMENTS("This order is not paid through a contract's installments; refund it outside the "
             + "system", 409),
@@ -548,6 +588,12 @@ public enum ErrorCode {
     ORDER_NOT_ON_HOLD("This order is not on hold", 409),
     /** G3-2: a credit hold is decided through credit approval, not resolved like the others. */
     ORDER_CREDIT_HOLD_USE_APPROVAL("A credit hold is decided through credit approval", 409),
+    /** WF-05 GH-2: the order's completion is paused already; release that hold first. */
+    ORDER_COMPLETION_ALREADY_HELD("This order's completion is already paused", 409),
+    /** WF-05 GH-2: releasing a completion hold on an order whose completion is not paused. */
+    ORDER_COMPLETION_NOT_HELD("This order's completion is not paused", 409),
+    /** WF-05 GH-2: an order completed, closed, cancelled or refunded has no completion left to pause. */
+    ORDER_COMPLETION_HOLD_NOT_APPLICABLE("This order can no longer be completed, so there is nothing to pause", 409),
     /**
      * WF-05 fix plan, section 2: a hold for a failed delivery is lifted by deciding its delivery failure case - deliver
      * again, or cancel what was not delivered - not resolved with a note.
@@ -850,6 +896,12 @@ public enum ErrorCode {
      */
     ORDER_DELIVERY_NOT_CORRECTABLE("This delivery can no longer be corrected", 409),
     /**
+     * WF-05 (gap after TH-1): a delivery with a return request against it, open or resolved, is not corrected to a
+     * failure - the customer claimed for goods they received, and the return's refund, quarantine and invoice
+     * adjustment all stand on that delivery.
+     */
+    ORDER_DELIVERY_HAS_RETURN("This delivery has a return request against it and cannot be corrected to a failure", 409),
+    /**
      * 4B-1 (18 BR-03, 14 BR-13): an instalment after delivery needs the customer's credit approved by accounting with a
      * limit above 0 - and that credit is not taken away while the default schedule still uses it.
      */
@@ -919,7 +971,8 @@ public enum ErrorCode {
     DESIGN_FILES_OUTDATED("Render the design's files again from its current layout", 409),
     /**
      * The print file of a design being approved is not what the press needs: not a PDF, or not one page per print
-     * area of the bleed box's size (kltn-docs 12 BR-09: the approval is refused and the design stays pending).
+     * area (a bag: one page, its flat sheet) whose BleedBox is the bleed box's size and whose TrimBox, if declared, is
+     * the trim (kltn-docs 12 BR-09: the approval is refused and the design stays pending).
      */
     DESIGN_PRINT_FILE_INVALID("The design's print file does not fit its template", 409),
     /** A design holds at most 100 images (Design Studio plan 2F-4). */

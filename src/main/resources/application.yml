@@ -463,13 +463,14 @@ stockflow:
     max-concurrent: 4
     acquire-timeout: PT15S
 
-  # The PDF/X output intent stamped into an approved print file (PrintOutputIntentProperties). Blank profile =
-  # the interim sRGB intent until the printer's ICC profile is chosen (open question B35); then e.g.
-  # profile: file:/etc/stockflow/ISOcoated_v2_eci.icc, output-condition-identifier: FOGRA39.
+  # The PDF/X output intent stamped into an approved print file (PrintOutputIntentProperties). By default the bundled
+  # ISO Coated v2 (ECI) profile, FOGRA39 - the one the storefront embeds (print/icc/README.md), so a laptop and the VPS
+  # need nothing installed. A printer's own profile: a classpath:/file: location or a plain path, with its condition
+  # identifier (required then). A blank profile falls back to the interim sRGB intent.
   design:
     print:
       output-intent:
-        profile: ${DESIGN_PRINT_ICC_PROFILE:}
+        profile: ${DESIGN_PRINT_ICC_PROFILE:classpath:print/icc/ISOcoated_v2_eci.icc}
         output-condition-identifier: ${DESIGN_PRINT_OUTPUT_CONDITION:}
         info: ${DESIGN_PRINT_OUTPUT_INFO:}
 
@@ -575,6 +576,21 @@ stockflow:
     # How long an invoice may wait for the provider's answer before the accountants are told it is stuck (the same
     # sweep). The reconciliation keeps asking either way.
     stuck-after: ${EINVOICE_STUCK_AFTER:PT30M}
+    # How long after it was last sent an invoice the provider has no record of may be taken back from it by the
+    # accountant (POST /api/v1/einvoices/{id}/withdrawal). Longer than two hours: SePay retries a request it took in for
+    # up to two hours, and the application refuses to start with less.
+    withdraw-after: ${EINVOICE_WITHDRAW_AFTER:PT3H}
+    # How long after an invoice was submitted the reconciliation may still send it again by itself while the provider
+    # has no record of it. Past it the invoice is only asked about, so its last send ages and the accountant can take
+    # it back withdraw-after later: sent again every quiet period for ever, it never could (HD-1).
+    auto-resend-for: ${EINVOICE_AUTO_RESEND_FOR:PT1H}
+    # How long after its last send an invoice the provider still "cannot say" anything about may be taken back by the
+    # accountant, after checking with the provider (HD-1). At least withdraw-after; without it such an invoice, and
+    # every later-dated one of its series, would wait for good.
+    withdraw-unknown-after: ${EINVOICE_WITHDRAW_UNKNOWN_AFTER:P1D}
+    # The provider's remaining invoices under which the accountants are warned, once a day (kltn-docs 21 BR-09). Only a
+    # provider that tells its quota (SePay: GET /v1/usage) is asked; 0 turns the warning off.
+    quota-warning-below: ${EINVOICE_QUOTA_WARNING_BELOW:50}
     sandbox:
       # How long the sandbox provider takes to "sign and get the tax authority's code" before a result is there.
       processing-delay: ${EINVOICE_SANDBOX_PROCESSING_DELAY:PT5S}

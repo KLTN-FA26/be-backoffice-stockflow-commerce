@@ -118,7 +118,8 @@ public class PaymentReceiptService {
     @Auditable(action = AuditAction.CREATE, resourceType = "payment-receipt", resourceId = "#result?.receipt()?.id()")
     public ReceiptDetail record(RecordReceiptCommand command) {
         if (command.customerId() == null || customers.findById(command.customerId()).isEmpty()) {
-            throw new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND, "No customer " + command.customerId());
+            throw new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND, "No customer " + command.customerId())
+                    .localized("refusal.payment.customerNotFound");
         }
         Instant now = clock.instant();
         LocalDate today = LocalDate.ofInstant(now, InstallmentService.BUSINESS_ZONE);
@@ -141,14 +142,17 @@ public class PaymentReceiptService {
         for (PaymentReceipt.Line line : receipt.lines()) {
             Installment installment = installments.get(line.installmentId());
             if (installment == null) {
-                throw new BusinessException(ErrorCode.INSTALLMENT_NOT_FOUND, "No installment " + line.installmentId());
+                throw new BusinessException(ErrorCode.INSTALLMENT_NOT_FOUND, "No installment " + line.installmentId())
+                        .localized("refusal.payment.installmentNotFound");
             }
             if (!installment.customerId().equals(receipt.customerId())) {
                 throw new BusinessException(ErrorCode.INSTALLMENT_CUSTOMER_MISMATCH, ("Installment %d of contract %s "
-                        + "is another customer's").formatted(installment.seq(), installment.contractNumber()));
+                        + "is another customer's").formatted(installment.seq(), installment.contractNumber()))
+                        .localized("refusal.payment.otherCustomer", installment.seq(), installment.contractNumber());
             }
             if (!installment.currency().equals(currency)) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "One receipt is in one currency");
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "One receipt is in one currency")
+                        .localized("refusal.payment.oneCurrency");
             }
             InstallmentOrder order = payable.get(installment.orderId());
             // A cancelled order's fee item is what it still owes (4B-9, 15 §4.6 step 18): that money is taken.
@@ -156,7 +160,8 @@ public class PaymentReceiptService {
                 // 15 BR-06, edge "tiền về sau khi đơn đã huỷ": money for a cancelled order is settled outside.
                 throw new BusinessException(ErrorCode.INSTALLMENT_NOT_PAYABLE, ("Installment %d of contract %s is of "
                         + "order %s, which is cancelled").formatted(installment.seq(), installment.contractNumber(),
-                        order.orderNumber()));
+                        order.orderNumber())).localized("refusal.payment.orderCancelled", installment.seq(),
+                        installment.contractNumber(), order.orderNumber());
             }
             installment.pay(line.amount(), now);
         }
@@ -231,7 +236,8 @@ public class PaymentReceiptService {
                     || SETTLED.contains(order.status()) || settledOnPaid.contains(installment.orderId()))) {
                 throw new BusinessException(ErrorCode.PAYMENT_RECEIPT_VOID_NOT_ALLOWED, ("Receipt %s paid order %s, "
                         + "which is %s: its money is settled with the order").formatted(receipt.reference(),
-                        order.orderNumber(), order.status()));
+                        order.orderNumber(), order.status())).localized("refusal.payment.voidSettled",
+                        receipt.reference(), order.orderNumber());
             }
             installment.unpay(line.amount());
         }
@@ -245,7 +251,8 @@ public class PaymentReceiptService {
         if (!leftShort.isEmpty() && !command.holdOrders()) {
             throw new BusinessException(ErrorCode.PAYMENT_RECEIPT_VOID_NEEDS_HOLD, ("Voiding receipt %s leaves order(s) "
                     + "%s short of the installment on signing they were confirmed by: confirm putting them on hold")
-                    .formatted(receipt.reference(), String.join(", ", leftShort)));
+                    .formatted(receipt.reference(), String.join(", ", leftShort)))
+                    .localized("refusal.payment.voidNeedsHold", receipt.reference(), String.join(", ", leftShort));
         }
         PaymentReceipt saved = book.saveVoided(receipt);
         receipt.lines().forEach(line -> book.save(installments.get(line.installmentId())));
@@ -292,11 +299,13 @@ public class PaymentReceiptService {
     }
 
     private static BusinessException notFound(UUID receiptId) {
-        return new BusinessException(ErrorCode.PAYMENT_RECEIPT_NOT_FOUND, "No payment receipt " + receiptId);
+        return new BusinessException(ErrorCode.PAYMENT_RECEIPT_NOT_FOUND, "No payment receipt " + receiptId)
+                .localized("refusal.payment.receiptNotFound");
     }
 
     private static BusinessException referenceInUse(String reference) {
         return new BusinessException(ErrorCode.PAYMENT_RECEIPT_REFERENCE_IN_USE,
-                "Statement line %s is already recorded".formatted(reference));
+                "Statement line %s is already recorded".formatted(reference))
+                .localized("refusal.payment.referenceInUse", reference);
     }
 }

@@ -47,7 +47,7 @@ public class ReturnRequestQueries {
                        ReturnStatus status, ReturnReason reason, ReturnResolution requestedResolution, String channel,
                        Instant requestedAt, Instant returnDeadline, BigDecimal settlementAmount,
                        BigDecimal refundedAmount, BigDecimal offsetAmount, String currency,
-                       boolean vatAdjustmentRequired, Instant closedAt, long version) {
+                       boolean vatAdjustmentRequired, Instant closedAt, long version, UUID shipmentId) {
     }
 
     /** One return with its status history, oldest first. */
@@ -147,7 +147,7 @@ public class ReturnRequestQueries {
         return new Item(row.id(), row.rmaNumber(), row.orderId(), row.orderNumber(), row.customerId(), row.status(),
                 row.reason(), row.requestedResolution(), row.channel(), row.requestedAt(), row.returnDeadline(),
                 row.settlementAmount(), row.refundedAmount(), row.offsetAmount(), row.currency(),
-                row.vatAdjustmentRequired(), row.closedAt(), row.version());
+                row.vatAdjustmentRequired(), row.closedAt(), row.version(), row.shipmentId());
     }
 
     private static BusinessException notFound(UUID returnId) {

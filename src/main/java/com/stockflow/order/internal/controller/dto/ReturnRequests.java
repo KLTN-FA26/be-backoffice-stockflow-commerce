@@ -46,7 +46,9 @@ public final class ReturnRequests {
             @Size(max = 500, message = "lateClaimReason is at most 500 characters") String lateClaimReason,
             @Schema(description = "The delivered shipment the goods came on (WF-05 TH-1: one return per delivery). "
                     + "Omitted: the order's only delivered shipment; required (RETURN_SHIPMENT_REQUIRED) once the order "
-                    + "was delivered in several. A shipment not delivered: RETURN_SHIPMENT_NOT_DELIVERED")
+                    + "was delivered in several. A shipment not delivered: RETURN_SHIPMENT_NOT_DELIVERED. The customer "
+                    + "reads it from GET /api/v1/orders/me/{orderId} as shipments[].shipmentId (CustomerOrderShipment); "
+                    + "back-office from the order's shipments")
             UUID shipmentId) {
     }
 
@@ -88,6 +90,12 @@ public final class ReturnRequests {
     }
 
     public record Version(Long version) {
+    }
+
+    @Schema(description = "The goods of an AWAITING_RETURN return are all here, fewer than approved (WF-05 TH-3)")
+    public record GoodsComplete(
+            @Size(max = 500, message = "note is at most 500 characters") String note,
+            Long version) {
     }
 
     @Schema(description = "Close a RECEIVED return with no refund: nothing approved came back usable (WF-05 TH-4)")

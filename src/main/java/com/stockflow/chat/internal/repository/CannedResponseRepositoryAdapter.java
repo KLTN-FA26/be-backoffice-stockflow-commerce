@@ -48,7 +48,7 @@ class CannedResponseRepositoryAdapter implements CannedResponseRepository {
         if (response.shortcut() != null && response.archivedAt() == null
                 && responses.shortcutTaken(response.ownerId(), response.shortcut(), response.id())) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "The shortcut /" + response.shortcut() + " is already used by another saved reply");
+                    "The shortcut /" + response.shortcut() + " is already used by another saved reply").localized("refusal.chat.shortcutTaken", response.shortcut());
         }
         CannedResponseJpaEntity entity = responses.findById(response.id())
                 .orElseGet(() -> new CannedResponseJpaEntity(response.id(), response.ownerId()));

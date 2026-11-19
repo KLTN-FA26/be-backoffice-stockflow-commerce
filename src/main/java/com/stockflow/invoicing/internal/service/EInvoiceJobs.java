@@ -26,7 +26,9 @@ import java.util.UUID;
  *       and once its deadline has passed, reminded once a day for as long as it is not issued (HĐ-2) - an invoice left
  *       in draft or stuck at the provider is late every day it stays so. In the same sweep they are told, once per
  *       submission, of an invoice that has waited for the provider's answer for too long (WF-05 E5): the
- *       reconciliation keeps asking, but somebody has to know.</li>
+ *       reconciliation keeps asking, but somebody has to know. And the provider's remaining invoices are looked at
+ *       ({@link EInvoiceQuotaWatch}, kltn-docs 21 BR-09), so a plan running out is known before invoices are
+ *       refused for it.</li>
  * </ul>
  *
  * <p>Bounded batches, the most urgent first; what does not fit waits for the next run. One invoice failing does not
@@ -52,10 +54,15 @@ class EInvoiceJobs {
 
     private final EInvoiceWorkQueues queues;
     private final EInvoiceIssuance issuance;
+    private final EInvoiceQuotaWatch quota;
+    private final EInvoiceDrafts drafts;
 
-    EInvoiceJobs(EInvoiceWorkQueues queues, EInvoiceIssuance issuance) {
+    EInvoiceJobs(EInvoiceWorkQueues queues, EInvoiceIssuance issuance, EInvoiceQuotaWatch quota,
+                 EInvoiceDrafts drafts) {
         this.queues = queues;
         this.issuance = issuance;
+        this.quota = quota;
+        this.drafts = drafts;
     }
 
     @Scheduled(initialDelayString = "${stockflow.invoicing.reconcile-interval:PT30S}",
@@ -80,6 +87,11 @@ class EInvoiceJobs {
             log.info("E-invoices: {} close to their deadline, {} past it and {} stuck at the provider announced",
                     warned, reminded, stuck);
         }
+        try {
+            quota.check();
+        } catch (RuntimeException failure) {
+            log.warn("The e-invoice provider's quota was not looked at: {}", failure.toString());
+        }
     }
 
     /** @return how many invoices were asked about */
@@ -101,11 +113,22 @@ class EInvoiceJobs {
         return done;
     }
 
-    /** @return how many drafts were sent to the provider */
+    /**
+     * Sends the drafts the automatic issuing takes, each checked first against the rules as they are now
+     * ({@link EInvoiceDrafts#recheckForAutomaticIssue}): a draft drawn up before a rule existed - the e-mail warning, a
+     * VAT reduction period - is held back with its warning instead of being issued as the rule never was.
+     *
+     * @return how many drafts were sent to the provider
+     */
     int issueAutomatically() {
         int done = 0;
         for (UUID id : queues.autoIssuable(BATCH)) {
             try {
+                if (!drafts.recheckForAutomaticIssue(id)) {
+                    log.info("E-invoice {} was not issued automatically: it no longer is what drawing it up now "
+                            + "gives, and waits for the accountant", id);
+                    continue;
+                }
                 issuance.issue(id, null, null);
                 done++;
             } catch (BusinessException refused) {

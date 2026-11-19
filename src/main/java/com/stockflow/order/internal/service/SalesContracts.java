@@ -80,7 +80,11 @@ public interface SalesContracts {
     record PlanSuggestion(UUID contractId, long version, BigDecimal totalAmount, List<InstallmentView> paymentPlan) { }
 
     /**
-     * @param creditWarning    set only on the answer to a send that warned
+     * @param creditWarning    what the plan's part paid after delivery would ask of the customer's credit, when it does
+     *                         not fit (15 BR-10, BR-11): shown on a DRAFT contract - read, drawn up or edited - so Sales
+     *                         decide before sending, as 14 §4.3 step 13 has it (change the plan, or send and let accounting
+     *                         decide at signing), and on the answer to a send that warned; null otherwise, and never on
+     *                         the customer's copy
      * @param returnWindowDays the complaint period agreed, in calendar days from each delivery (Luật Thương mại Điều
      *                         318; WF-05 TH-1); null on a contract drawn up before it was written down, whose returns
      *                         use the configured default

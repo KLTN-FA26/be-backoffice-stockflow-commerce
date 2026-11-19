@@ -228,13 +228,13 @@ public final class Conversation extends AggregateRoot {
         requireNotClosed();
         Objects.requireNonNull(agentId, "agentId");
         if (agentId.equals(assignedAgentId)) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The conversation is already theirs");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The conversation is already theirs").localized("refusal.chat.alreadyTheirs");
         }
         UUID previous = assignedAgentId;
         if (previous == null) {
             if (!by.supervisor()) {
                 throw new BusinessException(ErrorCode.CHAT_NOT_ASSIGNEE,
-                        "Only a chat supervisor assigns a conversation; take it yourself instead");
+                        "Only a chat supervisor assigns a conversation; take it yourself instead").localized("refusal.chat.supervisorAssigns");
             }
         } else if (!by.supervisor() && !previous.equals(by.userId())) {
             throw new BusinessException(ErrorCode.CHAT_NOT_ASSIGNEE);
@@ -375,21 +375,22 @@ public final class Conversation extends AggregateRoot {
         if (target == null || target.isInitial() || target == ConversationStatus.REOPENED
                 || target == ConversationStatus.AUTO_CLOSED || target == ConversationStatus.CLOSED) {
             throw new BusinessException(ErrorCode.CHAT_TRANSITION_NOT_ALLOWED,
-                    "A conversation is not moved to " + target + " by hand");
+                    "A conversation is not moved to " + target + " by hand").localized("refusal.chat.notByHand", target);
         }
         if (!status.canMoveTo(target)) {
             throw new BusinessException(ErrorCode.CHAT_TRANSITION_NOT_ALLOWED,
-                    status + " -> " + target + " is not a move of the conversation (16 §5)");
+                    status + " -> " + target + " is not a move of the conversation (16 §5)")
+                    .localized("refusal.chat.notAMove", status, target);
         }
         if (status == ConversationStatus.ESCALATED && !by.supervisor()) {
             throw new BusinessException(ErrorCode.CHAT_NOT_ASSIGNEE,
-                    "An escalated conversation is the chat supervisor's to take further");
+                    "An escalated conversation is the chat supervisor's to take further").localized("refusal.chat.escalatedSupervisor");
         }
         requireInCharge(by);
         String why = reason == null || reason.isBlank() ? null : reason.strip();
         if (target == ConversationStatus.ESCALATED) {
             if (why == null) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Say why the conversation is escalated");
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Say why the conversation is escalated").localized("refusal.chat.escalationReason");
             }
             escalationReason = why.length() > 1000 ? why.substring(0, 1000) : why;
         }
@@ -418,7 +419,7 @@ public final class Conversation extends AggregateRoot {
             throw new BusinessException(ErrorCode.CHAT_TRANSITION_NOT_ALLOWED, status + " -> CLOSED (16 §5)");
         }
         if (reopensAt(now)) {
-            throw new BusinessException(ErrorCode.CHAT_TRANSITION_NOT_ALLOWED, "The reopen window is still open");
+            throw new BusinessException(ErrorCode.CHAT_TRANSITION_NOT_ALLOWED, "The reopen window is still open").localized("refusal.chat.reopenWindowOpen");
         }
         closedAt = now;
         move(ConversationStatus.CLOSED, Actor.system(), now, null);
@@ -498,7 +499,7 @@ public final class Conversation extends AggregateRoot {
      */
     public void rate(Actor customer, int score, String comment, Instant now) {
         if (!customer.isCustomer()) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "Only the customer rates the conversation");
+            throw new BusinessException(ErrorCode.FORBIDDEN, "Only the customer rates the conversation").localized("refusal.chat.customerRates");
         }
         if (csatSubmittedAt != null) {
             throw new BusinessException(ErrorCode.CHAT_CSAT_ALREADY_GIVEN);
@@ -507,12 +508,12 @@ public final class Conversation extends AggregateRoot {
             throw new BusinessException(ErrorCode.CHAT_CSAT_NOT_OPEN);
         }
         if (score < 1 || score > 5) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A rating is 1 to 5 stars");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A rating is 1 to 5 stars").localized("refusal.chat.ratingRange");
         }
         String said = comment == null || comment.isBlank() ? null : SensitiveData.mask(comment.strip());
         if (said != null && said.length() > MAX_CSAT_COMMENT) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "A comment is at most " + MAX_CSAT_COMMENT + " characters");
+                    "A comment is at most " + MAX_CSAT_COMMENT + " characters").localized("refusal.chat.commentTooLong", MAX_CSAT_COMMENT);
         }
         csatScore = score;
         csatComment = said;
@@ -558,7 +559,8 @@ public final class Conversation extends AggregateRoot {
     private void move(ConversationStatus target, Actor by, Instant now, String note) {
         if (!status.canMoveTo(target)) {
             throw new BusinessException(ErrorCode.CHAT_TRANSITION_NOT_ALLOWED,
-                    status + " -> " + target + " is not a move of the conversation (16 §5)");
+                    status + " -> " + target + " is not a move of the conversation (16 §5)")
+                    .localized("refusal.chat.notAMove", status, target);
         }
         ConversationStatus from = status;
         status = target;
@@ -606,7 +608,7 @@ public final class Conversation extends AggregateRoot {
 
     private void requireStaff(Actor actor) {
         if (!actor.isStaff()) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "This is the staff's to do");
+            throw new BusinessException(ErrorCode.FORBIDDEN, "This is the staff's to do").localized("refusal.chat.staffAction");
         }
     }
 
@@ -619,7 +621,7 @@ public final class Conversation extends AggregateRoot {
     private void requireStatus(ConversationStatus expected) {
         if (status != expected) {
             throw new BusinessException(ErrorCode.CHAT_TRANSITION_NOT_ALLOWED,
-                    "Expected a " + expected + " conversation, it is " + status);
+                    "Expected a " + expected + " conversation, it is " + status).localized("refusal.chat.expectedStatus", expected, status);
         }
     }
 

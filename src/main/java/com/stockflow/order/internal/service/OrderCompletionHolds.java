@@ -1,0 +1,153 @@
+package com.stockflow.order.internal.service;
+
+import com.stockflow.common.audit.AuditAction;
+import com.stockflow.common.audit.Auditable;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.id.Identifiers;
+import com.stockflow.order.api.OrderStatus;
+import com.stockflow.order.internal.domain.CompletionHoldReason;
+import com.stockflow.order.internal.domain.Order;
+import com.stockflow.order.internal.domain.OrderId;
+import com.stockflow.order.internal.domain.OrderRepository;
+import com.stockflow.order.internal.entity.OrderCompletionHoldJpaEntity;
+import com.stockflow.order.internal.repository.OrderCompletionHoldJpaRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.EnumSet;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+
+/**
+ * Pauses an order's automatic completion while a delivery is verified (WF-05 GH-2), and lifts the pause.
+ *
+ * <p><b>Why.</b> The carrier reports a delivery the customer says never arrived. Until the warehouse manager has
+ * checked with the carrier - and corrected the outcome to a failure (kltn-docs 09 §4.3 step 5) or confirmed it - the
+ * nightly run would complete the order as soon as the return window passed and the money was in (17 §4.6 step 21), and
+ * a completed order's deliveries are no longer corrected: the invoice and the receivable could not be put right inside
+ * the system any more. Sales hold the completion, with a reason; the nightly run passes the order by
+ * ({@link OrderSettlementService#complete}) and finds it again every night until the hold is released.</p>
+ *
+ * <p><b>Why not ON_HOLD.</b> ON_HOLD is a status the order takes in place of its own (17 §4.9): set only up to PACKED,
+ * it stops every batch's fulfilment, and a delivered order put ON_HOLD would no longer read as delivered - which the
+ * installments after delivery count from. A completion hold changes neither the status nor any batch: it is a row
+ * the completion step reads ({@code ordering.order_completion_hold}), one open per order, kept after release.</p>
+ *
+ * <p>Under the order's row lock, the lock the completion takes: a hold set while the night's run looks at the order
+ * is either seen by it or comes after the order is completed - then refused here, as any hold of a completed order
+ * is. {@code tg_order_completion_hold_respected} states the rule once more in the database.</p>
+ */
+@Service
+public class OrderCompletionHolds {
+
+    private static final Logger log = LoggerFactory.getLogger(OrderCompletionHolds.class);
+
+    /** Statuses from which the order never completes: there is nothing left to pause. */
+    private static final Set<OrderStatus> PAST_COMPLETION = EnumSet.of(OrderStatus.COMPLETED, OrderStatus.CLOSED,
+            OrderStatus.CANCELLED, OrderStatus.RETURNED, OrderStatus.REFUNDED, OrderStatus.PARTIALLY_REFUNDED);
+
+    /** A pause of the order's completion, open while {@code releasedAt} is null. */
+    public record CompletionHold(UUID id, UUID orderId, CompletionHoldReason reason, String note, Instant heldAt,
+                                 UUID heldBy, Instant releasedAt, UUID releasedBy, String releaseNote) {
+    }
+
+    private final OrderRepository orders;
+    private final OrderCompletionHoldJpaRepository holds;
+    private final Clock clock;
+
+    OrderCompletionHolds(OrderRepository orders, OrderCompletionHoldJpaRepository holds, Clock clock) {
+        this.orders = orders;
+        this.holds = holds;
+        this.clock = clock;
+    }
+
+    /** The order's open completion hold; empty when its completion is not paused. */
+    @Transactional(readOnly = true)
+    public Optional<CompletionHold> current(UUID orderId) {
+        if (orders.findById(new OrderId(orderId)).isEmpty()) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId);
+        }
+        return holds.findFirstByOrderIdAndReleasedAtIsNull(orderId).map(OrderCompletionHolds::toHold);
+    }
+
+    /**
+     * Pauses the order's completion. OTHER says why in the note.
+     *
+     * @throws BusinessException {@code NOT_FOUND}; {@code VALIDATION_FAILED} for OTHER without a note or a note over
+     *         1000 characters; {@code ORDER_COMPLETION_HOLD_NOT_APPLICABLE} for an order completed, closed, cancelled,
+     *         returned or refunded; {@code ORDER_COMPLETION_ALREADY_HELD}
+     */
+    @Transactional
+    @Auditable(action = AuditAction.UPDATE, resourceType = "order", resourceId = "#orderId")
+    public CompletionHold hold(UUID orderId, CompletionHoldReason reason, String note, UUID by) {
+        if (reason == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "reasonCode: DELIVERY_DISPUTED or OTHER");
+        }
+        String trimmed = note == null || note.isBlank() ? null : note.strip();
+        if ((reason == CompletionHoldReason.OTHER && trimmed == null) || (trimmed != null && trimmed.length() > 1000)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "note: what the pause is for, at most 1000 characters (required for OTHER)");
+        }
+        Order order = lock(orderId);
+        if (PAST_COMPLETION.contains(order.status())) {
+            throw new BusinessException(ErrorCode.ORDER_COMPLETION_HOLD_NOT_APPLICABLE,
+                    "Order %s is %s: it will not be completed".formatted(order.orderNumber(), order.status()));
+        }
+        if (holds.findFirstByOrderIdAndReleasedAtIsNull(orderId).isPresent()) {
+            throw new BusinessException(ErrorCode.ORDER_COMPLETION_ALREADY_HELD,
+                    "The completion of order %s is paused already".formatted(order.orderNumber()));
+        }
+        OrderCompletionHoldJpaEntity held = holds.saveAndFlush(new OrderCompletionHoldJpaEntity(Identifiers.newId(),
+                orderId, reason.name(), trimmed, now(), by));
+        log.info("Order {}: completion paused ({})", order.orderNumber(), reason);
+        return toHold(held);
+    }
+
+    /**
+     * Lifts the pause: the next nightly run completes the order if everything else holds. A note says what the
+     * verification found.
+     *
+     * @throws BusinessException {@code NOT_FOUND}; {@code VALIDATION_FAILED} without a note or with one over 1000
+     *         characters; {@code ORDER_COMPLETION_NOT_HELD}
+     */
+    @Transactional
+    @Auditable(action = AuditAction.UPDATE, resourceType = "order", resourceId = "#orderId")
+    public CompletionHold release(UUID orderId, String note, UUID by) {
+        String trimmed = note == null || note.isBlank() ? null : note.strip();
+        if (trimmed == null || trimmed.length() > 1000) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "note: what the verification found, at most 1000 characters");
+        }
+        Order order = lock(orderId);
+        OrderCompletionHoldJpaEntity open = holds.findFirstByOrderIdAndReleasedAtIsNull(orderId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.ORDER_COMPLETION_NOT_HELD,
+                        "The completion of order %s is not paused".formatted(order.orderNumber())));
+        open.release(by, trimmed, now());
+        OrderCompletionHoldJpaEntity released = holds.saveAndFlush(open);
+        log.info("Order {}: completion pause released", order.orderNumber());
+        return toHold(released);
+    }
+
+    /** To the microsecond the database keeps: what a call answers is what a later read finds. */
+    private Instant now() {
+        return clock.instant().truncatedTo(ChronoUnit.MICROS);
+    }
+
+    private Order lock(UUID orderId) {
+        return orders.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
+    }
+
+    private static CompletionHold toHold(OrderCompletionHoldJpaEntity row) {
+        return new CompletionHold(row.getId(), row.getOrderId(), CompletionHoldReason.valueOf(row.getReason()),
+                row.getNote(), row.getHeldAt(), row.getHeldBy(), row.getReleasedAt(), row.getReleasedBy(),
+                row.getReleaseNote());
+    }
+}

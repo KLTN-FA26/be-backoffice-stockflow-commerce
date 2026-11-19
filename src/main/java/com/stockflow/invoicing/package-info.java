@@ -13,8 +13,10 @@
  *
  * <p>{@code notification :: api}, only to answer its question about an issued invoice ({@code EInvoiceDirectory}:
  * what the mail to the buyer says and its two files, WF-05 E5). Notification hears of an issued, a refused and a stuck
- * invoice through {@code EInvoiceIssued} and {@code EInvoiceNeedsAttention} from {@code contracts}; this module sends
- * nothing itself.</p>
+ * invoice through {@code EInvoiceIssued} and {@code EInvoiceNeedsAttention} from {@code contracts}, of the provider's
+ * account needing somebody on its portal through {@code EInvoiceProviderAccountAlert} (HĐ-1), and of a buyer whose
+ * profile lacks what an invoice needs through {@code EInvoiceBuyerIncomplete} (HĐ-8); this module sends nothing
+ * itself.</p>
  *
  * <p>An issued invoice is never cancelled or changed. What was wrong is corrected the ways TT 91/2026/TT-BTC Điều 10
  * gives (WF-05 E4): a notice and no invoice for a wrong buyer name or address ({@code EInvoiceErrorNotices}); an
@@ -28,8 +30,10 @@
  * it.</p>
  *
  * <p>The provider is a port ({@code EInvoiceProvider}). {@code SandboxProvider} is the default at capstone scale and
- * issues nothing of legal value; a real provider (Viettel SInvoice, package E3) is another implementation of the same
- * port, chosen by {@code invoicing.einvoice_provider_config}, with no change to the invoice's own rules.</p>
+ * issues nothing of legal value; a real provider (Viettel SInvoice, package E3; SePay eInvoice) is another
+ * implementation of the same port, chosen by {@code invoicing.einvoice_provider_config}, with no change to the invoice's
+ * own rules. An adjustment or a replacement goes through the provider that issued the invoice it corrects, whichever is
+ * in use (HĐ-5).</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
  * <ul>

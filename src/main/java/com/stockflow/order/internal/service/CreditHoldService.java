@@ -142,7 +142,8 @@ public class CreditHoldService {
         var hold = holds.findFirstByOrderIdAndResolvedAtIsNullOrderByRaisedAtDesc(orderId)
                 .filter(h -> OrderServiceImpl.CREDIT_HOLD.equals(h.getReason()))
                 .orElseThrow(() -> new BusinessException(ErrorCode.ORDER_NOT_ON_CREDIT_HOLD,
-                        "Order %s is not waiting for a credit decision".formatted(order.orderNumber())));
+                        "Order %s is not waiting for a credit decision".formatted(order.orderNumber()))
+                        .localized("refusal.credit.notHeld", order.orderNumber().value()));
         CreditChecks.Check held = creditChecks.latest(orderId).orElseThrow();
         Instant now = clock.instant();
         creditChecks.record(new CreditChecks.Check(orderId, now, held.creditLimit(), held.exposure(), held.orderAmount(),
@@ -153,7 +154,8 @@ public class CreditHoldService {
 
     private static void requireNote(String note) {
         if (note == null || note.isBlank()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A credit decision must say why");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A credit decision must say why")
+                    .localized("refusal.credit.noteRequired");
         }
     }
 }

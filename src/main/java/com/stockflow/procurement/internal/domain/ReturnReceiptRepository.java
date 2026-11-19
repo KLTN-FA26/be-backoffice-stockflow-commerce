@@ -19,6 +19,9 @@ public interface ReturnReceiptRepository {
     /** The receipt not cancelled for this returned shipment, if any ({@code uk_goods_receipts_return_shipment}). */
     Optional<ReturnReceipt> findLiveForShipment(UUID shipmentId);
 
-    /** The receipt not cancelled for this return request, if any ({@code uk_goods_receipts_return_request}). */
-    Optional<ReturnReceipt> findLiveForReturnRequest(UUID returnRequestId);
+    /**
+     * The draft receipt of this return request, if any ({@code uk_goods_receipts_return_request_draft}). A return may
+     * come back in several parcels, each on a receipt of its own (WF-05 TH-3), one being counted at a time.
+     */
+    Optional<ReturnReceipt> findDraftForReturnRequest(UUID returnRequestId);
 }

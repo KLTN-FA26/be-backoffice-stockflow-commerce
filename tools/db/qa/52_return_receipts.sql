@@ -195,6 +195,16 @@ SELECT pg_temp.expect_fail('RR19 a second open return receipt for the same shipm
     pg_temp.receipt('qa52:r:s1b', 'qa52:o1', 'qa52:s1', NULL, 'HCM-RTV01'));
 SELECT pg_temp.expect_fail('RR20 a second open return receipt for the same return request',
     pg_temp.receipt('qa52:r:rma1b', 'qa52:o1', NULL, 'qa52:rma1', 'HCM-QC01'));
+-- WF-05 TH-3 (V20261202000300): the goods of a return may come in several parcels, each on a receipt of its own - one
+-- draft at a time, any number confirmed.
+SELECT pg_temp.expect_ok('RR20b a confirmed return receipt of the return request does not hold its next draft back', $q$
+    INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by,
+                                            receipt_type, customer_order_id, return_request_id, quarantine_location_id,
+                                            confirmed_at, confirmed_by, closed_at)
+    VALUES (md5('qa52:r:rma1c')::uuid, 'GR-QA52-R1C', md5('demo:wh:HCM')::uuid, 'CLOSED', NOW(),
+            md5('demo:user:editor')::uuid, 'RETURN', md5('qa52:o1')::uuid, md5('qa52:rma1')::uuid,
+            (SELECT id FROM warehouse.storage_location WHERE location_code = 'HCM-QC01'), NOW(),
+            md5('demo:user:editor')::uuid, NOW()) $q$);
 SELECT pg_temp.expect_ok('RR21 a cancelled return receipt does not block a new one for its shipment', $q$
     INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by,
                                             receipt_type, customer_order_id, return_shipment_id, quarantine_location_id)

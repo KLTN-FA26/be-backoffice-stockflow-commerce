@@ -364,8 +364,10 @@ class CustomerDesignIntegrationTest {
     @Test
     void aDesignThatIsNoLongerADraftDoesNotChange() throws Exception {
         String id = started().get("id").asText();
-        tx.executeWithoutResult(s -> jdbc.update(
-                "UPDATE design.design_draft SET status = 'PENDING_REVIEW', review_requested_at = NOW() WHERE id = ?::uuid", id));
+        // Submitted from another tab: the status and the version both moved. The tab still holding version 0 is told
+        // the design is no longer a draft (FE request 2026-11-18 BE-15), not that it is stale - as a submission is.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE design.design_draft SET status = 'PENDING_REVIEW',"
+                + " review_requested_at = NOW(), version = version + 1 WHERE id = ?::uuid", id));
 
         save(id, 0, layout("")).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("DESIGN_NOT_DRAFT"));
@@ -471,7 +473,11 @@ class CustomerDesignIntegrationTest {
                 .content("{\"version\":" + version + "}")).andExpect(status().isOk());
         as(owner);
 
-        mvc.perform(get("/api/v1/designs/" + id + "/template")).andExpect(jsonPath("$.data.active").value(false));
+        // BE-11: no longer offered for new designs, still one this draft is submitted on (its variant is unchanged) -
+        // which the catalogue, listing only active templates, cannot tell the studio. This fixture has no carton.
+        mvc.perform(get("/api/v1/designs/" + id + "/template")).andExpect(jsonPath("$.data.active").value(false))
+                .andExpect(jsonPath("$.data.designable").value(true))
+                .andExpect(jsonPath("$.data.hasCartonSpec").value(false));
         save(id, 0, layout(text("t1"))).andExpect(status().isOk());
         start("Bản mới").andExpect(status().isNotFound());
     }

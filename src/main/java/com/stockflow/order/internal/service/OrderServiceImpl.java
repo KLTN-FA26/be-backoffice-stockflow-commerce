@@ -902,6 +902,17 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                                                 com.stockflow.order.api.DeliveryFailureReason reason, String note,
                                                 Instant at, UUID by) {
         Order order = lockOrder(orderId);
+        // WF-05, the gap left after TH-1: a return against this delivery says the customer received its goods - they
+        // claim for them, and the claim's refund, its cartons in quarantine and its invoice adjustment all stand on
+        // the delivery. Undoing the delivery under them would leave a refund for goods "never delivered", an installment
+        // taken back while its refund is credited to it, and an invoice reduced twice. Read under the order's lock,
+        // which opening a return takes too: one of the two sees the other. A carrier that really failed is settled by
+        // closing the return first (rejected or cancelled); a resolved one stays, and so does the delivery.
+        if (repository.hasReturnAgainst(orderId, shipmentId)) {
+            throw new BusinessException(ErrorCode.ORDER_DELIVERY_HAS_RETURN, ("Shipment %s of order %s has a return "
+                    + "request against it: its delivery is not corrected to a failure").formatted(shipmentId,
+                    order.orderNumber()));
+        }
         if (!order.correctShipmentToFailed(shipmentId, reason, note, at, by)) {
             return toSummary(order);
         }
@@ -1079,11 +1090,11 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         // 4B-9 (15 §4.6 step 19, BR-16): a contract order's installments owe less by the goods closed with their VAT -
         // never the mould / print or shipping fee lines (D30, D32), which closeRemainder leaves out of `closed`; money
         // paid above the order's new worth pays the fee first and the rest is to refund. In this transaction, under the
-        // order's lock.
+        // order's lock. WF-05 TT-5: the batches whose goods left are named, so the installments of those closed go first.
         if (order.paidByContract() && closed.signum() > 0) {
             paymentService.settleRemainderClosure(new com.stockflow.payment.api.SettleRemainderClosureCommand(orderId,
                     order.lastClosureId(), closed, fee == null ? null : fee.amount(), fee == null ? null : fee.reason(),
-                    fee == null ? null : fee.detail(), by, now));
+                    fee == null ? null : fee.detail(), by, now, HandedOverBatches.of(order)));
         }
         log.info("Order {}: rest closed ({}), {} {} worth; now {}", order.orderNumber(), reasonCode, closed,
                 order.total().currency(), order.status());

@@ -48,4 +48,11 @@ public interface QuoteRequests {
      * Closing a closed request changes nothing.
      */
     void close(UUID requestId, UUID salesUserId);
+
+    /**
+     * Sales answered a project's request with one quote of every design on it (14 BR-22): closed like a design's
+     * request, so the project asks again for its next order with a new one, and the request no longer reads as waiting
+     * in the request lists. Closing a closed request changes nothing.
+     */
+    void closeProject(UUID requestId, UUID salesUserId);
 }

@@ -6,7 +6,9 @@ import java.util.UUID;
 /**
  * Published by the <b>invoicing</b> module when an e-invoice becomes ISSUED (WF-05 E5; plan §1.4): the provider gave it
  * its number and the tax authority's code, and its XML and PDF are stored. Published in the transaction that records
- * the issue, once per invoice - an invoice is issued once.
+ * the issue, once per invoice - an invoice is issued once. Not for one whose seller's signature does not hold on the
+ * XML the provider handed back (HĐ-8): that one is announced to the accountants instead
+ * ({@link EInvoiceNeedsAttention.Cause#SIGNATURE_INVALID}), and the buyer is sent its replacement, not it.
  *
  * <p>Notification tells the buyer: the invoice is on the portal, and it is e-mailed with its files to the address the
  * invoice names. The event carries ids and codes only. The buyer's address, the lookup code and the files are read

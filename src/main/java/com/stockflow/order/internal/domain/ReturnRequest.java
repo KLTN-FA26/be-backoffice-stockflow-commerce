@@ -42,9 +42,11 @@ import java.util.UUID;
  * cartons, and its refund comes off that delivery's installments and e-invoice first. Only an order delivered without
  * shipments (before split shipments) is claimed as a whole, from its delivery date.</p>
  *
- * <p>The goods always come back (17 BR-18): the warehouse receives them on a return receipt into quarantine
- * ({@code procurement}, 03 §4.2), and that receipt, confirmed, is what moves the return to RECEIVED
- * ({@link #goodsReceived}). What happens to the goods next is a warehouse manager's decision on each carton
+ * <p>The goods always come back (17 BR-18): the warehouse receives them on return receipts into quarantine
+ * ({@code procurement}, 03 §4.2) - one per parcel the customer sent (WF-05 TH-3) - and the receipts, confirmed, are
+ * what move the return to RECEIVED ({@link #goodsReceived}): once everything approved is back, once Sales say no more is
+ * coming ({@link #markGoodsComplete}), or at the deadline with what came. What happens to the goods next is a warehouse
+ * manager's decision on each carton
  * (20 §4.8), not the return's. The return decides the money: Sales propose a refund, a second person approves it,
  * payment settles it against the order's installments (15 §4.5). There is no QC step, no replacement order and no
  * credit kept for the customer any more (team plan 4D-3; 15 BR-05).</p>
@@ -153,9 +155,12 @@ public final class ReturnRequest extends AggregateRoot {
 
     private final List<ReturnEvidence> evidence = new ArrayList<>();
     private final List<ReturnDiscrepancy> discrepancies = new ArrayList<>();
+    /** The confirmed return receipts that brought its goods, the first first (WF-05 TH-3). */
+    private final List<ReturnParcel> parcels = new ArrayList<>();
     /** Children added since the request was loaded; drained by the repository, which only ever inserts them. */
     private final List<ReturnEvidence> newEvidence = new ArrayList<>();
     private final List<ReturnDiscrepancy> newDiscrepancies = new ArrayList<>();
+    private final List<ReturnParcel> newParcels = new ArrayList<>();
     private final List<ReturnTransition> transitions = new ArrayList<>();
 
     public ReturnRequest(UUID id, String rmaNumber, UUID orderId, String orderNumber, UUID customerId, UUID requestId,
@@ -545,14 +550,28 @@ public final class ReturnRequest extends AggregateRoot {
     // ================================================================================================= withdrawal
 
     /**
-     * The customer (or Sales for them) withdraws the return before the goods are back: REQUESTED or AWAITING_RETURN →
-     * CANCELLED. Goods a return receipt already opened for it brings in anyway ({@link #goodsReceived}).
+     * The customer (or Sales for them) withdraws the return before any of its goods is back: REQUESTED or
+     * AWAITING_RETURN → CANCELLED. Goods a return receipt already opened for it brings in anyway ({@link #goodsReceived}).
+     *
+     * <p>Not once a parcel came back (WF-05 TH-3). A return sent in several parcels is still AWAITING_RETURN after the
+     * first one, and withdrawing it then would leave those goods in quarantine with nothing refunded, while the order
+     * went back to DELIVERED and on to completion. Sales mark the goods complete instead ({@link #markGoodsComplete}),
+     * and the refund is decided - or the return closed without one - on what came. The database refuses the same step
+     * ({@code tg_return_request_no_cancel_after_parcel}).</p>
+     *
+     * @throws BusinessException {@code RETURN_INVALID_TRANSITION} past AWAITING_RETURN;
+     *         {@code RETURN_GOODS_PARTLY_RECEIVED} once a parcel of its goods came back
      */
     public void cancel(UUID by, Instant now, String why, boolean byCustomer) {
         Objects.requireNonNull(by, "by");
         if (status != ReturnStatus.REQUESTED && status != ReturnStatus.AWAITING_RETURN) {
             throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION,
                     "Return %s is %s: it is withdrawn only before its goods are back".formatted(rmaNumber, status));
+        }
+        if (anyParcel()) {
+            throw new BusinessException(ErrorCode.RETURN_GOODS_PARTLY_RECEIVED, ("Return %s has %d parcel(s) of its "
+                    + "goods back: mark its goods complete instead of withdrawing it").formatted(rmaNumber,
+                    Math.max(parcels.size(), 1)));
         }
         String text = trimmed(why) == null ? "WITHDRAWN" : limited(why, REASON_LIMIT, "reason");
         this.cancelledBy = by;
@@ -563,14 +582,22 @@ public final class ReturnRequest extends AggregateRoot {
     }
 
     /**
-     * The approved goods did not arrive by the deadline (AWAITING_RETURN → EXPIRED), as the nightly sweep finds it.
-     * Goods a return receipt already opened for it brings in anyway ({@link #goodsReceived}).
+     * The deadline for the approved goods passed, as the nightly sweep finds it. Nothing came back: AWAITING_RETURN →
+     * EXPIRED; goods a return receipt already opened for it brings in anyway ({@link #goodsReceived}). Some parcels came
+     * and not all that was approved (WF-05 TH-3): no more is awaited, AWAITING_RETURN → RECEIVED with what came, and the
+     * units short are recorded - the refund is decided on the goods that are here.
      *
-     * @return whether it expired; false while the deadline has not passed, or once the return moved on
+     * @return whether it moved; false while the deadline has not passed, or once the return moved on
      */
     public boolean expire(Instant now) {
         if (status != ReturnStatus.AWAITING_RETURN || returnDeadline == null || returnDeadline.isAfter(now)) {
             return false;
+        }
+        if (anyParcel()) {
+            // Recorded under who took the last parcel in: the sweep is nobody, and a discrepancy names its recorder.
+            recordDiscrepancies(shortfalls(receivedBy, now, "Goods deadline passed"));
+            transitionTo(ReturnStatus.RECEIVED, null, "GOODS_DEADLINE_PASSED", now);
+            return true;
         }
         close(ReturnStatus.EXPIRED, null, "RETURN_DEADLINE_PASSED", now);
         registerEvent(new OrderEvent.ReturnChanged(id, new ReturnClosed(id, rmaNumber, orderId, orderNumber, customerId,
@@ -581,31 +608,40 @@ public final class ReturnRequest extends AggregateRoot {
     // ================================================================================================= goods back
 
     /**
-     * The goods came back (17 §4.10 step 39; 03 §4.2 step 12): the warehouse confirmed return receipt
-     * {@code receiptId}, which scanned {@code cartons} of the order into the quarantine area {@code location}. Each line
-     * counts the units of its SKU among them; fewer or more than approved, and a carton of a SKU the return does not
-     * claim, are recorded as discrepancies for Sales to follow up (03 edge cases: the receipt is confirmed with the
-     * cartons that came, the rest is settled outside the system). AWAITING_RETURN → RECEIVED; an EXPIRED return, or one
-     * withdrawn after approval, is brought back too: the goods are here, and a return receipt was opened for them while
-     * the return awaited them.
+     * A parcel of the goods came back (17 §4.10 step 39; 03 §4.2 step 12; WF-05 TH-3): the warehouse confirmed return
+     * receipt {@code receiptId}, which scanned {@code cartons} of the order into the quarantine area {@code location}.
+     * A B2B customer may send the goods of one return in several parcels, each received on a receipt of its own, so each
+     * line adds the units of its SKU among them to what the earlier parcels brought.
+     * <ul>
+     *   <li>AWAITING_RETURN: RECEIVED once every line has what was approved; until then it keeps waiting - for the next
+     *       parcel, for Sales to say the goods are complete ({@link #markGoodsComplete}), or for its deadline
+     *       ({@link #expire}), whichever comes first.</li>
+     *   <li>EXPIRED, or withdrawn after approval: brought back, RECEIVED - the goods are here, on a receipt opened while
+     *       the return awaited them, and nothing more is awaited.</li>
+     *   <li>Its goods back already (RECEIVED, SETTLEMENT_PENDING, RESOLVED): a parcel whose receipt was opened while the
+     *       return awaited it and confirmed after Sales said the goods were complete. Its units are added and its
+     *       discrepancies recorded; the status stays, and a refund proposed or made stays as decided. Refused instead,
+     *       the event would be retried for ever over goods already in quarantine.</li>
+     * </ul>
+     * Units beyond those approved and cartons of a SKU the return does not claim are discrepancies of the parcel; units
+     * short of those approved are one once no more is awaited - for Sales to follow up with the customer outside the
+     * system (03 edge cases).
      *
      * @return false when this receipt was taken already (the event delivered again): nothing changes
-     * @throws BusinessException {@code RETURN_INVALID_TRANSITION} for a return that does not take goods now, or took
-     *         them on another receipt
+     * @throws BusinessException {@code RETURN_INVALID_TRANSITION} for a return that takes no goods (never approved)
      */
     public boolean goodsReceived(UUID receiptId, String receiptNumber, String location, List<ReturnedCarton> cartons,
                                  UUID by, Instant now) {
         Objects.requireNonNull(receiptId, "receiptId");
         Objects.requireNonNull(by, "by");
-        if (receiptId.equals(goodsReceiptId)) {
+        if (receiptId.equals(goodsReceiptId) || parcels.stream().anyMatch(p -> p.goodsReceiptId().equals(receiptId))) {
             return false;
         }
         boolean reopening = status == ReturnStatus.EXPIRED
                 || status == ReturnStatus.CANCELLED && Boolean.TRUE.equals(returnRequired) && decidedAt != null;
-        if (goodsReceiptId != null || status != ReturnStatus.AWAITING_RETURN && !reopening) {
-            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, goodsReceiptId != null
-                    ? "Return %s took its goods on another return receipt".formatted(rmaNumber)
-                    : "Return %s is %s and takes no goods now".formatted(rmaNumber, status));
+        if (status != ReturnStatus.AWAITING_RETURN && !reopening && !status.goodsBack()) {
+            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION,
+                    "Return %s is %s and takes no goods now".formatted(rmaNumber, status));
         }
         String at = trimmed(location);
         if (at == null) {
@@ -618,48 +654,112 @@ public final class ReturnRequest extends AggregateRoot {
         if (bySku.isEmpty()) {
             throw new IllegalArgumentException("A confirmed return receipt received at least one carton");
         }
+        String source = "Receipt %s".formatted(receiptNumber);
         List<ReturnDiscrepancy> found = new ArrayList<>();
         Set<String> claimed = new HashSet<>();
         for (ReturnLine line : lines) {
             claimed.add(line.sku());
-            int units = bySku.getOrDefault(line.sku(), 0);
-            int approvedUnits = line.approvedQuantity() == null ? 0 : line.approvedQuantity();
-            line.receive(units);
-            if (units < approvedUnits) {
-                found.add(new ReturnDiscrepancy(Identifiers.newId(), line.id(), ReturnDiscrepancy.Kind.SHORT,
-                        line.sku(), approvedUnits - units, "Receipt %s".formatted(receiptNumber), by, now));
-            } else if (units > approvedUnits) {
+            int before = received(line);
+            int total = before + bySku.getOrDefault(line.sku(), 0);
+            int approvedUnits = approved(line);
+            line.receive(total);
+            int excess = Math.max(0, total - approvedUnits) - Math.max(0, before - approvedUnits);
+            if (excess > 0) {
                 found.add(new ReturnDiscrepancy(Identifiers.newId(), line.id(), ReturnDiscrepancy.Kind.EXCESS,
-                        line.sku(), units - approvedUnits, "Receipt %s".formatted(receiptNumber), by, now));
+                        line.sku(), excess, source, by, now));
             }
         }
         bySku.forEach((sku, units) -> {
-            if (!claimed.contains(sku)) {
+            if (!claimed.contains(sku) && units > 0) {
                 found.add(new ReturnDiscrepancy(Identifiers.newId(), null, ReturnDiscrepancy.Kind.UNEXPECTED_ITEM,
-                        sku, units, "Receipt %s: a SKU the return does not claim".formatted(receiptNumber), by, now));
+                        sku, units, "%s: a SKU the return does not claim".formatted(source), by, now));
             }
         });
-        discrepancies.addAll(found);
-        newDiscrepancies.addAll(found);
+        int parcel = Math.max(parcels.size(), goodsReceiptId == null ? 0 : 1) + 1;
+        ReturnParcel taken = new ReturnParcel(receiptId, parcel, receiptNumber, at, by, now);
+        parcels.add(taken);
+        newParcels.add(taken);
+        // The first receipt stays the one the return names (it never changes, check_return_request_goods_receipt); who,
+        // when and where follow the latest parcel.
+        if (goodsReceiptId == null) {
+            this.goodsReceiptId = receiptId;
+        }
         this.receivedBy = by;
         this.receivedAt = now;
         this.receivingLocation = at;
-        this.goodsReceiptId = receiptId;
-        String why = reopening
-                ? (status == ReturnStatus.EXPIRED ? "RECEIVED_AFTER_DEADLINE" : "RECEIVED_AFTER_WITHDRAWAL")
-                : found.isEmpty() ? "RECEIVED" : "RECEIVED_WITH_DISCREPANCY";
         if (reopening) {
+            found.addAll(shortfalls(by, now, source));
+            String why = status == ReturnStatus.EXPIRED ? "RECEIVED_AFTER_DEADLINE" : "RECEIVED_AFTER_WITHDRAWAL";
             this.closedAt = null;
             this.cancelledBy = null;
             this.cancellationReason = null;
+            transitionTo(ReturnStatus.RECEIVED, by, why + " " + receiptNumber, now);
+        } else if (status == ReturnStatus.AWAITING_RETURN && lines.stream().allMatch(l -> received(l) >= approved(l))) {
+            boolean clean = found.isEmpty() && discrepancies.isEmpty();
+            transitionTo(ReturnStatus.RECEIVED, by, (clean ? "RECEIVED " : "RECEIVED_WITH_DISCREPANCY ")
+                    + receiptNumber, now);
         }
-        transitionTo(ReturnStatus.RECEIVED, by, why + " " + receiptNumber, now);
+        recordDiscrepancies(found);
         registerEvent(new OrderEvent.ReturnChanged(id, new ReturnReceived(id, rmaNumber, orderId, orderNumber,
                 customerId, at, lines.stream().map(l -> new ReturnReceived.Line(l.orderLineId(), l.sku(), l.sku(),
-                        l.approvedQuantity() == null ? 0 : l.approvedQuantity(),
-                        l.receivedQuantity() == null ? 0 : l.receivedQuantity())).toList(), !found.isEmpty(), by, now,
-                1)));
+                        approved(l), received(l))).toList(), !found.isEmpty(), by, now, parcel)));
         return true;
+    }
+
+    /**
+     * Sales say the goods of the return are all here (WF-05 TH-3): fewer than approved came back - the customer sent
+     * what they had, or sent another SKU by mistake - and no more is coming. AWAITING_RETURN → RECEIVED with the units
+     * the parcels brought, the units short recorded; the refund is then decided on those, or the return closed without
+     * one. Without it such a return would wait for its deadline. A parcel still on its way is taken all the same
+     * ({@link #goodsReceived}).
+     *
+     * <p>The only way to settle such a return before its deadline: once a parcel is in, it is no longer withdrawn
+     * ({@link #cancel}).</p>
+     *
+     * @throws BusinessException {@code RETURN_INVALID_TRANSITION} for a return not awaiting its goods, or one no parcel
+     *         of which came back yet - nothing is here to decide on; withdraw it, or let it expire
+     */
+    public void markGoodsComplete(UUID by, Instant now, String note) {
+        Objects.requireNonNull(by, "by");
+        requireStatus(ReturnStatus.AWAITING_RETURN, "have its goods marked complete");
+        if (!anyParcel()) {
+            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, ("Nothing of return %s came back yet: "
+                    + "wait for its goods, or withdraw it").formatted(rmaNumber));
+        }
+        String text = limited(note, REASON_LIMIT, "note");
+        recordDiscrepancies(shortfalls(by, now, "Goods marked complete"));
+        transitionTo(ReturnStatus.RECEIVED, by, text == null ? "GOODS_COMPLETE" : "GOODS_COMPLETE: " + text, now);
+    }
+
+    /** Whether a parcel of the goods came back: a confirmed return receipt brought some. */
+    private boolean anyParcel() {
+        return goodsReceiptId != null || !parcels.isEmpty();
+    }
+
+    /** One SHORT discrepancy per line that has fewer units back than approved, once no more is awaited. */
+    private List<ReturnDiscrepancy> shortfalls(UUID by, Instant now, String note) {
+        List<ReturnDiscrepancy> found = new ArrayList<>();
+        for (ReturnLine line : lines) {
+            int missing = approved(line) - received(line);
+            if (missing > 0) {
+                found.add(new ReturnDiscrepancy(Identifiers.newId(), line.id(), ReturnDiscrepancy.Kind.SHORT,
+                        line.sku(), missing, note, by, now));
+            }
+        }
+        return found;
+    }
+
+    private void recordDiscrepancies(List<ReturnDiscrepancy> found) {
+        discrepancies.addAll(found);
+        newDiscrepancies.addAll(found);
+    }
+
+    private static int approved(ReturnLine line) {
+        return line.approvedQuantity() == null ? 0 : line.approvedQuantity();
+    }
+
+    private static int received(ReturnLine line) {
+        return line.receivedQuantity() == null ? 0 : line.receivedQuantity();
     }
 
     // ================================================================================================= refund
@@ -675,6 +775,19 @@ public final class ReturnRequest extends AggregateRoot {
      * @throws BusinessException {@code RETURN_INVALID_TRANSITION}; {@code RETURN_QUANTITIES_INVALID}
      */
     public void proposeRefund(UUID by, Instant now, Map<UUID, Integer> units, Order order, String note) {
+        proposeRefund(by, now, units, order, note, false);
+    }
+
+    /**
+     * As {@link #proposeRefund(UUID, Instant, Map, Order, String)}; {@code nothingPaid} for an order with no
+     * installments at all (WF-05 TH-2: a sample order, an order of before contracts). Money is recorded in the system
+     * only against a contract's installments (15 BR-01, BR-05), so nothing was paid on such an order that a refund could
+     * hand back or set off: the units are refunded worth nothing, the settlement is 0 - and still approved by a second
+     * person, since it decides that the goods given back are not paid for. Refused before, such a return could never
+     * leave RECEIVED and kept its order RETURNED for good.
+     */
+    public void proposeRefund(UUID by, Instant now, Map<UUID, Integer> units, Order order, String note,
+                              boolean nothingPaid) {
         Objects.requireNonNull(by, "by");
         Objects.requireNonNull(order, "order");
         requireStatus(ReturnStatus.RECEIVED, "have a refund proposed");
@@ -701,7 +814,7 @@ public final class ReturnRequest extends AggregateRoot {
         BigDecimal value = BigDecimal.ZERO;
         for (ReturnLine line : lines) {
             int count = refunded.getOrDefault(line.id(), 0);
-            BigDecimal amount = count == 0 ? BigDecimal.ZERO : order.findLine(line.orderLineId())
+            BigDecimal amount = count == 0 || nothingPaid ? BigDecimal.ZERO : order.findLine(line.orderLineId())
                     .orElseThrow(() -> new IllegalStateException("Return %s names line %s that order %s does not have"
                             .formatted(rmaNumber, line.orderLineId(), order.orderNumber())))
                     .grossOf(count).amount();
@@ -709,12 +822,13 @@ public final class ReturnRequest extends AggregateRoot {
             value = value.add(amount);
         }
         this.settlementAmount = value;
-        this.moneyMode = ReturnResolution.REFUND;
+        // ck_return_request_money_mode: a settlement of nothing has no money mode.
+        this.moneyMode = value.signum() > 0 ? ReturnResolution.REFUND : null;
         this.proposedBy = by;
         this.proposedAt = now;
         this.resolutionNote = limited(note, NOTE_LIMIT, "note");
-        transitionTo(ReturnStatus.SETTLEMENT_PENDING, by, "REFUND_PROPOSED %s %s".formatted(plain(value), currency),
-                now);
+        transitionTo(ReturnStatus.SETTLEMENT_PENDING, by, "REFUND_PROPOSED %s %s%s".formatted(plain(value), currency,
+                nothingPaid ? " NOTHING_PAID" : ""), now);
     }
 
     /**
@@ -845,6 +959,13 @@ public final class ReturnRequest extends AggregateRoot {
         return drained;
     }
 
+    /** Parcels taken since the request was loaded; the repository inserts them, once. */
+    public List<ReturnParcel> pullNewParcels() {
+        List<ReturnParcel> drained = List.copyOf(newParcels);
+        newParcels.clear();
+        return drained;
+    }
+
     // ================================================================================================= helpers
 
     private void requireStatus(ReturnStatus expected, String what) {
@@ -948,6 +1069,13 @@ public final class ReturnRequest extends AggregateRoot {
         return this;
     }
 
+    /** Rehydration of the receipts that brought the goods back, the first first. */
+    public ReturnRequest restoreParcels(Collection<ReturnParcel> taken) {
+        parcels.clear();
+        parcels.addAll(taken);
+        return this;
+    }
+
     public UUID id() { return id; }
     public String rmaNumber() { return rmaNumber; }
     public UUID orderId() { return orderId; }
@@ -977,8 +1105,10 @@ public final class ReturnRequest extends AggregateRoot {
     public Instant receivedAt() { return receivedAt; }
     /** The quarantine area the goods came back into, as the return receipt named it. */
     public String receivingLocation() { return receivingLocation; }
-    /** The return receipt that brought the goods back; null until it was confirmed. */
+    /** The first return receipt that brought goods back; null until one was confirmed. */
     public UUID goodsReceiptId() { return goodsReceiptId; }
+    /** Every return receipt that brought goods back, the first first (WF-05 TH-3). */
+    public List<ReturnParcel> parcels() { return java.util.Collections.unmodifiableList(parcels); }
     public ReturnResolution moneyMode() { return moneyMode; }
     public BigDecimal settlementAmount() { return settlementAmount; }
     public UUID proposedBy() { return proposedBy; }

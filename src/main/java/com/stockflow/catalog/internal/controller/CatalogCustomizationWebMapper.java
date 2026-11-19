@@ -36,9 +36,10 @@ class CatalogCustomizationWebMapper {
         return switch (model) {
             case CupModel cup -> new CatalogCustomizationResponse.Model(cup.kind(), cup.topDiameterMm(),
                     cup.bottomDiameterMm(), cup.heightMm(), cup.rimMm(), cup.seamMm(), cup.bandTopOffsetMm(),
-                    cup.bandBottomOffsetMm(), null, null, null, null, cup.material());
+                    cup.bandBottomOffsetMm(), null, null, null, null, null, null, cup.material());
             case BagModel bag -> new CatalogCustomizationResponse.Model(bag.kind(), null, null, bag.heightMm(), null,
-                    null, null, null, bag.widthMm(), bag.gussetMm(), bag.topFoldMm(), bag.handle(), bag.material());
+                    null, null, null, bag.widthMm(), bag.gussetMm(), bag.topFoldMm(), bag.glueFlapMm(),
+                    bag.bottomFoldMm(), bag.handle(), bag.material());
         };
     }
 

@@ -129,8 +129,9 @@ public class EInvoiceCorrections {
     /**
      * Draws up an adjustment of an issued invoice, as a draft.
      *
-     * @throws BusinessException {@code EINVOICE_NOT_FOUND}; {@code RETURN_REQUEST_NOT_FOUND}; {@code VALIDATION_FAILED}
-     *         for a line that is not the invoice's, a quantity of zero, a price that is not whole dong, a return of
+     * @throws BusinessException {@code EINVOICE_NOT_FOUND}; {@code RETURN_REQUEST_NOT_FOUND};
+     *         {@code EINVOICE_CORRECTION_NOT_APPLICABLE} for {@code DELIVERY_FAILED}, the system's alone;
+     *         {@code VALIDATION_FAILED} for a line that is not the invoice's, a quantity of zero, a price that is not whole dong, a return of
      *         another order, or a buyer changed on anything but the correction of an error; and what
      *         {@link EInvoice#drawUpAdjustment} refuses
      */
@@ -139,6 +140,12 @@ public class EInvoiceCorrections {
     public EInvoice.Snapshot adjust(Adjust command) {
         if (command.basis() == null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "basis: ERROR, RETURN or TRADE_DISCOUNT");
+        }
+        if (command.basis().systemOnly()) {
+            // WF-05 HĐ-3: drawn up when the delivery is corrected, whole, by EInvoiceDrafts.reverseForCorrectedDelivery
+            // - which also stops the invoice standing for its shipment. Drawn up by hand it would do neither.
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE, ("basis %s: drawn up by the "
+                    + "system when a delivery is corrected to a failure, never by hand").formatted(command.basis()));
         }
         Map<UUID, EInvoice> locked = lock(command.originalId(), command.listedInvoiceIds());
         EInvoice original = locked.get(command.originalId());

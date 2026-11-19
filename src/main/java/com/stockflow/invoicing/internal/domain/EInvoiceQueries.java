@@ -58,6 +58,10 @@ public interface EInvoiceQueries {
     /**
      * Those of {@code shipmentIds} that have an invoice in force: ISSUED, and not an adjustment - an original, or the
      * invoice that replaced it. What an order's completion asks about its delivered shipments.
+     *
+     * <p>WF-05 HĐ-3: an original reversed because its delivery was corrected to a failure is not in force - the
+     * shipment delivered again counts once its new original is issued - and a shipment whose reversal is not issued yet
+     * counts as not invoiced: until it is, an invoice stands in law for goods the customer did not receive.</p>
      */
     java.util.Set<UUID> invoicedAmong(java.util.Collection<UUID> shipmentIds);
 

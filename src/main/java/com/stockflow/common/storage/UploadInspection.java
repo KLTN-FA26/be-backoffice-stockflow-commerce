@@ -112,7 +112,10 @@ public class UploadInspection {
             output.writeInt(0);
             output.flush();
             String result = readReply(socket.getInputStream());
-            if (result.endsWith(" FOUND")) { throw new BusinessException(ErrorCode.VALIDATION_FAILED, "File failed security inspection"); }
+            if (result.endsWith(" FOUND")) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "File failed security inspection")
+                        .localized("refusal.upload.infected");
+            }
             if (!result.equals("stream: OK")) { throw new StorageException("File inspection did not return a clean result"); }
         } catch (IOException ex) { throw new StorageException("File inspection service is unavailable", ex); }
         finally { permits.release(); }
@@ -147,9 +150,11 @@ public class UploadInspection {
                     : permits.tryAcquire(acquireTimeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
-            throw new BusinessException(ErrorCode.RATE_LIMITED, "File inspection is busy");
+            throw new BusinessException(ErrorCode.RATE_LIMITED, "File inspection is busy").localized("refusal.upload.busy");
         }
-        if (!acquired) { throw new BusinessException(ErrorCode.RATE_LIMITED, "File inspection is busy"); }
+        if (!acquired) {
+            throw new BusinessException(ErrorCode.RATE_LIMITED, "File inspection is busy").localized("refusal.upload.busy");
+        }
     }
 
     /** A zero-terminated clamd reply, bounded so a misbehaving peer cannot grow it without limit. */

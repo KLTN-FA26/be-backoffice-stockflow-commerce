@@ -2,6 +2,7 @@ package com.stockflow.invoicing.internal.domain;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.text.VietnameseAmountInWords;
 
 import java.math.BigDecimal;
@@ -37,8 +38,8 @@ import java.util.UUID;
  *   <li><b>A draft</b> takes two corrections - the buyer (refreshed from the customer's profile, or typed by the
  *       accountant) and the names on its lines. Its money never changes: quantities and prices are the contract's,
  *       and a draft that got them wrong is voided and drawn up again from the order.</li>
- *   <li><b>Issuing</b> needs a complete buyer (name, tax code, address - the e-mail only decides whether the
- *       invoice is also mailed) and a series for the invoice's year.
+ *   <li><b>Issuing</b> needs a complete buyer (name, tax code, address) with an e-mail that receives the invoice
+ *       (kltn-docs 21 BR-06; HĐ-8) and a series for the invoice's year.
  *       It gives the invoice a transaction id - its own id and the attempt's number - under which the provider knows
  *       at most one invoice. Every later question to the provider is asked under that id, so a reply that was lost can
  *       never turn into a second invoice for the same delivery.</li>
@@ -53,7 +54,8 @@ import java.util.UUID;
  * <ul>
  *   <li><b>An adjustment</b> ({@link #drawUpAdjustment}) states what changes, signed: below zero reduces. The invoice it
  *       names stays in force and is flagged once the adjustment is issued. Its {@link CorrectionBasis} says why: an
- *       error, returned goods, or a trade discount - the last two only reduce.</li>
+ *       error, returned goods, a trade discount, or a delivery corrected to a failure - the last three only reduce,
+ *       and the last, drawn up by the system alone ({@link #drawUpDeliveryReversal}), reduces the whole invoice.</li>
  *   <li><b>A replacement</b> ({@link #drawUpReplacement}) is the invoice as it should have been; the one it names
  *       becomes REPLACED as the replacement is issued.</li>
  *   <li><b>The form is kept</b> (khoản 6 điểm a): an invoice with an adjustment is not replaced, one being replaced is
@@ -77,6 +79,15 @@ public final class EInvoice {
     public enum Warning {
         /** The buyer's name, tax code or address is missing: issuing is refused until it is there. */
         BUYER_PROFILE_INCOMPLETE,
+        /**
+         * HĐ-8: the buyer has no e-mail to receive the invoice. kltn-docs 21 BR-06 wants one before issuing, so the
+         * draft is not issued automatically and Sales are told to add it ({@code EInvoiceBuyerIncomplete}). It does not
+         * refuse an accountant's issuing, though: the e-mail is not invoice content in law (legal review WF05-E0 L7,
+         * which is why {@code ck_einvoice_buyer_complete} does not ask for it), while issuing after the deadline is an
+         * offence of its own, so a missing address must not hold a lawful invoice back (owner's decision 2026-11-18).
+         * The provider then cannot mail it; the customer still finds it on the portal.
+         */
+        BUYER_EMAIL_MISSING,
         /** A line's VAT rate on the day of delivery is not the one the contract fixed: the totals differ from the contract's. */
         TAX_RATE_DIFFERS_FROM_CONTRACT,
         /**
@@ -84,6 +95,14 @@ public final class EInvoice {
          * product without a tax class, assumed standard. The customer agreed to no rate: the accountant decides.
          */
         TAX_RATE_NOT_ON_CONTRACT,
+        /**
+         * Found just before the automatic issuing (WF-05 review, defect 4): a line's rate is not the one a draft drawn
+         * up now for the same delivery would carry - the draft was drawn up before a rate period that covers its day was
+         * entered (the NĐ 174 reduction, V20261201000200), or the rates changed since. Warnings are worked out when a
+         * draft is drawn up, so a draft older than a rule would otherwise be issued as the rule never existed. The
+         * accountant voids it and draws it up again, or issues it as it is having checked why.
+         */
+        TAX_RATE_OUT_OF_DATE,
         /**
          * A line (not a note) is at 0%, and the invoice is not issued ({@code EINVOICE_TAX_EXEMPT_NOT_SUPPORTED}). No
          * tax class here is zero-rated: 0.00 is the rate {@code ordering.tax_rate} keeps for EXEMPT - goods not subject
@@ -101,11 +120,26 @@ public final class EInvoice {
          * id could become a second invoice). It waits for the accountant, who sends it as a new transaction once the
          * provider confirms it holds none. Gone when the invoice is issued or leaves the provider.
          */
-        UNKNOWN_TO_PROVIDER
+        UNKNOWN_TO_PROVIDER,
+        /**
+         * HĐ-8: the provider issued the invoice, but the seller's digital signature on the XML it handed back does not
+         * hold ({@code InvoiceXmlSignature}: changed content, a signature its certificate did not make, none at all).
+         * The invoice exists in law and stays issued; it is not sent to the buyer, and the accountant replaces it.
+         * The only warning an issued invoice carries; set as it is issued, since an issued invoice changes no more and
+         * its stored XML always checks the same.
+         */
+        SIGNATURE_INVALID
     }
 
     /** The rejection code of an invoice taken back from a provider that confirmed it holds no such transaction. */
     public static final String UNKNOWN_TO_PROVIDER_CODE = "UNKNOWN_TO_PROVIDER";
+
+    /**
+     * The rejection code of an invoice the accountant took back from the provider after it was stuck there, the
+     * provider confirming it has no record of it (HĐ-1, {@code EInvoiceIssuance.withdraw}): reopened and issued again
+     * under a new transaction like any refused one. The accountant's reason is its rejection message.
+     */
+    public static final String WITHDRAWN_CODE = "WITHDRAWN_NO_PROVIDER_RECORD";
 
     /** How the customer pays: by bank transfer against the contract's installments (kltn-docs 15), always. */
     public static final String BANK_TRANSFER = "BANK_TRANSFER";
@@ -340,9 +374,7 @@ public final class EInvoice {
         }
         BigDecimal total = net.add(tax);
         Set<Warning> warnings = EnumSet.noneOf(Warning.class);
-        if (!buyer.completeBuyer()) {
-            warnings.add(Warning.BUYER_PROFILE_INCOMPLETE);
-        }
+        buyerWarnings(buyer, warnings);
         if (taxRateDiffersFromContract) {
             warnings.add(Warning.TAX_RATE_DIFFERS_FROM_CONTRACT);
         }
@@ -358,6 +390,43 @@ public final class EInvoice {
                 null, null, null, null, delivery.deliveredOn(), IssueDeadline.of(delivery.deliveredOn()), null, null,
                 seller, buyer, VND, BANK_TRANSFER, lines, net, tax, total, VietnameseAmountInWords.of(total),
                 warnings, null, null, null, null, null, null, null, null, null, null, null, null, 0));
+    }
+
+    /**
+     * Draws up the reduction of a whole issued invoice - the original, or the replacement standing for the shipment -
+     * whose delivery was corrected to a failure, as a draft
+     * ({@link CorrectionBasis#DELIVERY_FAILED}; kltn-docs 21 §4.4, 09 §4.3 step 5; WF-05 HĐ-3): every line of the
+     * invoice taken off at its own quantity, price and rate, so that the two together come to nothing - each line's tax
+     * is rounded the same way below zero as above it ({@link EInvoiceLine#vat}).
+     *
+     * <p>Only an invoice of a shipment that nothing corrects yet: an adjustment already drawn up of it, issued or not, or
+     * a replacement, would leave the full reduction either reducing it below nothing or reducing the wrong invoice.
+     * Such an invoice is the accountant's to bring to nothing by hand. Whether to reduce at all is the caller's to decide -
+     * the delivery is what was corrected, not the invoice.</p>
+     *
+     * @param original read under its lock
+     * @throws BusinessException {@code EINVOICE_NOT_IN_FORCE} unless it is issued; {@code
+     *         EINVOICE_CORRECTION_NOT_APPLICABLE} for an adjustment, or an invoice of no shipment or that something
+     *         corrects
+     */
+    public static EInvoice drawUpDeliveryReversal(UUID id, String code, EInvoice original, String reason,
+                                                  LocalDate issueDate, Corrections corrections) {
+        requireCorrectable(original);
+        // A replacement in force stands for its shipment as an original does, and only an ERROR of it is replaced
+        // again rather than adjusted (TT 91 Điều 10 khoản 6 điểm a): its reduction for a failed delivery is an
+        // adjustment like the original's.
+        if (original.shipmentId == null || original.adjusted
+                || corrections.liveAdjustment() || corrections.liveReplacement()) {
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE, ("Invoice %s is not an "
+                    + "invoice of a delivery that nothing corrects yet: it is reduced by hand").formatted(original.code));
+        }
+        List<EInvoiceLine> lines = new ArrayList<>();
+        for (EInvoiceLine line : original.lines) {
+            lines.add(line.corrected(Identifiers.newId(), lines.size() + 1, -line.quantity(), line.unitsPerCarton(),
+                    line.unit(), line.unitPrice(), line.taxRate(), line.itemName()));
+        }
+        return drawUpAdjustment(id, code, original, CorrectionBasis.DELIVERY_FAILED, reason, original.buyer, lines,
+                issueDate, null, List.of(), corrections);
     }
 
     /**
@@ -506,9 +575,7 @@ public final class EInvoice {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "buyer.name: required");
         }
         Set<Warning> warnings = EnumSet.noneOf(Warning.class);
-        if (!buyer.completeBuyer()) {
-            warnings.add(Warning.BUYER_PROFILE_INCOMPLETE);
-        }
+        buyerWarnings(buyer, warnings);
         if (atZeroRate(lines)) {
             warnings.add(Warning.TAX_EXEMPT_NOT_SUPPORTED);
         }
@@ -519,6 +586,18 @@ public final class EInvoice {
                 totals.net(), totals.tax(), totals.total(), VietnameseAmountInWords.of(totals.total()), warnings,
                 reason.strip(), null, null, null, null, null, null, null, null, null, null, null, 0, basis, null, null,
                 returnRequestId, listed));
+    }
+
+    /** {@link Warning#BUYER_PROFILE_INCOMPLETE} and {@link Warning#BUYER_EMAIL_MISSING}, as the buyer is now. */
+    private static void buyerWarnings(InvoiceParty buyer, Set<Warning> warnings) {
+        warnings.remove(Warning.BUYER_PROFILE_INCOMPLETE);
+        warnings.remove(Warning.BUYER_EMAIL_MISSING);
+        if (!buyer.completeBuyer()) {
+            warnings.add(Warning.BUYER_PROFILE_INCOMPLETE);
+        }
+        if (buyer.email() == null) {
+            warnings.add(Warning.BUYER_EMAIL_MISSING);
+        }
     }
 
     /** Whether a line other than a note is at 0%: only an EXEMPT one ({@link Warning#TAX_EXEMPT_NOT_SUPPORTED}). */
@@ -534,6 +613,44 @@ public final class EInvoice {
     // ---- corrections on a draft ---------------------------------------------------------------------------------
 
     /**
+     * The warnings of a draft worked out again just before the automatic issuing sends it (WF-05 review, defect 4):
+     * what drawing it up decides - the buyer's gaps, a line at 0% - as the draft stands now, and the rate facts the
+     * caller found by comparing it with a draft drawn up now for the same delivery. Warnings are decided when a draft
+     * is drawn up and the automatic issuing takes only drafts without any, so a draft drawn up before a rule existed
+     * (the e-mail warning, the VAT reduction period) would be issued as if it never did. Only adds: a warning the
+     * accountant has not dealt with stays.
+     *
+     * @return the warnings added now; empty when the draft may still be issued automatically
+     * @throws BusinessException {@code EINVOICE_NOT_DRAFT}
+     */
+    public Set<Warning> recheckBeforeAutomaticIssue(boolean rateOutOfDate, boolean rateDiffersFromContract,
+                                                    boolean rateNotOnContract) {
+        requireDraft("check before issuing");
+        Set<Warning> found = EnumSet.noneOf(Warning.class);
+        if (!buyer.completeBuyer()) {
+            found.add(Warning.BUYER_PROFILE_INCOMPLETE);
+        }
+        if (buyer.email() == null) {
+            found.add(Warning.BUYER_EMAIL_MISSING);
+        }
+        if (atZeroRate(lines)) {
+            found.add(Warning.TAX_EXEMPT_NOT_SUPPORTED);
+        }
+        if (rateOutOfDate) {
+            found.add(Warning.TAX_RATE_OUT_OF_DATE);
+        }
+        if (rateDiffersFromContract) {
+            found.add(Warning.TAX_RATE_DIFFERS_FROM_CONTRACT);
+        }
+        if (rateNotOnContract) {
+            found.add(Warning.TAX_RATE_NOT_ON_CONTRACT);
+        }
+        found.removeAll(warnings);
+        warnings.addAll(found);
+        return found;
+    }
+
+    /**
      * The buyer as the invoice is to name it: refreshed from the customer's profile, or corrected by the accountant.
      * Only on a draft - an issued invoice keeps the buyer it was issued to (kltn-docs 21 BR-06).
      */
@@ -544,11 +661,7 @@ public final class EInvoice {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "buyer.name: required");
         }
         this.buyer = revised;
-        if (revised.completeBuyer()) {
-            warnings.remove(Warning.BUYER_PROFILE_INCOMPLETE);
-        } else {
-            warnings.add(Warning.BUYER_PROFILE_INCOMPLETE);
-        }
+        buyerWarnings(revised, warnings);
     }
 
     /**
@@ -582,16 +695,18 @@ public final class EInvoice {
 
     /**
      * The written agreement of the two parties on what was wrong (TT 91 Điều 10 khoản 1 điểm b): its signed file, its
-     * number and its date. On a draft correction of an error; attaching again replaces it.
+     * number and its date. On a draft correction of an error; attaching again replaces it. On the reduction of a
+     * delivery corrected to a failure the same three fields carry its written evidence, which is accepted but not
+     * required ({@link CorrectionBasis#DELIVERY_FAILED}).
      *
      * @param today no agreement is dated after the day it is attached
      * @throws BusinessException {@code EINVOICE_NOT_DRAFT}; {@code EINVOICE_CORRECTION_NOT_APPLICABLE} for an invoice
-     *         that needs none (an original, a return, a trade discount); {@code VALIDATION_FAILED} for a blank or long
+     *         that takes none (an original, a return, a trade discount); {@code VALIDATION_FAILED} for a blank or long
      *         number or a date in the future
      */
     public void attachAgreement(String fileKey, String number, LocalDate date, LocalDate today) {
         requireDraft("attach an agreement to");
-        if (correctionBasis == null || !correctionBasis.requiresAgreement()) {
+        if (correctionBasis == null || !correctionBasis.acceptsAgreement()) {
             throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE,
                     "Invoice %s needs no agreement: only the correction of an error is agreed in writing".formatted(code));
         }
@@ -638,7 +753,8 @@ public final class EInvoice {
      * @param by who issued it; null when it was issued automatically
      * @throws BusinessException {@code EINVOICE_INVALID_TRANSITION} unless it is a draft;
      *                           {@code EINVOICE_BUYER_PROFILE_INCOMPLETE} while the buyer's name, tax code or address
-     *                           is missing; {@code EINVOICE_AGREEMENT_REQUIRED} for the correction
+     *                           is missing (a missing e-mail is only {@link Warning#BUYER_EMAIL_MISSING});
+     *                           {@code EINVOICE_AGREEMENT_REQUIRED} for the correction
      *                           of an error without the agreement of both parties;
      *                           {@code EINVOICE_TAX_EXEMPT_NOT_SUPPORTED} for a line at 0%
      *                           ({@link Warning#TAX_EXEMPT_NOT_SUPPORTED});
@@ -709,6 +825,18 @@ public final class EInvoice {
     }
 
     /**
+     * The seller's signature on the XML just handed back does not hold ({@link Warning#SIGNATURE_INVALID}). Only while
+     * the invoice is being recorded as issued: in the same write, since an issued invoice changes no more
+     * ({@code tg_einvoice_issued_immutable}).
+     */
+    public void signatureInvalid() {
+        if (status != EInvoiceStatus.ISSUED || issuedAt == null) {
+            throw new IllegalStateException("Only an invoice being recorded as issued is flagged for its signature");
+        }
+        warnings.add(Warning.SIGNATURE_INVALID);
+    }
+
+    /**
      * Marks an invoice at the provider as one the provider does not know and that is no longer sent on its own.
      *
      * @return whether it was not marked before
@@ -740,13 +868,22 @@ public final class EInvoice {
 
     /**
      * Gives up a draft that was never sent: DRAFT → VOIDED_DRAFT. Not for anything that reached the provider, and
-     * never for an issued invoice - that is adjusted or replaced, not voided.
+     * never for an issued invoice - that is adjusted or replaced, not voided. Never for the reduction of a delivery
+     * corrected to a failure ({@link CorrectionBasis#DELIVERY_FAILED}): the invoice it reduces stopped standing for its
+     * shipment when it was drawn up, and the shipment may already carry its new original - voiding it would leave an
+     * invoice in force for goods that were not delivered (WF-05 HĐ-3). Refused by the provider, it is reopened,
+     * corrected and issued like any draft.
      *
      * @param by null when the system voids it
+     * @throws BusinessException {@code EINVOICE_CORRECTION_NOT_APPLICABLE} for a failed delivery's reduction
      */
     public void voidDraft(String reason, UUID by, Instant now) {
         if (reason == null || reason.isBlank()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "reason: required to void a draft");
+        }
+        if (correctionBasis != null && correctionBasis.systemOnly()) {
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE, ("Invoice %s reduces an invoice "
+                    + "whose delivery was corrected to a failure: it is issued, not voided").formatted(code));
         }
         move(EInvoiceStatus.VOIDED_DRAFT);
         this.voidReason = reason.strip().substring(0, Math.min(500, reason.strip().length()));

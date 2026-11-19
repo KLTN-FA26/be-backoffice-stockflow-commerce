@@ -133,8 +133,8 @@ class QuoteVatIntegrationTest {
     }
 
     @Test
-    @DisplayName("a first production: plate fee added, priced by Sales; VAT per line; sent, accepted and placed with the "
-            + "total with tax; revenue before tax on the dashboard")
+    @DisplayName("TC-F03-02: a first production: plate fee added, priced by Sales; VAT per line; sent, accepted and "
+            + "placed with the total with tax; revenue before tax on the dashboard")
     void aFirstProductionQuotedWithVatAndFees() {
         String sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, 10, "STANDARD", false).sku();
         CustomerSkuRows.stock(jdbc, tx, sku, 100);
