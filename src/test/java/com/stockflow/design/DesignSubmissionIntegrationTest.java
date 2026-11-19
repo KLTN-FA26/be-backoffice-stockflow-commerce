@@ -275,6 +275,10 @@ class DesignSubmissionIntegrationTest {
     @Test
     void aVariantNoLongerOnSaleOrWithoutACartonCannotBeSubmitted() throws Exception {
         uploadFiles(saveLogoLayout(uploadLogo(1200)));
+        // BE-11: the template endpoint answers the submission's own two questions, before and after they change.
+        mvc.perform(get("/api/v1/designs/" + design + "/template")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.designable").value(true))
+                .andExpect(jsonPath("$.data.hasCartonSpec").value(true));
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE product.variants SET status = 'BLOCKED' WHERE sku = ?", sku);
             jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE WHERE NOT is_base "
@@ -287,6 +291,9 @@ class DesignSubmissionIntegrationTest {
                 .andReturn().getResponse().getContentAsString()).get("details").get("issues");
         assertThat(issues.findValuesAsText("rule")).containsExactly("VARIANT_UNAVAILABLE", "CARTON_SPEC_MISSING");
         assertThat(issues.get(0).has("surfaceCode")).isFalse();
+        mvc.perform(get("/api/v1/designs/" + design + "/template")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.designable").value(false))
+                .andExpect(jsonPath("$.data.hasCartonSpec").value(false));
     }
 
     @Test

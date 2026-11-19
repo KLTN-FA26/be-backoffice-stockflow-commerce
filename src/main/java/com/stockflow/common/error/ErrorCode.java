@@ -989,7 +989,8 @@ public enum ErrorCode {
     DESIGN_FILES_OUTDATED("Render the design's files again from its current layout", 409),
     /**
      * The print file of a design being approved is not what the press needs: not a PDF, or not one page per print
-     * area of the bleed box's size (kltn-docs 12 BR-09: the approval is refused and the design stays pending).
+     * area (a bag: one page, its flat sheet) whose BleedBox is the bleed box's size and whose TrimBox, if declared, is
+     * the trim (kltn-docs 12 BR-09: the approval is refused and the design stays pending).
      */
     DESIGN_PRINT_FILE_INVALID("The design's print file does not fit its template", 409),
     /** A design holds at most 100 images (Design Studio plan 2F-4). */

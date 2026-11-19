@@ -154,7 +154,7 @@ public class PrintConfigService implements PrintConfigs {
         VariantJpaEntity variant = variantOf(productId, variantId);
         requireWritable(product, variant);
         if (draft.code() == null || !CODE.matcher(draft.code()).matches()) {
-            throw new BusinessException(ErrorCode.PRINT_CONFIG_INVALID,
+            throw PrintConfigRules.invalid("code", "Pattern",
                     "A template code is 1 to 50 capital letters, digits or hyphens");
         }
         if (templates.existsByVariantIdAndCode(variantId, draft.code())) {
@@ -387,10 +387,10 @@ public class PrintConfigService implements PrintConfigs {
 
     private void describe(CustomizationTemplateJpaEntity template, Draft draft) {
         if (draft.name() == null || draft.name().isBlank() || draft.name().length() > 255) {
-            throw new BusinessException(ErrorCode.PRINT_CONFIG_INVALID, "A template needs a name of at most 255 characters");
+            throw PrintConfigRules.invalid("name", "Size", "A template needs a name of at most 255 characters");
         }
         if (draft.model() == null) {
-            throw new BusinessException(ErrorCode.PRINT_CONFIG_INVALID, "A template needs the product model");
+            throw PrintConfigRules.invalid("model", "NotNull", "A template needs the product model");
         }
         PrintConfigRules.Limits limits = PrintConfigRules.requireValid(draft.limits());
         template.describe(draft.name().trim(), limits.minDpi(), limits.colorMode(),
@@ -402,7 +402,7 @@ public class PrintConfigService implements PrintConfigs {
     /** The print areas of {@code draft}'s model, checked before anything is written. */
     private static List<PrintArea> computeAreas(Draft draft) {
         if (draft.model() == null) {
-            throw new BusinessException(ErrorCode.PRINT_CONFIG_INVALID, "A template needs the product model");
+            throw PrintConfigRules.invalid("model", "NotNull", "A template needs the product model");
         }
         return PrintConfigRules.areas(draft.model(), draft.areaSpecs());
     }

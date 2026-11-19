@@ -192,9 +192,11 @@ public class ResourceServerSecurityConfig {
                         // checked by the service with everything else on each use. GET, and HEAD, which mail link
                         // checkers send first (Spring MVC answers it from the GET handler, with the same checks).
                         .requestMatchers(HttpMethod.GET, "/api/v1/production-order-files/*/slip",
-                                "/api/v1/production-order-files/*/print-files/*").permitAll()
+                                "/api/v1/production-order-files/*/print-files/*",
+                                "/api/v1/production-order-files/*/print-files/*/originals/*").permitAll()
                         .requestMatchers(HttpMethod.HEAD, "/api/v1/production-order-files/*/slip",
-                                "/api/v1/production-order-files/*/print-files/*").permitAll()
+                                "/api/v1/production-order-files/*/print-files/*",
+                                "/api/v1/production-order-files/*/print-files/*/originals/*").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth
                         .bearerTokenResolver(carrierWebhooksCarryNoToken())
