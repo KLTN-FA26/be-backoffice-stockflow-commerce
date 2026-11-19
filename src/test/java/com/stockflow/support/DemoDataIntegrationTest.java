@@ -146,10 +146,10 @@ class DemoDataIntegrationTest {
                   FROM inventory.stock_package p
                   JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
                   JOIN inventory.uom_conversions u ON u.id = p.uom_conversion_id
-                 WHERE i.sku IN (?, ?)
+                 WHERE i.sku IN (?, ?) AND p.created_by = 'V20261206000100'
                  GROUP BY 1
                 """, String.class, DemoData.SKU_STOCKED, DemoData.SKU_QUARANTINED))
-                .as("every carton holds its SKU's carton factor")
+                .as("every seeded carton holds its SKU's carton factor (other classes may add cartons of their own)")
                 .containsExactlyInAnyOrder(DemoData.SKU_STOCKED + " 1000 1000", DemoData.SKU_QUARANTINED + " 500 500");
 
         for (String sku : List.of(DemoData.SKU_STOCKED, DemoData.SKU_QUARANTINED)) {

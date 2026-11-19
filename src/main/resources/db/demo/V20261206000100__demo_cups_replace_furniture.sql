@@ -286,6 +286,14 @@ DELETE FROM inventory.inventory_items WHERE sku IN (SELECT sku FROM c_furniture)
 
 UPDATE inventory.inventory_items SET barcode = '8930000000011' WHERE sku = 'LY-GIAY-DEMO-12OZ-DO';
 
+-- The catalog's projection of the two published products: CatalogProjectionListener writes it at every start, so a
+-- database the application has run on holds it, and its foreign keys would refuse the variants' and products' delete.
+DELETE FROM catalog.catalog_entry WHERE sku IN (SELECT sku FROM c_furniture);
+
+DELETE FROM catalog.product_listing l
+ USING product.products p
+ WHERE p.id = l.product_id AND p.code IN (SELECT code FROM c_furniture_product);
+
 DELETE FROM product.media m
  USING product.variants v JOIN product.products p ON p.id = v.product_id
  WHERE m.variant_id = v.id AND p.code IN (SELECT code FROM c_furniture_product);
@@ -368,7 +376,11 @@ BEGIN
         UNION ALL SELECT 'product ' || code FROM product.products WHERE code LIKE 'SOFA-3S%' OR code LIKE 'TABLE-OAK%'
         UNION ALL SELECT 'brand ' || code FROM product.brands WHERE code = 'NHAXINH'
         UNION ALL SELECT 'category ' || code FROM product.categories WHERE code IN ('LIVING', 'DINING', 'SOFA', 'TABLE')
-        UNION ALL SELECT 'attribute value ' || code FROM product.attribute_values WHERE code IN ('OAK', 'FABRIC', '160')
+        UNION ALL SELECT 'attribute value ' || a.code || '=' || v.code FROM product.attribute_values v
+          JOIN product.attributes a ON a.id = v.attribute_id
+         WHERE (a.code, v.code) IN (('MATERIAL', 'OAK'), ('MATERIAL', 'FABRIC'), ('LENGTH', '160'))
+        UNION ALL SELECT 'catalog entry ' || sku FROM catalog.catalog_entry
+         WHERE sku LIKE 'SOFA-3S%' OR sku LIKE 'TABLE-OAK%'
         UNION ALL SELECT 'media ' || id FROM product.media WHERE url LIKE '%SOFA-3S%' OR url LIKE '%TABLE-OAK%'
         UNION ALL SELECT 'zone ' || name FROM warehouse.zone WHERE name IN ('Khu A - Sofa', 'Khu B - Bàn')
     ) furniture;

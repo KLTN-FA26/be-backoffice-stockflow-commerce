@@ -383,10 +383,7 @@ SELECT pg_temp.expect_fail('P20 inventory item for a sku that is no variant', $q
 SELECT pg_temp.expect_fail('P22 inventory item sku changed',
     $q$ UPDATE inventory.inventory_items SET sku = 'LY-GIAY-DEMO-12OZ-XA' WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH' $q$);
 SELECT pg_temp.expect_fail('P23 variant deleted while it has an inventory item',
-    $q$ DELETE FROM product.media WHERE variant_id = md5('demo:cups:variant:HOP-GIAY-DEMO-BLUE-PAPER')::uuid;
-        DELETE FROM product.variant_attribute_values
-         WHERE variant_id = md5('demo:cups:variant:HOP-GIAY-DEMO-BLUE-PAPER')::uuid;
-        DELETE FROM product.variants WHERE sku = 'HOP-GIAY-DEMO-BLUE-PAPER' $q$);
+    $q$ DELETE FROM product.variants WHERE sku = 'HOP-GIAY-DEMO-BLUE-PAPER' $q$);
 
 \echo '--- product follow-ups (V20261014001100, SCRUM-461)'
 SELECT pg_temp.expect_fail('P24 DISCONTINUED without a reason (docs 01 §5.1)', $q$

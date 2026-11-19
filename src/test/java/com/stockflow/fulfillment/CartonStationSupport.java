@@ -85,7 +85,8 @@ final class CartonStationSupport {
 
     /** The demo SKUs are read by every class on the shared database: a fixture changes only a SKU of the test's own. */
     private static void requireOwn(String sku) {
-        if (DemoData.SKU_STOCKED.equals(sku) || DemoData.SKU_QUARANTINED.equals(sku)) {
+        if (DemoData.SKU_STOCKED.equals(sku) || DemoData.SKU_QUARANTINED.equals(sku)
+                || DemoData.BLANK_CUP.equals(sku)) {
             throw new IllegalArgumentException("A demo SKU is shared by every integration test; make one with "
                     + "CustomerSkuRows.like and change that: " + sku);
         }
