@@ -232,7 +232,15 @@ class WaybillImportService implements WaybillImports {
             }
         }
         waybills.lock(numbers);
-        List<WaybillImportCheck.Verdict> verdicts = check(rows, locked, warehouseId, confirmed);
+        // A load outside the chosen warehouse (or the caller's) is not locked - nobody here may act on it - but it is
+        // read, so the line is refused for what it is (LOAD_OUT_OF_SCOPE), as in the preview, not as "no such load".
+        Set<String> lockedCodes = byCode.keySet();
+        Set<String> others = codes(rows).stream().filter(c -> !lockedCodes.contains(c)).collect(Collectors.toSet());
+        List<DispatchLoadJpaEntity> checked = new ArrayList<>(locked);
+        if (!others.isEmpty()) {
+            checked.addAll(loads.findByCodeIn(others));
+        }
+        List<WaybillImportCheck.Verdict> verdicts = check(rows, checked, warehouseId, confirmed);
         Instant now = clock.instant();
         UUID importId = Identifiers.newId();
         int applied = 0;

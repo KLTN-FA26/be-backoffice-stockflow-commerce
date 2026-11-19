@@ -735,6 +735,14 @@ class FtlDispatchIntegrationTest {
         dispatch(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                 .multipart(BASE + "/waybill-imports/preview" + withWarehouse(elsewhereWarehouse, "")).file(csvFile))
                 .andExpect(status().isForbidden());
+        // A load of another warehouse than the chosen one: the same reason in the preview and after the import.
+        JsonNode otherPreview = data(importing(dispatcherElsewhere, "WAREHOUSE_STAFF", "/preview", csv)
+                .andExpect(status().isOk()));
+        JsonNode otherApplied = data(importing(dispatcherElsewhere, "WAREHOUSE_STAFF", "", csv)
+                .andExpect(status().isCreated()));
+        assertThat(otherPreview.path("lines").get(0).path("problem").asText()).isEqualTo("LOAD_OUT_OF_SCOPE");
+        assertThat(otherApplied.path("lines").get(0).path("problem").asText())
+                .isEqualTo(otherPreview.path("lines").get(0).path("problem").asText());
         // The picker offers only the caller's own warehouses (RTM-WBIMPORT-WH).
         assertThat(data(dispatch(get(BASE + "/waybill-imports/warehouses")).andExpect(status().isOk()))
                 .findValuesAsText("warehouseId")).containsExactly(HCM.toString());
