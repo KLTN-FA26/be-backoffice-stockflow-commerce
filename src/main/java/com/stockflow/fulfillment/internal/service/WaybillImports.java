@@ -36,6 +36,15 @@ public interface WaybillImports {
     record ImportRow(UUID id, String fileName, UUID uploadedBy, Instant uploadedAt, int rowsTotal, int rowsApplied,
                      int rowsRejected) { }
 
+    /** A warehouse an import may be made for. */
+    record WarehouseOption(UUID warehouseId, String code, String name) { }
+
+    /**
+     * The warehouses the caller may import waybill numbers for (RTM-WBIMPORT-WH): every active warehouse, or only the
+     * ones the caller is assigned to - the list the screen's picker offers, so no choice ends in a 403.
+     */
+    List<WarehouseOption> warehouses();
+
     /** The empty template, its headings in the request's language. */
     byte[] template();
 

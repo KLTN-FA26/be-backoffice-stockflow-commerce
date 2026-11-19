@@ -66,6 +66,14 @@ class WaybillImportController {
                 .body(imports.template());
     }
 
+    @GetMapping("/warehouses")
+    @Operation(summary = "The warehouses the caller may import waybill numbers for: the active ones, limited to the "
+            + "caller's assigned warehouses")
+    @RequiresPermission(resource = FulfillmentResources.WAYBILL_IMPORTS, action = Action.CREATE)
+    public ApiResponse<java.util.List<WaybillImports.WarehouseOption>> warehouses() {
+        return ApiResponse.ok(imports.warehouses());
+    }
+
     @PostMapping(path = "/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @Operation(summary = "Check each line of a file (CSV UTF-8 or an .xlsx workbook, the template's table) against the "
             + "loads it names, of the chosen warehouse only (warehouseId, required); nothing is written. 400 "

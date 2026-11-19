@@ -125,6 +125,14 @@ class WaybillImportService implements WaybillImports {
 
     @Override
     @Transactional(readOnly = true)
+    public List<WarehouseOption> warehouses() {
+        Optional<AssignedWarehouses> restriction = WarehouseScope.restriction();
+        return warehouses.activeWarehouses().stream().filter(w -> visible(restriction, w.id()))
+                .map(w -> new WarehouseOption(w.id(), w.prefix(), w.name())).toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Preview preview(byte[] file, UUID warehouseId, CurrentUser actor) {
         requireWarehouse(warehouseId);
         List<WaybillImportFile.Row> rows = parse(file);
