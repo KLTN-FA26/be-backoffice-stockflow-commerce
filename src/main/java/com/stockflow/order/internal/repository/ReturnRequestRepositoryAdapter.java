@@ -3,6 +3,7 @@ package com.stockflow.order.internal.repository;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Specs;
 import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.order.internal.domain.ReturnClaims;
 import com.stockflow.order.internal.domain.ReturnDiscrepancy;
 import com.stockflow.order.internal.domain.ReturnEvidence;
 import com.stockflow.order.internal.domain.ReturnLine;
@@ -93,6 +94,16 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
     @Override
     public List<ReturnRequest> findByOrder(UUID orderId) {
         return jpa.findByOrderIdWithLines(orderId).stream().map(this::toDomain).toList();
+    }
+
+    @Override
+    public ReturnClaims claimsOf(UUID orderId) {
+        // The returns and their lines in the one fetch-joined statement findByOrder starts with; the rest toDomain reads
+        // per return (evidence, parcels, history) is not needed to count what is claimed, so it is not read.
+        return ReturnClaims.of(jpa.findByOrderIdWithLines(orderId).stream()
+                .flatMap(e -> e.getLines().stream()
+                        .map(row -> ReturnClaims.Claim.of(e.getShipmentId(), e.getStatus(), toLine(row))))
+                .toList());
     }
 
     @Override
@@ -206,12 +217,14 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
         }
     }
 
+    private static ReturnLine toLine(ReturnRequestLineJpaEntity row) {
+        return new ReturnLine(row.getId(), row.getOrderLineId(), row.getSku(), row.isCustomPrinted(),
+                row.getUnitPrice(), row.getQuantity()).restore(row.getApprovedQuantity(),
+                row.getReceivedQuantity(), row.getRefundQuantity(), row.getRefundAmount());
+    }
+
     private ReturnRequest toDomain(ReturnRequestJpaEntity e) {
-        List<ReturnLine> lines = e.getLines().stream()
-                .map(row -> new ReturnLine(row.getId(), row.getOrderLineId(), row.getSku(), row.isCustomPrinted(),
-                        row.getUnitPrice(), row.getQuantity()).restore(row.getApprovedQuantity(),
-                        row.getReceivedQuantity(), row.getRefundQuantity(), row.getRefundAmount()))
-                .toList();
+        List<ReturnLine> lines = e.getLines().stream().map(ReturnRequestRepositoryAdapter::toLine).toList();
         ReturnRequest request = new ReturnRequest(e.getId(), e.getRmaNumber(), e.getOrderId(), e.getOrderNumber(),
                 e.getCustomerId(), e.getRequestId(), e.getChannel(), e.getReasonCode(), e.getNote(),
                 e.getRequestedResolution(), e.getRequestedBy(), e.getRequestedAt(), e.getCurrency(), lines,

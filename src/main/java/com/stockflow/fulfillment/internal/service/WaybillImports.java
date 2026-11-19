@@ -36,16 +36,28 @@ public interface WaybillImports {
     record ImportRow(UUID id, String fileName, UUID uploadedBy, Instant uploadedAt, int rowsTotal, int rowsApplied,
                      int rowsRejected) { }
 
+    /** A warehouse an import may be made for. */
+    record WarehouseOption(UUID warehouseId, String code, String name) { }
+
+    /**
+     * The warehouses the caller may import waybill numbers for (RTM-WBIMPORT-WH): every active warehouse, or only the
+     * ones the caller is assigned to - the list the screen's picker offers, so no choice ends in a 403.
+     */
+    List<WarehouseOption> warehouses();
+
     /** The empty template, its headings in the request's language. */
     byte[] template();
 
     /**
-     * Each line checked against the loads it names, as they are now; nothing written.
+     * Each line checked against the loads it names, as they are now; nothing written. Only loads of the chosen
+     * warehouse {@code warehouseId} are accepted (RTM-WBIMPORT-WH): a line naming a load of another warehouse is a
+     * refused line (LOAD_OUT_OF_SCOPE).
      *
-     * @throws com.stockflow.common.error.BusinessException 400 {@code WAYBILL_IMPORT_INVALID_FILE} for a file that is
+     * @throws com.stockflow.common.error.BusinessException 404 {@code WAREHOUSE_NOT_FOUND}, 403 for a warehouse the
+     *         caller is not assigned to; 400 {@code WAYBILL_IMPORT_INVALID_FILE} for a file that is
      *         not the template's table (not UTF-8, no data line, over 1,000 lines, a quote left open)
      */
-    Preview preview(byte[] file, CurrentUser actor);
+    Preview preview(byte[] file, UUID warehouseId, CurrentUser actor);
 
     /**
      * Applies the file's valid lines, under the loads' locks and against the loads as they are then (a preview may be
@@ -57,7 +69,8 @@ public interface WaybillImports {
      * @throws com.stockflow.common.error.BusinessException 400 {@code WAYBILL_IMPORT_INVALID_FILE}; 503
      *         {@code STORAGE_ERROR} when the file cannot be kept
      */
-    ImportView importFile(byte[] file, String fileName, java.util.Set<Integer> overwriteLines, CurrentUser actor);
+    ImportView importFile(byte[] file, String fileName, UUID warehouseId, java.util.Set<Integer> overwriteLines,
+                          CurrentUser actor);
 
     /** The imports the caller made, and those with a line on a load of their warehouses; newest first. */
     PageResponse<ImportRow> list(int page, int size, CurrentUser actor);

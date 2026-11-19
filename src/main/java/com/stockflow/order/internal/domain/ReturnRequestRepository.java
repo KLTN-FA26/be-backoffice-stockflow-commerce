@@ -30,6 +30,12 @@ public interface ReturnRequestRepository {
     /** Every return of the order, oldest first: what the order's lines are still claimed for, and how they ended. */
     List<ReturnRequest> findByOrder(UUID orderId);
 
+    /**
+     * What the order's returns claim of its lines, line by line and delivery by delivery - all a new claim is bounded
+     * by, in one statement, without loading each return whole (its evidence, parcels and history are not needed).
+     */
+    ReturnClaims claimsOf(UUID orderId);
+
     /** Returns waiting for goods whose deadline passed before {@code now}, oldest deadline first, at most {@code limit}. */
     List<UUID> awaitingReturnPast(Instant now, int limit);
 

@@ -40,8 +40,8 @@ import java.util.UUID;
 /**
  * The carton check and labelling station (team plan 4C-6; kltn-docs 08), at the dispatch area: the queue, the check
  * session of a task, scanning each carton's LPN, its shipping label (label, print, reprint), and removing a damaged
- * carton. Completing stays on {@code POST /tasks/{taskId}/packing-completion}; the repack station's endpoints of
- * {@code PackingController} stay until team plan 4C-7 removes them.
+ * carton. Completing the check, which makes the labelled cartons one shipment, is
+ * {@code POST /tasks/{taskId}/packing-completion} on {@code FulfillmentController}.
  *
  * <p>{@code fulfillment-packages:READ} to look at the queue and a session; {@code fulfillment-packing} to work the
  * station: UPDATE to start, scan, label, reprint and remove, READ to print the labels, and APPROVE to work another

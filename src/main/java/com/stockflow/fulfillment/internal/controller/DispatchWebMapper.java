@@ -46,7 +46,7 @@ class DispatchWebMapper {
     }
 
     LoadResponse toResponse(Dispatching.LoadDetail d) {
-        return new LoadResponse(d.loadId(), d.code(), d.warehouseId(), d.status(), d.carrierId(),
+        return new LoadResponse(d.loadId(), d.code(), d.warehouseId(), d.warehouseName(), d.status(), d.carrierId(),
                 d.carrierCode(), d.carrierName(), d.vehiclePlate(), d.driverName(), d.driverPhone(),
                 d.loadingStartedAt(), d.loadingStartedBy(), d.dispatchedAt(), d.dispatchedBy(), d.dispatchedByName(),
                 d.carrierRepresentative(), d.signatureRef(), d.handoverNote(), d.cancelledAt(), d.cancelReason(),

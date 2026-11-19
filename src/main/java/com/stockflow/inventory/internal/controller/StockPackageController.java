@@ -168,7 +168,8 @@ class StockPackageController {
             description = "Each label carries the LPN as text, as a QR code and as a Code 128 barcode, with the SKU "
                     + "and received / nominal unit. Send Accept: application/pdf, application/json - "
                     + "errors are the usual JSON envelope: 404 STOCK_PACKAGE_NOT_FOUND, 409 "
-                    + "INVALID_STOCK_PACKAGE_TRANSITION for a VOID, CONSUMED or LOST carton, 422 "
+                    + "INVALID_STOCK_PACKAGE_TRANSITION for a VOID or LOST carton, or a CONSUMED one unless it is "
+                    + "picked for an order and not handed over yet (kltn-docs 03 §4.1 step 4), 422 "
                     + "STOCK_PACKAGE_LABELS_EMPTY and STOCK_PACKAGE_LABELS_TOO_MANY (over 500 labels).")
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "The labels",
             content = @Content(mediaType = MediaType.APPLICATION_PDF_VALUE,

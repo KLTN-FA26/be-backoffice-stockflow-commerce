@@ -208,6 +208,8 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}", "fulfillment-load-plans:READ"),
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/layouts", "fulfillment-load-plans:READ"),
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/vehicles/{seq}/layout", "fulfillment-load-plans:READ"),
+            Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/vehicles/{seq}/loading-sheet.pdf",
+                    "fulfillment-load-plans:READ"),
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/reconciliation", "fulfillment-load-plans:READ"),
             Map.entry("POST /api/v1/fulfillment/load-plans", "fulfillment-load-plans:CREATE"),
             Map.entry("PUT /api/v1/fulfillment/load-plans/{loadPlanId}/inputs", "fulfillment-load-plans:UPDATE"),
@@ -386,6 +388,8 @@ class PermissionMatrixTest {
                     Role.SYSTEM_ADMIN)),
             // 4B-7, kltn-docs 17 §4.2 step 2: Sales chooses the shipping warehouse; those who follow the order read it.
             Map.entry("sales-order-shipping-warehouses:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            // WF04 G2 (V20261204006100; kltn-docs 17 §2, §3 "Khách / Sale ... đổi địa chỉ"): Sales change the address.
+            Map.entry("sales-order-addresses:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("sales-order-shipping-warehouses:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
                     Role.WAREHOUSE_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             // 4A-2, kltn-docs 17 §4.3, BR-23: the coordinator draws production orders up, the Sales Manager approves.

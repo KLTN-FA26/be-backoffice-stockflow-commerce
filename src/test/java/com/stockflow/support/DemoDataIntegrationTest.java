@@ -1,5 +1,7 @@
 package com.stockflow.support;
 
+import com.stockflow.common.storage.FileCategory;
+import com.stockflow.common.storage.StorageKeys;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -195,5 +197,19 @@ class DemoDataIntegrationTest {
             cartons.put(rs.getString("place"), rs.getInt("cartons"));
         }, sku);
         return cartons;
+    }
+
+    @Test
+    @DisplayName("the demo return photos have keys the storage layer accepts, so a demo return's detail can sign them")
+    void demoReturnPhotosHaveKnownKeys() {
+        List<String> keys = jdbc.queryForList(
+                "SELECT file_key FROM ordering.return_request_evidence WHERE file_key LIKE '%/demo/%'", String.class);
+        assertThat(keys).isNotEmpty();
+        for (String key : keys) {
+            assertThat(StorageKeys.categoryOf(key)).as(key).isEqualTo(FileCategory.RETURN_EVIDENCE);
+            // What the return detail does with every photo (FileTransfers.evidenceThumbnailLink); it threw for
+            // 'returns/demo/...' and the detail answered 503.
+            assertThat(StorageKeys.evidenceCopyOf(key, 256)).as(key).startsWith("evidence-copies/return-evidence/demo/");
+        }
     }
 }

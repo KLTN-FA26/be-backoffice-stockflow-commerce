@@ -660,6 +660,11 @@ public enum ErrorCode {
     ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED("This order does not allow partial shipments", 409),
     /** PACK-PARTIAL: whether the order may ship in parts can no longer change once everything left or it is closed. */
     ORDER_PARTIAL_SHIPMENT_LOCKED("Partial shipment can no longer be changed on this order", 409),
+    /**
+     * kltn-docs 17 §4.7 step 24, BR-16; 08 BR-04: the delivery address no longer changes - a carton of the order is
+     * labelled, or the order is in a status where only something else changes (a contract sent, packed and later).
+     */
+    ORDER_ADDRESS_LOCKED("The delivery address of this order can no longer change", 409),
     /** SCRUM-466: a task is picked in one warehouse; the order's stock is held in more than one, or elsewhere. */
     FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE("Stock held for this order is in another warehouse", 409),
     /** SCRUM-267 (docs 07 step 6): the bin scanned is not the one this pick line takes its goods from. */
@@ -802,6 +807,12 @@ public enum ErrorCode {
     CARTON_SPEC_UNMEASURED("The SKU's carton spec has no size or weight: no shipping label can print", 422),
     /** Docs 09 §5: the shipment's status does not allow the step. */
     SHIPMENT_STATE_CONFLICT("The shipment cannot do that in its current status", 409),
+    /** Docs 09 §4.3 step 2: the delivery time a manager records is when the carrier delivered, so never in the future. */
+    SHIPMENT_DELIVERY_TIME_IN_FUTURE("The delivery time cannot be in the future", 422),
+    /** Docs 09 §4.3 step 2: a shipment cannot be delivered before it was handed over to the carrier. */
+    SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER("The delivery time cannot be before the shipment was handed over", 422),
+    /** Docs 09 §4.3 step 3: a retried delivery comes after the failure it follows. */
+    SHIPMENT_DELIVERY_TIME_BEFORE_FAILURE("The delivery time cannot be before the failed delivery it follows", 422),
     // ---- G4-2a loading and handover (kltn-docs 09 §4.1, §5): 404 / 400 / 409 kept together with the flow
     /** G4-2a: a load (manifest) of a warehouse outside the caller's scope is OUT_OF_DATA_SCOPE, not this. */
     LOAD_NOT_FOUND("Load not found", 404),

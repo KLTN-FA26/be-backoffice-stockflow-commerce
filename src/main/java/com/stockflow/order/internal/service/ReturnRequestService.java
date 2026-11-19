@@ -22,16 +22,14 @@ import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.OrderShipment;
 import com.stockflow.order.internal.domain.ReturnChannel;
+import com.stockflow.order.internal.domain.ReturnClaims;
 import com.stockflow.order.internal.domain.ReturnEvidence;
-import com.stockflow.order.internal.domain.ReturnLine;
 import com.stockflow.order.internal.domain.ReturnPolicy;
 import com.stockflow.order.internal.domain.ReturnReason;
 import com.stockflow.order.internal.domain.ReturnRequest;
 import com.stockflow.order.internal.domain.ReturnRequestRepository;
 import com.stockflow.order.internal.domain.ReturnResolution;
 import com.stockflow.order.internal.domain.ReturnStatus;
-import com.stockflow.order.internal.domain.SalesContract;
-import com.stockflow.order.internal.domain.SalesContractRepository;
 import com.stockflow.payment.api.OrderSettlementResult;
 import com.stockflow.payment.api.PaymentService;
 import com.stockflow.payment.api.SettleReturnCommand;
@@ -49,13 +47,10 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -145,14 +140,14 @@ public class ReturnRequestService {
     private final ReturnPolicy policy;
     private final Clock clock;
     private final DeliveryFailureService deliveryFailures;
-    private final SalesContractRepository contracts;
+    private final ReturnAllowances allowances;
 
     ReturnRequestService(ReturnRequestRepository returns, OrderRepository orders, OrderEventPublisher events,
                          PaymentService payments, CustomerService customers, FileTransfers files,
                          StagedUploads staged, TransactionOperations tx, ReturnPolicy policy, Clock clock,
-                         DeliveryFailureService deliveryFailures, SalesContractRepository contracts) {
+                         DeliveryFailureService deliveryFailures, ReturnAllowances allowances) {
         this.deliveryFailures = deliveryFailures;
-        this.contracts = contracts;
+        this.allowances = allowances;
         this.returns = returns;
         this.orders = orders;
         this.events = events;
@@ -216,26 +211,14 @@ public class ReturnRequestService {
         // WF-05 TH-1: the delivery the goods came on; what its other returns claim bounds this one.
         OrderShipment shipment = ReturnRequest.deliveredShipment(order, command.shipmentId());
         UUID shipmentId = shipment == null ? null : shipment.id();
-        Map<UUID, Integer> claimed = new HashMap<>();
-        Map<UUID, Integer> claimedOnShipment = new HashMap<>();
-        Set<UUID> open = new HashSet<>();
-        for (ReturnRequest other : returns.findByOrder(order.id().value())) {
-            boolean sameDelivery = Objects.equals(other.shipmentId(), shipmentId);
-            for (ReturnLine line : other.lines()) {
-                claimed.merge(line.orderLineId(), line.claimedUnits(other.status()), Integer::sum);
-                if (sameDelivery) {
-                    claimedOnShipment.merge(line.orderLineId(), line.claimedUnits(other.status()), Integer::sum);
-                    if (other.status().isOpen()) {
-                        open.add(line.orderLineId());
-                    }
-                }
-            }
-        }
+        // Read as the customer's order detail reads it (ReturnAllowances), so what it showed returnable is what passes.
+        ReturnClaims claims = allowances.claimsOf(order.id().value());
         Instant now = now();
         ReturnRequest request = ReturnRequest.open(returns.nextRmaNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)),
                 command.requestId(), order, shipmentId, channel, command.reason(), command.description(),
-                command.requestedResolution(), command.lines(), claimed, claimedOnShipment, open, by, now,
-                policyOf(order.id().value()), channel == ReturnChannel.BACK_OFFICE ? command.lateClaimReason() : null);
+                command.requestedResolution(), command.lines(), claims.inAll(), claims.onShipment(shipmentId),
+                claims.openOn(shipmentId), by, now, allowances.policyOf(order.id().value()),
+                channel == ReturnChannel.BACK_OFFICE ? command.lateClaimReason() : null);
         if (order.requestReturn(by, now, "RETURN_REQUESTED " + request.rmaNumber())) {
             orders.save(order);
             events.publishEventsOf(order);
@@ -658,15 +641,6 @@ public class ReturnRequestService {
     private static BigDecimal goodsWorth(Order order) {
         return order.lines().stream().map(l -> l.grossOf(l.quantity() - l.cancelledQuantity()).amount())
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-    }
-
-    /**
-     * The return rules for the order: the complaint period its contract agreed (Điều 318), else the configured one. A
-     * contract cancelled and drawn up again is read as the live one.
-     */
-    private ReturnPolicy policyOf(UUID orderId) {
-        return policy.withWindowDays(contracts.findLiveByOrderId(orderId).map(SalesContract::returnWindowDays)
-                .orElse(null));
     }
 
     /** Microseconds, as the database keeps them. */
