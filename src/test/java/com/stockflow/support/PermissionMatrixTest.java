@@ -263,10 +263,10 @@ class PermissionMatrixTest {
             // 09B G12 (09 edge "hoàn hàng khi còn Handed Over"): the warehouse manager corrects the failure reason.
             Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/failure-reason-correction",
                     "fulfillment-delivery-corrections:UPDATE"),
-            // RTM-RTDCANCEL (V20261206010600, 09 §5.1): the warehouse manager cancels a shipment waiting for dispatch.
+            // RTM-RTDCANCEL (V20261207010600, 09 §5.1): the warehouse manager cancels a shipment waiting for dispatch.
             Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/cancellation",
                     "fulfillment-shipment-cancellations:UPDATE"),
-            // 09B G13 (V20261206010100): Sales read an order's POD and waybill files to send the customer.
+            // 09B G13 (V20261207010100): Sales read an order's POD and waybill files to send the customer.
             Map.entry("GET /api/v1/fulfillment/orders/{orderId}/delivery-documents",
                     "fulfillment-delivery-documents:READ"),
             Map.entry("GET /api/v1/fulfillment/orders/{orderId}/delivery-documents/pod-files/{fileId}/download-url",
