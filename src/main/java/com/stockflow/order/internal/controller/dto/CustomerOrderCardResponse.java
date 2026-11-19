@@ -22,7 +22,8 @@ public record CustomerOrderCardResponse(
 
         @Schema(example = "PREPARING", description = "What the customer reads: AWAITING_CONTRACT, AWAITING_PAYMENT, "
                 + "UNDER_REVIEW, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION (legacy), PREPARING, SHIPPING, DELIVERED, "
-                + "CANCELLED or RETURNED")
+                + "RETURN_REQUESTED (a return is being decided; the goods are still the customer's), CANCELLED or "
+                + "RETURNED (goods came back, or the order was settled by a return). Parse tolerantly: more may come")
         String statusGroup,
 
         BigDecimal total,

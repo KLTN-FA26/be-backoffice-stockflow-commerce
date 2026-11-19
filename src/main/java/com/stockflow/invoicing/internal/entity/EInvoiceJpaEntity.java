@@ -191,6 +191,19 @@ public class EInvoiceJpaEntity extends BaseEntity {
     @Column(name = "void_reason", length = 500)
     private String voidReason;
 
+    /**
+     * WF-05 HĐ-3: when the delivery this invoice was at the provider for was corrected to a failure. Read here, never
+     * written ({@code insertable = false, updatable = false}): the mark is set and taken back in SQL by
+     * {@code EInvoiceRepositoryAdapter.markDeliveryFailed} / {@code clearDeliveryFailed}, outside the version, while
+     * the invoice is at the provider and a provider poll may be saving the same row. Were it an ordinary column, any
+     * save from a copy read before the mark would write the old value back and silently unmark it (or, after a
+     * clear, mark it again) - and {@code tg_einvoice_delivery_failed} would refuse only some of those writes. A copy
+     * already in the persistence context does not see a mark set by SQL in the same transaction; the readers of the
+     * mark that decide anything ({@code EInvoiceRepository.deliveryFailed}) ask the database instead.
+     */
+    @Column(name = "delivery_failed_at", insertable = false, updatable = false)
+    private Instant deliveryFailedAt;
+
     protected EInvoiceJpaEntity() {
     }
 
@@ -330,6 +343,7 @@ public class EInvoiceJpaEntity extends BaseEntity {
     public Instant getVoidedAt() { return voidedAt; }
     public UUID getVoidedBy() { return voidedBy; }
     public String getVoidReason() { return voidReason; }
+    public Instant getDeliveryFailedAt() { return deliveryFailedAt; }
 
     public CorrectionBasis getCorrectionBasis() {
         return correctionBasis;
