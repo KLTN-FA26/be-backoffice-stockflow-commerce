@@ -238,7 +238,7 @@ SELECT pg_temp.expect_fail('O51 a rejection without a reason', $q$
 SELECT pg_temp.expect_fail('O52 a pick to put back that was not cancelled', $q$
     UPDATE fulfillment.pick SET needs_put_back = TRUE WHERE id = md5('qa:pick:1')::uuid $q$);
 SELECT pg_temp.expect_ok('O53 a cancelled pick whose goods go back', $q$
-    UPDATE fulfillment.pick SET status = 'CANCELLED', needs_put_back = TRUE WHERE id = md5('qa:pick:1')::uuid $q$);
+    UPDATE fulfillment.pick SET status = 'CANCELLED', needs_put_back = TRUE, cancelled_at = NOW() WHERE id = md5('qa:pick:1')::uuid $q$);
 
 \echo '--- order lifecycle: fulfilment states, hold, delivery outcome, split shipments (G3-2, V20261021000100)'
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,

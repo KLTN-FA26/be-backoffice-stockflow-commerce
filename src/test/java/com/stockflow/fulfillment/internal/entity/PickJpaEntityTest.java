@@ -201,10 +201,13 @@ class PickJpaEntityTest {
         var pending = task(PickStatus.PENDING, PickDestination.STAGING);
         var stagedTask = task(PickStatus.STAGED, PickDestination.STAGING);
 
-        pending.cancel();
-        stagedTask.cancel();
+        pending.cancel(NOW);
+        stagedTask.cancel(NOW);
 
         assertThat(pending.isNeedsPutBack()).isFalse();
         assertThat(stagedTask.isNeedsPutBack()).isTrue();
+        assertThat(stagedTask.getCancelledAt()).as("07 §4.5 step 13: the queue goes by it").isEqualTo(NOW);
+        assertThat(stagedTask.cancel(NOW.plusSeconds(60))).as("cancelled once").isFalse();
+        assertThat(stagedTask.getCancelledAt()).isEqualTo(NOW);
     }
 }

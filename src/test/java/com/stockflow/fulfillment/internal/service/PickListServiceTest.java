@@ -115,7 +115,7 @@ class PickListServiceTest {
         task.assign(picker, NOW);
         switch (status) {
             case PICKING -> task.start(picker, NOW);
-            case CANCELLED -> task.cancel();
+            case CANCELLED -> task.cancel(NOW);
             default -> { }
         }
         when(picks.lockById(task.getId())).thenReturn(Optional.of(task));
@@ -860,7 +860,7 @@ class PickListServiceTest {
             task = new PickJpaEntity(task.getId(), null, task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
             task.assign(picker, NOW);
             task.start(picker, NOW);
-            task.cancel();
+            task.cancel(NOW);
             when(picks.lockById(task.getId())).thenReturn(Optional.of(task));
             row = line("SKU-A", "HCM-A-01", 3, reservation);
             row.apply(3, PickLineStatus.PICKED, picker, NOW, NOW, "HCM-A-01", "LPN-SKU-A", 0, null, null, null);
@@ -989,7 +989,7 @@ class PickListServiceTest {
         @DisplayName("a task that was not started before it was cancelled has nothing to put back")
         void nothingToPutBack() {
             task = new PickJpaEntity(task.getId(), null, task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
-            task.cancel();
+            task.cancel(NOW);
             when(picks.lockById(task.getId())).thenReturn(Optional.of(task));
             binOf(WAREHOUSE, true, StorageLocationView.Kind.BIN);
 
@@ -1068,7 +1068,7 @@ class PickListServiceTest {
                 task.complete(picker, NOW);
             }
             if (status == PickStatus.CANCELLED) {
-                task.cancel();
+                task.cancel(NOW);
             }
             when(picks.lockById(task.getId())).thenReturn(Optional.of(task));
             when(picks.findById(task.getId())).thenReturn(Optional.of(task));

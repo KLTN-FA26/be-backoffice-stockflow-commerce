@@ -769,6 +769,8 @@ public enum ErrorCode {
     /** Docs 07 BR-05: only goods picked for an order cancelled afterwards go back to a bin. */
     PUT_BACK_NOT_REQUIRED("Nothing on this line needs putting back", 409),
     PUT_BACK_LOCATION_INVALID("Put back onto an active bin of the task's warehouse", 409),
+    /** kltn-docs 07 BR-12: a carton goes back into OVERFLOW only when no bin of its warehouse takes it. */
+    PUT_BACK_OVERFLOW_NOT_ALLOWED("A bin can still take this carton; put it back onto a bin", 409),
     /**
      * Kltn-docs 11 BR-09, 20 BR-20 (team plan 4C-5): a staging area holds cartons picked for an order; stock enters it
      * only by picking, and leaves it only when the task moves to dispatch or by the put-back - never by hand.

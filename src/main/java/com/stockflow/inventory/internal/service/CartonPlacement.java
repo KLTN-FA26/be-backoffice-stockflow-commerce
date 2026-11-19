@@ -83,6 +83,57 @@ class CartonPlacement {
         }
     }
 
+    /**
+     * Where a carton of a cancelled order may go back to (kltn-docs 07 BR-12): a bin it fits, or - only when no bin
+     * of its warehouse takes it - an OVERFLOW area of that warehouse (05 BR-13). Any other area is not judged here.
+     *
+     * @throws BusinessException {@code CARTON_DOES_NOT_FIT_BIN}; {@code PUT_BACK_OVERFLOW_NOT_ALLOWED} for an OVERFLOW
+     *         area while a bin still takes the carton
+     */
+    void requirePutBackTarget(String locationCode, StockPackageId carton) {
+        StorageLocationView location = warehouses.findLocation(locationCode).orElse(null);
+        if (location != null && location.kind() == StorageLocationView.Kind.AREA
+                && location.areaType() == StorageLocationView.AreaType.OVERFLOW) {
+            if (!fittingNoBin(location.warehouseId(), List.of(carton.value())).contains(carton.value())) {
+                throw new BusinessException(ErrorCode.PUT_BACK_OVERFLOW_NOT_ALLOWED,
+                        "A bin still takes this carton; OVERFLOW is for a carton no bin takes");
+            }
+            return;
+        }
+        requireFits(locationCode, carton);
+    }
+
+    /**
+     * The cartons among {@code cartonIds} that no bin of the warehouse takes, dimension by dimension (06 BR-01): the
+     * ones that may go into OVERFLOW (07 BR-12, 05 BR-13). The bins are those the warehouse stores in - the putaway
+     * targets, usable down to their shelf; with none, every carton fits nowhere. A carton without a full size cannot be
+     * judged and counts as fitting, as {@link CartonFit} lets it through.
+     */
+    java.util.Set<UUID> fittingNoBin(UUID warehouseId, java.util.Collection<UUID> cartonIds) {
+        if (cartonIds.isEmpty()) {
+            return java.util.Set.of();
+        }
+        List<CartonFit.Space> bins = warehouses.putawayCandidates(warehouseId).stream()
+                .map(candidate -> spaceOf(candidate.size())).toList();
+        Map<UUID, Need> needs = space.needsOf(cartonIds);
+        java.util.Set<UUID> nowhere = new java.util.HashSet<>();
+        for (UUID id : cartonIds) {
+            Need need = needs.get(id);
+            boolean fits = !bins.isEmpty() && (need == null
+                    || bins.stream().anyMatch(bin -> CartonFit.fits(need.carton(), bin)));
+            if (!fits) {
+                nowhere.add(id);
+            }
+        }
+        return nowhere;
+    }
+
+    /** The usable OVERFLOW areas of a warehouse, by location code. */
+    List<String> overflowAreas(UUID warehouseId) {
+        return warehouses.areasOf(warehouseId, StorageLocationView.AreaType.OVERFLOW).stream()
+                .filter(StorageLocationView::usable).map(StorageLocationView::locationCode).toList();
+    }
+
     static BusinessException doesNotFit(String lpn, String locationCode) {
         return new BusinessException(ErrorCode.CARTON_DOES_NOT_FIT_BIN,
                 "Carton %s does not fit bin %s".formatted(lpn, locationCode),

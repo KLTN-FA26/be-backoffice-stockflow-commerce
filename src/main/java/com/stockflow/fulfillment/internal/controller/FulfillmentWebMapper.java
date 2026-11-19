@@ -41,6 +41,6 @@ class FulfillmentWebMapper {
     PutBackRowResponse toResponse(PickLists.PutBackRow row) {
         return new PutBackRowResponse(row.taskId(), row.orderNumber(), row.warehouseId(), row.lineId(), row.sku(),
                 row.lotNumber(), row.lpn(), row.pickedQty(), row.fromLocationCode(), row.pickedAt(),
-                row.quarantine());
+                row.quarantine(), row.overflowLocationCodes());
     }
 }

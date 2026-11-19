@@ -87,6 +87,27 @@ SELECT pg_temp.expect_fail('QR6 a STATUS_CHANGE across two places out of quarant
     VALUES (gen_random_uuid(), 'STATUS_CHANGE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-QC01', 'HCM-A01-1-A', 4,
             'QUARANTINE', 'AVAILABLE', 'STOCK_PACKAGE', gen_random_uuid(), NOW()) $q$);
 
+\echo '--- a damaged carton standing in a staging area is quarantined from it (WF04 G7; 11 BR-09, 20 BR-20)'
+-- Only the staging trigger's say is asked: the line may be refused by another rule, never by it.
+CREATE FUNCTION pg_temp.staging_verdict(from_code TEXT, to_code TEXT, ref TEXT) RETURNS TEXT LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
+                                          quantity, from_status, to_status, reference_type, reference_id, occurred_at)
+    VALUES (gen_random_uuid(), 'STATUS_CHANGE', 'SOFA-3S-GREY', 'UNTRACED', from_code, to_code, 1,
+            'AVAILABLE', 'QUARANTINE', ref, gen_random_uuid(), NOW());
+    RETURN 'accepted';
+EXCEPTION WHEN OTHERS THEN
+    RETURN CASE WHEN SQLERRM LIKE '%staging area%' THEN 'refused by staging' ELSE 'other: ' || left(SQLERRM, 60) END;
+END $$;
+SELECT pg_temp.expect_true('QR4b a carton leaves the staging area for a quarantine area: the staging rule lets it',
+    pg_temp.staging_verdict('HCM-STG01', 'HCM-QC01', 'STOCK_PACKAGE') NOT LIKE 'refused by staging');
+SELECT pg_temp.expect_true('QR4c ... for any other document it is refused by the staging rule',
+    pg_temp.staging_verdict('HCM-STG01', 'HCM-QC01', 'MOVE_TASK') = 'refused by staging');
+SELECT pg_temp.expect_true('QR4d ... nor does it leave for a bin',
+    pg_temp.staging_verdict('HCM-STG01', 'HCM-A01-1-A', 'STOCK_PACKAGE') = 'refused by staging');
+SELECT pg_temp.expect_true('QR4e ... and nothing enters a staging area this way',
+    pg_temp.staging_verdict('HCM-QC01', 'HCM-STG01', 'STOCK_PACKAGE') = 'refused by staging');
+
 \echo '--- quarantined stock leaves only by an approved adjustment or its release''s putaway (20 BR-21, 05 BR-14)'
 SELECT pg_temp.expect_fail('QR7 quarantined stock picked for an order', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, quantity,

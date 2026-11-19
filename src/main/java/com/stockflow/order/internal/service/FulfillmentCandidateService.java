@@ -5,11 +5,15 @@ import com.stockflow.common.persistence.Pages;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.order.api.FulfillmentCandidate;
 import com.stockflow.order.api.FulfillmentCandidates;
+import com.stockflow.order.api.ReleasedBatchOfOrder;
+import com.stockflow.order.internal.domain.DeliveryBatchRecords;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -25,15 +29,24 @@ class FulfillmentCandidateService implements FulfillmentCandidates {
 
     private final OrderSearchRepository search;
     private final CustomerService customers;
+    private final DeliveryBatchRecords batchRecords;
 
-    FulfillmentCandidateService(OrderSearchRepository search, CustomerService customers) {
+    FulfillmentCandidateService(OrderSearchRepository search, CustomerService customers,
+                                DeliveryBatchRecords batchRecords) {
         this.search = search;
         this.customers = customers;
+        this.batchRecords = batchRecords;
     }
 
     @Override
-    public PageResponse<FulfillmentCandidate> awaitingTask(UUID warehouseId, int page, int size) {
-        var candidates = search.awaitingTask(warehouseId, Pages.of(page, size, FIRST_RELEASED));
+    public List<ReleasedBatchOfOrder> lastReleasedBatches(UUID warehouseId) {
+        return batchRecords.lastReleasePerPartiallyFulfilled(warehouseId);
+    }
+
+    @Override
+    public PageResponse<FulfillmentCandidate> awaitingTask(UUID warehouseId, Collection<UUID> awaitingBatchOrders,
+                                                           int page, int size) {
+        var candidates = search.awaitingTask(warehouseId, awaitingBatchOrders, Pages.of(page, size, FIRST_RELEASED));
         // One query for every customer on the page (review of #150), not one per row.
         Map<UUID, String> names = customers.fullNames(candidates.getContent().stream()
                 .map(FulfillmentCandidate::customerId).filter(java.util.Objects::nonNull).distinct().toList());

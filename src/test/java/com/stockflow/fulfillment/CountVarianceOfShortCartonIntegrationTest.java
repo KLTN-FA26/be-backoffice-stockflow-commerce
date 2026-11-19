@@ -3,6 +3,7 @@ package com.stockflow.fulfillment;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
+import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.internal.service.CycleCounts;
 import com.stockflow.inventory.internal.service.StockOperations;
@@ -73,6 +74,7 @@ class CountVarianceOfShortCartonIntegrationTest {
     @MockitoBean JwtDecoder decoder;
     @Autowired OrderService orders;
     @Autowired StockOperations operations;
+    @Autowired com.stockflow.inventory.internal.service.CartonQuarantineService quarantine;
     @Autowired com.stockflow.fulfillment.internal.service.PickLists pickLists;
     @Autowired CycleCounts cycleCounts;
     @Autowired JdbcTemplate jdbc;
@@ -333,6 +335,164 @@ class CountVarianceOfShortCartonIntegrationTest {
         assertThat(approve(s).status()).isEqualTo(StockAdjustmentStatus.POSTED);
 
         assertSettled(s);
+    }
+
+    // ------------------------------------------------------------------ a damaged carton, quarantined at once
+
+    @Test
+    @DisplayName("WF04 G7 (07 §4.4 step 9, 20 §4.8): the picker reports the carton DAMAGED; the manager quarantines it at "
+            + "once, without waiting for the blind count it opened to be submitted - its hold is given up, the line stays "
+            + "SHORT, and the reallocation then takes another carton")
+    void aDamagedCartonIsQuarantinedBeforeTheCountIsSubmitted() throws Exception {
+        UUID order = confirmedOrders.release(
+                confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(cupCarton, 1, 12_000_000))
+                        .orderId(), HCM, coordinator).orderId();
+        placed.add(order);
+        String admin = token(coordinator, "SYSTEM_ADMIN");
+        String pickerToken = token(picker, "WAREHOUSE_STAFF");
+        UUID task = taskIdOf(send(admin, API + "/tasks",
+                "{\"orderId\":\"" + order + "\",\"assignedUserId\":\"" + picker + "\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString());
+        send(pickerToken, API + "/tasks/" + task + "/picking-start", null).andExpect(status().isOk());
+        Map<String, Object> line = jdbc.queryForMap("""
+                SELECT id, lpn, location_code, reservation_id FROM fulfillment.pick_line
+                 WHERE pick_id = ? AND status = 'OPEN'""", task);
+        UUID lineId = (UUID) line.get("id");
+        send(pickerToken, API + "/tasks/" + task + "/pick-lines/" + lineId + "/short",
+                "{\"locationCode\":\"" + line.get("location_code") + "\",\"reason\":\"DAMAGED\"}")
+                .andExpect(status().isOk());
+        String lpn = (String) line.get("lpn");
+        UUID carton = jdbc.queryForObject("SELECT id FROM inventory.stock_package WHERE lpn = ?", UUID.class, lpn);
+        UUID hold = (UUID) line.get("reservation_id");
+        UUID count = jdbc.queryForObject("""
+                SELECT c.id FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
+                 WHERE l.stock_package_id = ? AND c.trigger_type = 'SHORT_PICK'""", UUID.class, carton);
+        assertThat(holdState(hold)).containsEntry("status", "HELD");
+
+        StockPackageView quarantined = WithCurrentUser.call(TestUsers.admin(), DataScope.ALL,
+                () -> quarantine.quarantine(lpn, "HCM-QC01", "Damaged: reported short", manager));
+
+        assertThat(quarantined.locationCode()).isEqualTo("HCM-QC01");
+        assertThat(jdbc.queryForObject("""
+                SELECT string_agg(DISTINCT s.status, ',') FROM inventory.stock_item s WHERE s.stock_package_id = ?""",
+                String.class, carton)).isEqualTo("QUARANTINE");
+        assertThat(holdState(hold)).containsEntry("status", "RELEASED").containsEntry("release_reason", "SHORT_PICKED");
+        assertThat(jdbc.queryForObject("SELECT status FROM inventory.cycle_count WHERE id = ?", String.class, count))
+                .as("the blind count is still open: it is not cancelled by the quarantine").isIn("PLANNED", "IN_PROGRESS");
+        assertThat(lineStatus(lineId)).isEqualTo("SHORT");
+        OrderSummary stillHeld = orders.findById(order).orElseThrow();
+        assertThat(stillHeld.status()).isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(stillHeld.lifecycle().holdReason()).isEqualTo(HoldReason.INVENTORY);
+
+        send(token(manager, "WAREHOUSE_MANAGER"), API + "/tasks/" + task + "/pick-lines/" + lineId + "/reallocation",
+                null).andExpect(status().isOk());
+        assertThat(jdbc.queryForList("SELECT lpn FROM fulfillment.pick_line WHERE pick_id = ? AND status = 'OPEN'",
+                String.class, task)).singleElement().isNotEqualTo(lpn);
+    }
+
+    @Test
+    @DisplayName("WF04 G7: a DAMAGED carton standing in the STAGING area is quarantined at once, and it commits (the staging "
+            + "trigger lets that one STATUS_CHANGE out of the staging area into quarantine): hold given up, line SHORT")
+    void aDamagedStagedCartonIsQuarantinedFromTheStagingArea() throws Exception {
+        UUID order = confirmedOrders.release(
+                confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(cupCarton, 1, 12_000_000))
+                        .orderId(), HCM, coordinator).orderId();
+        placed.add(order);
+        String admin = token(coordinator, "SYSTEM_ADMIN");
+        String pickerToken = token(picker, "WAREHOUSE_STAFF");
+        UUID task = taskIdOf(send(admin, API + "/tasks", "{\"orderId\":\"" + order + "\",\"assignedUserId\":\""
+                + picker + "\",\"destination\":\"STAGING\"}").andExpect(status().isCreated()).andReturn().getResponse()
+                .getContentAsString());
+        send(pickerToken, API + "/tasks/" + task + "/picking-start", null).andExpect(status().isOk());
+        Map<String, Object> line = jdbc.queryForMap("""
+                SELECT id, lpn, location_code, reservation_id FROM fulfillment.pick_line
+                 WHERE pick_id = ? AND status = 'OPEN'""", task);
+        UUID lineId = (UUID) line.get("id");
+        String lpn = (String) line.get("lpn");
+        send(pickerToken, API + "/tasks/" + task + "/pick-lines/" + lineId + "/confirmation",
+                "{\"locationCode\":\"" + line.get("location_code") + "\",\"lpn\":\"" + lpn + "\"}")
+                .andExpect(status().isOk());
+        send(pickerToken, API + "/tasks/" + task + "/picking-completion", null).andExpect(status().isOk());
+        String staging = jdbc.queryForObject("SELECT staging_location_code FROM fulfillment.pick WHERE id = ?",
+                String.class, task);
+        assertThat(lineStatus(lineId)).isEqualTo("STAGED");
+        // The picker finds the staged carton damaged.
+        send(pickerToken, API + "/tasks/" + task + "/pick-lines/" + lineId + "/short",
+                "{\"locationCode\":\"" + staging + "\",\"reason\":\"DAMAGED\"}").andExpect(status().isOk());
+        UUID carton = jdbc.queryForObject("SELECT id FROM inventory.stock_package WHERE lpn = ?", UUID.class, lpn);
+        UUID hold = (UUID) line.get("reservation_id");
+        assertThat(jdbc.queryForObject("SELECT location_code FROM inventory.stock_package WHERE id = ?", String.class,
+                carton)).as("the carton stands in the staging area").isEqualTo(staging);
+
+        StockPackageView quarantined = WithCurrentUser.call(TestUsers.admin(), DataScope.ALL,
+                () -> quarantine.quarantine(lpn, "HCM-QC01", "Damaged: reported short at the staging area", manager));
+
+        assertThat(quarantined.locationCode()).isEqualTo("HCM-QC01");
+        assertThat(jdbc.queryForObject("SELECT location_code FROM inventory.stock_package WHERE id = ?", String.class,
+                carton)).isEqualTo("HCM-QC01");
+        assertThat(jdbc.queryForObject("""
+                SELECT string_agg(DISTINCT s.status, ',') FROM inventory.stock_item s WHERE s.stock_package_id = ?""",
+                String.class, carton)).isEqualTo("QUARANTINE");
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.stock_movement WHERE movement_type = 'STATUS_CHANGE'
+                   AND reference_type = 'STOCK_PACKAGE' AND from_location_code = ? AND to_location_code = 'HCM-QC01'""",
+                Long.class, staging)).isEqualTo(1L);
+        assertThat(holdState(hold)).containsEntry("status", "RELEASED").containsEntry("release_reason", "SHORT_PICKED");
+        assertThat(lineStatus(lineId)).isEqualTo("SHORT");
+        assertThat(orders.findById(order).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
+    }
+
+    @Test
+    @DisplayName("WF04 G7: a carton reported NOT_FOUND is not there to be quarantined: refused STOCK_SLOT_UNDER_COUNT until "
+            + "its blind count is submitted; nothing changes")
+    void aNotFoundCartonIsNotQuarantinedAtOnce() throws Exception {
+        UUID order = confirmedOrders.release(
+                confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(cupCarton, 1, 12_000_000))
+                        .orderId(), HCM, coordinator).orderId();
+        placed.add(order);
+        String admin = token(coordinator, "SYSTEM_ADMIN");
+        String pickerToken = token(picker, "WAREHOUSE_STAFF");
+        UUID task = taskIdOf(send(admin, API + "/tasks",
+                "{\"orderId\":\"" + order + "\",\"assignedUserId\":\"" + picker + "\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString());
+        send(pickerToken, API + "/tasks/" + task + "/picking-start", null).andExpect(status().isOk());
+        Map<String, Object> line = jdbc.queryForMap("""
+                SELECT id, lpn, location_code, reservation_id FROM fulfillment.pick_line
+                 WHERE pick_id = ? AND status = 'OPEN'""", task);
+        send(pickerToken, API + "/tasks/" + task + "/pick-lines/" + line.get("id") + "/short",
+                "{\"locationCode\":\"" + line.get("location_code") + "\",\"reason\":\"NOT_FOUND\"}")
+                .andExpect(status().isOk());
+        String lpn = (String) line.get("lpn");
+        UUID carton = jdbc.queryForObject("SELECT id FROM inventory.stock_package WHERE lpn = ?", UUID.class, lpn);
+
+        Throwable refused = org.assertj.core.api.Assertions.catchThrowable(() -> WithCurrentUser.call(TestUsers.admin(),
+                DataScope.ALL, () -> quarantine.quarantine(lpn, "HCM-QC01", "Not found", manager)));
+
+        assertThat(refused).isInstanceOf(com.stockflow.common.error.BusinessException.class);
+        assertThat(((com.stockflow.common.error.BusinessException) refused).errorCode())
+                .isEqualTo(com.stockflow.common.error.ErrorCode.STOCK_SLOT_UNDER_COUNT);
+        assertThat(cartonState(carton)).containsEntry("status", "IN_STOCK").containsEntry("live_holds", 1L);
+        assertThat(holdState((UUID) line.get("reservation_id"))).containsEntry("status", "HELD");
+    }
+
+    @Test
+    @DisplayName("WF04 G7: a carton held for an order that nobody reported short is still refused: STOCK_PACKAGE_HELD")
+    void aHeldCartonNobodyReportedIsStillRefused() throws Exception {
+        UUID order = confirmedOrders.release(
+                confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(cupCarton, 1, 12_000_000))
+                        .orderId(), HCM, coordinator).orderId();
+        placed.add(order);
+        String heldLpn = jdbc.queryForObject("""
+                SELECT p.lpn FROM inventory.stock_reservation r JOIN inventory.stock_item s ON s.id = r.stock_item_id
+                  JOIN inventory.stock_package p ON p.id = s.stock_package_id
+                 WHERE r.order_id = ? AND r.status = 'HELD' LIMIT 1""", String.class, order);
+
+        Throwable refused = org.assertj.core.api.Assertions.catchThrowable(() -> WithCurrentUser.call(TestUsers.admin(),
+                DataScope.ALL, () -> quarantine.quarantine(heldLpn, "HCM-QC01", "Damaged", manager)));
+
+        assertThat(refused).isInstanceOf(com.stockflow.common.error.BusinessException.class);
+        assertThat(((com.stockflow.common.error.BusinessException) refused).errorCode())
+                .isEqualTo(com.stockflow.common.error.ErrorCode.STOCK_PACKAGE_HELD);
     }
 
     // ------------------------------------------------------------------ a shortage nobody reported at a bin

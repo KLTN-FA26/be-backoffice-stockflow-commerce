@@ -701,14 +701,16 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     /**
-     * Whether the short allocation was already given up because its carton was written off: an approved count variance
+     * Whether the short allocation was already given up because its carton left with it: an approved count variance
      * released it ({@code SHORT_PICKED}) while its pick line waited for this reallocation (20 §4.2 step 8, 07 §4.4), and
-     * the carton is empty now. A hold given up by an earlier reallocation names a carton still in stock, and is refused
-     * as before; a replay of that reallocation never gets here (it is answered from its own holds).
+     * the carton is empty now - or the manager quarantined the carton the picker reported short (07 §4.4 step 9, 20
+     * §4.8), which gave the hold up and left the carton QUARANTINE. A hold given up by an earlier reallocation names a
+     * carton still in stock, available, and is refused as before; a replay of that reallocation never gets here (it is
+     * answered from its own holds).
      */
     private static boolean givenUpWithItsCarton(Reservation hold, StockItem row) {
         return hold.status() == ReservationStatus.RELEASED && hold.releaseReason() == ReleaseReason.SHORT_PICKED
-                && row.onHand().isZero();
+                && (row.onHand().isZero() || row.status() == StockStatus.QUARANTINE);
     }
 
     /**

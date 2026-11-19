@@ -56,6 +56,13 @@ public interface DeliveryBatchRecords {
 
     void recordRelease(UUID orderId, Release release);
 
+    /**
+     * The batch each PARTIALLY_FULFILLED order of {@code warehouseId} (any when null) was last released for - the
+     * batch its next pick task is opened for, if it has none yet (07 BR-07). One row per order; a released batch
+     * is picked once its task exists, which only fulfillment knows.
+     */
+    List<com.stockflow.order.api.ReleasedBatchOfOrder> lastReleasePerPartiallyFulfilled(UUID warehouseId);
+
     /** Oldest first. */
     List<WindowChange> windowChangesOf(UUID orderId);
 

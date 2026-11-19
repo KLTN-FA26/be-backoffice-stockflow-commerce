@@ -47,10 +47,13 @@ public interface OrderSearchRepository {
     List<OrderStatusChange> history(UUID orderId);
 
     /**
-     * READY_TO_FULFILL orders of {@code warehouseId} (any when null) within the caller's warehouse scope, each with
-     * its lines; the customer's name is left for the service to resolve.
+     * READY_TO_FULFILL orders of {@code warehouseId} (any when null) within the caller's warehouse scope, with no task
+     * yet, and the PARTIALLY_FULFILLED ones among {@code awaitingBatchOrders} (07 BR-07: their latest released batch
+     * has none), each with its lines; the customer's name is left for the service to resolve.
      */
-    Page<com.stockflow.order.api.FulfillmentCandidate> awaitingTask(UUID warehouseId, Pageable pageable);
+    Page<com.stockflow.order.api.FulfillmentCandidate> awaitingTask(UUID warehouseId,
+                                                                    Collection<UUID> awaitingBatchOrders,
+                                                                    Pageable pageable);
 
     /**
      * How many lines each of these orders has, in one query. An order with no lines is absent from the

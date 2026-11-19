@@ -84,6 +84,22 @@ class DeliveryBatchRecordsAdapter implements DeliveryBatchRecords {
     }
 
     @Override
+    public List<com.stockflow.order.api.ReleasedBatchOfOrder> lastReleasePerPartiallyFulfilled(UUID warehouseId) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT r.order_id, r.delivery_batch_id
+                          FROM ordering.delivery_batch_release r
+                          JOIN ordering.customer_order o ON o.id = r.order_id
+                         WHERE o.status = 'PARTIALLY_FULFILLED'
+                           AND (CAST(:warehouse AS UUID) IS NULL OR o.warehouse_id = CAST(:warehouse AS UUID))
+                           AND r.seq = (SELECT max(l.seq) FROM ordering.delivery_batch_release l
+                                         WHERE l.order_id = r.order_id)""")
+                .setParameter("warehouse", warehouseId).getResultList();
+        return rows.stream().map(r -> new com.stockflow.order.api.ReleasedBatchOfOrder((UUID) r[0], (UUID) r[1]))
+                .toList();
+    }
+
+    @Override
     public void recordRelease(UUID orderId, Release release) {
         entityManager.createNativeQuery("""
                         INSERT INTO ordering.delivery_batch_release (delivery_batch_id, order_id, seq, warehouse_id,

@@ -10,6 +10,10 @@
  * needs answered, fulfillment implements it ({@code allowedDependencies} names {@code "inventory :: spi"}), and the
  * label print asks it synchronously, inside its own read.</p>
  *
+ * <p>A short pick's reason (the carton was not there, or it was damaged) is recorded on the pick line, which is
+ * fulfillment's: inventory asks it here too, and fulfillment answers it, as the warehouse map asks inventory what stands
+ * in a bin.</p>
+ *
  * <p>Like {@code api}: records and interfaces only, nothing internal.</p>
  */
 @org.springframework.modulith.NamedInterface("spi")

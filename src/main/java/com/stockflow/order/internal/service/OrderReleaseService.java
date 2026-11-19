@@ -123,7 +123,7 @@ class OrderReleaseService implements OrderReleases {
         }
         order.release(warehouseId, warehouseCode, releasedBy, clock.instant());
         // F-FUL step 02 (SCRUM-152): the SKU reservations taken at checkout become allocations on pickable bins of
-        // this warehouse, FEFO - every line. All or nothing: a warehouse that cannot cover a line refuses the release,
+        // this warehouse, FIFO - every line. All or nothing: a warehouse that cannot cover a line refuses the release,
         // and the order stays as it was.
         allocation.allocate(order, warehouseCode);
         repository.save(order);

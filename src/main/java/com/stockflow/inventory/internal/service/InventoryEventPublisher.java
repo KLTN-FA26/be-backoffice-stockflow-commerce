@@ -45,4 +45,9 @@ class InventoryEventPublisher {
             }
         });
     }
+
+    /** Publish a contract record that no aggregate recorded; still inside the transaction, after the change it announces. */
+    void publish(Object event) {
+        publisher.publishEvent(event);
+    }
 }

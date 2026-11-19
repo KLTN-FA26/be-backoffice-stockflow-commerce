@@ -228,9 +228,9 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("Pick line %s took loose stock; only a "
                     + "whole carton is put back (kltn-docs 07 §4.5 step 14)").formatted(command.pickLineId()));
         }
-        // Onto a bin, the carton must fit it (kltn-docs 07 BR-12, 06 BR-01; team plan 5-4); one that fits no bin goes to an
-        // OVERFLOW area, which takes any size. An area is not judged.
-        placement.requireFits(target.code(), rowView.stockPackageId());
+        // Onto a bin, the carton must fit it (kltn-docs 07 BR-12, 06 BR-01); one that fits no bin goes to an OVERFLOW
+        // area, which takes any size - and only then. A quarantine area is not judged.
+        placement.requirePutBackTarget(target.code(), rowView.stockPackageId());
         StockPackage cartonView = stockPackages.findById(rowView.stockPackageId()).orElseThrow(() ->
                 new IllegalStateException("No stock package " + rowView.stockPackageId().value()));
         if (!cartonView.lpn().equalsIgnoreCase(command.lpn().trim())) {
@@ -439,6 +439,8 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
             throw new BusinessException(ErrorCode.STAGING_MOVE_NOT_ALLOWED,
                     "A staged carton is put back onto a bin, not into a staging area (%s)".formatted(target));
         }
+        // Onto a bin, the carton must fit it; one that fits no bin goes to OVERFLOW, and only then (07 BR-12).
+        placement.requirePutBackTarget(target.code(), rowView.stockPackageId());
         StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(rowView.stockPackageId())).stream()
                 .findFirst().orElseThrow(() -> new IllegalStateException(
                         "No stock package " + rowView.stockPackageId().value()));
@@ -466,6 +468,24 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                 .ofLot(row.lotId()).forOrder(hold.orderId()).leaving(carton.id()).arriving(carton.id()));
         log.info("Pick line {} put back staged carton {} ({} x {}) from {} onto {}", command.pickLineId(),
                 carton.lpn(), row.onHand(), row.sku(), staging, target);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<String, List<String>> overflowAreasFor(UUID warehouseId, java.util.Collection<String> lpns) {
+        if (lpns.isEmpty()) {
+            return java.util.Map.of();
+        }
+        List<StockPackage> found = stockPackages.findByLpns(lpns);
+        java.util.Set<UUID> nowhere = placement.fittingNoBin(warehouseId,
+                found.stream().map(carton -> carton.id().value()).toList());
+        List<String> areas = nowhere.isEmpty() ? List.of() : placement.overflowAreas(warehouseId);
+        java.util.Map<String, List<String>> out = new java.util.HashMap<>();
+        if (!areas.isEmpty()) {
+            found.stream().filter(carton -> nowhere.contains(carton.id().value()))
+                    .forEach(carton -> out.put(carton.lpn(), areas));
+        }
+        return out;
     }
 
     /**

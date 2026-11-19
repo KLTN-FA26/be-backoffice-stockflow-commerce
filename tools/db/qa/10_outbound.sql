@@ -170,7 +170,7 @@ SELECT pg_temp.expect_fail('F15 a put-back with no bin to go to', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, quantity, reference_type, reference_id, occurred_at)
     VALUES (gen_random_uuid(), 'PUT_BACK', 'LY-GIAY-DEMO-12OZ-XANH', 1000, 'PICK_LINE', md5('qa:pl:f5')::uuid, NOW()) $q$);
 SELECT pg_temp.expect_ok('F16 the order is cancelled: the line goes back onto its bin, one PUT_BACK row from nowhere', $q$
-    UPDATE fulfillment.pick SET status = 'CANCELLED', needs_put_back = TRUE WHERE id = md5('qa:pick:f1')::uuid;
+    UPDATE fulfillment.pick SET status = 'CANCELLED', needs_put_back = TRUE, cancelled_at = NOW() WHERE id = md5('qa:pick:f1')::uuid;
     UPDATE fulfillment.pick_line SET status = 'PUT_BACK', put_back_qty = picked_qty, put_back_by = md5('demo:user:editor')::uuid,
            put_back_location_code = 'HCM-A01-2-B', put_back_at = NOW() WHERE id = md5('qa:pl:f5')::uuid;
     INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, to_status, reference_type,

@@ -215,13 +215,20 @@ public interface PickLists {
     /**
      * @param quarantine the check station removed the carton as damaged (4C-6): it goes into a quarantine area, not
      *                   onto a bin
+     * @param overflowLocationCodes the warehouse's usable OVERFLOW areas, when no bin of it takes the carton (07 BR-12);
+     *                   empty while one does
      */
     record PutBackRow(UUID taskId, String orderNumber, UUID warehouseId, UUID lineId, String sku, String lotNumber,
-                      String lpn, int pickedQty, String fromLocationCode, Instant pickedAt, boolean quarantine) {
+                      String lpn, int pickedQty, String fromLocationCode, Instant pickedAt, boolean quarantine,
+                      List<String> overflowLocationCodes) {
+        public PutBackRow {
+            overflowLocationCodes = overflowLocationCodes == null ? List.of() : List.copyOf(overflowLocationCodes);
+        }
+
         PutBackRow(UUID taskId, String orderNumber, UUID warehouseId, UUID lineId, String sku, String lotNumber,
                    String lpn, int pickedQty, String fromLocationCode, Instant pickedAt) {
             this(taskId, orderNumber, warehouseId, lineId, sku, lotNumber, lpn, pickedQty, fromLocationCode, pickedAt,
-                    false);
+                    false, List.of());
         }
     }
 }

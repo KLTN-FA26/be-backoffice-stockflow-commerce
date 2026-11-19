@@ -14,6 +14,8 @@ public interface PickLineJpaRepository extends BaseJpaRepository<PickLineJpaEnti
 
     List<PickLineJpaEntity> findByPickIdOrderBySequenceNoAscIdAsc(UUID pickId);
 
+    /** The newest short report of a carton (UUIDv7 ids sort by time), whatever became of its line. */
+    Optional<PickLineJpaEntity> findFirstByLpnIgnoreCaseAndShortReasonIsNotNullOrderByIdDesc(String lpn);
     /** The lines that replace any of these removed lines (07 §4.4 step 10). */
     List<PickLineJpaEntity> findByReplacesLineIdIn(java.util.Collection<UUID> removedLineIds);
 

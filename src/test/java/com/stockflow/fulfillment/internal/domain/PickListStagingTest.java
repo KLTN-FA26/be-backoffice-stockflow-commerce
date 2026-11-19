@@ -305,6 +305,29 @@ class PickListStagingTest {
                     .isEqualTo(ErrorCode.PUT_BACK_LOCATION_INVALID);
             assertThat(line.status()).isEqualTo(PickLineStatus.STAGED);
         }
+
+        @Test
+        @DisplayName("07 BR-12: an OVERFLOW area of the task's warehouse is a place to put back (inventory judges that no "
+                + "bin takes the carton); another warehouse's, or an inactive one, is not")
+        void anOverflowAreaIsAPlaceToPutBack() {
+            PickLine line = staged("SOFA", "HCM-A01-2-B", 4, LPN);
+            var list = new PickList(UUID.randomUUID(), HCM, PickStatus.CANCELLED, true, STAGING, List.of(line));
+
+            assertThat(refusal(() -> list.putBack(line.id(), LPN,
+                    new PickList.PutBackTarget("HN-OVF01", UUID.randomUUID(), false, true, false, true), PICKER, NOW)))
+                    .as("another warehouse").isEqualTo(ErrorCode.PUT_BACK_LOCATION_INVALID);
+            assertThat(refusal(() -> list.putBack(line.id(), LPN,
+                    new PickList.PutBackTarget("HCM-OVF01", HCM, false, false, false, true), PICKER, NOW)))
+                    .as("inactive").isEqualTo(ErrorCode.PUT_BACK_LOCATION_INVALID);
+            assertThat(line.status()).isEqualTo(PickLineStatus.STAGED);
+
+            var put = list.putBack(line.id(), LPN, new PickList.PutBackTarget("HCM-OVF01", HCM, false, true, false,
+                    true), PICKER, NOW);
+
+            assertThat(put.fromStaging()).isTrue();
+            assertThat(put.line().status()).isEqualTo(PickLineStatus.PUT_BACK);
+            assertThat(put.line().putBackLocationCode()).isEqualTo("HCM-OVF01");
+        }
     }
 
     @Test
