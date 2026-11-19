@@ -297,7 +297,7 @@ SELECT pg_temp.expect_ok('LN14 a line put back after a pick was deducted, as bef
 SELECT pg_temp.expect_ok('LN15 an OPEN line is untouched by all this', pg_temp.line_sql(5, 'OPEN'));
 
 \echo '--- the task: STAGED needs a STAGING task with its time; moving to dispatch is once, by someone (07 BR-11)'
-UPDATE fulfillment.pick SET status = 'PICKING', needs_put_back = FALSE WHERE id = md5('qa64:pick')::uuid;
+UPDATE fulfillment.pick SET status = 'PICKING', needs_put_back = FALSE, cancelled_at = NULL WHERE id = md5('qa64:pick')::uuid;
 SELECT pg_temp.expect_fail_by('PS1 a STAGED DISPATCH task', 'ck_pick_staged',
     pg_temp.pick_sql('qa64:s1', 'STAGED', 'DISPATCH', NULL, ', staged_at', ', NOW()'));
 SELECT pg_temp.expect_fail_by('PS2 a STAGED task with no time of staging', 'ck_pick_staged',
