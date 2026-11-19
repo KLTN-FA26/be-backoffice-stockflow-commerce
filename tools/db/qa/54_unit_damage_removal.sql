@@ -58,23 +58,25 @@ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------------------------------------
--- Fixtures: an order of HCM with a line of 8 sofas and its pick; two demo cartons of one sofa and one carton of three of
--- their own (QA54-LPN-3), each held for the order (consumed once picked) - the lines below are written against them.
+-- Fixtures: an order of HCM with a line of 2,008 cups and its pick; two demo cartons of 1,000 cups and one carton of
+-- three of their own (QA54-LPN-3), each held whole for the order (consumed once picked) - the lines below are written
+-- against them.
 -- ---------------------------------------------------------------------------------------------
 CREATE TEMP TABLE qa54_carton AS
-SELECT row_number() OVER (ORDER BY p.lpn) AS n, s.id AS row_id, p.id AS package_id, p.lpn
+SELECT row_number() OVER (ORDER BY p.lpn) AS n, s.id AS row_id, p.id AS package_id, p.lpn, s.on_hand AS units
   FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
- WHERE s.sku = 'SOFA-3S-GREY' AND s.location_code = 'HCM-A01-2-B' AND p.status = 'IN_STOCK' AND s.on_hand = 1
+ WHERE s.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND s.location_code = 'HCM-A01-2-B' AND p.status = 'IN_STOCK'
+   AND s.on_hand = p.nominal_qty AND s.reserved = 0
  ORDER BY p.lpn LIMIT 2;
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-VALUES (md5('qa54:unit')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA54_CTN', 3);
+VALUES (md5('qa54:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA54_CTN', 3);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
                                      location_code, status)
-VALUES (md5('qa54:pk3')::uuid, 'QA54-LPN-3', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa54:unit')::uuid, 3, 3,
+VALUES (md5('qa54:pk3')::uuid, 'QA54-LPN-3', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa54:unit')::uuid, 3, 3,
         'HCM-A01-2-B', 'IN_STOCK');
 INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at,
                                   stock_package_id)
-VALUES (md5('qa54:pk3:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-2-B', 'UNTRACED', 3, 0, 'AVAILABLE', NOW(),
+VALUES (md5('qa54:pk3:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'UNTRACED', 3, 0, 'AVAILABLE', NOW(),
         NOW() - interval '1 day', md5('qa54:pk3')::uuid);
 
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
@@ -82,12 +84,13 @@ INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, 
 VALUES (md5('qa54:o')::uuid, 'SO-QA54', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'PICKING', 1000,
         'VND', NOW(), NOW(), md5('demo:wh:HCM')::uuid);
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-VALUES (md5('qa54:ol')::uuid, md5('qa54:o')::uuid, 'SOFA-3S-GREY', 8, 100, 'VND');
+VALUES (md5('qa54:ol')::uuid, md5('qa54:o')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 2008, 100, 'VND');
 INSERT INTO fulfillment.pick (id, order_id, order_number, warehouse_id, status, created_at)
 VALUES (md5('qa54:pick')::uuid, md5('qa54:o')::uuid, 'SO-QA54', md5('demo:wh:HCM')::uuid, 'PICKING', NOW());
 INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at,
                                          expires_at, status)
-SELECT md5('qa54:res:' || n)::uuid, row_id, md5('qa54:o')::uuid, gen_random_uuid(), gen_random_uuid(), 1, NOW(), NULL, 'HELD'
+SELECT md5('qa54:res:' || n)::uuid, row_id, md5('qa54:o')::uuid, gen_random_uuid(), gen_random_uuid(), units, NOW(), NULL,
+       'HELD'
   FROM qa54_carton;
 INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at,
                                          expires_at, status)
@@ -100,28 +103,28 @@ SELECT pg_temp.expect_fail_by('DM1 a line that names no carton: the unit damage 
     ALTER TABLE fulfillment.pick_line DISABLE TRIGGER tg_pick_line_carton;   -- the CHECK is the second line of defence
     INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no,
                                        allocated_qty, short_qty, status, short_reason)
-    VALUES (gen_random_uuid(), md5('qa54:pick')::uuid, md5('qa54:ol')::uuid, md5('qa54:res:1')::uuid, 'SOFA-3S-GREY',
-            'HCM-A01-2-B', 1, 1, 1, 'SHORT', 'DAMAGED') $q$);
+    VALUES (gen_random_uuid(), md5('qa54:pick')::uuid, md5('qa54:ol')::uuid, md5('qa54:res:1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH',
+            'HCM-A01-2-B', 1, 1000, 1000, 'SHORT', 'DAMAGED') $q$);
 SELECT pg_temp.expect_fail_by('DM2 a SHORT line that does not say why', 'ck_pick_line_short_reported', $q$
     INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no,
                                        allocated_qty, short_qty, status, lpn, whole_carton)
-    SELECT gen_random_uuid(), md5('qa54:pick')::uuid, md5('qa54:ol')::uuid, md5('qa54:res:1')::uuid, 'SOFA-3S-GREY',
-           'HCM-A01-2-B', 1, 1, 1, 'SHORT', c.lpn, TRUE FROM qa54_carton c WHERE c.n = 1 $q$);
+    SELECT gen_random_uuid(), md5('qa54:pick')::uuid, md5('qa54:ol')::uuid, md5('qa54:res:1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH',
+           'HCM-A01-2-B', 1, c.units, c.units, 'SHORT', c.lpn, TRUE FROM qa54_carton c WHERE c.n = 1 $q$);
 SELECT pg_temp.expect_ok('DM3 a damaged carton found at the shelf: a SHORT line, reason DAMAGED, naming the carton', $q$
     INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no,
                                        allocated_qty, short_qty, status, short_reason, lpn, whole_carton)
-    SELECT md5('qa54:pl:1')::uuid, md5('qa54:pick')::uuid, md5('qa54:ol')::uuid, md5('qa54:res:1')::uuid, 'SOFA-3S-GREY',
-           'HCM-A01-2-B', 1, 1, 1, 'SHORT', 'DAMAGED', c.lpn, TRUE FROM qa54_carton c WHERE c.n = 1 $q$);
+    SELECT md5('qa54:pl:1')::uuid, md5('qa54:pick')::uuid, md5('qa54:ol')::uuid, md5('qa54:res:1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH',
+           'HCM-A01-2-B', 1, c.units, c.units, 'SHORT', 'DAMAGED', c.lpn, TRUE FROM qa54_carton c WHERE c.n = 1 $q$);
 SELECT pg_temp.expect_fail_by('DM4 picked and short together above what the line allocated', 'ck_pick_line_within_allocation', $q$
     INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no,
                                        allocated_qty, picked_qty, short_qty, status, short_reason, lpn, whole_carton)
-    SELECT gen_random_uuid(), md5('qa54:pick')::uuid, md5('qa54:ol')::uuid, md5('qa54:res:2')::uuid, 'SOFA-3S-GREY',
-           'HCM-A01-2-B', 2, 1, 1, 1, 'SHORT', 'DAMAGED', c.lpn, TRUE FROM qa54_carton c WHERE c.n = 2 $q$);
+    SELECT gen_random_uuid(), md5('qa54:pick')::uuid, md5('qa54:ol')::uuid, md5('qa54:res:2')::uuid, 'LY-GIAY-DEMO-12OZ-XANH',
+           'HCM-A01-2-B', 2, c.units, c.units, c.units, 'SHORT', 'DAMAGED', c.lpn, TRUE FROM qa54_carton c WHERE c.n = 2 $q$);
 
 \echo '--- a put-back returns what the line picked, and something (07 BR-05)'
 INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no,
                                    allocated_qty, picked_qty, status, lpn, whole_carton, picked_by, picked_at, consumed_at)
-VALUES (md5('qa54:pl:3')::uuid, md5('qa54:pick')::uuid, md5('qa54:ol')::uuid, md5('qa54:res:3')::uuid, 'SOFA-3S-GREY',
+VALUES (md5('qa54:pl:3')::uuid, md5('qa54:pick')::uuid, md5('qa54:ol')::uuid, md5('qa54:res:3')::uuid, 'LY-GIAY-DEMO-12OZ-XANH',
         'HCM-A01-2-B', 3, 3, 3, 'PICKED', 'QA54-LPN-3', TRUE, md5('demo:user:editor')::uuid, NOW(), NOW());
 SELECT pg_temp.expect_fail_by('DM5 a put-back of a part of what the line picked (the rest was "damaged at packing")',
     'ck_pick_line_put_back', $q$

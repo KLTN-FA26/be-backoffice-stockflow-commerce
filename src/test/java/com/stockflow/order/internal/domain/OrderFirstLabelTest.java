@@ -133,6 +133,36 @@ class OrderFirstLabelTest {
     }
 
     @Test
+    @DisplayName("RTM-RTDCANCEL: a packed order whose shipment was cancelled before dispatch has its replacement cartons "
+            + "labelled: locked by its first label already, it answers false and keeps the first time")
+    void packedOrderLabelsItsReplacements() {
+        Order order = picking();
+        order.recordFirstLabel(NOW);
+        order.markPacked(NOW.plusSeconds(60), STAFF);
+        assertThat(order.status()).isEqualTo(OrderStatus.PACKED);
+        assertThat(order.recordFirstLabel(NOW.plusSeconds(600))).isFalse();
+        assertThat(order.firstLabeledAt()).isEqualTo(NOW);
+    }
+
+    @Test
+    @DisplayName("RTM-RTDCANCEL (QA case 13): a labelled order held for stock (INVENTORY) has its replacements labelled - "
+            + "false, nothing recorded; held for anything else it is still refused")
+    void heldForStockLabelsItsReplacements() {
+        Order stock = picking();
+        stock.recordFirstLabel(NOW);
+        stock.markPacked(NOW.plusSeconds(60), STAFF);
+        stock.putOnHold(com.stockflow.order.api.HoldReason.INVENTORY, "shipment cancelled", STAFF, NOW.plusSeconds(90));
+        assertThat(stock.recordFirstLabel(NOW.plusSeconds(600))).isFalse();
+        assertThat(stock.firstLabeledAt()).isEqualTo(NOW);
+
+        Order other = picking();
+        other.recordFirstLabel(NOW);
+        other.putOnHold(com.stockflow.order.api.HoldReason.OTHER, "checking", STAFF, NOW.plusSeconds(90));
+        assertThat(code(catchThrowable(() -> other.recordFirstLabel(NOW.plusSeconds(600)))))
+                .isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
+    }
+
+    @Test
     @DisplayName("rehydration restores the lock without recording it again")
     void rehydration() {
         Order order = picking();

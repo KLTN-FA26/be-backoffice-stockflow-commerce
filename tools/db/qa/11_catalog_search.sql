@@ -32,18 +32,18 @@ END $$;
 
 \echo '--- the search document is generated: no writer can store one that disagrees with the title'
 INSERT INTO catalog.product_listing (product_id, slug, enabled, ever_published, published_title)
-SELECT md5('demo:product:SOFA-3S')::uuid, 'qa-search-sofa', false, false, 'Sofa'
-WHERE NOT EXISTS (SELECT 1 FROM catalog.product_listing WHERE product_id = md5('demo:product:SOFA-3S')::uuid);
+SELECT md5('demo:cups:product:HOP-GIAY-DEMO')::uuid, 'qa-search-box', false, false, 'Hộp giấy'
+WHERE NOT EXISTS (SELECT 1 FROM catalog.product_listing WHERE product_id = md5('demo:cups:product:HOP-GIAY-DEMO')::uuid);
 INSERT INTO catalog.product_listing (product_id, slug, enabled, ever_published, published_title)
-SELECT md5('demo:product:TABLE-OAK')::uuid, 'qa-search-table', false, false, 'Table'
-WHERE NOT EXISTS (SELECT 1 FROM catalog.product_listing WHERE product_id = md5('demo:product:TABLE-OAK')::uuid);
+SELECT md5('demo:wf02:product:LY-GIAY-DEMO')::uuid, 'qa-search-cup', false, false, 'Ly giấy'
+WHERE NOT EXISTS (SELECT 1 FROM catalog.product_listing WHERE product_id = md5('demo:wf02:product:LY-GIAY-DEMO')::uuid);
 
 SELECT pg_temp.expect_fail('S1 writing search_document directly (update)', $q$
     UPDATE catalog.product_listing SET search_document = to_tsvector('simple', 'forged')
-    WHERE product_id = md5('demo:product:SOFA-3S')::uuid $q$);
+    WHERE product_id = md5('demo:cups:product:HOP-GIAY-DEMO')::uuid $q$);
 SELECT pg_temp.expect_fail('S1b writing search_document directly (insert)', $q$
     INSERT INTO catalog.product_listing (product_id, slug, search_document)
-    VALUES (md5('demo:product:SOFA-3S')::uuid, 'forged-slug', to_tsvector('simple', 'forged')) $q$);
+    VALUES (md5('demo:cups:product:HOP-GIAY-DEMO')::uuid, 'forged-slug', to_tsvector('simple', 'forged')) $q$);
 
 \echo '--- the accent fold is a pure, Vietnamese-aware function'
 SELECT pg_temp.expect_true('S2 immutable_unaccent(Ly nhựa) = Ly nhua', $q$
@@ -56,20 +56,20 @@ SELECT pg_temp.expect_true('S4 the fold is IMMUTABLE and PARALLEL SAFE (it sits 
 
 \echo '--- the document follows the title, accent-folded, title heavier than description'
 UPDATE catalog.product_listing
-SET published_title = 'Bàn gỗ sồi', published_description = 'Chất liệu đặc biệt'
-WHERE product_id = md5('demo:product:TABLE-OAK')::uuid;
+SET published_title = 'Ly giấy in logo', published_description = 'Chất liệu đặc biệt'
+WHERE product_id = md5('demo:wf02:product:LY-GIAY-DEMO')::uuid;
 SELECT pg_temp.expect_true('S5 a title is searchable without its accents, with weight A', $q$
-    SELECT search_document::text LIKE '%''ban'':1A%' AND search_document::text LIKE '%''go'':2A%'
-       AND search_document @@ to_tsquery('simple', 'ban & go:*')
-    FROM catalog.product_listing WHERE product_id = md5('demo:product:TABLE-OAK')::uuid $q$);
+    SELECT search_document::text LIKE '%''ly'':1A%' AND search_document::text LIKE '%''giay'':2A%'
+       AND search_document @@ to_tsquery('simple', 'ly & gia:*')
+    FROM catalog.product_listing WHERE product_id = md5('demo:wf02:product:LY-GIAY-DEMO')::uuid $q$);
 SELECT pg_temp.expect_true('S6 a description word is searchable with weight C', $q$
     SELECT search_document::text LIKE '%''dac'':%C%'
-    FROM catalog.product_listing WHERE product_id = md5('demo:product:TABLE-OAK')::uuid $q$);
+    FROM catalog.product_listing WHERE product_id = md5('demo:wf02:product:LY-GIAY-DEMO')::uuid $q$);
 UPDATE catalog.product_listing SET published_title = NULL, published_description = NULL
-WHERE product_id = md5('demo:product:TABLE-OAK')::uuid;
+WHERE product_id = md5('demo:wf02:product:LY-GIAY-DEMO')::uuid;
 SELECT pg_temp.expect_true('S7 a listing with no published text has an empty document, not NULL', $q$
     SELECT search_document = ''::tsvector
-    FROM catalog.product_listing WHERE product_id = md5('demo:product:TABLE-OAK')::uuid $q$);
+    FROM catalog.product_listing WHERE product_id = md5('demo:wf02:product:LY-GIAY-DEMO')::uuid $q$);
 
 \echo '--- the indexes exist and are GIN'
 SELECT pg_temp.expect_true('S8 GIN on search_document, trigram on title and on sku', $q$

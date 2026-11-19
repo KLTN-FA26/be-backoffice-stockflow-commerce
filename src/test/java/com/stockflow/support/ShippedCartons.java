@@ -106,7 +106,7 @@ public final class ShippedCartons {
                     + "fulfillment.pick_line WHERE pick_id = ?", Integer.class, pick));
             for (CartonRows.Carton carton : stocked) {
                 no++;
-                // The SKU's carton unit says what a carton holds (a demo sofa: one piece), whatever the caller hoped.
+                // The SKU's carton unit says what a carton holds (a demo cup SKU: its thung count), whatever the caller hoped.
                 int held = jdbc.queryForObject("SELECT on_hand FROM inventory.stock_item WHERE id = ?", Integer.class,
                         carton.stockItemId());
                 jdbc.update("UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW() "

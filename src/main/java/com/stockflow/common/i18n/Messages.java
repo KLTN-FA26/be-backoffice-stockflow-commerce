@@ -25,7 +25,7 @@ import java.util.Locale;
  * things a user reads on a form.</p>
  *
  * <p><b>Not translated:</b> the specific detail a domain exception builds, such as
- * "Insufficient stock for SKU SOFA-3S-GREY: requested 6, available 5". Translating those would mean
+ * "Insufficient stock for SKU LY-GIAY-DEMO-12OZ-XANH: requested 6, available 5". Translating those would mean
  * a properties key and a parameter list for every message in the system, and most of them are read
  * by a developer in a log rather than by a customer. Where a customer-facing message needs
  * translating, add a key and call {@link #forCode}.</p>

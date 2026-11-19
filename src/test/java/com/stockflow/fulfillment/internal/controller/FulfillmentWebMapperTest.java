@@ -19,9 +19,9 @@ class FulfillmentWebMapperTest {
     private final FulfillmentWebMapper mapper = new FulfillmentWebMapper();
 
     private static PickLists.PutBackRow row(boolean quarantine) {
-        return new PickLists.PutBackRow(UUID.randomUUID(), "SO-1", UUID.randomUUID(), UUID.randomUUID(), "SOFA", "LOT-1",
-                "LPN-1", 1, "HCM-A01-2-B", Instant.parse("2026-11-13T08:00:00Z"), quarantine,
-                quarantine ? java.util.List.of() : java.util.List.of("HCM-OVF01"));
+        return new PickLists.PutBackRow(UUID.randomUUID(), "SO-1", UUID.randomUUID(), UUID.randomUUID(),
+                "LY-GIAY-DEMO-12OZ-XANH", "LOT-1", "LPN-1", 1, "HCM-A01-2-B", Instant.parse("2026-11-13T08:00:00Z"),
+                quarantine, quarantine ? java.util.List.of() : java.util.List.of("HCM-OVF01"));
     }
 
     @Test

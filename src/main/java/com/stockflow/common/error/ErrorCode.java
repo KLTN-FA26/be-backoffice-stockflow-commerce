@@ -660,6 +660,11 @@ public enum ErrorCode {
     ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED("This order does not allow partial shipments", 409),
     /** PACK-PARTIAL: whether the order may ship in parts can no longer change once everything left or it is closed. */
     ORDER_PARTIAL_SHIPMENT_LOCKED("Partial shipment can no longer be changed on this order", 409),
+    /**
+     * kltn-docs 17 §4.7 step 24, BR-16; 08 BR-04: the delivery address no longer changes - a carton of the order is
+     * labelled, or the order is in a status where only something else changes (a contract sent, packed and later).
+     */
+    ORDER_ADDRESS_LOCKED("The delivery address of this order can no longer change", 409),
     /** SCRUM-466: a task is picked in one warehouse; the order's stock is held in more than one, or elsewhere. */
     FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE("Stock held for this order is in another warehouse", 409),
     /** SCRUM-267 (docs 07 step 6): the bin scanned is not the one this pick line takes its goods from. */
@@ -804,6 +809,12 @@ public enum ErrorCode {
     CARTON_SPEC_UNMEASURED("The SKU's carton spec has no size or weight: no shipping label can print", 422),
     /** Docs 09 §5: the shipment's status does not allow the step. */
     SHIPMENT_STATE_CONFLICT("The shipment cannot do that in its current status", 409),
+    /** Docs 09 §4.3 step 2: the delivery time a manager records is when the carrier delivered, so never in the future. */
+    SHIPMENT_DELIVERY_TIME_IN_FUTURE("The delivery time cannot be in the future", 422),
+    /** Docs 09 §4.3 step 2: a shipment cannot be delivered before it was handed over to the carrier. */
+    SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER("The delivery time cannot be before the shipment was handed over", 422),
+    /** Docs 09 §4.3 step 3: a retried delivery comes after the failure it follows. */
+    SHIPMENT_DELIVERY_TIME_BEFORE_FAILURE("The delivery time cannot be before the failed delivery it follows", 422),
     // ---- G4-2a loading and handover (kltn-docs 09 §4.1, §5): 404 / 400 / 409 kept together with the flow
     /** G4-2a: a load (manifest) of a warehouse outside the caller's scope is OUT_OF_DATA_SCOPE, not this. */
     LOAD_NOT_FOUND("Load not found", 404),
@@ -940,6 +951,24 @@ public enum ErrorCode {
      */
     LOAD_PLAN_VEHICLE_SHARES_ORDER("This vehicle carries parcels of an order that also left on another "
             + "vehicle: it cannot be dropped from the plan", 409),
+    /** 09 §4.4 (RTM-WAYBILLFILE): a waybill file is attached to a load booked with a carrier, not cancelled. */
+    LOAD_NOT_BOOKED("This load has no carrier booked: a waybill file is attached once the vehicle is booked", 409),
+    /** 09 BR-16: a booked load changes carrier only through a cancelled booking (with its reason) and a new one. */
+    LOAD_CARRIER_CHANGE_NEEDS_CANCEL("This load is booked with another carrier: cancel that booking first", 409),
+    /**
+     * 09 §4.2 step 9, BR-09, BR-14: a shipment taken off a vehicle under a controlled cancel goes whole - one with
+     * parcels on another vehicle of the plan would be left half in it.
+     */
+    LOAD_REMOVAL_SPLITS_SHIPMENT("This shipment also has parcels on another vehicle of the plan: it cannot be taken "
+            + "off this one alone", 409),
+    /** 09 §4.2 step 9, BR-14: the vehicle recalculated for the parcels it keeps could not place every one of them. */
+    LOAD_PLAN_RELAYOUT_INCOMPLETE("The parcels left on this vehicle could not all be placed again", 409),
+    /**
+     * 09 edge "hoàn hàng khi còn Handed Over": the failure reason is corrected until the goods are received back and
+     * their delivery failure case is opened on it (the case keeps the reason it was opened with).
+     */
+    SHIPMENT_FAILURE_REASON_LOCKED("The returned goods were received and their case opened: the failure reason no "
+            + "longer changes", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),

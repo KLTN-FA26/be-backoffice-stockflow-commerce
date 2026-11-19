@@ -185,11 +185,19 @@ class DispatchLoadTest {
                 .isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
         assertThat(load.book(GHN, "51C-1", null, null, " WB-1 ", DISPATCHER, NOW)).isTrue();
         assertThat(load.waybillNo()).isEqualTo("WB-1");
-        // Booked again with the same carrier and no number: kept; with another carrier: a number is one carrier's.
+        // Booked again with the same carrier and no number: kept. Another carrier only through a cancelled booking
+        // (09 BR-16), which takes the number with it: a number is one carrier's.
         assertThat(load.book(GHN, "51C-2", null, null, DISPATCHER, NOW)).isTrue();
         assertThat(load.waybillNo()).isEqualTo("WB-1");
-        assertThat(load.book(UUID.randomUUID(), "51C-2", null, null, DISPATCHER, NOW)).isTrue();
+        UUID other = UUID.randomUUID();
+        assertThat(code(() -> load.book(other, "51C-2", null, null, DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.LOAD_CARRIER_CHANGE_NEEDS_CANCEL);
+        assertThat(load.carrierId()).isEqualTo(GHN);
+        assertThat(load.waybillNo()).isEqualTo("WB-1");
+        assertThat(load.cancelBooking("the truck is not coming", DISPATCHER, NOW)).isTrue();
+        assertThat(load.book(other, "51C-2", null, null, DISPATCHER, NOW)).isTrue();
         assertThat(load.waybillNo()).isNull();
+        assertThat(load.cancelBooking("back to the first carrier", DISPATCHER, NOW)).isTrue();
         assertThat(load.book(GHN, "51C-2", null, null, DISPATCHER, NOW)).isTrue();
         assertThat(load.recordWaybill("WB-2", null, "Tài", "0900", null)).isTrue();
         assertThat(load.snapshot().waybillNo()).isEqualTo("WB-2");
@@ -385,7 +393,7 @@ class DispatchLoadTest {
     }
 
     @Test
-    @DisplayName("PLANNED -> booked (again: replaced; same: no-op) -> booking cancelled with a reason back to PLANNED "
+    @DisplayName("PLANNED -> booked (again, same carrier: replaced; same: no-op; another carrier: refused) -> booking cancelled with a reason back to PLANNED "
             + "-> booked -> LOADING; loading before booking, booking or cancelling the booking once loading are "
             + "INVALID_LOAD_TRANSITION")
     void bookingAndLoading() {
@@ -397,8 +405,11 @@ class DispatchLoadTest {
         assertThat(load.book(ghn, "51C-1", "Tai", null, DISPATCHER, NOW)).isTrue();
         assertThat(load.status()).isEqualTo(LoadStatus.VEHICLE_BOOKED);
         assertThat(load.book(ghn, "51C-1", "Tai", null, DISPATCHER, NOW)).isFalse();
-        assertThat(load.book(ghtk, "51C-2", null, null, DISPATCHER, NOW)).isTrue();
-        assertThat(load.carrierId()).isEqualTo(ghtk);
+        // 09 BR-16: the carrier changes only through a cancelled booking; the same carrier's details are replaced.
+        assertThat(code(() -> load.book(ghtk, "51C-2", null, null, DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.LOAD_CARRIER_CHANGE_NEEDS_CANCEL);
+        assertThat(load.book(ghn, "51C-2", null, null, DISPATCHER, NOW)).isTrue();
+        assertThat(load.carrierId()).isEqualTo(ghn);
         assertThat(code(() -> load.cancelBooking(" ", DISPATCHER, NOW))).isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThat(load.cancelBooking("carrier has no truck", DISPATCHER, NOW)).isTrue();
         DispatchLoad.Snapshot cancelled = load.snapshot();

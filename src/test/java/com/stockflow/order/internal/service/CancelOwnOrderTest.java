@@ -52,7 +52,7 @@ class CancelOwnOrderTest {
     /** A placed order of a signed contract waiting for its first installment - what the customer sees (a DRAFT order is not theirs, 17 §5.2). */
     private Order orderOf(UUID customerId) {
         var order = Order.draft(OrderNumber.of(LocalDate.of(2026, 9, 20), 7), customerId, UUID.randomUUID(),
-                List.of(Order.line(new Sku("SOFA-3S-GREY"), 1, Money.vnd(100_000), null)), NOW);
+                List.of(Order.line(new Sku("LY-GIAY-DEMO-12OZ-XANH"), 1, Money.vnd(100_000), null)), NOW);
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
         order.sendContract(UUID.randomUUID(), NOW);
         order.contractSigned(false, true, UUID.randomUUID(), NOW);

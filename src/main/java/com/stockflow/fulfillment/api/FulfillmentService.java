@@ -94,16 +94,19 @@ public interface FulfillmentService {
     FulfillmentTask completePacking(UUID taskId, CurrentUser actor);
 
     /**
-     * Completes packing (G4-5, kltn-docs 08 step 7-9): every sealed package not shipped yet becomes one shipment,
-     * READY_TO_DISPATCH. Everything the order still wants must be in it unless {@code completion.partial()} (08 BR-01).
-     * No design is checked: printed goods arrive carrying the customer's design, so only the SKU and the count are
-     * checked (kltn-docs 08 §1). Shipping everything left marks the order PACKED; part of it records that a
-     * package was completed (the order is no longer cancelled, decision 2026-10-17). A print line's goods leave stock
-     * with the shipment that completes the line (decision 2026-10-16). Completed again, it answers as it is.
+     * Completes the carton check (team plan 4C-6, kltn-docs 08 §4.4 steps 8-9): every carton of the session LABELED or
+     * REMOVED, at least one labelled, and a shortfall against what the task's delivery batch wants only when
+     * {@code completion.partial()} with a note on an order Sales allowed to ship in parts (08 BR-01). The labelled
+     * cartons not shipped yet become one shipment, READY_TO_DISPATCH. No design is checked: printed goods arrive
+     * carrying the customer's design, so only the SKU and the count are checked (kltn-docs 08 §1). In full the order is
+     * PACKED and the session COMPLETED; in part the order is PARTIALLY_FULFILLED and the session goes on. Nothing leaves
+     * stock here (08 BR-10). An installment BEFORE_DELIVERY still unpaid is a warning on the answer, not a refusal
+     * (BR-11). Completed again, it answers as it is.
      *
-     * @throws com.stockflow.common.error.BusinessException {@code PACKING_NOT_READY}, {@code PACK_STATE_CONFLICT},
-     *         {@code PACKING_TAKEN}, {@code PACKAGE_NOT_SEALED}, {@code PACK_NOTHING_TO_SHIP},
-     *         {@code PACKING_INCOMPLETE}, {@code PACK_PARTIAL_NOT_ALLOWED}, {@code ORDER_CANCELLED}
+     * @throws com.stockflow.common.error.BusinessException {@code PACKING_NOT_READY}, {@code PICK_TASK_STATE_CONFLICT}
+     *         (the task or its order cancelled), {@code PACK_STATE_CONFLICT}, {@code PACKING_TAKEN},
+     *         {@code PACKING_INCOMPLETE}, {@code PACK_NOTHING_TO_SHIP}, {@code PACK_PARTIAL_NOT_ALLOWED},
+     *         {@code VALIDATION_FAILED} (a partial completion without a note)
      */
     FulfillmentTask completePacking(UUID taskId, PackingCompletion completion, CurrentUser actor);
 }

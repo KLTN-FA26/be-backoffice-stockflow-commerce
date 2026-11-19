@@ -296,7 +296,7 @@ class AwaitingStockReceiptIntegrationTest {
     private ProductionOrder pendingWithoutSample(UUID orderId, int batch) {
         ProductionOrder draft = productionOrders.drawUp(orderId, batch, producer.id(), coordinator);
         ProductionOrder waived = productionOrders.edit(draft.id(), draft.version(), new ProductionOrder.Draft(
-                draft.producerId(), draft.needByDate(), draft.unitPrice(), draft.note(), false,
+                draft.producerId(), draft.needByDate(), draft.note(), false,
                 "The customer approved the same print on paper", null));
         return productionOrders.submit(waived.id(), waived.version(), coordinator);
     }

@@ -4,7 +4,6 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -85,7 +84,7 @@ public final class ProductionOrder {
     }
 
     /** What the coordinator may change while it is a draft (B33: the need-by date too). */
-    public record Draft(UUID producerId, LocalDate needByDate, BigDecimal unitPrice, String note,
+    public record Draft(UUID producerId, LocalDate needByDate, String note,
                         boolean sampleApprovalRequired, String sampleWaiverReason,
                         Map<UUID, LineEdit> lines) {
     }
@@ -106,8 +105,6 @@ public final class ProductionOrder {
     private boolean sampleApprovalRequired;
     private final boolean sampleRequiredByDefault;
     private String sampleWaiverReason;
-    private BigDecimal unitPrice;
-    private final String currency;
     private String note;
     private final UUID drawnUpBy;
     private Instant submittedAt;
@@ -131,13 +128,13 @@ public final class ProductionOrder {
     public ProductionOrder(UUID id, String code, UUID salesOrderId, UUID deliveryBatchId, UUID customerId,
                            UUID producerId, UUID receivingWarehouseId, LocalDate needByDate,
                            ProductionOrderStatus status, boolean sampleApprovalRequired,
-                           boolean sampleRequiredByDefault, String sampleWaiverReason, BigDecimal unitPrice,
-                           String currency, String note, UUID drawnUpBy, Instant submittedAt, UUID approvedBy,
+                           boolean sampleRequiredByDefault, String sampleWaiverReason, String note,
+                           UUID drawnUpBy, Instant submittedAt, UUID approvedBy,
                            Instant approvedAt, String returnedReason, Instant sentAt, Instant productionStartedAt,
                            UUID cancelledBy, Instant cancelledAt, String cancellationReason, UUID closedBy,
                            Instant closedAt, String closingReason, List<Line> lines, long version) {
         this(id, code, salesOrderId, deliveryBatchId, customerId, producerId, receivingWarehouseId, needByDate, status,
-                sampleApprovalRequired, sampleRequiredByDefault, sampleWaiverReason, unitPrice, currency, note,
+                sampleApprovalRequired, sampleRequiredByDefault, sampleWaiverReason, note,
                 drawnUpBy, submittedAt, approvedBy, approvedAt, returnedReason, sentAt, productionStartedAt, null,
                 cancelledBy, cancelledAt, cancellationReason, closedBy, closedAt, closingReason, lines, version);
     }
@@ -146,8 +143,8 @@ public final class ProductionOrder {
     public ProductionOrder(UUID id, String code, UUID salesOrderId, UUID deliveryBatchId, UUID customerId,
                            UUID producerId, UUID receivingWarehouseId, LocalDate needByDate,
                            ProductionOrderStatus status, boolean sampleApprovalRequired,
-                           boolean sampleRequiredByDefault, String sampleWaiverReason, BigDecimal unitPrice,
-                           String currency, String note, UUID drawnUpBy, Instant submittedAt, UUID approvedBy,
+                           boolean sampleRequiredByDefault, String sampleWaiverReason, String note,
+                           UUID drawnUpBy, Instant submittedAt, UUID approvedBy,
                            Instant approvedAt, String returnedReason, Instant sentAt, Instant productionStartedAt,
                            LocalDate expectedCompletionDate, UUID cancelledBy, Instant cancelledAt,
                            String cancellationReason, UUID closedBy, Instant closedAt, String closingReason,
@@ -164,8 +161,6 @@ public final class ProductionOrder {
         this.sampleApprovalRequired = sampleApprovalRequired;
         this.sampleRequiredByDefault = sampleRequiredByDefault;
         this.sampleWaiverReason = sampleWaiverReason;
-        this.unitPrice = unitPrice;
-        this.currency = Objects.requireNonNull(currency, "currency");
         this.note = note;
         this.drawnUpBy = Objects.requireNonNull(drawnUpBy, "drawnUpBy");
         this.submittedAt = submittedAt;
@@ -193,21 +188,21 @@ public final class ProductionOrder {
      */
     public static ProductionOrder drawUp(String code, UUID salesOrderId, UUID deliveryBatchId, UUID customerId,
                                          UUID producerId, UUID receivingWarehouseId, LocalDate needByDate,
-                                         boolean sampleRequiredByDefault, List<Line> lines, String currency, UUID by,
+                                         boolean sampleRequiredByDefault, List<Line> lines, UUID by,
                                          Instant at) {
         if (lines == null || lines.isEmpty()) {
             throw invalid("A production order makes at least one line");
         }
         ProductionOrder order = new ProductionOrder(Identifiers.newId(), code, salesOrderId, deliveryBatchId,
                 customerId, producerId, receivingWarehouseId, needByDate, ProductionOrderStatus.DRAFT,
-                sampleRequiredByDefault, sampleRequiredByDefault, null, null, currency, null, by, null, null, null,
+                sampleRequiredByDefault, sampleRequiredByDefault, null, null, by, null, null, null,
                 null, null, null, null, null, null, null, null, null, lines, 0L);
         order.changes.add(new Change(null, ProductionOrderStatus.DRAFT, null, Objects.requireNonNull(by, "by"), at));
         return order;
     }
 
     /**
-     * The coordinator's changes to a draft (B33): producer, need-by date, price, note, the sample flag - turned off when
+     * The coordinator's changes to a draft (B33): producer, need-by date, note, the sample flag - turned off when
      * it is on by default, with a reason (BR-24) - and the lines' cartons and packing requirements. {@code maxCartons}
      * says, per order line, how many cartons the line may make at most (what the batch lacks); a line it does not name
      * may make none - a slip in building the map refuses an edit rather than lifting the cap.
@@ -221,9 +216,6 @@ public final class ProductionOrder {
         String waiver = text(draft.sampleWaiverReason());
         if (!draft.sampleApprovalRequired() && sampleRequiredByDefault && waiver == null) {
             throw invalid("A SKU is produced for the first time: say why its print sample is not approved (BR-24)");
-        }
-        if (draft.unitPrice() != null && draft.unitPrice().signum() < 0) {
-            throw invalid("The unit price is not negative");
         }
         List<Line> edited = new ArrayList<>();
         for (Line line : lines) {
@@ -244,7 +236,6 @@ public final class ProductionOrder {
         }
         this.producerId = Objects.requireNonNull(draft.producerId(), "producerId");
         this.needByDate = Objects.requireNonNull(draft.needByDate(), "needByDate");
-        this.unitPrice = draft.unitPrice();
         this.note = text(draft.note());
         this.sampleApprovalRequired = draft.sampleApprovalRequired();
         this.sampleWaiverReason = draft.sampleApprovalRequired() ? null : waiver;
@@ -595,8 +586,6 @@ public final class ProductionOrder {
     public boolean sampleApprovalRequired() { return sampleApprovalRequired; }
     public boolean sampleRequiredByDefault() { return sampleRequiredByDefault; }
     public String sampleWaiverReason() { return sampleWaiverReason; }
-    public BigDecimal unitPrice() { return unitPrice; }
-    public String currency() { return currency; }
     public String note() { return note; }
     public UUID drawnUpBy() { return drawnUpBy; }
     public Instant submittedAt() { return submittedAt; }

@@ -13,6 +13,9 @@ import java.util.UUID;
 /** Proofs of delivery kept with shipments (3-6). */
 public interface ShipmentPodFileJpaRepository extends BaseJpaRepository<ShipmentPodFileJpaEntity> {
 
+    /** Whether the carrier event's proof of delivery is kept with the shipment already (a redelivered event). */
+    boolean existsByCarrierEventIdAndShipmentId(UUID carrierEventId, UUID shipmentId);
+
     List<ShipmentPodFileJpaEntity> findByShipmentIdOrderByUploadedAtAscIdAsc(UUID shipmentId);
 
     Optional<ShipmentPodFileJpaEntity> findByIdAndShipmentId(UUID id, UUID shipmentId);

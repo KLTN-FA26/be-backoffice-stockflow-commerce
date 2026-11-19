@@ -823,8 +823,10 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                     && m.releaseReason() == LoadPlanReleaseReason.PLAN_CANCELLED) {
                 counted.put(m.packageId(), false);
             } else if (m.releaseReason() == LoadPlanReleaseReason.LEFT_BEHIND
-                    || m.releaseReason() == LoadPlanReleaseReason.VEHICLE_DROPPED) {
-                // Left in the warehouse: at the confirmation, or with a vehicle dropped from the plan (SCRUM-474).
+                    || m.releaseReason() == LoadPlanReleaseReason.VEHICLE_DROPPED
+                    || m.releaseReason() == LoadPlanReleaseReason.REMOVED_FROM_VEHICLE) {
+                // Left in the warehouse: at the confirmation, with a vehicle dropped from the plan (SCRUM-474), or taken
+                // off a vehicle under its controlled cancel (09 §4.2 step 9).
                 counted.put(m.packageId(), true);
             }
         }

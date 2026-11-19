@@ -66,4 +66,9 @@ class ProductionOrderMailDirectory implements ProductionOrderDirectory {
                             : Optional.empty();
                 }));
     }
+
+    @Override
+    public Optional<byte[]> slipPdf(UUID productionOrderId) {
+        return dispatch.slipPdf(productionOrderId);
+    }
 }

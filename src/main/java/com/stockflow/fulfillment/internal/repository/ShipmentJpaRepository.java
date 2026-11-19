@@ -60,5 +60,8 @@ public interface ShipmentJpaRepository extends BaseJpaRepository<ShipmentJpaEnti
 
     List<ShipmentJpaEntity> findByPackIdIn(java.util.Collection<UUID> packIds);
 
+    /** Whether a shipment of the check session is in that status (RTM-RTDCANCEL: one cancelled before dispatch). */
+    boolean existsByPackIdAndStatus(UUID packId, com.stockflow.fulfillment.internal.domain.ShipmentStatus status);
+
     List<ShipmentJpaEntity> findByIdIn(java.util.Collection<UUID> ids);
 }

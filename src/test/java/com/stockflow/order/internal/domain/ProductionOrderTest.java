@@ -5,7 +5,6 @@ import com.stockflow.common.error.ErrorCode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.EnumSet;
@@ -35,7 +34,7 @@ class ProductionOrderTest {
         return ProductionOrder.drawUp("PRD-20261109-0001", UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
                 UUID.randomUUID(), UUID.randomUUID(), LocalDate.of(2026, 12, 1), firstTime,
                 List.of(new ProductionOrder.Line(UUID.randomUUID(), LINE, "CUP-12OZ-ACME", 8, 50, UUID.randomUUID(),
-                        "a".repeat(64), null, 0)), "VND", COORDINATOR, NOW);
+                        "a".repeat(64), null, 0)), COORDINATOR, NOW);
     }
 
     private static ErrorCode code(Throwable thrown) {
@@ -43,7 +42,7 @@ class ProductionOrderTest {
     }
 
     private static ProductionOrder.Draft draft(ProductionOrder order, int cartons, boolean sample, String waiver) {
-        return new ProductionOrder.Draft(order.producerId(), LocalDate.of(2026, 11, 28), new BigDecimal("1200"),
+        return new ProductionOrder.Draft(order.producerId(), LocalDate.of(2026, 11, 28),
                 "deliver before noon", sample, waiver, Map.of(LINE, new ProductionOrder.LineEdit(cartons, "label A")));
     }
 
@@ -156,7 +155,7 @@ class ProductionOrderTest {
 
         ProductionOrder printing = new ProductionOrder(UUID.randomUUID(), "PRD-20261109-0002", UUID.randomUUID(),
                 UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), LocalDate.of(2026, 12, 1),
-                ProductionOrderStatus.IN_PRODUCTION, false, false, null, null, "VND", null, COORDINATOR, NOW, MANAGER,
+                ProductionOrderStatus.IN_PRODUCTION, false, false, null, null, COORDINATOR, NOW, MANAGER,
                 NOW, null, NOW, NOW, null, null, null, null, null, null, List.of(), 3L);
         assertThatThrownBy(() -> printing.cancel("too late", COORDINATOR, NOW)).extracting(ProductionOrderTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
@@ -172,7 +171,7 @@ class ProductionOrderTest {
                 || status == ProductionOrderStatus.PARTIALLY_RECEIVED || status == ProductionOrderStatus.RECEIVED;
         return new ProductionOrder(UUID.randomUUID(), "PRD-20261109-0003", UUID.randomUUID(), UUID.randomUUID(),
                 UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), LocalDate.of(2026, 12, 1), status, sample,
-                sample, null, null, "VND", null, COORDINATOR, sent ? NOW : null, sent ? MANAGER : null,
+                sample, null, null, COORDINATOR, sent ? NOW : null, sent ? MANAGER : null,
                 sent ? NOW : null, null, sent ? NOW : null, started ? NOW : null, null, null, null, null, null, null,
                 List.of(new ProductionOrder.Line(LINE_A, LINE, "CUP-12OZ-ACME", 8, 50, UUID.randomUUID(),
                                 "a".repeat(64), null, 0),

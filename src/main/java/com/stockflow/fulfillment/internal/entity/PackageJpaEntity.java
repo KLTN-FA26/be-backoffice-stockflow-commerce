@@ -54,7 +54,7 @@ public class PackageJpaEntity extends BaseEntity {
     @Column(name = "removed_at") private Instant removedAt;
     @Column(name = "removed_by") private UUID removedBy;
     @Enumerated(EnumType.STRING)
-    @Column(name = "removal_reason", length = 16) private CartonCheck.RemovalReason removalReason;
+    @Column(name = "removal_reason", length = 32) private CartonCheck.RemovalReason removalReason;
     @Column(name = "removal_note", length = 500) private String removalNote;
 
     protected PackageJpaEntity() {

@@ -161,22 +161,23 @@ class B2bAccessIntegrationTest {
 
     @Test
     void availabilityRequiresAnActiveLinkedCustomerAndHasNoPublicAlias() throws Exception {
-        mvc.perform(get(AVAILABILITY).param("sku", "TABLE-OAK"))
+        mvc.perform(get(AVAILABILITY).param("sku", "HOP-GIAY-DEMO"))
                 .andExpect(status().isUnauthorized());
         for (Account caller : List.of(blocked, unlinked, sales, warehouse, admin)) {
-            mvc.perform(get(AVAILABILITY).param("sku", "TABLE-OAK")
+            mvc.perform(get(AVAILABILITY).param("sku", "HOP-GIAY-DEMO")
                             .param("customerId", alice.customerId().toString())
                             .header("Authorization", bearer(caller)))
                     .andExpect(status().isForbidden());
         }
-        mvc.perform(get(AVAILABILITY).param("sku", "TABLE-OAK").header("Authorization", bearer(alice)))
+        mvc.perform(get(AVAILABILITY).param("sku", "HOP-GIAY-DEMO").header("Authorization", bearer(alice)))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Cache-Control", "max-age=10, private"))
-                // TABLE-OAK is not on sale here (no published listing): omitted, as if not found (SCRUM-485).
+                // HOP-GIAY-DEMO names a product, not a SKU on sale (no published listing of it): omitted, as if not
+                // found (SCRUM-485).
                 .andExpect(jsonPath("$.data").isEmpty());
-        mvc.perform(get("/api/v1/public/products/availability").param("sku", "TABLE-OAK"))
+        mvc.perform(get("/api/v1/public/products/availability").param("sku", "HOP-GIAY-DEMO"))
                 .andExpect(status().isUnauthorized());
-        mvc.perform(get("/api/v1/public/products/availability").param("sku", "TABLE-OAK")
+        mvc.perform(get("/api/v1/public/products/availability").param("sku", "HOP-GIAY-DEMO")
                         .header("Authorization", bearer(alice)))
                 .andExpect(status().isForbidden());
     }
@@ -221,7 +222,7 @@ class B2bAccessIntegrationTest {
                 .andExpect(status().isOk());
         mvc.perform(get("/api/v1/customers").header("Authorization", bearer(warehouse)))
                 .andExpect(status().isForbidden());
-        mvc.perform(get("/api/v1/inventory/stock-items").param("sku", "TABLE-OAK")
+        mvc.perform(get("/api/v1/inventory/stock-items").param("sku", "HOP-GIAY-DEMO")
                         .header("Authorization", bearer(admin)))
                 .andExpect(status().isOk());
     }

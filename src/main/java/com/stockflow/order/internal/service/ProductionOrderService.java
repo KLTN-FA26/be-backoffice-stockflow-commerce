@@ -195,7 +195,7 @@ public class ProductionOrderService {
                         BUSINESS_ZONE)), salesOrderId, batch.id(), order.customerId(), producer.id(),
                 // BR-26: needed by the first day of the batch's window in force - after a move, the new one (4B-8).
                 order.shippingWarehouseId(), batchRecords.windowInForce(salesOrderId, batch).start(), firstTime, made,
-                order.total().currency().getCurrencyCode(), by, now);
+                by, now);
         ProductionOrder saved = productionOrders.save(drawn);
         log.info("Production order {} drawn up for batch {} of order {}: {} line(s), producer {}", saved.code(),
                 batchSeq, order.orderNumber(), made.size(), producer.code());
@@ -279,7 +279,7 @@ public class ProductionOrderService {
         }
         // 4A-3: the slip is drawn and stored with no lock held, from the version read - which the transaction checks.
         Instant now = clock.instant();
-        try (ProductionOrderDispatch.PreparedSlip slip = dispatch.prepareSlip(read, by, now)) {
+        try (ProductionOrderDispatch.PreparedSlip slip = dispatch.prepareSlip(read, now)) {
             return tx.execute(status -> {
                 Locked locked = lockedWithOrder(id, version);
                 ProductionOrder production = locked.production();

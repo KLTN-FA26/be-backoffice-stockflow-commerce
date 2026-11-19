@@ -3,6 +3,7 @@ package com.stockflow.inventory;
 import com.stockflow.inventory.api.InventoryService;
 
 import com.stockflow.common.domain.Sku;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.PostgresContainer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -37,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Import(PostgresContainer.class)
 class InventoryModuleTest {
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
+    private static final Sku STOCKED = new Sku(DemoData.SKU_STOCKED);
 
     @Autowired InventoryService inventory;
     @Autowired ApplicationContext context;
@@ -50,27 +51,27 @@ class InventoryModuleTest {
     @Test
     @DisplayName("inventory starts and serves queries with no other module present")
     void bootsInIsolation() {
-        assertThat(inventory.availableToPromise(SOFA)).isPositive();
-        assertThat(inventory.availabilityOf(SOFA)).isNotEmpty();
+        assertThat(inventory.availableToPromise(STOCKED)).isPositive();
+        assertThat(inventory.availabilityOf(STOCKED)).isNotEmpty();
     }
 
     /**
      * The batch read (one grouped query over the denormalised column) must say exactly what the
      * single read (entities plus their reservation rows) says, or a product page and a checkout
-     * would disagree about the same SKU. TABLE-OAK-160 also holds QUARANTINE stock, which neither
-     * may count.
+     * would disagree about the same SKU. {@link DemoData#SKU_QUARANTINED} also holds QUARANTINE stock, which
+     * neither may count.
      */
     @Test
     @DisplayName("ATP for several SKUs in one query equals ATP asked one SKU at a time")
     void batchAtpMatchesSingleAtp() {
-        Sku table = new Sku("TABLE-OAK-160");
+        Sku quarantined = new Sku(DemoData.SKU_QUARANTINED);
         Sku unknown = new Sku("NO-SUCH-SKU");
 
-        var batch = inventory.availableToPromise(List.of(SOFA, table, unknown, SOFA));
+        var batch = inventory.availableToPromise(List.of(STOCKED, quarantined, unknown, STOCKED));
 
-        assertThat(batch).containsOnlyKeys(SOFA, table, unknown);
-        assertThat(batch.get(SOFA)).isEqualTo(inventory.availableToPromise(SOFA)).isPositive();
-        assertThat(batch.get(table)).isEqualTo(inventory.availableToPromise(table)).isPositive();
+        assertThat(batch).containsOnlyKeys(STOCKED, quarantined, unknown);
+        assertThat(batch.get(STOCKED)).isEqualTo(inventory.availableToPromise(STOCKED)).isPositive();
+        assertThat(batch.get(quarantined)).isEqualTo(inventory.availableToPromise(quarantined)).isPositive();
         assertThat(batch.get(unknown)).isZero();
         assertThat(inventory.availableToPromise(List.of())).isEmpty();
     }

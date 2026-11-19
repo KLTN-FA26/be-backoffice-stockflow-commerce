@@ -335,7 +335,7 @@ class ProductionSampleIntegrationTest {
         UUID otherOrder = confirmedOrder(null);
         ProductionOrder draft = productionOrders.drawUp(otherOrder, 1, producer.id(), coordinator);
         ProductionOrder waived = productionOrders.edit(draft.id(), draft.version(), new ProductionOrder.Draft(
-                draft.producerId(), draft.needByDate(), null, null, false, "A re-run of a tested design", null));
+                draft.producerId(), draft.needByDate(), null, false, "A re-run of a tested design", null));
         ProductionOrder pending = productionOrders.submit(waived.id(), waived.version(), coordinator);
         ProductionOrder sentWaived = productionOrders.approve(pending.id(), pending.version(), manager);
         assertThatThrownBy(() -> samples.open(sentWaived.id(), null, null, PrintSamples.photos(1), coordinator))

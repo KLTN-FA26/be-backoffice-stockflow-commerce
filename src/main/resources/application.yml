@@ -678,6 +678,10 @@ stockflow:
       # budgetExhausted (LoadPlanRequest.wallLimit).
       solver-wall-limit: PT12S
     ahamove:
+      # live: Ahamove's real API. fake: an in-memory Ahamove that makes no network call, for demos (FakeAhamoveGateway);
+      # it needs no STOCKFLOW_SECRETS_KEY, adds a remote control under /api/v1/fulfillment/dev/fake-ahamove, and the
+      # application refuses to start with it under the prod profile. Only the local profile sets it, never a server.
+      mode: ${AHAMOVE_MODE:live}
       # Ahamove's partner API v3 (3-4). Which one a carrier calls is its own setting (STAGING / PRODUCTION), as are its
       # account and key (sealed on the carrier).
       staging-url: ${AHAMOVE_STAGING_URL:https://partner-apistg.ahamove.com}

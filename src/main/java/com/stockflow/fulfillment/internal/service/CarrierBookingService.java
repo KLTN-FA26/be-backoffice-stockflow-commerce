@@ -290,6 +290,11 @@ class CarrierBookingService implements Bookings {
                 + "province %s").formatted(carrier.getCode(), ctx.vehicle().spec().code(), pickup.getProvinceCode())));
 
         DispatchLoad load = store.load(header);
+        if (!load.pendingUnloads().isEmpty()) {
+            // RTM-LOADCANCEL2: parcels of the truck the carrier called off are scanned off before an order is placed.
+            throw new BusinessException(ErrorCode.LOAD_UNLOAD_PENDING, ("Load %s still has %d parcel(s) to scan off "
+                    + "the vehicle before it is booked again").formatted(header.getCode(), load.pendingUnloads().size()));
+        }
         List<UUID> manifest = load.activeShipments();
         if (manifest.isEmpty()) {
             throw new BusinessException(ErrorCode.LOAD_EMPTY,

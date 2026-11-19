@@ -310,6 +310,11 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public Instant getFulfilmentStartedAt() { return fulfilmentStartedAt; }
 
 
+    /** Sales changed the delivery address before the first label (kltn-docs 17 BR-16; tg_order_label_lock after it). */
+    public void applyShippingAddress(OrderAddressJpaEmbeddable address) {
+        this.shippingAddress = address;
+    }
+
     public void applyFirstLabeled(Instant firstLabeled) {
         this.firstLabeledAt = firstLabeled;
     }

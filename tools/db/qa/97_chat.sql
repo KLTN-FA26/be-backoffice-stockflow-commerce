@@ -207,7 +207,7 @@ SELECT pg_temp.expect_fail_by('CX2 another customer''s quote', '16 BR-02', $q$
 SELECT pg_temp.expect_fail_by('CX3 a catalogue variant is no customer''s own SKU', '16 BR-02', $q$
     INSERT INTO chat.conversation_context (id, conversation_id, kind, variant_id, attached_at, version, created_at)
     SELECT gen_random_uuid(), md5('qa97:c1')::uuid, 'CUSTOMER_SKU', v.id, NOW(), 0, NOW()
-      FROM product.variants v WHERE v.sku = 'SOFA-3S-GREY' $q$);
+      FROM product.variants v WHERE v.sku = 'LY-GIAY-DEMO-12OZ' $q$);
 SELECT pg_temp.expect_fail_by('CX4 a context names the reference of its kind', 'ck_conversation_context_reference', $q$
     INSERT INTO chat.conversation_context (id, conversation_id, kind, quote_id, attached_at, version, created_at)
     VALUES (gen_random_uuid(), md5('qa97:c2')::uuid, 'ORDER', md5('qa97:quote-b')::uuid, NOW(), 0, NOW()) $q$);
@@ -233,7 +233,7 @@ SELECT pg_temp.expect_ok('CX10 the customer''s own quote, and a catalogue produc
     VALUES (md5('qa97:c2:quote-b')::uuid, md5('qa97:c2')::uuid, 'QUOTE', md5('qa97:quote-b')::uuid, NOW(), 0, NOW());
     INSERT INTO chat.conversation_context (id, conversation_id, kind, product_id, attached_at, version, created_at)
     SELECT gen_random_uuid(), md5('qa97:c1')::uuid, 'PRODUCT', p.id, NOW(), 0, NOW()
-      FROM product.products p WHERE p.code = 'SOFA-3S' $q$);
+      FROM product.products p WHERE p.code = 'HOP-GIAY-DEMO' $q$);
 
 \echo '--- BR-07: internal notes, and who writes what (ck_message_*)'
 SELECT pg_temp.expect_fail_by('MV1 an internal note shown to the customer', 'ck_message_internal_note', $q$

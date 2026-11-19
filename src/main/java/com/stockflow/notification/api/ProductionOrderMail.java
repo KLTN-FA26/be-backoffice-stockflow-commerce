@@ -1,6 +1,5 @@
 package com.stockflow.notification.api;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
@@ -16,13 +15,15 @@ import java.util.UUID;
  * @param coordinatorId    who drew it up: the producer's reply goes to them
  * @param status           the production order's status now ({@code CANCELLED}, {@code CLOSED} for a stopped one)
  * @param stopReason       why it was cancelled or closed, as the coordinator wrote it; null while it goes on
- * @param slip             the slip it was sent with; null for one sent before slips were kept
+ * @param slip             the slip it was sent with; null for one sent before slips were kept. The order's processing
+ *                         price is not here: prices are agreed by other departments, outside the system, and neither the
+ *                         slip nor the e-mail names one (owner, 2026-11-19)
  * @param filesAvailableUntil until when the links to the slip, the print files and the original images work
  */
 public record ProductionOrderMail(UUID productionOrderId, String code, String producerName, String channel,
                                   String producerEmail, UUID coordinatorId, String status, LocalDate needByDate,
                                   String warehouseName, String warehouseAddress, boolean sampleApprovalRequired,
-                                  BigDecimal unitPrice, String currency, String note, String stopReason,
+                                  String note, String stopReason,
                                   List<Line> lines, File slip, Instant filesAvailableUntil) {
 
     public ProductionOrderMail {
