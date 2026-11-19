@@ -114,6 +114,7 @@ class StockOperationsServiceImpl implements StockOperations {
     private final UomConversionRepository units;
     private final CycleCountRepository countLines;
     private final CartonPlacement placement;
+    private final org.springframework.beans.factory.ObjectProvider<com.stockflow.inventory.spi.ShortReports> shortReports;
     /** Asked whether a carton is on its way into a bin before it is written off (team plan 4D-1). */
     private final com.stockflow.warehouse.api.PutawayTasks putawayTasks;
 
@@ -125,7 +126,10 @@ class StockOperationsServiceImpl implements StockOperations {
                                UomConversionRepository units, SlotsUnderCount underCount,
                                CycleCountRepository countLines, CartonPlacement placement,
                                com.stockflow.warehouse.api.PutawayTasks putawayTasks,
-                               com.stockflow.inventory.internal.domain.WarehouseDirectory warehouses) {
+                               com.stockflow.inventory.internal.domain.WarehouseDirectory warehouses,
+                               org.springframework.beans.factory.ObjectProvider<com.stockflow.inventory.spi.ShortReports>
+                                       shortReports) {
+        this.shortReports = shortReports;
         this.warehouses = warehouses;
         this.placement = placement;
         this.putawayTasks = putawayTasks;
@@ -554,13 +558,8 @@ class StockOperationsServiceImpl implements StockOperations {
     }
 
     /**
-     * Kltn-docs 11 BR-06, 20 BR-10 for cartons moved by hand: a carton a count holds stays where it is. Held is exactly
-     * what {@code claim} calls busy (open count, or submitted with its variance still pending), so the two cannot
-     * disagree. Whoever asks, whatever they may do: this protects the count, it is not a visibility rule.
-     */
-    /**
      * {@link #requireNotUnderCount} for a quarantine, with one exception (kltn-docs 07 §4.4 step 9, §4.4 edge "thùng hư
-     * hỏng", decided 2026-11-19): a carton the picker reported short is on the blind count that report opened
+     * hỏng", decided 2026-11-19): a carton the picker reported DAMAGED is on the blind count that report opened
      * ({@code SHORT_PICK}, still open), and the manager quarantines it at once instead of waiting for the count to be
      * submitted. The count goes on for its other cartons; its line follows the carton to the quarantine area as it does
      * for any whole move. A carton held by another count, a submitted variance or an adjustment still refuses.
@@ -579,13 +578,23 @@ class StockOperationsServiceImpl implements StockOperations {
             return false;
         }
         boolean shortReport = countLines.findHolding(slot).filter(count -> count.number().equals(holder)
-                && count.trigger() == CycleCountTrigger.SHORT_PICK && count.status().isOpen()).isPresent();
+                && count.trigger() == CycleCountTrigger.SHORT_PICK && count.status().isOpen()).isPresent()
+                // Only a carton the picker found DAMAGED is there to be quarantined; one not found is not (07 §4.4 step 9,
+                // WF04 G7). The reason is on the pick line, which fulfillment answers for.
+                && shortReports.getIfAvailable() != null
+                && shortReports.getObject().latestReasonOf(carton.lpn())
+                        .filter(reason -> reason == com.stockflow.inventory.spi.ShortReports.Reason.DAMAGED).isPresent();
         if (!shortReport) {
             requireNotUnderCount(List.of(carton), rowIds, to);
         }
         return shortReport;
     }
 
+    /**
+     * Kltn-docs 11 BR-06, 20 BR-10 for cartons moved by hand: a carton a count holds stays where it is. Held is exactly
+     * what {@code claim} calls busy (open count, or submitted with its variance still pending), so the two cannot
+     * disagree. Whoever asks, whatever they may do: this protects the count, it is not a visibility rule.
+     */
     private void requireNotUnderCount(List<StockPackage> cartons, List<StockItemId> rowIds, LocationId to) {
         Map<StockPackageId, StockItem> rowOf = new HashMap<>();
         for (StockItemId id : rowIds) {

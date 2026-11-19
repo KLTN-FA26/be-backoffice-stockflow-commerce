@@ -391,6 +391,39 @@ class CountVarianceOfShortCartonIntegrationTest {
     }
 
     @Test
+    @DisplayName("WF04 G7: a carton reported NOT_FOUND is not there to be quarantined: refused STOCK_SLOT_UNDER_COUNT until "
+            + "its blind count is submitted; nothing changes")
+    void aNotFoundCartonIsNotQuarantinedAtOnce() throws Exception {
+        UUID order = confirmedOrders.release(
+                confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(sofaCarton, 1, 12_000_000))
+                        .orderId(), HCM, coordinator).orderId();
+        placed.add(order);
+        String admin = token(coordinator, "SYSTEM_ADMIN");
+        String pickerToken = token(picker, "WAREHOUSE_STAFF");
+        UUID task = taskIdOf(send(admin, API + "/tasks",
+                "{\"orderId\":\"" + order + "\",\"assignedUserId\":\"" + picker + "\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString());
+        send(pickerToken, API + "/tasks/" + task + "/picking-start", null).andExpect(status().isOk());
+        Map<String, Object> line = jdbc.queryForMap("""
+                SELECT id, lpn, location_code, reservation_id FROM fulfillment.pick_line
+                 WHERE pick_id = ? AND status = 'OPEN'""", task);
+        send(pickerToken, API + "/tasks/" + task + "/pick-lines/" + line.get("id") + "/short",
+                "{\"locationCode\":\"" + line.get("location_code") + "\",\"reason\":\"NOT_FOUND\"}")
+                .andExpect(status().isOk());
+        String lpn = (String) line.get("lpn");
+        UUID carton = jdbc.queryForObject("SELECT id FROM inventory.stock_package WHERE lpn = ?", UUID.class, lpn);
+
+        Throwable refused = org.assertj.core.api.Assertions.catchThrowable(() -> WithCurrentUser.call(TestUsers.admin(),
+                DataScope.ALL, () -> quarantine.quarantine(lpn, "HCM-QC01", "Not found", manager)));
+
+        assertThat(refused).isInstanceOf(com.stockflow.common.error.BusinessException.class);
+        assertThat(((com.stockflow.common.error.BusinessException) refused).errorCode())
+                .isEqualTo(com.stockflow.common.error.ErrorCode.STOCK_SLOT_UNDER_COUNT);
+        assertThat(cartonState(carton)).containsEntry("status", "IN_STOCK").containsEntry("live_holds", 1L);
+        assertThat(holdState((UUID) line.get("reservation_id"))).containsEntry("status", "HELD");
+    }
+
+    @Test
     @DisplayName("WF04 G7: a carton held for an order that nobody reported short is still refused: STOCK_PACKAGE_HELD")
     void aHeldCartonNobodyReportedIsStillRefused() throws Exception {
         UUID order = confirmedOrders.release(
