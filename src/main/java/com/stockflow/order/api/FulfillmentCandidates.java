@@ -23,8 +23,10 @@ public interface FulfillmentCandidates {
      * The orders a fulfillment task may be opened for, by the rule createTask applies (review of #150): READY_TO_FULFILL
      * and no task opened for it yet ({@code fulfilment_started_at}, which the order records when createTask calls
      * {@link OrderService#startPicking}) - and, kltn-docs 07 BR-07, the PARTIALLY_FULFILLED orders among
-     * {@code awaitingBatchOrders}: those whose latest released delivery batch has no task yet. Oldest release first,
-     * each with its lines. Only orders of the caller's
+     * {@code awaitingBatchOrders}: those whose latest released delivery batch has no task yet - and, 07 §4.1 step 1,
+     * the AWAITING_STOCK orders with no task whose next delivery batch has cartons held, not all, at their shipping
+     * warehouse ({@link PrePicking}). Oldest release first, the orders awaiting stock last, each with its lines. Only
+     * orders of the caller's
      * warehouses when the caller is limited to some (the ambient warehouse scope); {@code warehouseId}, when given,
      * narrows to one. Read-only: it joins the caller's transaction when there is one and locks nothing - by the time a
      * task is opened, createTask checks the order again under its row lock.

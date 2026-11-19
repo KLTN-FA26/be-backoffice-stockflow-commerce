@@ -112,15 +112,18 @@ class PickListService implements PickLists {
     private final com.stockflow.fulfillment.internal.repository.PackageJpaRepository packages;
     /** RTM-RTDCANCEL: whether a task's check was reopened by a shipment cancelled before dispatch. */
     private final com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository shipments;
-
+    /** 07 §4.3 step 7: the top-up of a task opened before its order's release allocates what was held since. */
+    private final com.stockflow.order.api.PrePicking prePicking;
 
     PickListService(PickJpaRepository picks, PickLineJpaRepository pickLines, OrderService orders,
                     InventoryService inventory, InventoryControlService itemControls, PickConsumption consumption,
                     WarehouseService warehouses, Clock clock, OrderReservations orderReservations,
                     com.stockflow.fulfillment.internal.repository.PackJpaRepository packs,
                     com.stockflow.fulfillment.internal.repository.PackageJpaRepository packages,
-                    com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository shipments) {
+                    com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository shipments,
+                    com.stockflow.order.api.PrePicking prePicking) {
         this.shipments = shipments;
+        this.prePicking = prePicking;
         this.packs = packs;
         this.packages = packages;
         this.orderReservations = orderReservations;
@@ -804,10 +807,18 @@ class PickListService implements PickLists {
         // here (fulfillment.pick.order_id is unique), so it is refused rather than opened as a second task.
         requireOpenForMore(pick);
         OrderSummary order = TaskAccess.orderInFulfilment(orders, pick);
+        if (pick.getDeliveryBatchId() != null && pick.getRedeliveryCaseId() == null
+                && prePicking.topUp(pick.getOrderId(), pick.getDeliveryBatchId(), actor.userId())) {
+            // 07 §4.3 step 7, 17 §4.4 step 16: a task opened before its order's release - the rest of its batch arrived,
+            // it was held and the batch released (AWAITING_STOCK -> READY_TO_FULFILL). Read again for what follows.
+            order = TaskAccess.orderInFulfilment(orders, pick);
+        }
         List<PickLine> added = planLines(pick, order, actor.userId());
-        if (!added.isEmpty() && order.status() != com.stockflow.order.api.OrderStatus.ON_HOLD) {
+        if (!added.isEmpty() && order.status() != com.stockflow.order.api.OrderStatus.ON_HOLD
+                && order.status() != com.stockflow.order.api.OrderStatus.AWAITING_STOCK) {
             // 07 §4.3 step 7: the order is picking again with its task (READY_TO_FULFILL -> PICKING; an order already
-            // picking is left alone). An order on hold stays held: the hold resolves back to where it was.
+            // picking is left alone). An order on hold stays held: the hold resolves back to where it was. An order
+            // still awaiting stock - part of the rest arrived, not all - stays so until its batch is held in full.
             orders.startPicking(pick.getOrderId(), actor.userId());
         }
         Map<String, String> barcodes = barcodesOf(added.stream().map(PickLine::sku).toList());
@@ -901,8 +912,48 @@ class PickListService implements PickLists {
                 .toList();
     }
 
-    /** The holds of the order's lines, with the warehouse each one's location belongs to. */
+    /**
+     * The holds of the order's lines, with the warehouse each one's location belongs to - allocations only: a SKU
+     * reservation is on no shelf yet. It stands among a task's holds only for an order picked before its release (07
+     * §4.1 step 2): goods held for its batch since, which a top-up allocates first ({@link #topUp}).
+     */
     private Map<UUID, PickList.Hold> holdsOf(PickJpaEntity pick, OrderSummary order) {
+        Set<UUID> ids = taskHoldIds(pick, order);
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, UUID> warehouseOf = new HashMap<>();
+        Map<UUID, PickList.Hold> holds = new HashMap<>();
+        for (HoldView hold : inventory.holds(ids)) {
+            if (hold.locationCode() == null) {
+                continue;
+            }
+            UUID where = warehouseOf.computeIfAbsent(hold.locationCode(), code -> warehouses.findLocation(code)
+                    .map(StorageLocationView::warehouseId).orElse(null));
+            holds.put(hold.reservationId(), new PickList.Hold(hold.reservationId(), hold.sku(), hold.locationCode(),
+                    where, hold.lotNumber(), hold.quantity(), hold.status() == HoldView.Status.HELD, hold.lpn(),
+                    hold.wholeCarton()));
+        }
+        return holds;
+    }
+
+    /**
+     * 07 §4.3 step 7: whether a top-up would add to the task - it is STAGED or PICKED, its check not complete, and the
+     * order holds cartons for it (a SKU reservation of its batch held since, or an allocation) that no line takes yet.
+     */
+    @Transactional(readOnly = true)
+    public boolean topUpAvailable(PickJpaEntity pick, OrderSummary order) {
+        if (pick.getStatus() != PickStatus.STAGED && pick.getStatus() != PickStatus.PICKED || !isOpenForMore(pick)) {
+            return false;
+        }
+        Set<UUID> ids = taskHoldIds(pick, order);
+        pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId()).stream()
+                .map(PickLineJpaEntity::getReservationId).filter(java.util.Objects::nonNull).forEach(ids::remove);
+        return !ids.isEmpty() && inventory.holds(ids).stream().anyMatch(hold -> hold.status() == HoldView.Status.HELD);
+    }
+
+    /** The ids of the holds the task picks: the order's, narrowed to its redelivery or its delivery batch. */
+    private Set<UUID> taskHoldIds(PickJpaEntity pick, OrderSummary order) {
         Set<UUID> ids = order.lines().stream()
                 .flatMap(line -> line.reservationIds().stream())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
@@ -916,19 +967,7 @@ class PickListService implements PickLists {
             // others (a later batch's holds wait at the warehouse for their own release).
             ids.retainAll(orders.holdsOfBatch(order.orderId(), pick.getDeliveryBatchId()));
         }
-        if (ids.isEmpty()) {
-            return Map.of();
-        }
-        Map<String, UUID> warehouseOf = new HashMap<>();
-        Map<UUID, PickList.Hold> holds = new HashMap<>();
-        for (HoldView hold : inventory.holds(ids)) {
-            UUID where = warehouseOf.computeIfAbsent(hold.locationCode(), code -> warehouses.findLocation(code)
-                    .map(StorageLocationView::warehouseId).orElse(null));
-            holds.put(hold.reservationId(), new PickList.Hold(hold.reservationId(), hold.sku(), hold.locationCode(),
-                    where, hold.lotNumber(), hold.quantity(), hold.status() == HoldView.Status.HELD, hold.lpn(),
-                    hold.wholeCarton()));
-        }
-        return holds;
+        return ids;
     }
 
     /** The barcode of each SKU; a SKU without one maps to nothing. One lookup per distinct SKU. */

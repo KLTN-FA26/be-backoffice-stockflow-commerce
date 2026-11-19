@@ -273,7 +273,8 @@ public class DeliveryBatchService {
 
     /**
      * The batch on its way out (17 §4.5): the latest released, with its window in force and the units of the batches
-     * after it. Empty for an order without released batches - it hands over as a whole, as before.
+     * after it - or, for an order picked before its release (07 §4.1 step 2), its first batch. Empty for an order
+     * without released batches otherwise - it hands over as a whole, as before.
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public Optional<BatchInFlight> inFlight(Order order) {
@@ -290,15 +291,17 @@ public class DeliveryBatchService {
     @Transactional(propagation = Propagation.MANDATORY)
     public Optional<BatchInFlight> inFlight(Order order, UUID redeliveredBatchId) {
         List<DeliveryBatchRecords.Release> releases = records.releasesOf(order.id().value());
-        if (releases.isEmpty()) {
+        // 07 §4.1 step 2, 17 §4.4 step 15: an order picked before its release has its first batch on the way out - its
+        // part held may be handed over first (17 §4.5 step 18), and never before that batch's window (BR-29).
+        if (releases.isEmpty() && !order.prePicked()) {
             return Optional.empty();
         }
         SalesContract contract = signedContract(order).orElse(null);
-        if (contract == null) {
+        if (contract == null || contract.schedule().isEmpty()) {
             return Optional.empty();
         }
-        DeliveryBatchRecords.Release last = releases.getLast();
-        DeliveryBatch batch = contract.schedule().stream().filter(b -> b.id().equals(last.batchId())).findFirst()
+        UUID lastId = releases.isEmpty() ? sorted(contract).getFirst().id() : releases.getLast().batchId();
+        DeliveryBatch batch = contract.schedule().stream().filter(b -> b.id().equals(lastId)).findFirst()
                 .orElse(null);
         if (batch == null) {
             return Optional.empty();

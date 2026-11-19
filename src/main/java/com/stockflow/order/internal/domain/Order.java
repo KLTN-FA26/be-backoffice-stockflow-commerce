@@ -560,6 +560,55 @@ public final class Order extends AggregateRoot {
     }
 
     /**
+     * The warehouse opens a task for the part of an AWAITING_STOCK order already held (kltn-docs 07 §4.1 step 2, 17 §4.4
+     * step 15): the order stays AWAITING_STOCK (07 §4.1 step 2: "Đơn Awaiting Stock ... giữ nguyên trạng thái") and is
+     * not released - it becomes READY_TO_FULFILL when its batch is held in full (17 §5.1). What is recorded is that its
+     * task exists, the fact the list of orders waiting for a task reads ({@code fulfilment_started_at}).
+     *
+     * @return whether this changed the order
+     * @throws InvalidOrderTransitionException in any other status, or once released
+     */
+    public boolean startPrePicking(Instant at) {
+        java.util.Objects.requireNonNull(at, "at");
+        if (status != OrderStatus.AWAITING_STOCK || releasedAt != null) {
+            throw new InvalidOrderTransitionException(orderNumber, status,
+                    "only an order awaiting stock, not released yet, is picked before its release");
+        }
+        if (fulfilmentStartedAt != null) {
+            return false;
+        }
+        this.fulfilmentStartedAt = at;
+        return true;
+    }
+
+    /**
+     * The first partial delivery of an order picked before its release goes towards dispatch - its part held, Sales
+     * having allowed a partial shipment (17 §4.5 step 18): owner decision SCOPE-PARTIAL-1105, "đợt BEFORE_DELIVERY đến
+     * hạn ở lần giao đầu tiên sẵn sàng" (15 §4.1 step 2). {@code OrderReleased} names the batch, so payment makes due
+     * what that batch waits for, as at a release; the order stays AWAITING_STOCK and is not released (its batch is
+     * released once held in full). Payment ignores a second notice for an installment already due.
+     *
+     * @throws InvalidOrderTransitionException unless AWAITING_STOCK, picked before its release, allowed in parts
+     */
+    public void releasePartFirst(String warehouseCode, UUID deliveryBatchId, Instant at) {
+        java.util.Objects.requireNonNull(at, "at");
+        if (status != OrderStatus.AWAITING_STOCK || !prePicked() || !allowPartialShipment) {
+            throw new InvalidOrderTransitionException(orderNumber, status,
+                    "only an order awaiting stock, picked ahead and allowed to ship in parts, sends its part held first");
+        }
+        registerEvent(new OrderEvent.Released(new com.stockflow.contracts.OrderReleased(id.value(), warehouseCode, at,
+                deliveryBatchId)));
+    }
+
+    /**
+     * Whether the warehouse picks the order before its release (07 §4.1 step 2, 17 §4.4 step 15): a task was opened
+     * for the part held while it was AWAITING_STOCK, and its batch was not released since.
+     */
+    public boolean prePicked() {
+        return fulfilmentStartedAt != null && releasedAt == null;
+    }
+
+    /**
      * The warehouse starts picking (kltn-docs 17 §4.2 step 6): READY_TO_FULFILL → PICKING. Only a released order -
      * its warehouse chosen (17 BR-02). An order already picking, packed or partly shipped is left as it is. An order held
      * for stock ({@code INVENTORY}) from READY_TO_FULFILL stays held and goes back PICKING when the hold is resolved
@@ -658,6 +707,17 @@ public final class Order extends AggregateRoot {
                 recordPacked(at);
                 return true;
             }
+            case AWAITING_STOCK -> {
+                // 17 §5.1 "Awaiting Stock → Partially Fulfilled (giao trước phần có sẵn)", §4.5 step 18: Sales allowed
+                // the part already held to go first while the rest is produced (08 §4.1 step 1).
+                if (!allowPartialShipment) {
+                    throw new InvalidOrderTransitionException(orderNumber, status,
+                            "an order awaiting stock ships its part held only when Sales allowed a partial shipment");
+                }
+                transitionTo(OrderStatus.PARTIALLY_FULFILLED, by, null, at);
+                recordPacked(at);
+                return true;
+            }
             case ON_HOLD -> throw new InvalidOrderTransitionException(orderNumber, status,
                     "resolve the hold before packing");
             default -> throw new InvalidOrderTransitionException(orderNumber, status, OrderStatus.PARTIALLY_FULFILLED);
@@ -681,13 +741,19 @@ public final class Order extends AggregateRoot {
     /**
      * 4B-8 (17 §4.5, BR-03, BR-29): the first delivery batch released - the order goes to the warehouse as before, but
      * only the lines that batch carries need their stock held ({@code batchLines}; null: every line, an order without a
-     * schedule). {@code OrderReleased} names the batch, so payment makes due only what that batch waits for.
+     * schedule). {@code OrderReleased} names the batch, so payment makes due only what that batch waits for. An order
+     * picked before its release ({@link #prePicked}) whose part held was handed over first is PARTIALLY_FULFILLED when
+     * its batch is held in full; it is released then and stays PARTIALLY_FULFILLED (07 §4.3 step 7).
      */
     public void release(UUID warehouse, String warehouseCode, UUID by, Instant now, UUID deliveryBatchId,
                         java.util.Set<UUID> batchLines) {
         java.util.Objects.requireNonNull(warehouse, "warehouse");
         java.util.Objects.requireNonNull(by, "by");
-        if (status != OrderStatus.CONFIRMED && !(status == OrderStatus.AWAITING_STOCK && paidByContract())) {
+        // 07 §4.3 step 7, 17 §4.4 step 16: an order picked before its release whose part held left first (Sales allowed
+        // it, 17 §4.5 step 18) is PARTIALLY_FULFILLED; its batch is released once held in full, and it stays so.
+        boolean partShippedFirst = status == OrderStatus.PARTIALLY_FULFILLED && prePicked() && paidByContract();
+        if (status != OrderStatus.CONFIRMED && !(status == OrderStatus.AWAITING_STOCK && paidByContract())
+                && !partShippedFirst) {
             throw new InvalidOrderTransitionException(orderNumber, status, "only a confirmed order can be released");
         }
         if (paidByContract() && shippingWarehouseId == null) {
@@ -707,7 +773,9 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.ORDER_STOCK_NOT_HELD, ("Order %s holds no stock for some of its "
                     + "lines: choose its shipping warehouse and hold its stock first").formatted(orderNumber));
         }
-        transitionTo(OrderStatus.READY_TO_FULFILL);
+        if (!partShippedFirst) {
+            transitionTo(OrderStatus.READY_TO_FULFILL);
+        }
         this.warehouseId = warehouse;
         this.releasedAt = now;
         this.releasedBy = by;
@@ -816,7 +884,10 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, ("Order %s is on hold (%s); its cartons are "
                     + "labelled once the hold is resolved").formatted(orderNumber, holdReason));
         }
-        if (!LABELLABLE.contains(status)) {
+        // 08 §4.1 step 1: an order still AWAITING_STOCK is checked and labelled only when Sales allowed its part held to
+        // go first (17 §4.5 step 18).
+        boolean partFirst = status == OrderStatus.AWAITING_STOCK && allowPartialShipment;
+        if (!LABELLABLE.contains(status) && !partFirst) {
             throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT,
                     "Order %s is %s; its cartons are not labelled now".formatted(orderNumber, status));
         }

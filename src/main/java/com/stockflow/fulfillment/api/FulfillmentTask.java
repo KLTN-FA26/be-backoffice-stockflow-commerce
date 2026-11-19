@@ -21,6 +21,9 @@ import java.util.UUID;
  * @param stagedAt         when every carton of a {@code STAGING} task was last in its staging area; null until then
  * @param movedToDispatchAt when the warehouse manager moved the staged task to dispatch, deducting its cartons (07
  *                         §4.3 step 8); null until then
+ * @param topUpAvailable   set only when one task is read by id: the task is STAGED or PICKED, its check not complete,
+ *                         and the order holds cartons for it that no line takes yet - what a top-up adds (07 §4.3 step
+ *                         7); null on list rows and write answers
  */
 public record FulfillmentTask(
         UUID taskId,
@@ -41,7 +44,8 @@ public record FulfillmentTask(
         PickDestination destination,
         String stagingLocationCode,
         Instant stagedAt,
-        Instant movedToDispatchAt
+        Instant movedToDispatchAt,
+        Boolean topUpAvailable
 ) {
     public FulfillmentTask {
         lines = lines == null ? null : List.copyOf(lines);
@@ -55,7 +59,18 @@ public record FulfillmentTask(
                            PaymentDue paymentDue, UUID shipmentId) {
         this(taskId, orderId, orderNumber, warehouseId, assignedUserId, assignedUserName, pickStatus, packStatus,
                 assignedAt, startedAt, pickedAt, packedAt, lines, paymentDue, shipmentId, PickDestination.DISPATCH,
-                null, null, null);
+                null, null, null, null);
+    }
+
+    /** A task as written before a top-up was offered on it (07 §4.3 step 7): not said. */
+    public FulfillmentTask(UUID taskId, UUID orderId, String orderNumber, UUID warehouseId, UUID assignedUserId,
+                           String assignedUserName, String pickStatus, String packStatus, Instant assignedAt,
+                           Instant startedAt, Instant pickedAt, Instant packedAt, List<Line> lines,
+                           PaymentDue paymentDue, UUID shipmentId, PickDestination destination,
+                           String stagingLocationCode, Instant stagedAt, Instant movedToDispatchAt) {
+        this(taskId, orderId, orderNumber, warehouseId, assignedUserId, assignedUserName, pickStatus, packStatus,
+                assignedAt, startedAt, pickedAt, packedAt, lines, paymentDue, shipmentId, destination,
+                stagingLocationCode, stagedAt, movedToDispatchAt, null);
     }
 
     public FulfillmentTask(UUID taskId, UUID orderId, String orderNumber, UUID warehouseId, UUID assignedUserId,
@@ -68,13 +83,20 @@ public record FulfillmentTask(
     public FulfillmentTask withPaymentDue(PaymentDue due) {
         return new FulfillmentTask(taskId, orderId, orderNumber, warehouseId, assignedUserId, assignedUserName,
                 pickStatus, packStatus, assignedAt, startedAt, pickedAt, packedAt, lines, due, shipmentId,
-                destination, stagingLocationCode, stagedAt, movedToDispatchAt);
+                destination, stagingLocationCode, stagedAt, movedToDispatchAt, topUpAvailable);
     }
 
     public FulfillmentTask withShipment(UUID shipment) {
         return new FulfillmentTask(taskId, orderId, orderNumber, warehouseId, assignedUserId, assignedUserName,
                 pickStatus, packStatus, assignedAt, startedAt, pickedAt, packedAt, lines, paymentDue, shipment,
-                destination, stagingLocationCode, stagedAt, movedToDispatchAt);
+                destination, stagingLocationCode, stagedAt, movedToDispatchAt, topUpAvailable);
+    }
+
+    /** The same task saying whether a top-up would add lines to it (07 §4.3 step 7). */
+    public FulfillmentTask withTopUpAvailable(boolean available) {
+        return new FulfillmentTask(taskId, orderId, orderNumber, warehouseId, assignedUserId, assignedUserName,
+                pickStatus, packStatus, assignedAt, startedAt, pickedAt, packedAt, lines, paymentDue, shipmentId,
+                destination, stagingLocationCode, stagedAt, movedToDispatchAt, available);
     }
 
     /** Money the order must receive before its goods may be handed to the carrier. */

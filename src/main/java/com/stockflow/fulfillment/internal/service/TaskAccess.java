@@ -18,9 +18,13 @@ final class TaskAccess {
     private TaskAccess() {
     }
 
-    /** The order statuses a task may be worked in: from release until everything left, and while it is held. */
+    /**
+     * The order statuses a task may be worked in: from release until everything left, and while it is held - and
+     * AWAITING_STOCK, whose part held is picked before its release (kltn-docs 07 §4.1 step 2, 17 §4.4 step 15).
+     */
     private static final java.util.Set<OrderStatus> WORKABLE = java.util.EnumSet.of(OrderStatus.READY_TO_FULFILL,
-            OrderStatus.PICKING, OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED, OrderStatus.ON_HOLD);
+            OrderStatus.PICKING, OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED, OrderStatus.ON_HOLD,
+            OrderStatus.AWAITING_STOCK);
 
     /**
      * The assignee sees the task; so does whoever oversees tasks, for the warehouses they are assigned to (BR-SEC-002:

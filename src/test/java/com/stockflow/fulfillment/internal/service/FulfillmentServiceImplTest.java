@@ -54,8 +54,9 @@ class FulfillmentServiceImplTest {
     private final PickListService pickLists = mock(PickListService.class);
     private final CartonCheckService packing = mock(CartonCheckService.class);
     private final Instant now = Instant.parse("2026-09-18T08:00:00Z");
+    private final com.stockflow.order.api.PrePicking prePicking = mock(com.stockflow.order.api.PrePicking.class);
     private final FulfillmentServiceImpl service = new FulfillmentServiceImpl(
-            picks, packs, orders, identities, inventory, warehouses, pickLists, packing,
+            picks, packs, orders, identities, inventory, warehouses, pickLists, packing, prePicking,
             Clock.fixed(now, ZoneOffset.UTC));
 
     /**
@@ -405,6 +406,50 @@ class FulfillmentServiceImplTest {
         assertThat(thrown.errorCode()).isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
         verify(picks, never()).save(any());
         verify(picks, never()).saveAndFlush(any());
+    }
+
+    @Test
+    @org.junit.jupiter.api.DisplayName("07 §4.1 step 2: an order awaiting stock goes to dispatch only when Sales allowed a "
+            + "partial shipment - refused before anything is allocated or written")
+    void anOrderAwaitingStockIsNotPickedToDispatchWithoutPartialShipment() {
+        var order = orderIn(OrderStatus.AWAITING_STOCK, null);
+        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
+        when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
+
+        var thrown = refusal(() -> asScoped(managerOf(HCM), () -> service.createTask(order.orderId(),
+                UUID.randomUUID(), com.stockflow.fulfillment.api.PickDestination.DISPATCH, null, managerOf(HCM))));
+
+        assertThat(thrown.errorCode()).isEqualTo(ErrorCode.PICK_AWAITING_STOCK_DESTINATION);
+        verify(prePicking, never()).prePick(any(), any());
+        verify(picks, never()).saveAndFlush(any());
+        verify(orders, never()).startPicking(any(), any());
+    }
+
+    @Test
+    @org.junit.jupiter.api.DisplayName("07 §4.1 step 2: to the staging area, the part held is allocated by the order and "
+            + "the task picks its batch; the order is not started picking (it stays AWAITING_STOCK)")
+    void anOrderAwaitingStockIsPickedToStaging() {
+        UUID picker = UUID.randomUUID();
+        UUID batch = UUID.randomUUID();
+        var order = orderIn(OrderStatus.AWAITING_STOCK, null);
+        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
+        when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
+        assignable(HCM, picker);
+        when(prePicking.prePick(eq(order.orderId()), any())).thenReturn(
+                new com.stockflow.order.api.PrePicking.PrePick(batch, 1, HCM));
+        when(warehouses.areasOf(HCM, StorageLocationView.AreaType.STAGING)).thenReturn(List.of(
+                stagingView(HCM, "HCM-STG01", true, StorageLocationView.AreaType.STAGING)));
+        when(picks.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
+
+        var task = asScoped(managerOf(HCM), () -> service.createTask(order.orderId(), picker,
+                com.stockflow.fulfillment.api.PickDestination.STAGING, null, managerOf(HCM)));
+
+        assertThat(task.destination()).isEqualTo(com.stockflow.fulfillment.api.PickDestination.STAGING);
+        assertThat(task.warehouseId()).isEqualTo(HCM);
+        var saved = org.mockito.ArgumentCaptor.forClass(PickJpaEntity.class);
+        verify(picks).saveAndFlush(saved.capture());
+        assertThat(saved.getValue().getDeliveryBatchId()).isEqualTo(batch);
+        verify(orders, never()).startPicking(any(), any());
     }
 
     @Test

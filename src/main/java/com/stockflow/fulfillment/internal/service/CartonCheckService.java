@@ -83,7 +83,10 @@ class CartonCheckService implements CartonChecks {
 
     private static final Logger log = LoggerFactory.getLogger(CartonCheckService.class);
 
-    /** The order statuses the station may change cartons in: released, picking, or the rest of a split order. */
+    /**
+     * The order statuses the station may change cartons in: released, picking, or the rest of a split order - and
+     * AWAITING_STOCK only when Sales allowed its part held to go first ({@link #workable}; 08 §4.1 step 1).
+     */
     private static final Set<OrderStatus> WORKABLE = EnumSet.of(OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING,
             OrderStatus.PARTIALLY_FULFILLED);
     private static final EnumSet<PackStatus> QUEUED = EnumSet.of(PackStatus.PENDING, PackStatus.IN_PROGRESS);
@@ -181,7 +184,8 @@ class CartonCheckService implements CartonChecks {
                 .map(PickJpaEntity::getId).toList());
         List<PickJpaEntity> shown = candidates.stream()
                 .filter(pick -> states.get(pick.getOrderId()) != null
-                        && (WORKABLE.contains(states.get(pick.getOrderId()).status())
+                        && (workable(states.get(pick.getOrderId()).status(),
+                                states.get(pick.getOrderId()).allowPartialShipment())
                         || replacing.contains(pick.getId())))
                 .toList();
         var pageable = Pages.of(page, size, Sort.by(Sort.Direction.ASC, "pickedAt", "id"));
@@ -654,8 +658,16 @@ class CartonCheckService implements CartonChecks {
                 .map(row -> pickByPack.get(row.getPackId())).collect(Collectors.toSet());
     }
 
+    /**
+     * 08 §4.1 step 1: "Đơn còn Awaiting Stock chỉ hiện khi Sale đã cho phép giao một phần" - the part held of an order
+     * awaiting stock is checked only to go first (17 §4.5 step 18).
+     */
+    private static boolean workable(OrderStatus status, boolean partialShipmentAllowed) {
+        return WORKABLE.contains(status) || status == OrderStatus.AWAITING_STOCK && partialShipmentAllowed;
+    }
+
     private static void requireWorkable(OrderSummary order) {
-        if (!WORKABLE.contains(order.status())) {
+        if (!workable(order.status(), order.lifecycle() != null && order.lifecycle().allowPartialShipment())) {
             String why = order.status() == OrderStatus.ON_HOLD && order.lifecycle() != null
                     && order.lifecycle().holdReason() != null ? " (" + order.lifecycle().holdReason() + ")" : "";
             throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT,

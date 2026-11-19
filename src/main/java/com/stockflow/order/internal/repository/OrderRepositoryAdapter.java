@@ -308,11 +308,13 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
     /**
      * The warehouse scope is applied here, by the order's warehouse ({@code WarehouseScope.warehousesIn}): the order
      * row has no warehouse attribute for the generic data-scope filter, since an order has no warehouse until it is
-     * released, and every candidate is released.
+     * released, and every released candidate is. The orders awaiting stock among them ({@code prePickable}) were chosen
+     * by their shipping warehouse, in scope, by {@link #awaitingStockWithoutTask}.
      */
     @Override
     public Page<com.stockflow.order.api.FulfillmentCandidate> awaitingTask(UUID warehouseId,
                                                                            Collection<UUID> awaitingBatchOrders,
+                                                                           Collection<UUID> prePickable,
                                                                            Pageable pageable) {
         // createTask's rule (review of #150): READY_TO_FULFILL, and no task yet; or, 07 BR-07, a PARTIALLY_FULFILLED
         // order whose latest released delivery batch has no task (the caller, fulfillment, names those orders).
@@ -323,9 +325,12 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
                     : cb.or(firstTask, cb.and(root.get("id").in(awaitingBatchOrders),
                             cb.equal(root.get("status"), OrderStatus.PARTIALLY_FULFILLED)));
         };
-        Specification<OrderJpaEntity> spec = Specification.<OrderJpaEntity>where(openable)
+        Specification<OrderJpaEntity> released = Specification.<OrderJpaEntity>where(openable)
                 .and(Specs.eq("warehouseId", warehouseId))
                 .and(com.stockflow.common.security.WarehouseScope.warehousesIn("warehouseId"));
+        // 07 §4.1 step 1: an order awaiting stock with cartons held for its next batch, no task yet.
+        Specification<OrderJpaEntity> spec = prePickable.isEmpty() ? released
+                : released.or((root, query, cb) -> root.get("id").in(prePickable));
         Page<OrderJpaEntity> orders = jpa.findAll(spec, pageable);
         Map<UUID, List<com.stockflow.order.api.FulfillmentCandidate.Line>> lines = new HashMap<>();
         List<UUID> ids = orders.getContent().stream().map(OrderJpaEntity::getId).toList();
@@ -337,8 +342,20 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
             }
         }
         return orders.map(order -> new com.stockflow.order.api.FulfillmentCandidate(order.getId(),
-                order.getOrderNumber(), order.getCustomerId(), null, order.getWarehouseId(), order.getPlacedAt(),
-                order.getReleasedAt(), lines.getOrDefault(order.getId(), List.of())));
+                order.getOrderNumber(), order.getCustomerId(), null,
+                order.getWarehouseId() != null ? order.getWarehouseId() : order.getShippingWarehouseId(),
+                order.getPlacedAt(), order.getReleasedAt(), lines.getOrDefault(order.getId(), List.of()),
+                order.getStatus(), order.isAllowPartialShipment()));
+    }
+
+    @Override
+    public List<UUID> awaitingStockWithoutTask(UUID warehouseId) {
+        Specification<OrderJpaEntity> spec = Specification.<OrderJpaEntity>where((root, query, cb) -> cb.and(
+                        cb.equal(root.get("status"), OrderStatus.AWAITING_STOCK),
+                        cb.isNull(root.get("fulfilmentStartedAt")), cb.isNull(root.get("releasedAt"))))
+                .and(Specs.eq("shippingWarehouseId", warehouseId))
+                .and(com.stockflow.common.security.WarehouseScope.warehousesIn("shippingWarehouseId"));
+        return jpa.findAll(spec).stream().map(OrderJpaEntity::getId).toList();
     }
 
     @Override
