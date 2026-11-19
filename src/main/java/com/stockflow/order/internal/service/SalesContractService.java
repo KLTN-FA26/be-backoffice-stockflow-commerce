@@ -54,8 +54,10 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.ResourceBundle;
 import java.util.UUID;
 
 /** See {@link SalesContracts}. */
@@ -65,6 +67,13 @@ class SalesContractService implements SalesContracts {
 
     private static final Logger log = LoggerFactory.getLogger(SalesContractService.class);
     private static final BigDecimal HUNDRED = new BigDecimal("100");
+    /**
+     * The name of the one installment a contract gets when the customer has no schedule: printed on a Vietnamese
+     * contract and shown to the customer, so it is read from the Vietnamese bundle whatever the caller's language,
+     * as the production instruction sheet does.
+     */
+    private static final String ON_SIGNING = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"))
+            .getString("contract.installment.onSigning");
     private static final java.time.ZoneId VIETNAM = java.time.ZoneId.of("Asia/Ho_Chi_Minh");
 
     private final OrderRepository orders;
@@ -491,7 +500,7 @@ class SalesContractService implements SalesContracts {
     private List<ContractTerms.InstallmentEntry> defaultPlan(UUID customerId) {
         DefaultPaymentSchedule schedule = paymentSchedules.defaultPaymentSchedule(customerId);
         if (schedule.awaitingApproval() || schedule.installments().isEmpty()) {
-            return List.of(new ContractTerms.InstallmentEntry("On signing", PaymentMilestone.ON_SIGNING, null,
+            return List.of(new ContractTerms.InstallmentEntry(ON_SIGNING, PaymentMilestone.ON_SIGNING, null,
                     HUNDRED, 0, null));
         }
         return schedule.installments().stream()

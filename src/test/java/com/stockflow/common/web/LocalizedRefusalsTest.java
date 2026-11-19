@@ -6,6 +6,8 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.error.NotFoundException;
 import com.stockflow.common.i18n.Messages;
+import com.stockflow.common.storage.ContentTypePolicy;
+import com.stockflow.common.storage.FileCategory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -114,6 +116,43 @@ class LocalizedRefusalsTest {
                 .isNotEqualTo(ErrorCode.CHAT_DESIGN_NOT_APPROVED.defaultMessage());
         assertThat(handler.handleBusiness(new BusinessException(ErrorCode.CONFLICT, "busy")).getBody().message())
                 .as("a specific message stays as it was").isEqualTo("busy");
+    }
+
+    @Test
+    @DisplayName("an upload refused for its size or type answers in Vietnamese with the limit and what is accepted")
+    void uploadRefusals() {
+        LocaleContextHolder.setLocale(VIETNAMESE);
+        BusinessException tooLarge = catchBusiness(() -> ContentTypePolicy.check(FileCategory.DOCUMENT,
+                "application/pdf", FileCategory.DOCUMENT.maxBytes() + 1, "%PDF-1.4".getBytes(StandardCharsets.US_ASCII)));
+        assertThat(handler.handleBusiness(tooLarge).getBody().message()).isEqualTo("File quá lớn: tối đa 25 MB.");
+        assertThat(tooLarge.getMessage()).contains("at most 25 MB");
+
+        BusinessException wrongType = catchBusiness(() -> ContentTypePolicy.check(FileCategory.DOCUMENT,
+                "text/plain", 10, "hello".getBytes(StandardCharsets.US_ASCII)));
+        assertThat(handler.handleBusiness(wrongType).getBody().message())
+                .startsWith("Không nhận loại file này. Loại được nhận: ").contains("application/pdf");
+    }
+
+    @Test
+    @DisplayName("every upload-check key reads in both languages, so no refusal falls back to its English log text")
+    void uploadCheckKeysResolve() {
+        for (String key : List.of("refusal.pdf.encrypted", "refusal.pdf.javascript", "refusal.pdf.attachedFiles",
+                "refusal.pdf.xfa", "refusal.pdf.media", "refusal.pdf.password", "refusal.pdf.unreadable",
+                "refusal.pdf.action", "refusal.upload.tooLarge", "refusal.upload.type",
+                "refusal.upload.contentMismatch", "refusal.upload.noType", "refusal.image.unreadable",
+                "refusal.image.tooManyPixels", "refusal.upload.busy")) {
+            assertThat(source.getMessage(key, new Object[] {"x"}, VIETNAMESE)).as(key).isNotBlank();
+            assertThat(source.getMessage(key, new Object[] {"x"}, Locale.ENGLISH)).as(key).isNotBlank();
+        }
+    }
+
+    private static BusinessException catchBusiness(Runnable call) {
+        try {
+            call.run();
+        } catch (BusinessException refused) {
+            return refused;
+        }
+        throw new AssertionError("not refused");
     }
 
     @Test
