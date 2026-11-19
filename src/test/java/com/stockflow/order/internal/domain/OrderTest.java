@@ -266,7 +266,8 @@ class OrderTest {
     @DisplayName("delivered from SHIPPED, announced with its total - and none of the money ledger's fields (4B-10)")
     void delivery() {
         Order order = new Order(OrderId.newId(), NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
-                Order.line(new Sku("LY-GIAY-DEMO-12OZ-XANH"), 1, Money.vnd(12_000_000), null)), OrderStatus.SHIPPED, NOW, null, 0L);
+                Order.line(new Sku("LY-GIAY-DEMO-12OZ-XANH"), 1, Money.vnd(12_000_000), null)), OrderStatus.SHIPPED,
+                NOW, null, 0L);
 
         order.markDelivered(NOW);
 

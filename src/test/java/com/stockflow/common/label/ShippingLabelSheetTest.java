@@ -98,7 +98,8 @@ class ShippingLabelSheetTest {
         byte[] pdf = ShippingLabelSheet.render(fonts, List.of(label("LPN-20261113-000001")));
         String text = text(pdf, 1);
         assertThat(text).contains("SO-20261113-0001").contains("SO-20261113-0001-C1").contains("label v1")
-                .contains("Nguyen Van An").contains("0900000001").contains("SKU  LY-GIAY-DEMO-12OZ-XANH").contains("QTY  1")
+                .contains("Nguyen Van An").contains("0900000001").contains("SKU  LY-GIAY-DEMO-12OZ-XANH")
+                .contains("QTY  1")
                 .contains("52.5 kg").contains("306.375 kg").contains("215 x 95 x 90 cm").contains("FROM / RETURN TO");
         assertThat(text).as("a rotatable carton has no warning").doesNotContain("DO NOT ROTATE");
     }

@@ -23,6 +23,7 @@
 -- the ledger and the shelves still agree (tools/db/qa/99_stock_ledger_balance.sql). The four empty stock rows the
 -- furniture kept where its loose stock was boxed (11111111-..., 22222222-..., 33333333-..., 44444444-...) are made
 -- again for the cups, at the same places, with ids of their own.
+-- The two zones named after the furniture ('Khu A - Sofa', 'Khu B - Bàn') take the cups' names (section 6).
 --
 -- Order: the catalogue is added first; the furniture's stock leaves before the cups' stock comes in, because the cups
 -- take the very LPNs (uk_stock_package_lpn) and a carton's LPN cannot be renamed (tg_stock_package_immutable); the
@@ -338,7 +339,17 @@ DELETE FROM product.attribute_values v
    AND (a.code, v.code) IN (('MATERIAL', 'OAK'), ('MATERIAL', 'FABRIC'), ('LENGTH', '160'));
 
 -- ---------------------------------------------------------------------------------------------
--- 6. Nothing of the furniture is left, and the cups stand where it stood
+-- 6. The zones of HCM were named after the furniture they held: they are named after the cups standing there now
+-- ---------------------------------------------------------------------------------------------
+UPDATE warehouse.zone SET name = 'Khu A - Ly giấy xanh', version = version + 1, last_modified_at = NOW(),
+                          last_modified_by = 'flyway'
+ WHERE id = md5('demo:zone:HCM:A')::uuid;
+UPDATE warehouse.zone SET name = 'Khu B - Ly giấy đỏ', version = version + 1, last_modified_at = NOW(),
+                          last_modified_by = 'flyway'
+ WHERE id = md5('demo:zone:HCM:B')::uuid;
+
+-- ---------------------------------------------------------------------------------------------
+-- 7. Nothing of the furniture is left, and the cups stand where it stood
 -- ---------------------------------------------------------------------------------------------
 DO $$
 DECLARE
@@ -359,6 +370,7 @@ BEGIN
         UNION ALL SELECT 'category ' || code FROM product.categories WHERE code IN ('LIVING', 'DINING', 'SOFA', 'TABLE')
         UNION ALL SELECT 'attribute value ' || code FROM product.attribute_values WHERE code IN ('OAK', 'FABRIC', '160')
         UNION ALL SELECT 'media ' || id FROM product.media WHERE url LIKE '%SOFA-3S%' OR url LIKE '%TABLE-OAK%'
+        UNION ALL SELECT 'zone ' || name FROM warehouse.zone WHERE name IN ('Khu A - Sofa', 'Khu B - Bàn')
     ) furniture;
     IF leftover IS NOT NULL THEN
         RAISE EXCEPTION 'furniture demo rows left: %', leftover;

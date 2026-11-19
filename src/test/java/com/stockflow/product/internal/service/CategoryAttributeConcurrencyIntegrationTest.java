@@ -55,7 +55,8 @@ class CategoryAttributeConcurrencyIntegrationTest {
 
     @AfterEach
     void restoreTheSet() {
-        new TransactionTemplate(transactionManager).executeWithoutResult(status -> service.replace(PAPER_BOXES, original));
+        new TransactionTemplate(transactionManager)
+                .executeWithoutResult(status -> service.replace(PAPER_BOXES, original));
     }
 
     @Test

@@ -75,7 +75,8 @@ class OrderShippingWarehouseTest {
                 .isEqualTo(ErrorCode.ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED);
 
         Order checkout = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 9), 11), UUID.randomUUID(),
-                UUID.randomUUID(), List.of(Order.line(new Sku("LY-GIAY-DEMO-12OZ-XANH"), 1, Money.vnd(1_000_000), null)), NOW);
+                UUID.randomUUID(), List.of(Order.line(new Sku("LY-GIAY-DEMO-12OZ-XANH"), 1, Money.vnd(1_000_000),
+                        null)), NOW);
         assertThatThrownBy(() -> checkout.chooseShippingWarehouse(HCM, false, SALES, NOW))
                 .extracting(OrderShippingWarehouseTest::code)
                 .isEqualTo(ErrorCode.ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED);

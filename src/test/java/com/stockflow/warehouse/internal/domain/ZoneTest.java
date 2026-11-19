@@ -20,9 +20,9 @@ class ZoneTest {
     @Test
     @DisplayName("trims the name and upper-cases the colour - the database accepts only #RRGGBB in capitals")
     void normalises() {
-        Zone zone = Zone.create(ID, WAREHOUSE, "  Khu A - Sofa ", "#22c55e");
+        Zone zone = Zone.create(ID, WAREHOUSE, "  Khu A - Ly giấy xanh ", "#22c55e");
 
-        assertThat(zone.name()).isEqualTo("Khu A - Sofa");
+        assertThat(zone.name()).isEqualTo("Khu A - Ly giấy xanh");
         assertThat(zone.color()).isEqualTo("#22C55E");
         assertThat(zone.warehouseId()).isEqualTo(WAREHOUSE);
     }

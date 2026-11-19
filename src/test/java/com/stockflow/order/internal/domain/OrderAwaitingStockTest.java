@@ -76,7 +76,8 @@ class OrderAwaitingStockTest {
     @DisplayName("only an order of a contract waits, and only from CONFIRMED: a released or checkout order is left alone")
     void onlyFromConfirmed() {
         Order checkout = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 9), 47), UUID.randomUUID(),
-                UUID.randomUUID(), List.of(Order.line(new Sku("LY-GIAY-DEMO-12OZ-XANH"), 1, Money.vnd(1_000_000), null)), NOW);
+                UUID.randomUUID(), List.of(Order.line(new Sku("LY-GIAY-DEMO-12OZ-XANH"), 1, Money.vnd(1_000_000),
+                        null)), NOW);
         assertThat(checkout.awaitStock(MANAGER, NOW)).isFalse();
         assertThat(checkout.status()).isEqualTo(OrderStatus.DRAFT);
 

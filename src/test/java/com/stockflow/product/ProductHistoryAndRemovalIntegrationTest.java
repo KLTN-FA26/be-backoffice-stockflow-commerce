@@ -479,8 +479,8 @@ class ProductHistoryAndRemovalIntegrationTest {
         products.discontinue(discontinued.productId(), "end", discontinued.version());
 
         Map<String, Purchasability> verdicts = products.purchasability(List.of(drafted.code(), pending.code(), active.code(),
-                blockedVariant.code(), suspended.code(), discontinued.code(), DemoData.BLANK_CUP, " " + active.code().toLowerCase(Locale.ROOT),
-                "NO-SUCH-SKU"));
+                blockedVariant.code(), suspended.code(), discontinued.code(), DemoData.BLANK_CUP,
+                " " + active.code().toLowerCase(Locale.ROOT), "NO-SUCH-SKU"));
 
         assertThat(verdicts).containsOnly(
                 Map.entry(drafted.code(), Purchasability.PRODUCT_NOT_APPROVED),

@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Warehouses and zones through the application service, on a real Postgres with the demo seed
  * ({@code db/demo/V20260928009000}): warehouse {@code HCM}, a 60 x 40 map whose layout reaches
  * 60 x 38 - the north wall and east door at x = 60, the office area down to y = 38 - and zones
- * "Khu A - Sofa" and "Khu B - Bàn". Every test rolls back.
+ * "Khu A - Ly giấy xanh" and "Khu B - Ly giấy đỏ". Every test rolls back.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -201,48 +201,51 @@ class WarehouseLayoutServiceIntegrationTest {
         @Test
         @DisplayName("creates a zone with an upper-cased colour")
         void creates() {
-            ZoneSummary zone = layout.createZone(new CreateZoneCommand(WAREHOUSE_HCM, "Khu C - Ghế", "#ff8800"));
+            ZoneSummary zone = layout.createZone(new CreateZoneCommand(WAREHOUSE_HCM, "Khu C - Hộp giấy", "#ff8800"));
 
             assertThat(zone.color()).isEqualTo("#FF8800");
             assertThat(layout.listZones(WAREHOUSE_HCM)).extracting(ZoneSummary::name)
-                    .containsExactly("Khu A - Sofa", "Khu B - Bàn", "Khu C - Ghế");
+                    .containsExactly("Khu A - Ly giấy xanh", "Khu B - Ly giấy đỏ", "Khu C - Hộp giấy");
         }
 
         @Test
         @DisplayName("refuses a second zone with the same name in one warehouse, allows it in another")
         void namesAreUniquePerWarehouse() {
-            assertThat(errorOf(() -> layout.createZone(new CreateZoneCommand(WAREHOUSE_HCM, "Khu A - Sofa", null))))
+            assertThat(errorOf(() -> layout.createZone(
+                    new CreateZoneCommand(WAREHOUSE_HCM, "Khu A - Ly giấy xanh", null))))
                     .isEqualTo(ErrorCode.ZONE_NAME_ALREADY_EXISTS);
 
             UUID hanoi = registerHanoi().id();
-            assertThat(layout.createZone(new CreateZoneCommand(hanoi, "Khu A - Sofa", null)).warehouseId())
+            assertThat(layout.createZone(new CreateZoneCommand(hanoi, "Khu A - Ly giấy xanh", null)).warehouseId())
                     .isEqualTo(hanoi);
         }
 
         @Test
         @DisplayName("renames a zone, but not onto another zone's name; keeping its own name is fine")
         void renames() {
-            ZoneSummary a = zoneNamed("Khu A - Sofa");
+            ZoneSummary a = zoneNamed("Khu A - Ly giấy xanh");
 
-            assertThat(errorOf(() -> layout.updateZone(new UpdateZoneCommand(a.id(), "Khu B - Bàn",
+            assertThat(errorOf(() -> layout.updateZone(new UpdateZoneCommand(a.id(), "Khu B - Ly giấy đỏ",
                     null, a.version())))).isEqualTo(ErrorCode.ZONE_NAME_ALREADY_EXISTS);
-            assertThat(layout.updateZone(new UpdateZoneCommand(a.id(), "Khu A - Sofa", "#000000",
+            assertThat(layout.updateZone(new UpdateZoneCommand(a.id(), "Khu A - Ly giấy xanh", "#000000",
                     a.version())).color()).isEqualTo("#000000");
         }
 
         @Test
         @DisplayName("a name differing only in case is taken; re-casing a zone's own name is fine")
         void namesIgnoreCase() {
-            assertThat(errorOf(() -> layout.createZone(new CreateZoneCommand(WAREHOUSE_HCM, "KHU A - SOFA", null))))
+            assertThat(errorOf(() -> layout.createZone(
+                    new CreateZoneCommand(WAREHOUSE_HCM, "KHU A - LY GIẤY XANH", null))))
                     .isEqualTo(ErrorCode.ZONE_NAME_ALREADY_EXISTS);
-            assertThat(errorOf(() -> layout.createZone(new CreateZoneCommand(WAREHOUSE_HCM, "khu b - bàn", null))))
+            assertThat(errorOf(() -> layout.createZone(
+                    new CreateZoneCommand(WAREHOUSE_HCM, "khu b - ly giấy đỏ", null))))
                     .isEqualTo(ErrorCode.ZONE_NAME_ALREADY_EXISTS);
 
-            ZoneSummary a = zoneNamed("Khu A - Sofa");
-            assertThat(errorOf(() -> layout.updateZone(new UpdateZoneCommand(a.id(), "KHU B - BÀN",
+            ZoneSummary a = zoneNamed("Khu A - Ly giấy xanh");
+            assertThat(errorOf(() -> layout.updateZone(new UpdateZoneCommand(a.id(), "KHU B - LY GIẤY ĐỎ",
                     null, a.version())))).isEqualTo(ErrorCode.ZONE_NAME_ALREADY_EXISTS);
-            assertThat(layout.updateZone(new UpdateZoneCommand(a.id(), "KHU A - SOFA", null,
-                    a.version())).name()).isEqualTo("KHU A - SOFA");
+            assertThat(layout.updateZone(new UpdateZoneCommand(a.id(), "KHU A - LY GIẤY XANH", null,
+                    a.version())).name()).isEqualTo("KHU A - LY GIẤY XANH");
         }
 
         @Test

@@ -89,8 +89,9 @@ class OrderWarehouseVisibilityHttpTest {
         return tx.execute(s -> orderRepository.save(com.stockflow.order.internal.domain.Order.draft(
                 com.stockflow.order.internal.domain.OrderNumber.of(java.time.LocalDate.now(java.time.ZoneId.of("Asia/Ho_Chi_Minh")),
                         ORDER_NUMBERS.incrementAndGet()), DemoData.CUSTOMER_ID, Identifiers.newId(),
-                List.of(com.stockflow.order.internal.domain.Order.line(Identifiers.newId(), new Sku(DemoData.SKU_STOCKED), 1,
-                        Money.vnd(12_000_000), null)), java.time.Instant.now())).id().value());
+                List.of(com.stockflow.order.internal.domain.Order.line(Identifiers.newId(),
+                        new Sku(DemoData.SKU_STOCKED), 1, Money.vnd(12_000_000), null)), java.time.Instant.now()))
+                .id().value());
     }
 
     private UUID warehouse() {

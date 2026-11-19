@@ -148,15 +148,15 @@ class QuoteDocumentTest {
     @Test
     @DisplayName("a quote drafted before cartons (QD-16) counts pieces; a cancelled one says it no longer stands")
     void legacyAndCancelled() throws IOException {
-        Quotes.LineView legacy = new Quotes.LineView(UUID.randomUUID(), 1, "UNIT", "LY-GIAY-DEMO-12OZ-XANH", null, null, 100,
-                UUID.randomUUID(), null, true, 1, List.of(new Quotes.Tier(1, new BigDecimal("1000"))),
+        Quotes.LineView legacy = new Quotes.LineView(UUID.randomUUID(), 1, "UNIT", "LY-GIAY-DEMO-12OZ-XANH", null, null,
+                100, UUID.randomUUID(), null, true, 1, List.of(new Quotes.Tier(1, new BigDecimal("1000"))),
                 new BigDecimal("1000"), new BigDecimal("100000"), null, null, null, null, null, null,
                 BigDecimal.ZERO, null);
         Quotes.Totals totals = new Quotes.Totals(new BigDecimal("100000"), new BigDecimal("500000"),
                 new BigDecimal("50000"), new BigDecimal("650000"));
         String text = text(document.render(facts(quote(QuoteStatus.CANCELLED, List.of(legacy), totals, null))));
-        assertThat(text).contains("ĐÃ HUỶ", "LY-GIAY-DEMO-12OZ-XANH: 100 cái; đơn giá 1.000 VND/cái; thành tiền 100.000 VND; "
-                + "thuế GTGT 0 VND", "Bậc giá: từ 1 cái: 1.000 VND/cái");
+        assertThat(text).contains("ĐÃ HUỶ", "LY-GIAY-DEMO-12OZ-XANH: 100 cái; đơn giá 1.000 VND/cái; "
+                + "thành tiền 100.000 VND; thuế GTGT 0 VND", "Bậc giá: từ 1 cái: 1.000 VND/cái");
     }
 
     private static String text(byte[] pdf) throws IOException {

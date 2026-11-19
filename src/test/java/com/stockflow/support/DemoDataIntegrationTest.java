@@ -42,8 +42,8 @@ class DemoDataIntegrationTest {
     void demoIdIsPostgresMd5() {
         assertThat(DemoData.demoId("demo:wh:HCM"))
                 .isEqualTo(jdbc.queryForObject("select md5('demo:wh:HCM')::uuid", UUID.class));
-        assertThat(DemoData.demoId("Khu B - Bàn"))
-                .isEqualTo(jdbc.queryForObject("select md5('Khu B - Bàn')::uuid", UUID.class));
+        assertThat(DemoData.demoId("Khu B - Ly giấy đỏ"))
+                .isEqualTo(jdbc.queryForObject("select md5('Khu B - Ly giấy đỏ')::uuid", UUID.class));
         assertThat(UUID.nameUUIDFromBytes("demo:wh:HCM".getBytes(StandardCharsets.UTF_8)))
                 .isNotEqualTo(DemoData.WAREHOUSE_HCM);
     }

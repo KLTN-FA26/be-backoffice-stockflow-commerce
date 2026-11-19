@@ -175,7 +175,8 @@ class PickConsumptionServiceTest {
 
             ConsumedPick consumed = service.consumeForPick(hold, line, PICKER);
 
-            assertThat(consumed).isEqualTo(new ConsumedPick(hold, "LY-GIAY-DEMO-12OZ-XANH", "HCM-A01-2-B", "LOT-1", 3, false));
+            assertThat(consumed).isEqualTo(new ConsumedPick(hold, "LY-GIAY-DEMO-12OZ-XANH", "HCM-A01-2-B", "LOT-1", 3,
+                    false));
             assertThat(item.onHand()).isEqualTo(Quantity.of(7));
             assertThat(item.findReservation(ReservationId.of(hold)).orElseThrow().status())
                     .isEqualTo(ReservationStatus.CONSUMED);
@@ -907,8 +908,8 @@ class PickConsumptionServiceTest {
 
             ConsumedPick consumed = service.consumeStaged(held.hold(), line, PICKER);
 
-            assertThat(consumed).isEqualTo(new ConsumedPick(held.hold(), "LY-GIAY-DEMO-12OZ-XANH", staging.code(), "LOT-1", 6,
-                    false));
+            assertThat(consumed).isEqualTo(new ConsumedPick(held.hold(), "LY-GIAY-DEMO-12OZ-XANH", staging.code(),
+                    "LOT-1", 6, false));
             assertThat(held.row().onHand()).isEqualTo(Quantity.ZERO);
             assertThat(held.row().findReservation(ReservationId.of(held.hold())).orElseThrow().status())
                     .isEqualTo(ReservationStatus.CONSUMED);

@@ -717,7 +717,8 @@ class B2bOnboardingIntegrationTest {
         mvc.perform(post("/api/v1/orders").header("Authorization", "Bearer " + shop)
                         .contentType("application/json").content(json(Map.of(
                                 "requestId", UUID.randomUUID(), "customerId", customerId,
-                                "lines", List.of(Map.of("sku", "LY-GIAY-DEMO-12OZ-XANH", "quantity", 1, "unitPrice", 1000))))))
+                                "lines", List.of(Map.of("sku", "LY-GIAY-DEMO-12OZ-XANH", "quantity", 1,
+                                        "unitPrice", 1000))))))
                 .andExpect(status().isForbidden());
 
         // Supplied later by Sales, with the usual rules.

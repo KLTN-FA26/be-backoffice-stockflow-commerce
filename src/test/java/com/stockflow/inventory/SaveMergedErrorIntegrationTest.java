@@ -43,7 +43,8 @@ class SaveMergedErrorIntegrationTest {
         // A carton's layer at a location that does not exist: the INSERT breaks fk_stock_item_location. (In a carton -
         // also unknown - because a loose row holding a unit is refused first, by ck_stock_item_whole_cartons, 23514.)
         StockItem nowhere = StockItem.receiveInboundInto(new StockPackageId(java.util.UUID.randomUUID()),
-                new Sku(DemoData.SKU_STOCKED), new LocationId("HCM-ZZ99-9-Z"), "LOT-SMERR", Quantity.of(1), Instant.now(), null);
+                new Sku(DemoData.SKU_STOCKED), new LocationId("HCM-ZZ99-9-Z"), "LOT-SMERR", Quantity.of(1),
+                Instant.now(), null);
 
         Throwable thrown = catchThrowable(() -> tx.executeWithoutResult(s -> stockItems.saveMerged(nowhere)));
 

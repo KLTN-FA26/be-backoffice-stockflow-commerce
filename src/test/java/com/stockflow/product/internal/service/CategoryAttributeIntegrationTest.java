@@ -64,7 +64,8 @@ class CategoryAttributeIntegrationTest {
 
     @Test
     void listsTheDemoSet() {
-        assertThat(service.list(PAPER_BOXES)).extracting(CategoryAttributeView::attributeCode, CategoryAttributeView::defaultRole)
+        assertThat(service.list(PAPER_BOXES))
+                .extracting(CategoryAttributeView::attributeCode, CategoryAttributeView::defaultRole)
                 .containsExactlyInAnyOrder(tuple("COLOR", VARIANT_AXIS), tuple("MATERIAL", VARIANT_AXIS));
     }
 
@@ -75,7 +76,8 @@ class CategoryAttributeIntegrationTest {
                 new CategoryAttributeEntry(MATERIAL, DESCRIPTIVE, true, 1)));
         entityManager.flush();
         assertThat(rowId(PAPER_BOXES, MATERIAL)).isEqualTo(rowId);
-        assertThat(service.list(PAPER_BOXES)).extracting(CategoryAttributeView::attributeCode, CategoryAttributeView::defaultRole)
+        assertThat(service.list(PAPER_BOXES))
+                .extracting(CategoryAttributeView::attributeCode, CategoryAttributeView::defaultRole)
                 .containsExactly(tuple("COLOR", DESCRIPTIVE), tuple("MATERIAL", DESCRIPTIVE));
         assertThat(service.list(PAPER_BOXES)).extracting(CategoryAttributeView::required).containsExactly(false, true);
     }
@@ -84,7 +86,8 @@ class CategoryAttributeIntegrationTest {
     void anAttributeLeftOutIsRemovedAndANewOneAdded() {
         service.replace(PAPER_BOXES, List.of(new CategoryAttributeEntry(LENGTH, VARIANT_AXIS, false, 0)));
         entityManager.flush();
-        assertThat(service.list(PAPER_BOXES)).extracting(CategoryAttributeView::attributeCode).containsExactly("LENGTH");
+        assertThat(service.list(PAPER_BOXES)).extracting(CategoryAttributeView::attributeCode)
+                .containsExactly("LENGTH");
     }
 
     @Test
@@ -111,7 +114,8 @@ class CategoryAttributeIntegrationTest {
 
         deactivate(COLOR);
         service.replace(PAPER_BOXES, List.of(new CategoryAttributeEntry(COLOR, VARIANT_AXIS, true, 0)));
-        assertThat(service.list(PAPER_BOXES)).extracting(CategoryAttributeView::attributeCode, CategoryAttributeView::attributeActive)
+        assertThat(service.list(PAPER_BOXES))
+                .extracting(CategoryAttributeView::attributeCode, CategoryAttributeView::attributeActive)
                 .containsExactly(tuple("COLOR", false));
     }
 

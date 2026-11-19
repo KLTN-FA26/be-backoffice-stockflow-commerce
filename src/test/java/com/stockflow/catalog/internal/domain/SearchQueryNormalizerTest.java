@@ -62,8 +62,10 @@ class SearchQueryNormalizerTest {
 
     @Test
     void skuKeysCoverHyphenatedAndSpacedForms() {
-        assertThat(SearchQueryNormalizer.normalize("LY-GIAY-DEMO-12OZ-XANH").skuKeys()).containsExactly("ly-giay-demo-12oz-xanh");
-        assertThat(SearchQueryNormalizer.normalize("ly giay demo 12oz xanh").skuKeys()).containsExactly("ly-giay-demo-12oz-xanh");
+        assertThat(SearchQueryNormalizer.normalize("LY-GIAY-DEMO-12OZ-XANH").skuKeys())
+                .containsExactly("ly-giay-demo-12oz-xanh");
+        assertThat(SearchQueryNormalizer.normalize("ly giay demo 12oz xanh").skuKeys())
+                .containsExactly("ly-giay-demo-12oz-xanh");
         assertThat(SearchQueryNormalizer.normalize("ly_giay").skuKeys()).containsExactly("ly_giay", "ly-giay");
     }
 
