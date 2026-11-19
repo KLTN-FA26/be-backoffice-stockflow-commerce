@@ -309,7 +309,12 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 || request.vehicleTypeIds() != null && !request.vehicleTypeIds().isEmpty();
         if (withInputs) {
             lockPicksOf(request.shipmentIds());
-            applyInputs(plan, request.shipmentIds(), request.vehicleTypeIds(), null, actor.userId(), now);
+            applyInputs(plan, request.shipmentIds(), request.vehicleTypeIds(), null, request.fillOrderLineIds(),
+                    actor.userId(), now);
+        } else if (request.fillOrderLineIds() != null && !request.fillOrderLineIds().isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Filler cargo is chosen among the plan's shipments",
+                    List.of(new FieldError("fillOrderLineIds", "needs the shipments they belong to",
+                            "LOAD_PLAN_FILL_LINE_UNKNOWN")));
         }
         LoadPlanJpaEntity header = claim(() -> store.insert(plan, now));
         log.info("Load plan {} created at warehouse {}: {} package(s)", plan.code(), plan.warehouseId(),
@@ -363,7 +368,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         LoadPlanJpaEntity header = lock(loadPlanId, inputs.expectedVersion());
         LoadPlan plan = store.load(header);
         Instant now = clock.instant();
-        applyInputs(plan, inputs.shipmentIds(), inputs.vehicleTypeIds(), inputs.selectionMode(), actor.userId(), now);
+        applyInputs(plan, inputs.shipmentIds(), inputs.vehicleTypeIds(), inputs.selectionMode(),
+                inputs.fillOrderLineIds(), actor.userId(), now);
         return saved(plan, header, now);
     }
 
@@ -394,9 +400,12 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 .forEach(orderId -> picks.lockAllByOrderId(orderId));
     }
 
-    /** Whole shipments (LP-5) of this warehouse's full truckloads waiting for dispatch, with their free parcels. */
+    /**
+     * Whole shipments (LP-5) of this warehouse's full truckloads waiting for dispatch, with their free parcels; the
+     * filler cargo, ticked by order line (RTM-LPGROUP; null keeps the plan's), is every parcel of those lines.
+     */
     private void applyInputs(LoadPlan plan, List<UUID> shipmentIds, List<UUID> typeIds, String selectionMode,
-                             UUID by, Instant at) {
+                             List<UUID> fillOrderLineIds, UUID by, Instant at) {
         Set<UUID> wanted = new LinkedHashSet<>(shipmentIds == null ? List.of() : shipmentIds);
         Map<UUID, ShipmentJpaEntity> rows = shipmentLocks.lock(wanted).stream()
                 .collect(Collectors.toMap(ShipmentJpaEntity::getId, Function.identity()));
@@ -441,10 +450,39 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         // 08 edge case: a carton spec corrected after the check applies when the vehicle is planned. Under the tasks'
         // and shipments' locks, before the plan holds the cartons (from then tg_package_in_load_plan freezes them).
         cartonMeasures.refreshForPlanning(taken);
-        LoadPlanParcels.requireMeasured(parcels.describe(taken).values());
+        Map<UUID, LoadPlanParcels.Parcel> described = parcels.describe(taken);
+        LoadPlanParcels.requireMeasured(described.values());
         List<UUID> types = typeIds == null ? plan.vehicleTypeIds() : typeIds;
         requireUsableTypes(types);
-        plan.setInputs(chosen, types, selectionMode == null ? null : mode(selectionMode), by, at);
+        plan.setInputs(chosen, types, selectionMode == null ? null : mode(selectionMode),
+                fillPackages(fillOrderLineIds, described.values()), by, at);
+    }
+
+    /**
+     * The parcels of the order lines ticked as filler (null: none ticked now, the plan keeps its own). A line no parcel
+     * of the plan holds is refused: the dispatcher ticks among the plan's own cargo.
+     */
+    private static Set<UUID> fillPackages(List<UUID> fillOrderLineIds, Collection<LoadPlanParcels.Parcel> parcels) {
+        if (fillOrderLineIds == null) {
+            return null;
+        }
+        Set<UUID> wanted = new LinkedHashSet<>(fillOrderLineIds);
+        Set<UUID> out = new LinkedHashSet<>();
+        Set<UUID> seen = new HashSet<>();
+        for (LoadPlanParcels.Parcel p : parcels) {
+            if (p.orderLineId() != null && wanted.contains(p.orderLineId())) {
+                out.add(p.packageId());
+                seen.add(p.orderLineId());
+            }
+        }
+        List<FieldError> problems = wanted.stream().filter(id -> !seen.contains(id))
+                .map(id -> new FieldError(id.toString(), "no package of the plan holds this order line",
+                        "LOAD_PLAN_FILL_LINE_UNKNOWN")).toList();
+        if (!problems.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Filler cargo is ticked among the plan's order "
+                    + "lines", problems);
+        }
+        return out;
     }
 
     private List<VehicleTypeJpaEntity> requireUsableTypes(Collection<UUID> typeIds) {
@@ -516,7 +554,11 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
             specs.put(t.getId(), spec(t));
         }
         Map<UUID, CargoPackage> cartons = cartons(held);
-        LoadPlanRequest request = new LoadPlanRequest(List.copyOf(cartons.values()), List.copyOf(specs.values()),
+        // 09 §3: the main / filler split is read by PRIORITY_FILL only (the plan has no filler under another mode).
+        Set<UUID> fill = plan.fillPackageIds();
+        List<CargoPackage> offered = cartons.values().stream()
+                .map(c -> fill.contains(UUID.fromString(c.ref())) ? c.asFill() : c).toList();
+        LoadPlanRequest request = new LoadPlanRequest(offered, List.copyOf(specs.values()),
                 plan.mode(), List.of(), KitDistribution.AUTO, false, null, 0L, budget, wallLimit);
         return new Calculation(request, specs, cartons);
     }
@@ -1115,26 +1157,19 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         return out;
     }
 
-    /**
-     * A mode a plan stores ({@link SelectionMode#storable()}, WF4-LP-MODES); none named: SINGLE_TYPE, the docs' default
-     * "Một loại". PRIORITY_FILL is refused like an unknown word: its main / filler split is not defined for a plan yet.
-     */
+    /** Any mode of 09 §4.2 (WF4-LP-MODES); none named: SINGLE_TYPE, the docs' default "Một loại". */
     private static SelectionMode mode(String raw) {
         if (raw == null || raw.isBlank()) {
             return SelectionMode.SINGLE_TYPE;
         }
-        SelectionMode mode;
         try {
-            mode = SelectionMode.valueOf(raw.trim().toUpperCase(Locale.ROOT));
+            return SelectionMode.valueOf(raw.trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException e) {
-            mode = null;
-        }
-        if (mode == null || !mode.storable()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Invalid selection mode",
-                    List.of(new FieldError("selectionMode", "SINGLE_TYPE, FEWEST_VEHICLES, KEEP_LINES or OVER_CAPACITY",
+                    List.of(new FieldError("selectionMode",
+                            "SINGLE_TYPE, FEWEST_VEHICLES, KEEP_LINES, PRIORITY_FILL or OVER_CAPACITY",
                             "LOAD_PLAN_MODE_INVALID")));
         }
-        return mode;
     }
 
     private static LoadPlanStatus status(String raw) {
@@ -1148,11 +1183,15 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
     }
 
     private static ParcelView parcelView(LoadPlanParcels.Parcel p, Integer seq, String unplacedReason) {
+        return parcelView(p, seq, unplacedReason, false);
+    }
+
+    private static ParcelView parcelView(LoadPlanParcels.Parcel p, Integer seq, String unplacedReason, boolean fill) {
         CargoPackage c = p.carton();
         return new ParcelView(p.packageId(), p.row().getLabelCode(), p.row().getShipmentId(),
                 p.shipment() == null ? null : p.shipment().getCode(), p.partName(), c == null ? 0 : c.lengthMm(),
                 c == null ? 0 : c.widthMm(), c == null ? 0 : c.heightMm(), p.row().getWeightKg(), p.row().isRotatable(),
-                seq, unplacedReason);
+                seq, unplacedReason, p.orderLineId(), fill);
     }
 
     private PlanDetail detail(LoadPlanJpaEntity header, LoadPlan plan) {
@@ -1175,7 +1214,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 continue;
             }
             parcelViews.add(parcelView(p, seqOf.get(m.packageId()),
-                    m.unplacedReason() == null ? null : m.unplacedReason().name()));
+                    m.unplacedReason() == null ? null : m.unplacedReason().name(), m.fill()));
             perShipment.computeIfAbsent(m.shipmentId(), k -> new int[1])[0]++;
         }
         Map<UUID, ShipmentJpaEntity> shipmentRows = shipments.findAllById(perShipment.keySet()).stream()

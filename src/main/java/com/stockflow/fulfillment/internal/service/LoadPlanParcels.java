@@ -49,13 +49,22 @@ import java.util.stream.Collectors;
 @Component
 class LoadPlanParcels {
 
-    /** One parcel with everything planning shows of it. */
     /**
-     * @param carton its sizes as the planner sees them, or null when it has none; {@link #plannable} says whether a
-     *               plan may take it (sealed, with sizes and weight)
+     * One parcel with everything planning shows of it.
+     *
+     * @param carton      its sizes as the planner sees them, or null when it has none; {@link #plannable} says whether a
+     *                    plan may take it (sealed, with sizes and weight)
+     * @param orderLineId the order line the parcel holds (a carton holds one, 08 BR-02), or null when it holds none or
+     *                    several: the line the dispatcher ticks as filler cargo (RTM-LPGROUP)
      */
     record Parcel(PackageJpaEntity row, ShipmentJpaEntity shipment, OrderSummary order, CargoPackage carton,
-                  String partName) {
+                  String partName, UUID orderLineId) {
+
+        /** A parcel whose order line is not known to the caller. */
+        Parcel(PackageJpaEntity row, ShipmentJpaEntity shipment, OrderSummary order, CargoPackage carton,
+               String partName) {
+            this(row, shipment, order, carton, partName, null);
+        }
 
         UUID packageId() {
             return row.getId();
@@ -114,7 +123,8 @@ class LoadPlanParcels {
             held.forEach(l -> lineIds.add(l.orderLineId()));
             String lineKey = lineIds.isEmpty() ? null
                     : lineIds.stream().map(UUID::toString).collect(Collectors.joining("+"));
-            out.put(row.getId(), new Parcel(row, shipment, order, carton(row, partName, lineKey), partName));
+            out.put(row.getId(), new Parcel(row, shipment, order, carton(row, partName, lineKey), partName,
+                    lineIds.size() == 1 ? lineIds.first() : null));
         }
         return out;
     }

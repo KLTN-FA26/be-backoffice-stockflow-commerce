@@ -52,6 +52,7 @@ import java.util.Map;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.HashSet;
 import java.util.UUID;
 
 /**
@@ -148,15 +149,14 @@ class LoadEstimateService implements LoadEstimates {
     public LoadEstimateView create(CreateEstimate command) {
         Source source = onlySource(command.sources());
         SelectionMode mode = command.selectionMode() == null ? SelectionMode.SINGLE_TYPE : command.selectionMode();
-        if (!mode.storable()) {
-            // A stored estimate keeps its mode (its table's check); PRIORITY_FILL is the trial's until a plan's main /
-            // filler split is defined (docs issue #40, question 4).
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "An order estimate is SINGLE_TYPE, "
-                    + "FEWEST_VEHICLES, KEEP_LINES or OVER_CAPACITY", List.of(new FieldError("selectionMode",
-                    "SINGLE_TYPE, FEWEST_VEHICLES, KEEP_LINES or OVER_CAPACITY", "Pattern")));
+        List<UUID> fillLines = command.fillOrderLineIds() == null ? List.of() : command.fillOrderLineIds();
+        if (!fillLines.isEmpty() && mode != SelectionMode.PRIORITY_FILL) {
+            // 09 §3: the main / filler split is the input of "Ưu tiên + hàng chèn" only.
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Filler lines are chosen only for PRIORITY_FILL",
+                    List.of(new FieldError("fillOrderLineIds", "only with PRIORITY_FILL", "FILL_NOT_IN_MODE")));
         }
         Prepared prepared = reads.execute(s -> prepare(source.id(), command.warehouseId(), command.vehicleTypeIds(),
-                mode));
+                mode, fillLines));
 
         LoadPlanResult result = planner.plan(prepared.request());
         Layouts.Mapped mapped = Layouts.of(prepared.request(), result,
@@ -304,7 +304,8 @@ class LoadEstimateService implements LoadEstimates {
         return sources.getFirst();
     }
 
-    private Prepared prepare(UUID orderId, UUID requestedWarehouse, List<UUID> requestedTypes, SelectionMode mode) {
+    private Prepared prepare(UUID orderId, UUID requestedWarehouse, List<UUID> requestedTypes, SelectionMode mode,
+                             List<UUID> fillOrderLineIds) {
         OrderSummary order = orders.findById(orderId).orElseThrow(() -> new NotFoundException("Order", orderId));
         UUID warehouseId = warehouseOf(order, requestedWarehouse);
         WarehouseScope.requireWarehouse(warehouseId);
@@ -375,7 +376,10 @@ class LoadEstimateService implements LoadEstimates {
                     + " again", missing.stream().map(LoadEstimateService::missingField).toList());
         }
         EstimateCartons.Built built = EstimateCartons.build(orderId.toString(), resolved);
-        LoadPlanRequest request = new LoadPlanRequest(built.cartons(), types, mode, built.kits(),
+        Set<String> fill = fillLines(order, fillOrderLineIds);
+        List<CargoPackage> cartons = built.cartons().stream()
+                .map(c -> fill.contains(c.sourceRef()) ? c.asFill() : c).toList();
+        LoadPlanRequest request = new LoadPlanRequest(cartons, types, mode, built.kits(),
                 KitDistribution.AUTO, false, null, SEED, budget, wallLimit);
         return new Prepared(warehouseId, remaining, types.stream().map(VehicleSpec::typeId).toList(), mode, request,
                 built, estimateLines, List.copyOf(missing), warnings);
@@ -498,6 +502,26 @@ class LoadEstimateService implements LoadEstimates {
         return new FieldError("inventoryItems[" + line.inventoryItemId() + "]", "SKU " + line.sku() + " (order line "
                 + line.orderLineId() + ") has no " + String.join(", ", line.missingFields())
                 + " on its inventory item", "PackagingMissing");
+    }
+
+    /**
+     * RTM-LPGROUP (19/11): the order lines ticked as filler cargo ("hàng chèn"), by the id an estimate carton carries as
+     * its {@code sourceRef}. A line the order does not have is refused.
+     */
+    private static Set<String> fillLines(OrderSummary order, List<UUID> fillOrderLineIds) {
+        if (fillOrderLineIds == null || fillOrderLineIds.isEmpty()) {
+            return Set.of();
+        }
+        Set<UUID> lines = new HashSet<>();
+        order.lines().forEach(l -> lines.add(l.lineId()));
+        List<FieldError> problems = fillOrderLineIds.stream().filter(id -> !lines.contains(id))
+                .map(id -> new FieldError(id.toString(), "not a line of this order", "FILL_LINE_UNKNOWN")).toList();
+        if (!problems.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Filler lines are lines of the order", problems);
+        }
+        Set<String> out = new HashSet<>();
+        fillOrderLineIds.forEach(id -> out.add(id.toString()));
+        return out;
     }
 
     /**

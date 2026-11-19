@@ -151,17 +151,21 @@ class LoadEstimateServiceTest {
         }
 
         @Test
-        @DisplayName("an order estimate stores its mode: PRIORITY_FILL, whose main / filler split is not defined for an "
-                + "order yet, is refused (WF4-LP-MODES)")
-        void trialOnlyModesAreRefused() {
+        @DisplayName("RTM-LPGROUP: filler lines are ticked only with PRIORITY_FILL, and only lines of the order")
+        void fillerLinesOnlyWithTheirMode() {
             var source = List.of(new LoadEstimates.Source(LoadEstimates.SourceType.ORDER, orderId));
-            for (SelectionMode mode : List.of(SelectionMode.PRIORITY_FILL)) {
-                var thrown = refusal(() -> service.create(new LoadEstimates.CreateEstimate(source, null, List.of(),
-                        mode)));
-                assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-                assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("selectionMode");
-            }
+            var other = refusal(() -> service.create(new LoadEstimates.CreateEstimate(source, null, List.of(truckId),
+                    SelectionMode.SINGLE_TYPE, List.of(lineId))));
+            assertThat(other.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+            assertThat(other.fieldErrors()).extracting(f -> f.code()).containsExactly("FILL_NOT_IN_MODE");
+            var unknown = refusal(() -> service.create(new LoadEstimates.CreateEstimate(source, null, List.of(truckId),
+                    SelectionMode.PRIORITY_FILL, List.of(UUID.randomUUID()))));
+            assertThat(unknown.fieldErrors()).extracting(f -> f.code()).containsExactly("FILL_LINE_UNKNOWN");
             verify(estimates, never()).saveAndFlush(any());
+
+            var view = service.create(new LoadEstimates.CreateEstimate(source, null, List.of(truckId),
+                    SelectionMode.PRIORITY_FILL, List.of(lineId)));
+            assertThat(view.selectionMode()).isEqualTo(SelectionMode.PRIORITY_FILL);
         }
     }
 

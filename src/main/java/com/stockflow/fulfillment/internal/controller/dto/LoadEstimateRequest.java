@@ -18,12 +18,17 @@ import java.util.UUID;
  *                       own)
  * @param vehicleTypeIds the vehicle types the plan may use; empty or absent: every active type
  * @param selectionMode  SINGLE_TYPE ("Một loại", the default), FEWEST_VEHICLES ("Ít xe nhất"), KEEP_LINES ("Giữ
- *                       nguyên dòng") or OVER_CAPACITY ("Vượt sức chứa"); WF4-LP-MODES
+ *                       nguyên dòng"), PRIORITY_FILL ("Ưu tiên + hàng chèn") or OVER_CAPACITY ("Vượt sức chứa");
+ *                       WF4-LP-MODES
+ * @param fillOrderLineIds the order lines that are filler cargo ("hàng chèn"), PRIORITY_FILL only (RTM-LPGROUP);
+ *                       absent: every line main cargo
  */
 public record LoadEstimateRequest(@NotEmpty @Size(max = 1) List<@Valid @NotNull SourceRef> sources,
                                   UUID warehouseId,
                                   @Size(max = 20) List<@NotNull UUID> vehicleTypeIds,
-                                  @Pattern(regexp = "SINGLE_TYPE|FEWEST_VEHICLES|KEEP_LINES|OVER_CAPACITY") String selectionMode) {
+                                  @Pattern(regexp = "SINGLE_TYPE|FEWEST_VEHICLES|KEEP_LINES|PRIORITY_FILL|OVER_CAPACITY")
+                                  String selectionMode,
+                                  @Size(max = 500) List<@NotNull UUID> fillOrderLineIds) {
 
     public record SourceRef(@NotNull @Pattern(regexp = "ORDER") String type, @NotNull UUID id) { }
 }

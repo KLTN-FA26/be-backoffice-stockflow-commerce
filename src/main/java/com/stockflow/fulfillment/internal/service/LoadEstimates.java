@@ -38,9 +38,17 @@ public interface LoadEstimates {
      *                       to send it to); for a released order its own warehouse is used and a different one refused
      * @param vehicleTypeIds the vehicle types the plan may use; empty: every active type
      * @param selectionMode  null: SINGLE_TYPE (docs 09 §3 default "Một loại")
+     * @param fillOrderLineIds the order's lines that are filler cargo ("hàng chèn"; PRIORITY_FILL only, owner answer
+     *                       RTM-LPGROUP 19/11); null or empty: every line is main cargo
      */
     record CreateEstimate(List<Source> sources, UUID warehouseId, List<UUID> vehicleTypeIds,
-                          SelectionMode selectionMode) {
+                          SelectionMode selectionMode, List<UUID> fillOrderLineIds) {
+
+        /** Every line main cargo. */
+        public CreateEstimate(List<Source> sources, UUID warehouseId, List<UUID> vehicleTypeIds,
+                              SelectionMode selectionMode) {
+            this(sources, warehouseId, vehicleTypeIds, selectionMode, null);
+        }
 
         /** Without a target warehouse: a released order. */
         public CreateEstimate(List<Source> sources, List<UUID> vehicleTypeIds, SelectionMode selectionMode) {

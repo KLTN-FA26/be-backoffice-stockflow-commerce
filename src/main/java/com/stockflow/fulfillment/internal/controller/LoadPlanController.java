@@ -78,7 +78,7 @@ class LoadPlanController {
                                                     @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(loadPlans.create(new LoadPlans.CreatePlan(request.requestId(), request.warehouseId(),
                 request.shipmentIds(), request.vehicleTypeIds(), request.selectionMode(), request.note(),
-                request.sourceType()), actor));
+                request.sourceType(), request.fillOrderLineIds()), actor));
     }
 
     @GetMapping("/load-plans")
@@ -108,7 +108,8 @@ class LoadPlanController {
     public ApiResponse<LoadPlans.PlanDetail> setInputs(@PathVariable UUID loadPlanId,
             @Valid @RequestBody LoadPlanInputsRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(loadPlans.setInputs(loadPlanId, new LoadPlans.Inputs(request.expectedVersion(),
-                request.shipmentIds(), request.vehicleTypeIds(), request.selectionMode()), actor));
+                request.shipmentIds(), request.vehicleTypeIds(), request.selectionMode(), request.fillOrderLineIds()),
+                actor));
     }
 
     @PostMapping("/load-plans/{loadPlanId}/shipments/{shipmentId}/removal")

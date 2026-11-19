@@ -260,10 +260,9 @@ class LoadPlanServiceTest {
         }
 
         @Test
-        @DisplayName("PRIORITY_FILL is not stored by a plan (its main / filler split is not defined yet, WF4-LP-MODES), "
-                + "nor an unknown mode: VALIDATION_FAILED, not a 500")
+        @DisplayName("a mode the docs do not have is VALIDATION_FAILED, not a 500")
         void trialOnlyModesAreRefused() {
-            for (String mode : List.of("PRIORITY_FILL", "MANUAL")) {
+            for (String mode : List.of("MANUAL", "BEST")) {
                 var thrown = refusal(() -> service.create(new LoadPlans.CreatePlan(UUID.randomUUID(), WAREHOUSE, null,
                         null, mode, null, null), actor));
                 assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);

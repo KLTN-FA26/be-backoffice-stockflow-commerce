@@ -224,8 +224,8 @@ class LoadPlanModesIntegrationTest {
 
     @Test
     @DisplayName("09 §4.2: \"Giữ nguyên dòng\" keeps each order line's cartons on one vehicle; \"Vượt sức chứa\" loads "
-            + "the vehicles on offer and reports the rest; \"Ưu tiên + hàng chèn\" is not stored on a plan yet; the "
-            + "mode is stored and shown")
+            + "the vehicles on offer and reports the rest; a mode the docs do not have is refused; the mode is stored "
+            + "and shown")
     void keepLinesAndOverCapacity() throws Exception {
         // Two heavy sofas (2 400 kg) and three tables (114 kg): the tables do not join the sofas' 2.5 t truck.
         UUID shipment = packed(order(2, 3));
@@ -259,11 +259,79 @@ class LoadPlanModesIntegrationTest {
         String id = plan.path("loadPlanId").asText();
         dispatch(body(put(PLANS + "/" + id + "/inputs"), "{\"expectedVersion\":" + plan.path("version").asLong()
                 + ",\"shipmentIds\":" + ids(List.of(shipment)) + ",\"vehicleTypeIds\":[\"" + one
-                + "\"],\"selectionMode\":\"PRIORITY_FILL\"}"))
+                + "\"],\"selectionMode\":\"MANUAL\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors[0].code").value("LOAD_PLAN_MODE_INVALID"));
         assertThat(jdbc.queryForObject("SELECT selection_mode FROM fulfillment.load_plan WHERE id = ?::uuid",
                 String.class, id)).isEqualTo("OVER_CAPACITY");
+    }
+
+    @Test
+    @DisplayName("RTM-LPGROUP: \"Ưu tiên + hàng chèn\" - the order line ticked as filler only tops up the vehicle the "
+            + "main cargo needs and never opens one; untouched lines are main cargo; a line the plan does not hold is "
+            + "refused")
+    void priorityFillByOrderLine() throws Exception {
+        // Two heavy sofas (2 400 kg) fill a 2.5 t truck but for 100 kg: two of the four tables (38 kg) top it up.
+        UUID shipment = packed(order(2, 4));
+        String tableSku = sku("TABLE-OAK-160").sku();
+        JsonNode candidate = null;
+        for (JsonNode c : data(dispatch(get(BASE + "/load-plan-candidates?warehouseId=" + HCM))
+                .andExpect(status().isOk()))) {
+            if (c.path("shipmentId").asText().equals(shipment.toString())) {
+                candidate = c;
+            }
+        }
+        assertThat(candidate).isNotNull();
+        Set<String> tableLines = new HashSet<>();
+        candidate.path("packages").forEach(p -> {
+            assertThat(p.hasNonNull("orderLineId")).as("a carton holds one order line").isTrue();
+            if (p.path("partName").asText().equals(tableSku)) {
+                tableLines.add(p.path("orderLineId").asText());
+            }
+        });
+        assertThat(tableLines).hasSize(1);
+        String tableLine = tableLines.iterator().next();
+
+        dispatch(body(post(PLANS), "{\"requestId\":\"" + UUID.randomUUID() + "\",\"warehouseId\":\"" + HCM
+                + "\",\"shipmentIds\":" + ids(List.of(shipment)) + ",\"vehicleTypeIds\":[\"" + truck2t5
+                + "\"],\"selectionMode\":\"PRIORITY_FILL\",\"fillOrderLineIds\":[\"" + UUID.randomUUID() + "\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("LOAD_PLAN_FILL_LINE_UNKNOWN"));
+
+        JsonNode plan = data(dispatch(body(post(PLANS), "{\"requestId\":\"" + UUID.randomUUID()
+                + "\",\"warehouseId\":\"" + HCM + "\",\"shipmentIds\":" + ids(List.of(shipment))
+                + ",\"vehicleTypeIds\":[\"" + truck2t5 + "\"],\"selectionMode\":\"PRIORITY_FILL\",\"fillOrderLineIds\":[\""
+                + tableLine + "\"]}")).andExpect(status().isCreated()));
+        assertThat(plan.path("selectionMode").asText()).isEqualTo("PRIORITY_FILL");
+        plan = step(plan, "/calculation", version(plan));
+
+        assertThat(plan.path("vehicles")).as("the filler never opens a vehicle").hasSize(1);
+        int fillerPlaced = 0;
+        int fillerLeft = 0;
+        for (JsonNode p : plan.path("packages")) {
+            boolean table = p.path("orderLineId").asText().equals(tableLine);
+            assertThat(p.path("fill").asBoolean()).as("fill follows the ticked line").isEqualTo(table);
+            if (!table) {
+                assertThat(p.hasNonNull("vehicleSeq")).as("main cargo is loaded").isTrue();
+            } else if (p.hasNonNull("vehicleSeq")) {
+                fillerPlaced++;
+            } else {
+                fillerLeft++;
+            }
+        }
+        assertThat(fillerPlaced).as("tables top up the truck").isPositive();
+        assertThat(fillerLeft).as("the rest waits: it opens no vehicle").isPositive();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM fulfillment.load_plan_package WHERE load_plan_id = ?::uuid"
+                + " AND active AND fill", Integer.class, plan.path("loadPlanId").asText())).isEqualTo(4);
+
+        // Without the tick every line is main cargo: the tables need a second truck.
+        plan = data(dispatch(body(put(PLANS + "/" + plan.path("loadPlanId").asText() + "/inputs"),
+                "{\"expectedVersion\":" + plan.path("version").asLong() + ",\"shipmentIds\":" + ids(List.of(shipment))
+                        + ",\"vehicleTypeIds\":[\"" + truck2t5 + "\"],\"fillOrderLineIds\":[]}"))
+                .andExpect(status().isOk()));
+        plan = step(plan, "/calculation", version(plan));
+        assertThat(plan.path("vehicles")).hasSize(2);
+        assertThat(plan.path("unplacedCount").asInt()).isZero();
     }
 
     // ---- 09 §4.2 step 9: one shipment out, only its vehicles recalculated --------------------
@@ -363,7 +431,7 @@ class LoadPlanModesIntegrationTest {
 
     @Test
     @DisplayName("09 §4.0 step 2: a released order's estimate loads the very LPN cartons allocated to it (one box per "
-            + "LPN, labelled with it); the estimate takes \"Giữ nguyên dòng\" and refuses \"Ưu tiên + hàng chèn\"")
+            + "LPN, labelled with it); the estimate takes \"Giữ nguyên dòng\" and \"Ưu tiên + hàng chèn\" by order line")
     void anEstimateOfAllocatedCartons() throws Exception {
         OrderSummary order = order(1, 2);
         Set<String> allocated = new HashSet<>(jdbc.queryForList("""
@@ -384,8 +452,16 @@ class LoadPlanModesIntegrationTest {
         Set<String> labels = new HashSet<>(estimate.path("vehicles").findValuesAsText("label"));
         assertThat(labels).isEqualTo(allocated);
 
+        // RTM-LPGROUP: "Ưu tiên + hàng chèn" with the table line ticked; a line the order does not have is refused.
+        UUID tableLine = jdbc.queryForObject("SELECT id FROM ordering.order_line WHERE order_id = ? AND sku = ?",
+                UUID.class, order.orderId(), sku("TABLE-OAK-160").sku());
         oc(body(post(BASE + "/load-estimates"), "{\"sources\":[{\"type\":\"ORDER\",\"id\":\"" + order.orderId()
-                + "\"}],\"vehicleTypeIds\":[\"" + truck2t5 + "\"],\"selectionMode\":\"PRIORITY_FILL\"}"))
+                + "\"}],\"vehicleTypeIds\":[\"" + truck2t5 + "\"],\"selectionMode\":\"PRIORITY_FILL\",\"fillOrderLineIds\":[\""
+                + UUID.randomUUID() + "\"]}"))
                 .andExpect(status().isBadRequest());
+        JsonNode filled = data(oc(body(post(BASE + "/load-estimates"), "{\"sources\":[{\"type\":\"ORDER\",\"id\":\""
+                + order.orderId() + "\"}],\"vehicleTypeIds\":[\"" + truck2t5 + "\"],\"selectionMode\":\"PRIORITY_FILL\","
+                + "\"fillOrderLineIds\":[\"" + tableLine + "\"]}")).andExpect(status().isCreated()));
+        assertThat(filled.path("selectionMode").asText()).isEqualTo("PRIORITY_FILL");
     }
 }

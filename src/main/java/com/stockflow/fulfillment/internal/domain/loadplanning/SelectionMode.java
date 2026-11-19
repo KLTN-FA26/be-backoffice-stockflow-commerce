@@ -8,9 +8,9 @@ package com.stockflow.fulfillment.internal.domain.loadplanning;
  * pick vehicles before a calculation: it edits a calculated plan (09 §4.2 step 3, BR-11), see
  * {@code LoadPlans#editPlacements} and {@code LoadPlans#recalculateVehicle}.</p>
  *
- * <p>Load plans and order estimates store their mode ({@link #storable()}, their tables' checks): every mode but
- * {@link #PRIORITY_FILL} (WF4-LP-MODES), which waits for the docs to say how a plan's cargo is split into main and
- * filler (docs issue #40, question 4). The trial estimate offers every mode (LP2-9, WF4-TRIAL-EST).</p>
+ * <p>Load plans, order estimates and the trial estimate take every mode (WF4-LP-MODES, WF4-TRIAL-EST). The main /
+ * filler split of {@link #PRIORITY_FILL} is by order line on a plan and an estimate (owner answer RTM-LPGROUP, 19/11),
+ * by sheet row in the trial.</p>
  */
 public enum SelectionMode {
     /** "Một loại": the one type that loads best, as many of it as needed (the original's {@code same_type}). */
@@ -36,11 +36,6 @@ public enum SelectionMode {
      * merit puts the fewest cartons left first.
      */
     OVER_CAPACITY;
-
-    /** Whether a load plan or an order estimate may store this mode (their database checks). */
-    public boolean storable() {
-        return this != PRIORITY_FILL;
-    }
 
     /** Whether the search mixes the vehicle types (the fleet drive) rather than trying each type alone. */
     boolean mixesTypes() {

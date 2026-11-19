@@ -1,6 +1,6 @@
 -- =============================================================================
 -- Adversarial checks + happy paths: the selection modes a load plan stores (WF4-LP-MODES, kltn-docs 09 §4.2;
--- V20261204004100) and the history of cancelled bookings (09 §4.2 step 6; V20261204004200).
+-- V20261204004100, V20261204004300) and the history of cancelled bookings (09 §4.2 step 6; V20261204004200).
 -- Needs the demo seed (its history holds a load plan and its dispatch load). Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
@@ -36,7 +36,7 @@ SELECT pg_temp.expect_ok('LM1 KEEP_LINES ("Giữ nguyên dòng")', $q$
 SELECT pg_temp.expect_ok('LM2 OVER_CAPACITY ("Vượt sức chứa")', $q$
     UPDATE fulfillment.load_plan SET selection_mode = 'OVER_CAPACITY'
      WHERE id = (SELECT id FROM fulfillment.load_plan ORDER BY id LIMIT 1) $q$);
-SELECT pg_temp.expect_fail('LM3 PRIORITY_FILL: its main / filler split is not defined for a plan yet', $q$
+SELECT pg_temp.expect_ok('LM3 PRIORITY_FILL ("Ưu tiên + hàng chèn")', $q$
     UPDATE fulfillment.load_plan SET selection_mode = 'PRIORITY_FILL'
      WHERE id = (SELECT id FROM fulfillment.load_plan ORDER BY id LIMIT 1) $q$);
 SELECT pg_temp.expect_fail('LM4 an unknown mode', $q$

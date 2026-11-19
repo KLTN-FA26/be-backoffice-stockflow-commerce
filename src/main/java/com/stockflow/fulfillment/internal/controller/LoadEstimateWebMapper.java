@@ -18,7 +18,7 @@ class LoadEstimateWebMapper {
         List<LoadEstimates.Source> sources = r.sources().stream()
                 .map(s -> new LoadEstimates.Source(LoadEstimates.SourceType.valueOf(s.type()), s.id())).toList();
         return new LoadEstimates.CreateEstimate(sources, r.warehouseId(), r.vehicleTypeIds() == null ? List.of() : r.vehicleTypeIds(),
-                r.selectionMode() == null ? null : SelectionMode.valueOf(r.selectionMode()));
+                r.selectionMode() == null ? null : SelectionMode.valueOf(r.selectionMode()), r.fillOrderLineIds());
     }
 
     LoadEstimateResponse toResponse(LoadEstimates.LoadEstimateView v) {
