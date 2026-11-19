@@ -26,8 +26,9 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  */
 class StockPackageSchemaMigrationTest {
 
-    private static final String SOFA = "md5('demo:item:SOFA-3S-GREY')::uuid";
-    private static final String TABLE = "md5('demo:item:TABLE-OAK-160')::uuid";
+    /** The items of the demo cups {@code LY-GIAY-DEMO-12OZ-XANH} and {@code LY-GIAY-DEMO-12OZ-DO}. */
+    private static final String BLUE_CUP = "(SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH')";
+    private static final String RED_CUP = "(SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-DO')";
 
     private static PostgreSQLContainer<?> pg;
 
@@ -48,24 +49,24 @@ class StockPackageSchemaMigrationTest {
         return DriverManager.getConnection(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword());
     }
 
-    /** A packing unit of SOFA-3S-GREY, factor 10. */
+    /** A packing unit of LY-GIAY-DEMO-12OZ-XANH, factor 10. */
     private static String unit(Connection db, String name) throws SQLException {
         String id = "md5('it:unit:" + name + "')::uuid";
         update(db, "INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor) VALUES ("
-                + id + ", " + SOFA + ", '" + name + "', 10)");
+                + id + ", " + BLUE_CUP + ", '" + name + "', 10)");
         return id;
     }
 
-    /** A whole stock package of 10 in stock at {@code location}, holding its 10 sofas in one row (lot UNTRACED). */
+    /** A whole stock package of 10 in stock at {@code location}, holding its 10 cups in one row (lot UNTRACED). */
     private static String inStock(Connection db, String name, String unit, String location) throws SQLException {
         String id = "md5('it:pk:" + name + "')::uuid";
         transaction(db,
                 "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,"
                         + " received_qty, location_code, status) VALUES (" + id + ", 'IT-" + name + "', "
-                        + SOFA + ", " + unit + ", 10, 10, '" + location + "', 'IN_STOCK')",
+                        + BLUE_CUP + ", " + unit + ", 10, 10, '" + location + "', 'IN_STOCK')",
                 "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status,"
                         + " created_at, received_at, stock_package_id) VALUES (md5('it:pk:" + name
-                        + ":row')::uuid, 'SOFA-3S-GREY', '" + location + "', 'UNTRACED', 10, 0, 'AVAILABLE', NOW(),"
+                        + ":row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', '" + location + "', 'UNTRACED', 10, 0, 'AVAILABLE', NOW(),"
                         + " NOW() - interval '1 day', " + id + ")");
         return id;
     }
@@ -92,13 +93,13 @@ class StockPackageSchemaMigrationTest {
             String carton = unit(db, "LOCKED");
             String unused = unit(db, "UNUSED");
             update(db, "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,"
-                    + " location_code) VALUES (gen_random_uuid(), 'IT-LOCKED', " + SOFA + ", " + carton
+                    + " location_code) VALUES (gen_random_uuid(), 'IT-LOCKED', " + BLUE_CUP + ", " + carton
                     + ", 10, 'HCM-A01-1-A')");
 
             refused(db, "the factor of a unit in use", "UPDATE inventory.uom_conversions SET factor = 12 WHERE id = "
                     + carton);
             refused(db, "a unit in use moved to another item",
-                    "UPDATE inventory.uom_conversions SET inventory_item_id = " + TABLE + " WHERE id = " + carton);
+                    "UPDATE inventory.uom_conversions SET inventory_item_id = " + RED_CUP + " WHERE id = " + carton);
             refused(db, "a unit in use renamed",
                     "UPDATE inventory.uom_conversions SET unit_of_measure = 'BOX' WHERE id = " + carton);
             assertThat(text(db, "SELECT unit_of_measure || ':' || factor FROM inventory.uom_conversions WHERE id = "
@@ -118,7 +119,7 @@ class StockPackageSchemaMigrationTest {
             String carton = unit(writer, "RACED");
             writer.setAutoCommit(false);
             update(writer, "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id,"
-                    + " nominal_qty, location_code) VALUES (gen_random_uuid(), 'IT-RACED', " + SOFA + ", " + carton
+                    + " nominal_qty, location_code) VALUES (gen_random_uuid(), 'IT-RACED', " + BLUE_CUP + ", " + carton
                     + ", 10, 'HCM-A01-1-A')");
             // Anything that waits is a failure here: the lock_timeout turns a wait into an error at once.
             update(editor, "SET lock_timeout = '1s'");
@@ -147,7 +148,7 @@ class StockPackageSchemaMigrationTest {
             update(db, "UPDATE inventory.uom_conversions SET active = FALSE WHERE id = " + old);
             refused(db, "a stock package made in the warehouse in a retired unit",
                     "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,"
-                            + " location_code) VALUES (gen_random_uuid(), 'IT-RETIRED', " + SOFA + ", " + old
+                            + " location_code) VALUES (gen_random_uuid(), 'IT-RETIRED', " + BLUE_CUP + ", " + old
                             + ", 10, 'HCM-A01-1-A')");
         }
     }
@@ -161,10 +162,10 @@ class StockPackageSchemaMigrationTest {
                     + " to_stock_package_id) VALUES (gen_random_uuid(), 'MOVE', '%s', '%s', '%s', 1, 'MOVE_TASK',"
                     + " gen_random_uuid(), NOW(), " + pkg + ", " + pkg + ")";   // a move by hand names its carton both sides
 
-            refused(db, "a stock package of another SKU", row.formatted("TABLE-OAK-160", "HCM-A01-1-A", "HCM-A01-1-B"));
+            refused(db, "a stock package of another SKU", row.formatted("LY-GIAY-DEMO-12OZ-DO", "HCM-A01-1-A", "HCM-A01-1-B"));
             refused(db, "a stock package at a bin the movement never touched",
-                    row.formatted("SOFA-3S-GREY", "HCM-A01-1-B", "HCM-RCV01"));
-            update(db, row.formatted("SOFA-3S-GREY", "HCM-A01-1-A", "HCM-A01-1-B"));
+                    row.formatted("LY-GIAY-DEMO-12OZ-XANH", "HCM-A01-1-B", "HCM-RCV01"));
+            update(db, row.formatted("LY-GIAY-DEMO-12OZ-XANH", "HCM-A01-1-A", "HCM-A01-1-B"));
         }
     }
 
@@ -173,7 +174,7 @@ class StockPackageSchemaMigrationTest {
         try (Connection db = connect()) {
             String pkg = inStock(db, "ONEROW", unit(db, "ONEROW"), "HCM-A01-1-A");
             String second = "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved,"
-                    + " status, created_at, received_at, stock_package_id) VALUES (gen_random_uuid(), 'SOFA-3S-GREY',"
+                    + " status, created_at, received_at, stock_package_id) VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH',"
                     + " 'HCM-A01-1-A', 'UNTRACED', 0, 0, 'AVAILABLE', NOW(), NOW() - interval '2 day', " + pkg + ")";
 
             // V20261113000300 (kltn-docs 20 BR-18): a carton is one row, put back or found again it fills the same row.
@@ -203,10 +204,10 @@ class StockPackageSchemaMigrationTest {
                     + " quantity_delta, reason_code, requested_by, stock_package_id) VALUES (gen_random_uuid(), '%s', '%s',"
                     + " '%s', -10, 'DAMAGED', " + user + ", " + pkg + ")";
             refused(db, "an adjustment naming a carton of another SKU",
-                    adjustment.formatted("ADJ-IT-DOC-1", "HCM-A01-1-A", "TABLE-OAK-160"));
+                    adjustment.formatted("ADJ-IT-DOC-1", "HCM-A01-1-A", "LY-GIAY-DEMO-12OZ-DO"));
             refused(db, "an adjustment naming a carton at another bin",
-                    adjustment.formatted("ADJ-IT-DOC-2", "HCM-A01-1-B", "SOFA-3S-GREY"));
-            update(db, adjustment.formatted("ADJ-IT-DOC-3", "HCM-A01-1-A", "SOFA-3S-GREY"));
+                    adjustment.formatted("ADJ-IT-DOC-2", "HCM-A01-1-B", "LY-GIAY-DEMO-12OZ-XANH"));
+            update(db, adjustment.formatted("ADJ-IT-DOC-3", "HCM-A01-1-A", "LY-GIAY-DEMO-12OZ-XANH"));
 
             // One count line per carton: two cartons of one SKU, bin and lot are two lines. A line names a carton.
             String count = "md5('it:count:DOC')::uuid";
@@ -214,7 +215,7 @@ class StockPackageSchemaMigrationTest {
                     + ", 'CC-IT-DOC', id, 'MANUAL' FROM warehouse.warehouse WHERE prefix = 'HCM'");
             String other = inStock(db, "DOC2", unit(db, "DOC2"), "HCM-A01-1-A");
             String line = "INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty,"
-                    + " stock_package_id) VALUES (gen_random_uuid(), " + count + ", '%s', 'SOFA-3S-GREY', 10, %s)";
+                    + " stock_package_id) VALUES (gen_random_uuid(), " + count + ", '%s', 'LY-GIAY-DEMO-12OZ-XANH', 10, %s)";
             update(db, line.formatted("HCM-A01-1-A", pkg));
             update(db, line.formatted("HCM-A01-1-A", other));
             refused(db, "the same carton twice in one count", line.formatted("HCM-A01-1-A", pkg));
@@ -230,10 +231,10 @@ class StockPackageSchemaMigrationTest {
             String pkg = "md5('it:pk:FULL')::uuid";
             String carton = "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id,"
                     + " nominal_qty, received_qty, location_code, status) VALUES (" + pkg + ", 'IT-FULL', "
-                    + SOFA + ", " + unit + ", 10, %d, 'HCM-A01-1-A', 'IN_STOCK')";
+                    + BLUE_CUP + ", " + unit + ", 10, %d, 'HCM-A01-1-A', 'IN_STOCK')";
             String row = "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved,"
                     + " status, created_at, received_at, stock_package_id) VALUES (md5('it:pk:FULL:row')::uuid,"
-                    + " 'SOFA-3S-GREY', 'HCM-A01-1-A', 'UNTRACED', %d, 0, 'AVAILABLE', NOW(),"
+                    + " 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'UNTRACED', %d, 0, 'AVAILABLE', NOW(),"
                     + " NOW() - interval '1 day', " + pkg + ")";
 
             refused(db, "a carton in stock counted in at 6 of a standard 10 (ck_stock_package_standard_count)",
@@ -250,7 +251,7 @@ class StockPackageSchemaMigrationTest {
             assertThat(text(db, "SELECT lpn || ':' || sku || ':' || unit_of_measure || ':' || received_qty || ':'"
                     + " || on_hand || ':' || reserved || ':' || available || ':' || status || ':' || lot_number"
                     + " FROM inventory.stock_package_balance WHERE stock_package_id = " + pkg))
-                    .isEqualTo("IT-FULL:SOFA-3S-GREY:FULL:10:10:0:10:IN_STOCK:UNTRACED");
+                    .isEqualTo("IT-FULL:LY-GIAY-DEMO-12OZ-XANH:FULL:10:10:0:10:IN_STOCK:UNTRACED");
         }
     }
 }

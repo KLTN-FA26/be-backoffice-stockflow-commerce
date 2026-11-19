@@ -228,7 +228,7 @@ class B2bOnboardingIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.customerId").value(customerId.toString()))
                 .andExpect(jsonPath("$.data.status").value("ACTIVE"));
-        mvc.perform(get("/api/v1/catalog/products/availability").param("sku", "TABLE-OAK")
+        mvc.perform(get("/api/v1/catalog/products/availability").param("sku", "HOP-GIAY-DEMO")
                         .header("Authorization", "Bearer " + customerToken))
                 .andExpect(status().isOk());
 
@@ -625,7 +625,7 @@ class B2bOnboardingIntegrationTest {
         // kltn-docs 18 §5: Suspended = no sign-in. The token issued before the block stops at once.
         changeStatus(customerId, "BLOCKED").andExpect(status().isOk());
         me(before).andExpect(status().isUnauthorized());
-        mvc.perform(get("/api/v1/catalog/products/availability").param("sku", "TABLE-OAK")
+        mvc.perform(get("/api/v1/catalog/products/availability").param("sku", "HOP-GIAY-DEMO")
                 .header("Authorization", "Bearer " + before)).andExpect(status().isUnauthorized());
         login(email, PASSWORD).andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.errorCode").value("ACCOUNT_NOT_ACTIVE"));
@@ -717,7 +717,7 @@ class B2bOnboardingIntegrationTest {
         mvc.perform(post("/api/v1/orders").header("Authorization", "Bearer " + shop)
                         .contentType("application/json").content(json(Map.of(
                                 "requestId", UUID.randomUUID(), "customerId", customerId,
-                                "lines", List.of(Map.of("sku", "SOFA-3S-GREY", "quantity", 1, "unitPrice", 1000))))))
+                                "lines", List.of(Map.of("sku", "LY-GIAY-DEMO-12OZ-XANH", "quantity", 1, "unitPrice", 1000))))))
                 .andExpect(status().isForbidden());
 
         // Supplied later by Sales, with the usual rules.

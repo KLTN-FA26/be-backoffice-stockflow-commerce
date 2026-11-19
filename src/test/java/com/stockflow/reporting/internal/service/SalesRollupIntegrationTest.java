@@ -92,14 +92,14 @@ class SalesRollupIntegrationTest {
 
     private ConfirmedOrders confirmedOrders;
     /** The demo customer's own SKU, issued per test: a contract's lines are only ever the customer's own (14 BR-04). */
-    private String sofa;
+    private String cup;
 
     private final List<UUID> placed = new ArrayList<>();
 
     @BeforeEach
     void ownSku() {
         confirmedOrders = new ConfirmedOrders(context);
-        sofa = CustomerSkuRows.issue(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, 50).sku();
+        cup = CustomerSkuRows.issue(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, 50).sku();
     }
 
     @AfterEach
@@ -120,7 +120,7 @@ class SalesRollupIntegrationTest {
      */
     private OrderSummary place(int quantity, long unitPrice) {
         UUID orderId = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
-                ConfirmedOrders.Line.units(sofa, quantity, unitPrice)).orderId();
+                ConfirmedOrders.Line.units(cup, quantity, unitPrice)).orderId();
         placed.add(orderId);
         return orders.findById(orderId).orElseThrow();
     }
@@ -173,14 +173,14 @@ class SalesRollupIntegrationTest {
         return reports.salesDaily(day, day).getFirst();
     }
 
-    private long unitsOfSofa(LocalDate day) {
+    private long unitsOfCup(LocalDate day) {
         return jdbc.queryForObject("SELECT COALESCE(SUM(quantity_sold), 0) FROM reporting.product_sales_summary "
-                + "WHERE sku = ? AND period = ?", Long.class, sofa, BusinessDay.period(day));
+                + "WHERE sku = ? AND period = ?", Long.class, cup, BusinessDay.period(day));
     }
 
-    private BigDecimal revenueOfSofa(LocalDate day) {
+    private BigDecimal revenueOfCup(LocalDate day) {
         return jdbc.queryForObject("SELECT COALESCE(SUM(revenue), 0) FROM reporting.product_sales_summary "
-                + "WHERE sku = ? AND period = ?", BigDecimal.class, sofa, BusinessDay.period(day));
+                + "WHERE sku = ? AND period = ?", BigDecimal.class, cup, BusinessDay.period(day));
     }
 
     /** Everything the rollups hold for one day, as comparable text. */
@@ -215,8 +215,8 @@ class SalesRollupIntegrationTest {
     void placeThenCancel() {
         LocalDate today = BusinessDay.today(clock);
         var before = dayRow(today);
-        long unitsBefore = unitsOfSofa(today);
-        BigDecimal revenueBefore = revenueOfSofa(today);
+        long unitsBefore = unitsOfCup(today);
+        BigDecimal revenueBefore = revenueOfCup(today);
 
         OrderSummary order = place(2, 12_000_000);
         awaitPlaced(order);
@@ -224,16 +224,16 @@ class SalesRollupIntegrationTest {
         assertThat(dayOf(order)).isEqualTo(today);
         assertThat(dayRow(today).ordersCount()).isEqualTo(before.ordersCount() + 1);
         assertThat(dayRow(today).revenue()).isEqualByComparingTo(before.revenue().add(new BigDecimal("24000000")));
-        assertThat(unitsOfSofa(today)).isEqualTo(unitsBefore + 2);
-        assertThat(revenueOfSofa(today)).isEqualByComparingTo(revenueBefore.add(new BigDecimal("24000000")));
+        assertThat(unitsOfCup(today)).isEqualTo(unitsBefore + 2);
+        assertThat(revenueOfCup(today)).isEqualByComparingTo(revenueBefore.add(new BigDecimal("24000000")));
 
         cancel(order);
         awaitCancelled(order);
 
         assertThat(dayRow(today).ordersCount()).isEqualTo(before.ordersCount());
         assertThat(dayRow(today).revenue()).isEqualByComparingTo(before.revenue());
-        assertThat(unitsOfSofa(today)).isEqualTo(unitsBefore);
-        assertThat(revenueOfSofa(today)).isEqualByComparingTo(revenueBefore);
+        assertThat(unitsOfCup(today)).isEqualTo(unitsBefore);
+        assertThat(revenueOfCup(today)).isEqualByComparingTo(revenueBefore);
     }
 
     @Test
@@ -246,7 +246,7 @@ class SalesRollupIntegrationTest {
 
         tx.executeWithoutResult(s -> publisher.publishEvent(new OrderPlaced(order.orderId(), order.customerId(),
                 "x@example.com", order.orderNumber(),
-                List.of(new OrderPlaced.OrderLine(sofa, 1, new BigDecimal("5000000"), null)),
+                List.of(new OrderPlaced.OrderLine(cup, 1, new BigDecimal("5000000"), null)),
                 new BigDecimal("5000000"), "VND")));
         awaitRollupsIdle();
         assertThat(dayRow(today).ordersCount()).isEqualTo(before.ordersCount() + 1);
@@ -296,12 +296,12 @@ class SalesRollupIntegrationTest {
         OrderSummary order = place(3, 4_000_000);
         awaitPlaced(order);
         var before = dayRow(today);
-        long unitsBefore = unitsOfSofa(today);
+        long unitsBefore = unitsOfCup(today);
         UUID returnId = UUID.randomUUID();
         com.stockflow.contracts.ReturnResolved credited = new com.stockflow.contracts.ReturnResolved(returnId,
                 "RMA-IT-9", order.orderId(), order.orderNumber(), order.customerId(), null, null, BigDecimal.ZERO,
                 BigDecimal.ZERO, new BigDecimal("4000000"), "VND", true,
-                List.of(new com.stockflow.contracts.ReturnResolved.Line(UUID.randomUUID(), sofa, 1, 0, 1,
+                List.of(new com.stockflow.contracts.ReturnResolved.Line(UUID.randomUUID(), cup, 1, 0, 1,
                         new BigDecimal("4000000"))), UUID.randomUUID(), Instant.now(), order.orderId());
         tx.executeWithoutResult(s -> publisher.publishEvent(credited));
         Await.until("return applied", ASYNC, () -> jdbc.queryForObject("SELECT count(*) FROM "
@@ -309,7 +309,7 @@ class SalesRollupIntegrationTest {
 
         assertThat(dayRow(today).ordersCount()).as("the sale happened").isEqualTo(before.ordersCount());
         assertThat(dayRow(today).revenue()).isEqualByComparingTo(before.revenue().subtract(new BigDecimal("4000000")));
-        assertThat(unitsOfSofa(today)).isEqualTo(unitsBefore - 1);
+        assertThat(unitsOfCup(today)).isEqualTo(unitsBefore - 1);
 
         tx.executeWithoutResult(s -> publisher.publishEvent(credited));
         tx.executeWithoutResult(s -> publisher.publishEvent(new com.stockflow.contracts.ReturnResolved(UUID.randomUUID(),
@@ -333,7 +333,7 @@ class SalesRollupIntegrationTest {
                 jdbc.update("UPDATE reporting.sales_daily_summary SET revenue = revenue + 4000000 WHERE day = ? "
                         + "AND currency = 'VND'", java.sql.Date.valueOf(today));
                 jdbc.update("UPDATE reporting.product_sales_summary SET quantity_sold = quantity_sold + 1, "
-                        + "revenue = revenue + 4000000 WHERE sku = ? AND period = ?", sofa,
+                        + "revenue = revenue + 4000000 WHERE sku = ? AND period = ?", cup,
                         BusinessDay.period(today));
             });
         }
@@ -392,8 +392,8 @@ class SalesRollupIntegrationTest {
         assertThat(dayRow(d14).revenue()).isEqualByComparingTo("1000000");
         assertThat(dayRow(d15).ordersCount()).isEqualTo(1);
         assertThat(dayRow(d15).revenue()).isEqualByComparingTo("2000000");
-        assertThat(unitsOfSofa(d14)).as("one carton of two").isEqualTo(2);
-        assertThat(unitsOfSofa(d15)).isEqualTo(2);
+        assertThat(unitsOfCup(d14)).as("one carton of two").isEqualTo(2);
+        assertThat(unitsOfCup(d15)).isEqualTo(2);
     }
 
     private void movePlacement(OrderSummary order, String instant) {
@@ -466,10 +466,10 @@ class SalesRollupIntegrationTest {
                 .param("to", today.toString()).param("limit", "3"), Role.SALES_MANAGER).andExpect(status().isOk()));
 
         assertThat(top.size()).isBetween(1, 3);
-        JsonNode sofaRow = Stream.iterate(0, i -> i + 1).limit(top.size()).map(top::get)
-                .filter(row -> sofa.equals(row.path("sku").asText())).findFirst().orElseThrow();
-        assertThat(sofaRow.path("quantitySold").asLong()).isGreaterThanOrEqualTo(2);
-        assertThat(sofaRow.path("revenue").decimalValue()).isGreaterThanOrEqualTo(new BigDecimal("22000000"));
+        JsonNode cupRow = Stream.iterate(0, i -> i + 1).limit(top.size()).map(top::get)
+                .filter(row -> cup.equals(row.path("sku").asText())).findFirst().orElseThrow();
+        assertThat(cupRow.path("quantitySold").asLong()).isGreaterThanOrEqualTo(2);
+        assertThat(cupRow.path("revenue").decimalValue()).isGreaterThanOrEqualTo(new BigDecimal("22000000"));
         for (int i = 1; i < top.size(); i++) {
             assertThat(top.get(i - 1).path("revenue").decimalValue())
                     .isGreaterThanOrEqualTo(top.get(i).path("revenue").decimalValue());
