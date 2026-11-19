@@ -1,6 +1,6 @@
 -- =============================================================================
 -- Adversarial checks + happy paths: the selection modes a load plan stores (WF4-LP-MODES, kltn-docs 09 §4.2;
--- V20261204004100) and the history of cancelled bookings (09 §4.2 step 6; V20261204004200).
+-- V20261207011100) and the history of cancelled bookings (09 §4.2 step 6; V20261207011200).
 -- Needs the demo seed (its history holds a load plan and its dispatch load). Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
