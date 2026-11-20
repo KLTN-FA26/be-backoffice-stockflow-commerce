@@ -30,7 +30,7 @@ import java.util.UUID;
  * Its lines count production order lines, in whole cartons, in the production order's lot.</p>
  *
  * <p>Every receipt is against a production order and every line counts one of its lines: purchasing is gone (4A-8,
- * kltn-docs 00 of 04/11) and {@code V20261213000100} removed the purchase receipts it had left behind, so there is no
+ * kltn-docs 00 of 04/11) and {@code V20261214000100} removed the purchase receipts it had left behind, so there is no
  * receipt without a production order to read, count or cancel.</p>
  *
  * <p>What the aggregate decides: the order of the steps, and that a confirmed count is never edited (BR-05). What it

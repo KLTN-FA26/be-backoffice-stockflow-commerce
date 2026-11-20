@@ -153,13 +153,13 @@ SELECT pg_temp.expect_fail('RR1 a receipt of an unknown type', $q$
                                             receipt_type)
     VALUES (gen_random_uuid(), 'GR-QA52-X1', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(), md5('demo:user:editor')::uuid,
             'TRANSFER') $q$);
-SELECT pg_temp.expect_fail('RR2 a PURCHASE receipt (ck_goods_receipts_type, V20261213000100) naming a customer order and a returned shipment', $q$
+SELECT pg_temp.expect_fail('RR2 a PURCHASE receipt (ck_goods_receipts_type, V20261214000100) naming a customer order and a returned shipment', $q$
     INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by,
                                             receipt_type, customer_order_id, return_shipment_id)
     VALUES (gen_random_uuid(), 'GR-QA52-X2', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(), md5('demo:user:editor')::uuid,
             'PURCHASE', md5('qa52:o1')::uuid, md5('qa52:s1')::uuid) $q$);
 -- The supplier and blind-receipt columns and the PURCHASE default went with purchasing (V20261113000200, 4A-9), the
--- PURCHASE type itself with V20261213000100: a receipt names its type.
+-- PURCHASE type itself with V20261214000100: a receipt names its type.
 SELECT pg_temp.expect_fail('RR3 a receipt written without a type', $q$
     INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by)
     VALUES (md5('qa52:blind')::uuid, 'GR-QA52-B1', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(),

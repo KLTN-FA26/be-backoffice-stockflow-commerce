@@ -43,7 +43,7 @@ import java.util.UUID;
  * <p>Purchasing is gone (4A-8, kltn-docs 00 of 04/11): the receipts against a purchase order or none
  * ({@code POST /goods-receipts}, {@code /without-po}), the manager's over-tolerance decisions ({@code /approval},
  * {@code /rejection}, {@code /excess-rejection}) and the PO reference of a blind receipt went with it, and so did the
- * {@code APPROVE} action of this resource. {@code V20261213000100} deleted the purchase receipts left over, so every
+ * {@code APPROVE} action of this resource. {@code V20261214000100} deleted the purchase receipts left over, so every
  * receipt listed here is against a production order.</p>
  */
 @RestController

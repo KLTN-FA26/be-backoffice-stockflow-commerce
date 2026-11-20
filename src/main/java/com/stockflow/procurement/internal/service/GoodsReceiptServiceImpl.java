@@ -78,7 +78,7 @@ import java.util.UUID;
  * production order wait for each other instead of deadlocking.</p>
  *
  * <p>Purchasing is gone (4A-8, kltn-docs 00 of 04/11): receipts against purchase orders - and blind ones, the
- * over-tolerance approval, the PO reference of a blind receipt - went with it, and {@code V20261213000100} removed the
+ * over-tolerance approval, the PO reference of a blind receipt - went with it, and {@code V20261214000100} removed the
  * purchase receipts it had left behind: every receipt here is against a production order.</p>
  */
 @Service

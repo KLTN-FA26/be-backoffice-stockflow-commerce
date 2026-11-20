@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The receipt's step order (docs 03 §5.1) and BR-05, without a database. Every receipt is against a production order
- * (4A-5); the purchase receipts that were there before were deleted (V20261213000100), so only a DRAFT is cancelled,
+ * (4A-5); the purchase receipts that were there before were deleted (V20261214000100), so only a DRAFT is cancelled,
  * which the last test pins.
  */
 class GoodsReceiptTest {

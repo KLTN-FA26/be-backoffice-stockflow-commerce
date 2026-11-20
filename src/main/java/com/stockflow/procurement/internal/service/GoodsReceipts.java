@@ -15,7 +15,7 @@ import java.util.UUID;
  * warehouse (kltn-docs 03 BR-07): a confirmed receipt goes straight to putaway.
  *
  * <p>Purchasing is gone (4A-8, kltn-docs 00 of 04/11): the receipts counted against a purchase order, or none, before
- * 4A-5 ({@link GoodsReceiptType#PURCHASE}) were deleted by {@code V20261213000100}; every receipt is against a
+ * 4A-5 ({@link GoodsReceiptType#PURCHASE}) were deleted by {@code V20261214000100}; every receipt is against a
  * production order.</p>
  *
  * <p>Not on {@code procurement :: api}: nothing outside this module drives a receipt. Other modules

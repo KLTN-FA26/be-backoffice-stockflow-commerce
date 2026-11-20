@@ -11,7 +11,7 @@
 
 UPDATE inventory.uom_conversions c
    SET active = FALSE, default_shipping = FALSE, version = c.version + 1, last_modified_at = now(),
-       last_modified_by = 'migration V20261213000400'
+       last_modified_by = 'migration V20261214000400'
  WHERE NOT c.is_base AND c.active
    AND c.id <> (SELECT k.id FROM inventory.uom_conversions k
                  WHERE k.inventory_item_id = c.inventory_item_id AND NOT k.is_base AND k.active

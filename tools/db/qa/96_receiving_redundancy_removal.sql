@@ -3,13 +3,13 @@
 -- Needs the demo seed (the HCM warehouse and its RECEIVING area HCM-RCV01). Rolled back at the end. Each section below
 -- is one task of the plan; a later task appends its own section, with the same helpers, before the final ROLLBACK.
 --
---   A2  purchase receipts and the CONFIRMED status (V20261213000100): a receipt is PRODUCTION or RETURN, a line always
+--   A2  purchase receipts and the CONFIRMED status (V20261214000100): a receipt is PRODUCTION or RETURN, a line always
 --       names a production order line, and no receipt is stored CONFIRMED.
---   A3  the lot origin GOODS_RECEIPT (V20261213000200): a lot is of a production order or UNTRACED; the columns that named
+--   A3  the lot origin GOODS_RECEIPT (V20261214000200): a lot is of a production order or UNTRACED; the columns that named
 --       a receipt are gone. A lot stored GOODS_RECEIPT before it is StockLotReceiptOriginMigrationUpgradeTest's.
---   A4  the default purchase unit (V20261213000300): uom_conversions has no default_purchase column, and an inventory item
+--   A4  the default purchase unit (V20261214000300): uom_conversions has no default_purchase column, and an inventory item
 --       still gets its base unit from create_base_uom().
---   B   one active carton per item (V20261213000400): at most one active non-base unit per inventory item; retired
+--   B   one active carton per item (V20261214000400): at most one active non-base unit per inventory item; retired
 --       ones stay as history beside it (01 BR-03, BR-10).
 --
 -- The fixture follows 61_purchasing_removal.sql: a production order written with the row triggers off (its rules are
@@ -81,10 +81,10 @@ VALUES (md5('qa96:carton')::uuid, (SELECT id FROM inventory.inventory_items WHER
 SET LOCAL session_replication_role = replica;
 INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, customer_id, producer_id,
                                        receiving_warehouse_id, need_by_date, status, sample_approval_required,
-                                       sample_required_by_default, drawn_up_by, submitted_at, approved_by, approved_at, sent_at)
+                                       sample_required_by_default, drawn_up_by, sent_by, sent_at)
 VALUES (md5('qa96:prod')::uuid, 'PRD-20261109-9601', md5('qa96:so')::uuid, md5('qa96:batch')::uuid,
         md5('qa96:cust')::uuid, md5('qa96:producer')::uuid, md5('demo:wh:HCM')::uuid, CURRENT_DATE + 30, 'SENT', FALSE,
-        FALSE, md5('demo:user:editor')::uuid, NOW(), md5('demo:user:approver')::uuid, NOW(), NOW());
+        FALSE, md5('demo:user:editor')::uuid, md5('demo:user:editor')::uuid, NOW());
 INSERT INTO ordering.production_order_line (id, production_order_id, order_line_id, sku, cartons, units_per_carton,
                                             design_snapshot_id, print_file_checksum)
 VALUES (md5('qa96:prod:line')::uuid, md5('qa96:prod')::uuid, md5('qa96:ol')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 5, 10,

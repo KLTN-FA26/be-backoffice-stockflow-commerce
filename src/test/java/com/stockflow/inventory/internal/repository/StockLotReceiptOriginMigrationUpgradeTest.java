@@ -18,7 +18,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * V20261213000200 on the real upgrade path (receiving redundancy removal, A3). It drops the {@code GOODS_RECEIPT}
+ * V20261214000200 on the real upgrade path (receiving redundancy removal, A3). It drops the {@code GOODS_RECEIPT}
  * origin of {@code inventory.stock_lot}, its two columns and its index. A lot stored with that origin before it holds
  * stock rows and may be named by ledger lines, so it must stay and become {@code UNTRACED}, with the lot trace still
  * reading it; the rows are written with triggers off because what is tested is the migration on rows the old rules
@@ -29,8 +29,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class StockLotReceiptOriginMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261213000100";
-    private static final String MIGRATION = "20261213000200";
+    private static final String BEFORE = "20261214000100";
+    private static final String MIGRATION = "20261214000200";
     private static final String LOT = "00000000-0000-4000-8000-0000000e0a01";
     private static final String CARTON = "00000000-0000-4000-8000-0000000e0a02";
     private static final String ROW = "00000000-0000-4000-8000-0000000e0a03";

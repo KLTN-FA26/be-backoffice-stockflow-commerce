@@ -21,7 +21,7 @@ public class StockLotJpaEntity extends BaseEntity {
 
     /**
      * Where a lot's identity comes from; {@code ck_stock_lot_origin}. {@code GOODS_RECEIPT} is historical, no row holds
-     * it: V20261213000200 made such lots UNTRACED and the check refuses it.
+     * it: V20261214000200 made such lots UNTRACED and the check refuses it.
      */
     public enum Origin { GOODS_RECEIPT, PRODUCTION_ORDER, UNTRACED }
 

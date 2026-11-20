@@ -7,7 +7,7 @@ import java.util.UUID;
  * Where received goods came from, as the receiving documents read at the moment of receipt (SCRUM-142): the lot
  * the receipt opens keeps the production order of this snapshot (not the receipt: the lot outlives it and gathers the
  * next receipts of the production order), so the lot trace (SCRUM-153) can name it without reading another module's
- * tables. {@code goodsReceiptId} and {@code goodsReceiptNumber} are no longer kept on the lot (V20261213000200); they remain
+ * tables. {@code goodsReceiptId} and {@code goodsReceiptNumber} are no longer kept on the lot (V20261214000200); they remain
  * on the snapshot the caller hands in.
  *
  * <p>4A-5: goods received against a production order name it ({@code productionOrderId}, {@code productionOrderCode}).

@@ -9,7 +9,7 @@ package com.stockflow.procurement.internal.domain;
  * {@code V20261113000200} took it out of {@code ck_goods_receipts_status}.</p>
  *
  * <p>{@code CONFIRMED}: historical, no row holds it. It was the moment the count is final, and the receipt left it for
- * {@code IN_PUTAWAY} in the same transaction, so no row ever stayed in it; {@code V20261213000100} took it out of the
+ * {@code IN_PUTAWAY} in the same transaction, so no row ever stayed in it; {@code V20261214000100} took it out of the
  * CHECK. Both constants stay so an old value read back is named, never guessed. There is no QC status: receiving QC
  * was removed (kltn-docs 03 BR-07) and {@code V20261108000200} moved the receipts that were in it on.</p>
  */

@@ -34,7 +34,7 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     private GoodsReceiptJpaEntity receipt;
 
     /**
-     * 4A-5: the production order line the line counts. NOT NULL since {@code V20261213000100}.
+     * 4A-5: the production order line the line counts. NOT NULL since {@code V20261214000100}.
      */
     @Column(name = "production_order_line_id", nullable = false, updatable = false)
     private UUID productionOrderLineId;

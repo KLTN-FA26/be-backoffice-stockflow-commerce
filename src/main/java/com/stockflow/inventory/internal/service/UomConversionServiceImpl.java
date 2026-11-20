@@ -38,7 +38,7 @@ import java.util.stream.Collectors;
  * mark stay editable, and retiring it is the way out BR-10 names: retire this one, then declare the new one.</p>
  *
  * <p>01 BR-03: a SKU has one active packing unit, its carton ({@code uk_uom_conversions_one_carton},
- * V20261213000400). Declaring or re-activating a second is asked about first, under the SKU lock, so the index never
+ * V20261214000400). Declaring or re-activating a second is asked about first, under the SKU lock, so the index never
  * surfaces as a bare 409 and the user is told to retire the other first; retired units stay beside it as history.</p>
  */
 @Service

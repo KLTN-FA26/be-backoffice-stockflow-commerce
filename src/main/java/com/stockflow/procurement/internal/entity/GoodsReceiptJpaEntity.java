@@ -23,7 +23,7 @@ import java.util.UUID;
  *
  * <p>The purchase columns ({@code po_id}, {@code po_revision_id}, {@code supplier_id}, {@code blind_reason},
  * {@code referenced_po_id}, {@code approval_*}) went with purchasing: 4A-8 stopped mapping them and
- * {@code V20261113000200} archived the purchase receipts whole and dropped them, and {@code V20261213000100}
+ * {@code V20261113000200} archived the purchase receipts whole and dropped them, and {@code V20261214000100}
  * deleted the PURCHASE receipts and took the type out of the CHECK.</p>
  *
  * <p>Every receipt but a RETURN one (team plan 4D-2): a return receipt shares the table and the numbering, but is

@@ -12,15 +12,15 @@ import java.sql.SQLException;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * V20261213000400 on the real upgrade path (plan 2026-11-20-receiving-redundancy-removal, task 5): a SKU has ONE active
+ * V20261214000400 on the real upgrade path (plan 2026-11-20-receiving-redundancy-removal, task 5): a SKU has ONE active
  * carton (kltn-docs 01 BR-03). Items that, before it, had several active cartons keep one - the default shipping one,
  * else the most recently created - and the others are retired (BR-10: a unit a document used is never deleted), after
  * which {@code uk_uom_conversions_one_carton} holds. Retired units, the base unit and items with one carton are left alone.
  */
 class CartonUnitPerItemMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261213000300";
-    private static final String MIGRATION = "20261213000400";
+    private static final String BEFORE = "20261214000300";
+    private static final String MIGRATION = "20261214000400";
 
     @Test
     void extraActiveCartonsAreRetiredAndTheIndexHolds() throws Exception {
