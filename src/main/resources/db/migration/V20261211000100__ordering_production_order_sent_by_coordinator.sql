@@ -15,7 +15,9 @@
 --      by no one;
 --   3. the transitions: DRAFT -> SENT in; DRAFT -> PENDING_APPROVAL and every edge out of PENDING_APPROVAL out, so the
 --      status is historical only (the constant stays, as removed statuses do);
---   4. ck_production_order_approval: approved_* both set or both null and never the drafter - nothing about sending;
+--   4. ck_production_order_approval: approved_* both set or both null, never the drafter, and only on an order that
+--      was submitted - nothing about sending. Nothing submits any more, so the last clause is what refuses an
+--      approval written onto a production order drawn up after 2026-11-20;
 --   5. ck_production_order_sent: sent_at and sent_by together; null in DRAFT / PENDING_APPROVAL, set in every later
 --      status but CANCELLED, which may be either (cancelled as a draft, or after sending);
 --   6. ck_production_order_acceptance_note: non-blank, and only from ACCEPTED on (CANCELLED from SENT has none, from
@@ -57,10 +59,11 @@ INSERT INTO ordering.production_order_status_transition (from_status, to_status)
 DELETE FROM ordering.production_order_status_transition
  WHERE (from_status = 'DRAFT' AND to_status = 'PENDING_APPROVAL') OR from_status = 'PENDING_APPROVAL';
 
--- 4. An approval, where there is one, is still by someone else --------------------------------------------------------
+-- 4. An approval, where there is one, is still by someone else, of an order once submitted -----------------------------
 ALTER TABLE ordering.production_order DROP CONSTRAINT ck_production_order_approval;
 ALTER TABLE ordering.production_order ADD CONSTRAINT ck_production_order_approval
-    CHECK ((approved_by IS NULL) = (approved_at IS NULL) AND (approved_by IS NULL OR approved_by <> drawn_up_by));
+    CHECK ((approved_by IS NULL) = (approved_at IS NULL) AND (approved_by IS NULL OR approved_by <> drawn_up_by)
+           AND (approved_at IS NULL OR submitted_at IS NOT NULL));
 
 -- 5. Sent: when and by whom, together --------------------------------------------------------------------------------
 ALTER TABLE ordering.production_order DROP CONSTRAINT ck_production_order_sent;

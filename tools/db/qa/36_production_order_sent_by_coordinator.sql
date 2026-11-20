@@ -94,6 +94,12 @@ SELECT pg_temp.expect_fail_like('PS6a the day it was sent rewritten', 'kept as w
 SELECT pg_temp.expect_fail_like('PS6b an approval added to a production order sent without one', 'ck_production_order_approval', $q$
     UPDATE ordering.production_order SET approved_by = md5('demo:user:editor')::uuid
      WHERE id = md5('qa36:po1')::uuid $q$);
+-- Approved by someone other than its drafter, so only the "once submitted" clause is broken.
+SELECT pg_temp.expect_fail_like('PS6c a whole approval added to a production order never submitted', 'ck_production_order_approval', $q$
+    UPDATE ordering.production_order po
+       SET approved_by = (SELECT u.id FROM identity.app_user u WHERE u.id <> po.drawn_up_by ORDER BY u.id LIMIT 1),
+           approved_at = NOW()
+     WHERE po.id = md5('qa36:po1')::uuid $q$);
 SELECT pg_temp.expect_ok('PS7 a draft cancelled: no sender, no sending', $q$
     UPDATE ordering.production_order SET status = 'CANCELLED', cancelled_at = NOW(),
            cancelled_by = md5('demo:user:editor')::uuid, cancellation_reason = 'drawn up twice'
