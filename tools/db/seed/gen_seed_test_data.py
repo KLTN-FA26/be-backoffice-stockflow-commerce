@@ -1883,7 +1883,7 @@ o.ship_from(T(10, 31, 11), "sales2")
 o.production("S5:1", 1, "INSG", T(11, 6, 9), ["SENT"])
 o.move("AWAITING_STOCK", T(11, 8, 9), U["sales2"], "Chờ hàng từ xưởng in")
 
-# ---- confirmed: a production order cancelled at a producer that stopped, its replacement waiting for approval,
+# ---- confirmed: a production order cancelled at a producer that stopped, its replacement still a draft,
 #      batch 2's still a draft
 o = Order("S4", "caphemoc", [(CPM_LY12, 20, 420)], T(11, 1, 10), "BDG")
 o.draw_up(T(11, 1, 15), [(date(2026, 11, 28), date(2026, 12, 1), [10]), (date(2026, 12, 12), date(2026, 12, 15), [10])],
