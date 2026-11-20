@@ -265,6 +265,8 @@ public class ProductionOrderService {
             return tx.execute(status -> {
                 Locked locked = lockedWithOrder(id, version);
                 ProductionOrder production = locked.production();
+                // Checked again under the lock: the producer may have been deactivated while the files downloaded.
+                activeProducer(production.producerId());
                 production.requireWithin(lacking(locked));
                 // BE1 (06 §4.6 step 8, C42): read while it is still a draft, under the warehouse's capacity lock.
                 capacity.warnIfSendingTurnsNegative(production, now);

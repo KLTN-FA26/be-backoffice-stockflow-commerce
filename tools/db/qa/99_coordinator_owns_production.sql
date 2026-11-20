@@ -1,5 +1,5 @@
 -- =============================================================================
--- Checks of V20261210000200 (spec 2026-11-20, the Production Coordinator owns production):
+-- Checks of V20261211000200 (spec 2026-11-20, the Production Coordinator owns production):
 --   - the coordinator reviews the customers' designs (kltn-docs 12 §4.4, §4.10), the Sales Manager no longer does;
 --   - production orders are sent without approval: production-orders:APPROVE is gone, grants and row (17 §4.3);
 --   - the Sales Manager is told of a production order sent (17 §2): production-order-sends:READ.

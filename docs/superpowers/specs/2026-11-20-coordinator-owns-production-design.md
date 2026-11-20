@@ -163,8 +163,9 @@ PENDING_APPROVAL: historical only; no edge leads into it
 - **Notifications.** Submitting published no event and sent no notice, so nothing is removed. New: the Sales Manager is
   notified when a production order is **sent** (code, sales order, producer, cartons, need-by day) — oversight after the
   fact. Recipients are chosen by permission, as everywhere (`staff.activeHolders`), and `production-orders:READ` is
-  held too widely; *my call:* a new permission `production-orders:MONITOR` ("notified of production orders sent"),
-  granted to SALES_MANAGER and SYSTEM_ADMIN in the same migration. The warehouse manager's notice at send is unchanged.
+  held too widely; *my call:* a new permission of those notified of production orders sent, granted to SALES_MANAGER
+  and SYSTEM_ADMIN in the same migration (built as `production-order-sends:READ`, with a narrower notice: see "Built
+  as" below). The warehouse manager's notice at send is unchanged.
 - **Errors.** `PRODUCTION_ORDER_SELF_APPROVAL` stays in the enum (historical clients) but is no longer thrown; message
   bundles keep it.
 
@@ -210,3 +211,14 @@ typing, against the first goal.
   for historical orders).
 - Exact read permissions the coordinator needs for design review screens (§1).
 - How to retire `production-orders:APPROVE` (follow precedent).
+
+## Built as
+
+Two rulings taken while building, where the code differs from §2 above:
+
+- **The permission is `production-order-sends:READ`**, not `production-orders:MONITOR`: `Action` has no `MONITOR`
+  constant, and the frontend parses a permission's action as a closed enum, so a new action would break it. A new
+  resource with the existing `READ` action says the same thing (V20261211000200, `ProductionOrderSendsResourceDeclaration`).
+- **The Sales Manager's sent notice carries the code, the cartons and the need-by day only**, not the sales order or the
+  producer: the `ProductionOrderSent` event carries neither, and the notice's link opens the production order, which
+  shows both (`ProductionOrderSentOversightListener`).

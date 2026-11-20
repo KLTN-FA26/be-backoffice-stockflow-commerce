@@ -99,7 +99,7 @@ BEGIN
             RAISE EXCEPTION 'production order %: % -> % is not a transition (17 §5.3)', OLD.code, OLD.status,
                 NEW.status USING ERRCODE = 'check_violation';
         END IF;
-        -- What the coordinator edits is settled once it is submitted (B33; the warehouse moves with the order's
+        -- What the coordinator edits is settled once it is sent (B33; the warehouse moves with the order's
         -- shipping warehouse while it is not yet sent).
         IF OLD.status NOT IN ('DRAFT') AND (NEW.producer_id IS DISTINCT FROM OLD.producer_id
             OR NEW.need_by_date IS DISTINCT FROM OLD.need_by_date

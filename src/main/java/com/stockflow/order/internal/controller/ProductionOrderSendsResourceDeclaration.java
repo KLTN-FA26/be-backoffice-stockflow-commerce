@@ -4,7 +4,7 @@ import com.stockflow.common.security.Action;
 import com.stockflow.common.security.PermissionResource;
 
 /**
- * Catalog declaration of {@code production-order-sends} (V20261210000200; kltn-docs 17 §2): those told when a
+ * Catalog declaration of {@code production-order-sends} (V20261211000200; kltn-docs 17 §2): those told when a
  * production order is sent - the Sales Manager and the administrator, now that nobody approves one. It guards no
  * endpoint of its own - the notification of a production order sent goes to its holders - so it is declared here, as
  * {@link DeliveryDelayAlertsResourceDeclaration} is. READ rather than an action of its own: the action set is closed

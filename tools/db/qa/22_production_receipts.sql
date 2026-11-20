@@ -1,7 +1,7 @@
 -- =============================================================================
 -- Adversarial checks + happy paths: receiving against a production order (V20261108002800, team plan 4A-5;
 -- kltn-docs 03 §4.1, BR-01..BR-15 and edge cases; 17 §4.3 step 11, §5.3). Needs the demo seed (demo.editor draws up
--- sends and receives, V20261210000100; the HCM warehouse and its RECEIVING area HCM-RCV01). Rolled back at the end.
+-- sends and receives, V20261211000100; the HCM warehouse and its RECEIVING area HCM-RCV01). Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;

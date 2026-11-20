@@ -979,7 +979,7 @@ class ProductionOrderIntegrationTest {
         assertThat(actions("SALES_STAFF")).containsExactly("READ", "VIEW_PAGE");
         assertThat(actions("WAREHOUSE_MANAGER")).containsExactly("READ", "VIEW_PAGE");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM identity.permission WHERE code = 'production-orders:APPROVE'",
-                Long.class)).as("approval is retired (V20261210000200)").isZero();
+                Long.class)).as("approval is retired (V20261211000200)").isZero();
         assertThat(jdbc.queryForList("""
                 SELECT r.code FROM identity.role_permission rp
                   JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p ON p.id = rp.permission_id

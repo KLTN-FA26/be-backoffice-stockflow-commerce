@@ -11,7 +11,7 @@ import java.sql.DriverManager;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * V20261210000100 on the real upgrade path (design 2026-11-20 §2-§3; kltn-docs 17 §4.3 step 7, BR-23 rewritten): the
+ * V20261211000100 on the real upgrade path (design 2026-11-20 §2-§3; kltn-docs 17 §4.3 step 7, BR-23 rewritten): the
  * Sales Manager's approval of production orders is gone, so a production order waiting for it goes back to DRAFT, with
  * the reason and a status-history row saying why, and every production order already sent keeps its approver as the
  * one who sent it - the column the coordinator's sending writes from now on, set exactly when {@code sent_at} is.
@@ -19,7 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ProductionOrderSendMigrationUpgradeTest {
 
     private static final String BEFORE = "20261209000400";
-    private static final String MIGRATION = "20261210000100";
+    private static final String MIGRATION = "20261211000100";
     private static final String REASON = "Approval step removed 2026-11-20";
 
     @Test

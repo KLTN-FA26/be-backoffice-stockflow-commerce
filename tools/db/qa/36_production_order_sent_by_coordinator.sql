@@ -1,6 +1,6 @@
 -- =============================================================================
 -- Adversarial checks + happy paths: the Production Coordinator sends a production order without approval, and the
--- producer's acceptance takes an optional note (V20261210000100; design 2026-11-20 §2-§3; kltn-docs 17 §4.3 step 7,
+-- producer's acceptance takes an optional note (V20261211000100; design 2026-11-20 §2-§3; kltn-docs 17 §4.3 step 7,
 -- §5.3, BR-23 rewritten). DRAFT -> SENT is an edge, nothing leads into PENDING_APPROVAL any more; sent_at and sent_by
 -- are written together and once; acceptance_note is non-blank, only after the acceptance, and written once.
 -- Each rule is attacked by the statement that breaks only it (expect_fail_like names the rule). Needs the demo seed:

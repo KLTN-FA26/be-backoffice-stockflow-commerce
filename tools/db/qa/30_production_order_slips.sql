@@ -2,7 +2,7 @@
 -- Adversarial checks + happy paths: production order slips (V20261110000200, team plan 4A-3; kltn-docs 17 §4.3
 -- step 7, BR-23): one slip per production order, only once it is sent, kept as it was sent. The fixtures are QA 21's
 -- (a confirmed order of a signed contract shipping from HCM, a producer). Needs the demo seed (demo.editor draws up
--- and sends, V20261210000100). Rolled back at the end.
+-- and sends, V20261211000100). Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -133,7 +133,7 @@ $$;
 \echo '--- only a sent production order has a slip (17 §4.3 step 7)'
 SELECT pg_temp.expect_fail('SL1 a slip for a draft', $q$
     SELECT pg_temp.slip(md5('qa30:po1')::uuid, 'documents/2026/11/10/a.pdf', repeat('a', 64), 2048) $q$);
--- (SL2, a slip for a production order awaiting approval, went with the approval step: V20261210000100.)
+-- (SL2, a slip for a production order awaiting approval, went with the approval step: V20261211000100.)
 SELECT pg_temp.expect_ok('SL3 sent by the coordinator', $q$
     UPDATE ordering.production_order SET status = 'SENT', sent_by = md5('demo:user:editor')::uuid, sent_at = NOW()
      WHERE id = md5('qa30:po1')::uuid $q$);

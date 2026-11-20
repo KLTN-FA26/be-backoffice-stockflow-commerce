@@ -1,7 +1,7 @@
 -- =============================================================================
 -- Adversarial checks + happy paths: print sample rounds and the producer's acceptance (V20261108003100, team plan
 -- 4A-4; kltn-docs 17 §4.3 steps 8-10, §5.3, BR-24; 13 BR-13; 14 BR-18). Needs the demo seed (demo.editor is the
--- coordinator and sends, V20261210000100). Fixtures as 21_production_orders.sql. Rolled back at the end.
+-- coordinator and sends, V20261211000100). Fixtures as 21_production_orders.sql. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;

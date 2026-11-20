@@ -1,7 +1,7 @@
 -- =============================================================================
 -- Adversarial checks + happy paths: production orders (V20261108002700, team plan 4A-2; kltn-docs 17 §4.3, §5.3,
 -- BR-05, BR-06, BR-23, BR-24; no price since V20261207000100; sent by the coordinator with no approval since
--- V20261210000100). Needs the demo seed (demo.editor draws up and sends). Rolled back at the end.
+-- V20261211000100). Needs the demo seed (demo.editor draws up and sends). Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -150,7 +150,7 @@ SELECT pg_temp.expect_fail('PO6 sent with no one named as its sender', $q$
     UPDATE ordering.production_order SET status = 'SENT', sent_at = NOW() WHERE id = md5('qa21:po1')::uuid $q$);
 SELECT pg_temp.expect_fail('PO7 moved to another sales order', $q$
     UPDATE ordering.production_order SET sales_order_id = gen_random_uuid() WHERE id = md5('qa21:po1')::uuid $q$);
-SELECT pg_temp.expect_fail('PO8 submitted for approval: the step is gone (V20261210000100)', $q$
+SELECT pg_temp.expect_fail('PO8 submitted for approval: the step is gone (V20261211000100)', $q$
     UPDATE ordering.production_order SET status = 'PENDING_APPROVAL', submitted_at = NOW()
      WHERE id = md5('qa21:po1')::uuid $q$);
 -- V20261207000100: a production order carries no money. The expect_ok updates around here (PO8a, PO17) also prove the
@@ -225,7 +225,7 @@ SELECT pg_temp.expect_fail('PO19 its history rewritten', $q$
     UPDATE ordering.production_order_status_history SET to_status = 'SENT' WHERE id = md5('qa21:h1')::uuid $q$);
 SELECT pg_temp.expect_fail('PO20 deleted', $q$
     DELETE FROM ordering.production_order WHERE id = md5('qa21:po1')::uuid $q$);
-SELECT pg_temp.expect_true('PO21 the 15 edges of 17 §5.3 (DRAFT -> SENT since V20261210000100)',
+SELECT pg_temp.expect_true('PO21 the 15 edges of 17 §5.3 (DRAFT -> SENT since V20261211000100)',
     (SELECT count(*) FROM ordering.production_order_status_transition) = 15);
 
 \echo '--- who does what (00 §2.1, 17 §4.3)'

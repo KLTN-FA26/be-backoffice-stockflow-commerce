@@ -13,7 +13,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * V20261210000200 on the real upgrade path (spec 2026-11-20, coordinator owns production): the Production Coordinator
+ * V20261211000200 on the real upgrade path (spec 2026-11-20, coordinator owns production): the Production Coordinator
  * reviews the customers' designs instead of the Sales Manager (design-designs:APPROVE, with the READ and VIEW_PAGE the
  * review screens call); production orders are no longer approved (production-orders:APPROVE gone, grants and row); the
  * Sales Manager and the administrator are told of production orders sent (production-order-sends:READ). Exactly the
@@ -21,8 +21,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class CoordinatorReviewsDesignsMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261210000100";
-    private static final String MIGRATION = "20261210000200";
+    private static final String BEFORE = "20261211000100";
+    private static final String MIGRATION = "20261211000200";
 
     @Test
     void theCoordinatorReviewsDesignsAndTheManagerIsToldOfSends() throws Exception {

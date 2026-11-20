@@ -26,7 +26,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * The Production Coordinator's review of customers' designs (kltn-docs 12 §4.4; the Sales Manager's until
- * V20261210000200 moved {@code design-designs:APPROVE}). Handlers are public so the permission proxy advises them; the
+ * V20261211000200 moved {@code design-designs:APPROVE}). Handlers are public so the permission proxy advises them; the
  * resource is declared once, on {@code DesignController}.
  */
 @RestController

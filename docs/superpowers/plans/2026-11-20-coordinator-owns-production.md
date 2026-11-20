@@ -22,8 +22,8 @@ repeat its reasoning.
   `feature/drop-production-order-price` HEAD (`c15413c4`)** — the spec relies on that commit (no price), which is PR be#383,
   not yet in `develop`. The main checkout has the owner's uncommitted work: do not touch it.
 - New migrations, in this order, above every existing one (latest is `V20261209000400`):
-  `V20261210000100__ordering_production_order_sent_by_coordinator.sql`,
-  `V20261210000200__identity_coordinator_reviews_designs_and_sends.sql`. Never edit an existing migration.
+  `V20261211000100__ordering_production_order_sent_by_coordinator.sql`,
+  `V20261211000200__identity_coordinator_reviews_designs_and_sends.sql`. Never edit an existing migration.
 - `check_production_order()` is rewritten from its **latest** body, `V20261207000100__ordering_production_order_no_price.sql`
   (not the baseline's).
 - Every role-permission change advances `identity.app_role.version` of each role that gains or loses a grant, in the
@@ -51,7 +51,7 @@ repeat its reasoning.
 ### Task 1: Ordering schema — sent by the coordinator, acceptance note
 
 **Files:**
-- Create: `src/main/resources/db/migration/V20261210000100__ordering_production_order_sent_by_coordinator.sql`
+- Create: `src/main/resources/db/migration/V20261211000100__ordering_production_order_sent_by_coordinator.sql`
 - Create: `tools/db/qa/36_production_order_sent_by_coordinator.sql` (follow the style of `tools/db/qa/21_production_orders.sql`)
 - Create: `src/test/java/com/stockflow/ProductionOrderSendMigrationUpgradeTest.java` (template:
   `WarehouseCapacityMigrationUpgradeTest`)
@@ -87,7 +87,7 @@ The migration, in this order (header comment says why, citing the spec and 17 §
   `acceptance_note` → refused by the trigger; changing `sent_by` of a SENT order → refused by the trigger.
 - [ ] **Step 2: Write `ProductionOrderSendMigrationUpgradeTest.pendingOrdersGoBackToDraftAndSentOrdersKeepTheirSender`**
   — Flyway `locations("classpath:db/migration","classpath:db/demo")`, `BEFORE = "20261209000400"`,
-  `MIGRATION = "20261210000100"`. Before migrating: pick one DRAFT demo production order and move it to
+  `MIGRATION = "20261211000100"`. Before migrating: pick one DRAFT demo production order and move it to
   `PENDING_APPROVAL` with `submitted_at = now()` (raw SQL). After: that order is `DRAFT` with
   `returned_reason = 'Approval step removed 2026-11-20'` and one new history row; every order with `sent_at` has
   `sent_by = approved_by`; `RawSql.refusedBy(db, "ck_production_order_sent", …)` for nulling `sent_by` on one of them.
@@ -178,10 +178,10 @@ Domain `send`: `move(SENT, null, by, at, "sent")`, sets `sentBy`, `sentAt`; refu
   `mvn test -Dtest='ProductionOrderTest,ProductionOrderIntegrationTest,ProductionSampleIntegrationTest'` → PASS.
 - [ ] **Step 6: Stage.**
 
-### Task 4: Grants — the coordinator reviews designs, approval retired, MONITOR added
+### Task 4: Grants — the coordinator reviews designs, approval retired, the send notice's permission added
 
 **Files:**
-- Create: `src/main/resources/db/migration/V20261210000200__identity_coordinator_reviews_designs_and_sends.sql`
+- Create: `src/main/resources/db/migration/V20261211000200__identity_coordinator_reviews_designs_and_sends.sql`
 - Create: `src/test/java/com/stockflow/CoordinatorReviewsDesignsMigrationUpgradeTest.java`
 - Create: `tools/db/qa/99_coordinator_owns_production.sql`
 - Modify: `src/test/java/com/stockflow/support/PermissionMatrixTest.java` (`SEEDED_HOLDERS` and any endpoint map)
@@ -191,12 +191,9 @@ Domain `send`: `move(SENT, null, by, at, "sent")`, sets `sentBy`, `sentAt`; refu
   in a SALES_MANAGER to review now use a PRODUCTION_COORDINATOR (`grep -rln "SALES_MANAGER\|sf.manager" src/test/java/com/stockflow/design`).
 
 The migration:
-1. Insert permission `production-orders:MONITOR` (resource `production-orders`, action `MONITOR`, description "Told
-   when a production order is sent (kltn-docs 17 §2)"), `ON CONFLICT (code) DO NOTHING`. If `Action` has no `MONITOR`
-   constant and the permission catalog is validated against it at startup, add the constant (check
-   `common/security/Action.java` and the startup validator first; if adding an action is heavy, use `READ` on a new
-   resource `production-order-sends` instead and say so in the header).
-2. Grants: `design-designs:APPROVE` → PRODUCTION_COORDINATOR (insert), SALES_MANAGER (delete); `production-orders:MONITOR`
+1. Insert the permission of those told when a production order is sent, `ON CONFLICT (code) DO NOTHING`. Built as
+   `production-order-sends:READ`: see the spec's "Built as" note for why not `production-orders:MONITOR`.
+2. Grants: `design-designs:APPROVE` → PRODUCTION_COORDINATOR (insert), SALES_MANAGER (delete); `production-order-sends:READ`
    → SALES_MANAGER, SYSTEM_ADMIN; `production-orders:APPROVE` → delete every grant, then the permission row.
 3. Whatever else the review screens require that the coordinator lacks: list the `@RequiresPermission` of every
    handler in `DesignReviewController`, `DesignReviewRoundController` and the design artifact / project / preflight
@@ -206,11 +203,11 @@ The migration:
    `RETURNING role_id` from each insert/delete).
 
 - [ ] **Step 1: Upgrade test** `theCoordinatorReviewsDesignsAndTheManagerIsToldOfSends`: before/after
-  (`BEFORE = "20261210000100"`, `MIGRATION = "20261210000200"`): holders of `design-designs:APPROVE` =
-  `[PRODUCTION_COORDINATOR, SYSTEM_ADMIN]`; of `production-orders:MONITOR` = `[SALES_MANAGER, SYSTEM_ADMIN]`; no row
+  (`BEFORE = "20261211000100"`, `MIGRATION = "20261211000200"`): holders of `design-designs:APPROVE` =
+  `[PRODUCTION_COORDINATOR, SYSTEM_ADMIN]`; of `production-order-sends:READ` (spec "Built as") = `[SALES_MANAGER, SYSTEM_ADMIN]`; no row
   `production-orders:APPROVE`; versions of PRODUCTION_COORDINATOR, SALES_MANAGER, SYSTEM_ADMIN each +1; CUSTOMER,
   WAREHOUSE_MANAGER unchanged.
-- [ ] **Step 2: PermissionMatrixTest**: `"production-orders:APPROVE"` removed; add `"production-orders:MONITOR"` →
+- [ ] **Step 2: PermissionMatrixTest**: `"production-orders:APPROVE"` removed; add `"production-order-sends:READ"` (spec "Built as") →
   `{SALES_MANAGER, SYSTEM_ADMIN}` and `"design-designs:APPROVE"` → `{PRODUCTION_COORDINATOR, SYSTEM_ADMIN}` (if the map
   lists it; else add it).
 - [ ] **Step 3: QA SQL**: the three holder sets as `SELECT … HAVING` assertions in the style of
@@ -232,8 +229,8 @@ The migration:
   (shape: `DesignReviewNotificationListenerTest`, Mockito)
 
 **Interfaces:**
-- Consumes: `contracts.ProductionOrderSent`; permission `production-orders:MONITOR` (Task 4).
-- Produces: `static final String AUDIENCE = "production-orders:MONITOR"`; dedupe key
+- Consumes: `contracts.ProductionOrderSent`; permission `production-order-sends:READ` (Task 4; spec "Built as").
+- Produces: `static final String AUDIENCE = "production-order-sends:READ"`; dedupe key
   `"production-order-sent-oversight:" + productionOrderId`; link `"/production/orders/" + id`; severity INFO; inbox only.
 
 `@ApplicationModuleListener public void on(ProductionOrderSent event)`: `staff.activeHolders(AUDIENCE, null)` → user

@@ -14,7 +14,7 @@
 -- opens no design that does not wait for review. The Sales Manager keeps design-designs:READ and so reads a design
 -- through an open quote request only (spec §1: accepted, no new read right).
 --
--- Production orders are no longer approved (17 §4.3; the /approval endpoint went with V20261210000100's code):
+-- Production orders are no longer approved (17 §4.3; the /approval endpoint went with V20261211000100's code):
 -- production-orders:APPROVE is retired - every grant deleted first (custom roles too), then the permission row,
 -- because the row's ON DELETE CASCADE would drop the grants without moving any role's version.
 --
@@ -72,11 +72,13 @@ UPDATE identity.app_role
 DELETE FROM identity.permission WHERE code = 'production-orders:APPROVE';
 
 UPDATE identity.app_role
-   SET description = 'Product data and approval, internal prices per customer, print setup, told of production orders sent'
+   SET description = 'Product data and approval, internal prices per customer, print setup, told of production orders sent',
+       last_modified_at = NOW(), last_modified_by = 'flyway'
  WHERE code = 'SALES_MANAGER'
    AND description = 'Product data and approval, internal prices per customer, print setup, review of the customers'' designs, production order approval';
 
 UPDATE identity.app_role
-   SET description = 'Review of the customers'' designs; production orders for what a confirmed order lacks: producers, lead times, sending, print samples, progress'
+   SET description = 'Review of the customers'' designs; production orders for what a confirmed order lacks: producers, lead times, sending, print samples, progress',
+       last_modified_at = NOW(), last_modified_by = 'flyway'
  WHERE code = 'PRODUCTION_COORDINATOR'
    AND description = 'Production orders for what a confirmed order lacks: producers, lead times, print samples, progress';

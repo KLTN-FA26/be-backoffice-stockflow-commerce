@@ -28,7 +28,7 @@ import java.util.UUID;
  * inbox owns the dedupe).
  *
  * <p>{@code production-order-sends:READ} is a dedicated audience permission because {@code production-orders:READ}
- * is held too widely to say "told of every send"; see V20261210000200. The receiving warehouse's own notice is
+ * is held too widely to say "told of every send"; see V20261211000200. The receiving warehouse's own notice is
  * {@link ProductionOrderArrivalNotificationListener}'s.</p>
  */
 @Component
