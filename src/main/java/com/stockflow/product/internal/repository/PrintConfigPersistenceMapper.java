@@ -38,7 +38,7 @@ public final class PrintConfigPersistenceMapper {
                 template.getAllowedFontCodes() == null ? null : Arrays.asList(template.getAllowedFontCodes()),
                 template.isActive(), model(template.getModelParams()),
                 areas.stream().map(PrintConfigPersistenceMapper::toArea).toList(), template.getReferenceFileKey(),
-                template.getReferenceFileName(), template.getVersion(), model3d(template));
+                template.getReferenceFileName(), template.getVersion(), model3d(template), template.getPrintVersion());
     }
 
     /** The template's {@code .glb} and its surfaces, as stored. */

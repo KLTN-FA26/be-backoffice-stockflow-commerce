@@ -465,4 +465,81 @@ class QuoteServiceTest {
                 .containsExactly(org.assertj.core.groups.Tuple.tuple(com.stockflow.order.api.FeeKind.PLATE_FEE, 500_000L),
                         org.assertj.core.groups.Tuple.tuple(com.stockflow.order.api.FeeKind.SHIPPING_FEE, 300_000L));
     }
+
+    @Test
+    void theCustomersListReadsTheSentValidityOfEveryRevisingRowInOneStatement() {
+        UUID revisingA = UUID.randomUUID();
+        UUID revisingB = UUID.randomUUID();
+        UUID sent = UUID.randomUUID();
+        Instant draftValidity = NOW.plusSeconds(86_400);
+        when(search.search(any(), any())).thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(
+                new QuoteSearch.Row(revisingA, "QT-A", customer, QuoteStatus.DRAFT, 2, draftValidity, NOW, null, NOW,
+                        "sales", 3),
+                new QuoteSearch.Row(revisingB, "QT-B", customer, QuoteStatus.DRAFT, 3, draftValidity, NOW, null, NOW,
+                        "sales", 5),
+                new QuoteSearch.Row(sent, "QT-C", customer, QuoteStatus.SENT, 1, draftValidity, NOW, null, NOW,
+                        "sales", 1))));
+        when(search.lastSentValidUntil(anyCollection())).thenReturn(Map.of(revisingA, NOW.plusSeconds(60),
+                revisingB, NOW.plusSeconds(120)));
+
+        List<Quotes.Row> rows = service.list(portal, new Quotes.Criteria(null, null, null, 0, 20, null)).items();
+
+        assertThat(rows).extracting(Quotes.Row::status).containsExactly(QuoteStatus.CHANGES_REQUESTED,
+                QuoteStatus.CHANGES_REQUESTED, QuoteStatus.SENT);
+        assertThat(rows).extracting(Quotes.Row::validUntil).containsExactly(NOW.plusSeconds(60), NOW.plusSeconds(120),
+                draftValidity);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Collection<UUID>> asked = ArgumentCaptor.forClass(java.util.Collection.class);
+        verify(search).lastSentValidUntil(asked.capture());
+        assertThat(asked.getValue()).containsExactlyInAnyOrder(revisingA, revisingB);
+        // Nothing per row: no history and no quote loaded for a listed quote.
+        verify(search, never()).history(any());
+        verify(quotes, never()).findById(any());
+
+        service.list(sales, new Quotes.Criteria(null, null, null, 0, 20, null));
+        verify(search).lastSentValidUntil(any());   // staff list nothing as revising: still the one call above
+    }
+
+    @Test
+    void eachLineSaysWhetherItsSkuMayStillBeQuotedAskedOnceForTheWholeQuote() {
+        String stopped = "LY16-ACME-02";
+        ownedByTheCustomer(stopped);
+        Quote quote = stored(QuoteStatus.ACCEPTED, new Quote.Offer(NOW.plusSeconds(3600), null,
+                List.of(line(1, SKU, 20, 20, Money.vnd(2000)), line(2, stopped, 20, 20, Money.vnd(2000)))));
+        when(products.purchasability(anyCollection())).thenReturn(Map.of(SKU, com.stockflow.product.api.Purchasability
+                .PURCHASABLE, stopped, com.stockflow.product.api.Purchasability.PRODUCT_DISCONTINUED));
+
+        Quotes.QuoteView view = service.get(sales, quote.id());
+
+        assertThat(view.lines()).extracting(Quotes.LineView::purchasability).containsExactly(
+                com.stockflow.product.api.Purchasability.PURCHASABLE,
+                com.stockflow.product.api.Purchasability.PRODUCT_DISCONTINUED);
+        verify(products).purchasability(anyCollection());
+    }
+
+    @Test
+    void theCustomersHistoryHasNoDraftRowNoAccountAndOnlyTheirOwnWords() {
+        Quote quote = stored(QuoteStatus.CANCELLED);
+        UUID orderNumberHolder = UUID.randomUUID();
+        when(search.history(quote.id())).thenReturn(List.of(
+                new QuoteSearch.Transition(1, null, QuoteStatus.DRAFT, null, null, NOW, sales.userId()),
+                new QuoteSearch.Transition(1, QuoteStatus.DRAFT, QuoteStatus.SENT, null, null, NOW, sales.userId()),
+                new QuoteSearch.Transition(1, QuoteStatus.SENT, QuoteStatus.CHANGES_REQUESTED, "cheaper please",
+                        null, NOW, portalUser),
+                new QuoteSearch.Transition(2, QuoteStatus.CHANGES_REQUESTED, QuoteStatus.DRAFT, null, null, NOW,
+                        sales.userId()),
+                new QuoteSearch.Transition(2, QuoteStatus.DRAFT, QuoteStatus.CANCELLED, "internal: margin too low",
+                        null, NOW, orderNumberHolder)));
+
+        Quotes.QuoteView mine = service.get(portal, quote.id());
+        assertThat(mine.history()).extracting(Quotes.Transition::toStatus).containsExactly(QuoteStatus.SENT,
+                QuoteStatus.CHANGES_REQUESTED, QuoteStatus.CANCELLED);
+        assertThat(mine.history()).extracting(Quotes.Transition::reason).containsExactly(null, "cheaper please", null);
+        assertThat(mine.history()).extracting(Quotes.Transition::changedBy).containsOnlyNulls();
+
+        Quotes.QuoteView staff = service.get(sales, quote.id());
+        assertThat(staff.history()).hasSize(5);
+        assertThat(staff.history().getLast().reason()).isEqualTo("internal: margin too low");
+        assertThat(staff.history().getFirst().changedBy()).isEqualTo(sales.userId());
+    }
 }

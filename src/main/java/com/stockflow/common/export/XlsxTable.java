@@ -261,7 +261,7 @@ public final class XlsxTable {
 
     private static BusinessException tooLarge(String sheet) {
         return new BusinessException(ErrorCode.EXPORT_TOO_LARGE, "Sheet '%s' would have more than %d rows"
-                .formatted(sheet, MAX_ROWS));
+                .formatted(sheet, MAX_ROWS)).localized("refusal.export.tooLarge", MAX_ROWS);
     }
 
     /** The cell styles of one workbook: a style belongs to its workbook, and a workbook holds at most 64,000. */

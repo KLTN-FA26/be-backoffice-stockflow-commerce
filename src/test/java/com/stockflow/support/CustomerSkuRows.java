@@ -76,18 +76,67 @@ public final class CustomerSkuRows {
      */
     public static Issued issueOn(JdbcTemplate jdbc, TransactionTemplate tx, UUID customerId,
                                  ReferenceRows.ProductRow product, int unitsPerCarton) {
+        return issueOn(jdbc, tx, customerId, product, unitsPerCarton, null);
+    }
+
+    /**
+     * A SKU of {@code customerId}, produced before, issued from an APPROVED design as the design module reads one back
+     * (a snapshot with its print file and a confirmer, kltn-docs 12 §4.5): what a quote request on the design reads as
+     * approved with its customer SKU (14 BR-22). The design is {@link #designOf}.
+     */
+    public static Issued issueApproved(JdbcTemplate jdbc, TransactionTemplate tx, EntityManager em, UUID customerId,
+                                       int unitsPerCarton) {
+        ReferenceRows.ProductRow product = tx.execute(s -> ReferenceRows.approvedProduct(em));
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE product.products SET tax_class = 'EXEMPT' WHERE id = ?",
+                product.productId()));
+        UUID confirmer = tx.execute(s -> ReferenceRows.user(em));
+        Issued issued = issueOn(jdbc, tx, customerId, product, unitsPerCarton, confirmer);
+        produced(jdbc, tx, customerId, issued.sku());
+        return issued;
+    }
+
+    /** The design {@code issued} was drawn from. */
+    public static UUID designOf(JdbcTemplate jdbc, Issued issued) {
+        return jdbc.queryForObject("SELECT draft_id FROM design.design_snapshot WHERE id = ?", UUID.class,
+                issued.snapshotId());
+    }
+
+    /** {@code approvedBy} null: the design a DRAFT and its snapshot the legacy, unconfirmed shape. */
+    private static Issued issueOn(JdbcTemplate jdbc, TransactionTemplate tx, UUID customerId,
+                                  ReferenceRows.ProductRow product, int unitsPerCarton, UUID approvedBy) {
         return tx.execute(s -> {
             jdbc.update("UPDATE product.products SET kind = 'CUSTOMIZABLE' WHERE id = ?", product.productId());
             UUID draft = Identifiers.newId();
             UUID snapshot = Identifiers.newId();
-            jdbc.update("""
-                    INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
-                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, customerId, product.productId());
-            jdbc.update("""
-                    INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at,
-                        artifact_manifest)
-                    VALUES (?, ?, ?, 'https://example.com/print.pdf', NOW(), NOW(), '[]'::jsonb)""",
-                    snapshot, draft, "c".repeat(64));
+            if (approvedBy == null) {
+                jdbc.update("""
+                        INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at,
+                            current_artifacts)
+                        VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, customerId, product.productId());
+                jdbc.update("""
+                        INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at,
+                            created_at, artifact_manifest)
+                        VALUES (?, ?, ?, 'https://example.com/print.pdf', NOW(), NOW(), '[]'::jsonb)""",
+                        snapshot, draft, "c".repeat(64));
+            } else {
+                UUID art = Identifiers.newId();
+                jdbc.update("""
+                        INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at,
+                            current_artifacts, name, reviewed_by, reviewed_at)
+                        VALUES (?, ?, ?, 'APPROVED', NOW(), '{}'::jsonb, 'Ly in logo khach', ?, NOW())""", draft,
+                        customerId, product.productId(), approvedBy);
+                jdbc.update("""
+                        INSERT INTO design.design_artifact (id, draft_id, storage_key, original_name, content_type,
+                            size_bytes, stored_at, checksum, created_at, artifact_role)
+                        VALUES (?, ?, ?, 'art.pdf', 'application/pdf', 1, NOW(), ?, NOW(), 'PRINT_READY')""",
+                        art, draft, "design/" + art + "/art.pdf", "c".repeat(64));
+                jdbc.update("""
+                        INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at,
+                            created_at, artifact_manifest, artifact_id, confirmed_by, reviewed_by, spec)
+                        VALUES (?, ?, ?, 'https://example.com/print.pdf', NOW(), NOW(), '[]'::jsonb, ?, ?, ?,
+                            'Logo front, 2 colours')""",
+                        snapshot, draft, "c".repeat(64), art, approvedBy, approvedBy);
+            }
             UUID variant = Identifiers.newId();
             String sku = product.sku() + "-C" + variant.toString().substring(24, 28).toUpperCase();
             jdbc.update("""

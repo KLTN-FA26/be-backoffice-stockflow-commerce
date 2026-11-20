@@ -34,6 +34,10 @@ public interface QuoteCards {
      * @param status        the order module's name: DRAFT, SENT, ACCEPTED, CHANGES_REQUESTED, EXPIRED, CANCELLED,
      *                      CONVERTED
      * @param proposedTotal the total with tax at the proposed cartons; null while a part of it is unknown
+     * @param convertedOrderId     the order it became, once the customer can open it: null while that order is a
+     *                             DRAFT, which the customer does not see until its contract is sent (17 §5.2) - a card
+     *                             linking to it led them to a page that does not exist for them
+     * @param convertedOrderNumber with {@code convertedOrderId}
      * @param version       what an answer to it names (the quote refuses one to a version the customer did not see)
      */
     record Card(UUID id, String number, UUID customerId, String status, int revision, Instant validUntil,
@@ -55,6 +59,13 @@ public interface QuoteCards {
     }
 
     Optional<Card> quote(UUID quoteId);
+
+    /**
+     * The card of the quote an order was converted from; empty for an order no quote became. What the chat redraws when
+     * the order's contract moves: the order becomes the customer's to open when its contract is sent, and theirs no
+     * longer when the contract is cancelled back to a draft, so the quote's card links to it or stops.
+     */
+    Optional<Card> quoteOfOrder(UUID orderId);
 
     /**
      * The customer accepts on the card, as on the quote's page.

@@ -2,6 +2,7 @@ package com.stockflow.chat.internal.service;
 
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.StaffContact;
+import com.stockflow.identity.api.StaffMember;
 import org.springframework.stereotype.Component;
 
 import java.util.Collection;
@@ -39,6 +40,14 @@ public class AgentDirectory {
 
     public boolean answersCustomers(UUID userId) {
         return userId != null && agents().contains(userId);
+    }
+
+    /**
+     * Active staff whose name contains {@code nameQuery}, by name, at most {@code limit}: anyone a note may mention, not
+     * only the agents. Identity leaves out every portal account.
+     */
+    public List<StaffMember> staff(String nameQuery, int limit) {
+        return identity.activeStaff(nameQuery, limit);
     }
 
     /** Display names (full name, or the username) of the accounts that exist among {@code userIds}. */

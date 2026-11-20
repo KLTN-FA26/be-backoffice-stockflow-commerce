@@ -78,6 +78,14 @@ public class CustomizationTemplateJpaEntity extends BaseEntity {
     @Column(name = "model_file_checksum", length = 64)
     private String modelFileChecksum;
 
+    /**
+     * The print version ({@code PrintConfig#printVersion}): moved by {@link #movePrintVersion} only, never by the
+     * optimistic lock, so renaming or activating a template leaves the files of designs drawn on it current.
+     * {@code ck_customization_templates_print_version} states its floor again.
+     */
+    @Column(name = "print_version", nullable = false)
+    private long printVersion;
+
     /** {@code [{"printAreaCode": ..., "meshName": ...}]}; checked against the print areas by the service. */
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "model_surfaces_json", nullable = false, columnDefinition = "jsonb")
@@ -110,6 +118,10 @@ public class CustomizationTemplateJpaEntity extends BaseEntity {
     public String getModelFileName() { return modelFileName; }
     public String getModelFileChecksum() { return modelFileChecksum; }
     public List<Map<String, Object>> getModelSurfaces() { return modelSurfaces; }
+    public long getPrintVersion() { return printVersion; }
+
+    /** What a customer's files are drawn on changed ({@code PrintFacts#next} gives {@code next}). */
+    public void movePrintVersion(long next) { printVersion = next; }
 
     /** Everything a Sales Manager edits at once; the model as its stored JSON object. */
     public void describe(String name, int minDpi, String colorMode, String[] allowedFileFormats, int maxFileSizeMb,

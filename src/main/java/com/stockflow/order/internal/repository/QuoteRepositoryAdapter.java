@@ -237,6 +237,35 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
         return jpa.findById(quoteId).map(QuoteRepositoryAdapter::toRow);
     }
 
+    @Override
+    public Map<UUID, Instant> lastSentValidUntil(java.util.Collection<UUID> quoteIds) {
+        if (quoteIds == null || quoteIds.isEmpty()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT DISTINCT ON (quote_id) quote_id, offer ->> 'validUntil'
+                          FROM ordering.quote_status_history
+                         WHERE quote_id IN (:quotes) AND to_status = 'SENT' AND offer IS NOT NULL
+                         ORDER BY quote_id, changed_at DESC, id DESC""")
+                .setParameter("quotes", List.copyOf(quoteIds))
+                .getResultList();
+        Map<UUID, Instant> validity = new java.util.HashMap<>();
+        rows.stream().filter(r -> r[1] != null).forEach(r -> validity.put((UUID) r[0], Instant.parse((String) r[1])));
+        return validity;
+    }
+
+    @Override
+    public Optional<UUID> quoteConvertedInto(UUID orderId) {
+        @SuppressWarnings("unchecked")
+        List<UUID> ids = entityManager.createNativeQuery("""
+                        SELECT id FROM ordering.quote WHERE converted_order_id = :order
+                         ORDER BY converted_at DESC NULLS LAST LIMIT 1""")
+                .setParameter("order", orderId)
+                .getResultList();
+        return ids.stream().findFirst();
+    }
+
     private static Instant toInstant(Object value) {
         return switch (value) {
             case Instant instant -> instant;

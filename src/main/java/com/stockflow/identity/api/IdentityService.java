@@ -165,6 +165,18 @@ public interface IdentityService {
      */
     List<AssignableUser> assignableUsers(java.util.Set<String> roleCodes, UUID warehouseId);
 
+    /** The most {@link #activeStaff} returns at once: a picker narrows by typing, it does not page. */
+    int MAX_STAFF_PICKED = 50;
+
+    /**
+     * The ACTIVE staff whose display name (full name, or the username) contains {@code nameQuery} - case and Vietnamese
+     * accents ignored, every one when it is blank - by name, at most {@code limit}, kept between 1 and
+     * {@link #MAX_STAFF_PICKED}. For a screen where a colleague is picked (a chat note's mentions): like
+     * {@link #assignableUsers} it reveals no e-mail, phone or status, so it needs no user-management permission.
+     * Anybody who holds the CUSTOMER role is never returned.
+     */
+    List<StaffMember> activeStaff(String nameQuery, int limit);
+
     /**
      * The ACTIVE staff to notify about something in {@code warehouseId} (or system-wide when it is {@code null}),
      * by role (SCRUM-147): holders of at least one of {@code roleCodes} whose data scope reaches it - everyone whose

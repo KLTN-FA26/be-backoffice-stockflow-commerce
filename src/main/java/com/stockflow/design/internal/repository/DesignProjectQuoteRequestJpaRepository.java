@@ -1,13 +1,16 @@
 package com.stockflow.design.internal.repository;
 
 import com.stockflow.common.persistence.BaseJpaRepository;
+import com.stockflow.design.internal.domain.QuoteRequestStatus;
+import com.stockflow.design.internal.entity.DesignProjectJpaEntity;
 import com.stockflow.design.internal.entity.DesignProjectQuoteRequestJpaEntity;
 import jakarta.persistence.LockModeType;
+import jakarta.persistence.criteria.Predicate;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -31,17 +34,25 @@ public interface DesignProjectQuoteRequestJpaRepository extends BaseJpaRepositor
     /** A project's quote requests, the newest first. */
     List<DesignProjectQuoteRequestJpaEntity> findByProjectIdOrderByCreatedAtDescIdDesc(UUID projectId);
 
-    /** The sales staff's list of every customer, the newest first. */
-    Page<DesignProjectQuoteRequestJpaEntity> findAllByOrderByCreatedAtDescIdDesc(Pageable page);
-
     /**
-     * The sales staff's list of one customer - the project's - the newest first. Two methods rather than
-     * {@code (:customerId is null or ...)}: an absent filter would bind a null PostgreSQL cannot type.
+     * The sales staff's list: every customer's requests or one customer's - the project's, read in the design schema
+     * itself - in any status or one, as {@link DesignQuoteRequestJpaRepository#listed} lists a single design's. A
+     * specification rather than {@code (:x is null or ...)}: an absent filter then binds no parameter, whose type
+     * PostgreSQL could not infer, and the page's count is taken after the filter.
      */
-    @Query(value = "select r from DesignProjectQuoteRequestJpaEntity r where r.projectId in ("
-            + "select p.id from DesignProjectJpaEntity p where p.customerId = :customerId) "
-            + "order by r.createdAt desc, r.id desc",
-            countQuery = "select count(r) from DesignProjectQuoteRequestJpaEntity r where r.projectId in ("
-                    + "select p.id from DesignProjectJpaEntity p where p.customerId = :customerId)")
-    Page<DesignProjectQuoteRequestJpaEntity> ofCustomer(@Param("customerId") UUID customerId, Pageable page);
+    static Specification<DesignProjectQuoteRequestJpaEntity> listed(UUID customerId, QuoteRequestStatus status) {
+        return (root, query, cb) -> {
+            List<Predicate> where = new ArrayList<>();
+            if (status != null) {
+                where.add(cb.equal(root.get("status"), status));
+            }
+            if (customerId != null) {
+                var projects = query.subquery(UUID.class);
+                var project = projects.from(DesignProjectJpaEntity.class);
+                projects.select(project.get("id")).where(cb.equal(project.get("customerId"), customerId));
+                where.add(root.get("projectId").in(projects));
+            }
+            return cb.and(where.toArray(Predicate[]::new));
+        };
+    }
 }

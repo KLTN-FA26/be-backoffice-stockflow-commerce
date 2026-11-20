@@ -29,6 +29,16 @@ class CustomerDocumentsAdapter implements CustomerDocuments {
             SELECT q.id, q.customer_id, q.quote_number AS number, q.status, q.sent_by AS responsible,
                    NULL::numeric AS amount, NULL AS currency, q.created_at
               FROM ordering.quote q""";
+    /**
+     * {@link #QUOTES} as the customer's portal names the status: a revision being written after the customer asked for
+     * changes (DRAFT, sent before) is CHANGES_REQUESTED to them ({@code Quote#revisingSentQuote}).
+     */
+    private static final String QUOTES_AS_CUSTOMER_SEES = """
+            SELECT q.id, q.customer_id, q.quote_number AS number,
+                   CASE WHEN q.status = 'DRAFT' AND q.sent_at IS NOT NULL THEN 'CHANGES_REQUESTED' ELSE q.status END
+                       AS status,
+                   q.sent_by AS responsible, NULL::numeric AS amount, NULL AS currency, q.created_at
+              FROM ordering.quote q""";
     private static final String ORDERS = """
             SELECT o.id, o.customer_id, o.order_number AS number, o.status,
                    (SELECT q.sent_by FROM ordering.quote q WHERE q.converted_order_id = o.id
@@ -63,6 +73,12 @@ class CustomerDocumentsAdapter implements CustomerDocuments {
     @Transactional(readOnly = true)
     public Optional<CustomerDocument> quote(UUID quoteId) {
         return one(QUOTES + " WHERE q.id = :id", quoteId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<CustomerDocument> quoteAsCustomerSees(UUID quoteId) {
+        return one(QUOTES_AS_CUSTOMER_SEES + " WHERE q.id = :id", quoteId);
     }
 
     @Override

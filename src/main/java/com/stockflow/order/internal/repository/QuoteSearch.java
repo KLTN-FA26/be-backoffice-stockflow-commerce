@@ -38,4 +38,14 @@ public interface QuoteSearch {
 
     /** Audit fields of one quote, for the detail view. */
     java.util.Optional<Row> findRow(UUID quoteId);
+
+    /**
+     * The validity of the offer each quote was last sent with, as its latest SENT history row kept it - what a quote
+     * Sales are revising is listed with to its customer. One statement for all of them; a quote never sent with an offer
+     * on its history is not a key.
+     */
+    java.util.Map<UUID, Instant> lastSentValidUntil(java.util.Collection<UUID> quoteIds);
+
+    /** The quote an order was converted from; empty for an order no quote became. */
+    java.util.Optional<UUID> quoteConvertedInto(UUID orderId);
 }

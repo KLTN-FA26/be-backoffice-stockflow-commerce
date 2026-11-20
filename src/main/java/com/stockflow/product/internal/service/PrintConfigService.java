@@ -15,6 +15,7 @@ import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.api.TemplateModel3d;
 import com.stockflow.product.internal.domain.ModelFileRules;
 import com.stockflow.product.internal.domain.PrintConfigRules;
+import com.stockflow.product.internal.domain.PrintFacts;
 import com.stockflow.product.internal.domain.VariantStatus;
 import com.stockflow.product.internal.entity.CustomizationTemplateJpaEntity;
 import com.stockflow.product.internal.entity.PrintAreaJpaEntity;
@@ -58,6 +59,11 @@ import java.util.stream.Collectors;
  * pure {@link PrintConfigRules}, which also computes the print areas; everything else is a fact about its variant and
  * product. Saving replaces the areas whole - they are derived, never edited one by one - and a template is born
  * inactive, so a half-entered one is never offered to a customer.</p>
+ *
+ * <p>A template carries two versions. {@code version} is the optimistic lock and moves with every write. The print
+ * version ({@link PrintConfig#printVersion}) moves only when an edit changes what customers' files are drawn on
+ * ({@link PrintFacts}): renaming, activating, deactivating - including the variant's template retired by another's
+ * activation - and attaching a reference die-line leave it, so designs waiting for review stay approvable.</p>
  *
  * <p>Every write takes the product lock first, then the template's: the same order as every other write of a product,
  * and what makes "one active template per variant" (activation retires the one active before it) safe under two
@@ -203,6 +209,7 @@ public class PrintConfigService implements PrintConfigs {
         VariantJpaEntity variant = variantOf(productId, variantId);
         requireWritable(product, variant);
         CustomizationTemplateJpaEntity template = lockTemplate(variantId, templateId, version);
+        PrintFacts before = PrintFacts.of(assemble(List.of(template), Map.of(variantId, variant)).get(0));
         var computed = computeAreas(draft);
         TemplateModel3d current = PrintConfigPersistenceMapper.model3d(template);
         List<TemplateModel3d.Surface> requested = draft.surfaces() == null ? null
@@ -224,6 +231,13 @@ public class PrintConfigService implements PrintConfigs {
         if (prepared != null) {
             PreparedFiles.PreparedFile file = prepared.single();
             template.attachModelFile(file.file().key(), file.file().originalName(), file.sha256());
+        }
+        // The edit as it will be stored, areas included, against the template as it was: only a change customers'
+        // files are drawn on outdates them.
+        PrintFacts after = PrintFacts.of(PrintConfigPersistenceMapper.toConfig(template, productId, variant.getSku(),
+                PrintConfigPersistenceMapper.toRows(templateId, computed)));
+        if (!after.equals(before)) {
+            template.movePrintVersion(PrintFacts.next(template.getPrintVersion()));
         }
         templates.saveAndFlush(template);
         if (prepared != null) {

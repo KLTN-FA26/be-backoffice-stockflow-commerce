@@ -1,5 +1,6 @@
 package com.stockflow.customer.internal.service;
 
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
@@ -18,11 +19,14 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * A customer's legal profile (kltn-docs 18 §3, BR-05, BR-12, §6; QD-14; team plan 4B-4; WF-05 E1): Sales records the
@@ -91,11 +95,12 @@ public class CustomerLegalProfileService implements CustomerLegalProfiles {
     public CustomerLegalProfile save(Save command) {
         Customer customer = customers.findForUpdate(command.customerId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND));
-        String address = required(command.registeredAddress(), "registeredAddress", 500);
-        String representative = required(command.representativeName(), "representativeName", 200);
-        String title = required(command.representativeTitle(), "representativeTitle", 100);
-        String invoiceEmail = invoiceEmail(command.invoiceEmail(), customer.email());
-        CustomerLegalProfile.BankAccount bank = bankAccount(command.bankAccount());
+        Checked checked = check(command, customer.email());
+        String address = checked.registeredAddress();
+        String representative = checked.representativeName();
+        String title = checked.representativeTitle();
+        String invoiceEmail = checked.invoiceEmail();
+        CustomerLegalProfile.BankAccount bank = checked.bankAccount();
         Optional<CustomerLegalProfileJpaEntity> existing = profiles.findByCustomerId(command.customerId());
         if (existing.isPresent() ? command.expectedVersion() == null
                 || existing.get().getVersion() != command.expectedVersion()
@@ -123,35 +128,68 @@ public class CustomerLegalProfileService implements CustomerLegalProfiles {
         return view(customer, profiles.saveAndFlush(row));
     }
 
+    /** The profile's fields as they are kept: trimmed, the invoice e-mail lower-cased, the account number unspaced. */
+    record Checked(String registeredAddress, String representativeName, String representativeTitle,
+                   String invoiceEmail, CustomerLegalProfile.BankAccount bankAccount) {
+    }
+
+    /**
+     * Every field of {@code command} checked, each one at fault named in {@code fieldErrors} with its message in the
+     * reader's language - the way a form validated by Bean Validation answers, so the back office puts each message
+     * under its own input (FE BE-8). The checks are here rather than {@code @Valid} on the request because the
+     * controller must turn away a caller who is not staff before anything about the body is said.
+     *
+     * @param contactEmail the customer's contact e-mail, the invoice e-mail's default
+     * @throws BusinessException {@code VALIDATION_FAILED} with one field error per field at fault
+     */
+    static Checked check(Save command, String contactEmail) {
+        List<FieldError> errors = new ArrayList<>();
+        String address = required(command.registeredAddress(), "registeredAddress", 500, errors);
+        String representative = required(command.representativeName(), "representativeName", 200, errors);
+        String title = required(command.representativeTitle(), "representativeTitle", 100, errors);
+        String invoiceEmail = invoiceEmail(command.invoiceEmail(), contactEmail, errors);
+        CustomerLegalProfile.BankAccount bank = bankAccount(command.bankAccount(), errors);
+        if (!errors.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, errors.stream()
+                    .map(e -> e.field() + ": " + e.message()).collect(Collectors.joining("; ")), errors)
+                    .localized("refusal.customer.legalProfile.invalid", errors.size());
+        }
+        return new Checked(address, representative, title, invoiceEmail, bank);
+    }
+
     /**
      * The address invoices go to, lower-cased as the customer's own is; blank takes the customer's contact address,
      * which is what 18 §3 makes its default.
      */
-    private static String invoiceEmail(String entered, String contactEmail) {
+    private static String invoiceEmail(String entered, String contactEmail, List<FieldError> errors) {
         String value = entered == null || entered.isBlank() ? contactEmail : entered;
         if (value == null || value.isBlank()) {
             return null;
         }
         value = value.strip().toLowerCase(Locale.ROOT);
         if (value.length() > 320 || !EMAIL.matcher(value).matches()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "invoiceEmail: not an e-mail address");
+            errors.add(FieldError.localized("invoiceEmail", "not an e-mail address", "Email",
+                    "refusal.customer.legalProfile.invoiceEmail"));
+            return null;
         }
         return value;
     }
 
     /** Null for no account; otherwise its number without spaces, its bank and its holder, all three. */
-    private static CustomerLegalProfile.BankAccount bankAccount(CustomerLegalProfile.BankAccount entered) {
+    private static CustomerLegalProfile.BankAccount bankAccount(CustomerLegalProfile.BankAccount entered,
+                                                                List<FieldError> errors) {
         if (entered == null || (blank(entered.accountNumber()) && blank(entered.bankName())
                 && blank(entered.accountHolder()))) {
             return null;
         }
         String number = entered.accountNumber() == null ? "" : entered.accountNumber().replaceAll("[\\s.-]", "");
         if (!ACCOUNT_NUMBER.matcher(number).matches()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "bankAccount.accountNumber: 4 to 34 digits or letters");
+            errors.add(FieldError.localized("bankAccount.accountNumber", "4 to 34 digits or letters", "Pattern",
+                    "refusal.customer.legalProfile.accountNumber"));
         }
-        return new CustomerLegalProfile.BankAccount(number, required(entered.bankName(), "bankAccount.bankName", 200),
-                required(entered.accountHolder(), "bankAccount.accountHolder", 200));
+        String bankName = required(entered.bankName(), "bankAccount.bankName", 200, errors);
+        String holder = required(entered.accountHolder(), "bankAccount.accountHolder", 200, errors);
+        return new CustomerLegalProfile.BankAccount(number, bankName, holder);
     }
 
     private static boolean blank(String value) {
@@ -175,10 +213,16 @@ public class CustomerLegalProfileService implements CustomerLegalProfiles {
         }
     }
 
-    private static String required(String value, String field, int max) {
-        if (value == null || value.isBlank() || value.strip().length() > max) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, field + ": required, at most " + max
-                    + " characters");
+    /** The value trimmed; blank or longer than {@code max} adds the field's error and answers null. */
+    private static String required(String value, String field, int max, List<FieldError> errors) {
+        if (value == null || value.isBlank()) {
+            errors.add(FieldError.localized(field, "required", "NotBlank", "refusal.customer.legalProfile.required"));
+            return null;
+        }
+        if (value.strip().length() > max) {
+            errors.add(FieldError.localized(field, "at most " + max + " characters", "Size",
+                    "refusal.customer.legalProfile.tooLong", max));
+            return null;
         }
         return value.strip();
     }

@@ -314,6 +314,35 @@ class DocumentCardsTest {
     }
 
     @Test
+    @DisplayName("BE-17: the contract sent - the order now the customer's - redraws the converted quote's card with "
+            + "the order; its state stays, and a signing does not redraw it")
+    void contractSentRedrawsTheQuoteCardWithTheOrder() {
+        UUID quote = UUID.randomUUID();
+        UUID contract = UUID.randomUUID();
+        ContextRef ref = new ContextRef(ContextKind.QUOTE, quote);
+        ChatMessage converted = card(CardKind.QUOTE, "{\"quoteId\":\"" + quote + "\",\"revision\":2,"
+                + "\"status\":\"CONVERTED\",\"convertedOrderId\":null}");
+        ChatMessage older = card(CardKind.QUOTE, "{\"quoteId\":\"" + quote + "\",\"revision\":1}");
+        when(messages.cardsAbout(ref, CardKind.QUOTE)).thenReturn(List.of(converted, older));
+        when(quotes.quoteOfOrder(order)).thenReturn(Optional.of(new QuoteCards.Card(quote, "QT-1", customer,
+                "CONVERTED", 2, Instant.now(), null, List.of(), new BigDecimal("999"), new BigDecimal("999"), order,
+                "SO-1", null, null, 7)));
+
+        documents.contractChanged(new SalesContractStatusChanged(contract, "HD-1", order, "SO-1", customer, "SENT",
+                UUID.randomUUID(), Instant.now()));
+
+        ArgumentCaptor<JsonNode> payload = ArgumentCaptor.forClass(JsonNode.class);
+        verify(cards).update(eq(converted.id()), isNull(), payload.capture(), eq(Actor.system()), isNull(), isNull());
+        assertThat(payload.getValue().path("convertedOrderId").asText()).isEqualTo(order.toString());
+        assertThat(payload.getValue().path("convertedOrderNumber").asText()).isEqualTo("SO-1");
+        verify(cards, never()).update(eq(older.id()), any(), any(), any(), any(), any());
+
+        documents.contractChanged(new SalesContractStatusChanged(contract, "HD-1", order, "SO-1", customer, "SIGNED",
+                UUID.randomUUID(), Instant.now()));
+        verify(quotes).quoteOfOrder(order);   // the SENT step only: signing does not change what the customer opens
+    }
+
+    @Test
     @DisplayName("a card paid in full stays ACTED and draws no code")
     void paidStaysActed() {
         UUID installment = UUID.randomUUID();

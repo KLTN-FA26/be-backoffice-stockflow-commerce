@@ -56,6 +56,8 @@ class FulfillmentModuleTest {
     @MockitoBean com.stockflow.product.api.CustomerSkus customerSkusMock;
     // Order's, not fulfillment's, since packing no longer checks designs (V20261108000500).
     @MockitoBean com.stockflow.design.api.DesignService designServiceMock;
+    // order draws quotes from design quote requests (FE request, decision 2); design is not booted here.
+    @MockitoBean com.stockflow.design.api.QuoteRequests quoteRequestsMock;
     // R4 (4B-8): order's own port for the customer's chat consent, implemented by chat, which is not booted here.
     @MockitoBean com.stockflow.order.api.ConsentMessages consentMessagesMock;
 

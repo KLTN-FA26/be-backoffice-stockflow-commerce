@@ -98,6 +98,16 @@ public class ResourceServerSecurityConfig {
     }
 
     /**
+     * The live-session check, one instance: the decoder runs it on every bearer token, and the STOMP socket runs it
+     * again when a socket ticket is redeemed ({@code common.websocket.SocketTickets}), because a ticket outlives the
+     * request that asked for it by up to 30 seconds and a logout in between must still end it.
+     */
+    @Bean
+    public SessionValidator sessionValidator(ActiveSessionCheck sessions) {
+        return new SessionValidator(sessions);
+    }
+
+    /**
      * The decoder is declared here, rather than left to Boot's auto-configuration, so a token is
      * also refused once its session has ended ({@link SessionValidator}). Signature, {@code exp}
      * and {@code nbf} are still checked first by the default validators.
@@ -106,10 +116,10 @@ public class ResourceServerSecurityConfig {
     public JwtDecoder jwtDecoder(
             @org.springframework.beans.factory.annotation.Value(
                     "${spring.security.oauth2.resourceserver.jwt.jwk-set-uri}") String jwkSetUri,
-            ActiveSessionCheck sessions) {
+            SessionValidator sessions) {
         NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
         decoder.setJwtValidator(new org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator<>(
-                JwtValidators.createDefault(), new SessionValidator(sessions)));
+                JwtValidators.createDefault(), sessions));
         return decoder;
     }
 
@@ -174,8 +184,9 @@ public class ResourceServerSecurityConfig {
                         .requestMatchers("/api/v1/identity/auth/login", "/oauth2/jwks",
                                 "/api/v1/public/products/**").permitAll()
                         // The STOMP handshake (sales chat): a browser cannot put a bearer token on a WebSocket
-                        // upgrade, so the token comes in the STOMP CONNECT frame and StompAuthenticationInterceptor
-                        // checks it there; nothing is served before it. GET only: the upgrade is a GET.
+                        // upgrade, so the token - or a single-use socket ticket (POST /api/v1/chat/socket-tickets) -
+                        // comes in the STOMP CONNECT frame and StompAuthenticationInterceptor checks it there; nothing
+                        // is served before it. GET only: the upgrade is a GET.
                         .requestMatchers(HttpMethod.GET, "/ws", "/ws/**").permitAll()
                         // A Sales-invited contact has no password yet; the invitation token in the
                         // body is the credential (SCRUM-450). POST only: nothing else lives there.

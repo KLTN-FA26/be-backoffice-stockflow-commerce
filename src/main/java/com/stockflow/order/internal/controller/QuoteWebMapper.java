@@ -38,7 +38,7 @@ final class QuoteWebMapper {
                         l.tiers().stream().map(t -> new QuoteResponse.Tier(t.minQuantity(), t.unitPrice())).toList(),
                         l.proposedUnitPrice(), l.proposedLineTotal(), l.acceptedCartons(), l.acceptedUnits(),
                         l.acceptedUnitPrice(), l.acceptedLineTotal(), l.taxClass(), l.taxRate(), l.proposedTax(),
-                        l.acceptedTax())).toList(),
+                        l.acceptedTax(), l.purchasability() == null ? null : l.purchasability().name())).toList(),
                 q.fees().stream().map(f -> new QuoteResponse.Fee(f.id(), f.kind().name(), f.sku(), f.amount(),
                         f.taxClass(), f.taxRate(), f.tax())).toList(),
                 q.priced(), totals(q.proposed()), totals(q.accepted()), q.proposedTotal(), q.acceptedTotal(), q.sentAt(), q.sentBy(), q.respondedAt(), q.respondedBy(), q.customerFeedback(),

@@ -176,12 +176,17 @@ class QuoteService implements Quotes {
         var page = search.search(new QuoteSearch.Criteria(own.orElse(criteria.customerId()), statuses,
                 criteria.search(), own.isPresent(), now), Pages.of(criteria.page(), criteria.size(),
                 SORT.parse(criteria.sort())));
+        // The validity each revising row was last sent with, for the whole page in one statement: read row by row it
+        // was a history query and a quote load per revising quote listed.
+        Map<UUID, Instant> lastSentValidUntil = own.isEmpty() ? Map.of() : search.lastSentValidUntil(
+                page.getContent().stream().filter(r -> r.status() == QuoteStatus.DRAFT && r.sentAt() != null)
+                        .map(QuoteSearch.Row::id).toList());
         return Pages.toResponse(page.map(r -> {
             boolean revising = own.isPresent() && r.status() == QuoteStatus.DRAFT && r.sentAt() != null;
             QuoteStatus status = revising ? QuoteStatus.CHANGES_REQUESTED
                     : r.status() == QuoteStatus.SENT && !now.isBefore(r.validUntil()) ? QuoteStatus.EXPIRED : r.status();
             return new Row(r.id(), r.quoteNumber(), r.customerId(), status, revising ? r.revision() - 1 : r.revision(),
-                    revising ? lastSentValidUntil(r.id()).orElse(r.validUntil()) : r.validUntil(), r.sentAt(),
+                    revising ? lastSentValidUntil.getOrDefault(r.id(), r.validUntil()) : r.validUntil(), r.sentAt(),
                     r.convertedOrderId(), r.createdAt(), r.version());
         }));
     }
@@ -243,7 +248,7 @@ class QuoteService implements Quotes {
                 user.userId());
         notifySales(quote, CustomerActedOnQuote.Action.ACCEPTED, quote.sentBy(), now);
         log.info("Quote {} accepted", quote.quoteNumber());
-        return view(quote);
+        return view(quote, true);   // answered by the customer: what they see of it, as GET shows them
     }
 
     @Override
@@ -259,7 +264,7 @@ class QuoteService implements Quotes {
         // The feedback stays on the quote: the event carries facts, not what the customer typed (B-4).
         notifySales(quote, CustomerActedOnQuote.Action.CHANGES_REQUESTED, quote.sentBy(),
                 quote.respondedAt());
-        return view(quote);
+        return view(quote, true);   // answered by the customer: what they see of it, as GET shows them
     }
 
     @Override
@@ -398,13 +403,6 @@ class QuoteService implements Quotes {
         }
         requireVersion(quote, version);
         return quote;
-    }
-
-    /** The validity of the offer last sent, as its SENT history row kept it: what a revising quote is listed with. */
-    private Optional<Instant> lastSentValidUntil(UUID quoteId) {
-        Optional<QuoteSearch.Transition> lastSent = search.history(quoteId).stream()
-                .filter(t -> t.toStatus() == QuoteStatus.SENT && t.offer() != null).reduce((first, last) -> last);
-        return lastSent.flatMap(sent -> quotes.findById(quoteId).map(q -> sentOffer(q, sent.offer()).validUntil()));
     }
 
     private Quote lockVisible(CurrentUser user, UUID quoteId) {
@@ -829,15 +827,24 @@ class QuoteService implements Quotes {
     /**
      * @param forCustomer read by the customer (portal): a revision Sales reopened and then dropped before sending it
      *                    was never offered - the customer sees the quote end with the offer
-     *                    they were last sent, as its SENT history row kept it, not the draft's working terms
+     *                    they were last sent, as its SENT history row kept it, not the draft's working terms. Its
+     *                    history is the customer's too: no DRAFT row (drawn up, a revision reopened - Sales' working
+     *                    steps), no account behind a step, and a reason only where it is the customer's own words
+     *                    (CHANGES_REQUESTED); Sales' other reasons - a cancellation's, the order number on CONVERTED -
+     *                    are internal
      */
     private QuoteView view(Quote quote, boolean forCustomer) {
         Instant now = clock.instant();
         QuoteSearch.Row row = search.findRow(quote.id()).orElseThrow();
+        // The full history stays in `rows`: what the customer is shown of a revising quote is read from it below.
         List<QuoteSearch.Transition> rows = search.history(quote.id());
         List<Transition> history = rows.stream()
-                .map(t -> new Transition(t.revision(), t.fromStatus(), t.toStatus(), t.reason(), t.changedAt(),
-                        t.changedBy()))
+                .filter(t -> !forCustomer || t.toStatus() != QuoteStatus.DRAFT)
+                .map(t -> forCustomer
+                        ? new Transition(t.revision(), t.fromStatus(), t.toStatus(),
+                                t.toStatus() == QuoteStatus.CHANGES_REQUESTED ? t.reason() : null, t.changedAt(), null)
+                        : new Transition(t.revision(), t.fromStatus(), t.toStatus(), t.reason(), t.changedAt(),
+                                t.changedBy()))
                 .toList();
         Quote.Offer offer = quote.offer();
         int revision = quote.revision();
@@ -873,6 +880,11 @@ class QuoteService implements Quotes {
                 && offer.lines().stream().anyMatch(line -> line.taxRate() == null);
         TotalsBuilder proposedTotals = new TotalsBuilder();
         TotalsBuilder acceptedTotals = new TotalsBuilder();
+        // Whether each SKU may still be quoted (01 BR-04): an accepted quote is cancelled only when one may not. One
+        // statement for the whole quote; a legacy line's blank is not asked.
+        List<String> skus = offer.lines().stream().filter(line -> !line.legacy()).map(line -> line.sku().code())
+                .toList();
+        Map<String, Purchasability> verdicts = skus.isEmpty() ? Map.of() : products.purchasability(skus);
         List<LineView> lines = new ArrayList<>();
         for (QuoteLine line : offer.lines()) {
             com.stockflow.common.domain.Money acceptedNet = line.acceptedQuantity() == null ? null
@@ -893,7 +905,8 @@ class QuoteService implements Quotes {
                     proposed == null ? null : proposed.amount(), amount(proposedNet),
                     line.legacy() ? null : line.acceptedQuantity(), line.acceptedUnits(),
                     line.acceptedUnitPrice() == null ? null : line.acceptedUnitPrice().amount(), amount(acceptedNet),
-                    line.taxClass(), line.taxRate(), amount(proposedTax), amount(acceptedTax)));
+                    line.taxClass(), line.taxRate(), amount(proposedTax), amount(acceptedTax),
+                    line.legacy() ? null : verdicts.get(line.sku().code().strip().toUpperCase(java.util.Locale.ROOT))));
         }
         List<FeeView> fees = new ArrayList<>();
         for (com.stockflow.order.internal.domain.QuoteFee fee : offer.fees()) {

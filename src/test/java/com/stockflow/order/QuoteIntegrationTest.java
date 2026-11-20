@@ -344,11 +344,22 @@ class QuoteIntegrationTest {
         assertThat(meanwhile.lines()).extracting(line -> line.proposedUnitPrice() != null
                         && line.proposedUnitPrice().compareTo(new BigDecimal("2200")) == 0)
                 .as("the offer they were sent, not Sales' 2,200 draft").containsOnly(false);
+        // The customer's history: their own request with their words; no DRAFT row (drawn up, reopened), no account.
+        assertThat(meanwhile.history()).extracting(Quotes.Transition::toStatus)
+                .containsExactly(QuoteStatus.SENT, QuoteStatus.CHANGES_REQUESTED);
+        assertThat(meanwhile.history()).extracting(Quotes.Transition::changedBy).containsOnlyNulls();
+        assertThat(meanwhile.history()).extracting(Quotes.Transition::reason).containsExactly(null, "2,200?");
+        assertThat(changed.history()).as("requestChanges answers the customer's form")
+                .extracting(Quotes.Transition::toStatus).doesNotContain(QuoteStatus.DRAFT);
+        assertThat(quotes.get(sales, first.id()).history()).as("Sales keep the whole history")
+                .extracting(Quotes.Transition::toStatus).contains(QuoteStatus.DRAFT);
         assertThat(quotes.list(portal, new Quotes.Criteria(null, null, null, 0, 20, null)).items())
                 .filteredOn(row -> row.id().equals(first.id())).singleElement()
                 .satisfies(row -> {
                     assertThat(row.status()).isEqualTo(QuoteStatus.CHANGES_REQUESTED);
                     assertThat(row.revision()).isEqualTo(1);
+                    assertThat(row.validUntil()).as("the validity revision 1 was sent with, read for the page at once")
+                            .isEqualTo(first.validUntil());
                 });
         assertThatThrownBy(() -> quotes.accept(portal, first.id(), new Quotes.Acceptance(meanwhile.version(),
                 Map.of()))).as("nothing to accept until revision 2 is sent, and said so")
@@ -369,6 +380,10 @@ class QuoteIntegrationTest {
         assertThat(noticesOf(first.id(), CustomerActedOnQuote.Action.ACCEPTED)).singleElement()
                 .satisfies(e -> assertThat(e.salesUserId()).isEqualTo(sales.userId()));
         mailedTo(emailOf(sales), accepted.quoteNumber());
+        assertThat(accepted.lines().getFirst().purchasability())
+                .isEqualTo(com.stockflow.product.api.Purchasability.PURCHASABLE);
+        assertThat(accepted.history()).as("accept answers the customer's form")
+                .extracting(Quotes.Transition::changedBy).containsOnlyNulls();
         assertThat(accepted.lines().getFirst().acceptedCartons()).isEqualTo(4);
         assertThat(accepted.lines().getFirst().acceptedUnitPrice()).isEqualByComparingTo("2200");
         assertThat(accepted.acceptedTotal()).isEqualByComparingTo("88000");

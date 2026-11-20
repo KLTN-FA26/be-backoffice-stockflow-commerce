@@ -128,6 +128,7 @@ class QuoteSecurityIntegrationTest {
                 .andExpect(jsonPath("$.data.lines[0].units").value(30))
                 .andExpect(jsonPath("$.data.lines[0].proposedUnitPrice").value(3000))
                 .andExpect(jsonPath("$.data.lines[0].proposedLineTotal").value(90000))
+                .andExpect(jsonPath("$.data.lines[0].purchasability").value("PURCHASABLE"))
                 .andExpect(jsonPath("$.data.proposedTotal").value(90000)));
         String id = draft.path("id").asText();
         // A line without tiers is read from the customer's own price over HTTP too (it was a 500).

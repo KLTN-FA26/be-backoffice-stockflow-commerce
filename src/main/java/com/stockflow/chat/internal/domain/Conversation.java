@@ -8,8 +8,10 @@ import com.stockflow.common.id.Identifiers;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -372,8 +374,7 @@ public final class Conversation extends AggregateRoot {
      */
     public void changeStatus(Actor by, ConversationStatus target, String reason, Instant now, Duration reopenWindow) {
         requireStaff(by);
-        if (target == null || target.isInitial() || target == ConversationStatus.REOPENED
-                || target == ConversationStatus.AUTO_CLOSED || target == ConversationStatus.CLOSED) {
+        if (!askedForByHand(target)) {
             throw new BusinessException(ErrorCode.CHAT_TRANSITION_NOT_ALLOWED,
                     "A conversation is not moved to " + target + " by hand").localized("refusal.chat.notByHand", target);
         }
@@ -535,6 +536,46 @@ public final class Conversation extends AggregateRoot {
         requireInCharge(agent);
     }
 
+    /**
+     * Whether {@code agent} may act for the conversation towards the customer now - answer it, send transfer details,
+     * act on a card: what {@link #acceptAgentMessage} and {@link #requireInCharge(Actor, boolean)} (not even if ended)
+     * accept. Asked by the views so a client never offers what these would refuse with {@code CHAT_NOT_ASSIGNEE}.
+     */
+    public boolean answerableBy(Actor agent) {
+        return agent.isStaff() && !status.isEnded() && inCharge(agent);
+    }
+
+    /** Whether {@code agent} may take the conversation now: what {@link #claim} accepts. */
+    public boolean claimableBy(Actor agent) {
+        return agent.isStaff() && status != ConversationStatus.CLOSED && assignedAgentId == null;
+    }
+
+    /**
+     * Whether {@code by} may hand the conversation to someone: what {@link #handTo} accepts of the person asking - a
+     * supervisor always, the agent in charge their own. Whom it goes to is checked when they ask.
+     */
+    public boolean assignableBy(Actor by) {
+        return by.isStaff() && status != ConversationStatus.CLOSED && inCharge(by);
+    }
+
+    /**
+     * The statuses {@code by} may ask for from here ({@link #changeStatus}): the moves of 16 §5 that are asked for by
+     * hand, and none unless they are in charge - an escalated conversation only for a supervisor. Empty for anyone
+     * else, so the views offer exactly what {@code changeStatus} accepts.
+     */
+    public Set<ConversationStatus> movesOpenTo(Actor by) {
+        if (!by.isStaff() || (status == ConversationStatus.ESCALATED && !by.supervisor()) || !inCharge(by)) {
+            return Set.of();
+        }
+        Set<ConversationStatus> open = EnumSet.noneOf(ConversationStatus.class);
+        for (ConversationStatus target : status.next()) {
+            if (askedForByHand(target)) {
+                open.add(target);
+            }
+        }
+        return Set.copyOf(open);
+    }
+
     /** Whether the first answer is late: none came, and it was due before {@code now} (BR-09). */
     public boolean firstResponseOverdueAt(Instant now) {
         return firstRespondedAt == null && firstResponseDueAt != null && !status.isEnded()
@@ -598,12 +639,20 @@ public final class Conversation extends AggregateRoot {
     }
 
     private void requireInCharge(Actor agent) {
-        if (agent.supervisor()) {
-            return;
-        }
-        if (assignedAgentId == null || !assignedAgentId.equals(agent.userId())) {
+        if (!inCharge(agent)) {
             throw new BusinessException(ErrorCode.CHAT_NOT_ASSIGNEE);
         }
+    }
+
+    /** The agent in charge, or a supervisor: who answers the customer and moves the conversation along. */
+    private boolean inCharge(Actor agent) {
+        return agent.supervisor() || (assignedAgentId != null && assignedAgentId.equals(agent.userId()));
+    }
+
+    /** NEW, QUEUED, ASSIGNED, REOPENED, AUTO_CLOSED and CLOSED are reached by other methods, never asked for. */
+    private static boolean askedForByHand(ConversationStatus target) {
+        return target != null && !target.isInitial() && target != ConversationStatus.REOPENED
+                && target != ConversationStatus.AUTO_CLOSED && target != ConversationStatus.CLOSED;
     }
 
     private void requireStaff(Actor actor) {

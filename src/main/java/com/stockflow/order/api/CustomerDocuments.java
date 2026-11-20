@@ -16,6 +16,14 @@ public interface CustomerDocuments {
 
     Optional<CustomerDocument> quote(UUID quoteId);
 
+    /**
+     * {@link #quote}, with the status the customer's portal shows: a revision Sales reopened after the customer asked
+     * for changes, and has not sent yet, is the quote they asked to change - {@code CHANGES_REQUESTED} - not Sales'
+     * working {@code DRAFT}, as the quote's own pages show it (kltn-docs 14 §4.1 step 4). A first draft, never sent,
+     * stays {@code DRAFT}. Staff read {@link #quote}: to them the revision is the draft they are writing.
+     */
+    Optional<CustomerDocument> quoteAsCustomerSees(UUID quoteId);
+
     Optional<CustomerDocument> order(UUID orderId);
 
     Optional<CustomerDocument> contract(UUID contractId);

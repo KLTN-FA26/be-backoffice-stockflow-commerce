@@ -7,6 +7,7 @@ import com.stockflow.product.api.BagModel;
 import com.stockflow.product.api.CupModel;
 import com.stockflow.product.api.PrintArea;
 import com.stockflow.product.api.PrintAreaShape;
+import com.stockflow.product.api.PrintFont;
 import com.stockflow.product.api.ProductModel;
 
 import java.util.ArrayList;
@@ -25,7 +26,8 @@ import java.util.Set;
  * {@code RIGHT} as deep as its gusset, all as tall as the bag less its top fold. Accepting a shape from the client would
  * let the stored outline disagree with the geometry the browser and the preflight compute from the same model.</p>
  *
- * <p>Pure and stateless; every refusal is {@code PRINT_CONFIG_INVALID} with the reason, and names the request field it
+ * <p>Pure and stateless; every refusal but a font the studio does not offer ({@code VALIDATION_FAILED}, the contract
+ * the back office was given for BE-18) is {@code PRINT_CONFIG_INVALID} with the reason, and names the request field it
  * is about in {@code fieldErrors} (FE request 2026-11-18 BE-12): {@code model.seamMm}, {@code printAreas[1].bleedMm} -
  * the paths of {@code CustomizationTemplateRequest}, a print area by its index in the request - so the back office puts
  * the refusal next to the input that caused it. Each field error carries the English reason as its message and the
@@ -109,6 +111,14 @@ public final class PrintConfigRules {
                 String font = fonts.get(i);
                 if (font == null || font.isBlank() || font.length() > 64) {
                     throw invalid("allowedFontCodes[" + i + "]", "Size", "A font code must be 1 to 64 characters");
+                }
+                if (!PrintFont.isKnown(font)) {
+                    // A font the studio does not offer would narrow the template to nothing a customer can use.
+                    // VALIDATION_FAILED, as the product owner set the contract (BE-18), the field named as one.
+                    String reason = "Font " + font + " is not one the design studio offers";
+                    throw new BusinessException(ErrorCode.VALIDATION_FAILED, reason, List.of(FieldError.localized(
+                            "allowedFontCodes", reason, ONE_OF, "refusal.printConfig.fontUnknown", font)),
+                            Map.of(), "refusal.printConfig.fontUnknown", font);
                 }
             }
             fonts = List.copyOf(new java.util.LinkedHashSet<>(fonts));

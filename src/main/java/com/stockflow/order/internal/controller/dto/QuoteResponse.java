@@ -37,13 +37,17 @@ public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String
      *                         design and print specification, and counts units
      * @param moq              where the lowest tier starts, in the line's measure
      * @param proposedUnitPrice VND per piece at the proposed cartons
+     * @param purchasability   whether the SKU may go on a new quote or order now ({@code PURCHASABLE},
+     *                         {@code PRODUCT_INACTIVE}, {@code PRODUCT_DISCONTINUED}, {@code PRODUCT_NOT_APPROVED},
+     *                         {@code VARIANT_NOT_ACTIVE}): an accepted quote may be cancelled only when a line is not
+     *                         {@code PURCHASABLE}; null on a legacy line
      */
     public record Line(UUID id, int lineNo, String measure, String sku, Integer cartons, Integer unitsPerCarton,
                        int units, UUID designSnapshotId, String printSpec, boolean priced, Integer moq,
                        List<Tier> tiers, BigDecimal proposedUnitPrice, BigDecimal proposedLineTotal,
                        Integer acceptedCartons, Integer acceptedUnits, BigDecimal acceptedUnitPrice,
                        BigDecimal acceptedLineTotal, String taxClass, BigDecimal taxRate, BigDecimal proposedTax,
-                       BigDecimal acceptedTax) {
+                       BigDecimal acceptedTax, String purchasability) {
     }
 
     /** A fee line with its VAT (14 BR-17, BR-20, BR-21); {@code amount} null for a plate fee not priced yet. */

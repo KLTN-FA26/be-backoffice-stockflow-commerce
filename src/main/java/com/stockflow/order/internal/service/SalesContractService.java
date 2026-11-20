@@ -336,7 +336,7 @@ class SalesContractService implements SalesContracts {
         // the customer sent meanwhile stays PENDING for Sales to decide (17 §4.8 step 28: a request lapses only once
         // the order can no longer be cancelled, and a DRAFT order can): closing it here dropped the customer's wish and
         // told them the order had been packed or shipped. Approved, it cancels the DRAFT order.
-        order.withdrawContract(user.userId(), now);
+        order.withdrawContract(user.userId(), saved.cancellationReason(), now);
         orders.save(order);
         statusChanged(saved, order, user.userId(), now);
         log.info("Sales contract {} of order {} cancelled", saved.contractNumber(), order.orderNumber());

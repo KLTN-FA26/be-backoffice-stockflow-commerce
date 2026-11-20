@@ -19,6 +19,7 @@ import com.stockflow.design.internal.controller.dto.DesignProjectResponse;
 import com.stockflow.design.internal.controller.dto.DesignProjectSummaryResponse;
 import com.stockflow.design.internal.controller.dto.DesignProjectTextResponse;
 import com.stockflow.design.internal.domain.QuoteRequestRules;
+import com.stockflow.design.internal.domain.QuoteRequestStatus;
 import com.stockflow.design.internal.domain.TextStyle;
 import com.stockflow.design.internal.service.DesignBatchSubmissionService;
 import com.stockflow.design.internal.service.DesignProjectAssetService;
@@ -385,9 +386,9 @@ class DesignProjectController {
     @Operation(summary = "Customers' project quote requests, the newest first")
     @RequiresPermission(resource = DesignResources.QUOTE_REQUESTS, action = Action.READ)
     public ApiResponse<PageResponse<DesignProjectQuoteRequestResponse>> salesList(
-            @RequestParam(required = false) UUID customerId, @RequestParam(defaultValue = "0") int page,
-            @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(Pages.toResponse(quotes.list(customerId, pageOf(page, size))
+            @RequestParam(required = false) UUID customerId, @RequestParam(required = false) QuoteRequestStatus status,
+            @RequestParam(defaultValue = "0") int page, @RequestParam(required = false) Integer size) {
+        return ApiResponse.ok(Pages.toResponse(quotes.list(customerId, status, pageOf(page, size))
                 .map(DesignProjectController::toResponse)));
     }
 

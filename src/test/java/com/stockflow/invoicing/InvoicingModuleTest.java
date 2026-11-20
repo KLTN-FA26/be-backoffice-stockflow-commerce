@@ -34,6 +34,8 @@ class InvoicingModuleTest {
     @MockitoBean com.stockflow.inventory.api.UomConversionService uomConversionServiceMock;
     @MockitoBean com.stockflow.inventory.api.PackagingSpecResolver packagingSpecResolverMock;
     @MockitoBean com.stockflow.design.api.DesignService designServiceMock;
+    // order draws quotes from design quote requests (FE request, decision 2); design is not booted here.
+    @MockitoBean com.stockflow.design.api.QuoteRequests quoteRequestsMock;
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
     // order's WarehouseCapacityService (BE1: the capacity board behind the shipping-warehouse options and production
     // order approval) reads the map's room and the cartons standing in each warehouse.

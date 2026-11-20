@@ -145,10 +145,10 @@ class PrintConfigRulesTest {
     @Test
     void limitsAreCheckedAndFormatsDeduplicated() {
         var limits = PrintConfigRules.requireValid(new PrintConfigRules.Limits(300, "CMYK",
-                List.of("image/png", "image/jpeg", "image/png"), 20, 4, List.of("ROBOTO", "ROBOTO")));
+                List.of("image/png", "image/jpeg", "image/png"), 20, 4, List.of("roboto-slab", "roboto-slab")));
 
         assertThat(limits.allowedFileFormats()).containsExactly("image/png", "image/jpeg");
-        assertThat(limits.allowedFontCodes()).containsExactly("ROBOTO");
+        assertThat(limits.allowedFontCodes()).containsExactly("roboto-slab");
 
         refused(() -> PrintConfigRules.requireValid(new PrintConfigRules.Limits(300, "CMYK", List.of("PNG"), 20, null,
                 null)), "image/png");
@@ -235,6 +235,31 @@ class PrintConfigRulesTest {
         BagModel said = BagModel.withDefaults(260, 120, 320, 40, 15.0, 0.0, "twisted", "kraft-brown");
         assertThat(said.glueFlapMm()).isEqualTo(15);
         assertThat(said.bottomFoldMm()).isZero();
+    }
+
+    /** FE request BE-18: only the studio's own fonts; none named is every font. */
+    @Test
+    void aTemplateNamesOnlyTheStudiosFonts() {
+        assertThat(PrintConfigRules.requireValid(new PrintConfigRules.Limits(300, "CMYK", List.of("image/png"), 20,
+                null, List.of("be-vietnam-pro", "pacifico"))).allowedFontCodes())
+                .containsExactly("be-vietnam-pro", "pacifico");
+        assertThat(PrintConfigRules.requireValid(new PrintConfigRules.Limits(300, "CMYK", List.of("image/png"), 20,
+                null, null)).allowedFontCodes()).isNull();
+        assertThatThrownBy(() -> PrintConfigRules.requireValid(new PrintConfigRules.Limits(300, "CMYK",
+                List.of("image/png"), 20, null, List.of("montserrat", "Montserrat"))))
+                .isInstanceOf(BusinessException.class)
+                .satisfies(ex -> {
+                    BusinessException refusal = (BusinessException) ex;
+                    assertThat(refusal.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+                    assertThat(refusal.fieldErrors()).singleElement().satisfies(error -> {
+                        assertThat(error.field()).isEqualTo("allowedFontCodes");
+                        assertThat(error.messageKey()).isEqualTo("refusal.printConfig.fontUnknown");
+                        assertThat(error.messageArguments()).containsExactly("Montserrat");
+                    });
+                });
+        assertThat(com.stockflow.product.api.PrintFont.values()).extracting(
+                com.stockflow.product.api.PrintFont::code).containsExactly("be-vietnam-pro", "montserrat",
+                "roboto-slab", "playfair-display", "oswald", "dancing-script", "lobster", "pacifico");
     }
 
     private static void refusedAt(org.assertj.core.api.ThrowableAssert.ThrowingCallable call, String... fields) {

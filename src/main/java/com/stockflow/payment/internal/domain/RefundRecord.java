@@ -71,18 +71,20 @@ public final class RefundRecord {
                                       String currency, LocalDate refundedOn, String reference, String note,
                                       UUID recordedBy, Instant now, LocalDate today) {
         if (amount == null || amount.signum() <= 0 || amount.stripTrailingZeros().scale() > 0) {
-            throw invalid("A refund is a positive amount in whole dong");
+            throw invalid("A refund is a positive amount in whole dong", "refusal.refund.amount");
         }
         if (refundedOn == null || refundedOn.isAfter(today)) {
-            throw invalid("The day the refund was made is required and not in the future");
+            throw invalid("The day the refund was made is required and not in the future",
+                    "refusal.refund.refundedOn");
         }
         String trimmed = reference == null ? "" : reference.strip();
         if (trimmed.isEmpty() || trimmed.length() > 100) {
-            throw invalid("The bank statement reference of the refund is required, at most 100 characters");
+            throw invalid("The bank statement reference of the refund is required, at most 100 characters",
+                    "refusal.refund.reference", 100);
         }
         String cleanNote = note == null || note.isBlank() ? null : note.strip();
         if (cleanNote != null && cleanNote.length() > 500) {
-            throw invalid("The note is at most 500 characters");
+            throw invalid("The note is at most 500 characters", "refusal.refund.note", 500);
         }
         return new RefundRecord(Identifiers.newId(), orderId, customerId, orderNumber, amount.setScale(0),
                 currency, refundedOn, trimmed, cleanNote, Status.RECORDED, Objects.requireNonNull(recordedBy,
@@ -97,11 +99,13 @@ public final class RefundRecord {
     public void voidRecord(String reason, UUID by, Instant at) {
         if (status == Status.VOIDED) {
             throw new BusinessException(ErrorCode.REFUND_RECORD_ALREADY_VOIDED,
-                    "Refund %s of order %s is already voided".formatted(reference, orderNumber));
+                    "Refund %s of order %s is already voided".formatted(reference, orderNumber))
+                    .localized("refusal.refund.alreadyVoided", reference, orderNumber);
         }
         String trimmed = reason == null ? "" : reason.strip();
         if (trimmed.isEmpty() || trimmed.length() > 500) {
-            throw invalid("Voiding a refund record needs a reason, at most 500 characters");
+            throw invalid("Voiding a refund record needs a reason, at most 500 characters",
+                    "refusal.refund.voidReason", 500);
         }
         this.status = Status.VOIDED;
         this.voidedBy = Objects.requireNonNull(by, "by");
@@ -109,8 +113,9 @@ public final class RefundRecord {
         this.voidReason = trimmed;
     }
 
-    private static BusinessException invalid(String message) {
-        return new BusinessException(ErrorCode.VALIDATION_FAILED, message);
+    /** A refusal the accountant reads: {@code message} for the log, {@code key} in their language. */
+    private static BusinessException invalid(String message, String key, Object... arguments) {
+        return new BusinessException(ErrorCode.VALIDATION_FAILED, message).localized(key, arguments);
     }
 
     public UUID id() { return id; }

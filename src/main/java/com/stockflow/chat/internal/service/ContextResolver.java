@@ -67,14 +67,26 @@ public class ContextResolver {
      * @throws BusinessException {@code CHAT_CONTEXT_NOT_FOUND} otherwise
      */
     public Resolved requireOwnedBy(ContextRef ref, UUID customerId, boolean byCustomer) {
-        return find(ref)
+        return find(ref, byCustomer)
                 .filter(found -> found.customerId() == null || found.customerId().equals(customerId))
                 .filter(found -> !byCustomer || visibleToCustomer(found))
                 .orElseThrow(() -> new BusinessException(ErrorCode.CHAT_CONTEXT_NOT_FOUND));
     }
 
-    /** The document whoever it belongs to; empty when it does not exist. */
+    /** The document whoever it belongs to, its status as the staff name it; empty when it does not exist. */
     public Optional<Resolved> find(ContextRef ref) {
+        return find(ref, false);
+    }
+
+    /**
+     * The document whoever it belongs to; empty when it does not exist.
+     *
+     * @param forCustomer its status as the customer's portal names it: a quote Sales are revising after the customer
+     *                    asked for changes is {@code CHANGES_REQUESTED} to them, the quote they still have - not a
+     *                    draft hidden from them, which would refuse their conversation about it and drop the link from
+     *                    its chip
+     */
+    public Optional<Resolved> find(ContextRef ref, boolean forCustomer) {
         UUID id = ref.id();
         return switch (ref.kind()) {
             case PRODUCT -> products.findById(id).map(p -> new Resolved(ref, null, p.name(),
@@ -84,7 +96,8 @@ public class ContextResolver {
             case DESIGN -> designs.design(id).map(d -> new Resolved(ref, d.customerId(), d.name(), d.status(), null));
             case DESIGN_PROJECT -> designs.project(id).map(d -> new Resolved(ref, d.customerId(), d.name(), d.status(),
                     null));
-            case QUOTE -> documents.quote(id).map(d -> resolved(ref, d));
+            case QUOTE -> (forCustomer ? documents.quoteAsCustomerSees(id) : documents.quote(id))
+                    .map(d -> resolved(ref, d));
             case ORDER -> documents.order(id).map(d -> resolved(ref, d));
             case CONTRACT -> documents.contract(id).map(d -> resolved(ref, d));
             case PRODUCTION_ORDER -> documents.productionOrder(id).map(d -> resolved(ref, d));

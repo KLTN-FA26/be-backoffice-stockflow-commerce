@@ -239,8 +239,16 @@ public class DocumentCards {
 
     // ---- contracts (16 §4.3 step 8) ---------------------------------------------------------------------------------
 
-    /** Sent: the contract's card with its document and installments; signed or cancelled: the card shows it. */
+    /**
+     * Sent: the contract's card with its document and installments; signed or cancelled: the card shows it. Sent or
+     * cancelled, the card of the quote the order came from is redrawn too: sending the contract is when the customer
+     * may open the order (17 §5.2), cancelling it puts the order back to a draft they may not, and the quote card links
+     * to the order only while they can - the quote itself did not move, so {@link #quoteChanged} is not called.
+     */
     public void contractChanged(SalesContractStatusChanged event) {
+        if ("SENT".equals(event.status()) || "CANCELLED".equals(event.status())) {
+            quoteOfOrderChanged(event.orderId());
+        }
         Optional<ContractCards.Card> found = contracts.contract(event.orderId(), event.contractId());
         if (found.isEmpty()) {
             return;
@@ -269,6 +277,19 @@ public class DocumentCards {
         };
         existing.stream().filter(c -> c.card().state() != CardState.SUPERSEDED).forEach(c -> cards.update(c.id(),
                 state, payload, Actor.system(), null, null));
+    }
+
+    /** The latest revision's quote card shows the converted order as the customer may now see it; its state stays. */
+    private void quoteOfOrderChanged(UUID orderId) {
+        quotes.quoteOfOrder(orderId).ifPresent(quote -> {
+            JsonNode payload = quotePayload(quote);
+            for (ChatMessage card : messages.cardsAbout(new ContextRef(ContextKind.QUOTE, quote.id()), CardKind.QUOTE)) {
+                if (card.card().state() != CardState.SUPERSEDED && cards.readPayload(card.card().payloadJson())
+                        .path("revision").asInt() == quote.revision()) {
+                    cards.update(card.id(), null, payload, Actor.system(), null, null);
+                }
+            }
+        });
     }
 
     // ---- transfer details (16 §4.4, BR-06) --------------------------------------------------------------------------

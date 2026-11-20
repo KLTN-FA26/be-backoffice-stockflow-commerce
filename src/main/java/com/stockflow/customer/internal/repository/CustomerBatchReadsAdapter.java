@@ -2,6 +2,7 @@ package com.stockflow.customer.internal.repository;
 
 import com.stockflow.customer.api.CreditTerms;
 import com.stockflow.customer.api.CustomerCredits;
+import com.stockflow.customer.api.CustomerSearch;
 import com.stockflow.customer.api.CustomerSummaries;
 import com.stockflow.customer.api.CustomerSummary;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -20,10 +21,11 @@ import java.util.UUID;
  * {@link CustomerSummaries} and {@link CustomerCredits}: one statement each over {@code customer.customer} and
  * {@code customer.credit_profile}, however many customers a report lists. The rows map to the api records exactly as
  * {@code CustomerServiceImpl} maps one customer (its {@code toSummary} and {@code toTerms}), so a report shows the same
- * code and the same credit as the customer's own screen.
+ * code and the same credit as the customer's own screen. {@link CustomerSearch} too: one bounded statement for the ids
+ * a search box means.
  */
 @Component
-class CustomerBatchReadsAdapter implements CustomerSummaries, CustomerCredits {
+class CustomerBatchReadsAdapter implements CustomerSummaries, CustomerCredits, CustomerSearch {
 
     private final NamedParameterJdbcTemplate jdbc;
 
@@ -78,6 +80,22 @@ class CustomerBatchReadsAdapter implements CustomerSummaries, CustomerCredits {
                     rs.getString("note"), rs.getLong("version")));
         });
         return found;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<UUID> idsMatching(String search, int limit) {
+        if (search == null || search.isBlank() || limit <= 0) {
+            return List.of();
+        }
+        // A bound parameter, its LIKE wildcards escaped: "50%" is not "anything".
+        String like = "%" + search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
+        return jdbc.queryForList("""
+                SELECT id FROM customer.customer
+                 WHERE lower(public.unaccent(full_name)) LIKE lower(public.unaccent(:like)) ESCAPE '\\'
+                    OR lower(tax_code) LIKE lower(:like) ESCAPE '\\'
+                 ORDER BY id
+                 LIMIT :limit""", Map.of("like", like, "limit", limit), UUID.class);
     }
 
     private static List<UUID> ids(Collection<UUID> customerIds) {

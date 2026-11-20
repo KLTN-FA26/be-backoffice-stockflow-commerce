@@ -45,6 +45,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -248,12 +249,13 @@ public class DesignProjectQuoteRequestService {
         return views(requests.findByProjectIdOrderByCreatedAtDescIdDesc(projectId));
     }
 
-    /** The sales staff's list, the newest first, of every customer or one. */
+    /** The sales staff's list, the newest first, of every customer or one, in any status or {@code status}. */
     @Transactional(readOnly = true)
-    public Page<ProjectQuoteRequestView> list(UUID customerId, Pageable page) {
-        Page<DesignProjectQuoteRequestJpaEntity> found = customerId == null
-                ? requests.findAllByOrderByCreatedAtDescIdDesc(Pages.of(page.getPageNumber(), page.getPageSize()))
-                : requests.ofCustomer(customerId, Pages.of(page.getPageNumber(), page.getPageSize()));
+    public Page<ProjectQuoteRequestView> list(UUID customerId, QuoteRequestStatus status, Pageable page) {
+        Page<DesignProjectQuoteRequestJpaEntity> found = requests.findAll(
+                DesignProjectQuoteRequestJpaRepository.listed(customerId, status),
+                Pages.of(page.getPageNumber(), page.getPageSize(),
+                        Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"))));
         return new PageImpl<>(views(found.getContent()), found.getPageable(), found.getTotalElements());
     }
 

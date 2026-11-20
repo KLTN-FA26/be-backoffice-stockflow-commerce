@@ -152,8 +152,22 @@ class ContractTermsTest {
         // 3,080,000 x 33.33% = 1,026,564; the last takes 3,080,000 - 2,053,128 = 1,026,872.
         assertThat(plan).extracting(i -> i.amount().amount().longValueExact())
                 .containsExactly(1_026_564L, 1_026_564L, 1_026_872L);
-        assertThat(plan).extracting(PlannedInstallment::dueDays).containsExactly(0, null, 45);
+        assertThat(plan).extracting(PlannedInstallment::dueDays).containsExactly(3, null, 45);
         assertThat(plan).extracting(PlannedInstallment::seq).containsExactly(1, 2, 3);
+    }
+
+    @Test
+    @DisplayName("15 §4.1: an ON_SIGNING installment without due days gets the default days, not 0; days Sales typed stay")
+    void anOnSigningInstallmentLeftWithoutDaysIsNotDueOnTheDayOfSigning() {
+        Order order = order();
+        List<PlannedInstallment> plan = ContractTerms.plan(order, 1, List.of(
+                share("30", PaymentMilestone.ON_SIGNING),
+                new ContractTerms.InstallmentEntry("Dot", PaymentMilestone.ON_SIGNING, null, new BigDecimal("20"), 0,
+                        null),
+                share("50", PaymentMilestone.AFTER_DELIVERY)), true, null);
+        assertThat(plan).extracting(PlannedInstallment::dueDays).containsExactly(
+                com.stockflow.customer.api.DefaultPaymentSchedule.DEFAULT_ON_SIGNING_DUE_DAYS, 0, 0);
+        assertThat(com.stockflow.customer.api.DefaultPaymentSchedule.DEFAULT_ON_SIGNING_DUE_DAYS).isEqualTo(3);
     }
 
     @Test
