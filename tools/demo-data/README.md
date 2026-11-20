@@ -30,7 +30,7 @@ instalments. It never prints a password or a token.
 | `--spare-cartons N` | Spare cartons per D23 SKU for the X01/X02 "top-up" demos (default `1`, `0` = none; `1` or `2` is enough). See "Spare cartons" below. |
 | `--d14-window-in-days N` | The D14 order's delivery window starts `N` days after the run date (default `1` = tomorrow). Run the script the day before the demo, or raise `N`. |
 | `--only carriers\|vehicles\|staging\|orders` | Run one part only (repeatable). `--only-order D14\|D23-A\|D23-B` narrows `orders`. |
-| `--actor ROLE=USERNAME` | Who acts in a role: `sales`, `accountant`, `coordinator`, `warehouse`, `admin` (default: `SF_DEMO_USER`) and `approver` (default `truongkd`). |
+| `--actor ROLE=USERNAME` | Who acts in a role: `sales`, `accountant`, `coordinator`, `warehouse`, `admin` (default: `SF_DEMO_USER`). |
 | `--customer-user CODE=USERNAME` | The sign-in of a customer when it cannot be looked up (e.g. `caphemoc=kh.caphemoc`). |
 
 Environment: `SF_DEMO_USER`, `SF_DEMO_PASSWORD` (required). `SF_DEMO_PASSWORD_<USERNAME>` (upper case, other characters
@@ -84,8 +84,8 @@ The steps per order, each one only if the order is not past it yet:
 2. contract drawn up (one delivery batch, payment plan) -> sent -> signed (a one-page PDF is attached as the signed file)
 3. payment receipt for the `ON_SIGNING` instalment (Accounting) -> order `CONFIRMED`
 4. shipping warehouse chosen (Sales) -> stock held there (none is free, so the cartons are short)
-5. production order for the missing cartons (Production Coordinator) -> submitted -> **approved by a second user** (the
-   approver is never the drafter) -> goods receipt of the cartons -> putaway into bins -> the hold completes
+5. production order for the missing cartons (Production Coordinator) -> sent to its producer by the
+   coordinator (no approval step since 2026-11-20) -> goods receipt of the cartons -> putaway into bins -> the hold completes
 
 It stops there: nothing is released, picked, labelled or loaded (a spare order has one more step: it is cancelled). The presenter does steps 1-10 live.
 
@@ -98,7 +98,7 @@ Note: the backoffice FE of 05/11 does not know `AWAITING_STOCK` and shows no Rel
 ## Accounts
 
 Used by the script (all seeded demo accounts; the standard seed gives them the same password): the account of
-`SF_DEMO_USER` for most roles, `truongkd` (Sales Manager) as the approver, and the customers' own accounts
+`SF_DEMO_USER` for every staff role, and the customers' own accounts
 (`kh.caphemoc`, `kh.trasuamay`, `kh.banhmiviet`; looked up through `GET /identity/users/{id}`). The login endpoint is
 limited to 5 a minute per IP; the script waits when it hits the limit.
 

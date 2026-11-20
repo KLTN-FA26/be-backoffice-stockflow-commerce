@@ -34,12 +34,12 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * The Sales Manager's side of projects' review rounds (kltn-docs 12 §4.10; BR-20): the queue of rounds, each one item;
- * a round opened with its designs side by side; and "Duyệt tất cả", which approves each design still waiting in turn -
- * one that cannot be approved stays waiting and stops none of the others. Each design is decided on its own
+ * The Production Coordinator's side of projects' review rounds (kltn-docs 12 §4.10; BR-20): the queue of rounds, each
+ * one item; a round opened with its designs side by side; and "Duyệt tất cả", which approves each design still waiting
+ * in turn - one that cannot be approved stays waiting and stops none of the others. Each design is decided on its own
  * ({@link DesignReviewService}), and the round closes once every one is ({@link DesignReviewRounds}).
  *
- * <p>The Sales Manager sees the project's name as context and nothing else of it (BR-17).</p>
+ * <p>The Production Coordinator sees the project's name as context and nothing else of it (BR-17).</p>
  */
 @Service
 @Transactional(readOnly = true)
@@ -80,7 +80,7 @@ public class DesignReviewRoundService {
                               Instant decidedAt) {
     }
 
-    /** A round as the Sales Manager reads it. */
+    /** A round as the Production Coordinator reads it. */
     public record RoundView(UUID id, UUID projectId, String projectName, UUID customerId, String customerName,
                             UUID submittedBy, Instant submittedAt, Instant closedAt, List<RoundDesign> designs) {
     }
@@ -101,7 +101,7 @@ public class DesignReviewRoundService {
     }
 
     /**
-     * Approves each of {@code designs} - the round's designs at the versions the Sales Manager saw - that still waits,
+     * Approves each of {@code designs} - the round's designs at the versions the coordinator saw - that still waits,
      * one after the other, each in a step of its own (BR-09, BR-11). A design that cannot be approved stays waiting,
      * and its reason is in the outcome.
      */
@@ -147,7 +147,7 @@ public class DesignReviewRoundService {
         return outcomes;
     }
 
-    /** A design the Sales Manager may see: one waiting for review or approved. */
+    /** A design the Production Coordinator may see: one waiting for review or approved. */
     private static DesignWorkflowService.DraftView visible(DesignWorkflowService.DraftView design) {
         return design != null && (DesignStatus.PENDING_REVIEW.name().equals(design.status())
                 || DesignStatus.APPROVED.name().equals(design.status())) ? design : null;

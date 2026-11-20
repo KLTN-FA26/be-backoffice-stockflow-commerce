@@ -153,8 +153,11 @@ class SeedTestDataLoadTest {
         assertThat(RawSql.number(db, "SELECT count(*) FROM ordering.return_request r JOIN ordering.customer_order o ON "
                 + "o.id = r.order_id WHERE r.created_by = 'seed' AND r.status = 'REQUESTED' AND o.status <> "
                 + "'RETURN_REQUESTED'")).as("a return waiting for its goods").isZero();
-        assertThat(byStatus(db, "ordering.production_order")).as("a production order in every state")
-                .containsOnlyKeys(allowedStatuses(db, "ordering.production_order"));
+        // PENDING_APPROVAL is history only: no edge leads into it since the approval step went (V20261213000100).
+        List<String> reachable = new ArrayList<>(allowedStatuses(db, "ordering.production_order"));
+        reachable.remove("PENDING_APPROVAL");
+        assertThat(byStatus(db, "ordering.production_order")).as("a production order in every reachable state")
+                .containsOnlyKeys(reachable);
         assertThat(byStatus(db, "ordering.production_order")).containsEntry("RECEIVED", 10L);
         assertThat(RawSql.number(db, "SELECT count(*) FROM ordering.production_order_sample_round r JOIN "
                 + "ordering.production_order p ON p.id = r.production_order_id WHERE p.created_by = 'seed'"))

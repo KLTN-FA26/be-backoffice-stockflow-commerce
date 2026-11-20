@@ -78,11 +78,11 @@ import java.util.UUID;
  * Sending a production order to its producer (4A-3, kltn-docs 17 §4.3 steps 7, 10, 12-13, BR-23; 00 §6).
  *
  * <ul>
- *   <li><b>Approval sends it.</b> Before the approval's transaction, the slip is drawn from what was read and kept as a
- *       {@link FileCategory#DOCUMENT} ({@link #prepareSlip}) - no lock is held while a PDF is drawn and stored; in the
- *       transaction, once the production order is SENT, the slip is recorded and {@link ProductionOrderSent} published
- *       ({@link #sent}). The approval re-checks the version it read, so the slip is of the production order as
- *       approved; when the transaction fails, the stored file goes with it.</li>
+ *   <li><b>The coordinator sends it.</b> Before the send's transaction, the slip is drawn from what was read and kept
+ *       as a {@link FileCategory#DOCUMENT} ({@link #prepareSlip}) - no lock is held while a PDF is drawn and stored;
+ *       in the transaction, once the production order is SENT, the slip is recorded and {@link ProductionOrderSent}
+ *       published ({@link #sent}). The send re-checks the version it read, so the slip is of the production order as
+ *       sent; when the transaction fails, the stored file goes with it.</li>
  *   <li><b>The producer is told</b> by notification, through the producer's channel: e-mailed with links to the slip,
  *       the print files and the customer's original images, or nothing for a producer the coordinator hands the slip.
  *       What the message says is read when it is written ({@link #mail}, behind
@@ -93,8 +93,8 @@ import java.util.UUID;
  *       every use ({@link #openSlip}, {@link #openPrintFile}): the signature, the production order still open, the
  *       file's digest still the approved one. Only then is a presigned URL of minutes handed out - never logged.</li>
  *   <li><b>What "checksum checked on download" checks.</b> The digest the object store keeps for the object (computed
- *       from its bytes when it was stored), against the one recorded at approval; the bytes are hashed only when the
- *       store kept no digest. It catches another object put under the key, not a change to the bytes that left the
+ *       from its bytes when it was stored), against the one recorded when it was sent; the bytes are hashed only when
+ *       the store kept no digest. It catches another object put under the key, not a change to the bytes that left the
  *       store's digest metadata as it was - reading every print file through the application on each download would
  *       defeat the presigned URL.</li>
  * </ul>
@@ -106,7 +106,7 @@ public class ProductionOrderDispatch {
     private static final Logger log = LoggerFactory.getLogger(ProductionOrderDispatch.class);
     private static final String FILES = "/api/v1/production-order-files/";
 
-    /** The slip as stored before the approval commits: adopted by it, or deleted when it does not. */
+    /** The slip as stored before the send commits: adopted by it, or deleted when it does not. */
     public static final class PreparedSlip implements AutoCloseable {
         private final PreparedFiles files;
         private final int totalCartons;
@@ -118,7 +118,7 @@ public class ProductionOrderDispatch {
             this.volumeM3 = volumeM3;
         }
 
-        /** Where the slip is stored; kept by the approval, deleted by {@link #close} when it was not. */
+        /** Where the slip is stored; kept by the send, deleted by {@link #close} when it was not. */
         public String storageKey() {
             return files.single().file().key();
         }
@@ -210,11 +210,11 @@ public class ProductionOrderDispatch {
     // ---- sending ----------------------------------------------------------------------------------------------------
 
     /**
-     * Draws the slip of {@code production} as it is approved at {@code at}, and stores it. Not transactional: called
-     * before the approval's transaction, with no lock held. The slip names who drew the order up, for questions, not
-     * who approved it: the approval is recorded in the system, and the slip needs no signature.
+     * Draws the slip of {@code production} as it is sent at {@code at}, and stores it. Not transactional: called
+     * before the send's transaction, with no lock held. The slip names who drew the order up, for questions; who sent
+     * it is recorded in the system, and the slip needs no signature.
      *
-     * @return the stored slip; close it when the approval is done - it deletes the file unless the approval adopted it
+     * @return the stored slip; close it when the send is done - it deletes the file unless the send adopted it
      */
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public PreparedSlip prepareSlip(ProductionOrder production, Instant at) {
@@ -237,7 +237,7 @@ public class ProductionOrderDispatch {
         Producer producer = producers.findById(production.producerId()).orElseThrow(() -> new BusinessException(
                 ErrorCode.PRODUCER_NOT_FOUND, "No producer " + production.producerId()));
         Optional<WarehouseView> warehouse = warehouses.findWarehouse(production.receivingWarehouseId());
-        // The slip no longer prints the delivery batch (design 2026-11-19), but approving a production order whose
+        // The slip no longer prints the delivery batch (design 2026-11-19), but sending a production order whose
         // batch is gone from the live contract is still refused, as it was when the slip printed its window.
         boolean batchLive = contracts.findLiveByOrderId(production.salesOrderId()).map(SalesContract::schedule)
                 .map(schedule -> schedule.stream().anyMatch(b -> b.id().equals(production.deliveryBatchId())))
@@ -264,7 +264,7 @@ public class ProductionOrderDispatch {
     }
 
     /**
-     * In the approval's transaction, once {@code production} is SENT: keeps its slip and publishes
+     * In the send's transaction, once {@code production} is SENT: keeps its slip and publishes
      * {@link ProductionOrderSent}, so its producer and the receiving warehouse's managers are told after commit.
      */
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
@@ -425,7 +425,8 @@ public class ProductionOrderDispatch {
 
     /**
      * The slip as sent, to attach to the message that sends it (for {@code notification.api.ProductionOrderDirectory}):
-     * the stored bytes, hashed and compared with the digest recorded at approval, as a link checks them on every use.
+     * the stored bytes, hashed and compared with the digest recorded when it was sent, as a link checks them on every
+     * use.
      * Empty when there is no slip or the stored one changed - the producer then gets the links, which refuse it too.
      */
     @Transactional(readOnly = true)

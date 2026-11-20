@@ -5,7 +5,8 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 
 /**
- * A production order's life (4A-2, kltn-docs 17 §5.3). The edges are also rows of
+ * A production order's life (4A-2, kltn-docs 17 §5.3). Since 2026-11-20 a draft is sent straight to its producer:
+ * {@link #PENDING_APPROVAL} is kept for the rows of before and has no edge in or out. The edges are also rows of
  * {@code ordering.production_order_status_transition}; {@code ProductionOrderIntegrationTest} holds the two to each
  * other.
  */
@@ -24,8 +25,8 @@ public enum ProductionOrderStatus {
     /** 17 §5.3: the moves each status allows. */
     public Set<ProductionOrderStatus> next() {
         return switch (this) {
-            case DRAFT -> EnumSet.of(PENDING_APPROVAL, CANCELLED);
-            case PENDING_APPROVAL -> EnumSet.of(SENT, DRAFT, CANCELLED);
+            case DRAFT -> EnumSet.of(SENT, CANCELLED);
+            case PENDING_APPROVAL -> EnumSet.noneOf(ProductionOrderStatus.class);
             case SENT -> EnumSet.of(ACCEPTED, IN_PRODUCTION, CANCELLED);
             case ACCEPTED -> EnumSet.of(SAMPLE_PENDING, IN_PRODUCTION, CANCELLED);
             case SAMPLE_PENDING -> EnumSet.of(IN_PRODUCTION, CANCELLED);

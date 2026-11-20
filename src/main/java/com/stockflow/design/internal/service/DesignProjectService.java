@@ -44,7 +44,7 @@ import org.springframework.transaction.annotation.Transactional;
  * open project; it leaves when its owner removes it, never while it waits for review. Joining or leaving changes
  * nothing else about the design.
  *
- * <p>Only the owner sees a project (BR-17); the Sales Manager and the sales staff see its name alone, on a review round
+ * <p>Only the owner sees a project (BR-17); the coordinator and the sales staff see its name alone, on a review round
  * and on a project quote request. Every write takes the project's row lock first, then a design's: the order a batch
  * locks them in.</p>
  */

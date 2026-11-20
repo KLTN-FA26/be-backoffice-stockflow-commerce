@@ -76,8 +76,8 @@ import static org.assertj.core.api.Assertions.tuple;
 /**
  * 4A-2 against the real database (kltn-docs 17 §4.3 steps 6-7, 12-13, §5.3; BR-05, BR-06, BR-22, BR-23, BR-24, BR-26):
  * the Production Coordinator draws a production order up for what one delivery batch of a confirmed order of a contract
- * lacks at the order's shipping warehouse; someone else - the Sales Manager - approves it, which sends it; it is
- * cancelled before mass printing and closed after it started.
+ * lacks at the order's shipping warehouse and sends it to its producer - no approval step since 2026-11-20 (BR-23
+ * rewritten); it is cancelled before mass printing and closed after it started.
  *
  * <p>Orders are confirmed the way production confirms them - a contract drawn up, sent and signed through
  * {@link SalesContracts} with a plan paying everything before delivery - and their shipping warehouse is chosen through
@@ -88,7 +88,7 @@ import static org.assertj.core.api.Assertions.tuple;
  * <p>Each test issues a customer SKU of its own on a design confirmed the way the design module leaves it: real bytes in
  * the (local, test) object store and a manifest adding up to the snapshot checksum. So the real {@code DesignService}
  * runs - {@code verifySnapshotForSku} when a production order is drawn up, and the byte-by-byte
- * {@code verifyForPrinting} on approval - instead of a mock that would agree with anything. ({@code CustomerSkuRows}
+ * {@code verifyForPrinting} when it is sent - instead of a mock that would agree with anything. ({@code CustomerSkuRows}
  * writes the legacy snapshot shape, which {@code verifySnapshot} refuses as unconfirmed, and a snapshot is immutable, so
  * the SKU is written here on a {@link ConfirmedDesigns} snapshot.) The SKU being the test's own also makes its stock,
  * and whether it was "produced before" (BR-24), exact whatever other tests left in the shared database.</p>
@@ -135,7 +135,6 @@ class ProductionOrderIntegrationTest {
 
     private CurrentUser sales;
     private UUID coordinator;
-    private UUID manager;
     private UUID customerId;
     private UUID customerUser;
     private IssuedSku sku;
@@ -152,7 +151,6 @@ class ProductionOrderIntegrationTest {
         sales = new CurrentUser(salesUser, "sales-" + salesUser, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
                 Set.of(), Set.of());
         coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
-        manager = tx.execute(s -> ReferenceRows.user(entityManager));
         customerId = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             jdbc.update("""
@@ -354,14 +352,40 @@ class ProductionOrderIntegrationTest {
         return productionOrders.drawUp(orderId, batchSeq, producer.id(), coordinator);
     }
 
-    private ProductionOrder submit(ProductionOrder production) {
-        return productionOrders.submit(production.id(), production.version(), coordinator);
+    /** Sent to its producer by the coordinator who drew it up: SENT. */
+    private ProductionOrder sent(ProductionOrder draft) {
+        return productionOrders.send(draft.id(), draft.version(), coordinator);
     }
 
-    /** Submitted by its coordinator and approved by the manager: SENT. */
-    private ProductionOrder approved(ProductionOrder draft) {
-        ProductionOrder pending = submit(draft);
-        return productionOrders.approve(pending.id(), pending.version(), manager);
+    /** Another file put under the key of the test's print file: its bytes no longer match the approved design. */
+    private void changePrintFile() {
+        byte[] other = ("%PDF-1.4\n% another print " + UUID.randomUUID()).getBytes(StandardCharsets.US_ASCII);
+        StoredFile replacement = storage.store(FileCategory.DESIGN_RENDER, "other.pdf", "application/pdf",
+                other.length, new ByteArrayInputStream(other));
+        storage.copy(replacement.key(), sku.printFileKey());
+    }
+
+    private long slips(UUID productionOrderId) {
+        return jdbc.queryForObject("SELECT count(*) FROM ordering.production_order_slip WHERE production_order_id = ?",
+                Long.class, productionOrderId);
+    }
+
+    /** {@code ProductionOrderSent} events published for it: one row per listener, so the distinct events are counted. */
+    private long sentEvents(UUID productionOrderId) {
+        return jdbc.queryForObject("""
+                SELECT count(DISTINCT serialized_event) FROM event_publication
+                 WHERE event_type = ? AND serialized_event LIKE ?""",
+                Long.class, com.stockflow.contracts.ProductionOrderSent.class.getName(), "%" + productionOrderId + "%");
+    }
+
+    /** Nothing was sent: still a DRAFT, no sender, no slip, no event. */
+    private void assertNotSent(UUID productionOrderId) {
+        ProductionOrder still = reread(productionOrderId);
+        assertThat(still.status()).isEqualTo(ProductionOrderStatus.DRAFT);
+        assertThat(still.sentBy()).isNull();
+        assertThat(still.sentAt()).isNull();
+        assertThat(slips(productionOrderId)).as("no slip kept").isZero();
+        assertThat(sentEvents(productionOrderId)).as("nobody told").isZero();
     }
 
     /** As stored now - what a client reads before acting on it. */
@@ -616,32 +640,26 @@ class ProductionOrderIntegrationTest {
     }
 
     @Test
-    @DisplayName("BR-05: stock arriving after the draft is not produced again - submission and approval check the batch "
-            + "still lacks what the production order makes")
-    void shortageCheckedAgainOnSubmissionAndApproval() {
+    @DisplayName("BR-05: stock arriving after the draft is not produced again - sending checks the batch still lacks "
+            + "what the production order makes")
+    void shortageCheckedAgainWhenSent() {
         stock(a, 12 * PER_CARTON);
         UUID orderId = confirmedOrder();
         choose(orderId, a);
-        ProductionOrder pending = submit(drawUp(orderId, 2));
-        assertThat(pending.status()).isEqualTo(ProductionOrderStatus.PENDING_APPROVAL);
+        ProductionOrder draft = drawUp(orderId, 2);
 
         stock(a, 8 * PER_CARTON);
         assertThat(choose(orderId, a).fullyHeld()).as("the same warehouse chosen again holds what arrived")
                 .isTrue();
 
-        assertThatThrownBy(() -> productionOrders.approve(pending.id(), pending.version(), manager))
-                .extracting(ProductionOrderIntegrationTest::code)
+        assertThatThrownBy(() -> sent(draft)).extracting(ProductionOrderIntegrationTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_EXCEEDS_SHORTAGE);
-        assertThat(reread(pending.id()).status()).as("nothing sent").isEqualTo(ProductionOrderStatus.PENDING_APPROVAL);
-
-        ProductionOrder returned = productionOrders.returnToDraft(pending.id(), pending.version(),
-                "the batch is held in full now", manager);
-        assertThatThrownBy(() -> submit(returned)).extracting(ProductionOrderIntegrationTest::code)
-                .isEqualTo(ErrorCode.PRODUCTION_ORDER_EXCEEDS_SHORTAGE);
-        assertThatThrownBy(() -> productionOrders.edit(returned.id(), returned.version(), withCartons(returned, 1)))
+        assertNotSent(draft.id());
+        ProductionOrder still = reread(draft.id());
+        assertThatThrownBy(() -> productionOrders.edit(still.id(), still.version(), withCartons(still, 1)))
                 .as("not even one carton: the batch lacks none").extracting(ProductionOrderIntegrationTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_EXCEEDS_SHORTAGE);
-        assertCancelled(productionOrders.cancel(returned.id(), returned.version(), "covered by stock", coordinator),
+        assertCancelled(productionOrders.cancel(still.id(), still.version(), "covered by stock", coordinator),
                 "covered by stock");
     }
 
@@ -670,97 +688,104 @@ class ProductionOrderIntegrationTest {
     }
 
     @Test
-    @DisplayName("17 §4.3 step 7, BR-23: submitted, approved by someone else - which sends it - or returned with a reason")
-    void submittedApprovedAndReturned() {
+    @DisplayName("17 §4.3 step 7: sending does what approval did - the slip kept, the producer and the warehouse told "
+            + "once, the sales order waiting for stock")
+    void sendingDoesWhatApprovalDid() {
         UUID orderId = confirmedOrder();
         choose(orderId, a);
         ProductionOrder drawn = drawUp(orderId, 1);
 
-        assertThatThrownBy(() -> productionOrders.approve(drawn.id(), drawn.version(), manager))
-                .as("a draft is not approved").extracting(ProductionOrderIntegrationTest::code)
-                .isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
-
-        ProductionOrder pending = submit(drawn);
-        assertThat(pending.status()).isEqualTo(ProductionOrderStatus.PENDING_APPROVAL);
-        assertThat(pending.submittedAt()).isNotNull();
-        assertThat(pending.approvedBy()).isNull();
-        assertThat(pending.sentAt()).isNull();
-        assertThatThrownBy(() -> productionOrders.edit(pending.id(), pending.version(), draftOf(pending, null)))
-                .as("only a draft is edited").extracting(ProductionOrderIntegrationTest::code)
-                .isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
-
-        assertThatThrownBy(() -> productionOrders.approve(pending.id(), pending.version(), coordinator))
-                .as("BR-23: not by the one who drew it up").extracting(ProductionOrderIntegrationTest::code)
-                .isEqualTo(ErrorCode.PRODUCTION_ORDER_SELF_APPROVAL);
-        assertThat(ErrorCode.PRODUCTION_ORDER_SELF_APPROVAL.httpStatus()).isEqualTo(409);
-        assertThat(reread(pending.id()).status()).isEqualTo(ProductionOrderStatus.PENDING_APPROVAL);
-
-        assertThatThrownBy(() -> productionOrders.returnToDraft(pending.id(), pending.version(), " ", manager))
-                .as("BR-23: returned with a reason").extracting(ProductionOrderIntegrationTest::code)
-                .isEqualTo(ErrorCode.VALIDATION_FAILED);
-        ProductionOrder returned = productionOrders.returnToDraft(pending.id(), pending.version(),
-                "Need-by date too late for the batch", manager);
-        assertThat(returned.status()).isEqualTo(ProductionOrderStatus.DRAFT);
-        assertThat(returned.returnedReason()).isEqualTo("Need-by date too late for the batch");
-        assertThat(row(returned.id())).containsEntry("status", "DRAFT")
-                .containsEntry("returned_reason", "Need-by date too late for the batch");
-        assertThat(returned.lines()).singleElement().satisfies(l -> assertThat(l.cartons()).isEqualTo(12));
-
-        ProductionOrder fixed = productionOrders.edit(returned.id(), returned.version(), new ProductionOrder.Draft(
-                producer.id(), today.plusDays(19), null, true, null, null));
-        assertThat(fixed.needByDate()).as("B33: edited after it was returned").isEqualTo(today.plusDays(19));
-        assertThatThrownBy(() -> productionOrders.approve(fixed.id(), fixed.version(), manager))
-                .extracting(ProductionOrderIntegrationTest::code).isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
-
-        ProductionOrder resubmitted = submit(fixed);
-        ProductionOrder sent = productionOrders.approve(resubmitted.id(), resubmitted.version(), manager);
+        ProductionOrder sent = sent(drawn);
 
         assertThat(sent.status()).isEqualTo(ProductionOrderStatus.SENT);
-        assertThat(sent.approvedBy()).isEqualTo(manager);
-        assertThat(sent.approvedAt()).isNotNull();
-        assertThat(sent.sentAt()).as("approval is what sends it").isEqualTo(sent.approvedAt());
-        assertThat(sent.submittedAt()).isNotNull();
+        assertThat(sent.sentBy()).isEqualTo(coordinator);
+        assertThat(sent.sentAt()).isNotNull();
+        assertThat(sent.approvedBy()).as("nobody approves it any more").isNull();
+        assertThat(sent.approvedAt()).isNull();
+        assertThat(sent.submittedAt()).isNull();
         Map<String, Object> stored = row(sent.id());
-        assertThat(stored).containsEntry("status", "SENT").containsEntry("approved_by", manager);
-        assertThat(stored.get("approved_at")).isNotNull();
+        assertThat(stored).containsEntry("status", "SENT").containsEntry("sent_by", coordinator)
+                .containsEntry("approved_by", null).containsEntry("approved_at", null);
         assertThat(stored.get("sent_at")).isNotNull();
-
+        assertThat(slips(sent.id())).as("the slip as sent is kept").isEqualTo(1);
+        assertThat(sentEvents(sent.id())).as("ProductionOrderSent, once: the producer and the warehouse are told")
+                .isEqualTo(1);
+        assertThat(status(orderId)).as("BR-04: batch 1 is short and its production order is sent")
+                .isEqualTo(OrderStatus.AWAITING_STOCK);
         assertThat(productionOrders.detail(sent.id()).history())
                 .extracting(HistoryEntry::from, HistoryEntry::to, HistoryEntry::reason, HistoryEntry::by)
                 .containsExactly(
                         tuple(null, ProductionOrderStatus.DRAFT, null, coordinator),
-                        tuple(ProductionOrderStatus.DRAFT, ProductionOrderStatus.PENDING_APPROVAL, null, coordinator),
-                        tuple(ProductionOrderStatus.PENDING_APPROVAL, ProductionOrderStatus.DRAFT,
-                                "Need-by date too late for the batch", manager),
-                        tuple(ProductionOrderStatus.DRAFT, ProductionOrderStatus.PENDING_APPROVAL, null, coordinator),
-                        tuple(ProductionOrderStatus.PENDING_APPROVAL, ProductionOrderStatus.SENT, null, manager));
+                        tuple(ProductionOrderStatus.DRAFT, ProductionOrderStatus.SENT, null, coordinator));
 
         assertThatThrownBy(() -> productionOrders.edit(sent.id(), sent.version(), draftOf(sent, null)))
-                .extracting(ProductionOrderIntegrationTest::code).isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
-        assertThatThrownBy(() -> productionOrders.returnToDraft(sent.id(), sent.version(), "Too late", manager))
-                .extracting(ProductionOrderIntegrationTest::code).isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
-        assertThatThrownBy(() -> productionOrders.approve(sent.id(), sent.version(), manager))
-                .extracting(ProductionOrderIntegrationTest::code).isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
+                .as("B33: settled once sent").extracting(ProductionOrderIntegrationTest::code)
+                .isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
+        assertThatThrownBy(() -> sent(sent)).as("sent once").extracting(ProductionOrderIntegrationTest::code)
+                .isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
+        assertThat(sentEvents(sent.id())).isEqualTo(1);
     }
 
     @Test
-    @DisplayName("17 §4.3 step 7: the print files are re-read before it is sent; a changed file is not sent")
-    void changedPrintFileIsNotSent() throws Exception {
+    @DisplayName("BR-23 rewritten: the coordinator who drew a production order up sends it - no second person")
+    void theDrawerSendsTheirOwnOrder() {
         UUID orderId = confirmedOrder();
         choose(orderId, a);
-        ProductionOrder pending = submit(drawUp(orderId, 1));
+        ProductionOrder drawn = drawUp(orderId, 1);
+        assertThat(drawn.drawnUpBy()).isEqualTo(coordinator);
 
-        byte[] other = ("%PDF-1.4\n% another print " + UUID.randomUUID()).getBytes(StandardCharsets.US_ASCII);
-        StoredFile replacement = storage.store(FileCategory.DESIGN_RENDER, "other.pdf", "application/pdf",
-                other.length, new ByteArrayInputStream(other));
-        storage.copy(replacement.key(), sku.printFileKey());
+        ProductionOrder sent = productionOrders.send(drawn.id(), drawn.version(), drawn.drawnUpBy());
 
-        assertThatThrownBy(() -> productionOrders.approve(pending.id(), pending.version(), manager))
-                .extracting(ProductionOrderIntegrationTest::code).isEqualTo(ErrorCode.PRINT_FILE_MISMATCH);
-        ProductionOrder still = reread(pending.id());
-        assertThat(still.status()).isEqualTo(ProductionOrderStatus.PENDING_APPROVAL);
-        assertThat(still.approvedBy()).isNull();
-        assertThat(still.sentAt()).isNull();
+        assertThat(sent.status()).isEqualTo(ProductionOrderStatus.SENT);
+        assertThat(sent.sentBy()).isEqualTo(sent.drawnUpBy());
+        assertThat(row(sent.id())).containsEntry("sent_by", coordinator).containsEntry("drawn_up_by", coordinator);
+    }
+
+    @Test
+    @DisplayName("17 §4.3 step 7: the print files are re-read before it is sent; a changed file is not sent, and "
+            + "nothing is stored")
+    void sendingRefusesAChangedPrintFileAndStoresNothing() {
+        UUID orderId = confirmedOrder();
+        choose(orderId, a);
+        ProductionOrder draft = drawUp(orderId, 1);
+        changePrintFile();
+
+        assertThatThrownBy(() -> sent(draft)).extracting(ProductionOrderIntegrationTest::code)
+                .isEqualTo(ErrorCode.PRINT_FILE_MISMATCH);
+        assertNotSent(draft.id());
+        assertThat(status(orderId)).isEqualTo(OrderStatus.CONFIRMED);
+    }
+
+    @Test
+    @DisplayName("a stale send is refused before any download: OPTIMISTIC_LOCK even with a changed print file")
+    void aStaleVersionIsRefusedBeforeAnyDownload() {
+        UUID orderId = confirmedOrder();
+        choose(orderId, a);
+        ProductionOrder drawn = drawUp(orderId, 1);
+        productionOrders.edit(drawn.id(), drawn.version(), withCartons(drawn, 10));
+        // Were the files downloaded first, this would answer PRINT_FILE_MISMATCH: the version is checked before.
+        changePrintFile();
+
+        assertThatThrownBy(() -> sent(drawn)).as("read before the edit")
+                .extracting(ProductionOrderIntegrationTest::code).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+        assertNotSent(drawn.id());
+    }
+
+    @Test
+    @DisplayName("a producer made inactive after the draft takes no production order: refused before any download")
+    void sendingRefusesAnInactiveProducer() {
+        UUID orderId = confirmedOrder();
+        choose(orderId, a);
+        ProductionOrder draft = drawUp(orderId, 1);
+        Producer current = producers.get(producer.id());
+        producers.update(current.id(), current.version(), pdfProducer("Production test workshop"),
+                Producer.Status.INACTIVE);
+        // Were the files downloaded first, this would answer PRINT_FILE_MISMATCH.
+        changePrintFile();
+
+        assertThatThrownBy(() -> sent(draft)).extracting(ProductionOrderIntegrationTest::code)
+                .isEqualTo(ErrorCode.PRODUCER_INACTIVE);
+        assertNotSent(draft.id());
     }
 
     @Test
@@ -782,12 +807,12 @@ class ProductionOrderIntegrationTest {
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
 
         // Cancelled, it brings nothing: the batch lacks its 12 cartons again.
-        ProductionOrder pending = submit(drawUp(orderId, 1));
-        assertThat(pending.lines()).singleElement().satisfies(l -> assertThat(l.cartons()).isEqualTo(12));
-        assertCancelled(productionOrders.cancel(pending.id(), pending.version(), "Stock came back from a return",
+        ProductionOrder again = drawUp(orderId, 1);
+        assertThat(again.lines()).singleElement().satisfies(l -> assertThat(l.cartons()).isEqualTo(12));
+        assertCancelled(productionOrders.cancel(again.id(), again.version(), "Stock came back from a return",
                 coordinator), "Stock came back from a return");
 
-        ProductionOrder sent = approved(drawUp(orderId, 1));
+        ProductionOrder sent = sent(drawUp(orderId, 1));
         assertThat(sent.status()).isEqualTo(ProductionOrderStatus.SENT);
         assertThatThrownBy(() -> productionOrders.close(sent.id(), sent.version(), "Stopped", coordinator))
                 .as("closed only once mass printing started").extracting(ProductionOrderIntegrationTest::code)
@@ -798,7 +823,7 @@ class ProductionOrderIntegrationTest {
         assertThat(productionOrders.detail(sent.id()).history()).last()
                 .satisfies(h -> assertThat(h.from()).isEqualTo(ProductionOrderStatus.SENT));
 
-        ProductionOrder printing = approved(drawUp(orderId, 1));
+        ProductionOrder printing = sent(drawUp(orderId, 1));
         startMassPrinting(printing.id());
         ProductionOrder inProduction = reread(printing.id());
         assertThat(inProduction.status()).isEqualTo(ProductionOrderStatus.IN_PRODUCTION);
@@ -826,11 +851,11 @@ class ProductionOrderIntegrationTest {
                         "The producer stopped before delivering anything", coordinator);
 
         // Closed, it delivers nothing more; and its SKU has been mass printed - no sample by default now (BR-24).
-        ProductionOrder again = drawUp(orderId, 1);
-        assertThat(again.lines()).singleElement().satisfies(l -> assertThat(l.cartons()).isEqualTo(12));
-        assertThat(again.sampleRequiredByDefault()).isFalse();
-        assertThat(again.sampleApprovalRequired()).isFalse();
-        ProductionOrder off = productionOrders.edit(again.id(), again.version(), withSample(again, false, null));
+        ProductionOrder after = drawUp(orderId, 1);
+        assertThat(after.lines()).singleElement().satisfies(l -> assertThat(l.cartons()).isEqualTo(12));
+        assertThat(after.sampleRequiredByDefault()).isFalse();
+        assertThat(after.sampleApprovalRequired()).isFalse();
+        ProductionOrder off = productionOrders.edit(after.id(), after.version(), withSample(after, false, null));
         assertThat(off.sampleApprovalRequired()).as("no reason needed when it was not on by default").isFalse();
     }
 
@@ -853,20 +878,18 @@ class ProductionOrderIntegrationTest {
         assertThat(choose(orderId, a).lines()).singleElement()
                 .satisfies(l -> assertThat(l.heldCartons()).as("A's free stock is held by the other order").isZero());
         ProductionOrder draft = drawUp(orderId, 1);
-        ProductionOrder pending = submit(drawUp(orderId, 2));
+        ProductionOrder other = drawUp(orderId, 2);
 
         Coverage atB = choose(orderId, b);
 
         assertThat(atB.warehouseId()).isEqualTo(b.id());
         assertThat(reread(draft.id()).receivingWarehouseId()).as("a draft is received at the new one")
                 .isEqualTo(b.id());
-        assertThat(reread(pending.id()).receivingWarehouseId()).as("so is one pending approval").isEqualTo(b.id());
+        assertThat(reread(other.id()).receivingWarehouseId()).as("so is every draft").isEqualTo(b.id());
         assertThat(row(draft.id())).containsEntry("receiving_warehouse_id", b.id());
-        assertThat(row(pending.id())).containsEntry("receiving_warehouse_id", b.id())
-                .containsEntry("status", "PENDING_APPROVAL");
+        assertThat(row(other.id())).containsEntry("receiving_warehouse_id", b.id()).containsEntry("status", "DRAFT");
 
-        ProductionOrder toSend = reread(pending.id());
-        ProductionOrder sent = productionOrders.approve(toSend.id(), toSend.version(), manager);
+        ProductionOrder sent = sent(reread(other.id()));
         assertThat(sent.receivingWarehouseId()).isEqualTo(b.id());
 
         assertThatThrownBy(() -> choose(orderId, a))
@@ -881,7 +904,8 @@ class ProductionOrderIntegrationTest {
     }
 
     @Test
-    @DisplayName("17 §5.3: the database holds the edges, the approver rule, the append-only history and the fixed header")
+    @DisplayName("17 §5.3: the database holds the edges, the sender, the historical approver rule, the append-only "
+            + "history and the fixed header")
     void databaseHoldsTheRules() {
         Set<String> rows = new HashSet<>(jdbc.queryForList(
                 "SELECT from_status || '>' || to_status FROM ordering.production_order_status_transition",
@@ -892,24 +916,30 @@ class ProductionOrderIntegrationTest {
         UUID orderId = confirmedOrder();
         choose(orderId, a);
         ProductionOrder draft = drawUp(orderId, 1);
-        ProductionOrder pending = submit(drawUp(orderId, 2));
+        ProductionOrder sentOne = sent(drawUp(orderId, 2));
 
         assertThatThrownBy(() -> sql("UPDATE ordering.production_order SET status = 'RECEIVED' WHERE id = ?",
                 draft.id())).isInstanceOf(DataAccessException.class).hasMessageContaining("is not a transition");
-        assertThatThrownBy(() -> sql("UPDATE ordering.production_order SET status = 'SENT', approved_by = ?, "
-                + "approved_at = NOW(), sent_at = NOW() WHERE id = ?", manager, draft.id()))
-                .as("approval is from PENDING_APPROVAL").isInstanceOf(DataAccessException.class)
+        assertThatThrownBy(() -> sql("UPDATE ordering.production_order SET status = 'PENDING_APPROVAL' WHERE id = ?",
+                draft.id())).as("no approval step any more").isInstanceOf(DataAccessException.class)
                 .hasMessageContaining("is not a transition");
-        assertThatThrownBy(() -> sql("UPDATE ordering.production_order SET status = 'SENT', approved_by = drawn_up_by, "
-                + "approved_at = NOW(), sent_at = NOW() WHERE id = ?", pending.id()))
-                .as("BR-23").isInstanceOf(DataAccessException.class)
-                .hasMessageContaining("ck_production_order_approval");
+        assertThatThrownBy(() -> sql("UPDATE ordering.production_order SET status = 'SENT', sent_at = NOW() "
+                + "WHERE id = ?", draft.id())).as("sent says by whom").isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("ck_production_order_sent");
+        assertThatThrownBy(() -> sql("UPDATE ordering.production_order SET status = 'SENT', sent_at = NOW(), "
+                + "sent_by = drawn_up_by, approved_by = drawn_up_by, approved_at = NOW() WHERE id = ?", draft.id()))
+                .as("an approval, where a row has one, is still by someone else")
+                .isInstanceOf(DataAccessException.class).hasMessageContaining("ck_production_order_approval");
         tx.executeWithoutResult(s -> {
-            // The same statement by someone else passes: the CHECK is about the same person, nothing else.
-            assertThat(jdbc.update("UPDATE ordering.production_order SET status = 'SENT', approved_by = ?, "
-                    + "approved_at = NOW(), sent_at = NOW() WHERE id = ?", manager, pending.id())).isEqualTo(1);
+            // Sent by the one who drew it up, with no approval: what the coordinator does.
+            assertThat(jdbc.update("UPDATE ordering.production_order SET status = 'SENT', sent_at = NOW(), "
+                    + "sent_by = drawn_up_by WHERE id = ?", draft.id())).isEqualTo(1);
             s.setRollbackOnly();
         });
+        UUID someoneElse = tx.execute(s -> ReferenceRows.user(entityManager));
+        assertThatThrownBy(() -> sql("UPDATE ordering.production_order SET sent_by = ? WHERE id = ?", someoneElse,
+                sentOne.id())).as("who sent it is kept").isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("its sending is kept as written");
 
         assertThatThrownBy(() -> sql("UPDATE ordering.production_order SET receiving_warehouse_id = ? WHERE id = ?",
                 b.id(), draft.id())).as("BR-22").isInstanceOf(DataAccessException.class)
@@ -923,35 +953,38 @@ class ProductionOrderIntegrationTest {
         assertThatThrownBy(() -> sql("DELETE FROM ordering.production_order WHERE id = ?", draft.id()))
                 .isInstanceOf(DataAccessException.class).hasMessageContaining("production orders are kept");
         assertThatThrownBy(() -> sql("UPDATE ordering.production_order_line SET cartons = 1 "
-                + "WHERE production_order_id = ?", pending.id())).isInstanceOf(DataAccessException.class)
+                + "WHERE production_order_id = ?", sentOne.id())).isInstanceOf(DataAccessException.class)
                 .hasMessageContaining("lines are not edited");
 
         assertThatThrownBy(() -> sql("UPDATE ordering.production_order_status_history SET reason = 'rewritten' "
-                + "WHERE production_order_id = ?", pending.id())).isInstanceOf(DataAccessException.class)
+                + "WHERE production_order_id = ?", sentOne.id())).isInstanceOf(DataAccessException.class)
                 .hasMessageContaining("kept as written");
         assertThatThrownBy(() -> sql("DELETE FROM ordering.production_order_status_history "
-                + "WHERE production_order_id = ?", pending.id())).isInstanceOf(DataAccessException.class)
+                + "WHERE production_order_id = ?", sentOne.id())).isInstanceOf(DataAccessException.class)
                 .hasMessageContaining("kept as written");
 
         assertThat(row(draft.id())).containsEntry("status", "DRAFT").containsEntry("receiving_warehouse_id", a.id())
                 .containsEntry("sample_approval_required", true);
-        assertThat(row(pending.id())).containsEntry("status", "PENDING_APPROVAL");
-        assertThat(productionOrders.detail(pending.id()).history()).hasSize(2);
-        assertThat(reread(pending.id()).lines()).singleElement().satisfies(l -> assertThat(l.cartons()).isEqualTo(8));
+        assertThat(row(sentOne.id())).containsEntry("status", "SENT").containsEntry("sent_by", coordinator);
+        assertThat(productionOrders.detail(sentOne.id()).history()).hasSize(2);
+        assertThat(reread(sentOne.id()).lines()).singleElement().satisfies(l -> assertThat(l.cartons()).isEqualTo(8));
     }
 
     @Test
-    @DisplayName("00 §2.1, BR-23: the coordinator draws up, the Sales Manager approves, Sales and the warehouse manager read")
+    @DisplayName("00 §2.1, 17 §4.3: the coordinator draws up and sends, nobody approves, the Sales Manager is told, "
+            + "Sales and the warehouse manager read")
     void grants() {
         assertThat(actions("PRODUCTION_COORDINATOR")).containsExactly("CREATE", "READ", "UPDATE", "VIEW_PAGE");
-        assertThat(actions("SALES_MANAGER")).containsExactly("APPROVE", "READ", "VIEW_PAGE");
+        assertThat(actions("SALES_MANAGER")).containsExactly("READ", "VIEW_PAGE");
         assertThat(actions("SALES_STAFF")).containsExactly("READ", "VIEW_PAGE");
         assertThat(actions("WAREHOUSE_MANAGER")).containsExactly("READ", "VIEW_PAGE");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM identity.permission WHERE code = 'production-orders:APPROVE'",
+                Long.class)).as("approval is retired (V20261213000200)").isZero();
         assertThat(jdbc.queryForList("""
                 SELECT r.code FROM identity.role_permission rp
                   JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p ON p.id = rp.permission_id
-                 WHERE p.code = 'production-orders:APPROVE' ORDER BY 1""", String.class))
-                .as("the coordinator never approves").containsExactly("SALES_MANAGER", "SYSTEM_ADMIN");
+                 WHERE p.code = 'production-order-sends:READ' AND r.is_system ORDER BY 1""", String.class))
+                .as("told of production orders sent").containsExactly("SALES_MANAGER", "SYSTEM_ADMIN");
     }
 
     private List<String> actions(String role) {
@@ -970,19 +1003,19 @@ class ProductionOrderIntegrationTest {
         UUID second = confirmedOrder();
         choose(second, b);
         ProductionOrder atA = drawUp(first, 1);
-        ProductionOrder pendingAtA = submit(productionOrders.drawUp(first, 2, other.id(), coordinator));
+        ProductionOrder sentAtA = sent(productionOrders.drawUp(first, 2, other.id(), coordinator));
         ProductionOrder atB = drawUp(second, 1);
 
         assertThat(ids(productionOrders.list(null, null, null, first, 0, 50, null).items()))
-                .containsExactlyInAnyOrder(atA.id(), pendingAtA.id());
-        assertThat(ids(productionOrders.list(null, ProductionOrderStatus.PENDING_APPROVAL, null, first, 0, 50, null)
-                .items())).containsExactly(pendingAtA.id());
+                .containsExactlyInAnyOrder(atA.id(), sentAtA.id());
+        assertThat(ids(productionOrders.list(null, ProductionOrderStatus.SENT, null, first, 0, 50, null)
+                .items())).containsExactly(sentAtA.id());
         assertThat(ids(productionOrders.list(null, null, producer.id(), null, 0, 50, null).items()))
                 .as("newest first by default").containsExactly(atB.id(), atA.id());
         assertThat(ids(productionOrders.list(a.id(), null, producer.id(), null, 0, 50, null).items()))
                 .containsExactly(atA.id());
         assertThat(ids(productionOrders.list(null, null, other.id(), null, 0, 50, null).items()))
-                .containsExactly(pendingAtA.id());
+                .containsExactly(sentAtA.id());
 
         assertThat(jdbc.queryForObject("SELECT data_scope FROM identity.app_role WHERE code = 'WAREHOUSE_MANAGER'",
                 String.class)).as("what makes the warehouse manager warehouse-bound").isEqualTo("WAREHOUSE");

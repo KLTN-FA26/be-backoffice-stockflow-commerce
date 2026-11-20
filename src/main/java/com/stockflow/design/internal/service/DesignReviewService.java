@@ -68,10 +68,10 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionOperations;
 
 /**
- * The Sales Manager's side of a customer's design (kltn-docs 12 §4.4, §4.5): the queue of designs submitted alone, and
- * the decision on one - also on one in a project's review round, which the decision counts towards closing (§4.10,
- * {@link DesignReviewRounds}). Who may decide is the permission on the endpoint ({@code design-designs:APPROVE}; BR-06), not who
- * owns the design.
+ * The Production Coordinator's side of a customer's design (kltn-docs 12 §4.4, §4.5): the queue of designs submitted
+ * alone, and the decision on one - also on one in a project's review round, which the decision counts towards closing
+ * (§4.10, {@link DesignReviewRounds}). Who may decide is the permission on the endpoint
+ * ({@code design-designs:APPROVE}; BR-06), not who owns the design.
  *
  * <h2>Approving is one step (BR-09)</h2>
  * <p>The files are checked, the print file stamped for the press, the production instruction drawn, the snapshot
@@ -89,7 +89,7 @@ import org.springframework.transaction.support.TransactionOperations;
 @Transactional(readOnly = true)
 public class DesignReviewService {
 
-    /** What the Sales Manager approves: the files the customer submitted (plan D2). */
+    /** What the Production Coordinator approves: the files the customer submitted (plan D2). */
     private static final List<DesignArtifactRole> SUBMITTED = List.of(DesignArtifactRole.CUSTOMER_PREVIEW,
             DesignArtifactRole.PRINT_READY, DesignArtifactRole.TECHNICAL_SPEC);
     private static final int REASON_MAX = 2000;

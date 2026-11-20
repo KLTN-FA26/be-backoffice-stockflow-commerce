@@ -124,7 +124,6 @@ class AwaitingStockIntegrationTest {
 
     private CurrentUser sales;
     private UUID coordinator;
-    private UUID manager;
     private UUID customerId;
     private UUID customerUser;
     private IssuedSku sku;
@@ -141,7 +140,6 @@ class AwaitingStockIntegrationTest {
         sales = new CurrentUser(salesUser, "sales-" + salesUser, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
                 Set.of(), Set.of());
         coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
-        manager = tx.execute(s -> ReferenceRows.user(entityManager));
         customerId = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             jdbc.update("""
@@ -283,10 +281,9 @@ class AwaitingStockIntegrationTest {
         return productionOrders.drawUp(orderId, batchSeq, producer.id(), coordinator);
     }
 
-    /** Drawn up by the coordinator, submitted, approved by the manager: SENT. */
+    /** Drawn up and sent by the coordinator: SENT. */
     private ProductionOrder sent(ProductionOrder draft) {
-        ProductionOrder pending = productionOrders.submit(draft.id(), draft.version(), coordinator);
-        return productionOrders.approve(pending.id(), pending.version(), manager);
+        return productionOrders.send(draft.id(), draft.version(), coordinator);
     }
 
     /**
@@ -378,9 +375,9 @@ class AwaitingStockIntegrationTest {
         ProductionOrder first = sent(drawUp(orderId, 1));
 
         assertThat(first.status()).isEqualTo(ProductionOrderStatus.SENT);
-        assertThat(status(orderId)).as("17 §4.3 step 7: approved and sent, the order waits for stock")
+        assertThat(status(orderId)).as("17 §4.3 step 7: sent, the order waits for stock")
                 .isEqualTo(OrderStatus.AWAITING_STOCK);
-        assertThat(history(orderId)).last().isEqualTo("CONFIRMED>AWAITING_STOCK PRODUCTION_ORDER_SENT " + manager);
+        assertThat(history(orderId)).last().isEqualTo("CONFIRMED>AWAITING_STOCK PRODUCTION_ORDER_SENT " + coordinator);
 
         ProductionOrder second = sent(drawUp(orderId, 2));
         assertThat(second.status()).as("drawn up and sent while the order waits").isEqualTo(ProductionOrderStatus.SENT);

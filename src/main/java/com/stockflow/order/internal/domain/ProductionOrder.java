@@ -17,8 +17,12 @@ import java.util.UUID;
 /**
  * What a producer makes for one delivery batch of a confirmed order of a contract (4A-2, kltn-docs 17 §4.3, §5.3;
  * BR-05, BR-06, BR-23, BR-24, BR-26). The Production Coordinator draws it up for what the batch lacks at the order's
- * shipping warehouse - the receiving warehouse - and submits it; the Sales Manager, never the one who drew it up,
- * approves it, which sends it, or returns it with a reason. It is cancelled before mass printing, and closed - short,
+ * shipping warehouse - the receiving warehouse - and sends it to its producer ({@link #send}): there is no approval
+ * step since 2026-11-20 (owner's decision), because what a second reader checked is enforced by the data - never past
+ * what the batch lacks, the customer-approved design re-hashed at send, a signed contract behind it, no money on it.
+ * {@code submittedAt}, {@code approvedBy}, {@code approvedAt}, {@code returnedReason} and
+ * {@link ProductionOrderStatus#PENDING_APPROVAL} are kept for the orders of before, and read as they were written.
+ * It is cancelled before mass printing, and closed - short,
  * or before anything came - after it started. Goods are received against it while it is {@link #receivable} (4A-5,
  * kltn-docs 03 BR-01, BR-15), and each confirmed receipt moves it on ({@link #receive}). The coordinator records the
  * producer's acceptance with its expected completion day, and the start of mass printing when no print sample is to be
@@ -112,8 +116,10 @@ public final class ProductionOrder {
     private Instant approvedAt;
     private String returnedReason;
     private Instant sentAt;
+    private UUID sentBy;
     private Instant productionStartedAt;
     private LocalDate expectedCompletionDate;
+    private String acceptanceNote;
     private UUID cancelledBy;
     private Instant cancelledAt;
     private String cancellationReason;
@@ -130,12 +136,14 @@ public final class ProductionOrder {
                            ProductionOrderStatus status, boolean sampleApprovalRequired,
                            boolean sampleRequiredByDefault, String sampleWaiverReason, String note,
                            UUID drawnUpBy, Instant submittedAt, UUID approvedBy,
-                           Instant approvedAt, String returnedReason, Instant sentAt, Instant productionStartedAt,
-                           UUID cancelledBy, Instant cancelledAt, String cancellationReason, UUID closedBy,
-                           Instant closedAt, String closingReason, List<Line> lines, long version) {
+                           Instant approvedAt, String returnedReason, Instant sentAt, UUID sentBy,
+                           Instant productionStartedAt, UUID cancelledBy, Instant cancelledAt,
+                           String cancellationReason, UUID closedBy, Instant closedAt, String closingReason,
+                           List<Line> lines, long version) {
         this(id, code, salesOrderId, deliveryBatchId, customerId, producerId, receivingWarehouseId, needByDate, status,
                 sampleApprovalRequired, sampleRequiredByDefault, sampleWaiverReason, note,
-                drawnUpBy, submittedAt, approvedBy, approvedAt, returnedReason, sentAt, productionStartedAt, null,
+                drawnUpBy, submittedAt, approvedBy, approvedAt, returnedReason, sentAt, sentBy, productionStartedAt,
+                null, null,
                 cancelledBy, cancelledAt, cancellationReason, closedBy, closedAt, closingReason, lines, version);
     }
 
@@ -145,9 +153,10 @@ public final class ProductionOrder {
                            ProductionOrderStatus status, boolean sampleApprovalRequired,
                            boolean sampleRequiredByDefault, String sampleWaiverReason, String note,
                            UUID drawnUpBy, Instant submittedAt, UUID approvedBy,
-                           Instant approvedAt, String returnedReason, Instant sentAt, Instant productionStartedAt,
-                           LocalDate expectedCompletionDate, UUID cancelledBy, Instant cancelledAt,
-                           String cancellationReason, UUID closedBy, Instant closedAt, String closingReason,
+                           Instant approvedAt, String returnedReason, Instant sentAt, UUID sentBy,
+                           Instant productionStartedAt, LocalDate expectedCompletionDate, String acceptanceNote,
+                           UUID cancelledBy, Instant cancelledAt, String cancellationReason, UUID closedBy, Instant closedAt,
+                           String closingReason,
                            List<Line> lines, long version) {
         this.id = Objects.requireNonNull(id, "id");
         this.code = Objects.requireNonNull(code, "code");
@@ -168,8 +177,10 @@ public final class ProductionOrder {
         this.approvedAt = approvedAt;
         this.returnedReason = returnedReason;
         this.sentAt = sentAt;
+        this.sentBy = sentBy;
         this.productionStartedAt = productionStartedAt;
         this.expectedCompletionDate = expectedCompletionDate;
+        this.acceptanceNote = acceptanceNote;
         this.cancelledBy = cancelledBy;
         this.cancelledAt = cancelledAt;
         this.cancellationReason = cancellationReason;
@@ -196,7 +207,7 @@ public final class ProductionOrder {
         ProductionOrder order = new ProductionOrder(Identifiers.newId(), code, salesOrderId, deliveryBatchId,
                 customerId, producerId, receivingWarehouseId, needByDate, ProductionOrderStatus.DRAFT,
                 sampleRequiredByDefault, sampleRequiredByDefault, null, null, by, null, null, null,
-                null, null, null, null, null, null, null, null, null, lines, 0L);
+                null, null, null, null, null, null, null, null, null, null, lines, 0L);
         order.changes.add(new Change(null, ProductionOrderStatus.DRAFT, null, Objects.requireNonNull(by, "by"), at));
         return order;
     }
@@ -244,7 +255,7 @@ public final class ProductionOrder {
 
     /**
      * 4B-8 (kltn-docs 17 §4.5 "Dời cửa sổ giao", BR-26): the window of its delivery batch moved, so a draft takes the
-     * default needed-by date again - the first day of the window in force. One already submitted keeps its date: the
+     * default needed-by date again - the first day of the window in force. One already sent keeps its date: the
      * production coordinator tells the producer if it must change.
      *
      * @return whether the date changed
@@ -275,39 +286,21 @@ public final class ProductionOrder {
         }
     }
 
-    /** DRAFT → PENDING_APPROVAL (17 §4.3 step 7). */
-    public void submit(UUID by, Instant at) {
-        move(ProductionOrderStatus.PENDING_APPROVAL, null, by, at, "submitted");
-        this.submittedAt = at;
-    }
-
     /**
-     * Approved, so sent (17 §4.3 step 7, BR-23): never by the one who drew it up.
+     * Sent to its producer by the coordinator (17 §4.3 step 7, BR-23 as rewritten on 2026-11-20): DRAFT → SENT, with
+     * who sent it and when, both written once (the database refuses a change). The one who drew it up may send it:
+     * there is no second person to check what the data already holds.
      *
-     * @throws BusinessException {@code PRODUCTION_ORDER_SELF_APPROVAL}; {@code PRODUCTION_ORDER_STATUS_INVALID}
+     * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID} unless a draft
      */
-    public void approve(UUID by, Instant at) {
-        Objects.requireNonNull(by, "by");
-        if (by.equals(drawnUpBy)) {
-            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_SELF_APPROVAL, ("Production order %s was drawn up by "
-                    + "you: someone else approves it (BR-23)").formatted(code));
-        }
-        move(ProductionOrderStatus.SENT, null, by, at, "approved");
-        this.approvedBy = by;
-        this.approvedAt = at;
+    public void send(UUID by, Instant at) {
+        move(ProductionOrderStatus.SENT, null, by, at, "sent");
+        this.sentBy = by;
         this.sentAt = at;
     }
 
-    /** Returned to the coordinator with a reason (BR-23): PENDING_APPROVAL → DRAFT. */
-    public void returnToDraft(String reason, UUID by, Instant at) {
-        String why = required(reason, "Returning a production order says why (BR-23)");
-        move(ProductionOrderStatus.DRAFT, why, by, at, "returned");
-        this.returnedReason = why;
-    }
-
     /**
-     * Cancelled before mass printing, with a reason (BR-06): from DRAFT, PENDING_APPROVAL, SENT, ACCEPTED or
-     * SAMPLE_PENDING.
+     * Cancelled before mass printing, with a reason (BR-06): from DRAFT, SENT, ACCEPTED or SAMPLE_PENDING.
      *
      * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID} once mass printing started
      */
@@ -336,14 +329,20 @@ public final class ProductionOrder {
     /**
      * The producer accepted it and said when the goods will be done (17 §4.3 step 8): SENT → ACCEPTED, recorded by hand
      * by the coordinator. The day is what the AT_RISK alert compares with the need-by date (§4.12), so an acceptance
-     * without one is refused rather than recorded half.
+     * without one is refused rather than recorded half. The optional note is whatever the coordinator wants kept with
+     * the acceptance (who at the producer said it, and how); only this method ever writes it, and the database
+     * keeps it once set.
      *
-     * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID} unless SENT; {@code VALIDATION_FAILED} with no day
+     * @param note a blank one is no note
+     * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID} unless SENT; {@code VALIDATION_FAILED} with no
+     *         day, or a note over {@value #TEXT_MAX} characters
      */
-    public void accept(LocalDate expectedCompletion, UUID by, Instant at) {
+    public void accept(LocalDate expectedCompletion, String note, UUID by, Instant at) {
         LocalDate day = requiredDay(expectedCompletion);
+        String kept = text(note);
         move(ProductionOrderStatus.ACCEPTED, null, by, at, "accepted");
         this.expectedCompletionDate = day;
+        this.acceptanceNote = kept;
     }
 
     /**
@@ -440,7 +439,10 @@ public final class ProductionOrder {
                 .mapToInt(line -> line.cartons() - line.receivedCartons()).sum();
     }
 
-    /** Sent to the producer and not finished: it counts for an order waiting for stock (17 BR-04). */
+    /**
+     * Sent to the producer and not finished: it counts for an order waiting for stock (17 BR-04). PENDING_APPROVAL is
+     * history, but a row of before reads as not sent, as it was.
+     */
     public boolean sentAndOpen() {
         return status.open() && status != ProductionOrderStatus.DRAFT
                 && status != ProductionOrderStatus.PENDING_APPROVAL;
@@ -593,6 +595,10 @@ public final class ProductionOrder {
     public Instant approvedAt() { return approvedAt; }
     public String returnedReason() { return returnedReason; }
     public Instant sentAt() { return sentAt; }
+    public UUID sentBy() { return sentBy; }
+
+    /** What the coordinator kept with the producer's acceptance; null when none. */
+    public String acceptanceNote() { return acceptanceNote; }
     public Instant productionStartedAt() { return productionStartedAt; }
     public LocalDate expectedCompletionDate() { return expectedCompletionDate; }
     public UUID cancelledBy() { return cancelledBy; }

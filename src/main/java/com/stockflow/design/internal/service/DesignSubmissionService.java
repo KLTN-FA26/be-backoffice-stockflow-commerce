@@ -43,7 +43,7 @@ import org.springframework.transaction.support.TransactionOperations;
 /**
  * A customer submits their design for review (kltn-docs 12 §4.3): the server's preflight runs on the layout as it is
  * saved (BR-05; {@link LayoutPreflight}), and the three files the studio rendered from it must name that layout's
- * checksum (BR-10; plan D2). Passing, the design is locked (BR-07), waits for the Sales Manager, and they are told
+ * checksum (BR-10; plan D2). Passing, the design is locked (BR-07), waits for the coordinator, and they are told
  * through {@link DesignSubmittedForReview}. Failing, it stays a draft and the failure is written to its history
  * ({@code PREFLIGHT_FAILED}), without moving its version.
  *
@@ -57,7 +57,7 @@ import org.springframework.transaction.support.TransactionOperations;
  *       print file and the technical spec must be PDFs.</li>
  *   <li>With no transaction held, the print file - up to 50 MB - is copied to disk, checked against its checksum, and
  *       checked to be the studio's for this template ({@link PrintFileGeometry}): a file the press cannot use never
- *       reaches the Sales Manager. A failure is written to the history in a transaction of its own, committed before the 422.</li>
+ *       reaches the coordinator. A failure is written to the history in a transaction of its own, committed before the 422.</li>
  *   <li>A short transaction locks the design and submits it - only if its version is still the one read in step 1:
  *       every change to the layout or the files moves it.</li>
  * </ol>
@@ -66,7 +66,7 @@ import org.springframework.transaction.support.TransactionOperations;
 @Transactional
 public class DesignSubmissionService {
 
-    /** What the studio renders when the customer submits (plan D2); the Sales Manager approves exactly these. */
+    /** What the studio renders when the customer submits (plan D2); the coordinator approves exactly these. */
     static final Set<DesignArtifactRole> SUBMITTED_FILES = EnumSet.of(DesignArtifactRole.CUSTOMER_PREVIEW,
             DesignArtifactRole.PRINT_READY, DesignArtifactRole.TECHNICAL_SPEC);
 
