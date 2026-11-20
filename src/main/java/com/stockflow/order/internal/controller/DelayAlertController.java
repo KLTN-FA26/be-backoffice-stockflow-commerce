@@ -68,7 +68,8 @@ class DelayAlertController {
             @RequestParam(required = false) Integer size,
             @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(alerts.list(salesOrderId, type, open, page,
+        boolean followsDelivery = user.can(OrderResources.DELIVERY_DELAY_ALERTS, Action.READ);
+        return ApiResponse.ok(alerts.list(salesOrderId, type, followsDelivery, open, page,
                 size == null ? Pages.DEFAULT_PAGE_SIZE : size).map(AlertResponse::of));
     }
 }
