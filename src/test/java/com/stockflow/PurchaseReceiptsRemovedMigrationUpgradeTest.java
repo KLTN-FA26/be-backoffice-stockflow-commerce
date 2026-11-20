@@ -80,6 +80,11 @@ class PurchaseReceiptsRemovedMigrationUpgradeTest {
                 + "production_order_id, warehouse_id, status, received_at, received_by, confirmed_at, confirmed_by, "
                 + "created_at) VALUES (?::uuid, 'GR-UPG-P2', 'PRODUCTION', gen_random_uuid(), gen_random_uuid(), "
                 + "'CONFIRMED', NOW(), gen_random_uuid(), NOW(), gen_random_uuid(), NOW())", PRODUCTION);
+        // The production order's own register of the receipt says CONFIRMED, as it did when the receipt was confirmed:
+        // moving the receipt on to IN_PUTAWAY is checked against it (check_production_receipt_registered).
+        RawSql.update(db, "INSERT INTO ordering.production_order_receipt (production_order_id, goods_receipt_id, "
+                + "receipt_number, status, opened_at, settled_at) SELECT production_order_id, id, receipt_number, "
+                + "'CONFIRMED', NOW(), NOW() FROM procurement.goods_receipts WHERE id = ?::uuid", PRODUCTION);
         RawSql.update(db, "SET session_replication_role = origin");
     }
 
