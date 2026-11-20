@@ -107,7 +107,9 @@ class ProductionOrderController {
     /** The producer accepted, and when it expects the goods done (17 §4.3 step 8). */
     @Schema(name = "AcceptProductionOrderRequest")
     record AcceptRequest(@NotNull(message = "version is required") Long version,
-                         @NotNull(message = "expectedCompletionDate is required") LocalDate expectedCompletionDate) {
+                         @NotNull(message = "expectedCompletionDate is required") LocalDate expectedCompletionDate,
+                         @Schema(description = "Optional: who at the producer accepted, and how to reach them")
+                         @Size(max = 500, message = "note is at most 500 characters") String note) {
     }
 
     /** The producer started mass printing; its new expected completion day, if it gave one (17 §4.3 step 10). */
@@ -149,7 +151,10 @@ class ProductionOrderController {
                                    UUID sentBy,
                                    Instant productionStartedAt,
                                    @Schema(description = "4A-4: the producer's expected completion day, from ACCEPTED on")
-                                   LocalDate expectedCompletionDate, Instant cancelledAt, String cancellationReason,
+                                   LocalDate expectedCompletionDate,
+                                   @Schema(description = "What the coordinator kept with the producer's acceptance "
+                                           + "(who accepted, how to reach them); null when none")
+                                   String acceptanceNote, Instant cancelledAt, String cancellationReason,
                                    Instant closedAt, String closingReason,
                                    @Schema(description = "BR-25: true since BE1 - capacity carries the receiving "
                                            + "warehouse's board")
@@ -168,7 +173,7 @@ class ProductionOrderController {
                     p.sampleApprovalRequired(), p.sampleRequiredByDefault(), p.sampleWaiverReason(),
                     p.note(), p.drawnUpBy(), p.submittedAt(), p.approvedBy(), p.approvedAt(),
                     p.returnedReason(), p.sentAt(), p.sentBy(), p.productionStartedAt(), p.expectedCompletionDate(),
-                    p.cancelledAt(), p.cancellationReason(), p.closedAt(), p.closingReason(), true, capacity,
+                    p.acceptanceNote(), p.cancelledAt(), p.cancellationReason(), p.closedAt(), p.closingReason(), true, capacity,
                     p.lines().stream().map(l -> new LineResponse(l.id(), l.orderLineId(), l.sku(), l.cartons(),
                             l.unitsPerCarton(), l.totalUnits(), l.designSnapshotId(), l.printFileChecksum(),
                             l.packingRequirements(), l.receivedCartons())).toList(),
@@ -268,7 +273,7 @@ class ProductionOrderController {
                                                        @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(respond(productionOrders.accept(id, request.version(),
-                request.expectedCompletionDate(), user.userId()), null));
+                request.expectedCompletionDate(), request.note(), user.userId()), null));
     }
 
     @PutMapping("/{id}/expected-completion-date")

@@ -265,7 +265,7 @@ class ProductionSampleIntegrationTest {
 
     private ProductionOrder accepted(UUID orderId) {
         ProductionOrder sent = sent(orderId);
-        return productionOrders.accept(sent.id(), sent.version(), today.plusDays(14), coordinator);
+        return productionOrders.accept(sent.id(), sent.version(), today.plusDays(14), null, coordinator);
     }
 
     private ProductionOrder reread(UUID id) {
@@ -302,7 +302,7 @@ class ProductionSampleIntegrationTest {
                 .as("no day before the producer accepted").extracting(ProductionSampleIntegrationTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
 
-        ProductionOrder accepted = productionOrders.accept(sent.id(), sent.version(), today.plusDays(14), coordinator);
+        ProductionOrder accepted = productionOrders.accept(sent.id(), sent.version(), today.plusDays(14), null, coordinator);
         assertThat(accepted.status()).isEqualTo(ProductionOrderStatus.ACCEPTED);
         assertThat(accepted.expectedCompletionDate()).isEqualTo(today.plusDays(14));
         assertThat(jdbc.queryForObject("SELECT expected_completion_date FROM ordering.production_order WHERE id = ?",
@@ -338,7 +338,7 @@ class ProductionSampleIntegrationTest {
                 .extracting(ProductionSampleIntegrationTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_SAMPLE_NOT_REQUIRED);
         ProductionOrder acceptedWaived = productionOrders.accept(sentWaived.id(), sentWaived.version(),
-                today.plusDays(10), coordinator);
+                today.plusDays(10), null, coordinator);
         assertThat(printingStartedAt(otherOrder)).isNull();
         ProductionOrder started = productionOrders.startProduction(acceptedWaived.id(), acceptedWaived.version(),
                 today.plusDays(12), coordinator);
@@ -522,7 +522,7 @@ class ProductionSampleIntegrationTest {
                  WHERE id = ?""", sent.id())).as("BR-24: from SENT with a sample to approve")
                 .hasMessageContaining("print sample");
 
-        ProductionOrder accepted = productionOrders.accept(sent.id(), sent.version(), today.plusDays(7), coordinator);
+        ProductionOrder accepted = productionOrders.accept(sent.id(), sent.version(), today.plusDays(7), null, coordinator);
         assertThatThrownBy(() -> sql("""
                 UPDATE ordering.production_order SET status = 'SAMPLE_PENDING' WHERE id = ?""", accepted.id()))
                 .as("pending before round 1 is there").hasMessageContaining("round 1");

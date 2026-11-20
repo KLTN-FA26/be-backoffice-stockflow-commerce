@@ -119,6 +119,7 @@ public final class ProductionOrder {
     private UUID sentBy;
     private Instant productionStartedAt;
     private LocalDate expectedCompletionDate;
+    private String acceptanceNote;
     private UUID cancelledBy;
     private Instant cancelledAt;
     private String cancellationReason;
@@ -142,7 +143,7 @@ public final class ProductionOrder {
         this(id, code, salesOrderId, deliveryBatchId, customerId, producerId, receivingWarehouseId, needByDate, status,
                 sampleApprovalRequired, sampleRequiredByDefault, sampleWaiverReason, note,
                 drawnUpBy, submittedAt, approvedBy, approvedAt, returnedReason, sentAt, sentBy, productionStartedAt,
-                null,
+                null, null,
                 cancelledBy, cancelledAt, cancellationReason, closedBy, closedAt, closingReason, lines, version);
     }
 
@@ -153,8 +154,8 @@ public final class ProductionOrder {
                            boolean sampleRequiredByDefault, String sampleWaiverReason, String note,
                            UUID drawnUpBy, Instant submittedAt, UUID approvedBy,
                            Instant approvedAt, String returnedReason, Instant sentAt, UUID sentBy,
-                           Instant productionStartedAt, LocalDate expectedCompletionDate, UUID cancelledBy,
-                           Instant cancelledAt, String cancellationReason, UUID closedBy, Instant closedAt,
+                           Instant productionStartedAt, LocalDate expectedCompletionDate, String acceptanceNote,
+                           UUID cancelledBy, Instant cancelledAt, String cancellationReason, UUID closedBy, Instant closedAt,
                            String closingReason,
                            List<Line> lines, long version) {
         this.id = Objects.requireNonNull(id, "id");
@@ -179,6 +180,7 @@ public final class ProductionOrder {
         this.sentBy = sentBy;
         this.productionStartedAt = productionStartedAt;
         this.expectedCompletionDate = expectedCompletionDate;
+        this.acceptanceNote = acceptanceNote;
         this.cancelledBy = cancelledBy;
         this.cancelledAt = cancelledAt;
         this.cancellationReason = cancellationReason;
@@ -327,14 +329,20 @@ public final class ProductionOrder {
     /**
      * The producer accepted it and said when the goods will be done (17 §4.3 step 8): SENT → ACCEPTED, recorded by hand
      * by the coordinator. The day is what the AT_RISK alert compares with the need-by date (§4.12), so an acceptance
-     * without one is refused rather than recorded half.
+     * without one is refused rather than recorded half. The optional note is whatever the coordinator wants kept with
+     * the acceptance (who at the producer said it, and how); only this method ever writes it, and the database
+     * keeps it once set.
      *
-     * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID} unless SENT; {@code VALIDATION_FAILED} with no day
+     * @param note a blank one is no note
+     * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID} unless SENT; {@code VALIDATION_FAILED} with no
+     *         day, or a note over {@value #TEXT_MAX} characters
      */
-    public void accept(LocalDate expectedCompletion, UUID by, Instant at) {
+    public void accept(LocalDate expectedCompletion, String note, UUID by, Instant at) {
         LocalDate day = requiredDay(expectedCompletion);
+        String kept = text(note);
         move(ProductionOrderStatus.ACCEPTED, null, by, at, "accepted");
         this.expectedCompletionDate = day;
+        this.acceptanceNote = kept;
     }
 
     /**
@@ -588,6 +596,9 @@ public final class ProductionOrder {
     public String returnedReason() { return returnedReason; }
     public Instant sentAt() { return sentAt; }
     public UUID sentBy() { return sentBy; }
+
+    /** What the coordinator kept with the producer's acceptance; null when none. */
+    public String acceptanceNote() { return acceptanceNote; }
     public Instant productionStartedAt() { return productionStartedAt; }
     public LocalDate expectedCompletionDate() { return expectedCompletionDate; }
     public UUID cancelledBy() { return cancelledBy; }

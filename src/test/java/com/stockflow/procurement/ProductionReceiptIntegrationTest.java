@@ -474,7 +474,7 @@ class ProductionReceiptIntegrationTest {
         UUID orderId = confirmedOrderAtA();
         UUID customerUser = PrintSamples.portalUser(jdbc, tx, entityManager, customerId);
         ProductionOrder sent = sentWithSample(orderId, 1);
-        ProductionOrder accepted = productionOrders.accept(sent.id(), sent.version(), today.plusDays(10), coordinator);
+        ProductionOrder accepted = productionOrders.accept(sent.id(), sent.version(), today.plusDays(10), null, coordinator);
         assertThatThrownBy(() -> start(accepted)).as("ACCEPTED with a print sample to approve")
                 .extracting(ProductionReceiptIntegrationTest::code).isEqualTo(ErrorCode.PRODUCTION_ORDER_NOT_RECEIVABLE);
 

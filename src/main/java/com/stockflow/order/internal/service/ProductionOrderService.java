@@ -317,14 +317,16 @@ public class ProductionOrderService {
      * The producer accepted it and gave its expected completion day (17 §4.3 step 8): SENT → ACCEPTED, recorded by the
      * coordinator by hand - there is no producer system to hear it from.
      *
-     * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID}; {@code VALIDATION_FAILED} with no day;
-     *         {@code OPTIMISTIC_LOCK}
+     * @param note what to keep with the acceptance (who at the producer said it); optional
+     * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID}; {@code VALIDATION_FAILED} with no day or a
+     *         note over 500 characters; {@code OPTIMISTIC_LOCK}
      */
     @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#id")
-    public ProductionOrder accept(UUID id, long version, LocalDate expectedCompletion, UUID by) {
+    public ProductionOrder accept(UUID id, long version, LocalDate expectedCompletion, String note,
+                                  UUID by) {
         requireNotPast(expectedCompletion);
         ProductionOrder production = lockedAfterItsOrder(id, version);
-        production.accept(expectedCompletion, by, clock.instant());
+        production.accept(expectedCompletion, note, by, clock.instant());
         log.info("Production order {} accepted by its producer, expected done on {}", production.code(),
                 expectedCompletion);
         return productionOrders.save(production);

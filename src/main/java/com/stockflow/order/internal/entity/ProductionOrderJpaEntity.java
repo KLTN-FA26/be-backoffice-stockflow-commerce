@@ -79,6 +79,10 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     @Column(name = "sent_by")
     private UUID sentBy;
 
+    /** 17 §4.3 step 8: what the coordinator kept with the producer's acceptance; written once, with it. */
+    @Column(name = "acceptance_note", length = 500)
+    private String acceptanceNote;
+
     @Column(name = "production_started_at")
     private Instant productionStartedAt;
 
@@ -147,8 +151,9 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     }
 
     /** Set beside {@link #apply}: the producer's day moves on its own, after the rest is settled. */
-    public void expectCompletion(LocalDate expectedCompletionDate) {
+    public void expectCompletion(LocalDate expectedCompletionDate, String acceptanceNote) {
         this.expectedCompletionDate = expectedCompletionDate;
+        this.acceptanceNote = acceptanceNote;
     }
 
     public String getCode() { return code; }
@@ -172,6 +177,8 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     public UUID getSentBy() { return sentBy; }
     public Instant getProductionStartedAt() { return productionStartedAt; }
     public LocalDate getExpectedCompletionDate() { return expectedCompletionDate; }
+
+    public String getAcceptanceNote() { return acceptanceNote; }
     public UUID getCancelledBy() { return cancelledBy; }
     public Instant getCancelledAt() { return cancelledAt; }
     public String getCancellationReason() { return cancellationReason; }

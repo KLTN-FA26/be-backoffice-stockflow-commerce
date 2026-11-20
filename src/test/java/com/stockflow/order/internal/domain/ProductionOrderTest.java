@@ -125,6 +125,41 @@ class ProductionOrderTest {
     }
 
     @Test
+    @DisplayName("17 §4.3 step 8: accepting keeps the coordinator's note, trimmed - who at the producer said it")
+    void acceptKeepsATrimmedNote() {
+        ProductionOrder order = stored(ProductionOrderStatus.SENT, false);
+
+        order.accept(NOW.atZone(java.time.ZoneOffset.UTC).toLocalDate().plusDays(5), "  anh Hùng, Zalo  ", COORDINATOR, NOW);
+
+        assertThat(order.status()).isEqualTo(ProductionOrderStatus.ACCEPTED);
+        assertThat(order.acceptanceNote()).isEqualTo("anh Hùng, Zalo");
+    }
+
+    @Test
+    @DisplayName("a blank or missing acceptance note is no note")
+    void aBlankNoteIsNoNote() {
+        LocalDate day = LocalDate.of(2026, 12, 20);
+        ProductionOrder blank = stored(ProductionOrderStatus.SENT, false);
+        blank.accept(day, "   ", COORDINATOR, NOW);
+        ProductionOrder none = stored(ProductionOrderStatus.SENT, false);
+        none.accept(day, null, COORDINATOR, NOW);
+
+        assertThat(blank.acceptanceNote()).isNull();
+        assertThat(none.acceptanceNote()).isNull();
+    }
+
+    @Test
+    @DisplayName("an acceptance note over 500 characters is refused, and the order stays SENT")
+    void aNoteOver500CharactersIsRefused() {
+        ProductionOrder order = stored(ProductionOrderStatus.SENT, false);
+
+        assertThatThrownBy(() -> order.accept(LocalDate.of(2026, 12, 20), "x".repeat(501), COORDINATOR, NOW))
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(order.status()).isEqualTo(ProductionOrderStatus.SENT);
+        assertThat(order.acceptanceNote()).isNull();
+    }
+
+    @Test
     @DisplayName("only a draft is sent: a sent one, or one pending approval from before 2026-11-20, is refused")
     void sendRefusesAnOrderThatIsNotADraft() {
         ProductionOrder order = drawn(false);

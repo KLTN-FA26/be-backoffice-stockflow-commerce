@@ -43,7 +43,7 @@ class SampleRoundsTest {
 
     private static ProductionOrder accepted(boolean sample) {
         ProductionOrder order = sent(sample);
-        order.accept(DONE_BY, COORDINATOR, NOW);
+        order.accept(DONE_BY, null, COORDINATOR, NOW);
         return order;
     }
 
@@ -61,18 +61,18 @@ class SampleRoundsTest {
     @DisplayName("17 §4.3 step 8: accepted with the producer's day, which moves while goods are to come")
     void acceptedWithItsDay() {
         ProductionOrder order = sent(true);
-        assertThatThrownBy(() -> order.accept(null, COORDINATOR, NOW)).satisfies(e ->
+        assertThatThrownBy(() -> order.accept(null, null, COORDINATOR, NOW)).satisfies(e ->
                 assertThat(code(e)).isEqualTo(ErrorCode.VALIDATION_FAILED));
         assertThatThrownBy(() -> order.expectCompletion(DONE_BY)).as("not before it is accepted").satisfies(e ->
                 assertThat(code(e)).isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID));
-        order.accept(DONE_BY, COORDINATOR, NOW);
+        order.accept(DONE_BY, null, COORDINATOR, NOW);
         assertThat(order.status()).isEqualTo(ProductionOrderStatus.ACCEPTED);
         assertThat(order.expectedCompletionDate()).isEqualTo(DONE_BY);
         assertThat(order.pullChanges()).extracting(ProductionOrder.Change::to).endsWith(ProductionOrderStatus.ACCEPTED);
         assertThat(order.expectCompletion(DONE_BY)).as("the same day changes nothing").isFalse();
         assertThat(order.expectCompletion(DONE_BY.plusDays(3))).isTrue();
         assertThat(order.expectedCompletionDate()).isEqualTo(DONE_BY.plusDays(3));
-        assertThatThrownBy(() -> order.accept(DONE_BY, COORDINATOR, NOW)).as("accepted once").satisfies(e ->
+        assertThatThrownBy(() -> order.accept(DONE_BY, null, COORDINATOR, NOW)).as("accepted once").satisfies(e ->
                 assertThat(code(e)).isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID));
     }
 

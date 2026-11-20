@@ -166,4 +166,39 @@ class ProductionOrderFileLinksSecurityIntegrationTest extends ProductionOrderDis
                 .andExpect(jsonPath("$.data.drawnUpBy").value(coordinator.toString()))
                 .andExpect(jsonPath("$.data.approvedBy").doesNotExist());
     }
+
+    @Test
+    @DisplayName("17 §4.3 step 8: the acceptance note is stored with the acceptance and returned with the order")
+    void theAcceptanceNoteIsReturnedWithTheOrder() throws Exception {
+        SecuredMvc http = new SecuredMvc(mvc, decoder);
+        ProductionOrder sent = sent(producer);
+        String base = "/api/v1/production-orders/" + sent.id();
+        String day = java.time.LocalDate.now().plusDays(10).toString();
+
+        http.asRole(Role.PRODUCTION_COORDINATOR, coordinator, post(base + "/acceptance")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\": " + sent.version() + ", \"expectedCompletionDate\": \"" + day
+                                + "\", \"note\": \"  anh Hung, Zalo  \"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data.acceptanceNote").value("anh Hung, Zalo"));
+        http.asRole(Role.PRODUCTION_COORDINATOR, coordinator, get(base))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.acceptanceNote").value("anh Hung, Zalo"));
+    }
+
+    @Test
+    @DisplayName("an acceptance note over 500 characters is 400, nothing accepted")
+    void anOverlongAcceptanceNoteIsRefused() throws Exception {
+        SecuredMvc http = new SecuredMvc(mvc, decoder);
+        ProductionOrder sent = sent(producer);
+        String day = java.time.LocalDate.now().plusDays(10).toString();
+
+        http.asRole(Role.PRODUCTION_COORDINATOR, coordinator, post("/api/v1/production-orders/" + sent.id()
+                        + "/acceptance").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\": " + sent.version() + ", \"expectedCompletionDate\": \"" + day
+                                + "\", \"note\": \"" + "x".repeat(501) + "\"}"))
+                .andExpect(status().isBadRequest());
+        assertThat(reread(sent.id()).status().name()).isEqualTo("SENT");
+    }
 }

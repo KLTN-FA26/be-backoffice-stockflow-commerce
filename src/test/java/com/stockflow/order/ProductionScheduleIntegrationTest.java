@@ -561,7 +561,7 @@ class ProductionScheduleIntegrationTest {
                 DataAccessException.class).hasMessageContaining("ck_production_order_expected_completion");
         // Accepted the way the coordinator records it (4A-4): the database refuses the status written around it.
         productionOrders.accept(sent.id(), productionOrders.detail(sent.id()).order().version(), today.plusDays(5),
-                coordinator);
+                null, coordinator);
         alerts.recompute(orderId);
         UUID risk = openAlert(DelayAlertType.AT_RISK, sent.id());
         assertThat(risk).as("expected after the need-by day").isNotNull();
