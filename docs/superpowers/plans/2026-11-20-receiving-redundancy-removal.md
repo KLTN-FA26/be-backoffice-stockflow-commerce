@@ -39,10 +39,10 @@ the return receipt's `counted_qty` / loose lines (code is ahead of the docs ther
   checkout carries the owner's uncommitted work: do not touch it.
 - Migrations above every one on `origin/develop` (latest `V20261212000100`) and clear of the in-flight
   `V20261210000100/200` of `feature/coordinator-owns-production`. Use exactly:
-  `V20261213000100__procurement_purchase_receipts_removed.sql`,
-  `V20261213000200__inventory_stock_lot_receipt_origin_removed.sql`,
-  `V20261213000300__inventory_uom_default_purchase_removed.sql`,
-  `V20261213000400__inventory_one_carton_unit_per_item.sql`.
+  `V20261214000100__procurement_purchase_receipts_removed.sql`,
+  `V20261214000200__inventory_stock_lot_receipt_origin_removed.sql`,
+  `V20261214000300__inventory_uom_default_purchase_removed.sql`,
+  `V20261214000400__inventory_one_carton_unit_per_item.sql`.
   Re-check the latest version on `origin/develop` before each; rename upward if someone merged above.
 - Never edit an existing migration or demo migration. A SQL function a migration changes is rewritten from its latest
   body (`git grep "FUNCTION <name>" origin/develop -- src/main/resources/db/migration`; today all three named below
@@ -115,7 +115,7 @@ gh issue create --repo KLTN-FA26/fe-backoffice-stockflow-commerce \
 ### Task 2: Purchase receipts and the CONFIRMED status (A2)
 
 **Files:**
-- Create: `src/main/resources/db/migration/V20261213000100__procurement_purchase_receipts_removed.sql`
+- Create: `src/main/resources/db/migration/V20261214000100__procurement_purchase_receipts_removed.sql`
 - Modify: `procurement/internal/domain/GoodsReceipt.java`, `GoodsReceiptType.java`, `GoodsReceiptStatus.java`, `ReceiptLine.java`
 - Modify: `procurement/internal/service/GoodsReceiptServiceImpl.java` (`replaceLines`, `confirm`, `cancel`, `get`, `view`)
 - Modify: `procurement/internal/entity/GoodsReceiptJpaEntity.java` / `GoodsReceiptLineJpaEntity.java` if they map `production_order_line_id` as nullable
@@ -156,7 +156,7 @@ gh issue create --repo KLTN-FA26/fe-backoffice-stockflow-commerce \
 ### Task 3: Lot origin GOODS_RECEIPT (A3)
 
 **Files:**
-- Create: `src/main/resources/db/migration/V20261213000200__inventory_stock_lot_receipt_origin_removed.sql`
+- Create: `src/main/resources/db/migration/V20261214000200__inventory_stock_lot_receipt_origin_removed.sql`
 - Modify: `inventory/internal/entity/StockLotJpaEntity.java`, `inventory/internal/repository/StockLotsAdapter.java`, `StockLotJpaRepository.java`, `inventory/internal/domain/StockLots.java`
 - Modify: `inventory/internal/domain/LotTrace.java`, `inventory/internal/repository/LotTraceSearchAdapter.java`, `inventory/internal/controller/dto/LotTraceResponse.java`
 - Modify: `inventory/api/ReceiptOrigin.java` (javadoc), `inventory/internal/service/StockOperationsServiceImpl.java` (`receive`)
@@ -170,7 +170,7 @@ gh issue create --repo KLTN-FA26/fe-backoffice-stockflow-commerce \
   without `production_order_id` is still refused (`ck_stock_lot_production_order`); an `UNTRACED` lot still inserts;
   and (Review Focus 5) a lot inserted as `GOODS_RECEIPT` *before* the migration is impossible to stage in a QA file
   that runs after it — cover that in a lean `StockLotReceiptOriginMigrationUpgradeTest` instead (template:
-  `DeliveryFailureCasesMigrationUpgradeTest`): migrate to `V20261213000100`, insert a GOODS_RECEIPT lot with one stock
+  `DeliveryFailureCasesMigrationUpgradeTest`): migrate to `V20261214000100`, insert a GOODS_RECEIPT lot with one stock
   row in a carton, migrate on, assert the lot is `UNTRACED` and `LotTraceSearchAdapter` still returns its row.
 - [ ] **Step 2:** Run both → FAIL.
 - [ ] **Step 3: The migration.** `UPDATE inventory.stock_lot SET origin_type = 'UNTRACED' … WHERE origin_type = 'GOODS_RECEIPT'`
@@ -188,7 +188,7 @@ gh issue create --repo KLTN-FA26/fe-backoffice-stockflow-commerce \
 ### Task 4: Default purchase unit and the response fields the FE does not read (A4, A5 part 1)
 
 **Files:**
-- Create: `src/main/resources/db/migration/V20261213000300__inventory_uom_default_purchase_removed.sql`
+- Create: `src/main/resources/db/migration/V20261214000300__inventory_uom_default_purchase_removed.sql`
 - Modify: `inventory/api/UomConversion.java`, `inventory/api/UomConversionDraft.java`, `inventory/internal/domain/UomConversionRules.java`, `inventory/internal/repository/UomConversionRepository.java`, `inventory/internal/service/UomConversionServiceImpl.java`, `inventory/internal/service/ItemSpecificationsImpl.java`, `product/internal/service/SkuUnitService.java` and the product controller DTOs that carry `defaultPurchase`
 - Modify: `procurement/internal/service/GoodsReceipts.java` (`UnitView` without `defaultPurchase`; `LineView` without `lotTracked`, `warnings`; `ReceiptView` without `warnings`), `GoodsReceiptServiceImpl.view`, `procurement/internal/controller/dto/GoodsReceiptResponse.java`, `GoodsReceiptWebMapper.java`
 - Test: every file listed by `grep -rln 'defaultPurchase\|default_purchase' src/test tools/db/qa` (19 today), QA section A4
@@ -207,7 +207,7 @@ gh issue create --repo KLTN-FA26/fe-backoffice-stockflow-commerce \
 ### Task 5: One carton unit per SKU (B)
 
 **Files:**
-- Create: `src/main/resources/db/migration/V20261213000400__inventory_one_carton_unit_per_item.sql`
+- Create: `src/main/resources/db/migration/V20261214000400__inventory_one_carton_unit_per_item.sql`
 - Modify: `common/error/ErrorCode.java` (+ `UOM_CARTON_ALREADY_DECLARED("This SKU already has a carton unit; retire it before declaring another", 409)`), `src/main/resources/i18n/messages.properties`, `messages_vi.properties`
 - Modify: `inventory/internal/service/UomConversionServiceImpl.java` (`add`, `change`), `inventory/internal/repository/UomConversionRepository.java` (`activeCartonOf(UUID itemId, UUID except)`)
 - Modify: `procurement/internal/service/GoodsReceiptServiceImpl.java` — replace `productionCartonUnit` with `cartonUnit`; `GoodsReceipts.NewLine` javadoc
@@ -222,7 +222,7 @@ gh issue create --repo KLTN-FA26/fe-backoffice-stockflow-commerce \
   - `InventoryItemMasterDataIntegrationTest.replacingTheCartonRetiresFirst`: retire CARTON (in use), then add CARTON2 → succeeds.
   - `ProductionReceiptIntegrationTest.recountAfterTheCartonUnitWasRetired` (Review Focus 3): count a draft in CARTON, retire CARTON and declare CARTON2 of the same factor, recount naming the same LPNs → `RECEIPT_LINE_HAS_PACKAGES`; recount naming no old LPN → the old cartons VOID, new ones labelled in CARTON2.
   - QA section B: two active non-base units for one item → refused by `uk_uom_conversions_one_carton`; a retired one beside an active one → accepted.
-  - `CartonUnitPerItemMigrationUpgradeTest` (Review Focus 2): migrate to `V20261213000300`, give one item two active cartons (one `default_shipping`), migrate on, assert the default-shipping one is active and the other retired.
+  - `CartonUnitPerItemMigrationUpgradeTest` (Review Focus 2): migrate to `V20261214000300`, give one item two active cartons (one `default_shipping`), migrate on, assert the default-shipping one is active and the other retired.
 - [ ] **Step 2:** Run them → FAIL.
 - [ ] **Step 3: The migration.** Retire extras first, keeping per item the `default_shipping` one, else the most recently created: `UPDATE inventory.uom_conversions SET active = false, default_shipping = false WHERE …`; then `CREATE UNIQUE INDEX uk_uom_conversions_one_carton ON inventory.uom_conversions (inventory_item_id) WHERE NOT is_base AND active;` with a `COMMENT ON INDEX` citing 01 BR-03.
 - [ ] **Step 4: Service.** `add`/`change` ask `activeCartonOf(itemId, id)` under the SKU lock (already taken) before writing, so the index never surfaces as a bare 409. Receiving: `cartonUnit` replaces `productionCartonUnit` (the active/default-shipping/kept-unit ladder goes); update the javadoc of `replaceLines` and `NewLine.unitOfMeasure` ("optional; when given it must be the SKU's carton").
