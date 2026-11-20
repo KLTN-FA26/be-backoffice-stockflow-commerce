@@ -418,8 +418,15 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-delivery-outcomes:APPROVE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("customer-status:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("catalog-storefront:READ", Set.of(Role.CUSTOMER, Role.SYSTEM_ADMIN)),
-            Map.entry("platform-actuator:READ", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
-            Map.entry("platform-actuator:UPDATE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // V20261209000100 (permission review 2026-11-20, A1; kltn-docs 00 §2.1): running the system is the System
+            // Admin's; the Sales Manager kept the actuator only because it reached it before the permission existed.
+            Map.entry("platform-actuator:READ", Set.of(Role.SYSTEM_ADMIN)),
+            Map.entry("platform-actuator:UPDATE", Set.of(Role.SYSTEM_ADMIN)),
+            // V20261209000200 (permission review 2026-11-20, A3; kltn-docs 20 §3): the Accountant reads the stock
+            // adjustments too; deciding one stays with the warehouse manager.
+            Map.entry("inventory-stock-adjustments:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("inventory-stock-adjustments:APPROVE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("sales-order-cancellations:READ", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             // F-13 (V20261124000300, kltn-docs 16 §2): the customer (its own, scope OWN) and Sales chat; the Sales
             // Manager supervises - assigns from the queue, takes escalations.
