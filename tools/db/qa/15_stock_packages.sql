@@ -190,10 +190,10 @@ SELECT pg_temp.expect_ok('K28g the stock package back on the bin it came from', 
 SET LOCAL session_replication_role = replica;
 INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, customer_id, producer_id,
                                        receiving_warehouse_id, need_by_date, status, sample_approval_required,
-                                       sample_required_by_default, drawn_up_by, submitted_at, approved_by, approved_at, sent_at)
+                                       sample_required_by_default, drawn_up_by, sent_by, sent_at)
 VALUES (md5('qa:pk:prod')::uuid, 'PRD-20261109-9015', md5('qa:pk:so')::uuid, md5('qa:pk:batch')::uuid,
         md5('qa:pk:cust')::uuid, md5('qa:pk:producer')::uuid, md5('demo:wh:HCM')::uuid, CURRENT_DATE + 30, 'SENT', FALSE,
-        FALSE, md5('demo:user:editor')::uuid, NOW(), md5('demo:user:approver')::uuid, NOW(), NOW());
+        FALSE, md5('demo:user:editor')::uuid, md5('demo:user:editor')::uuid, NOW());
 INSERT INTO ordering.production_order_line (id, production_order_id, order_line_id, sku, cartons, units_per_carton,
                                             design_snapshot_id, print_file_checksum)
 VALUES (md5('qa:pk:prod:line')::uuid, md5('qa:pk:prod')::uuid, md5('qa:pk:ol')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 5, 10,

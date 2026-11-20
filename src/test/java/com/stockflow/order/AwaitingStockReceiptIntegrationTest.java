@@ -123,7 +123,6 @@ class AwaitingStockReceiptIntegrationTest {
 
     private CurrentUser sales;
     private UUID coordinator;
-    private UUID manager;
     private UUID clerk;
     private UUID customerId;
     private IssuedSku sku;
@@ -139,7 +138,6 @@ class AwaitingStockReceiptIntegrationTest {
         sales = new CurrentUser(salesUser, "sales-" + salesUser, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
                 Set.of(), Set.of());
         coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
-        manager = tx.execute(s -> ReferenceRows.user(entityManager));
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
         customerId = Identifiers.newId();
         tx.executeWithoutResult(s -> {
@@ -292,19 +290,19 @@ class AwaitingStockReceiptIntegrationTest {
         return orderId;
     }
 
-    /** Drawn up, the sample waived with a reason (goods can be received while SENT), submitted: PENDING_APPROVAL. */
-    private ProductionOrder pendingWithoutSample(UUID orderId, int batch) {
+    /** Drawn up, the sample waived with a reason (goods can be received while SENT): still a DRAFT. */
+    private ProductionOrder draftWithoutSample(UUID orderId, int batch) {
         ProductionOrder draft = productionOrders.drawUp(orderId, batch, producer.id(), coordinator);
         ProductionOrder waived = productionOrders.edit(draft.id(), draft.version(), new ProductionOrder.Draft(
                 draft.producerId(), draft.needByDate(), draft.note(), false,
                 "The customer approved the same print on paper", null));
-        return productionOrders.submit(waived.id(), waived.version(), coordinator);
+        return waived;
     }
 
-    /** As {@link #pendingWithoutSample}, approved by the manager: SENT. */
+    /** As {@link #draftWithoutSample}, sent by the coordinator: SENT. */
     private ProductionOrder sentWithoutSample(UUID orderId, int batch) {
-        ProductionOrder pending = pendingWithoutSample(orderId, batch);
-        ProductionOrder sent = productionOrders.approve(pending.id(), pending.version(), manager);
+        ProductionOrder draft = draftWithoutSample(orderId, batch);
+        ProductionOrder sent = productionOrders.send(draft.id(), draft.version(), coordinator);
         assertThat(sent.status()).isEqualTo(ProductionOrderStatus.SENT);
         assertThat(sent.sampleApprovalRequired()).isFalse();
         return sent;
@@ -537,12 +535,12 @@ class AwaitingStockReceiptIntegrationTest {
     @DisplayName("17 5.1: an order on hold stays on hold when its production order is sent, and returns to AWAITING_STOCK")
     void onHoldOrderRemembersAwaitingStock() {
         UUID orderId = confirmedOrderAtA();
-        // Drawn up and submitted while CONFIRMED (drawing up wants CONFIRMED); the hold comes before the approval.
-        ProductionOrder pending = pendingWithoutSample(orderId, 1);
+        // Drawn up while CONFIRMED (drawing up wants CONFIRMED); the hold comes before it is sent.
+        ProductionOrder draft = draftWithoutSample(orderId, 1);
         orders.putOnHold(orderId, HoldReason.ADDRESS, "Wrong address", coordinator);
         assertThat(status(orderId)).isEqualTo(OrderStatus.ON_HOLD);
 
-        assertThat(productionOrders.approve(pending.id(), pending.version(), manager).status())
+        assertThat(productionOrders.send(draft.id(), draft.version(), coordinator).status())
                 .isEqualTo(ProductionOrderStatus.SENT);
 
         assertThat(status(orderId)).as("a hold is not lifted by sending a production order")

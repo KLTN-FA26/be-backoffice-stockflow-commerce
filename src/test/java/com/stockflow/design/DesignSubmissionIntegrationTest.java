@@ -55,7 +55,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * A customer submits their design (kltn-docs 12 §4.3), over HTTP: the server's preflight refuses with each finding
  * located and records the failure without moving the version; the three files must be rendered from the layout as it
- * is; passing, the design is locked, waits in the Sales Manager's queue, and the reviewers are told.
+ * is; passing, the design is locked, waits in the coordinator's queue, and the reviewers are told.
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RecordedEvents.class})
@@ -319,7 +319,7 @@ class DesignSubmissionIntegrationTest {
                 .andExpect(jsonPath("$.details.roles.length()").value(3));
     }
 
-    /** Review of 2F-5: the print file is checked before the design reaches the Sales Manager. */
+    /** Review of 2F-5: the print file is checked before the design reaches the coordinator. */
     @Test
     void aPrintFileThePressCannotUseIsRefused() throws Exception {
         String checksum = saveLogoLayout(uploadLogo(1200));

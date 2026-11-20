@@ -2586,6 +2586,8 @@ Table ordering.production_order [headercolor: #C0392B] {
   last_modified_at           timestamptz
   last_modified_by           varchar(100)
   expected_completion_date   date
+  sent_by                    uuid
+  acceptance_note            varchar(500)
 }
 
 Table ordering.production_order_line [headercolor: #C0392B] {
@@ -5300,6 +5302,7 @@ Ref: ordering.production_order.drawn_up_by > identity.app_user.id
 Ref: ordering.production_order.producer_id > ordering.producer.id
 Ref: ordering.production_order.receiving_warehouse_id > warehouse.warehouse.id
 Ref: ordering.production_order.sales_order_id > ordering.customer_order.id
+Ref: ordering.production_order.sent_by > identity.app_user.id
 Ref: ordering.production_order_line.design_snapshot_id > design.design_snapshot.id
 Ref: ordering.production_order_line.order_line_id > ordering.order_line.id
 Ref: ordering.production_order_line.production_order_id > ordering.production_order.id [delete: cascade]

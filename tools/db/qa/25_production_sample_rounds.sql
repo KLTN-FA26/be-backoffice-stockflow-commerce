@@ -1,7 +1,7 @@
 -- =============================================================================
 -- Adversarial checks + happy paths: print sample rounds and the producer's acceptance (V20261108003100, team plan
 -- 4A-4; kltn-docs 17 §4.3 steps 8-10, §5.3, BR-24; 13 BR-13; 14 BR-18). Needs the demo seed (demo.editor is the
--- coordinator, demo.approver approves). Fixtures as 21_production_orders.sql. Rolled back at the end.
+-- coordinator and sends, V20261213000100). Fixtures as 21_production_orders.sql. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -143,10 +143,7 @@ SELECT pg_temp.draft(md5('qa25:po1')::uuid, 'HCM', TRUE, TRUE, NULL, 'PRD-202611
 SELECT pg_temp.line(md5('qa25:po1')::uuid, 10, 'QA-PRD-OWN');
 SELECT pg_temp.draft(md5('qa25:po2')::uuid, 'HCM', TRUE, FALSE, 'a re-run of a tested design', 'PRD-20261109-2502');
 SELECT pg_temp.line(md5('qa25:po2')::uuid, 10, 'QA-PRD-OWN');
-UPDATE ordering.production_order SET status = 'PENDING_APPROVAL', submitted_at = NOW()
- WHERE id IN (md5('qa25:po1')::uuid, md5('qa25:po2')::uuid);
-UPDATE ordering.production_order SET status = 'SENT', approved_by = md5('demo:user:approver')::uuid,
-       approved_at = NOW(), sent_at = NOW()
+UPDATE ordering.production_order SET status = 'SENT', sent_by = md5('demo:user:editor')::uuid, sent_at = NOW()
  WHERE id IN (md5('qa25:po1')::uuid, md5('qa25:po2')::uuid);
 SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;

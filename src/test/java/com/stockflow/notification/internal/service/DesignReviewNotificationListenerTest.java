@@ -37,15 +37,15 @@ class DesignReviewNotificationListenerTest {
 
     @Test
     void theReviewersAreToldOncePerSubmission() {
-        UUID manager = UUID.randomUUID();
+        UUID coordinator = UUID.randomUUID();
         when(identity.notificationRecipientsHolding("design-designs:APPROVE", null))
-                .thenReturn(List.of(new StaffContact(manager, "manager@example.com")));
+                .thenReturn(List.of(new StaffContact(coordinator, "coordinator@example.com")));
         when(inbox.post(any(), any())).thenReturn(1);
 
         listener.on(event);
 
         var message = ArgumentCaptor.forClass(InboxMessage.class);
-        verify(inbox).post(eq(List.of(manager)), message.capture());
+        verify(inbox).post(eq(List.of(coordinator)), message.capture());
         assertThat(message.getValue().category()).isEqualTo("DESIGN_REVIEW");
         assertThat(message.getValue().title()).contains("CUP12-001");
         assertThat(message.getValue().link()).isEqualTo("/admin/designs/review-queue");

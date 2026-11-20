@@ -1,7 +1,7 @@
 -- =============================================================================
 -- Adversarial checks + happy paths: production orders (V20261108002700, team plan 4A-2; kltn-docs 17 §4.3, §5.3,
--- BR-05, BR-06, BR-23, BR-24; no price since V20261207000100). Needs the demo seed (demo.editor draws up, demo.approver approves). Rolled back at
--- the end.
+-- BR-05, BR-06, BR-23, BR-24; no price since V20261207000100; sent by the coordinator with no approval since
+-- V20261213000100). Needs the demo seed (demo.editor draws up and sends). Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -146,40 +146,36 @@ SELECT pg_temp.expect_ok('PO5 a draft for batch 2: 10 cartons of 50 at HCM, a sa
     SELECT pg_temp.line(md5('qa21:po1')::uuid, 10, 'QA-PRD-OWN') $q$);
 SELECT pg_temp.expect_true('PO5a its line counts its units', (SELECT total_units FROM ordering.production_order_line
     WHERE production_order_id = md5('qa21:po1')::uuid) = 500);
-SELECT pg_temp.expect_fail('PO6 sent without being submitted and approved (17 §5.3)', $q$
-    UPDATE ordering.production_order SET status = 'SENT', approved_by = md5('demo:user:approver')::uuid,
-           approved_at = NOW(), sent_at = NOW() WHERE id = md5('qa21:po1')::uuid $q$);
+SELECT pg_temp.expect_fail('PO6 sent with no one named as its sender', $q$
+    UPDATE ordering.production_order SET status = 'SENT', sent_at = NOW() WHERE id = md5('qa21:po1')::uuid $q$);
 SELECT pg_temp.expect_fail('PO7 moved to another sales order', $q$
     UPDATE ordering.production_order SET sales_order_id = gen_random_uuid() WHERE id = md5('qa21:po1')::uuid $q$);
-
-\echo '--- submitted, approved by someone else (BR-23)'
-SELECT pg_temp.expect_ok('PO8 submitted for approval', $q$
+SELECT pg_temp.expect_fail('PO8 submitted for approval: the step is gone (V20261213000100)', $q$
     UPDATE ordering.production_order SET status = 'PENDING_APPROVAL', submitted_at = NOW()
      WHERE id = md5('qa21:po1')::uuid $q$);
-SELECT pg_temp.expect_fail('PO9 its need-by date changed once submitted (B33)', $q$
-    UPDATE ordering.production_order SET need_by_date = need_by_date + 1 WHERE id = md5('qa21:po1')::uuid $q$);
-SELECT pg_temp.expect_fail('PO9a its note changed once submitted (B33)', $q$
-    UPDATE ordering.production_order SET note = 'one more thing' WHERE id = md5('qa21:po1')::uuid $q$);
-SELECT pg_temp.expect_fail('PO9b returned to draft without a reason (BR-23)', $q$
-    UPDATE ordering.production_order SET status = 'DRAFT' WHERE id = md5('qa21:po1')::uuid $q$);
--- V20261207000100: a production order carries no money. The expect_ok updates around here (PO8, PO12) also prove the
+-- V20261207000100: a production order carries no money. The expect_ok updates around here (PO8a, PO17) also prove the
 -- rewritten check_production_order() no longer reads the dropped unit_price - the old body would fail on every UPDATE.
 SELECT pg_temp.expect_true('PO9c no price: unit_price and currency are gone (owner, 2026-11-19)', NOT EXISTS (
     SELECT 1 FROM information_schema.columns
      WHERE table_schema = 'ordering' AND table_name = 'production_order' AND column_name IN ('unit_price', 'currency')));
 SELECT pg_temp.expect_fail('PO9d a price written to it', $q$
     UPDATE ordering.production_order SET unit_price = 1000 WHERE id = md5('qa21:po1')::uuid $q$);
-SELECT pg_temp.expect_fail('PO10 its lines changed once submitted', $q$
+
+\echo '--- sent by the coordinator, with no approval (BR-23 rewritten 2026-11-20)'
+SELECT pg_temp.expect_ok('PO8a sent by the coordinator who drew it up', $q$
+    UPDATE ordering.production_order SET status = 'SENT', sent_by = md5('demo:user:editor')::uuid, sent_at = NOW()
+     WHERE id = md5('qa21:po1')::uuid $q$);
+SELECT pg_temp.expect_fail('PO9 its need-by date changed once sent (B33)', $q$
+    UPDATE ordering.production_order SET need_by_date = need_by_date + 1 WHERE id = md5('qa21:po1')::uuid $q$);
+SELECT pg_temp.expect_fail('PO9a its note changed once sent (B33)', $q$
+    UPDATE ordering.production_order SET note = 'one more thing' WHERE id = md5('qa21:po1')::uuid $q$);
+SELECT pg_temp.expect_fail('PO9b a sent production order back to draft', $q$
+    UPDATE ordering.production_order SET status = 'DRAFT', sent_by = NULL, sent_at = NULL
+     WHERE id = md5('qa21:po1')::uuid $q$);
+SELECT pg_temp.expect_fail('PO10 its lines changed once sent', $q$
     UPDATE ordering.production_order_line SET cartons = 9 WHERE production_order_id = md5('qa21:po1')::uuid $q$);
-SELECT pg_temp.expect_fail('PO11 approved by the one who drew it up', $q$
-    UPDATE ordering.production_order SET status = 'SENT', approved_by = md5('demo:user:editor')::uuid,
-           approved_at = NOW(), sent_at = NOW() WHERE id = md5('qa21:po1')::uuid $q$);
-SELECT pg_temp.expect_ok('PO12 approved by the approver, so sent', $q$
-    UPDATE ordering.production_order SET status = 'SENT', approved_by = md5('demo:user:approver')::uuid,
-           approved_at = NOW(), sent_at = NOW() WHERE id = md5('qa21:po1')::uuid $q$);
-SELECT pg_temp.expect_fail('PO12a its approval rewritten (BR-23)', $q$
-    UPDATE ordering.production_order SET approved_at = approved_at - INTERVAL '1 hour',
-           sent_at = sent_at - INTERVAL '1 hour' WHERE id = md5('qa21:po1')::uuid $q$);
+SELECT pg_temp.expect_fail('PO12a its sending rewritten (BR-23)', $q$
+    UPDATE ordering.production_order SET sent_at = sent_at - INTERVAL '1 hour' WHERE id = md5('qa21:po1')::uuid $q$);
 SELECT pg_temp.expect_fail('PO13 sent, received at another warehouse', $q$
     UPDATE ordering.production_order SET receiving_warehouse_id = gen_random_uuid()
      WHERE id = md5('qa21:po1')::uuid $q$);
@@ -229,22 +225,23 @@ SELECT pg_temp.expect_fail('PO19 its history rewritten', $q$
     UPDATE ordering.production_order_status_history SET to_status = 'SENT' WHERE id = md5('qa21:h1')::uuid $q$);
 SELECT pg_temp.expect_fail('PO20 deleted', $q$
     DELETE FROM ordering.production_order WHERE id = md5('qa21:po1')::uuid $q$);
-SELECT pg_temp.expect_true('PO21 the 18 edges of 17 §5.3',
-    (SELECT count(*) FROM ordering.production_order_status_transition) = 18);
+SELECT pg_temp.expect_true('PO21 the 15 edges of 17 §5.3 (DRAFT -> SENT since V20261213000100)',
+    (SELECT count(*) FROM ordering.production_order_status_transition) = 15);
 
-\echo '--- who does what (00 §2.1, 17 BR-23)'
+\echo '--- who does what (00 §2.1, 17 §4.3)'
 CREATE FUNCTION pg_temp.grants(role_code TEXT, permission_code TEXT) RETURNS BOOLEAN LANGUAGE sql AS $$
     SELECT EXISTS (SELECT 1 FROM identity.role_permission rp
                      JOIN identity.app_role r ON r.id = rp.role_id
                      JOIN identity.permission p ON p.id = rp.permission_id
                     WHERE r.code = role_code AND p.code = permission_code)
 $$;
-SELECT pg_temp.expect_true('PO22 the coordinator draws up, the Sales Manager approves, Sales and the warehouse read',
+SELECT pg_temp.expect_true('PO22 the coordinator draws up and sends, nobody approves, Sales and the warehouse read',
     pg_temp.grants('PRODUCTION_COORDINATOR', 'production-orders:CREATE')
     AND pg_temp.grants('PRODUCTION_COORDINATOR', 'production-orders:UPDATE')
-    AND NOT pg_temp.grants('PRODUCTION_COORDINATOR', 'production-orders:APPROVE')
-    AND pg_temp.grants('SALES_MANAGER', 'production-orders:APPROVE')
+    AND NOT EXISTS (SELECT 1 FROM identity.permission WHERE code = 'production-orders:APPROVE')
+    AND pg_temp.grants('SALES_MANAGER', 'production-order-sends:READ')
     AND NOT pg_temp.grants('SALES_MANAGER', 'production-orders:CREATE')
+    AND NOT pg_temp.grants('SALES_MANAGER', 'production-orders:UPDATE')
     AND pg_temp.grants('SALES_STAFF', 'production-orders:READ')
     AND pg_temp.grants('WAREHOUSE_MANAGER', 'production-orders:READ')
     AND pg_temp.grants('PRODUCTION_COORDINATOR', 'sales-orders:READ')

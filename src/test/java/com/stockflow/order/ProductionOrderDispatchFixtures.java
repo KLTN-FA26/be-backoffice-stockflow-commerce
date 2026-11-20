@@ -114,7 +114,6 @@ abstract class ProductionOrderDispatchFixtures {
 
     protected CurrentUser sales;
     protected UUID coordinator;
-    protected UUID approver;
     protected UUID warehouseManager;
     protected UUID customerId;
     protected IssuedSku sku;
@@ -132,7 +131,6 @@ abstract class ProductionOrderDispatchFixtures {
         sales = new CurrentUser(salesUser, "sales-" + salesUser, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
                 Set.of(), Set.of());
         coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
-        approver = tx.execute(s -> ReferenceRows.user(entityManager));
         warehouseManager = managerOf(a);
         customerId = Identifiers.newId();
         tx.executeWithoutResult(s -> {
@@ -273,15 +271,15 @@ abstract class ProductionOrderDispatchFixtures {
         return orderId;
     }
 
-    /** A production order for batch 1 (12 cartons), submitted by the coordinator. */
-    protected ProductionOrder pending(Producer by) {
-        ProductionOrder drawn = productionOrders.drawUp(confirmedOrder(), 1, by.id(), coordinator);
-        return productionOrders.submit(drawn.id(), drawn.version(), coordinator);
+    /** A production order for batch 1 (12 cartons), drawn up by the coordinator: a DRAFT, not sent. */
+    protected ProductionOrder drafted(Producer by) {
+        return productionOrders.drawUp(confirmedOrder(), 1, by.id(), coordinator);
     }
 
-    protected ProductionOrder approved(Producer by) {
-        ProductionOrder pending = pending(by);
-        return productionOrders.approve(pending.id(), pending.version(), approver);
+    /** The same, sent to its producer by the coordinator who drew it up. */
+    protected ProductionOrder sent(Producer by) {
+        ProductionOrder draft = drafted(by);
+        return productionOrders.send(draft.id(), draft.version(), coordinator);
     }
 
     protected ProductionOrder reread(UUID id) {
