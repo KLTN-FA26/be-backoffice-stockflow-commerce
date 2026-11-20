@@ -211,8 +211,7 @@ class AwaitingStockPrePickIntegrationTest {
         ProductionOrder waived = productionOrders.edit(draft.id(), draft.version(), new ProductionOrder.Draft(
                 draft.producerId(), draft.needByDate(), draft.note(), false,
                 "The customer approved the same print on paper", null));
-        ProductionOrder pending = productionOrders.submit(waived.id(), waived.version(), coordinator);
-        assertThat(productionOrders.approve(pending.id(), pending.version(), manager).status())
+        assertThat(productionOrders.send(waived.id(), waived.version(), coordinator).status())
                 .isEqualTo(ProductionOrderStatus.SENT);
         assertThat(orderStatus(orderId)).isEqualTo(OrderStatus.AWAITING_STOCK);
         assertThat(jdbc.queryForObject("""

@@ -56,7 +56,7 @@ public interface DesignDraftJpaRepository extends BaseJpaRepository<DesignDraftJ
     }
 
     /**
-     * The Sales Manager's queue (kltn-docs 12 §4.4): customers' designs submitted on their own and waiting for review,
+     * The coordinator's queue (kltn-docs 12 §4.4): customers' designs submitted on their own and waiting for review,
      * the longest waiting first. A design waiting in a project's review round is that round's, one item of the queue
      * of rounds (§4.10).
      */

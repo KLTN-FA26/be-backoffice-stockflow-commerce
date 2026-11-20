@@ -19,7 +19,7 @@ public interface DesignReviewRoundJpaRepository extends BaseJpaRepository<Design
     @Query("select r from DesignReviewRoundJpaEntity r where r.id = :id")
     Optional<DesignReviewRoundJpaEntity> lockById(@Param("id") UUID id);
 
-    /** The Sales Manager's queue of rounds, the longest waiting first (ix_design_review_round_open). */
+    /** The Production Coordinator's queue of rounds, the longest waiting first (ix_design_review_round_open). */
     @Query(value = "select r from DesignReviewRoundJpaEntity r where r.closedAt is null "
             + "order by r.submittedAt asc, r.id asc",
             countQuery = "select count(r) from DesignReviewRoundJpaEntity r where r.closedAt is null")

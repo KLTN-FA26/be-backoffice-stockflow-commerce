@@ -17,7 +17,7 @@ import java.util.UUID;
  * <ul>
  *   <li><b>incoming</b>: production orders sent to their producer and not finished - what
  *       {@code ProductionOrder.sentAndOpen()} answers true for;</li>
- *   <li><b>pending</b>: not sent yet - DRAFT and PENDING_APPROVAL.</li>
+ *   <li><b>pending</b>: not sent yet - DRAFT, and PENDING_APPROVAL on rows of before 2026-11-20.</li>
  * </ul>
  *
  * <p>Received, cancelled and closed ones bring nothing more, so a production order closed short leaves the board the
@@ -46,7 +46,7 @@ public class OpenProductionCartons {
 
     /**
      * The transaction-scoped advisory lock {@code warehouse-capacity:<warehouseId>} (BE1; 06 §4.6 step 8, C42). Two
-     * approvals sending production orders to one warehouse at once would each see its projected free room before the
+     * sends of production orders to one warehouse at once would each see its projected free room before the
      * other's cartons, both find it zero or more, and neither tell the manager it went below; taken after the sales
      * order and the production order (lock order: customer_order, production_order, this), the second reads the
      * first's once it commits. Wrapped in a sub-select because {@code pg_advisory_xact_lock} returns void.

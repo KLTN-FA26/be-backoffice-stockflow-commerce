@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * BE1 against the real database (kltn-docs 06 §4.6, BR-20, BR-21; 17 BR-25; C40-C43): the capacity board of a warehouse
  * built for the test - its bins, a blocked one, a legacy level without a clear height, a receiving area - with cartons
  * standing in it, a hold, and production orders in every state that counts; the warehouse manager's view narrowed to
- * their warehouses; and the WARN told once, when an approval takes the warehouse below zero.
+ * their warehouses; and the WARN told once, when sending a production order takes the warehouse below zero.
  *
  * <p>The fixtures are {@link ProductionOrderDispatchIntegrationTest}'s - the same property source and mocks, so the
  * context is shared. Every test builds warehouses of its own, so every figure below is exact whatever other tests left
@@ -153,13 +153,8 @@ class WarehouseCapacityIntegrationTest extends ProductionOrderDispatchFixtures {
         return productionOrders.drawUp(orderId, batch, producer.id(), coordinator);
     }
 
-    private ProductionOrder submitted(ProductionOrder drawn) {
-        return productionOrders.submit(drawn.id(), drawn.version(), coordinator);
-    }
-
     private ProductionOrder sent(ProductionOrder drawn) {
-        ProductionOrder submitted = submitted(drawn);
-        return productionOrders.approve(submitted.id(), submitted.version(), approver);
+        return productionOrders.send(drawn.id(), drawn.version(), coordinator);
     }
 
     private Board board(Warehouse warehouse) {
@@ -181,17 +176,17 @@ class WarehouseCapacityIntegrationTest extends ProductionOrderDispatchFixtures {
     void everyColumn() {
         Layout layout = layout();
         Warehouse w = layout.warehouse();
-        // Two orders shipping from it; their production orders: one sent (incoming), one draft and one awaiting
-        // approval (pending), one cancelled (nothing).
+        // Two orders shipping from it; their production orders: one sent (incoming), two drafts (pending), one
+        // cancelled (nothing).
         UUID first = confirmedOrder(w);
         UUID second = confirmedOrder(w);
         ProductionOrder sentOne = sent(drawn(first, 1));                      // 12 cartons on their way
         ProductionOrder draft = drawn(first, 2);                              // 8 cartons, not sent
-        ProductionOrder awaiting = submitted(drawn(second, 1));               // 12 cartons, not sent
+        ProductionOrder awaiting = drawn(second, 1);                          // 12 cartons, not sent
         ProductionOrder dropped = drawn(second, 2);
         productionOrders.cancel(dropped.id(), dropped.version(), "Not needed after all", coordinator);
         assertThat(sentOne.status()).isEqualTo(ProductionOrderStatus.SENT);
-        assertThat(awaiting.status()).isEqualTo(ProductionOrderStatus.PENDING_APPROVAL);
+        assertThat(awaiting.status()).isEqualTo(ProductionOrderStatus.DRAFT);
         // Cartons standing: 10 in bin A, 1 in bin D, 2 in the receiving area; 2 cartons of them held for an order.
         cartons(layout.binA(), 10);
         cartons(layout.binD(), 1);
@@ -217,7 +212,7 @@ class WarehouseCapacityIntegrationTest extends ProductionOrderDispatchFixtures {
         m3(board.occupiedKg(), "54.6", "13 cartons x 4.2 kg, for reference");
         m3(board.incomingM3(), "1.008", "the sent production order's 12 cartons");
         m3(board.projectedFreeM3(), "8.3", "10.4 - 1.092 - 1.008");
-        m3(board.pendingM3(), "1.68", "the draft's 8 and the one awaiting approval's 12; not the cancelled one's");
+        m3(board.pendingM3(), "1.68", "the two drafts' 8 and 12; not the cancelled one's");
         m3(board.freeIfAllApprovedM3(), "6.62", "8.3 - 1.68");
         m3(board.outgoingM3(), "0.168", "2 cartons held, for reference only");
         m3(board.occupiedPercent(), "10.50", "1.092 / 10.4");
@@ -347,23 +342,23 @@ class WarehouseCapacityIntegrationTest extends ProductionOrderDispatchFixtures {
     }
 
     @Test
-    @DisplayName("C42: the approval that takes the warehouse below zero tells its manager, WARN, once - the next does not")
+    @DisplayName("C42: the send that takes the warehouse below zero tells its manager, WARN, once - the next does not")
     void warnOnceWhenItTurnsNegative() {
         Warehouse w = warehouse();          // one bin of 8.4 m³
         UUID manager = managerOf(w);
         factor(w, "0.15");                  // capacity 1.26 m³
         UUID first = confirmedOrder(w);
         UUID second = confirmedOrder(w);
-        ProductionOrder batchOne = submitted(drawn(first, 1));     // 12 cartons: 1.008 m³
-        ProductionOrder batchTwo = submitted(drawn(first, 2));     // 8 cartons: 0.672 m³
-        ProductionOrder another = submitted(drawn(second, 1));     // 12 cartons: 1.008 m³
+        ProductionOrder batchOne = drawn(first, 1);     // 12 cartons: 1.008 m³
+        ProductionOrder batchTwo = drawn(first, 2);     // 8 cartons: 0.672 m³
+        ProductionOrder another = drawn(second, 1);     // 12 cartons: 1.008 m³
 
-        ProductionOrder fits = productionOrders.approve(batchOne.id(), batchOne.version(), approver);
-        Await.until("the first approval's listeners are done", WAIT, () -> pendingPublications(fits.id()) == 0);
+        ProductionOrder fits = sent(batchOne);
+        Await.until("the first send's listeners are done", WAIT, () -> pendingPublications(fits.id()) == 0);
         assertThat(publications(WarehouseCapacityTurnedNegative.class, w.id())).as("1.26 - 1.008 is still 0.252 free")
                 .isZero();
 
-        ProductionOrder crosses = productionOrders.approve(batchTwo.id(), batchTwo.version(), approver);
+        ProductionOrder crosses = sent(batchTwo);
         Await.until("the warehouse manager is warned", WAIT, () -> jdbc.queryForObject("""
                 SELECT count(*) FROM notification.user_notification WHERE recipient_id = ? AND dedupe_key = ?""",
                 Long.class, manager, "capacity-negative:" + w.id() + ":" + crosses.id()) == 1);
@@ -376,8 +371,8 @@ class WarehouseCapacityIntegrationTest extends ProductionOrderDispatchFixtures {
         assertThat((String) notice.get("body")).as("0.252 - 0.672: 0.42 below zero")
                 .contains(crosses.code(), "0.42 m³");
 
-        ProductionOrder stillShort = productionOrders.approve(another.id(), another.version(), approver);
-        Await.until("the third approval's listeners are done", WAIT,
+        ProductionOrder stillShort = sent(another);
+        Await.until("the third send's listeners are done", WAIT,
                 () -> pendingPublications(stillShort.id()) == 0);
         assertThat(publications(WarehouseCapacityTurnedNegative.class, w.id()))
                 .as("told once, at the crossing; not again while the warehouse stays short").isEqualTo(1);

@@ -28,9 +28,9 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Projects' review rounds, for the Sales Manager (kltn-docs 12 §4.10): one item each in the queue, opened with their
- * designs side by side; each design is decided on its own ({@code POST /designs/{id}/reviews}), or all those still
- * waiting approved in turn. Handlers are public so the permission proxy advises them; the resource is declared on
+ * Projects' review rounds, for the Production Coordinator (kltn-docs 12 §4.10): one item each in the queue, opened with
+ * their designs side by side; each design is decided on its own ({@code POST /designs/{id}/reviews}), or all those
+ * still waiting approved in turn. Handlers are public so the permission proxy advises them; the resource is declared on
  * {@code DesignController}.
  */
 @RestController
@@ -49,7 +49,7 @@ class DesignReviewRoundController {
     record DesignAtVersion(@NotNull UUID id, @PositiveOrZero long version) {
     }
 
-    /** The round's designs at the versions the Sales Manager saw (BR-11). */
+    /** The round's designs at the versions the Production Coordinator saw (BR-11). */
     record ApprovalRequest(@NotNull @Size(min = 1, max = 20) List<@Valid @NotNull DesignAtVersion> designs) {
     }
 

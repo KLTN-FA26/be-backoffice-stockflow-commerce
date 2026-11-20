@@ -5,7 +5,7 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * A project's review round as the Sales Manager reads it (kltn-docs 12 §4.10): the project's name as context and
+ * A project's review round as the coordinator reads it (kltn-docs 12 §4.10): the project's name as context and
  * nothing else of it (BR-17), the customer, and each design with the decision on it - {@code outcome} absent while it
  * waits. {@code closedAt} is set once every design is decided (BR-20).
  */

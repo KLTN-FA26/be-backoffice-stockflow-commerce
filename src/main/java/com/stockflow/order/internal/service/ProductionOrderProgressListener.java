@@ -17,8 +17,8 @@ import java.util.Optional;
 
 /**
  * The sales order follows its production orders (4A-6; kltn-docs 17 §4.2 step 5, §4.3 steps 7 and 10, §5.1, BR-04,
- * BR-11), whatever moved them - approval today, sample rounds, progress and receiving later - since the repository
- * publishes every saved change of status ({@link ProductionOrderStatusChanged}):
+ * BR-11), whatever moved them - the coordinator's send, sample rounds, progress and receiving later - since the
+ * repository publishes every saved change of status ({@link ProductionOrderStatusChanged}):
  * <ul>
  *   <li><b>SENT</b>: an order CONFIRMED whose next delivery batch is short at its shipping warehouse, with a production
  *       order for that batch now sent, waits for stock - AWAITING_STOCK (BR-04: such an order always has one). A batch
@@ -66,7 +66,8 @@ class ProductionOrderProgressListener {
             case SENT -> awaitStock(change);
             case IN_PRODUCTION -> printingStarted(change);
             default -> {
-                // DRAFT, PENDING_APPROVAL, ACCEPTED, SAMPLE_PENDING, received, cancelled, closed: nothing on the order.
+                // DRAFT, PENDING_APPROVAL (history), ACCEPTED, SAMPLE_PENDING, received, cancelled, closed: nothing
+                // on the order.
             }
         }
     }

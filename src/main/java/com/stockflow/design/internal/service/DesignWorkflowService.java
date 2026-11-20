@@ -57,7 +57,7 @@ public class DesignWorkflowService {
     /**
      * A design as the API shows it. {@code productSlug} is null for a product since removed; {@code sku} and
      * {@code templateCode} are null for a design staff started before customers designed; {@code reviewNotes} is the
-     * Sales Manager's reason when it was returned; {@code updatedAt} is when the design or its layout last changed;
+     * coordinator's reason when it was returned; {@code updatedAt} is when the design or its layout last changed;
      * {@code customerSku} is the customer's own SKU, issued at approval, so null until the design is approved;
      * {@code customerName} names the customer whose design it is.
      */

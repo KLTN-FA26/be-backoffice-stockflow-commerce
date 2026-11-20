@@ -988,9 +988,10 @@ class ProductionOrder:
             self.lines.append(dict(id=lid, line=ln, cartons=n, received=0))
         self.log(None, "DRAFT", when, U["dieuphoi"], "Lập đơn sản xuất")
         commit()
-        steps = {"PENDING_APPROVAL": self.submit, "SENT": self.send, "ACCEPTED": self.accept,
-                 "IN_PRODUCTION": self.start}
-        t = when
+        steps = {"SENT": self.send, "ACCEPTED": self.accept, "IN_PRODUCTION": self.start}
+        # One day after the draft, as when it was submitted and approved the day after: the coordinator now sends it
+        # with no approval step (V20261213000100), and the later steps keep their days.
+        t = when + timedelta(days=1)
         for step in path:
             t = t + timedelta(days=1)
             steps[step](t)
@@ -1007,12 +1008,8 @@ class ProductionOrder:
         self.status = to
         commit()
 
-    def submit(self, when):
-        self.move("PENDING_APPROVAL", when, U["dieuphoi"], "Gửi duyệt", submitted_at=when)
-
     def send(self, when):
-        self.move("SENT", when, U["truongkd"], "Duyệt và gửi xưởng", approved_by=U["truongkd"], approved_at=when,
-                  sent_at=when)
+        self.move("SENT", when, U["dieuphoi"], "Gửi xưởng", sent_by=U["dieuphoi"], sent_at=when)
         slip = stored_file("documents", uid("slip:" + self.key), "application/pdf", when, f"Phieu san xuat {self.code}")
         ins("ordering.production_order_slip", when, production_order_id=self.id, storage_key=slip["key"],
             sha256=slip["checksum"], size_bytes=slip["size"])
@@ -1525,7 +1522,7 @@ def full_cycle(o, received, released, picked, checked, trip_key, dispatched, car
     """Batch 1 of `o` from production to the truck: produced, received, held, released, picked, checked, loaded and
     handed over. Returns the trip."""
     po = o.production(o.key + ":1", 1, "INHN" if o.p == "HAN" else "INSG", received - timedelta(days=12),
-                      ["PENDING_APPROVAL", "SENT", "IN_PRODUCTION"])
+                      ["SENT", "IN_PRODUCTION"])
     if o.status == "CONFIRMED":
         o.move("AWAITING_STOCK", received - timedelta(days=9), U[o.sales], "Chờ hàng từ xưởng in")
     po.receive(received, [pl["cartons"] for pl in po.lines])
@@ -1783,7 +1780,7 @@ o.sign(T(10, 22, 15))
 o.pay(1, o.plan[0]["amount"], T(10, 23, 10), "FT26296CTS0003")
 o.confirm(T(10, 23, 10, 30))
 o.ship_from(T(10, 23, 11), "sales2")
-po = o.production("S10:1", 1, "TANPHU", T(10, 24, 9), ["PENDING_APPROVAL", "SENT", "IN_PRODUCTION"])
+po = o.production("S10:1", 1, "TANPHU", T(10, 24, 9), ["SENT", "IN_PRODUCTION"])
 o.move("AWAITING_STOCK", T(10, 25, 9), U["sales2"], "Chờ hàng từ xưởng in")
 po.receive(T(11, 6, 8), [6])
 o.hold(T(11, 6, 12))
@@ -1807,7 +1804,7 @@ o.sign(T(10, 24, 15))
 o.pay(1, o.plan[0]["amount"], T(10, 25, 10), "FT26298CPM0002")
 o.confirm(T(10, 25, 10, 30))
 o.ship_from(T(10, 25, 11))
-po = o.production("S9:1", 1, "INSG", T(10, 25, 14), ["PENDING_APPROVAL", "SENT", "ACCEPTED", "IN_PRODUCTION"])
+po = o.production("S9:1", 1, "INSG", T(10, 25, 14), ["SENT", "ACCEPTED", "IN_PRODUCTION"])
 o.move("AWAITING_STOCK", T(10, 27, 9), U["sales1"], "Chờ hàng từ xưởng in")
 po.receive(T(11, 7, 8), [6])
 o.hold(T(11, 7, 12))
@@ -1824,8 +1821,8 @@ o.sign(T(10, 22, 15))
 o.pay(1, o.plan[0]["amount"], T(10, 23, 10), "FT26296KEM0003")
 o.confirm(T(10, 23, 10, 30))
 o.ship_from(T(10, 23, 11))
-po = o.production("S8:1", 1, "INHN", T(10, 24, 9), ["PENDING_APPROVAL", "SENT", "IN_PRODUCTION"])
-spare = o.production("S8:1b", 1, "TANPHU", T(10, 24, 10), ["PENDING_APPROVAL", "SENT", "IN_PRODUCTION"])
+po = o.production("S8:1", 1, "INHN", T(10, 24, 9), ["SENT", "IN_PRODUCTION"])
+spare = o.production("S8:1b", 1, "TANPHU", T(10, 24, 10), ["SENT", "IN_PRODUCTION"])
 o.move("AWAITING_STOCK", T(10, 25, 9), U["sales1"], "Chờ hàng từ xưởng in")
 po.receive(T(11, 7, 8), [8])
 spare.close(T(11, 7, 10), "Đã đủ hàng từ xưởng In Ly Giấy Hà Nội, hủy phần in thêm")
@@ -1845,7 +1842,7 @@ o.sign(T(10, 7, 15))
 o.pay(1, o.plan[0]["amount"], T(10, 8, 10), "FT26281TSM0003")
 o.confirm(T(10, 8, 10, 30))
 o.ship_from(T(10, 8, 11))
-po = o.production("S7:1", 1, "INHN", T(10, 9, 9), ["PENDING_APPROVAL", "SENT", "ACCEPTED"], sample=True)
+po = o.production("S7:1", 1, "INHN", T(10, 9, 9), ["SENT", "ACCEPTED"], sample=True)
 o.move("AWAITING_STOCK", T(10, 12, 9), U["sales1"], "Chờ hàng từ xưởng in")
 po.sample_round(T(10, 14, 10))
 po.answer(T(10, 15, 9), True)
@@ -1853,7 +1850,7 @@ po.start(T(10, 16, 8))
 po.receive(T(11, 5, 8), [6])
 o.hold(T(11, 5, 12))
 po.receive(T(11, 9, 8), [2], put_away=0)
-po2 = o.production("S7:2", 2, "INHN", T(10, 20, 9), ["PENDING_APPROVAL", "SENT", "IN_PRODUCTION"],
+po2 = o.production("S7:2", 2, "INHN", T(10, 20, 9), ["SENT", "IN_PRODUCTION"],
                    waiver="Mẫu in đã duyệt ở đợt 1 cùng hợp đồng")
 
 # ---- a print sample sent back for a reprint, the second round waiting for the customer; batch 2 accepted
@@ -1866,12 +1863,12 @@ o.sign(T(10, 27, 15))
 o.pay(1, o.plan[0]["amount"], T(10, 28, 10), "FT26301BMV0003")
 o.confirm(T(10, 28, 10, 30))
 o.ship_from(T(10, 28, 11), "sales2")
-po = o.production("S6:1", 1, "INSG", T(10, 29, 9), ["PENDING_APPROVAL", "SENT", "ACCEPTED"], sample=True)
+po = o.production("S6:1", 1, "INSG", T(10, 29, 9), ["SENT", "ACCEPTED"], sample=True)
 o.move("AWAITING_STOCK", T(10, 31, 9), U["sales2"], "Chờ hàng từ xưởng in")
 po.sample_round(T(11, 3, 10))
 po.answer(T(11, 4, 9), False, "Màu đỏ logo đậm hơn mẫu, xin in lại")
 po.sample_round(T(11, 7, 10), reprint="PRINT_DEFECT")
-o.production("S6:2", 2, "TANPHU", T(11, 1, 9), ["PENDING_APPROVAL", "SENT", "ACCEPTED"],
+o.production("S6:2", 2, "TANPHU", T(11, 1, 9), ["SENT", "ACCEPTED"],
              waiver="Dùng mẫu in của đợt 1 khi khách duyệt")
 
 # ---- sent to the producer, not accepted yet
@@ -1883,10 +1880,10 @@ o.sign(T(10, 30, 15))
 o.pay(1, o.plan[0]["amount"], T(10, 31, 10), "FT26304NEX0003")
 o.confirm(T(10, 31, 10, 30))
 o.ship_from(T(10, 31, 11), "sales2")
-o.production("S5:1", 1, "INSG", T(11, 6, 9), ["PENDING_APPROVAL", "SENT"])
+o.production("S5:1", 1, "INSG", T(11, 6, 9), ["SENT"])
 o.move("AWAITING_STOCK", T(11, 8, 9), U["sales2"], "Chờ hàng từ xưởng in")
 
-# ---- confirmed: a production order cancelled at a producer that stopped, its replacement waiting for approval,
+# ---- confirmed: a production order cancelled at a producer that stopped, its replacement still a draft,
 #      batch 2's still a draft
 o = Order("S4", "caphemoc", [(CPM_LY12, 20, 420)], T(11, 1, 10), "BDG")
 o.draw_up(T(11, 1, 15), [(date(2026, 11, 28), date(2026, 12, 1), [10]), (date(2026, 12, 12), date(2026, 12, 15), [10])],
@@ -1899,7 +1896,7 @@ o.confirm(T(11, 4, 10, 30))
 o.ship_from(T(11, 4, 11))
 old = o.production("S4:0", 1, "INCU", T(11, 5, 9), [])
 old.cancel(T(11, 5, 15), "Xưởng ngừng hợp tác, chuyển sang In Bao Bì Sài Gòn")
-o.production("S4:1", 1, "INSG", T(11, 6, 9), ["PENDING_APPROVAL"])
+o.production("S4:1", 1, "INSG", T(11, 6, 9), [])
 o.production("S4:2", 2, "INSG", T(11, 8, 9), [])
 
 section("12. orders before production: draft, contract sent, payment pending, cancelled")

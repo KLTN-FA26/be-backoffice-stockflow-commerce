@@ -16,8 +16,10 @@ import java.util.Optional;
  *   <li><b>Incoming</b> = what production orders sent to producers still have to deliver there (SENT, ACCEPTED,
  *       SAMPLE_PENDING, IN_PRODUCTION, PARTIALLY_RECEIVED - {@link ProductionOrder#sentAndOpen()}).</li>
  *   <li><b>Projected free</b> = capacity - occupied - incoming, negative when the warehouse is short of room.</li>
- *   <li><b>Pending</b> = production orders not sent yet (DRAFT, PENDING_APPROVAL): shown apart and taken out only of
- *       <b>free if all approved</b> = projected free - pending, since they may never be sent.</li>
+ *   <li><b>Pending</b> = production orders not sent yet (DRAFT; PENDING_APPROVAL on rows of before 2026-11-20): shown
+ *       apart and taken out only of <b>free if all approved</b> = projected free - pending, since they may never be
+ *       sent. The name is the API's, kept from when a Sales Manager approved each one: read "free if all
+ *       sent".</li>
  *   <li><b>Outgoing</b> = what is held for orders not delivered yet, for reference only: never added to free room.</li>
  *   <li>The two percentages are of capacity; with no capacity there is nothing to be a share of, so they are null.</li>
  * </ul>
@@ -71,7 +73,7 @@ public record CapacityBoard(BigDecimal binVolumeM3, BigDecimal utilizationFactor
     /**
      * BR-25 / 06 §4.6 step 5: does {@code neededM3} fit? Compared with the board as it would be without what is being
      * judged - its own cartons already counted as incoming ({@code ownIncomingM3}: a production order sent) or pending
-     * ({@code ownPendingM3}: a draft, one awaiting approval) - so nothing is counted twice: "không tính chính đơn đang
+     * ({@code ownPendingM3}: a draft not sent yet) - so nothing is counted twice: "không tính chính đơn đang
      * lập". Only a warning, never a refusal (BR-21).
      *
      * @param neededM3 null when a carton's size is unknown: nothing can be judged, no warning; zero needs no room,
@@ -95,9 +97,9 @@ public record CapacityBoard(BigDecimal binVolumeM3, BigDecimal utilizationFactor
     }
 
     /**
-     * 06 §4.6 step 8, C42: sending {@code sentM3} more to the warehouse - a production order approved, so sent - turns
-     * its projected free room from zero or more to below zero. Only that crossing is told, never a warehouse already
-     * short, so the manager hears once and not on every production order after it.
+     * 06 §4.6 step 8, C42: sending {@code sentM3} more to the warehouse - a production order the coordinator sent -
+     * turns its projected free room from zero or more to below zero. Only that crossing is told, never a warehouse
+     * already short, so the manager hears once and not on every production order after it.
      *
      * @return how far below zero it goes, when it crosses; empty otherwise, and when {@code sentM3} is unknown
      */
@@ -135,7 +137,7 @@ public record CapacityBoard(BigDecimal binVolumeM3, BigDecimal utilizationFactor
      * What {@link #check} found.
      *
      * @param projectedFreeM3      the room it was compared with: projected free without its own cartons
-     * @param freeIfAllApprovedM3  the same once every other production order awaiting approval is sent
+     * @param freeIfAllApprovedM3  the same once every other production order not sent yet is sent
      * @param exceedsProjected     it needs more than {@code projectedFreeM3}: warn
      * @param exceedsIfAllApproved it needs more than {@code freeIfAllApprovedM3}: warn that other production orders
      *                             pending for the warehouse would leave too little
