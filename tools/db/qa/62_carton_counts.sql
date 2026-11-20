@@ -5,9 +5,6 @@
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
--- Fixture, not the rule under test: this script declares several packing units for one demo SKU, which the
--- one-carton index (V20261213000400, 01 BR-03) refuses. Dropped here; the rollback at the end restores it.
-DROP INDEX inventory.uk_uom_conversions_one_carton;
 CREATE FUNCTION pg_temp.expect_fail(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     BEGIN
@@ -58,6 +55,9 @@ END $$;
 
 -- Fixtures: a carton unit of 4 cups; three cartons in stock (two on a bin, one on another) each with its one row;
 -- a MANUAL count of the bin with a line for the first carton; the editor and the approver of the demo.
+-- 01 BR-03: an item has ONE active carton. The demo seed's own is retired, so the fixture's unit below is the one.
+UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
+ WHERE NOT is_base AND active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa62:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA62_CTN', 4);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,

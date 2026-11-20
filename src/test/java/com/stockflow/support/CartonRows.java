@@ -61,10 +61,12 @@ public final class CartonRows {
     }
 
     /**
-     * The SKU's carton unit of exactly {@code factor} units (code {@code CTN<factor>}), made the first time: for a test
-     * that needs cartons of several sizes of one SKU - stock that was loose rows of any size before
-     * {@code ck_stock_item_whole_cartons} (V20261117000100). Make these before calling {@link #unit}, which takes
-     * whichever carton unit the SKU has first.
+     * The SKU's carton unit of exactly {@code factor} units (code {@code CTN<factor>}), made the SKU's ONE active carton
+     * (01 BR-03): made the first time, made active again when it was retired, and the SKU's other active carton is
+     * retired either way (its cartons stay, as history). For a test that needs cartons of several sizes of one SKU
+     * - stock that was loose rows of any size before {@code ck_stock_item_whole_cartons} (V20261117000100) - which
+     * therefore takes the sizes in turn: a carton made earlier stays, in a unit that is no longer the active one.
+     * {@link #unit} takes whichever carton unit the SKU has active.
      */
     public static UUID unitOf(JdbcTemplate jdbc, String sku, int factor) {
         List<UUID> found = jdbc.queryForList("""
@@ -82,10 +84,8 @@ public final class CartonRows {
     }
 
     /**
-     * Makes the item's unit {@code code} of {@code factor} units its ONE active carton (01 BR-03,
-     * {@code uk_uom_conversions_one_carton}): made the first time, and the item's other active packing unit is retired
-     * - its cartons stay, as history. A test that needs cartons of several sizes of one SKU takes them in turn; a unit
-     * is activated again when it is asked for again. Answers the unit's id.
+     * Makes this unit its item's ONE active packing unit (01 BR-03, {@code uk_uom_conversions_one_carton}): the item's
+     * other active packing unit is retired - its cartons stay, as history - and this one is activated if it was retired.
      */
     public static void reactivate(JdbcTemplate jdbc, UUID unit) {
         jdbc.update("""
@@ -95,11 +95,21 @@ public final class CartonRows {
         jdbc.update("UPDATE inventory.uom_conversions SET active = TRUE WHERE id = ? AND NOT active", unit);
     }
 
-    /** See {@link #reactivate}: the same, for a unit of this code, made when the item has none. */
+    /**
+     * Makes the item's unit {@code code} of {@code factor} units its ONE active carton, as {@link #reactivate} does,
+     * made first when the item has none of that code. A unit of that code with another factor is a fixture error, not
+     * a unit to take over: it fails loudly.
+     */
     public static UUID cartonUnit(JdbcTemplate jdbc, UUID item, String code, int factor) {
         List<UUID> found = jdbc.queryForList("""
-                SELECT id FROM inventory.uom_conversions WHERE inventory_item_id = ? AND unit_of_measure = ?""",
-                UUID.class, item, code);
+                SELECT id FROM inventory.uom_conversions
+                 WHERE inventory_item_id = ? AND unit_of_measure = ? AND factor = ?""", UUID.class, item, code, factor);
+        Integer sameCode = jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.uom_conversions WHERE inventory_item_id = ? AND unit_of_measure = ?""",
+                Integer.class, item, code);
+        if (found.isEmpty() && sameCode != null && sameCode > 0) {
+            throw new IllegalStateException("The item already has a unit " + code + " of another factor than " + factor);
+        }
         UUID id = found.isEmpty() ? Identifiers.newId() : found.getFirst();
         if (found.isEmpty()) {
             jdbc.update("""

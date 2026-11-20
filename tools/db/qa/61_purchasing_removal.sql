@@ -9,9 +9,6 @@
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
--- Fixture, not the rule under test: this script declares several packing units for one demo SKU, which the
--- one-carton index (V20261213000400, 01 BR-03) refuses. Dropped here; the rollback at the end restores it.
-DROP INDEX inventory.uk_uom_conversions_one_carton;
 CREATE FUNCTION pg_temp.expect_fail(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     BEGIN
@@ -138,10 +135,12 @@ SELECT pg_temp.expect_true('F2 unit_in_use runs', $c$
 -- Fixtures: a carton of 10 blue cups (its own unit code: the demo cup already has its THUNG of 1,000); a production order of 5 cartons of them at HCM, SENT with no sample to approve first;
 -- a DRAFT receipt against it, registered with it (as 22_production_receipts.sql does). The production order's own rows are
 -- written with the row triggers off: its rules are 21_production_orders.sql's.
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg)
-VALUES (md5('qa61:carton')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'CARTON10', 10, 60, 40, 50, 12),
-       (md5('qa61:old')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'OLDCTN', 10, NULL, NULL, NULL, NULL);
-UPDATE inventory.uom_conversions SET active = FALSE WHERE id = md5('qa61:old')::uuid;
+-- 01 BR-03: one active carton per item. The demo seed's own is retired, CARTON10 is the one, and OLDCTN is declared retired.
+UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
+ WHERE NOT is_base AND active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg, active)
+VALUES (md5('qa61:carton')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'CARTON10', 10, 60, 40, 50, 12, TRUE),
+       (md5('qa61:old')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'OLDCTN', 10, NULL, NULL, NULL, NULL, FALSE);
 SET LOCAL session_replication_role = replica;
 INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, customer_id, producer_id,
                                        receiving_warehouse_id, need_by_date, status, sample_approval_required,

@@ -174,6 +174,7 @@ public enum ErrorCode {
     CHAT_DESIGN_NOT_APPROVED("The design is not approved yet; a quote follows its approval", 409),
     /** The inventory item already has a unit with this code (its base unit included). */
     UOM_CONVERSION_DUPLICATE("This SKU already has a unit of measure with this code", 409),
+    /** 01 BR-03: one active carton per SKU ({@code uk_uom_conversions_one_carton}); the other is retired first. */
     UOM_CARTON_ALREADY_DECLARED("This SKU already has a carton unit; retire it before declaring another", 409),
     /**
      * The base unit, or a unit a variant sells in, cannot be deleted or retired (docs 01 BR-10, BR-11); a unit

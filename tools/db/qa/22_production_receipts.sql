@@ -5,9 +5,6 @@
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
--- Fixture, not the rule under test: this script declares several packing units for one demo SKU, which the
--- one-carton index (V20261213000400, 01 BR-03) refuses. Dropped here; the rollback at the end restores it.
-DROP INDEX inventory.uk_uom_conversions_one_carton;
 CREATE FUNCTION pg_temp.expect_fail(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     BEGIN
@@ -16,6 +13,23 @@ BEGIN
         SET CONSTRAINTS ALL IMMEDIATE;
         SET CONSTRAINTS ALL DEFERRED;
     EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'ok    %  [%]', label, left(SQLERRM, 110);
+        RETURN;
+    END;
+    RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
+END $$;
+
+-- Refused, and for the reason named: the message says {fragment}.
+CREATE FUNCTION pg_temp.expect_fail_like(label TEXT, fragment TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    BEGIN
+        EXECUTE stmt;
+        SET CONSTRAINTS ALL IMMEDIATE;
+        SET CONSTRAINTS ALL DEFERRED;
+    EXCEPTION WHEN OTHERS THEN
+        IF position(fragment IN SQLERRM) = 0 THEN
+            RAISE EXCEPTION 'FAIL  %: refused, but for another reason: %', label, SQLERRM;
+        END IF;
         RAISE NOTICE 'ok    %  [%]', label, left(SQLERRM, 110);
         RETURN;
     END;
@@ -64,9 +78,11 @@ INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, f
                                        version, created_at, default_shipping)
 SELECT md5('qa22:carton')::uuid, i.id, 'CARTON', 50, FALSE, TRUE, 0, NOW(), TRUE
   FROM inventory.inventory_items i WHERE i.sku = 'QA-PRR-OWN';
+-- BOX is a retired unit: the item has one active carton (01 BR-03), the CARTON of 50. A line counted in BOX is
+-- refused for its count (PR15), not for the unit being retired: that trigger asks for the factor only.
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, active,
                                        version, created_at, default_shipping)
-SELECT md5('qa22:box')::uuid, i.id, 'BOX', 25, FALSE, TRUE, 0, NOW(), FALSE
+SELECT md5('qa22:box')::uuid, i.id, 'BOX', 25, FALSE, FALSE, 0, NOW(), FALSE
   FROM inventory.inventory_items i WHERE i.sku = 'QA-PRR-OWN';
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
                                      currency, placed_at, created_at)
@@ -212,7 +228,8 @@ SELECT pg_temp.expect_fail('PR13 a line with an expiry date (BR-06)', $q$
 SELECT pg_temp.expect_fail('PR14 120 units: not whole cartons of 50 (BR-12, BR-13)', $q$
     SELECT pg_temp.line(md5('qa22:l0')::uuid, md5('qa22:gr1')::uuid, 'PRD-20261109-2201', 120, 'PRD-20261109-2201',
                         md5('qa22:carton')::uuid) $q$);
-SELECT pg_temp.expect_fail('PR15 counted in boxes of 25, not cartons of the line''s 50 (BR-13)', $q$
+SELECT pg_temp.expect_fail_like('PR15 counted in boxes of 25, not cartons of the line''s 50 (BR-13)',
+                               'counted in cartons holding the line', $q$
     SELECT pg_temp.line(md5('qa22:l0')::uuid, md5('qa22:gr1')::uuid, 'PRD-20261109-2201', 100, 'PRD-20261109-2201',
                         md5('qa22:box')::uuid) $q$);
 SELECT pg_temp.expect_fail('PR16 a line naming no production order line', $q$

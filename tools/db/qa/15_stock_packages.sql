@@ -5,9 +5,6 @@
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
--- Fixture, not the rule under test: this script declares several packing units for one demo SKU, which the
--- one-carton index (V20261213000400, 01 BR-03) refuses. Dropped here; the rollback at the end restores it.
-DROP INDEX inventory.uk_uom_conversions_one_carton;
 
 CREATE FUNCTION pg_temp.expect_fail(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
@@ -43,14 +40,19 @@ BEGIN
     RAISE NOTICE 'ok    %', label;
 END $$;
 
--- Packing units: a carton of 10 blue cups, a carton of 5 red cups, and a case of 4 blue cups nobody uses.
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg)
-VALUES (md5('qa:unit:XANH-CARTON')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_CARTON', 10, 60, 40, 50, 12),
-       (md5('qa:unit:DO-CARTON')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-DO'), 'QA_CARTON', 5, 80, 60, 40, 30),
-       (md5('qa:unit:XANH-CASE')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'CASE', 4, NULL, NULL, NULL, NULL);
--- The supplier's old carton of 10 blue cups, retired during the run (docs 01 edge case "NCC đổi quy cách thùng").
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-VALUES (md5('qa:unit:XANH-OLD')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'OLDCTN', 10);
+-- Packing units: a carton of 10 blue cups, a carton of 5 red cups, and a case of 4 blue cups nobody uses. An item has ONE
+-- active carton (01 BR-03): the demo seed's own are retired, the two cartons below are the active ones, and the case is
+-- declared retired - a retired unit is declared beside the active one freely.
+UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
+ WHERE NOT is_base AND active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items
+                                                         WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH', 'LY-GIAY-DEMO-12OZ-DO'));
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg, active)
+VALUES (md5('qa:unit:XANH-CARTON')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_CARTON', 10, 60, 40, 50, 12, TRUE),
+       (md5('qa:unit:DO-CARTON')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-DO'), 'QA_CARTON', 5, 80, 60, 40, 30, TRUE),
+       (md5('qa:unit:XANH-CASE')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'CASE', 4, NULL, NULL, NULL, NULL, FALSE);
+-- The supplier's old carton of 10 blue cups, retired before anything was received in it (docs 01 edge case "NCC đổi quy cách thùng").
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active)
+VALUES (md5('qa:unit:XANH-OLD')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'OLDCTN', 10, FALSE);
 
 
 \echo '--- a stock package and its stock rows (V20261020000100, 0200)'
@@ -203,8 +205,7 @@ VALUES (md5('qa:pk:gr')::uuid, 'GR-QA-PK', 'PRODUCTION', md5('qa:pk:prod')::uuid
         md5('demo:user:editor')::uuid);
 INSERT INTO ordering.production_order_receipt (production_order_id, goods_receipt_id, receipt_number, status, opened_at)
 VALUES (md5('qa:pk:prod')::uuid, md5('qa:pk:gr')::uuid, 'GR-QA-PK', 'DRAFT', NOW());
--- The old carton of 10 blue cups is retired before anything was received in it.
-UPDATE inventory.uom_conversions SET active = FALSE WHERE id = md5('qa:unit:XANH-OLD')::uuid;
+-- The old carton of 10 blue cups was declared retired: nothing was received in it.
 
 SELECT pg_temp.expect_fail('U9 received in a unit of another item', $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id, received_qty, lot_number, uom_conversion_id)
@@ -250,9 +251,12 @@ SELECT pg_temp.expect_fail('K35 a stock package in a retired unit its receipt li
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code, goods_receipt_line_id)
     VALUES (gen_random_uuid(), 'QA-LPN-35', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-OLD')::uuid, 10, 'HCM-RCV01', md5('qa:pk:grl')::uuid) $q$);
 SELECT pg_temp.expect_ok('K36 cartons received in the old unit before it was retired are still packed in it', $q$
+    -- The real sequence (BR-03, BR-10): the active carton is retired before the old one is active again.
+    UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE WHERE id = md5('qa:unit:XANH-CARTON')::uuid;
     UPDATE inventory.uom_conversions SET active = TRUE WHERE id = md5('qa:unit:XANH-OLD')::uuid;
     UPDATE procurement.goods_receipt_lines SET uom_conversion_id = md5('qa:unit:XANH-OLD')::uuid WHERE id = md5('qa:pk:grl')::uuid;
     UPDATE inventory.uom_conversions SET active = FALSE WHERE id = md5('qa:unit:XANH-OLD')::uuid;
+    UPDATE inventory.uom_conversions SET active = TRUE WHERE id = md5('qa:unit:XANH-CARTON')::uuid;
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code, goods_receipt_line_id)
     VALUES (gen_random_uuid(), 'QA-LPN-36', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-OLD')::uuid, 10, 'HCM-RCV01', md5('qa:pk:grl')::uuid) $q$);
 

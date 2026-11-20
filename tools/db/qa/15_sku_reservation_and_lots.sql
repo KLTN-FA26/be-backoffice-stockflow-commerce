@@ -4,9 +4,6 @@
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
--- Fixture, not the rule under test: this script declares several packing units for one demo SKU, which the
--- one-carton index (V20261213000400, 01 BR-03) refuses. Dropped here; the rollback at the end restores it.
-DROP INDEX inventory.uk_uom_conversions_one_carton;
 CREATE FUNCTION pg_temp.expect_fail(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     BEGIN
@@ -49,6 +46,9 @@ INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, 
 SELECT md5('qa15:other')::uuid, 'SO-QA-15B', c.id, gen_random_uuid(), 'PENDING_PAYMENT', 1000, 'VND', NOW(), 0, NOW()
   FROM customer.customer c ORDER BY c.id LIMIT 1;
 -- One carton of 2 (the allocation below takes it whole; stock is kept in whole cartons only: ck_stock_item_whole_cartons).
+-- 01 BR-03: an item has ONE active carton. The demo seed's own is retired, so the fixture's unit below is the one.
+UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
+ WHERE NOT is_base AND active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa15:u')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_QA15', 2);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
