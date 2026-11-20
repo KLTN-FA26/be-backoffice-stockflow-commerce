@@ -538,7 +538,7 @@ def customer_sku(cust, blank, suffix, name, when, project=None):
     ins("inventory.uom_conversions", d["at"], id=unit,
         inventory_item_id=Raw(f"(SELECT id FROM inventory.inventory_items WHERE sku = '{sku}')"),
         unit_of_measure="THUNG", factor=per, is_base=False, weight_kg=weight, length_cm=60, width_cm=40, height_cm=50,
-        default_purchase=False, active=True, default_shipping=True)
+        active=True, default_shipping=True)
     SKU[sku] = dict(sku=sku, cust=cust, blank=blank, unit=unit, per=per, snapshot=d["snapshot"],
                     checksum=d["checksum"], tax=v["tax"], rate=TAX_RATE[v["tax"]], name=name, product=v["product"],
                     weight=weight)
