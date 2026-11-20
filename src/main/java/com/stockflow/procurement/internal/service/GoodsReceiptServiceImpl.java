@@ -78,8 +78,8 @@ import java.util.UUID;
  * production order wait for each other instead of deadlocking.</p>
  *
  * <p>Purchasing is gone (4A-8, kltn-docs 00 of 04/11): receipts against purchase orders - and blind ones, the
- * over-tolerance approval, the PO reference of a blind receipt - went with it. A historical purchase receipt is read as
- * it stands and, while it has counted nothing in, cancelled; the aggregate refuses anything else.</p>
+ * over-tolerance approval, the PO reference of a blind receipt - went with it, and {@code V20261213000100} removed the
+ * purchase receipts it had left behind: every receipt here is against a production order.</p>
  */
 @Service
 @Transactional
@@ -184,10 +184,6 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     @Auditable(action = AuditAction.UPDATE, resourceType = "goods-receipt", resourceId = "#receiptId")
     public ReceiptView replaceLines(UUID receiptId, List<NewLine> newLines) {
         GoodsReceipt read = load(receiptId);
-        if (!read.againstProductionOrder()) {
-            // A historical purchase receipt: the aggregate refuses it, naming why.
-            read.replaceLines(List.of());
-        }
         ReceivableProductionOrder production = lockProduction(read);
         GoodsReceipt receipt = loadForUpdate(read.id());
         receipt.requireDraft("change the lines of");
@@ -605,12 +601,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "goods-receipt", resourceId = "#receiptId")
     public ReceiptView confirm(UUID receiptId, UUID userId) {
-        GoodsReceipt receipt = load(receiptId);
-        if (!receipt.againstProductionOrder()) {
-            // A historical purchase receipt: the aggregate refuses it, naming why.
-            receipt.confirm(userId, clock.instant());
-        }
-        return confirmProduction(receipt, userId);
+        return confirmProduction(load(receiptId), userId);
     }
 
     /**
@@ -662,26 +653,10 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         return view(saved, after);
     }
 
-    /**
-     * {@inheritDoc}
-     *
-     * <p>A historical purchase receipt has no production order to let it go: it is cancelled under its own row lock,
-     * and the cartons labelled while it was counted, which held no stock, are voided.</p>
-     */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "goods-receipt", resourceId = "#receiptId")
     public ReceiptView cancel(UUID receiptId) {
-        GoodsReceipt read = load(receiptId);
-        if (read.againstProductionOrder()) {
-            return cancelProduction(read);
-        }
-        GoodsReceipt receipt = loadForUpdate(receiptId);
-        receipt.cancel();
-        // Cartons labelled while counting held no stock and their labels are no longer valid (RECEIVING → VOID).
-        inventory.voidStockPackagesOfReceiptLines(receipt.lines().stream().map(ReceiptLine::id).toList());
-        GoodsReceipt saved = receipts.save(receipt);
-        log.info("Historical purchase receipt {} cancelled", saved.number());
-        return view(saved, null);
+        return cancelProduction(load(receiptId));
     }
 
     // ------------------------------------------------------------------ reads
@@ -690,8 +665,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     @Transactional(readOnly = true)
     public ReceiptView get(UUID receiptId) {
         GoodsReceipt receipt = load(receiptId);
-        return view(receipt, receipt.againstProductionOrder()
-                ? receiving.find(receipt.productionOrderId()).orElse(null) : null);
+        return view(receipt, receiving.find(receipt.productionOrderId()).orElse(null));
     }
 
     @Override
@@ -775,8 +749,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
 
     /**
      * The receipt as the screens show it. {@code production}: its production order (4A-5), which each line is shown
-     * against - ordered, received so far, this receipt, what remains (03 §3 output, §4.1 step 3); null on a historical
-     * purchase receipt.
+     * against - ordered, received so far, this receipt, what remains (03 §3 output, §4.1 step 3).
      */
     private ReceiptView view(GoodsReceipt receipt, ReceivableProductionOrder production) {
         Set<UUID> locationIds = new HashSet<>();
@@ -839,7 +812,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                 warehouse.map(WarehouseView::prefix).orElse(null), warehouse.map(WarehouseView::name).orElse(null),
                 receipt.status(), receipt.deliveryNote(), receipt.note(), receipt.receivedAt(), receipt.receivedBy(),
                 names.get(receipt.receivedBy()), receipt.confirmedAt(), receipt.confirmedBy(),
-                names.get(receipt.confirmedBy()), receipt.closedAt(), lines, warnings, receipt.type(),
+                names.get(receipt.confirmedBy()), receipt.closedAt(), lines, warnings, GoodsReceiptType.PRODUCTION,
                 receipt.productionOrderId(), production == null ? null : production.code(),
                 production == null ? null : production.status(), production == null ? null : production.producerId(),
                 production == null ? null : production.producerName());

@@ -14,9 +14,7 @@ import java.util.UUID;
  * <p>4A-5: {@code receiptType} is {@code PRODUCTION} - the receipt names its production order
  * ({@code productionOrderId}, {@code productionOrderCode} - also the lot of every line - its
  * {@code productionOrderStatus}, {@code producerId}, {@code producerName}), and each line names its
- * {@code productionOrderLineId} and carries {@code production}, the line against what it orders - or {@code PURCHASE}
- * on a historical receipt of the purchasing there was, whose purchase order, supplier and approval are not shown any
- * more (4A-8).</p>
+ * {@code productionOrderLineId} and carries {@code production}, the line against what it orders.</p>
  */
 public record GoodsReceiptResponse(UUID id, String number, UUID warehouseId, String warehouseCode,
                                    String warehouseName, String status, String deliveryNote, String note,
@@ -38,10 +36,10 @@ public record GoodsReceiptResponse(UUID id, String number, UUID warehouseId, Str
                        int quantityForPutaway, List<String> warnings, String unitOfMeasure, int looseQuantity,
                        List<Package> packages, List<Unit> units,
                        @io.swagger.v3.oas.annotations.media.Schema(description = "4A-5: the production order line a"
-                               + " production receipt's line counts; null on a historical purchase receipt")
+                               + " production receipt's line counts")
                        UUID productionOrderLineId,
                        @io.swagger.v3.oas.annotations.media.Schema(description = "4A-5: the line against its"
-                               + " production order line; null on a historical purchase receipt", nullable = true)
+                               + " production order line")
                        ProductionLineProgress production) {
     }
 

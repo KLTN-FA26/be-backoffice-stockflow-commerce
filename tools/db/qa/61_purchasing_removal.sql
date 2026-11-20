@@ -190,7 +190,7 @@ SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;
 
 \echo '--- no purchase receipt is started; a receipt says what it is against'
-SELECT pg_temp.expect_fail_like('R1 a PURCHASE receipt started', 'purchasing was removed', $q$
+SELECT pg_temp.expect_fail_like('R1 a PURCHASE receipt started', 'ck_goods_receipts_type', $q$
     INSERT INTO procurement.goods_receipts (id, receipt_number, receipt_type, warehouse_id, status, received_at, received_by)
     VALUES (gen_random_uuid(), 'GR-QA61-P', 'PURCHASE', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(), md5('demo:user:editor')::uuid) $q$);
 SELECT pg_temp.expect_fail_like('R2 a receipt with no type (the PURCHASE default is gone)', 'receipt_type', $q$

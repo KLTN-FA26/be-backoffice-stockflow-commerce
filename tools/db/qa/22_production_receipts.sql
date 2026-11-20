@@ -171,7 +171,7 @@ SELECT pg_temp.expect_fail('PR2 a receipt against a SENT production order whose 
     SELECT pg_temp.receipt(md5('qa22:gr0')::uuid, 'GR-QA22-0', md5('qa22:po2')::uuid, 'HCM', TRUE) $q$);
 SELECT pg_temp.expect_fail('PR3 into another warehouse than the production order is received at (BR-01)', $q$
     SELECT pg_temp.receipt(md5('qa22:gr0')::uuid, 'GR-QA22-0', md5('qa22:po1')::uuid, 'QAW', TRUE) $q$);
-SELECT pg_temp.expect_fail('PR4 a PURCHASE receipt started (purchasing was removed, V20261113000200)', $q$
+SELECT pg_temp.expect_fail('PR4 a PURCHASE receipt started (ck_goods_receipts_type, V20261213000100)', $q$
     INSERT INTO procurement.goods_receipts (id, receipt_number, receipt_type, warehouse_id, status, received_at,
                                             received_by)
     SELECT md5('qa22:gr0')::uuid, 'GR-QA22-0', 'PURCHASE', w.id, 'DRAFT', NOW(), md5('demo:user:editor')::uuid

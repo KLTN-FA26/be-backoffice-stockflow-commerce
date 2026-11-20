@@ -98,15 +98,21 @@ SET LOCAL session_replication_role = replica;
 UPDATE procurement.goods_receipts SET status = 'CLOSED', confirmed_at = NOW(), confirmed_by = md5('demo:user:editor')::uuid,
        closed_at = NOW() WHERE id = md5('qa53:g')::uuid;
 SET LOCAL session_replication_role = origin;
--- A legacy purchase receipt: the supplier and blind columns went with purchasing (V20261113000200, 4A-9), and no new
--- one is started by the application, so it is written as old data is, triggers off.
+-- A receipt that is not a return receipt: a production receipt, written with the row triggers off and a minimal
+-- production order (the rules of a production receipt are QA 22's).
 SET LOCAL session_replication_role = replica;
-INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by, receipt_type)
-VALUES (md5('qa53:g:purchase')::uuid, 'GR-QA53-P', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(), md5('demo:user:editor')::uuid,
-        'PURCHASE');
+INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, customer_id, producer_id,
+                                       receiving_warehouse_id, need_by_date, status, sample_approval_required,
+                                       sample_required_by_default, drawn_up_by, submitted_at, approved_by, approved_at, sent_at)
+VALUES (md5('qa53:prod')::uuid, 'PRD-20261109-5301', md5('qa53:so')::uuid, md5('qa53:batch')::uuid,
+        md5('qa53:cust')::uuid, md5('qa53:producer')::uuid, md5('demo:wh:HCM')::uuid, CURRENT_DATE + 30, 'SENT', FALSE,
+        FALSE, md5('demo:user:editor')::uuid, NOW(), md5('demo:user:approver')::uuid, NOW(), NOW());
+INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by, receipt_type, production_order_id)
+VALUES (md5('qa53:g:production')::uuid, 'GR-QA53-P', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(), md5('demo:user:editor')::uuid,
+        'PRODUCTION', md5('qa53:prod')::uuid);
 SET LOCAL session_replication_role = origin;
-SELECT pg_temp.expect_fail_by('RT3 a receipt that is not a return receipt (a purchase one)', 'its goods come back on a confirmed return receipt', $q$
-    UPDATE ordering.return_request SET goods_receipt_id = md5('qa53:g:purchase')::uuid,
+SELECT pg_temp.expect_fail_by('RT3 a receipt that is not a return receipt (a production one)', 'its goods come back on a confirmed return receipt', $q$
+    UPDATE ordering.return_request SET goods_receipt_id = md5('qa53:g:production')::uuid,
            received_by = md5('demo:user:editor')::uuid, received_at = NOW(), receiving_location_code = 'HCM-QC01'
      WHERE id = md5('qa53:r1')::uuid $q$);
 SELECT pg_temp.expect_fail_by('RT4 a receipt named without who took the goods, when and where', 'ck_return_request_goods_back', $q$
@@ -120,11 +126,11 @@ SELECT pg_temp.expect_fail_by('RT6 the receipt that brought the goods is changed
     UPDATE ordering.return_request SET goods_receipt_id = gen_random_uuid() WHERE id = md5('qa53:r1')::uuid $q$);
 
 \echo '--- parcels: every receipt that brought goods of the return, a confirmed return receipt against it (WF-05 TH-3)'
-SELECT pg_temp.expect_fail_by('RQ1 a parcel on a receipt that is not a return receipt (a purchase one)',
+SELECT pg_temp.expect_fail_by('RQ1 a parcel on a receipt that is not a return receipt (a production one)',
     'a parcel comes back on a confirmed return receipt', $q$
     INSERT INTO ordering.return_request_receipt (goods_receipt_id, return_request_id, parcel, receipt_number,
                                                  receiving_location_code, received_by, received_at)
-    VALUES (md5('qa53:g:purchase')::uuid, md5('qa53:r1')::uuid, 1, 'GR-QA53-P', 'HCM-QC01',
+    VALUES (md5('qa53:g:production')::uuid, md5('qa53:r1')::uuid, 1, 'GR-QA53-P', 'HCM-QC01',
             md5('demo:user:editor')::uuid, NOW()) $q$);
 SELECT pg_temp.expect_fail_by('RQ2 a parcel numbered 0', 'ck_return_request_receipt_parcel', $q$
     INSERT INTO ordering.return_request_receipt (goods_receipt_id, return_request_id, parcel, receipt_number,

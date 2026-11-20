@@ -15,8 +15,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The receipt's step order (docs 03 §5.1) and BR-05, without a database. Every receipt is against a production order
- * (4A-5); the purchase receipts that were there before are only read, or cancelled while nothing is counted in
- * (4A-8), which the last test pins.
+ * (4A-5); the purchase receipts that were there before were deleted (V20261213000100), so only a DRAFT is cancelled,
+ * which the last test pins.
  */
 class GoodsReceiptTest {
 
@@ -39,12 +39,6 @@ class GoodsReceiptTest {
         return line(UUID.randomUUID(), UUID.randomUUID(), cartons);
     }
 
-    /** What a purchase receipt of before 4A-5 looks like when read back: no production order. */
-    private static GoodsReceipt legacy(GoodsReceiptStatus status) {
-        return new GoodsReceipt(UUID.randomUUID(), "GR-20260901-0001", null, UUID.randomUUID(), NOW, USER, null, null,
-                List.of(), status, null, null, null, 0L);
-    }
-
     private static ErrorCode code(Throwable e) {
         return ((BusinessException) e).errorCode();
     }
@@ -53,15 +47,12 @@ class GoodsReceiptTest {
     @DisplayName("a receipt against a production order names it, and is a DRAFT until it is confirmed")
     void productionShape() {
         GoodsReceipt receipt = draft();
-        assertThat(receipt.type()).isEqualTo(GoodsReceiptType.PRODUCTION);
-        assertThat(receipt.againstProductionOrder()).isTrue();
         assertThat(receipt.productionOrderId()).isEqualTo(PRODUCTION_ORDER);
         assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.DRAFT);
-        assertThat(legacy(GoodsReceiptStatus.DRAFT).type()).isEqualTo(GoodsReceiptType.PURCHASE);
 
-        assertThatThrownBy(() -> new GoodsReceipt(UUID.randomUUID(), "GR-1", PRODUCTION_ORDER, UUID.randomUUID(), NOW,
-                USER, null, null, List.of(), GoodsReceiptStatus.PENDING_APPROVAL, null, null, null, 0L))
-                .as("it never waits for approval: nothing over is received").isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> GoodsReceipt.productionDraft(UUID.randomUUID(), "GR-1", null, UUID.randomUUID(), USER,
+                null, null, NOW)).as("a receipt is always against a production order")
+                .isInstanceOf(NullPointerException.class);
     }
 
     @Test
@@ -171,19 +162,17 @@ class GoodsReceiptTest {
     }
 
     @Test
-    @DisplayName("4A-8: a purchase receipt of before is read and cancelled while it counted nothing in; nothing else moves it")
-    void legacyPurchaseReceiptsAreOnlyCancelled() {
-        for (GoodsReceiptStatus status : List.of(GoodsReceiptStatus.DRAFT, GoodsReceiptStatus.PENDING_APPROVAL)) {
-            GoodsReceipt receipt = legacy(status);
-            assertThat(receipt.againstProductionOrder()).isFalse();
-            assertThatThrownBy(() -> receipt.replaceLines(List.of(line(1)))).as("recount " + status)
-                    .extracting(GoodsReceiptTest::code).isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-            assertThatThrownBy(() -> receipt.confirm(USER, NOW)).as("confirm " + status)
-                    .extracting(GoodsReceiptTest::code).isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-            receipt.cancel();
-            assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.CANCELLED);
+    @DisplayName("cancel takes a DRAFT only: every other status, the historical ones included, is INVALID_RECEIPT_TRANSITION")
+    void cancelRefusesAnythingButDraft() {
+        for (GoodsReceiptStatus status : GoodsReceiptStatus.values()) {
+            if (status == GoodsReceiptStatus.DRAFT) {
+                continue;
+            }
+            GoodsReceipt receipt = new GoodsReceipt(UUID.randomUUID(), "GR-20261109-0002", PRODUCTION_ORDER,
+                    UUID.randomUUID(), NOW, USER, null, null, List.of(), status, NOW, USER, null, 0L);
+            assertThatThrownBy(receipt::cancel).as("cancel " + status).extracting(GoodsReceiptTest::code)
+                    .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+            assertThat(receipt.status()).isEqualTo(status);
         }
-        assertThatThrownBy(() -> legacy(GoodsReceiptStatus.IN_PUTAWAY).cancel()).extracting(GoodsReceiptTest::code)
-                .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
     }
 }

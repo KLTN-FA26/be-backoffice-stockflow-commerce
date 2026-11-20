@@ -23,8 +23,7 @@ import java.util.UUID;
  * <p>{@code uom_conversion_id}: the packing unit the line's cartons are in - a production line counts whole cartons
  * of its standard count (kltn-docs 03 BR-12, BR-13). Recounted with the rest while DRAFT;
  * {@code tg_goods_receipt_lines_unit} checks it is a unit of the line's item. It and {@code lot_number} are NOT NULL
- * since {@code V20261113000200}: no line is counted loose or without a lot any more, and an old purchase line was
- * given its item's base unit and its receipt's number.</p>
+ * since {@code V20261113000200}: no line is counted loose or without a lot any more,.</p>
  */
 @Entity
 @Table(name = "goods_receipt_lines", schema = "procurement")
@@ -35,10 +34,9 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     private GoodsReceiptJpaEntity receipt;
 
     /**
-     * 4A-5: the production order line a line of a production receipt counts; null on a historical purchase receipt,
-     * whose {@code po_line_id} went with purchasing ({@code V20261113000200} archived and dropped it).
+     * 4A-5: the production order line the line counts. NOT NULL since {@code V20261213000100}.
      */
-    @Column(name = "production_order_line_id", updatable = false)
+    @Column(name = "production_order_line_id", nullable = false, updatable = false)
     private UUID productionOrderLineId;
 
     @Column(name = "inventory_item_id", nullable = false, updatable = false)

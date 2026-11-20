@@ -15,8 +15,8 @@ import java.util.UUID;
  * warehouse (kltn-docs 03 BR-07): a confirmed receipt goes straight to putaway.
  *
  * <p>Purchasing is gone (4A-8, kltn-docs 00 of 04/11): the receipts counted against a purchase order, or none, before
- * 4A-5 ({@link GoodsReceiptType#PURCHASE}) are read as they stand and cancelled while they have counted nothing in;
- * nothing else moves them.</p>
+ * 4A-5 ({@link GoodsReceiptType#PURCHASE}) were deleted by {@code V20261213000100}; every receipt is against a
+ * production order.</p>
  *
  * <p>Not on {@code procurement :: api}: nothing outside this module drives a receipt. Other modules
  * learn about receipts from the {@code GoodsReceiptConfirmed} and {@code ReceiptStockReadyForPutaway}
@@ -109,7 +109,7 @@ public interface GoodsReceipts {
      * The names next to the ids are for display (SCRUM-464); a name is null when its row is gone. {@code warnings} are
      * non-blocking business warnings; none is raised any more (the expiry warning went with expiry, team plan 5-1), so
      * the list is empty. {@code productionOrder*},
-     * {@code producer*}: the production order of a PRODUCTION receipt (4A-5), null on a historical purchase receipt.
+     * {@code producer*}: the production order of a PRODUCTION receipt (4A-5).
      */
     record ReceiptView(UUID id, String number, UUID warehouseId, String warehouseCode, String warehouseName,
                        GoodsReceiptStatus status, String deliveryNote, String note, Instant receivedAt,
@@ -119,7 +119,7 @@ public interface GoodsReceipts {
                        String productionOrderStatus, UUID producerId, String producerName) {
     }
 
-    /** {@code receiptType}, {@code productionOrder*}, {@code producerName}: 4A-5; null on a historical purchase receipt. */
+    /** {@code receiptType}, {@code productionOrder*}, {@code producerName}: 4A-5. */
     record Row(UUID id, String number, UUID warehouseId, String warehouseCode, String warehouseName,
                GoodsReceiptStatus status, String deliveryNote, Instant receivedAt, UUID receivedBy,
                String receivedByName, Instant confirmedAt, UUID confirmedBy, String confirmedByName,
@@ -140,20 +140,18 @@ public interface GoodsReceipts {
 
     /**
      * Replace the whole count of a DRAFT production receipt, and label, recount or void each line's cartons to match it
-     * (SCRUM-473). A historical purchase receipt is refused ({@code INVALID_RECEIPT_TRANSITION}): it is only cancelled.
+     * (SCRUM-473).
      */
     ReceiptView replaceLines(UUID receiptId, List<NewLine> lines);
 
     /**
      * The count is final: the cartons are counted in as INBOUND stock at their receiving locations, the production
-     * order moves on, and the receipt goes to putaway. A historical purchase receipt is refused
-     * ({@code INVALID_RECEIPT_TRANSITION}).
+     * order moves on, and the receipt goes to putaway.
      */
     ReceiptView confirm(UUID receiptId, UUID userId);
 
     /**
-     * A DRAFT, or a historical purchase receipt left waiting for the old over-tolerance approval: neither has counted
-     * anything in (BR-05).
+     * A DRAFT only: nothing is counted in yet (BR-05); a posted receipt is corrected by an adjustment.
      */
     ReceiptView cancel(UUID receiptId);
 

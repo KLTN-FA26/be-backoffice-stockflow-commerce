@@ -129,11 +129,18 @@ SELECT pg_temp.expect_ok('AE18 an EXPIRED adjustment recorded before is still de
            decided_at = NOW(), rejection_reason = 'qa' WHERE id = md5('qa42:adj:old')::uuid $q$);
 
 \echo '--- lots without expiry (SCRUM-142): one per receipt, SKU and lot number'
--- A historical (PURCHASE) receipt header, written with the row triggers off: purchasing was removed and
--- check_goods_receipt refuses one (QA 61), but a lot an old receipt opened is all AE20-AE22 are about.
+-- A receipt header for the lots to name, written with the row triggers off with a minimal production order: the
+-- receipt's own rules are QA 22's and 61's, and what AE20-AE22 are about is the lot a receipt opened.
 SET LOCAL session_replication_role = replica;
-INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, received_at, received_by, receipt_type)
-VALUES (md5('qa42:gr')::uuid, 'GR-QA42-1', md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid, 'PURCHASE');
+INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, customer_id, producer_id,
+                                       receiving_warehouse_id, need_by_date, status, sample_approval_required,
+                                       sample_required_by_default, drawn_up_by, submitted_at, approved_by, approved_at, sent_at)
+VALUES (md5('qa42:prod')::uuid, 'PRD-20261109-4201', md5('qa42:so')::uuid, md5('qa42:batch')::uuid,
+        md5('qa42:cust')::uuid, md5('qa42:producer')::uuid, md5('demo:wh:HCM')::uuid, CURRENT_DATE + 30, 'SENT', FALSE,
+        FALSE, md5('demo:user:editor')::uuid, NOW(), md5('demo:user:approver')::uuid, NOW(), NOW());
+INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, received_at, received_by, receipt_type, production_order_id)
+VALUES (md5('qa42:gr')::uuid, 'GR-QA42-1', md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid, 'PRODUCTION',
+        md5('qa42:prod')::uuid);
 SET LOCAL session_replication_role = origin;
 SELECT pg_temp.expect_ok('AE20 a receipt opens a lot of the red cup', $q$
     INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, goods_receipt_id)
