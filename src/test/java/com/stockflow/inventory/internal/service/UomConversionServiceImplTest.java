@@ -174,6 +174,21 @@ class UomConversionServiceImplTest {
         }
 
         @Test
+        @DisplayName("01 BR-03: a second active carton is UOM_CARTON_ALREADY_DECLARED; a retired one is declared freely")
+        void secondActiveCartonIsRefused() {
+            when(conversions.activeCartonOf(ITEM, null)).thenReturn(Optional.of("CARTON"));
+
+            assertThat(codeOf(() -> service.add(SKU, draft("BOX", 12, true, false))))
+                    .isEqualTo(ErrorCode.UOM_CARTON_ALREADY_DECLARED);
+            verify(conversions, never()).insert(any(), any(), any(), anyString());
+
+            when(conversions.find(eq(SKU.code()), any(UUID.class))).thenAnswer(call ->
+                    Optional.of(unit(call.getArgument(1), "BOX", 12, false, false, 0)));
+            service.add(SKU, draft("BOX", 12, false, false));
+            verify(conversions).insert(any(), eq(ITEM), any(), eq("system"));
+        }
+
+        @Test
         @DisplayName("takes the SKU lock first, then inserts the unit and reads it back")
         void lockThenInsert() {
             UUID[] inserted = new UUID[1];
@@ -269,6 +284,20 @@ class UomConversionServiceImplTest {
             service.change(SKU, CARTON_ID, 4, draft("CARTON", 500, true, false));
 
             verify(conversions).update(eq(CARTON_ID), eq(4L), any(), eq(false), eq("system"));
+        }
+
+        @Test
+        @DisplayName("01 BR-03: re-activating a retired unit while another is active is UOM_CARTON_ALREADY_DECLARED")
+        void reactivatingBesideAnActiveCartonIsRefused() {
+            UUID retiredId = UUID.randomUUID();
+            UomConversion retired = new UomConversion(retiredId, SKU.code(), "OLD", 1000, false, BigDecimal.ONE, null,
+                    null, null, false, 2, false);
+            when(conversions.find(SKU.code(), retiredId)).thenReturn(Optional.of(retired));
+            when(conversions.activeCartonOf(ITEM, retiredId)).thenReturn(Optional.of("CARTON"));
+
+            assertThat(codeOf(() -> service.change(SKU, retiredId, 2, draft("OLD", 1000, true, false))))
+                    .isEqualTo(ErrorCode.UOM_CARTON_ALREADY_DECLARED);
+            verify(conversions, never()).update(any(), anyLong(), any(), anyBoolean(), anyString());
         }
 
         @Test

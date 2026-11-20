@@ -79,37 +79,26 @@ class UomConversionHttpIntegrationTest {
     }
 
     @Test
-    void defaultShippingIsFalseUntilAskedAndMovesToTheNewestUnit() throws Exception {
+    void defaultShippingIsFalseUntilAskedAndASecondActiveUnitIsRefused() throws Exception {
         mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(create("BOX", 10, null)))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.defaultShipping").value(false));
-        String carton = mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON)
-                        .content(create("CARTON", 50, true)))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.defaultShipping").value(true))
-                .andReturn().getResponse().getContentAsString();
-        mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(create("PALLET", 500, true)))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.defaultShipping").value(true));
-
+                .andExpect(jsonPath("$.data.defaultShipping").value(false))
+                .andExpect(jsonPath("$.data.active").value(true));
+        // 01 BR-03: the SKU has one active carton; the mark can only be on it, and a second one is refused.
+        mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(create("CARTON", 50, true)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("UOM_CARTON_ALREADY_DECLARED"));
         mvc.perform(get(base))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[?(@.unitOfMeasure=='PALLET')].defaultShipping").value(true))
-                .andExpect(jsonPath("$.data.items[?(@.unitOfMeasure=='CARTON')].defaultShipping").value(false))
                 .andExpect(jsonPath("$.data.items[?(@.unitOfMeasure=='BOX')].defaultShipping").value(false))
+                .andExpect(jsonPath("$.data.items[?(@.unitOfMeasure=='CARTON')]").isEmpty())
                 .andExpect(jsonPath("$.data.items[?(@.base==true)].defaultShipping").value(false));
-        // CARTON took the mark first and lost it to PALLET.
-        String id = carton.replaceAll(".*\"id\":\"([^\"]+)\".*", "$1");
-        mvc.perform(get(base + "/" + id))
-                .andExpect(jsonPath("$.data.defaultShipping").value(false));
     }
 
     @Test
-    void putMovesTheMarkBackAndNeedsItSpelledOut() throws Exception {
-        String box = mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(create("BOX", 10, true)))
-                .andReturn().getResponse().getContentAsString();
-        mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(create("CARTON", 50, true)))
-                .andExpect(status().isCreated());
+    void putMarksTheCartonAndNeedsItSpelledOut() throws Exception {
+        String box = mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(create("BOX", 10, null)))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
         String id = box.replaceAll(".*\"id\":\"([^\"]+)\".*", "$1");
         long version = mvc.perform(get(base + "/" + id)).andReturn().getResponse().getContentAsString()
                 .transform(body -> Long.parseLong(body.replaceAll(".*\"version\":(\\d+).*", "$1")));
@@ -121,8 +110,6 @@ class UomConversionHttpIntegrationTest {
                         .content(update(version, "BOX", 10, true)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.defaultShipping").value(true));
-        mvc.perform(get(base))
-                .andExpect(jsonPath("$.data.items[?(@.unitOfMeasure=='CARTON')].defaultShipping").value(false));
     }
 
     @Test

@@ -35,7 +35,11 @@ import java.util.stream.Collectors;
  * them copies the factor (V20261020000400), so a unit one of them uses keeps its factor and its code. The
  * database refuses such a change (V20261020000600); asking first turns that into
  * {@code UOM_CONVERSION_IN_USE} rather than a generic 409. Its size, weight and default shipping
- * mark stay editable, and retiring it is the way out BR-10 names: declare a new unit, retire this one.</p>
+ * mark stay editable, and retiring it is the way out BR-10 names: retire this one, then declare the new one.</p>
+ *
+ * <p>01 BR-03: a SKU has one active packing unit, its carton ({@code uk_uom_conversions_one_carton},
+ * V20261213000400). Declaring or re-activating a second is asked about first, under the SKU lock, so the index never
+ * surfaces as a bare 409 and the user is told to retire the other first; retired units stay beside it as history.</p>
  */
 @Service
 @Transactional
@@ -97,6 +101,7 @@ class UomConversionServiceImpl implements UomConversionService {
         items.lock(sku.code());
         UUID itemId = itemId(sku);
         if (conversions.unitTaken(itemId, draft.unitOfMeasure(), null)) throw duplicate(sku, draft);
+        if (draft.active()) requireNoOtherActiveCarton(sku, itemId, null);
         String actor = actor();
         UUID id = Identifiers.newId();
         if (draft.defaultShipping()) conversions.clearDefaultShipping(itemId, id, actor);
@@ -114,6 +119,7 @@ class UomConversionServiceImpl implements UomConversionService {
         } else {
             UomConversionRules.validatePacking(draft);
             if (conversions.unitTaken(itemId, draft.unitOfMeasure(), id)) throw duplicate(sku, draft);
+            if (draft.active()) requireNoOtherActiveCarton(sku, itemId, id);
         }
         if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         // The base unit's code follows the item's and its factor is 1 (V20261019000300): nothing to lock here.
@@ -147,6 +153,14 @@ class UomConversionServiceImpl implements UomConversionService {
         }
     }
 
+    private void requireNoOtherActiveCarton(Sku sku, UUID itemId, UUID except) {
+        conversions.activeCartonOf(itemId, except).ifPresent(code -> {
+            throw new BusinessException(ErrorCode.UOM_CARTON_ALREADY_DECLARED,
+                    "%s already has the carton unit %s; retire it before declaring another (01 BR-03)"
+                            .formatted(sku, code));
+        });
+    }
+
     private UUID itemId(Sku sku) {
         return conversions.itemId(sku.code()).orElseThrow(
                 () -> new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No inventory item " + sku));
@@ -171,7 +185,7 @@ class UomConversionServiceImpl implements UomConversionService {
 
     private static BusinessException inUse(Sku sku, UomConversion unit) {
         return new BusinessException(ErrorCode.UOM_CONVERSION_IN_USE,
-                "%s %s (factor %d) is used by a document; declare a new unit and retire this one (BR-10)"
+                "%s %s (factor %d) is used by a document; retire it, then declare the new one (BR-10)"
                         .formatted(sku, unit.unitOfMeasure(), unit.factor()));
     }
 

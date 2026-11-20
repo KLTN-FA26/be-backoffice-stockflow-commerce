@@ -183,6 +183,30 @@ class InventoryItemMasterDataIntegrationTest {
     }
 
     @Test
+    @DisplayName("a SKU has one active carton (01 BR-03): the one a document uses is retired first, then the new one is declared")
+    void replacingTheCartonRetiresFirst() {
+        UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, true));
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
+                                                     location_code)
+                VALUES (?, ?, ?, ?, 1000, 'HCM-A01-1-A')""", Identifiers.newId(), "IT-" + suffix, itemId(),
+                carton.id()));
+
+        assertCode(() -> units.addConversion(productId, variantId, packing("CARTON2", 1000, true)),
+                ErrorCode.UOM_CARTON_ALREADY_DECLARED);
+        // A retired unit is history, declared beside the active one freely.
+        assertThat(units.addConversion(productId, variantId, packing("OLDBOX", 500, false)).active()).isFalse();
+
+        units.changeConversion(productId, variantId, carton.id(), carton.version(), packing("CARTON", 1000, false));
+        UomConversion replacement = units.addConversion(productId, variantId, packing("CARTON2", 1000, true));
+        assertThat(replacement.active()).isTrue();
+        // ...and the retired one cannot come back beside it.
+        UomConversion retired = units.conversion(productId, variantId, carton.id());
+        assertCode(() -> units.changeConversion(productId, variantId, carton.id(), retired.version(),
+                packing("CARTON", 1000, true)), ErrorCode.UOM_CARTON_ALREADY_DECLARED);
+    }
+
+    @Test
     @DisplayName("a unit a document is being written in right now is in use too: the document holds its lock (BR-10)")
     void unitBeingWrittenOnADocument() throws Exception {
         UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, true));

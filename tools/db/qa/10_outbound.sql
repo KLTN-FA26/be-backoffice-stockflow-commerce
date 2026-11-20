@@ -11,6 +11,9 @@
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
+-- Fixture, not the rule under test: this script declares several packing units for one demo SKU, which the
+-- one-carton index (V20261213000400, 01 BR-03) refuses. Dropped here; the rollback at the end restores it.
+DROP INDEX inventory.uk_uom_conversions_one_carton;
 -- V20261111000110 (team plan 4C-1) put the demo stock into cartons. The checks of loose stock below - loose stock goes
 -- with 4C-3 - use the empty rows it left of the demo cup LY-GIAY-DEMO-12OZ-XANH (made again for the cups by
 -- V20261206000100), filled as they were before it. The cups' cartons stay beside them, so the books hold the demo cups

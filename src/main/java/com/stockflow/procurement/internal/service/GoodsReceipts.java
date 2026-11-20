@@ -34,8 +34,8 @@ public interface GoodsReceipts {
      * quantity may be left out, 0; any other count is refused, BR-13). {@code quantity} may be left out too (0): it is
      * the cartons times their count. There is no lot to give: the lot is the production order's code (BR-03), and one
      * given is refused on its field; nor an expiry date, which nothing records (01 BR-17, 03 BR-06; team plan 5-1).
-     * {@code unitOfMeasure}, when given, names the SKU's packing
-     * unit holding that count; {@code sku}, when given, must be the production order line's.
+     * {@code unitOfMeasure} is optional: when given it must be the SKU's carton, its one active packing unit (01 BR-03),
+     * which must hold that count; {@code sku}, when given, must be the production order line's.
      */
     record NewLine(UUID productionOrderLineId, int quantity, String lotNumber,
                    String locationCode, String note, String unitOfMeasure, List<NewPackage> packages, String sku) {

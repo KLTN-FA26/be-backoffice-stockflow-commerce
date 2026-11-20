@@ -57,11 +57,7 @@ public final class CartonRows {
         if (!found.isEmpty()) {
             return found.getFirst();
         }
-        UUID id = Identifiers.newId();
-        jdbc.update("""
-                INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-                SELECT ?, id, 'CTN', ? FROM inventory.inventory_items WHERE sku = ?""", id, factor, sku);
-        return id;
+        return cartonUnit(jdbc, itemOf(jdbc, sku), "CTN", factor);
     }
 
     /**
@@ -78,10 +74,42 @@ public final class CartonRows {
         if (!found.isEmpty()) {
             return found.getFirst();
         }
-        UUID id = Identifiers.newId();
+        return cartonUnit(jdbc, itemOf(jdbc, sku), "CTN" + factor, factor);
+    }
+
+    private static UUID itemOf(JdbcTemplate jdbc, String sku) {
+        return jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, sku);
+    }
+
+    /**
+     * Makes the item's unit {@code code} of {@code factor} units its ONE active carton (01 BR-03,
+     * {@code uk_uom_conversions_one_carton}): made the first time, and the item's other active packing unit is retired
+     * - its cartons stay, as history. A test that needs cartons of several sizes of one SKU takes them in turn; a unit
+     * is activated again when it is asked for again. Answers the unit's id.
+     */
+    public static void reactivate(JdbcTemplate jdbc, UUID unit) {
         jdbc.update("""
-                INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-                SELECT ?, id, ?, ? FROM inventory.inventory_items WHERE sku = ?""", id, "CTN" + factor, factor, sku);
+                UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
+                 WHERE inventory_item_id = (SELECT inventory_item_id FROM inventory.uom_conversions WHERE id = ?)
+                   AND NOT is_base AND active AND id <> ?""", unit, unit);
+        jdbc.update("UPDATE inventory.uom_conversions SET active = TRUE WHERE id = ? AND NOT active", unit);
+    }
+
+    /** See {@link #reactivate}: the same, for a unit of this code, made when the item has none. */
+    public static UUID cartonUnit(JdbcTemplate jdbc, UUID item, String code, int factor) {
+        List<UUID> found = jdbc.queryForList("""
+                SELECT id FROM inventory.uom_conversions WHERE inventory_item_id = ? AND unit_of_measure = ?""",
+                UUID.class, item, code);
+        UUID id = found.isEmpty() ? Identifiers.newId() : found.getFirst();
+        if (found.isEmpty()) {
+            jdbc.update("""
+                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active)
+                    VALUES (?, ?, ?, ?, FALSE)""", id, item, code, factor);
+        }
+        jdbc.update("""
+                UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
+                 WHERE inventory_item_id = ? AND NOT is_base AND active AND id <> ?""", item, id);
+        jdbc.update("UPDATE inventory.uom_conversions SET active = TRUE WHERE id = ? AND NOT active", id);
         return id;
     }
 

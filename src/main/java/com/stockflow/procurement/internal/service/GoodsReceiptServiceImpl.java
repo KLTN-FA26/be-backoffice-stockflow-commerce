@@ -179,6 +179,10 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
      * fresh id on every recount would make a draft with labelled cartons impossible to correct. Only once the count is
      * saved - so a new line's row exists for the cartons' foreign key - does inventory label, recount, move and void
      * them; the response then carries their LPNs.</p>
+     *
+     * <p>The cartons are labelled in the SKU's one active carton unit (01 BR-03, {@link #cartonUnit}); a line's
+     * {@code unitOfMeasure}, when given, must name it. A carton labelled in a unit since retired (BR-10) cannot be
+     * named again: leaving it out voids it, and the new cartons are labelled in the unit that replaced it.</p>
      */
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "goods-receipt", resourceId = "#receiptId")
@@ -253,8 +257,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             UUID lineId = was == null ? Identifiers.newId() : was.id();
             List<StockPackageView> cartonsBefore = labelled.getOrDefault(lineId, List.of());
             int cartons = standardCartons(errors, i, in, line);
-            UomConversion unit = productionCartonUnit(errors, i, in, line,
-                    unitsBySku.getOrDefault(line.sku(), List.of()), was == null ? null : was.uomConversionId(),
+            UomConversion unit = cartonUnit(errors, i, in, line, unitsBySku.getOrDefault(line.sku(), List.of()),
                     cartonsBefore);
             int quantity = cartons * line.unitsPerCarton();
             if (in.quantity() != 0 && in.quantity() != quantity) {
@@ -330,65 +333,44 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     }
 
     /**
-     * The packing unit a production line's cartons are in: the SKU's carton specification holding the line's standard
-     * count (kltn-docs 01 BR-11). {@code unitOfMeasure} names it when the SKU has several of that count; otherwise the
-     * line's own unit when it still fits (a recount), else the one active unit of that count, else the one of them
-     * that is the default shipping unit. Null, with the refusal recorded on {@code unitOfMeasure}, when none fits. A
-     * carton of another unit is not kept while the line changes unit (SCRUM-473 design §3 rule 7).
+     * The packing unit a production line's cartons are in: the SKU's one active carton specification (kltn-docs 01 BR-03,
+     * BR-11), which must hold the line's standard count. {@code unitOfMeasure}, when given, must name it. Null, with the
+     * refusal recorded on {@code unitOfMeasure}, when the SKU has no active carton, its carton holds another count, or
+     * another unit is named. Cartons already labelled in an earlier unit (retired and replaced since, BR-10) are not
+     * kept while the line changes unit: they are left out to be voided (SCRUM-473 design §3 rule 7).
      */
-    private static UomConversion productionCartonUnit(LineErrors errors, int index, NewLine in,
-                                                      ReceivableProductionOrder.Line line,
-                                                      List<UomConversion> itemUnits, UUID lineUnitId,
-                                                      List<StockPackageView> cartonsBefore) {
-        List<UomConversion> fitting = itemUnits.stream()
-                .filter(unit -> !unit.base() && unit.factor() == line.unitsPerCarton()).toList();
+    private static UomConversion cartonUnit(LineErrors errors, int index, NewLine in,
+                                            ReceivableProductionOrder.Line line, List<UomConversion> itemUnits,
+                                            List<StockPackageView> cartonsBefore) {
         String code = blankToNull(in.unitOfMeasure());
-        UomConversion unit;
-        if (code != null) {
-            Optional<UomConversion> found = unitByCode(itemUnits, code);
-            if (found.isEmpty()) {
-                errors.add(index, "unitOfMeasure", ErrorCode.UOM_CONVERSION_NOT_FOUND,
-                        "%s has no unit %s".formatted(line.sku(), code));
-                return null;
-            }
-            if (!fitting.contains(found.get())) {
-                errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID, ("%s is not a carton of %s "
-                        + "holding its standard %d (BR-13)").formatted(code, line.sku(), line.unitsPerCarton()));
-                return null;
-            }
-            unit = found.get();
-        } else {
-            Optional<UomConversion> kept = fitting.stream().filter(u -> u.id().equals(lineUnitId)).findFirst();
-            List<UomConversion> active = fitting.stream().filter(UomConversion::active).toList();
-            List<UomConversion> shipping = active.stream().filter(UomConversion::defaultShipping).toList();
-            if (kept.isPresent()) {
-                unit = kept.get();
-            } else if (active.size() == 1) {
-                unit = active.getFirst();
-            } else if (shipping.size() == 1) {
-                unit = shipping.getFirst();
-            } else if (active.isEmpty()) {
-                errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID, ("%s has no active carton of "
-                        + "%d: its carton specification is set up first (01 BR-11)").formatted(line.sku(),
-                        line.unitsPerCarton()));
-                return null;
-            } else {
-                errors.add(index, "unitOfMeasure", ErrorCode.VALIDATION_FAILED, ("%s has several cartons of %d (%s): "
-                        + "name the one the goods arrived in").formatted(line.sku(), line.unitsPerCarton(),
-                        String.join(", ", active.stream().map(UomConversion::unitOfMeasure).toList())));
-                return null;
-            }
-        }
-        if (!unit.active() && !unit.id().equals(lineUnitId)) {
-            errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID,
-                    "%s is retired; cartons are labelled in an active packing unit".formatted(unit.unitOfMeasure()));
+        Optional<UomConversion> named = code == null ? Optional.empty() : unitByCode(itemUnits, code);
+        if (code != null && named.isEmpty()) {
+            errors.add(index, "unitOfMeasure", ErrorCode.UOM_CONVERSION_NOT_FOUND,
+                    "%s has no unit %s".formatted(line.sku(), code));
             return null;
         }
-        Set<String> named = new HashSet<>();
+        UomConversion unit = itemUnits.stream().filter(u -> !u.base() && u.active()).findFirst().orElse(null);
+        if (unit == null) {
+            errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID, ("%s has no active carton: its "
+                    + "carton specification is set up first (01 BR-11)").formatted(line.sku()));
+            return null;
+        }
+        if (unit.factor() != line.unitsPerCarton()) {
+            errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID, ("The carton of %s, %s, holds %d, "
+                    + "not the standard %d of the production order (BR-13)").formatted(line.sku(),
+                    unit.unitOfMeasure(), unit.factor(), line.unitsPerCarton()));
+            return null;
+        }
+        if (named.isPresent() && !named.get().id().equals(unit.id())) {
+            errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID, ("%s is not the carton of %s: it is "
+                    + "%s (01 BR-03)").formatted(code, line.sku(), unit.unitOfMeasure()));
+            return null;
+        }
+        Set<String> lpns = new HashSet<>();
         in.packages().forEach(carton -> Optional.ofNullable(StockPackageView.normalLpn(carton.lpn()))
-                .ifPresent(named::add));
+                .ifPresent(lpns::add));
         List<String> keptInOtherUnit = cartonsBefore.stream()
-                .filter(carton -> named.contains(carton.lpn()) && !unit.id().equals(carton.uomConversionId()))
+                .filter(carton -> lpns.contains(carton.lpn()) && !unit.id().equals(carton.uomConversionId()))
                 .map(StockPackageView::lpn).toList();
         if (!keptInOtherUnit.isEmpty()) {
             errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_HAS_PACKAGES,

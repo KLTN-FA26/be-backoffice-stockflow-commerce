@@ -104,6 +104,14 @@ public class UomConversionRepository {
                 Boolean.class, itemId, unitOfMeasure, except));
     }
 
+    /** The code of the item's active packing unit other than {@code except}, if any (01 BR-03: there is at most one). */
+    public Optional<String> activeCartonOf(UUID itemId, UUID except) {
+        return jdbc.query("""
+                select unit_of_measure from inventory.uom_conversions
+                where inventory_item_id = ? and not is_base and active and id is distinct from ?""",
+                (rs, n) -> rs.getString("unit_of_measure"), itemId, except).stream().findFirst();
+    }
+
     /**
      * Whether a document counts in this unit (inventory.unit_in_use, V20261020000600), or is being written
      * in it right now: a document's trigger holds the unit's advisory lock shared until it commits, and an

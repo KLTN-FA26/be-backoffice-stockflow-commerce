@@ -582,6 +582,37 @@ class ProductionReceiptIntegrationTest {
     }
 
     @Test
+    @DisplayName("01 BR-03: the carton unit was retired and replaced after counting: naming the old cartons is refused, leaving them out voids them")
+    void recountAfterTheCartonUnitWasRetired() {
+        UUID orderId = confirmedOrderAtA();
+        ProductionOrder production = sentWithoutSample(orderId, 1);
+        ReceiptView receipt = start(production);
+        List<PackageView> counted = count(receipt, lineId(production), cartons(2)).lines().getFirst().packages();
+
+        // BR-10: a unit a document counts in is retired, never changed; its replacement has the same count.
+        tx.executeWithoutResult(s -> {
+            jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE WHERE id = ?",
+                    sku.uomConversionId());
+            jdbc.update("""
+                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
+                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at, default_shipping)
+                    VALUES (?, ?, 'CARTON2', ?, FALSE, 1.2, 60, 40, 35, TRUE, 0, NOW(), TRUE)""",
+                    Identifiers.newId(), sku.itemId(), PER_CARTON);
+        });
+
+        Throwable named = catchThrowable(() -> count(receipt, lineId(production), List.of(
+                new NewPackage(counted.get(0).lpn(), PER_CARTON), new NewPackage(null, 0))));
+        assertThat(fields(named)).containsExactly("lines[0].unitOfMeasure:RECEIPT_LINE_HAS_PACKAGES");
+
+        GoodsReceipts.LineView recounted = count(receipt, lineId(production), cartons(2)).lines().getFirst();
+        assertThat(recounted.unitOfMeasure()).isEqualTo("CARTON2");
+        assertThat(recounted.packages()).extracting(PackageView::lpn)
+                .doesNotContainAnyElementsOf(counted.stream().map(PackageView::lpn).toList());
+        counted.forEach(old -> assertThat(jdbc.queryForObject("SELECT status FROM inventory.stock_package WHERE lpn = ?",
+                String.class, old.lpn())).as("the carton labelled in the retired unit").isEqualTo("VOID"));
+    }
+
+    @Test
     @DisplayName("BR-02: never more cartons than ordered on all its receipts not cancelled - another draft counts")
     void overReceiptRefusedCountingAnotherDraft() {
         UUID orderId = confirmedOrderAtA();

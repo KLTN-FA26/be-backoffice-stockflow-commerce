@@ -214,15 +214,10 @@ class ShippingWarehouseIntegrationTest {
             if (rest > 0) {
                 UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class,
                         sku.sku());
-                jdbc.update("""
-                        INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                            active, version, created_at, default_shipping)
-                        VALUES (?, ?, ?, ?, FALSE, TRUE, 0, NOW(), FALSE)
-                        ON CONFLICT (inventory_item_id, unit_of_measure) DO NOTHING""", Identifiers.newId(), item,
-                        "PK" + rest, rest);
-                UUID odd = jdbc.queryForObject("SELECT id FROM inventory.uom_conversions WHERE inventory_item_id = ? "
-                        + "AND unit_of_measure = ?", UUID.class, item, "PK" + rest);
+                UUID odd = CartonRows.cartonUnit(jdbc, item, "PK" + rest, rest);
                 CartonRows.stockOfUnit(jdbc, sku.sku(), odd, warehouse.bin(), 1, null, received, "AVAILABLE");
+                // 01 BR-03: one active carton; the SKU's own is its active unit again after the odd one is made.
+                CartonRows.reactivate(jdbc, sku.uomConversionId());
             }
         });
     }

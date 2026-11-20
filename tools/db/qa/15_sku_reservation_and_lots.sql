@@ -4,6 +4,9 @@
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
+-- Fixture, not the rule under test: this script declares several packing units for one demo SKU, which the
+-- one-carton index (V20261213000400, 01 BR-03) refuses. Dropped here; the rollback at the end restores it.
+DROP INDEX inventory.uk_uom_conversions_one_carton;
 CREATE FUNCTION pg_temp.expect_fail(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     BEGIN

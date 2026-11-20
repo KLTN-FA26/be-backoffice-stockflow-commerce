@@ -210,15 +210,7 @@ public final class ConfirmedOrders {
         return tx().execute(s -> {
             UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class,
                     line.sku());
-            jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        active, version, created_at, default_shipping)
-                    VALUES (?, ?, ?, ?, FALSE, TRUE, 0, NOW(), FALSE)
-                    ON CONFLICT (inventory_item_id, unit_of_measure) DO NOTHING""", Identifiers.newId(), item,
-                    line.unit(), line.unitsPerCarton());
-            return jdbc.queryForObject("""
-                    SELECT id FROM inventory.uom_conversions WHERE inventory_item_id = ? AND unit_of_measure = ?
-                       AND factor = ?""", UUID.class, item, line.unit(), line.unitsPerCarton());
+            return CartonRows.cartonUnit(jdbc, item, line.unit(), line.unitsPerCarton());
         });
     }
 
