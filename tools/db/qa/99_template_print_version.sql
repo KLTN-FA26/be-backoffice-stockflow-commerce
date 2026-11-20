@@ -1,5 +1,5 @@
 -- =============================================================================
--- A print configuration's print version (V20261211000100, decision 1). Needs the demo seed; rolled back.
+-- A print configuration's print version (V20261212000100, decision 1). Needs the demo seed; rolled back.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;

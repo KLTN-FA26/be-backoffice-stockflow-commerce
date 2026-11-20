@@ -42,7 +42,7 @@ public class DesignArtifactJpaEntity extends BaseEntity {
     private String documentChecksum;
     /**
      * The print version ({@code PrintConfig#printVersion}) of the template the file was drawn on; null exactly when
-     * {@code documentChecksum} is. The column keeps its name: until V20261211000100 it held the template's
+     * {@code documentChecksum} is. The column keeps its name: until V20261212000100 it held the template's
      * optimistic-lock version, which that migration copied into the print version, so old rows mean the same.
      */
     @Column(name = "template_version", updatable = false)
