@@ -92,7 +92,6 @@ class SalesContractService implements SalesContracts {
     private final Clock clock;
     private final OrderEventPublisher events;
     private final com.stockflow.order.internal.repository.OrderHoldJpaRepository holds;
-    private final com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests;
     /** Its window is the complaint period a new contract states unless Sales agree another (WF-05 TH-1). */
     private final com.stockflow.order.internal.domain.ReturnPolicy returnPolicy;
 
@@ -102,12 +101,10 @@ class SalesContractService implements SalesContracts {
                          SalesContractDocument document, SellerProperties seller, ContractProperties defaults,
                          TransactionTemplate tx, Clock clock, OrderEventPublisher events,
                          com.stockflow.order.internal.repository.OrderHoldJpaRepository holds,
-                         com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests,
                          com.stockflow.order.internal.domain.ReturnPolicy returnPolicy) {
         this.returnPolicy = returnPolicy;
         this.events = events;
         this.holds = holds;
-        this.cancellationRequests = cancellationRequests;
         this.orders = orders;
         this.contracts = contracts;
         this.customers = customers;
@@ -336,16 +333,11 @@ class SalesContractService implements SalesContracts {
         contract.cancel(reason, now, user.userId());
         SalesContract saved = contracts.save(contract);
         // 14 §4.3 step 16: cancelled to be drawn up again - the order goes back to DRAFT (4B-5). A cancellation request
-        // the customer sent meanwhile closes: the order is out of their sight until a new contract is sent.
-        boolean wasWaiting = order.status() == com.stockflow.order.api.OrderStatus.PENDING_CONTRACT;
+        // the customer sent meanwhile stays PENDING for Sales to decide (17 §4.8 step 28: a request lapses only once
+        // the order can no longer be cancelled, and a DRAFT order can): closing it here dropped the customer's wish and
+        // told them the order had been packed or shipped. Approved, it cancels the DRAFT order.
         order.withdrawContract(user.userId(), now);
         orders.save(order);
-        if (wasWaiting) {
-            cancellationRequests.findPending(orderId).ifPresent(request -> {
-                request.expire("Closed: the contract was withdrawn to be drawn up again; ask once it is sent.", now);
-                cancellationRequests.save(request);
-            });
-        }
         statusChanged(saved, order, user.userId(), now);
         log.info("Sales contract {} of order {} cancelled", saved.contractNumber(), order.orderNumber());
         return view(saved, order, null);
@@ -396,9 +388,9 @@ class SalesContractService implements SalesContracts {
 
     @Override
     @Transactional(readOnly = true)
-    public DownloadLink customerDocument(UUID customerId, UUID orderId) {
+    public DownloadLink customerDocument(UUID customerId, UUID orderId, boolean sentCopy) {
         SalesContract contract = sentContract(customersOrder(customerId, orderId));
-        return contract.signedFileKey() != null
+        return contract.signedFileKey() != null && !sentCopy
                 ? files.downloadLink(contract.signedFileKey(), contract.signedFileName())
                 : files.downloadLink(contract.sentDocumentKey(), contract.contractNumber() + ".pdf");
     }
@@ -501,7 +493,7 @@ class SalesContractService implements SalesContracts {
         DefaultPaymentSchedule schedule = paymentSchedules.defaultPaymentSchedule(customerId);
         if (schedule.awaitingApproval() || schedule.installments().isEmpty()) {
             return List.of(new ContractTerms.InstallmentEntry(ON_SIGNING, PaymentMilestone.ON_SIGNING, null,
-                    HUNDRED, 0, null));
+                    HUNDRED, com.stockflow.customer.api.DefaultPaymentSchedule.DEFAULT_ON_SIGNING_DUE_DAYS, null));
         }
         return schedule.installments().stream()
                 .map(i -> new ContractTerms.InstallmentEntry(i.name(), PaymentMilestone.valueOf(i.milestone().name()),

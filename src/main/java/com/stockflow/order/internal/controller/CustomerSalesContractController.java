@@ -16,6 +16,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.UUID;
@@ -48,10 +49,13 @@ class CustomerSalesContractController {
     }
 
     @GetMapping("/document")
-    @Operation(summary = "A short-lived link to the contract as sent, or as signed once it is")
+    @Operation(summary = "A short-lived link to the contract as signed once it is, else as sent; copy=sent asks for the "
+            + "PDF as sent even after signing")
     @RequiresPermission(resource = OrderResources.ORDERS, action = Action.READ, scope = DataScope.OWN)
-    public ApiResponse<DownloadLink> document(@PathVariable UUID orderId, @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(contracts.customerDocument(ownCustomerId(user), orderId));
+    public ApiResponse<DownloadLink> document(@PathVariable UUID orderId,
+                                              @RequestParam(name = "copy", required = false) String copy,
+                                              @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(contracts.customerDocument(ownCustomerId(user), orderId, "sent".equalsIgnoreCase(copy)));
     }
 
     private UUID ownCustomerId(CurrentUser user) {

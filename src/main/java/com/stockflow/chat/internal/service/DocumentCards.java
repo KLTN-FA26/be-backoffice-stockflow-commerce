@@ -214,13 +214,26 @@ public class DocumentCards {
             default -> null;
         };
         Actor actor = cards.actorOf(event.changedBy());
+        // The quote ended (cancelled, expired): an earlier revision's card ends with it. The customer who asked for
+        // changes holds revision N's card while Sales write N+1; cancelling N+1 before sending it left that card
+        // "changes requested" for good. It takes the end state on its own payload - never the unsent draft's terms.
+        boolean ended = state == CardState.CANCELLED || state == CardState.EXPIRED;
         for (ChatMessage card : messages.cardsAbout(ref, CardKind.QUOTE)) {
             if (card.card().state() == CardState.SUPERSEDED) {
                 continue;
             }
-            boolean latest = cards.readPayload(card.card().payloadJson()).path("revision").asInt() == quote.revision();
-            cards.update(card.id(), latest ? state : null, latest ? payload : null, actor, null,
-                    "{\"quoteStatus\":\"" + event.toStatus() + "\"}");
+            JsonNode old = cards.readPayload(card.card().payloadJson());
+            boolean latest = old.path("revision").asInt() == quote.revision();
+            String detail = "{\"quoteStatus\":\"" + event.toStatus() + "\"}";
+            if (latest) {
+                cards.update(card.id(), state, payload, actor, null, detail);
+            } else if (ended && old instanceof ObjectNode kept) {
+                ObjectNode endedPayload = kept.deepCopy();
+                endedPayload.put("status", event.toStatus());
+                cards.update(card.id(), state, endedPayload, actor, null, detail);
+            } else {
+                cards.update(card.id(), null, null, actor, null, detail);
+            }
         }
     }
 
@@ -279,22 +292,40 @@ public class DocumentCards {
     }
 
     /**
-     * The customer paid (or a receipt was voided): their open transfer cards show what is left - paid in full, the
-     * card is done; cancelled with its order, the card is too.
+     * The customer paid, a receipt was voided, or the order was cancelled: their transfer cards show what is left -
+     * paid in full, the card is done; cancelled with its order, the card is too, its VietQR gone. A card done because
+     * the installment was paid opens again when a void leaves it owing (15 BR-13): the customer was told it was paid,
+     * and is told it is not any more, with the transfer details and the code. Superseded, cancelled or closed cards
+     * stay as they are.
      */
     public void paymentsChanged(UUID customerId) {
-        for (ChatMessage card : messages.openCardsOf(customerId,
-                EnumSet.of(CardKind.PAYMENT_INFO, CardKind.PAYMENT_REMINDER))) {
+        for (ChatMessage card : messages.cardsOf(customerId,
+                EnumSet.of(CardKind.PAYMENT_INFO, CardKind.PAYMENT_REMINDER),
+                EnumSet.of(CardState.OPEN, CardState.ACTED))) {
             JsonNode old = cards.readPayload(card.card().payloadJson());
             installments.transfer(uuid(old, "installmentId")).ifPresent(transfer -> {
                 CardState state = switch (transfer.status()) {
                     case "PAID" -> CardState.ACTED;
                     case "CANCELLED" -> CardState.CANCELLED;
-                    default -> null;
+                    default -> CardState.OPEN;
                 };
-                cards.update(card.id(), state, transferPayload(transfer, old.path("reminder").asBoolean()),
-                        Actor.system(), null, null);
+                ObjectNode payload = transferPayload(transfer, old.path("reminder").asBoolean());
+                // Nothing changed: no update, so no conversation lock - a customer's paid cards are walked on every
+                // receipt, and most of them stay as they were.
+                if (state == card.card().state() && sameAsStored(payload, old)) {
+                    return;
+                }
+                cards.update(card.id(), state, payload, Actor.system(), null, null);
             });
+        }
+    }
+
+    /** Whether {@code payload}, once stored, reads as {@code stored}: compared as text, the way the card keeps it. */
+    private boolean sameAsStored(ObjectNode payload, JsonNode stored) {
+        try {
+            return cards.readPayload(json.writeValueAsString(payload)).equals(stored);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException unwritable) {
+            return false;
         }
     }
 
@@ -327,7 +358,10 @@ public class DocumentCards {
             node.put("bankBin", bank.bankBin());
             node.put("accountNumber", bank.accountNumber());
             node.put("accountName", bank.accountName());
-            boolean payable = transfer.outstanding().signum() > 0 && VND.equals(transfer.currency());
+            // Nothing to scan for an installment paid or cancelled: a code left on a cancelled order's card would let
+            // the customer pay an order that no longer exists.
+            boolean payable = transfer.outstanding().signum() > 0 && VND.equals(transfer.currency())
+                    && !"PAID".equals(transfer.status()) && !"CANCELLED".equals(transfer.status());
             payload.put("vietQr", bank.bankBin() == null || !payable ? null : VietQr.payload(bank.bankBin(),
                     bank.accountNumber(), transfer.outstanding(), transfer.transferReference()));
         } else {

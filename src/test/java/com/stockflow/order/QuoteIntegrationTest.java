@@ -335,6 +335,29 @@ class QuoteIntegrationTest {
                 new Quotes.Draft(Instant.now().plus(Duration.ofDays(7)), null,
                         List.of(new Quotes.Line(sku, 4,
                                 List.of(new Quotes.Tier(4, new BigDecimal("2200")))))));
+        // While Sales write revision 2 the customer keeps the quote they asked to change: revision 1's offer, their
+        // request, CHANGES_REQUESTED - listed, readable, never the working draft, and nothing to answer yet.
+        Quotes.QuoteView meanwhile = quotes.get(portal, first.id());
+        assertThat(meanwhile.status()).isEqualTo(QuoteStatus.CHANGES_REQUESTED);
+        assertThat(meanwhile.revision()).isEqualTo(1);
+        assertThat(meanwhile.customerFeedback()).isEqualTo("2,200?");
+        assertThat(meanwhile.lines()).extracting(line -> line.proposedUnitPrice() != null
+                        && line.proposedUnitPrice().compareTo(new BigDecimal("2200")) == 0)
+                .as("the offer they were sent, not Sales' 2,200 draft").containsOnly(false);
+        assertThat(quotes.list(portal, new Quotes.Criteria(null, null, null, 0, 20, null)).items())
+                .filteredOn(row -> row.id().equals(first.id())).singleElement()
+                .satisfies(row -> {
+                    assertThat(row.status()).isEqualTo(QuoteStatus.CHANGES_REQUESTED);
+                    assertThat(row.revision()).isEqualTo(1);
+                });
+        assertThatThrownBy(() -> quotes.accept(portal, first.id(), new Quotes.Acceptance(meanwhile.version(),
+                Map.of()))).as("nothing to accept until revision 2 is sent, and said so")
+                .isInstanceOfSatisfying(BusinessException.class, refused -> {
+                    assertThat(refused.errorCode()).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
+                    assertThat(refused.messageKey()).isEqualTo("refusal.quote.beingRevised");
+                });
+        assertThat(quotes.get(sales, first.id()).status()).as("Sales still see their draft")
+                .isEqualTo(QuoteStatus.DRAFT);
         Quotes.QuoteView second = quotes.send(sales, first.id(), edited.version());
         assertThat(second.revision()).isEqualTo(2);
         assertThatThrownBy(() -> quotes.accept(portal, first.id(), new Quotes.Acceptance(firstVersion, Map.of())))
@@ -511,8 +534,12 @@ class QuoteIntegrationTest {
         Quotes.QuoteView reopened = quotes.reopen(sales, sent.id(), changed.version());
         assertThat(reopened.status()).isEqualTo(QuoteStatus.DRAFT);
         assertThat(reopened.revision()).isEqualTo(2);
-        assertThatThrownBy(() -> quotes.get(portal, sent.id())).as("being revised: not shown")
-                .isInstanceOf(NotFoundException.class);
+        // Being revised, still the customer's (round 3, A4): it used to answer 404 and leave their list while Sales
+        // wrote revision 2. They see revision 1 as they asked to change it.
+        Quotes.QuoteView beingRevised = quotes.get(portal, sent.id());
+        assertThat(beingRevised.status()).isEqualTo(QuoteStatus.CHANGES_REQUESTED);
+        assertThat(beingRevised.revision()).isEqualTo(1);
+        assertThat(beingRevised.customerFeedback()).isEqualTo("2,400 from 5 units?");
         Quotes.QuoteView edited = quotes.edit(sales, sent.id(), reopened.version(), new Quotes.Draft(
                 Instant.now().plus(Duration.ofDays(7)), null, List.of(new Quotes.Line(sku, 5, List.of(new Quotes.Tier(5, new BigDecimal("2400")))))));
         Quotes.QuoteView resent = quotes.send(sales, sent.id(), edited.version());

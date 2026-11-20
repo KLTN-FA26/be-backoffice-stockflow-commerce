@@ -164,13 +164,26 @@ class QuoteService implements Quotes {
     public PageResponse<Row> list(CurrentUser user, Criteria criteria) {
         Optional<UUID> own = portalCustomer(user);
         Instant now = clock.instant();
-        var page = search.search(new QuoteSearch.Criteria(own.orElse(criteria.customerId()), criteria.statuses(),
+        // The customer meets a revision being written as the quote they asked to change (Quote#revisingSentQuote):
+        // listed under CHANGES_REQUESTED, at the revision they were last sent. Only sent quotes reach them, so a first
+        // draft is not added by asking for CHANGES_REQUESTED.
+        List<QuoteStatus> statuses = criteria.statuses();
+        if (own.isPresent() && statuses != null && statuses.contains(QuoteStatus.CHANGES_REQUESTED)
+                && !statuses.contains(QuoteStatus.DRAFT)) {
+            statuses = new ArrayList<>(statuses);
+            statuses.add(QuoteStatus.DRAFT);
+        }
+        var page = search.search(new QuoteSearch.Criteria(own.orElse(criteria.customerId()), statuses,
                 criteria.search(), own.isPresent(), now), Pages.of(criteria.page(), criteria.size(),
                 SORT.parse(criteria.sort())));
-        return Pages.toResponse(page.map(r -> new Row(r.id(), r.quoteNumber(), r.customerId(),
-                r.status() == QuoteStatus.SENT && !now.isBefore(r.validUntil()) ? QuoteStatus.EXPIRED : r.status(),
-                r.revision(), r.validUntil(), r.sentAt(), r.convertedOrderId(), r.createdAt(),
-                r.version())));
+        return Pages.toResponse(page.map(r -> {
+            boolean revising = own.isPresent() && r.status() == QuoteStatus.DRAFT && r.sentAt() != null;
+            QuoteStatus status = revising ? QuoteStatus.CHANGES_REQUESTED
+                    : r.status() == QuoteStatus.SENT && !now.isBefore(r.validUntil()) ? QuoteStatus.EXPIRED : r.status();
+            return new Row(r.id(), r.quoteNumber(), r.customerId(), status, revising ? r.revision() - 1 : r.revision(),
+                    revising ? lastSentValidUntil(r.id()).orElse(r.validUntil()) : r.validUntil(), r.sentAt(),
+                    r.convertedOrderId(), r.createdAt(), r.version());
+        }));
     }
 
     @Override
@@ -377,8 +390,21 @@ class QuoteService implements Quotes {
                     quote.quoteNumber(), quote.cancellationReason()))
                     .localized("refusal.quote.withdrawn", quote.quoteNumber(), quote.cancellationReason());
         }
+        // Shown to the customer as the offer they asked to change (Quote#revisingSentQuote): nothing to answer until
+        // the new revision is sent - said as such, before any check reads the draft's lines.
+        if (quote.revisingSentQuote()) {
+            throw new BusinessException(ErrorCode.INVALID_QUOTE_TRANSITION, "Quote %s is being revised".formatted(
+                    quote.quoteNumber())).localized("refusal.quote.beingRevised", quote.quoteNumber());
+        }
         requireVersion(quote, version);
         return quote;
+    }
+
+    /** The validity of the offer last sent, as its SENT history row kept it: what a revising quote is listed with. */
+    private Optional<Instant> lastSentValidUntil(UUID quoteId) {
+        Optional<QuoteSearch.Transition> lastSent = search.history(quoteId).stream()
+                .filter(t -> t.toStatus() == QuoteStatus.SENT && t.offer() != null).reduce((first, last) -> last);
+        return lastSent.flatMap(sent -> quotes.findById(quoteId).map(q -> sentOffer(q, sent.offer()).validUntil()));
     }
 
     private Quote lockVisible(CurrentUser user, UUID quoteId) {
@@ -433,7 +459,7 @@ class QuoteService implements Quotes {
         if (!"ACTIVE".equals(status)) {
             throw new BusinessException(ErrorCode.CUSTOMER_NOT_ACTIVE,
                     "Customer " + customerId + " is " + status + "; quotes are for ACTIVE customers (BR-ORD-007)")
-                    .localized("refusal.quote.customerNotActive", status);
+                    .localized("refusal.quote.customerNotActive", new com.stockflow.common.i18n.Label("CustomerStatus", status));
         }
     }
 
@@ -820,9 +846,23 @@ class QuoteService implements Quotes {
                 .map(t -> t.fromStatus() == QuoteStatus.DRAFT).orElse(false);
         Optional<QuoteSearch.Transition> lastSent = rows.stream()
                 .filter(t -> t.toStatus() == QuoteStatus.SENT && t.offer() != null).reduce((first, last) -> last);
-        if (neverOffered && lastSent.isPresent()) {
+        // A revision being written is not shown either: the customer keeps the offer they asked to change, as asked.
+        boolean revising = forCustomer && quote.revisingSentQuote();
+        if ((neverOffered || revising) && lastSent.isPresent()) {
             offer = sentOffer(quote, lastSent.get().offer());
             revision = lastSent.get().revision();
+        }
+        QuoteStatus shownStatus = quote.statusAt(now);
+        String shownFeedback = quote.customerFeedback();
+        Instant shownRespondedAt = quote.respondedAt();
+        UUID shownRespondedBy = quote.respondedBy();
+        if (revising) {
+            Optional<QuoteSearch.Transition> asked = rows.stream()
+                    .filter(t -> t.toStatus() == QuoteStatus.CHANGES_REQUESTED).reduce((first, last) -> last);
+            shownStatus = QuoteStatus.CHANGES_REQUESTED;
+            shownFeedback = asked.map(QuoteSearch.Transition::reason).orElse(null);
+            shownRespondedAt = asked.map(QuoteSearch.Transition::changedAt).orElse(null);
+            shownRespondedBy = asked.map(QuoteSearch.Transition::changedBy).orElse(null);
         }
         boolean priced = offer.priced();
         boolean accepted = !offer.lines().isEmpty() && offer.lines().stream().allMatch(l -> l.acceptedQuantity() != null);
@@ -869,12 +909,12 @@ class QuoteService implements Quotes {
                 .filter(o -> !forCustomer || o.status() != com.stockflow.order.api.OrderStatus.DRAFT)
                 .map(o -> new ConvertedOrder(o.orderId(), o.orderNumber(), o.status(), o.total().amount()))
                 .orElse(null);
-        return new QuoteView(quote.id(), quote.quoteNumber(), quote.customerId(), quote.statusAt(now), revision,
+        return new QuoteView(quote.id(), quote.quoteNumber(), quote.customerId(), shownStatus, revision,
                 offer.validUntil(), offer.terms(),
                 offer.requestedDeliveryDate(), offer.legacy(), lines, fees, priced, proposedView, acceptedView,
                 proposedView.total(),
                 acceptedView == null ? null : acceptedView.total(),
-                quote.sentAt(), quote.sentBy(), quote.respondedAt(), quote.respondedBy(), quote.customerFeedback(),
+                quote.sentAt(), quote.sentBy(), shownRespondedAt, shownRespondedBy, shownFeedback,
                 quote.cancellationReason(), converted, quote.convertedAt(), history, row.createdAt(), row.createdBy(),
                 row.version());
     }

@@ -88,6 +88,8 @@ public class Messages {
             if (labelled[i] instanceof Enum<?> constant) {
                 labelled[i] = get("label." + constant.getDeclaringClass().getSimpleName() + "." + constant.name(),
                         constant.name());
+            } else if (labelled[i] instanceof Label label) {
+                labelled[i] = get("label." + label.type() + "." + label.name(), label.name());
             }
         }
         return get(key, fallback, labelled);

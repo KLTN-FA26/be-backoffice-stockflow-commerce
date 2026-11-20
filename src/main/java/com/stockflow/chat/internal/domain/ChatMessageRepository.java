@@ -54,8 +54,8 @@ public interface ChatMessageRepository {
     /** The cards of {@code kind} about a document, in any conversation, the newest first. */
     List<ChatMessage> cardsAbout(ContextRef about, CardKind kind);
 
-    /** The cards of {@code kinds} still OPEN in the customer's conversations, the newest first. */
-    List<ChatMessage> openCardsOf(UUID customerId, Collection<CardKind> kinds);
+    /** The cards of {@code kinds} in one of {@code states}, in the customer's conversations, the newest first. */
+    List<ChatMessage> cardsOf(UUID customerId, Collection<CardKind> kinds, Collection<CardState> states);
 
     /** The cards of {@code kind} still OPEN in one conversation. */
     List<ChatMessage> openCardsIn(UUID conversationId, CardKind kind);

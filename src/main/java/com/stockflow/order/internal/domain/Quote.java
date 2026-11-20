@@ -425,10 +425,20 @@ public final class Quote {
 
     /**
      * Whether the customer has been shown this quote: everything once sent - an accepted quote Sales cancelled
-     * included, so the customer sees what became of it - but not a draft, nor one cancelled before it was sent.
+     * included, so the customer sees what became of it, and a revision Sales is writing after the customer asked for
+     * changes - but not a first draft, nor one cancelled before it was sent.
      */
     public boolean seenByCustomer() {
-        return status.seenByCustomer() || status == QuoteStatus.CANCELLED && sentAt != null;
+        return status.seenByCustomer() || (status == QuoteStatus.CANCELLED || status == QuoteStatus.DRAFT) && sentAt != null;
+    }
+
+    /**
+     * A revision Sales reopened after the customer asked for changes and has not sent yet (14 §4.1 step 4). The customer
+     * still has the quote: they see the offer they were last sent and their request, never the working draft, and
+     * answer nothing until the new revision is sent.
+     */
+    public boolean revisingSentQuote() {
+        return status == QuoteStatus.DRAFT && sentAt != null;
     }
     public UUID sentBy() { return sentBy; }
     public Instant respondedAt() { return respondedAt; }

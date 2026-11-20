@@ -368,7 +368,13 @@ public class InstallmentService {
                 .map(Installment::outstanding).reduce(BigDecimal.ZERO, BigDecimal::add);
         // What closures took off is no longer owed (4B-9, 15 §4.6 step 19).
         BigDecimal total = live.stream().map(Installment::owedAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal paid = live.stream().map(Installment::paidAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
+        // Every installment cancelled with its order: nothing is owed any more, but what the customer paid was paid -
+        // the order says so beside its refund, not "0 paid" (15 §5.2 skips cancelled installments for the status only).
+        // While something stays owed (a paid installment, a cancellation fee's shortfall), paid stays the live
+        // installments' own: the money collected on the cancelled ones went to the fee or to the refund (4B-9), and
+        // counting it here again would understate what is still owed (total - paid).
+        BigDecimal paid = (live.isEmpty() ? installments : live).stream().map(Installment::paidAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
         InstallmentStanding.ContractPaymentStatus status = live.isEmpty() ? null
                 : live.stream().allMatch(i -> i.status() == InstallmentStatus.PAID)
                 ? InstallmentStanding.ContractPaymentStatus.PAID

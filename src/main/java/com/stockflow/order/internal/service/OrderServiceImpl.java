@@ -92,6 +92,9 @@ import java.util.stream.Collectors;
 @Transactional
 class OrderServiceImpl implements OrderService, QuotedOrders {
 
+    private static final java.util.ResourceBundle VIETNAMESE = java.util.ResourceBundle.getBundle("i18n.messages",
+            java.util.Locale.forLanguageTag("vi"));
+
     private static final Logger log = LoggerFactory.getLogger(OrderServiceImpl.class);
 
     /** The days a coordinator filters by are Saigon days: "placed on the 8th" ends at 17:00 UTC. */
@@ -344,6 +347,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         CancellationRequest request = cancellationRequests.save(
                 CancellationRequest.open(order.id().value(), requestedBy, code, note, clock.instant()));
         log.info("Cancellation of order {} requested ({})", order.orderNumber(), code);
+        // 17 §4.8 step 28: Sales are told, not left to find it on the requests page.
+        events.publish(new com.stockflow.contracts.OrderCancellationRequested(request.id(), order.id().value(),
+                order.orderNumber().value(), String.valueOf(code), request.requestedAt()));
         return new CancellationOutcome(CancellationOutcome.Result.REQUESTED, request.id(), toSummary(order));
     }
 
@@ -357,6 +363,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         java.time.Instant now = clock.instant();
         order.cancel(command.reasonCode(), command.note(), command.retainedPercent(), command.agreedFee(),
                 command.cancelledBy(), now);
+        resolveOpenHolds(order, command, now);
         // 17 §4.8 step 27: an order cancelled before its contract is signed takes the contract with it. A signed
         // contract stays SIGNED: it is settled outside the system (14 §5.2, decided 2026-11-05).
         contracts.findLiveByOrderId(order.id().value())
@@ -365,7 +372,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 .ifPresent(contract -> {
                     // Someone cancels an order that has a contract: Sales, accounting or the customer's approved
                     // request - never the system on its own, which would have no one to name on the contract.
-                    contract.cancel("Order cancelled: " + command.reasonCode(), clock.instant(),
+                    contract.cancel(cancelledWith(command.reasonCode()), clock.instant(),
                             java.util.Objects.requireNonNull(command.cancelledBy(),
                                     "an order with a contract is cancelled by someone"));
                     contracts.save(contract);
@@ -384,6 +391,43 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         // would forge log lines (CodeQL java/log-injection).
         log.info("Cancelled order {} ({})", order.orderNumber(), order.cancellationReasonCode());
         return saved;
+    }
+
+    /**
+     * Why a contract or a hold closed with its order, as Sales and the customer read it on a Vietnamese screen: "Huỷ cùng
+     * đơn hàng: Khách yêu cầu", not "Order cancelled: CUSTOMER_REQUEST". From the Vietnamese bundle whatever the
+     * caller's language, as the contract itself is a Vietnamese document.
+     */
+    static String cancelledWith(com.stockflow.order.api.CancellationReasonCode code) {
+        String name = String.valueOf(code);
+        String key = "label.CancellationReasonCode." + name;
+        String reason = VIETNAMESE.containsKey(key) ? VIETNAMESE.getString(key) : name;
+        return java.text.MessageFormat.format(VIETNAMESE.getString("order.cancelledWith"), reason);
+    }
+
+    /**
+     * A held order cancelled leaves no hold open behind it: a credit hold Sales cancel instead of accounting deciding it
+     * (17 §5.1 lets Sales cancel an order on hold) is closed on record by whoever cancelled, with the reason - the trail
+     * then says the hold ended with the order, not that it is still waiting for a decision (15 §4.3: every decision is
+     * kept). Accounting's own refusal and Sales' delivery-failure decision resolve their row before they cancel, so
+     * nothing is left here for them. A cancellation nobody is named for (the system's) cannot be signed on the row
+     * (ck_order_hold_resolution) and leaves it as it is.
+     */
+    private void resolveOpenHolds(Order order, CancelOrderCommand command, java.time.Instant at) {
+        if (command.cancelledBy() == null) {
+            return;
+        }
+        String note = cancelledWith(command.reasonCode())
+                + (command.note() == null || command.note().isBlank() ? "" : " - " + command.note().trim());
+        for (int i = 0; i < 20; i++) {
+            var open = holds.findFirstByOrderIdAndResolvedAtIsNullOrderByRaisedAtDesc(order.id().value());
+            if (open.isEmpty()) {
+                return;
+            }
+            OrderHoldJpaEntity hold = open.get();
+            hold.resolve(command.cancelledBy(), note.length() > 1000 ? note.substring(0, 1000) : note, at);
+            holds.save(hold);
+        }
     }
 
     /**
