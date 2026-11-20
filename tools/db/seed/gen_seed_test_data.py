@@ -1093,7 +1093,9 @@ class ProductionOrder:
             pl["received"] += n
         commit()
         confirmed = when + timedelta(hours=2)
-        upd("procurement.goods_receipts", gid, status="CONFIRMED", confirmed_at=confirmed, confirmed_by=manager)
+        # Confirming moves a receipt straight on to IN_PUTAWAY, as GoodsReceipt.confirm does: CONFIRMED is never
+        # stored (V20261213000100 took it out of ck_goods_receipts_status).
+        upd("procurement.goods_receipts", gid, status="IN_PUTAWAY", confirmed_at=confirmed, confirmed_by=manager)
         upd("ordering.production_order_receipt", {"goods_receipt_id": gid}, status="CONFIRMED", settled_at=confirmed)
         for pl in self.lines:
             lot = uid(f"lot:{self.id}:{pl['line']['sku']}")
