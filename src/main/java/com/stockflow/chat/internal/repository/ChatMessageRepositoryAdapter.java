@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.chat.internal.domain.Audience;
 import com.stockflow.chat.internal.domain.CardKind;
+import com.stockflow.chat.internal.domain.CardState;
 import com.stockflow.chat.internal.domain.ChatMessage;
 import com.stockflow.chat.internal.domain.ChatMessageRepository;
 import com.stockflow.chat.internal.domain.ContextRef;
@@ -182,17 +183,18 @@ class ChatMessageRepositoryAdapter implements ChatMessageRepository {
     }
 
     @Override
-    public List<ChatMessage> openCardsOf(UUID customerId, Collection<CardKind> kinds) {
-        if (kinds.isEmpty()) {
+    public List<ChatMessage> cardsOf(UUID customerId, Collection<CardKind> kinds, Collection<CardState> states) {
+        if (kinds.isEmpty() || states.isEmpty()) {
             return List.of();
         }
         @SuppressWarnings("unchecked")
         List<UUID> ids = entityManager.createNativeQuery("""
                         select m.id from chat.message m join chat.conversation c on c.id = m.conversation_id
-                         where c.customer_id = :customer and m.card_state = 'OPEN' and m.card_kind in (:kinds)
+                         where c.customer_id = :customer and m.card_state in (:states) and m.card_kind in (:kinds)
                          order by m.sent_at desc, m.id desc""")
                 .setParameter("customer", customerId)
-                .setParameter("kinds", kinds.stream().map(Enum::name).toList()).getResultList();
+                .setParameter("kinds", kinds.stream().map(Enum::name).toList())
+                .setParameter("states", states.stream().map(Enum::name).toList()).getResultList();
         return ordered(ids);
     }
 
