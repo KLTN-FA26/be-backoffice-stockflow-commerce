@@ -109,11 +109,18 @@ public final class OrderResources {
     public static final String PRODUCTION_SCHEDULE = "production-schedule";
 
     /**
-     * 4A-7 (17 §4.12 step 49): the delay flags of an order, for the order page - Sales, the Sales Manager and the
-     * warehouse manager; its holders who can see the order's shipping warehouse are the ones told of DELIVERY_LATE
-     * (BR-30: not the Production Coordinator).
+     * 4A-7 (17 §4.12 step 49): the delay flags of an order, for the order page - Sales, the Sales Manager, the
+     * warehouse manager and (V20261209000400) the Production Coordinator. DELIVERY_LATE is listed only to holders of
+     * {@link #DELIVERY_DELAY_ALERTS} too.
      */
     public static final String DELAY_ALERTS = "delay-alerts";
+
+    /**
+     * Those who follow delivery (V20261209000400; 17 §3, BR-30): they see DELIVERY_LATE in the alert list, and its
+     * holders who can see the order's shipping warehouse are the ones told of it. Split from {@link #DELAY_ALERTS} so
+     * the Production Coordinator can read the production alerts without being told of late deliveries.
+     */
+    public static final String DELIVERY_DELAY_ALERTS = "delivery-delay-alerts";
 
     /**
      * Return requests (SCRUM-243, seeded by V20260903000100, UPDATE added by V20261101020000): CREATE opens one and adds

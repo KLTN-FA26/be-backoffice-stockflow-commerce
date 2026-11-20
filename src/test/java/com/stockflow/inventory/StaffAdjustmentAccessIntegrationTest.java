@@ -28,7 +28,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * V20261014001200: the warehouse staff, who may request an adjustment, may also read the adjustments,
- * but deciding one stays with the holder of {@code inventory-stock-adjustments:APPROVE}.
+ * but deciding one stays with the holder of {@code inventory-stock-adjustments:APPROVE}. V20261209000200: the Accountant
+ * reads them too (kltn-docs 20 §3) and neither requests nor decides one.
  */
 @SecuredIntegrationTest
 class StaffAdjustmentAccessIntegrationTest {
@@ -72,6 +73,24 @@ class StaffAdjustmentAccessIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"not mine to decide\"}"))
                 .andExpect(status().isForbidden());
     }
+
+    @Test
+    @DisplayName("V20261209000200 (kltn-docs 20 §3): the Accountant reads stock adjustments but cannot decide one, nor "
+            + "request one")
+    void accountantReadsButDoesNotDecide() throws Exception {
+        UUID accountant = UUID.randomUUID();
+        mvc.asRole(Role.ACCOUNTANT, accountant, get("/api/v1/inventory/adjustments"))
+                .andExpect(status().isOk());
+        mvc.asRole(Role.ACCOUNTANT, accountant, get("/api/v1/inventory/adjustments/" + UUID.randomUUID()))
+                .andExpect(status().isNotFound());
+        mvc.asRole(Role.ACCOUNTANT, accountant, post("/api/v1/inventory/adjustments/" + UUID.randomUUID() + "/approval"))
+                .andExpect(status().isForbidden());
+        mvc.asRole(Role.ACCOUNTANT, accountant, post("/api/v1/inventory/adjustments")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"lpn\":\"LPN-20991231-000001\",\"direction\":\"WRITE_OFF\",\"reason\":\"DAMAGED\"}"))
+                .andExpect(status().isForbidden());
+    }
+
     @Test
     @DisplayName("4A-8: an adjustment for SUBCONTRACT_LOSS is refused, 400 VALIDATION_FAILED: subcontracting is gone")
     void subcontractLossIsRefused() throws Exception {

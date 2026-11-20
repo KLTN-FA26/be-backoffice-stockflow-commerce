@@ -626,6 +626,11 @@ class ProductionScheduleIntegrationTest {
         assertThat(messages(salesUser, late)).isEqualTo(1);
         assertThat(asSales(() -> alerts.list(orderId, null, true, 0, 50).items())).extracting(AlertView::type)
                 .containsExactlyInAnyOrder(DelayAlertType.DELIVERY_LATE, DelayAlertType.PO_NEEDED);
+        // V20261209000400 (17 §3, BR-30): the list leaves DELIVERY_LATE out for a reader who does not follow delivery.
+        assertThat(asSales(() -> alerts.list(orderId, null, false, true, 0, 50).items())).extracting(AlertView::type)
+                .as("without DELIVERY_LATE").containsExactly(DelayAlertType.PO_NEEDED);
+        assertThat(asSales(() -> alerts.list(orderId, DelayAlertType.DELIVERY_LATE, false, true, 0, 50).items()))
+                .as("asked for by type, still left out").isEmpty();
 
         assertThatThrownBy(() -> sql("""
                 INSERT INTO ordering.delay_alert (id, type, delivery_batch_id, sales_order_id, opened_at)
@@ -652,7 +657,10 @@ class ProductionScheduleIntegrationTest {
                 "SALES_STAFF", "SYSTEM_ADMIN", "WAREHOUSE_MANAGER");
         assertThat(holders("production-schedule:VIEW_PAGE")).containsExactly("PRODUCTION_COORDINATOR",
                 "SALES_MANAGER", "SALES_STAFF", "SYSTEM_ADMIN", "WAREHOUSE_MANAGER");
-        assertThat(holders("delay-alerts:READ")).as("BR-30: DELIVERY_LATE is not the coordinator's")
+        assertThat(holders("delay-alerts:READ")).as("V20261209000400: the coordinator reads the alerts too (17 §3)")
+                .containsExactly("PRODUCTION_COORDINATOR", "SALES_MANAGER", "SALES_STAFF", "SYSTEM_ADMIN",
+                        "WAREHOUSE_MANAGER");
+        assertThat(holders("delivery-delay-alerts:READ")).as("BR-30: DELIVERY_LATE is not the coordinator's")
                 .containsExactly("SALES_MANAGER", "SALES_STAFF", "SYSTEM_ADMIN", "WAREHOUSE_MANAGER");
     }
 

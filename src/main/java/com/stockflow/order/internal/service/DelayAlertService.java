@@ -296,13 +296,29 @@ public class DelayAlertService {
 
     /**
      * Alerts for the order page and the list (step 49), newest first; a warehouse-bound caller sees those whose
-     * warehouse is one of theirs.
+     * warehouse is one of theirs. Every type, for a caller who follows delivery too.
      */
     @Transactional(readOnly = true)
     public PageResponse<ProductionScheduleQuery.AlertView> list(UUID salesOrderId, DelayAlertType type,
                                                                 boolean openOnly, int page, int size) {
+        return list(salesOrderId, type, true, openOnly, page, size);
+    }
+
+    /**
+     * As {@link #list(UUID, DelayAlertType, boolean, int, int)}, leaving out {@code DELIVERY_LATE} unless
+     * {@code withDeliveryLate}: 17 §3 and BR-30 give the Production Coordinator every alert but the delivery one, which
+     * is for those who deliver. Asking for that type alone without it finds nothing.
+     */
+    @Transactional(readOnly = true)
+    public PageResponse<ProductionScheduleQuery.AlertView> list(UUID salesOrderId, DelayAlertType type,
+                                                                boolean withDeliveryLate, boolean openOnly, int page,
+                                                                int size) {
+        EnumSet<DelayAlertType> types = type == null ? EnumSet.allOf(DelayAlertType.class) : EnumSet.of(type);
+        if (!withDeliveryLate) {
+            types.remove(DelayAlertType.DELIVERY_LATE);
+        }
         Pageable pageable = Pages.of(page, size);
-        ProductionScheduleQuery.AlertPage found = query.alerts(salesOrderId, type, openOnly,
+        ProductionScheduleQuery.AlertPage found = query.alerts(salesOrderId, types, openOnly,
                 WarehouseScope.restriction().map(AssignedWarehouses::ids).orElse(null), pageable.getPageSize(),
                 pageable.getOffset());
         return PageResponse.of(found.items(), page, size, found.total());
