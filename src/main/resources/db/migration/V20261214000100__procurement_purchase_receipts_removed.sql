@@ -6,6 +6,13 @@
 -- 1. Leftover purchase receipts, if a database kept one (none on a database rebuilt from the baseline, owner decision
 --    QD-1): their photos, lines and header. A stock package still pointing at such a line makes the foreign key refuse
 --    and the migration stop, which is the right failure.
+-- A lot a purchase receipt opened (origin GOODS_RECEIPT, fk_stock_lot_goods_receipt ON DELETE RESTRICT) would stop the
+-- delete below, and the next migration, which retires that origin, runs only after it. Such a lot is kept - stock rows and
+-- ledger lines name it - but is UNTRACED from here, naming no receipt: what the next migration does to every lot of the
+-- origin, done early for these. A lot of a production or return receipt keeps its origin until that migration.
+UPDATE inventory.stock_lot
+   SET origin_type = 'UNTRACED', goods_receipt_id = NULL, goods_receipt_number = NULL
+ WHERE goods_receipt_id IN (SELECT id FROM procurement.goods_receipts WHERE receipt_type = 'PURCHASE');
 -- The photos are append-only and the lines of a posted receipt are frozen (BR-05): those two triggers step aside for
 -- this clean-up and nothing else.
 ALTER TABLE procurement.goods_receipt_photos DISABLE TRIGGER tg_goods_receipt_photos_append_only;

@@ -76,6 +76,13 @@ class StockLotReceiptOriginMigrationUpgradeTest {
 
     private static void seed(Connection db) throws SQLException {
         RawSql.update(db, "SET session_replication_role = replica");
+        // The receipt the lot names is a real row, and a PRODUCTION one: V20261214000100 has already deleted every
+        // PURCHASE receipt (and turned the lots they opened UNTRACED), so a lot of the removed origin can only still name
+        // a receipt that migration leaves - a production receipt from before lots followed production orders.
+        RawSql.update(db, "INSERT INTO procurement.goods_receipts (id, receipt_number, receipt_type, "
+                + "production_order_id, warehouse_id, status, received_at, received_by, confirmed_at, confirmed_by, "
+                + "created_at) VALUES (?::uuid, 'GR-UPG-1', 'PRODUCTION', gen_random_uuid(), gen_random_uuid(), "
+                + "'IN_PUTAWAY', NOW(), gen_random_uuid(), NOW(), gen_random_uuid(), NOW())", RECEIPT);
         RawSql.update(db, "INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, "
                 + "goods_receipt_id, goods_receipt_number, created_at) VALUES (?::uuid, ?, 'UPG-LOT-1', NOW(), "
                 + "'GOODS_RECEIPT', ?::uuid, 'GR-UPG-1', NOW())", LOT, SKU, RECEIPT);
