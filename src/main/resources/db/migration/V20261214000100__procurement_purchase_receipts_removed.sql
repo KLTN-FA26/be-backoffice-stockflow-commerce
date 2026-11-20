@@ -28,6 +28,8 @@ ALTER TABLE procurement.goods_receipt_lines ENABLE TRIGGER tg_goods_receipt_line
 -- Nothing is stored CONFIRMED (the status was only ever passed through): move any such row on, as the confirm
 -- transaction would have.
 UPDATE procurement.goods_receipts SET status = 'IN_PUTAWAY' WHERE status = 'CONFIRMED';
+-- The row's deferred constraint triggers fire now: a table with pending trigger events cannot be altered below.
+SET CONSTRAINTS ALL IMMEDIATE;
 
 -- 2. The CHECKs say what is left.
 ALTER TABLE procurement.goods_receipts DROP CONSTRAINT ck_goods_receipts_type;
