@@ -123,18 +123,18 @@ class UomConversionHttpIntegrationTest {
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("defaultShipping"));
     }
 
-    /** The default purchase unit is gone; a client that still sends it is not refused, and the response omits it. */
+    /** The default purchase unit is gone; a client that still sends it is not refused, and the response says the constant (base: true). */
     @Test
     void defaultPurchaseInTheBodyIsIgnored() throws Exception {
         String body = create("CARTON", 50, null).replace("\"heightCm\":30", "\"heightCm\":30,\"defaultPurchase\":true");
         String created = mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.defaultPurchase").doesNotExist())
+                .andExpect(jsonPath("$.data.defaultPurchase").value(false))
                 .andReturn().getResponse().getContentAsString();
         String id = created.replaceAll(".*\"id\":\"([^\"]+)\".*", "$1");
         String put = update(0, "CARTON", 50, false).replace("\"active\":true", "\"active\":true,\"defaultPurchase\":true");
         mvc.perform(put(base + "/" + id).contentType(MediaType.APPLICATION_JSON).content(put))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.defaultPurchase").doesNotExist());
+                .andExpect(jsonPath("$.data.defaultPurchase").value(false));
     }
 }

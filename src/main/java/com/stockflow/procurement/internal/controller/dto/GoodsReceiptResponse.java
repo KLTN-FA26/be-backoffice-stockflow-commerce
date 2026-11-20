@@ -1,5 +1,6 @@
 package com.stockflow.procurement.internal.controller.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -55,6 +56,15 @@ public record GoodsReceiptResponse(UUID id, String number, UUID warehouseId, Str
      * unit that is not {@code base}; {@code factor} is what one carton of it holds.
      */
     public record Unit(String unitOfMeasure, int factor, boolean base, boolean active) {
+        /**
+         * Constant, kept for the FE until FE issue 220; removed with the gated Task 6. The default purchase unit is gone:
+         * this is {@code true} for the base unit and {@code false} otherwise, worked out here from {@code base}, never stored.
+         */
+        @Deprecated
+        @JsonProperty("defaultPurchase")
+        public boolean defaultPurchase() {
+            return base;
+        }
     }
 
     /**
