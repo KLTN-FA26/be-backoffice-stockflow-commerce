@@ -39,7 +39,7 @@ final class PaymentWebMapper {
         return new com.stockflow.payment.internal.controller.dto.OrderInstallmentsResponse(standing.orderId(),
                 first.orderNumber(), first.contractNumber(),
                 standing.paymentStatus() == null ? null : standing.paymentStatus().name(), standing.total(),
-                standing.paid(), standing.total().subtract(standing.paid()), standing.onSigningPaid(),
+                standing.paid(), standing.total().subtract(standing.paid()).max(java.math.BigDecimal.ZERO), standing.onSigningPaid(),
                 standing.beforeDeliveryUnpaid(), standing.dueBeforeHandover(), first.currency(),
                 o.installments().stream().map(i -> toResponse(i, null, today, labels)).toList());
     }

@@ -194,8 +194,8 @@ class OrderThroughContractIntegrationTest {
         asSales(() -> contracts.cancel(sales, orderId, sent.version(), "The customer wants another window"));
         assertThat(status(orderId)).as("14 §4.3 step 16: drawn up again").isEqualTo(OrderStatus.DRAFT);
         assertThat(jdbc.queryForObject("SELECT status FROM ordering.order_cancellation_request WHERE id = ?",
-                String.class, asked.requestId())).as("out of the customer's sight: the request closes")
-                .isEqualTo("EXPIRED");
+                String.class, asked.requestId())).as("17 §4.8 step 28: the order can still be cancelled, so the "
+                + "customer's request waits for Sales' decision").isEqualTo("PENDING");
         assertThat(jdbc.queryForObject("SELECT string_agg(to_status, '>' ORDER BY occurred_at, id) FROM "
                 + "ordering.order_status_history WHERE order_id = ?", String.class, orderId))
                 .contains("PENDING_CONTRACT").endsWith("DRAFT");
@@ -268,7 +268,7 @@ class OrderThroughContractIntegrationTest {
                 CancellationReasonCode.CUSTOMER_REQUEST, "agreed with the customer", null, sales.userId())));
         assertThat(status(orderId)).isEqualTo(OrderStatus.CANCELLED);
         assertThat(jdbc.queryForObject("SELECT status || ':' || cancellation_reason FROM ordering.sales_contract WHERE "
-                + "order_id = ?", String.class, orderId)).isEqualTo("CANCELLED:Order cancelled: CUSTOMER_REQUEST");
+                + "order_id = ?", String.class, orderId)).as("the reason as the Vietnamese contract history reads it").isEqualTo("CANCELLED:Huỷ cùng đơn hàng: Khách yêu cầu");
         assertThatThrownBy(() -> asSales(() -> contracts.get(orderId)))
                 .extracting(OrderThroughContractIntegrationTest::code).isEqualTo(ErrorCode.SALES_CONTRACT_NOT_FOUND);
     }

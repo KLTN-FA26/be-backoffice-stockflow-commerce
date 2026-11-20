@@ -272,7 +272,9 @@ public class DesignQuoteRequestService {
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         if (!"ACTIVE".equals(customer.status())) {
             throw new BusinessException(ErrorCode.CUSTOMER_NOT_ACTIVE,
-                    "The customer is " + customer.status() + "; only an active customer asks for a quote").localized("refusal.design.customerNotActive", customer.status());
+                    "The customer is " + customer.status() + "; only an active customer asks for a quote")
+                    .localized("refusal.design.customerNotActive",
+                            new com.stockflow.common.i18n.Label("CustomerStatus", customer.status()));
         }
     }
 

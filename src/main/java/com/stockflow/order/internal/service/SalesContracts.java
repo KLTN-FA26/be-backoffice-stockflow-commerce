@@ -175,6 +175,9 @@ public interface SalesContracts {
      */
     ContractView customerContract(UUID customerId, UUID orderId);
 
-    /** A link to the PDF the customer was sent, or to the signed file once signed. */
-    DownloadLink customerDocument(UUID customerId, UUID orderId);
+    /**
+     * A link to the PDF the customer was sent, or to the signed file once signed; {@code sentCopy} asks for the PDF that
+     * was sent even after signing (17 §5.2: "bản gửi ký / bản đã ký").
+     */
+    DownloadLink customerDocument(UUID customerId, UUID orderId, boolean sentCopy);
 }

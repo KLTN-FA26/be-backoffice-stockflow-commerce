@@ -2,8 +2,10 @@ package com.stockflow.order;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.security.DataScope;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.SaveCreditTermsCommand;
+import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderService;
@@ -15,6 +17,8 @@ import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.TestUsers;
+import com.stockflow.support.WithCurrentUser;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -159,6 +163,27 @@ class CreditHoldIntegrationTest {
                 .isEqualByComparingTo("0");
         assertThat(codeOf(catchThrowable(() -> credit.refuse(held, "again", accountant))))
                 .isEqualTo(ErrorCode.ORDER_NOT_ON_CREDIT_HOLD);
+    }
+
+    @Test
+    @DisplayName("Sales cancel an order held for credit: the hold is closed on record, by them, with the reason")
+    void cancelledWhileHeldClosesTheHold() {
+        creditLimit("1000000");
+        UUID held = signedOnCredit();
+        assertThat(status(held)).isEqualTo(OrderStatus.ON_HOLD);
+        UUID sales = tx.execute(s -> ReferenceRows.user(entityManager));
+
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(held,
+                new CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST, "khách rút đơn", null, sales)));
+
+        assertThat(status(held)).isEqualTo(OrderStatus.CANCELLED);
+        var rows = jdbc.queryForList("""
+                SELECT reason, resolved_by, resolution_note FROM ordering.order_hold WHERE order_id = ?""", held);
+        assertThat(rows).isNotEmpty().allSatisfy(row -> {
+            assertThat(row.get("resolved_by")).as("no hold left waiting for a decision").isEqualTo(sales);
+            assertThat((String) row.get("resolution_note")).isEqualTo("Huỷ cùng đơn hàng: Khách yêu cầu - khách rút đơn");
+        });
+        assertThat(credit.heldOrders(0, 200).items()).doesNotContain(held);
     }
 
     @Test

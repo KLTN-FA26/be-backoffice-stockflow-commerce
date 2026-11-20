@@ -135,13 +135,15 @@ class PaymentScheduleService implements PaymentSchedules {
     }
 
     /**
-     * No schedule set: everything on signing. Never credit - that is a schedule accounting approves (15 BR-12). Until
+     * No schedule set: everything on signing, due within {@link DefaultPaymentSchedule#DEFAULT_ON_SIGNING_DUE_DAYS}
+     * days. Never credit - that is a schedule accounting approves (15 BR-12). Until
      * 4B-10 a deposit customer's terms gave the deposit share on signing and the rest before delivery; customers have
      * no payment terms of their own any more.
      */
     static DefaultPaymentSchedule unset(UUID customerId) {
         return new DefaultPaymentSchedule(customerId, false, List.of(new DefaultPaymentSchedule.Installment(1,
-                ON_SIGNING, HUNDRED, PaymentMilestone.ON_SIGNING, 0)), null, null, null, null, null, -1L);
+                ON_SIGNING, HUNDRED, PaymentMilestone.ON_SIGNING, DefaultPaymentSchedule.DEFAULT_ON_SIGNING_DUE_DAYS)),
+                null, null, null, null, null, -1L);
     }
 
     static DefaultPaymentSchedule view(PaymentSchedule s) {
