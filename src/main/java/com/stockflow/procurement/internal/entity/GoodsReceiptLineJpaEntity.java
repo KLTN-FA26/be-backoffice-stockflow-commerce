@@ -23,7 +23,8 @@ import java.util.UUID;
  * <p>{@code uom_conversion_id}: the packing unit the line's cartons are in - a production line counts whole cartons
  * of its standard count (kltn-docs 03 BR-12, BR-13). Recounted with the rest while DRAFT;
  * {@code tg_goods_receipt_lines_unit} checks it is a unit of the line's item. It and {@code lot_number} are NOT NULL
- * since {@code V20261113000200}: no line is counted loose or without a lot any more,.</p>
+ * since {@code V20261113000200}: no line is counted loose or without a lot any more,
+ * and a line always names the production order line it counts.</p>
  */
 @Entity
 @Table(name = "goods_receipt_lines", schema = "procurement")

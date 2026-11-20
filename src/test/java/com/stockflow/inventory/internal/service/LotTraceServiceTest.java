@@ -51,8 +51,9 @@ class LotTraceServiceTest {
     }
 
     private static LotTrace.Summary summary() {
-        return new LotTrace.Summary(LOT, "INK-RED", "L1", NOW, "PRODUCTION_ORDER", null, 100, 60, 50,
-                10);
+        // A production order's lot: numbered with the order's code, naming the order (ck_stock_lot_production_order).
+        return new LotTrace.Summary(LOT, "INK-RED", "PRD-20261109-0001", NOW, "PRODUCTION_ORDER", null, 100, 60, 50,
+                10, UUID.randomUUID(), "PRD-20261109-0001");
     }
 
     private ArgumentCaptor<LotTraceSearch.Filter> lotsFiltered() {
@@ -189,7 +190,7 @@ class LotTraceServiceTest {
 
         LotTrace trace = service.trace(LOT, null, BookVisibility.FULL);
 
-        assertThat(trace.lot().lotNumber()).isEqualTo("L1");
+        assertThat(trace.lot().lotNumber()).isEqualTo("PRD-20261109-0001");
         assertThat(trace.balances()).containsExactly(balance);
     }
 
