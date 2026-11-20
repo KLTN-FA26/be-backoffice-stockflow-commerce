@@ -30,7 +30,9 @@ class ProductionOrderSendMigrationUpgradeTest {
             try (Connection db = DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(),
                     postgres.getPassword())) {
                 // The demo seed has no production order short of SENT: a second one is drawn up for the batch of demo
-                // order SO-20261031-910010, a copy of the one it has, and submitted for approval the old way.
+                // order SO-…-910010, a copy of the one it has, and submitted for approval the old way. The order is
+                // found by its sequence suffix: the demo history dates its order numbers back from the day it is
+                // applied (V20261128000200), so the date part changes every day.
                 db.setAutoCommit(false);
                 RawSql.update(db, "INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, "
                         + "customer_id, producer_id, receiving_warehouse_id, need_by_date, status, "
@@ -39,7 +41,7 @@ class ProductionOrderSendMigrationUpgradeTest {
                         + "p.customer_id, p.producer_id, p.receiving_warehouse_id, p.need_by_date, 'DRAFT', FALSE, "
                         + "p.sample_required_by_default, p.sample_waiver_reason, p.drawn_up_by "
                         + "FROM ordering.production_order p JOIN ordering.customer_order o ON o.id = p.sales_order_id "
-                        + "WHERE o.order_number = 'SO-20261031-910010'");
+                        + "WHERE o.order_number LIKE 'SO-%-910010'");
                 RawSql.update(db, "INSERT INTO ordering.production_order_line (id, production_order_id, order_line_id, "
                         + "sku, cartons, units_per_carton, design_snapshot_id, print_file_checksum) "
                         + "SELECT gen_random_uuid(), md5('upgrade:po')::uuid, l.order_line_id, l.sku, 10, "
