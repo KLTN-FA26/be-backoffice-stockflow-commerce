@@ -5,6 +5,8 @@
 --
 --   A2  purchase receipts and the CONFIRMED status (V20261213000100): a receipt is PRODUCTION or RETURN, a line always
 --       names a production order line, and no receipt is stored CONFIRMED.
+--   A3  the lot origin GOODS_RECEIPT (V20261213000200): a lot is of a production order or UNTRACED; the columns that named
+--       a receipt are gone. A lot stored GOODS_RECEIPT before it is StockLotReceiptOriginMigrationUpgradeTest's.
 --
 -- The fixture follows 61_purchasing_removal.sql: a production order written with the row triggers off (its rules are
 -- 21_production_orders.sql's), a DRAFT receipt against it, registered with it.
@@ -132,5 +134,32 @@ SELECT pg_temp.expect_ok('A2.7 the draft posted (IN_PUTAWAY) and its registratio
            confirmed_by = md5('demo:user:editor')::uuid WHERE id = md5('qa96:gr')::uuid;
     UPDATE ordering.production_order_receipt SET status = 'CONFIRMED', settled_at = NOW()
      WHERE goods_receipt_id = md5('qa96:gr')::uuid $q$);
+
+-- ============================================================================= A3
+\echo '--- A3 a lot is of a production order or UNTRACED'
+SELECT pg_temp.expect_fail_like('A3.1 a GOODS_RECEIPT lot', 'ck_stock_lot_origin', $q$
+    INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type)
+    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 'LOT-QA96', NOW(), 'GOODS_RECEIPT') $q$);
+SELECT pg_temp.expect_fail_like('A3.2 a PRODUCTION_ORDER lot naming no production order', 'ck_stock_lot_production_order', $q$
+    INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type)
+    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 'PRD-20261109-9601', NOW(), 'PRODUCTION_ORDER') $q$);
+SELECT pg_temp.expect_fail_like('A3.3 an UNTRACED lot naming a production order', 'ck_stock_lot_production_order', $q$
+    INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, production_order_id, production_order_code)
+    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 'PRD-20261109-9601', NOW(), 'UNTRACED', md5('qa96:prod')::uuid,
+            'PRD-20261109-9601') $q$);
+SELECT pg_temp.expect_ok('A3.4 an UNTRACED lot still inserts', $q$
+    INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type)
+    VALUES (md5('qa96:lot:untraced')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'LOT-QA96', NOW(), 'UNTRACED') $q$);
+SELECT pg_temp.expect_ok('A3.5 the lot of the production order''s SKU, numbered with its code', $q$
+    INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, production_order_id, production_order_code)
+    VALUES (md5('qa96:lot:prod')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'PRD-20261109-9601', NOW(), 'PRODUCTION_ORDER',
+            md5('qa96:prod')::uuid, 'PRD-20261109-9601') $q$);
+SELECT pg_temp.expect_true('A3.6 the columns, the index and the CHECKs of the receipt origin are gone', $c$
+    NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory' AND table_name = 'stock_lot'
+                 AND column_name IN ('goods_receipt_id', 'goods_receipt_number'))
+    AND NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'inventory' AND indexname = 'uk_stock_lot_receipt')
+    AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname IN ('ck_stock_lot_receipt', 'ck_stock_lot_untraced',
+                                                                  'fk_stock_lot_goods_receipt'))
+    AND (SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'ck_stock_lot_origin') NOT LIKE '%GOODS_RECEIPT%' $c$);
 
 ROLLBACK;

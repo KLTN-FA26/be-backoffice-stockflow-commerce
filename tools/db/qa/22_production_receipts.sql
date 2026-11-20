@@ -293,11 +293,6 @@ SELECT pg_temp.expect_ok('PR33 the first draft posted, registered confirmed, the
      WHERE id = md5('PRD-20261109-2201:line')::uuid $q$);
 SELECT pg_temp.expect_fail('PR34 a posted line recounted (BR-05)', $q$
     UPDATE procurement.goods_receipt_lines SET received_qty = 150 WHERE id = md5('qa22:l1')::uuid $q$);
-SELECT pg_temp.expect_fail('PR35 a production order lot naming a goods receipt', $q$
-    INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, production_order_id,
-                                     production_order_code, goods_receipt_id, goods_receipt_number)
-    VALUES (md5('qa22:lot0')::uuid, 'QA-PRR-OWN', 'PRD-20261109-2201', NOW(), 'PRODUCTION_ORDER',
-            md5('qa22:po1')::uuid, 'PRD-20261109-2201', md5('qa22:gr1')::uuid, 'GR-QA22-1') $q$);
 SELECT pg_temp.expect_fail('PR36 a production order lot whose number is not the code (BR-03)', $q$
     INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, production_order_id,
                                      production_order_code)
@@ -328,23 +323,10 @@ SELECT pg_temp.expect_fail('PR41 a second lot of the same production order and S
                                      production_order_code)
     VALUES (md5('qa22:lot0')::uuid, 'QA-PRR-OWN', 'PRD-20261109-2201', NOW() + INTERVAL '1 day', 'PRODUCTION_ORDER',
             md5('qa22:po1')::uuid, 'PRD-20261109-2201') $q$);
-SELECT pg_temp.expect_fail('PR42 a goods receipt lot naming a production order', $q$
-    INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, goods_receipt_id,
-                                     goods_receipt_number, production_order_id, production_order_code)
-    VALUES (md5('qa22:lot0')::uuid, 'QA-PRR-OWN', 'PRD-20261109-2201', NOW(), 'GOODS_RECEIPT', md5('qa22:gr1')::uuid,
-            'GR-QA22-1', md5('qa22:po1')::uuid, 'PRD-20261109-2201') $q$);
 SELECT pg_temp.expect_fail('PR43 an untraced lot naming a production order', $q$
     INSERT INTO inventory.stock_lot (id, sku, lot_number, origin_type, production_order_id, production_order_code)
     VALUES (md5('qa22:lot0')::uuid, 'QA-PRR-OWN', 'PRD-20261109-2201', 'UNTRACED', md5('qa22:po1')::uuid,
             'PRD-20261109-2201') $q$);
-SELECT pg_temp.expect_ok('PR44 goods receipt lots keep their rule: one per receipt, SKU, lot and expiry', $q$
-    INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, goods_receipt_id,
-                                     goods_receipt_number)
-    VALUES (md5('qa22:lot2')::uuid, 'QA-PRR-BLANK', 'L1', NOW(), 'GOODS_RECEIPT', md5('qa22:gr1')::uuid, 'GR-QA22-1') $q$);
-SELECT pg_temp.expect_fail('PR45 the same goods receipt lot twice', $q$
-    INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, goods_receipt_id,
-                                     goods_receipt_number)
-    VALUES (md5('qa22:lot3')::uuid, 'QA-PRR-BLANK', 'L1', NOW(), 'GOODS_RECEIPT', md5('qa22:gr1')::uuid, 'GR-QA22-1') $q$);
 
 \echo '--- settled receipts leave the production order free (BR-10: short is closed by hand)'
 SELECT pg_temp.expect_ok('PR46 closed short once no receipt is a draft', $q$

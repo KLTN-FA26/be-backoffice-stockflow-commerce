@@ -125,7 +125,7 @@ SELECT pg_temp.expect_true('LT6 ... with the layer''s lot and the order''s numbe
     (SELECT m.lot_id = s.lot_id AND m.order_number = 'SO-QA-15'
        FROM inventory.stock_movement m, inventory.stock_item s
       WHERE m.id = md5('qa15:pick')::uuid AND s.id = md5('qa15:layer')::uuid));
-SELECT pg_temp.expect_fail('LT7 a receipt lot without its receipt', $q$
+SELECT pg_temp.expect_fail('LT7 a lot of the removed origin GOODS_RECEIPT (ck_stock_lot_origin; QA 96 names the rule)', $q$
     INSERT INTO inventory.stock_lot (id, sku, origin_type, received_at) VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH',
         'GOODS_RECEIPT', NOW()) $q$);
 SELECT pg_temp.expect_true('LT8 a lot counts as a use of its SKU (rename guard)',
