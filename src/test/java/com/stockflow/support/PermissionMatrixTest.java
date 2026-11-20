@@ -426,7 +426,10 @@ class PermissionMatrixTest {
             Map.entry("production-schedule:VIEW_PAGE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SALES_MANAGER,
                     Role.SALES_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("delay-alerts:READ", Set.of(Role.SALES_MANAGER, Role.SALES_STAFF, Role.WAREHOUSE_MANAGER,
-                    Role.SYSTEM_ADMIN)),
+                    Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            // V20261209000400 (17 §3, BR-30): DELIVERY_LATE is listed to, and told to, those who follow delivery.
+            Map.entry("delivery-delay-alerts:READ", Set.of(Role.SALES_MANAGER, Role.SALES_STAFF,
+                    Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // 4A-1, kltn-docs 17 §4.3 and 00 §2.1 (2026-11-07): the Production Coordinator keeps the producers.
             Map.entry("sales-producers:CREATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("sales-producers:UPDATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
@@ -436,8 +439,21 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-delivery-outcomes:APPROVE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("customer-status:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("catalog-storefront:READ", Set.of(Role.CUSTOMER, Role.SYSTEM_ADMIN)),
-            Map.entry("platform-actuator:READ", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
-            Map.entry("platform-actuator:UPDATE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // V20261209000100 (permission review 2026-11-20, A1; kltn-docs 00 §2.1): running the system is the System
+            // Admin's; the Sales Manager kept the actuator only because it reached it before the permission existed.
+            Map.entry("platform-actuator:READ", Set.of(Role.SYSTEM_ADMIN)),
+            Map.entry("platform-actuator:UPDATE", Set.of(Role.SYSTEM_ADMIN)),
+            // V20261209000200 (permission review 2026-11-20, A3; kltn-docs 20 §3): the Accountant reads the stock
+            // adjustments too; deciding one stays with the warehouse manager.
+            Map.entry("inventory-stock-adjustments:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("inventory-stock-adjustments:APPROVE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // V20261209000300 (permission review 2026-11-20, A2; kltn-docs 20 §3): the lot trace report is the
+            // warehouse's, Sales' (customer care) and the coordinator's; the ledger itself stays the warehouse's.
+            Map.entry("inventory-lot-traces:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.SALES_STAFF, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("inventory-stock-movements:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.SYSTEM_ADMIN)),
             Map.entry("sales-order-cancellations:READ", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             // F-13 (V20261124000300, kltn-docs 16 §2): the customer (its own, scope OWN) and Sales chat; the Sales
             // Manager supervises - assigns from the queue, takes escalations.

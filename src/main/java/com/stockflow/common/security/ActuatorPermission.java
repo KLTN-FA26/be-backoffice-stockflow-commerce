@@ -1,9 +1,10 @@
 package com.stockflow.common.security;
 
 /**
- * The permissions that open the operational actuator endpoints to a signed-in caller (V20261022000200, seeded for the
- * roles that reached them before: SALES_MANAGER and SYSTEM_ADMIN). {@code platform-actuator:READ} covers GET and HEAD
- * on every exposed endpoint - the aggregate health with its details ({@code management.endpoint.health.roles}),
+ * The permissions that open the operational actuator endpoints to a signed-in caller (V20261022000200 seeded them for
+ * the roles that reached them before, SALES_MANAGER and SYSTEM_ADMIN; V20261209000100 took them back from the Sales
+ * Manager, since running the system is the System Admin's, kltn-docs 00 §2.1). {@code platform-actuator:READ} covers
+ * GET and HEAD on every exposed endpoint - the aggregate health with its details ({@code management.endpoint.health.roles}),
  * metrics, Prometheus, the module map; {@code platform-actuator:UPDATE} covers every other method on any of them (a
  * {@code POST /actuator/loggers/...} the day loggers is exposed). The liveness and readiness probes and
  * {@code /actuator/info} stay anonymous on their own filter chain

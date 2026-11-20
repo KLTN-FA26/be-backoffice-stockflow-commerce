@@ -229,12 +229,20 @@ SELECT pg_temp.expect_true('DA22 the schedule: the coordinator, Sales, the Sales
     AND pg_temp.grants('WAREHOUSE_MANAGER', 'production-schedule:READ')
     AND NOT pg_temp.grants('WAREHOUSE_STAFF', 'production-schedule:READ')
     AND NOT pg_temp.grants('CUSTOMER', 'production-schedule:READ'));
-SELECT pg_temp.expect_true('DA23 the delay flags (and DELIVERY_LATE): Sales, the Sales Manager, the warehouse manager',
+-- V20261209000400 split the two jobs delay-alerts:READ had: reading the list (now the coordinator's too, 17 §3) and
+-- following late deliveries (delivery-delay-alerts:READ, still not the coordinator's, BR-30).
+SELECT pg_temp.expect_true('DA23 the delay flags: Sales, the Sales Manager, the warehouse manager, the coordinator; '
+        || 'DELIVERY_LATE: not the coordinator',
     pg_temp.grants('SALES_STAFF', 'delay-alerts:READ')
     AND pg_temp.grants('SALES_MANAGER', 'delay-alerts:READ')
     AND pg_temp.grants('WAREHOUSE_MANAGER', 'delay-alerts:READ')
-    AND NOT pg_temp.grants('PRODUCTION_COORDINATOR', 'delay-alerts:READ')
-    AND NOT pg_temp.grants('CUSTOMER', 'delay-alerts:READ'));
+    AND pg_temp.grants('PRODUCTION_COORDINATOR', 'delay-alerts:READ')
+    AND NOT pg_temp.grants('CUSTOMER', 'delay-alerts:READ')
+    AND pg_temp.grants('SALES_STAFF', 'delivery-delay-alerts:READ')
+    AND pg_temp.grants('SALES_MANAGER', 'delivery-delay-alerts:READ')
+    AND pg_temp.grants('WAREHOUSE_MANAGER', 'delivery-delay-alerts:READ')
+    AND NOT pg_temp.grants('PRODUCTION_COORDINATOR', 'delivery-delay-alerts:READ')
+    AND NOT pg_temp.grants('CUSTOMER', 'delivery-delay-alerts:READ'));
 SELECT pg_temp.expect_true('DA24 the warehouse manager is the only warehouse-bound reader of the schedule',
     (SELECT array_agg(r.code ORDER BY r.code) FROM identity.role_permission rp
        JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p ON p.id = rp.permission_id
