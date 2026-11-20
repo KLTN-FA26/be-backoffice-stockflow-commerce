@@ -129,11 +129,9 @@ SELECT pg_temp.expect_ok('DA0 a production order for batch 2, sent', $q$
     SELECT pg_temp.line(md5('qa35:po1')::uuid, 10, 'QA-SCH-OWN') $q$);
 SELECT pg_temp.expect_fail('DA1 an expected completion day on a draft', $q$
     UPDATE ordering.production_order SET expected_completion_date = CURRENT_DATE WHERE id = md5('qa35:po1')::uuid $q$);
-SELECT pg_temp.expect_ok('DA1a submitted and approved, so sent', $q$
-    UPDATE ordering.production_order SET status = 'PENDING_APPROVAL', submitted_at = NOW()
-     WHERE id = md5('qa35:po1')::uuid;
-    UPDATE ordering.production_order SET status = 'SENT', approved_by = md5('demo:user:approver')::uuid,
-           approved_at = NOW(), sent_at = NOW() WHERE id = md5('qa35:po1')::uuid $q$);
+SELECT pg_temp.expect_ok('DA1a sent by the coordinator', $q$
+    UPDATE ordering.production_order SET status = 'SENT', sent_by = md5('demo:user:editor')::uuid, sent_at = NOW()
+     WHERE id = md5('qa35:po1')::uuid $q$);
 SELECT pg_temp.expect_fail('DA2 an expected completion day while only sent', $q$
     UPDATE ordering.production_order SET expected_completion_date = CURRENT_DATE WHERE id = md5('qa35:po1')::uuid $q$);
 SELECT pg_temp.expect_ok('DA3 accepted with the producer''s day, and the day moved later', $q$
