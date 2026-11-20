@@ -88,9 +88,9 @@ INSERT INTO product.variants (id, product_id, sku, name, status, is_default, att
 SELECT md5('qa93:own')::uuid, md5('qa93:product')::uuid, 'QA-DF-OWN', 'QA ly in logo', 'ACTIVE', FALSE,
        'OWNED-SKU:QA-DF-OWN', 1, 0, NOW(), c.id, md5('qa93:snap')::uuid, md5('qa93:blank')::uuid
   FROM qa93_customer c WHERE c.n = 1;
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, default_purchase, active,
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, active,
                                        version, created_at, default_shipping)
-SELECT md5('qa93:carton')::uuid, i.id, 'CARTON', 50, FALSE, FALSE, TRUE, 0, NOW(), TRUE
+SELECT md5('qa93:carton')::uuid, i.id, 'CARTON', 50, FALSE, TRUE, 0, NOW(), TRUE
   FROM inventory.inventory_items i WHERE i.sku = 'QA-DF-OWN';
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
                                      currency, placed_at, created_at)

@@ -48,7 +48,7 @@ class ItemSpecificationsImpl implements ItemSpecifications {
                 continue;
             }
             units.add(target, new UomConversionDraft(unit.unitOfMeasure(), unit.factor(), unit.weightKg(),
-                    unit.lengthCm(), unit.widthCm(), unit.heightCm(), unit.defaultPurchase(), true,
+                    unit.lengthCm(), unit.widthCm(), unit.heightCm(), true,
                     unit.defaultShipping()));
         }
         // A SKU shipped in its base unit carries the shipping mark there; only the marks change on a base unit.
@@ -56,7 +56,7 @@ class ItemSpecificationsImpl implements ItemSpecifications {
             UomConversion targetBase = units.baseUnit(target);
             units.change(target, targetBase.id(), targetBase.version(), new UomConversionDraft(
                     targetBase.unitOfMeasure(), 1, targetBase.weightKg(), targetBase.lengthCm(), targetBase.widthCm(),
-                    targetBase.heightCm(), targetBase.defaultPurchase(), true, true));
+                    targetBase.heightCm(), true, true));
         });
     }
 

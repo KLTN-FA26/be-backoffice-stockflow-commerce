@@ -232,7 +232,7 @@ class DesignStudioEndToEndTest {
         var config = printConfigs.byId(UUID.fromString(template.get("templateId").asText())).orElseThrow();
         surface = PrintSurface.of(config.model(), config.printAreas().get(0));
         units.add(new Sku(sku), new UomConversionDraft("CARTON", 50, new BigDecimal("4.2"), new BigDecimal("60"),
-                new BigDecimal("40"), new BigDecimal("35"), false, true, true));
+                new BigDecimal("40"), new BigDecimal("35"), true, true));
 
         // The customer starts a design.
         String taxCode = Long.toString(java.util.concurrent.ThreadLocalRandom.current().nextLong(1_000_000_000L,

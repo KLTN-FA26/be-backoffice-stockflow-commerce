@@ -780,8 +780,6 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                         .map(ReceiptLine::productionOrderLineId).filter(Objects::nonNull).toList(), receipt.id());
         List<LineView> lines = receipt.lines().stream().map(line -> {
             InventoryItemPolicy item = items.get(line.inventoryItemId());
-            // No expiry warning: there is no expiry (kltn-docs 01 BR-17, 03 BR-06; team plan 5-1).
-            List<String> lineWarnings = new ArrayList<>();
             List<PackageView> packages = cartons.getOrDefault(line.id(), List.of()).stream()
                     .map(c -> new PackageView(c.id(), c.lpn(), c.quantity() == null ? 0 : c.quantity(),
                             c.receivedQty() == null ? 0 : c.receivedQty(), c.nominalQty(), c.status(),
@@ -792,27 +790,23 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             int inCartons = packages.stream().mapToInt(PackageView::receivedQty).sum();
             return new LineView(line.id(), line.inventoryItemId(), item == null ? null : item.sku(),
                     line.receivedQuantity(), line.lotNumber(), code(where, line.locationId()), line.note(),
-                    // Every SKU is lot-tracked (01 BR-17, team plan 5-5): kept on the line for the form, always true.
-                    true,
-                    line.receivedQuantity(), lineWarnings,
+                    line.receivedQuantity(),
                     line.uomConversionId() == null ? null : unitCodes.get(line.uomConversionId()),
                     line.receivedQuantity() - inCartons, packages,
                     item == null ? List.of() : unitsBySku.getOrDefault(item.sku(), List.of()).stream()
-                            .map(u -> new UnitView(u.unitOfMeasure(), u.factor(), u.base(), u.active(),
-                                    u.defaultPurchase()))
+                            .map(u -> new UnitView(u.unitOfMeasure(), u.factor(), u.base(), u.active()))
                             .toList(),
                     line.productionOrderLineId(), production == null || line.productionOrderLineId() == null ? null
                             : production.line(line.productionOrderLineId())
                             .map(ordered -> progress(ordered, line, pending,
                                     elsewhere.getOrDefault(ordered.id(), 0))).orElse(null));
         }).toList();
-        List<String> warnings = new ArrayList<>();
         var warehouse = warehouses.findWarehouse(receipt.warehouseId());
         return new ReceiptView(receipt.id(), receipt.number(), receipt.warehouseId(),
                 warehouse.map(WarehouseView::prefix).orElse(null), warehouse.map(WarehouseView::name).orElse(null),
                 receipt.status(), receipt.deliveryNote(), receipt.note(), receipt.receivedAt(), receipt.receivedBy(),
                 names.get(receipt.receivedBy()), receipt.confirmedAt(), receipt.confirmedBy(),
-                names.get(receipt.confirmedBy()), receipt.closedAt(), lines, warnings, GoodsReceiptType.PRODUCTION,
+                names.get(receipt.confirmedBy()), receipt.closedAt(), lines, GoodsReceiptType.PRODUCTION,
                 receipt.productionOrderId(), production == null ? null : production.code(),
                 production == null ? null : production.status(), production == null ? null : production.producerId(),
                 production == null ? null : production.producerName());

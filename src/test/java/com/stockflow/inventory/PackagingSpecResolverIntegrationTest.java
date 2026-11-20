@@ -73,7 +73,7 @@ class PackagingSpecResolverIntegrationTest {
 
     private static UomConversionDraft pack(String code, int factor, String weight, boolean shipping) {
         return new UomConversionDraft(code, factor, new BigDecimal(weight), new BigDecimal("50"),
-                new BigDecimal("40"), new BigDecimal("30"), false, true, shipping);
+                new BigDecimal("40"), new BigDecimal("30"), true, shipping);
     }
 
     private List<String> flagged() {
@@ -111,11 +111,10 @@ class PackagingSpecResolverIntegrationTest {
     }
 
     @Test
-    void unmarkingLeavesTheItemWithoutOneAndKeepsThePurchaseMark() {
+    void unmarkingLeavesTheItemWithoutOne() {
         UomConversion box = units.add(sku, pack("BOX", 10, "5", true));
         units.change(sku, box.id(), box.version(), pack("BOX", 10, "5", false));
         assertThat(flagged()).isEmpty();
-        assertThat(base().defaultPurchase()).isTrue();
     }
 
     @Test
@@ -123,7 +122,7 @@ class PackagingSpecResolverIntegrationTest {
         UomConversion box = units.add(sku, pack("BOX", 10, "5", true));
         UomConversion base = base();
         UomConversion marked = units.change(sku, base.id(), base.version(),
-                new UomConversionDraft("IGNORED", 1, null, null, null, null, true, true, true));
+                new UomConversionDraft("IGNORED", 1, null, null, null, null, true, true));
         assertThat(marked.defaultShipping()).isTrue();
         assertThat(flagged()).containsExactly("EACH");
         assertThat(units.conversion(sku, box.id()).defaultShipping()).isFalse();
@@ -133,7 +132,7 @@ class PackagingSpecResolverIntegrationTest {
     void aRetiredUnitCannotCarryTheMark() {
         UomConversion box = units.add(sku, pack("BOX", 10, "5", false));
         UomConversionDraft retiredAndMarked = new UomConversionDraft("BOX", 10, new BigDecimal("5"),
-                new BigDecimal("50"), new BigDecimal("40"), new BigDecimal("30"), false, false, true);
+                new BigDecimal("50"), new BigDecimal("40"), new BigDecimal("30"), false, true);
         assertThatThrownBy(() -> units.change(sku, box.id(), box.version(), retiredAndMarked))
                 .isInstanceOfSatisfying(BusinessException.class, e -> {
                     assertThat(e.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);

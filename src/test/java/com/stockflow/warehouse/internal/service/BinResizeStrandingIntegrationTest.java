@@ -176,11 +176,11 @@ class BinResizeStrandingIntegrationTest {
         long version = jdbc.queryForObject("select version from inventory.uom_conversions where id = ?", Long.class,
                 unit);
         assertThat(refusal(() -> units.change(new Sku(sku), unit, version, new UomConversionDraft("CTN", 10, null,
-                new BigDecimal("50"), new BigDecimal("40"), new BigDecimal("141"), false, true))))
+                new BigDecimal("50"), new BigDecimal("40"), new BigDecimal("141"), true))))
                 .isEqualTo(ErrorCode.CARTONS_WOULD_NOT_FIT);
 
         units.change(new Sku(sku), unit, version, new UomConversionDraft("CTN", 10, null, new BigDecimal("45"),
-                new BigDecimal("40"), new BigDecimal("30"), false, true));
+                new BigDecimal("40"), new BigDecimal("30"), true));
         assertThat(jdbc.queryForObject("select length_cm from inventory.uom_conversions where id = ?",
                 BigDecimal.class, unit)).isEqualByComparingTo("45");
     }

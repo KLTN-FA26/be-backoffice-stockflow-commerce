@@ -7,6 +7,8 @@
 --       names a production order line, and no receipt is stored CONFIRMED.
 --   A3  the lot origin GOODS_RECEIPT (V20261213000200): a lot is of a production order or UNTRACED; the columns that named
 --       a receipt are gone. A lot stored GOODS_RECEIPT before it is StockLotReceiptOriginMigrationUpgradeTest's.
+--   A4  the default purchase unit (V20261213000300): uom_conversions has no default_purchase column, and an inventory item
+--       still gets its base unit from create_base_uom().
 --
 -- The fixture follows 61_purchasing_removal.sql: a production order written with the row triggers off (its rules are
 -- 21_production_orders.sql's), a DRAFT receipt against it, registered with it.
@@ -161,5 +163,31 @@ SELECT pg_temp.expect_true('A3.6 the columns, the index and the CHECKs of the re
     AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname IN ('ck_stock_lot_receipt', 'ck_stock_lot_untraced',
                                                                   'fk_stock_lot_goods_receipt'))
     AND (SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'ck_stock_lot_origin') NOT LIKE '%GOODS_RECEIPT%' $c$);
+
+-- ============================================================================= A4
+\echo '--- A4 the default purchase unit is gone, the base unit is still created'
+SELECT pg_temp.expect_fail_like('A4.1 default_purchase is no longer a column', 'default_purchase', $q$
+    SELECT default_purchase FROM inventory.uom_conversions $q$);
+SELECT pg_temp.expect_true('A4.2 the column, its index and its CHECK are gone', $c$
+    NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
+                 AND table_name = 'uom_conversions' AND column_name = 'default_purchase')
+    AND NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'inventory'
+                     AND indexname = 'uk_uom_conversions_default_purchase')
+    AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_uom_conversions_default_purchase') $c$);
+INSERT INTO product.products (id, code, name, slug, status, kind, tax_class, version, created_at)
+VALUES (md5('qa96:a4:product')::uuid, 'QA96A4', 'QA a4', 'qa96-a4', 'DRAFT', 'CUSTOMIZABLE', 'STANDARD', 0, NOW());
+-- An item is born with its variant (tg_variant_inventory_item); its base unit is born with the item.
+SELECT pg_temp.expect_ok('A4.3 a variant, and with it an inventory item, is inserted', $q$
+    INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
+                                  created_at)
+    VALUES (md5('qa96:a4:variant')::uuid, md5('qa96:a4:product')::uuid, 'QA96-A4-ITEM', 'QA a4', 'ACTIVE', TRUE,
+            'DEFAULT', 0, 0, NOW()) $q$);
+SELECT pg_temp.expect_true('A4.4 its base unit was created by create_base_uom', $c$
+    (SELECT count(*) FROM inventory.uom_conversions
+      WHERE inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'QA96-A4-ITEM')
+        AND is_base AND factor = 1 AND active) = 1 $c$);
+SELECT pg_temp.expect_true('A4.5 no function body names default_purchase any more', $c$
+    NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                 WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND p.prosrc LIKE '%default_purchase%') $c$);
 
 ROLLBACK;

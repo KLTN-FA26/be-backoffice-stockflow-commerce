@@ -148,9 +148,9 @@ public final class CustomerSkuRows {
             UUID carton = Identifiers.newId();
             jdbc.update("""
                     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        weight_kg, length_cm, width_cm, height_cm, default_purchase, active, version, created_at,
+                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at,
                         default_shipping)
-                    VALUES (?, ?, 'CARTON', ?, FALSE, 4.2, 60, 40, 35, FALSE, TRUE, 0, NOW(), TRUE)""",
+                    VALUES (?, ?, 'CARTON', ?, FALSE, 4.2, 60, 40, 35, TRUE, 0, NOW(), TRUE)""",
                     carton, item, unitsPerCarton);
             return new Issued(sku, variant, product.productId(), snapshot, carton, unitsPerCarton);
         });
@@ -219,8 +219,8 @@ public final class CustomerSkuRows {
             UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, sku);
             jdbc.update("""
                     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        default_purchase, active, version, created_at, default_shipping)
-                    VALUES (?, ?, ?, ?, FALSE, FALSE, TRUE, 0, NOW(), FALSE)
+                        active, version, created_at, default_shipping)
+                    VALUES (?, ?, ?, ?, FALSE, TRUE, 0, NOW(), FALSE)
                     ON CONFLICT (inventory_item_id, unit_of_measure) DO NOTHING""", Identifiers.newId(), item,
                     "PK" + units, units);
             UUID pack = jdbc.queryForObject("SELECT id FROM inventory.uom_conversions WHERE inventory_item_id = ? "

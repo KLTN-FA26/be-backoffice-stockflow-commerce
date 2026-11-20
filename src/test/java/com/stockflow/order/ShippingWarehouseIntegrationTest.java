@@ -216,8 +216,8 @@ class ShippingWarehouseIntegrationTest {
                         sku.sku());
                 jdbc.update("""
                         INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                            default_purchase, active, version, created_at, default_shipping)
-                        VALUES (?, ?, ?, ?, FALSE, FALSE, TRUE, 0, NOW(), FALSE)
+                            active, version, created_at, default_shipping)
+                        VALUES (?, ?, ?, ?, FALSE, TRUE, 0, NOW(), FALSE)
                         ON CONFLICT (inventory_item_id, unit_of_measure) DO NOTHING""", Identifiers.newId(), item,
                         "PK" + rest, rest);
                 UUID odd = jdbc.queryForObject("SELECT id FROM inventory.uom_conversions WHERE inventory_item_id = ? "

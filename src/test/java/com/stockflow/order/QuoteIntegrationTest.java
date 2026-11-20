@@ -711,8 +711,8 @@ class QuoteIntegrationTest {
                     + "WHERE sku = ?)", sku);
             jdbc.update("""
                     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        default_purchase, active, version, created_at, default_shipping)
-                    SELECT ?, i.id, 'CARTON20', 20, FALSE, FALSE, TRUE, 0, NOW(), TRUE FROM inventory.inventory_items i
+                        active, version, created_at, default_shipping)
+                    SELECT ?, i.id, 'CARTON20', 20, FALSE, TRUE, 0, NOW(), TRUE FROM inventory.inventory_items i
                      WHERE i.sku = ?""", Identifiers.newId(), sku);
         });
 

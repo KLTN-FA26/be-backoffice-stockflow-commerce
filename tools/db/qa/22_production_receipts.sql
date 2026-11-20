@@ -57,13 +57,13 @@ SELECT md5('qa22:own')::uuid, md5('qa22:product')::uuid, 'QA-PRR-OWN', 'QA ly in
   FROM customer.customer c ORDER BY c.id LIMIT 1;
 UPDATE inventory.inventory_items SET weight_kg = 0.02, length_cm = 9, width_cm = 9, height_cm = 12
  WHERE sku IN ('QA-PRR-OWN', 'QA-PRR-BLANK');
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, default_purchase, active,
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, active,
                                        version, created_at, default_shipping)
-SELECT md5('qa22:carton')::uuid, i.id, 'CARTON', 50, FALSE, FALSE, TRUE, 0, NOW(), TRUE
+SELECT md5('qa22:carton')::uuid, i.id, 'CARTON', 50, FALSE, TRUE, 0, NOW(), TRUE
   FROM inventory.inventory_items i WHERE i.sku = 'QA-PRR-OWN';
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, default_purchase, active,
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, active,
                                        version, created_at, default_shipping)
-SELECT md5('qa22:box')::uuid, i.id, 'BOX', 25, FALSE, FALSE, TRUE, 0, NOW(), FALSE
+SELECT md5('qa22:box')::uuid, i.id, 'BOX', 25, FALSE, TRUE, 0, NOW(), FALSE
   FROM inventory.inventory_items i WHERE i.sku = 'QA-PRR-OWN';
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
                                      currency, placed_at, created_at)

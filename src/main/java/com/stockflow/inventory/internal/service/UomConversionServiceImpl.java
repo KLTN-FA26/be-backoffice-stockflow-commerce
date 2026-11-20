@@ -25,18 +25,17 @@ import java.util.stream.Collectors;
 
 /**
  * See {@link UomConversionService}. Writes take the SKU's advisory lock (the one logistics and policy
- * edits take), so two people marking different default purchase (or default shipping) units are serialised and
- * the {@code uk_uom_conversions_default_purchase} and {@code uk_uom_conversions_default_shipping} indexes never
- * surface as a 500. Marking a default shipping unit unmarks the previous one in the same transaction rather than
- * answering 409: the user's intent ("this is the carton") is unambiguous, and it is how the default purchase unit
- * already behaves.
+ * edits take), so two people marking different default shipping units are serialised and
+ * the {@code uk_uom_conversions_default_shipping} index never surfaces as a 500. Marking a default shipping unit
+ * unmarks the previous one in the same transaction rather than answering 409: the user's intent ("this is the
+ * carton") is unambiguous.
  *
- * <p>BR-10 ("hệ số quy đổi đã phát sinh giao dịch không được sửa"): stock packages, purchase order lines
- * (and their revisions) and goods receipt lines record the unit they were made or counted in, and none of
+ * <p>BR-10 ("hệ số quy đổi đã phát sinh giao dịch không được sửa"): stock packages and goods receipt lines
+ * record the unit they were made or counted in, and none of
  * them copies the factor (V20261020000400), so a unit one of them uses keeps its factor and its code. The
  * database refuses such a change (V20261020000600); asking first turns that into
- * {@code UOM_CONVERSION_IN_USE} rather than a generic 409. Its size, weight and default purchase and shipping
- * marks stay editable, and retiring it is the way out BR-10 names: declare a new unit, retire this one.</p>
+ * {@code UOM_CONVERSION_IN_USE} rather than a generic 409. Its size, weight and default shipping
+ * mark stay editable, and retiring it is the way out BR-10 names: declare a new unit, retire this one.</p>
  */
 @Service
 @Transactional
@@ -100,7 +99,6 @@ class UomConversionServiceImpl implements UomConversionService {
         if (conversions.unitTaken(itemId, draft.unitOfMeasure(), null)) throw duplicate(sku, draft);
         String actor = actor();
         UUID id = Identifiers.newId();
-        if (draft.defaultPurchase()) conversions.clearDefaultPurchase(itemId, id, actor);
         if (draft.defaultShipping()) conversions.clearDefaultShipping(itemId, id, actor);
         conversions.insert(id, itemId, draft, actor);
         return conversion(sku, id);
@@ -127,12 +125,10 @@ class UomConversionServiceImpl implements UomConversionService {
             stranding.requireUnitResizable(id, draft.lengthCm(), draft.widthCm(), draft.heightCm());
         }
         String actor = actor();
-        if (draft.defaultPurchase() && !current.defaultPurchase()) conversions.clearDefaultPurchase(itemId, id, actor);
         if (draft.defaultShipping() && !current.defaultShipping()) conversions.clearDefaultShipping(itemId, id, actor);
         if (!conversions.update(id, expectedVersion, draft, current.base(), actor)) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         }
-        conversions.defaultToBaseIfNone(itemId, actor);
         return conversion(sku, id);
     }
 
@@ -149,7 +145,6 @@ class UomConversionServiceImpl implements UomConversionService {
         if (!conversions.delete(id, expectedVersion)) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         }
-        conversions.defaultToBaseIfNone(itemId, actor());
     }
 
     private UUID itemId(Sku sku) {

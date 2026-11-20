@@ -64,12 +64,11 @@ public interface GoodsReceipts {
      * into no carton, {@code quantity} less what the cartons were counted at ({@code receivedQty}) - none on a
      * production line. {@code packages}: the line's cartons, voided ones left out, by LPN - the client prints their
      * labels from these. {@code units}: every unit of the line's item, so the counting screen can offer the packing
-     * units without the product permission the unit catalogue sits behind. {@code lotTracked}: always true - every
-     * SKU is lot-tracked (01 BR-17, team plan 5-5) - kept for the receipt form.
+     * units without the product permission the unit catalogue sits behind.
      */
     record LineView(UUID id, UUID inventoryItemId, String sku, int quantity, String lotNumber,
-                    String locationCode, String note, boolean lotTracked,
-                    int quantityForPutaway, List<String> warnings, String unitOfMeasure, int looseQuantity,
+                    String locationCode, String note,
+                    int quantityForPutaway, String unitOfMeasure, int looseQuantity,
                     List<PackageView> packages, List<UnitView> units, UUID productionOrderLineId,
                     ProductionLineProgress production) {
     }
@@ -88,10 +87,9 @@ public interface GoodsReceipts {
 
     /**
      * A unit the line's item can be counted in, the base unit first, then by code. Cartons take an {@code active}
-     * unit that is not {@code base}; {@code factor} is what one of them holds; {@code defaultPurchase} is the unit's
-     * flag as the unit catalogue keeps it.
+     * unit that is not {@code base}; {@code factor} is what one of them holds.
      */
-    record UnitView(String unitOfMeasure, int factor, boolean base, boolean active, boolean defaultPurchase) {
+    record UnitView(String unitOfMeasure, int factor, boolean base, boolean active) {
     }
 
     /**
@@ -106,15 +104,13 @@ public interface GoodsReceipts {
     }
 
     /**
-     * The names next to the ids are for display (SCRUM-464); a name is null when its row is gone. {@code warnings} are
-     * non-blocking business warnings; none is raised any more (the expiry warning went with expiry, team plan 5-1), so
-     * the list is empty. {@code productionOrder*},
+     * The names next to the ids are for display (SCRUM-464); a name is null when its row is gone. {@code productionOrder*},
      * {@code producer*}: the production order of a PRODUCTION receipt (4A-5).
      */
     record ReceiptView(UUID id, String number, UUID warehouseId, String warehouseCode, String warehouseName,
                        GoodsReceiptStatus status, String deliveryNote, String note, Instant receivedAt,
                        UUID receivedBy, String receivedByName, Instant confirmedAt, UUID confirmedBy,
-                       String confirmedByName, Instant closedAt, List<LineView> lines, List<String> warnings,
+                       String confirmedByName, Instant closedAt, List<LineView> lines,
                        GoodsReceiptType receiptType, UUID productionOrderId, String productionOrderCode,
                        String productionOrderStatus, UUID producerId, String producerName) {
     }

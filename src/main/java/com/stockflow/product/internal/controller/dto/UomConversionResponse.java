@@ -17,7 +17,6 @@ public record UomConversionResponse(
         BigDecimal lengthCm,
         BigDecimal widthCm,
         BigDecimal heightCm,
-        boolean defaultPurchase,
         boolean active,
         long version,
         boolean defaultShipping

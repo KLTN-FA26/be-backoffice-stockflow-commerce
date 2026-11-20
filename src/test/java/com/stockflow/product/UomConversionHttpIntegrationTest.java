@@ -74,7 +74,7 @@ class UomConversionHttpIntegrationTest {
 
     private static String update(long version, String code, int factor, Boolean defaultShipping) {
         return "{\"version\":" + version + ",\"unitOfMeasure\":\"" + code + "\",\"factor\":" + factor
-                + ",\"weightKg\":5,\"lengthCm\":50,\"widthCm\":40,\"heightCm\":30,\"defaultPurchase\":false,"
+                + ",\"weightKg\":5,\"lengthCm\":50,\"widthCm\":40,\"heightCm\":30,"
                 + "\"active\":true" + (defaultShipping == null ? "" : ",\"defaultShipping\":" + defaultShipping) + "}";
     }
 
@@ -134,5 +134,20 @@ class UomConversionHttpIntegrationTest {
         mvc.perform(put(base + "/" + id).contentType(MediaType.APPLICATION_JSON).content(retired))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("defaultShipping"));
+    }
+
+    /** The default purchase unit is gone; a client that still sends it is not refused, and the response omits it. */
+    @Test
+    void defaultPurchaseInTheBodyIsIgnored() throws Exception {
+        String body = create("CARTON", 50, null).replace("\"heightCm\":30", "\"heightCm\":30,\"defaultPurchase\":true");
+        String created = mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.defaultPurchase").doesNotExist())
+                .andReturn().getResponse().getContentAsString();
+        String id = created.replaceAll(".*\"id\":\"([^\"]+)\".*", "$1");
+        String put = update(0, "CARTON", 50, false).replace("\"active\":true", "\"active\":true,\"defaultPurchase\":true");
+        mvc.perform(put(base + "/" + id).contentType(MediaType.APPLICATION_JSON).content(put))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.defaultPurchase").doesNotExist());
     }
 }

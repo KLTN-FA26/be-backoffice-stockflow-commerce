@@ -8,9 +8,6 @@ import java.util.UUID;
  * A goods receipt with its lines. {@code quantityForPutaway} per line: what it puts away, every unit it received
  * (there is no quality check at the warehouse, kltn-docs 03 BR-07).
  *
- * <p>{@code warnings}: non-blocking business warnings, on the receipt and on the line they come from. None is raised
- * any more: the expiry warning went with expiry (kltn-docs 01 BR-17, 03 BR-06; team plan 5-1).</p>
- *
  * <p>4A-5: {@code receiptType} is {@code PRODUCTION} - the receipt names its production order
  * ({@code productionOrderId}, {@code productionOrderCode} - also the lot of every line - its
  * {@code productionOrderStatus}, {@code producerId}, {@code producerName}), and each line names its
@@ -20,20 +17,19 @@ public record GoodsReceiptResponse(UUID id, String number, UUID warehouseId, Str
                                    String warehouseName, String status, String deliveryNote, String note,
                                    Instant receivedAt, UUID receivedBy, String receivedByName, Instant confirmedAt,
                                    UUID confirmedBy, String confirmedByName, Instant closedAt, List<Line> lines,
-                                   List<String> warnings, String receiptType, UUID productionOrderId,
+                                   String receiptType, UUID productionOrderId,
                                    String productionOrderCode, String productionOrderStatus, UUID producerId,
                                    String producerName) {
 
     /**
-     * {@code lotTracked}: always true - every SKU is lot-tracked (01 BR-17, team plan 5-5) - kept for the receipt form.
      * No expiry: there is none (03 BR-06, team plan 5-1). {@code unitOfMeasure}: the packing unit of
      * the line's cartons, null for a historical line counted loose. {@code looseQuantity}: the part counted into no
      * carton (the line less the cartons' {@code receivedQty}). {@code packages}: the line's cartons by LPN, voided ones
      * left out (SCRUM-473). {@code units}: every unit of the line's item, for the counting screen's unit picker.
      */
     public record Line(UUID id, UUID inventoryItemId, String sku, int quantity, String lotNumber,
-                       String locationCode, String note, boolean lotTracked,
-                       int quantityForPutaway, List<String> warnings, String unitOfMeasure, int looseQuantity,
+                       String locationCode, String note,
+                       int quantityForPutaway, String unitOfMeasure, int looseQuantity,
                        List<Package> packages, List<Unit> units,
                        @io.swagger.v3.oas.annotations.media.Schema(description = "4A-5: the production order line a"
                                + " production receipt's line counts")
@@ -56,10 +52,9 @@ public record GoodsReceiptResponse(UUID id, String number, UUID warehouseId, Str
 
     /**
      * A unit the line's item can be counted in, the base unit first, then by code. Cartons take an {@code active}
-     * unit that is not {@code base}; {@code factor} is what one carton of it holds; {@code defaultPurchase} is the
-     * unit's flag as the unit catalogue keeps it.
+     * unit that is not {@code base}; {@code factor} is what one carton of it holds.
      */
-    public record Unit(String unitOfMeasure, int factor, boolean base, boolean active, boolean defaultPurchase) {
+    public record Unit(String unitOfMeasure, int factor, boolean base, boolean active) {
     }
 
     /**
