@@ -75,6 +75,10 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     @Column(name = "sent_at")
     private Instant sentAt;
 
+    /** Who sent it to its producer (17 §4.3 step 7): the coordinator; before 2026-11-20, the approver. */
+    @Column(name = "sent_by")
+    private UUID sentBy;
+
     @Column(name = "production_started_at")
     private Instant productionStartedAt;
 
@@ -118,8 +122,8 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     public void apply(UUID producerId, UUID receivingWarehouseId, LocalDate needByDate, ProductionOrderStatus status,
                       boolean sampleApprovalRequired, String sampleWaiverReason, String note,
                       Instant submittedAt, UUID approvedBy, Instant approvedAt, String returnedReason, Instant sentAt,
-                      Instant productionStartedAt, UUID cancelledBy, Instant cancelledAt, String cancellationReason,
-                      UUID closedBy, Instant closedAt, String closingReason) {
+                      UUID sentBy, Instant productionStartedAt, UUID cancelledBy, Instant cancelledAt,
+                      String cancellationReason, UUID closedBy, Instant closedAt, String closingReason) {
         this.producerId = producerId;
         this.receivingWarehouseId = receivingWarehouseId;
         this.needByDate = needByDate;
@@ -132,6 +136,7 @@ public class ProductionOrderJpaEntity extends BaseEntity {
         this.approvedAt = approvedAt;
         this.returnedReason = returnedReason;
         this.sentAt = sentAt;
+        this.sentBy = sentBy;
         this.productionStartedAt = productionStartedAt;
         this.cancelledBy = cancelledBy;
         this.cancelledAt = cancelledAt;
@@ -164,6 +169,7 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     public Instant getApprovedAt() { return approvedAt; }
     public String getReturnedReason() { return returnedReason; }
     public Instant getSentAt() { return sentAt; }
+    public UUID getSentBy() { return sentBy; }
     public Instant getProductionStartedAt() { return productionStartedAt; }
     public LocalDate getExpectedCompletionDate() { return expectedCompletionDate; }
     public UUID getCancelledBy() { return cancelledBy; }

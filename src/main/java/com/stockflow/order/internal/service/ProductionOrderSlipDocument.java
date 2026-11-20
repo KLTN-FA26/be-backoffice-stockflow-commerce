@@ -35,7 +35,7 @@ import java.util.UUID;
  * which warehouse, whether a print sample comes first - with the need-by date, the address and the sample at a glance.
  *
  * <p>No money, no sales order or customer, no signatures (owner, 2026-11-19): prices and partner terms are other
- * departments' business outside the system; the approval (BR-23) and the producer's acceptance are recorded in the
+ * departments' business outside the system; who sent it (BR-23) and the producer's acceptance are recorded in the
  * system, not on paper. No totals row either: units of different products do not add up, and the warehouse counts
  * line by line against the production order (03 §4.1). The coordinator who drew it up is named for questions.</p>
  *
@@ -50,7 +50,7 @@ class ProductionOrderSlipDocument {
      * Everything the slip says. Text a person typed (note, packing requirements) is printed as written; any optional
      * part that is null or blank is left out.
      */
-    record Facts(String code, Instant approvedAt, String companyName, String producerCode, String producerName,
+    record Facts(String code, Instant sentAt, String companyName, String producerCode, String producerName,
                  String producerContact, String warehouseName, String warehouseAddress, LocalDate needByDate,
                  boolean sampleApprovalRequired, String note, String drawnUpByName, String drawnUpByEmail,
                  List<SlipLine> lines) {
@@ -76,7 +76,7 @@ class ProductionOrderSlipDocument {
         List<Block> blocks = new ArrayList<>();
         blocks.add(new Masthead(present(f.companyName()) ? f.companyName() : null));
         blocks.add(new Title(t.getString("production-order.pdf.title"), t.getString("production-order.pdf.number")
-                .formatted(f.code(), DAY.format(f.approvedAt().atZone(VIETNAM)))));
+                .formatted(f.code(), DAY.format(f.sentAt().atZone(VIETNAM)))));
         blocks.add(new KeyFacts(List.of(
                 new Fact(t.getString("production-order.pdf.needBy"), DAY.format(f.needByDate()), null, 0.22f),
                 new Fact(t.getString("production-order.pdf.deliverTo"), f.warehouseName(), f.warehouseAddress(),
@@ -94,7 +94,7 @@ class ProductionOrderSlipDocument {
         String coordinator = t.getString("production-order.pdf.drawnUpBy").formatted(f.drawnUpByName())
                 + (present(f.drawnUpByEmail()) ? " · " + f.drawnUpByEmail() : "");
         blocks.add(new Note(t.getString("production-order.pdf.ask"), coordinator,
-                t.getString("production-order.pdf.system").formatted(MOMENT.format(f.approvedAt()))));
+                t.getString("production-order.pdf.system").formatted(MOMENT.format(f.sentAt()))));
         return FormDocument.draw(fonts, blocks, t.getString("production-order.pdf.title") + " " + f.code(), f.code(),
                 t.getString("production-order.pdf.footer").formatted(f.code()),
                 t.getString("production-order.pdf.page"));

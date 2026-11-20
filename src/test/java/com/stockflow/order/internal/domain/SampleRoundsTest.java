@@ -24,11 +24,10 @@ class SampleRoundsTest {
     private static final LocalDate TODAY = LocalDate.of(2026, 11, 9);
     private static final LocalDate DONE_BY = LocalDate.of(2026, 11, 30);
     private static final UUID COORDINATOR = UUID.randomUUID();
-    private static final UUID MANAGER = UUID.randomUUID();
     private static final UUID CUSTOMER = UUID.randomUUID();
     private static final UUID CUSTOMER_USER = UUID.randomUUID();
 
-    /** SENT: drawn up, submitted and approved by someone else. A first-time SKU wants a sample unless waived. */
+    /** SENT: drawn up and sent by the coordinator. A first-time SKU wants a sample unless waived. */
     private static ProductionOrder sent(boolean sample) {
         ProductionOrder order = ProductionOrder.drawUp("PRD-20261109-0007", UUID.randomUUID(), UUID.randomUUID(),
                 CUSTOMER, UUID.randomUUID(), UUID.randomUUID(), LocalDate.of(2026, 12, 1), true,
@@ -38,8 +37,7 @@ class SampleRoundsTest {
             order.edit(new ProductionOrder.Draft(order.producerId(), order.needByDate(), null, false,
                     "re-run of a tested design", null), java.util.Map.of());
         }
-        order.submit(COORDINATOR, NOW);
-        order.approve(MANAGER, NOW);
+        order.send(COORDINATOR, NOW);
         return order;
     }
 

@@ -294,9 +294,8 @@ class ProductionScheduleIntegrationTest {
         return productionOrders.drawUp(orderId, batchSeq, producer.id(), coordinator);
     }
 
-    private ProductionOrder approved(ProductionOrder draft) {
-        ProductionOrder pending = productionOrders.submit(draft.id(), draft.version(), coordinator);
-        return productionOrders.approve(pending.id(), pending.version(), manager);
+    private ProductionOrder sent(ProductionOrder draft) {
+        return productionOrders.send(draft.id(), draft.version(), coordinator);
     }
 
     private void sql(String statement, Object... args) {
@@ -454,7 +453,7 @@ class ProductionScheduleIntegrationTest {
         ProductionOrder madeAtA = drawUp(atA, 1);
         ProductionOrder madeAtB = drawUp(atB, 1);
         sql("UPDATE ordering.production_order SET need_by_date = ? WHERE id = ?", today.minusDays(1), madeAtB.id());
-        approved(productionOrders.detail(madeAtB.id()).order());
+        sent(productionOrders.detail(madeAtB.id()).order());
         alerts.recompute(atB);
         alerts.recompute(atA);
         assertThat(openAlert(DelayAlertType.PRODUCTION_LATE, madeAtB.id())).isNotNull();
@@ -551,7 +550,7 @@ class ProductionScheduleIntegrationTest {
         alerts.recompute(orderId);
         assertThat(openAlert(DelayAlertType.PRODUCTION_LATE, draft.id())).as("a draft is with no producer").isNull();
 
-        ProductionOrder sent = approved(productionOrders.detail(draft.id()).order());
+        ProductionOrder sent = sent(productionOrders.detail(draft.id()).order());
         alerts.recompute(orderId);
         UUID late = openAlert(DelayAlertType.PRODUCTION_LATE, sent.id());
         assertThat(late).as("sent, past its need-by day").isNotNull();

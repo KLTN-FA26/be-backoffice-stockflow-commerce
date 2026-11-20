@@ -117,7 +117,6 @@ class ProductionSampleIntegrationTest {
 
     private CurrentUser sales;
     private UUID coordinator;
-    private UUID manager;
     private UUID customerId;
     private UUID customerUser;
     private IssuedSku sku;
@@ -134,7 +133,6 @@ class ProductionSampleIntegrationTest {
         sales = new CurrentUser(salesUser, "sales-" + salesUser, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
                 Set.of(), Set.of());
         coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
-        manager = tx.execute(s -> ReferenceRows.user(entityManager));
         customerId = customer("Print Sample Co");
         customerUser = PrintSamples.portalUser(jdbc, tx, entityManager, customerId);
         sku = issueSku();
@@ -259,11 +257,10 @@ class ProductionSampleIntegrationTest {
         return orders.findById(orderId).orElseThrow().status();
     }
 
-    /** Drawn up for the order's batch, submitted, approved by the manager: SENT, a print sample wanted (BR-24). */
+    /** Drawn up for the order's batch and sent by the coordinator: SENT, a print sample wanted (BR-24). */
     private ProductionOrder sent(UUID orderId) {
         ProductionOrder draft = productionOrders.drawUp(orderId, 1, producer.id(), coordinator);
-        ProductionOrder pending = productionOrders.submit(draft.id(), draft.version(), coordinator);
-        return productionOrders.approve(pending.id(), pending.version(), manager);
+        return productionOrders.send(draft.id(), draft.version(), coordinator);
     }
 
     private ProductionOrder accepted(UUID orderId) {
@@ -336,8 +333,7 @@ class ProductionSampleIntegrationTest {
         ProductionOrder draft = productionOrders.drawUp(otherOrder, 1, producer.id(), coordinator);
         ProductionOrder waived = productionOrders.edit(draft.id(), draft.version(), new ProductionOrder.Draft(
                 draft.producerId(), draft.needByDate(), null, false, "A re-run of a tested design", null));
-        ProductionOrder pending = productionOrders.submit(waived.id(), waived.version(), coordinator);
-        ProductionOrder sentWaived = productionOrders.approve(pending.id(), pending.version(), manager);
+        ProductionOrder sentWaived = productionOrders.send(waived.id(), waived.version(), coordinator);
         assertThatThrownBy(() -> samples.open(sentWaived.id(), null, null, PrintSamples.photos(1), coordinator))
                 .extracting(ProductionSampleIntegrationTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_SAMPLE_NOT_REQUIRED);

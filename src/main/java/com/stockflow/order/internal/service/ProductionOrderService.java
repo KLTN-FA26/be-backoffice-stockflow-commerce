@@ -62,9 +62,9 @@ import java.util.stream.Collectors;
  *       the batch lacks there after the stock held for it (17 §4.2 step 3) and what other open production orders of the
  *       batch still bring. Received at the shipping warehouse; needed by
  *       the batch's window start (BR-26); a sample required when one of its SKUs was never produced (BR-24).</li>
- *   <li><b>Edit</b> while a draft (B33), <b>submit</b>, <b>approve</b> (Sales Manager, not the one who drew it up -
- *       BR-23; the print files are checked byte by byte first) which sends it - the slip drawn and its producer told
- *       ({@link ProductionOrderDispatch}, 4A-3) - or <b>return</b> it with a reason.</li>
+ *   <li><b>Edit</b> while a draft (B33), and <b>send</b> it (Production Coordinator; BR-23 as rewritten on
+ *       2026-11-20 - no approval step, the one who drew it up included): the print files are checked byte by byte
+ *       first, then the slip drawn and its producer told ({@link ProductionOrderDispatch}, 4A-3).</li>
  *   <li><b>Cancel</b> before mass printing, <b>close</b> after it started (BR-06), with a reason - never while a goods
  *       receipt against it is a draft (4A-5, kltn-docs 03 edge cases); its producer is told to stop (4A-3).</li>
  *   <li><b>Accept</b> with the producer's expected completion day, move that day, and <b>start production</b> when no
@@ -74,10 +74,10 @@ import java.util.stream.Collectors;
  *
  * <p>Every write locks the sales order first and the production order after it - the order {@code drawUp} locks in,
  * and the one receiving takes ({@code ProductionOrderReceivingService}). One order everywhere: a path taking the
- * production order before its sales order would deadlock against an approval.</p>
+ * production order before its sales order would deadlock against a send.</p>
  *
  * <p>The capacity warning (BR-25; 06 §4.6 steps 5-6) is {@link WarehouseCapacityService}'s: shown with the production
- * order when it is drawn up and read again at approval, a warning and never a refusal. Approving one that takes its
+ * order when it is drawn up and read again when it is sent, a warning and never a refusal. Sending one that takes its
  * warehouse's projected free room below zero tells the warehouse manager, once (C42) - under the advisory lock
  * {@code warehouse-capacity:<warehouseId>}, taken after the sales order and the production order: customer_order,
  * production_order, warehouse capacity.</p>
@@ -220,54 +220,36 @@ public class ProductionOrderService {
     }
 
     /**
-     * DRAFT → PENDING_APPROVAL, while the batch still lacks what it makes: stock that arrived since it was drawn up (a
-     * top-up, goods returned, another shipping warehouse) may have covered part of it.
+     * Sent to its producer by the coordinator (17 §4.3 step 7; BR-23 as rewritten on 2026-11-20: no approval step, and
+     * the one who drew it up may send it): DRAFT → SENT, while the batch still lacks what it makes - stock that arrived
+     * since it was drawn up (a top-up, goods returned, another shipping warehouse) may have covered part of it - and to
+     * a producer still active. Everything approval did is still done here, in the same order. The print files of every
+     * line are re-read and re-hashed first, before any row is locked (a full download of each bundle, each in its own
+     * read-only transaction): a production order is not sent to print a file that changed. Its slip is drawn and stored
+     * then too, still with no lock held; the transaction keeps it and publishes {@code ProductionOrderSent} (4A-3), or
+     * the stored slip is deleted when it fails. The capacity board is read again at this moment (06 §4.6 step 6): when
+     * sending takes the warehouse's projected free room below zero, the transaction also publishes
+     * {@code WarehouseCapacityTurnedNegative} (BE1, C42). Never a refusal (BR-21).
      *
-     * @throws BusinessException {@code PRODUCTION_ORDER_EXCEEDS_SHORTAGE}; {@code PRODUCTION_ORDER_STATUS_INVALID};
-     *         {@code PRODUCER_INACTIVE}; {@code OPTIMISTIC_LOCK}
-     */
-    @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#id")
-    public ProductionOrder submit(UUID id, long version, UUID by) {
-        Locked locked = lockedWithOrder(id, version);
-        ProductionOrder production = locked.production();
-        activeProducer(production.producerId());
-        production.requireWithin(lacking(locked));
-        production.submit(by, clock.instant());
-        log.info("Production order {} submitted for approval", production.code());
-        return productionOrders.save(production);
-    }
-
-    /**
-     * Approved by the Sales Manager - never the one who drew it up - so sent (BR-23), while the batch still lacks what it
-     * makes (as on submission). The print files of every line are re-read and re-hashed first, before any row is locked
-     * (a full download of each bundle, each in its own read-only transaction): a production order is not sent to print
-     * a file that changed. Its slip is drawn and stored then too, still with no lock held; the transaction keeps it and
-     * publishes {@code ProductionOrderSent} (4A-3), or the stored slip is deleted when it fails. The capacity board is
-     * read again at this moment (06 §4.6 step 6): when sending takes the warehouse's projected free room below zero, the
-     * transaction also publishes {@code WarehouseCapacityTurnedNegative} (BE1, C42). Never a refusal (BR-21).
-     *
-     * @throws BusinessException {@code PRODUCTION_ORDER_SELF_APPROVAL}; {@code PRINT_FILE_MISMATCH};
-     *         {@code PRODUCTION_ORDER_EXCEEDS_SHORTAGE}; {@code PRODUCTION_ORDER_STATUS_INVALID};
-     *         {@code OPTIMISTIC_LOCK}
+     * @throws BusinessException {@code PRODUCTION_ORDER_NOT_FOUND}; {@code PRODUCTION_ORDER_STATUS_INVALID};
+     *         {@code OPTIMISTIC_LOCK}; {@code PRODUCER_INACTIVE}; {@code PRINT_FILE_MISMATCH};
+     *         {@code PRODUCTION_ORDER_EXCEEDS_SHORTAGE}
      */
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    @Auditable(action = AuditAction.APPROVE, resourceType = "production-order", resourceId = "#id")
-    public ProductionOrder approve(UUID id, long version, UUID by) {
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#id")
+    public ProductionOrder send(UUID id, long version, UUID by) {
         ProductionOrder read = productionOrders.findById(id).filter(this::visible).orElseThrow(() -> notFound(id));
-        // Refused before the download, where the bytes would not change the answer.
-        if (by.equals(read.drawnUpBy())) {
-            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_SELF_APPROVAL, ("Production order %s was drawn up by "
-                    + "you: someone else approves it (BR-23)").formatted(read.code()));
-        }
-        if (read.status() != ProductionOrderStatus.PENDING_APPROVAL) {
+        // What does not need the bytes is refused before the download, where they would not change the answer.
+        if (read.status() != ProductionOrderStatus.DRAFT) {
             throw new BusinessException(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID, ("Production order %s is %s and "
-                    + "cannot be approved").formatted(read.code(), read.status()));
+                    + "cannot be sent").formatted(read.code(), read.status()));
         }
-        // A stale request is refused before the files are downloaded and a slip drawn for a version nobody approves.
+        // A stale request is refused before the files are downloaded and a slip drawn for a version nobody sends.
         if (read.version() != version) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK, "Production order %s changed since it was read"
                     .formatted(read.code()));
         }
+        activeProducer(read.producerId());
         Map<UUID, String> snapshots = new LinkedHashMap<>();
         read.lines().forEach(line -> snapshots.put(line.designSnapshotId(), line.printFileChecksum()));
         for (Map.Entry<UUID, String> snapshot : snapshots.entrySet()) {
@@ -284,24 +266,15 @@ public class ProductionOrderService {
                 Locked locked = lockedWithOrder(id, version);
                 ProductionOrder production = locked.production();
                 production.requireWithin(lacking(locked));
-                // BE1 (06 §4.6 step 8, C42): read while it is still pending, under the warehouse's capacity lock.
+                // BE1 (06 §4.6 step 8, C42): read while it is still a draft, under the warehouse's capacity lock.
                 capacity.warnIfSendingTurnsNegative(production, now);
-                production.approve(by, now);
+                production.send(by, now);
                 ProductionOrder saved = productionOrders.save(production);
                 dispatch.sent(saved, slip);
-                log.info("Production order {} approved and sent", saved.code());
+                log.info("Production order {} sent", saved.code());
                 return saved;
             });
         }
-    }
-
-    /** Returned to the coordinator with a reason (BR-23). */
-    @Auditable(action = AuditAction.REJECT, resourceType = "production-order", resourceId = "#id")
-    public ProductionOrder returnToDraft(UUID id, long version, String reason, UUID by) {
-        ProductionOrder production = lockedAfterItsOrder(id, version);
-        production.returnToDraft(reason, by, clock.instant());
-        log.info("Production order {} returned to its coordinator", production.code());
-        return productionOrders.save(production);
     }
 
     /**
