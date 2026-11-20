@@ -1,5 +1,6 @@
 package com.stockflow.order;
 
+import com.stockflow.common.security.Role;
 import com.stockflow.common.storage.DownloadDisposition;
 import com.stockflow.common.storage.FileStorage;
 import com.stockflow.notification.internal.domain.Email;
@@ -8,12 +9,14 @@ import com.stockflow.order.internal.service.ProductionOrderDispatch;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.RedisContainer;
+import com.stockflow.support.SecuredMvc;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -33,6 +36,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.head;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -41,7 +45,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * A producer's links (4A-3, kltn-docs 17 §4.3 step 7) through the real HTTP chain with security ON: the routes are
  * reached with no token at all, the signed link being the only credential, and the answer is what a mail client sees.
  * {@link ProductionOrderDispatchIntegrationTest} calls the service with security off; this is the part it cannot
- * show - the permitAll matchers (GET and HEAD), the error codes as HTTP statuses, the redirect's headers.
+ * show - the permitAll matchers (GET and HEAD), the error codes as HTTP statuses, the redirect's headers. It also
+ * holds the staff route that sends a production order (2026-11-20: the coordinator sends, nobody approves), because
+ * this is where the real filter chain and the permission aspect run.
  *
  * <p>The test profile's local store signs no browser URL, so the store is a spy whose presigner answers an https URL:
  * presigning is really reached, after every check passed, and the redirect carries its answer.</p>
@@ -72,7 +78,7 @@ class ProductionOrderFileLinksSecurityIntegrationTest extends ProductionOrderDis
     @Test
     @DisplayName("a valid link, no token: 302 to the presigned URL, not stored, no referrer - GET and HEAD alike")
     void validLinkRedirects() throws Exception {
-        ProductionOrder sent = approved(producer);
+        ProductionOrder sent = sent(producer);
         Email email = awaitMail(sent.code());
         Link slip = link(email.text(), "/slip");
         Link print = link(email.text(), "/print-files/" + sku.snapshotId());
@@ -96,7 +102,7 @@ class ProductionOrderFileLinksSecurityIntegrationTest extends ProductionOrderDis
     @Test
     @DisplayName("a tampered link: 403 PRODUCTION_ORDER_LINK_INVALID; an expired one: 410 - and nothing presigned")
     void badLinksAreRefused() throws Exception {
-        ProductionOrder sent = approved(producer);
+        ProductionOrder sent = sent(producer);
         Email email = awaitMail(sent.code());
         Link slip = link(email.text(), "/slip");
         Link print = link(email.text(), "/print-files/" + sku.snapshotId());
@@ -122,10 +128,77 @@ class ProductionOrderFileLinksSecurityIntegrationTest extends ProductionOrderDis
     @Test
     @DisplayName("the staff routes next to them still need a token: only the signed routes are open")
     void staffRoutesStayClosed() throws Exception {
-        ProductionOrder sent = approved(producer);
+        ProductionOrder sent = sent(producer);
 
         mvc.perform(get("/api/v1/production-orders/" + sent.id() + "/slip")).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/v1/production-orders/" + sent.id() + "/dispatch")).andExpect(status().isUnauthorized());
         assertThat(sent.status().name()).isEqualTo("SENT");
+    }
+
+    @Test
+    @DisplayName("2026-11-20: the coordinator sends a draft over HTTP; the approval, submission and return routes are "
+            + "gone (404), and a Sales Manager cannot send (403)")
+    void theCoordinatorSendsAndTheApprovalRoutesAreGone() throws Exception {
+        SecuredMvc http = new SecuredMvc(mvc, decoder);
+        ProductionOrder draft = drafted(producer);
+        String base = "/api/v1/production-orders/" + draft.id();
+        String version = "{\"version\": " + draft.version() + "}";
+        java.util.UUID manager = tx.execute(s -> com.stockflow.support.ReferenceRows.user(entityManager));
+
+        for (String gone : new String[] {"/approval", "/submission", "/return"}) {
+            http.asRole(Role.SALES_MANAGER, manager, post(base + gone).contentType(MediaType.APPLICATION_JSON)
+                            .content(version))
+                    .andExpect(status().isNotFound());
+            http.asRole(Role.PRODUCTION_COORDINATOR, coordinator, post(base + gone)
+                            .contentType(MediaType.APPLICATION_JSON).content(version))
+                    .andExpect(status().isNotFound());
+        }
+        http.asRole(Role.SALES_MANAGER, manager, post(base + "/sending").contentType(MediaType.APPLICATION_JSON)
+                        .content(version))
+                .andExpect(status().isForbidden());
+        assertThat(reread(draft.id()).status().name()).as("nothing moved yet").isEqualTo("DRAFT");
+
+        http.asRole(Role.PRODUCTION_COORDINATOR, coordinator, post(base + "/sending")
+                        .contentType(MediaType.APPLICATION_JSON).content(version))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("SENT"))
+                .andExpect(jsonPath("$.data.sentBy").value(coordinator.toString()))
+                .andExpect(jsonPath("$.data.drawnUpBy").value(coordinator.toString()))
+                .andExpect(jsonPath("$.data.approvedBy").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("17 §4.3 step 8: the acceptance note is stored with the acceptance and returned with the order")
+    void theAcceptanceNoteIsReturnedWithTheOrder() throws Exception {
+        SecuredMvc http = new SecuredMvc(mvc, decoder);
+        ProductionOrder sent = sent(producer);
+        String base = "/api/v1/production-orders/" + sent.id();
+        String day = java.time.LocalDate.now().plusDays(10).toString();
+
+        http.asRole(Role.PRODUCTION_COORDINATOR, coordinator, post(base + "/acceptance")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\": " + sent.version() + ", \"expectedCompletionDate\": \"" + day
+                                + "\", \"note\": \"  anh Hung, Zalo  \"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data.acceptanceNote").value("anh Hung, Zalo"));
+        http.asRole(Role.PRODUCTION_COORDINATOR, coordinator, get(base))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.acceptanceNote").value("anh Hung, Zalo"));
+    }
+
+    @Test
+    @DisplayName("an acceptance note over 500 characters is 400, nothing accepted")
+    void anOverlongAcceptanceNoteIsRefused() throws Exception {
+        SecuredMvc http = new SecuredMvc(mvc, decoder);
+        ProductionOrder sent = sent(producer);
+        String day = java.time.LocalDate.now().plusDays(10).toString();
+
+        http.asRole(Role.PRODUCTION_COORDINATOR, coordinator, post("/api/v1/production-orders/" + sent.id()
+                        + "/acceptance").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\": " + sent.version() + ", \"expectedCompletionDate\": \"" + day
+                                + "\", \"note\": \"" + "x".repeat(501) + "\"}"))
+                .andExpect(status().isBadRequest());
+        assertThat(reread(sent.id()).status().name()).isEqualTo("SENT");
     }
 }

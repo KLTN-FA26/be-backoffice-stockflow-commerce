@@ -46,7 +46,7 @@ import java.util.UUID;
  * <p><b>Why here.</b> The board needs three sources - the bins of the map ({@code warehouse :: api}), the cartons in
  * stock and held ({@code inventory :: api}) and the production orders on their way (this module's own tables) - and
  * {@code order} is the module that may read all three and the one that uses the answer: choosing a shipping warehouse,
- * drawing up and approving a production order. {@code warehouse} calls no other module; {@code reporting} already
+ * drawing up and sending a production order. {@code warehouse} calls no other module; {@code reporting} already
  * depends on {@code order}, which could then not ask it back.</p>
  *
  * <p><b>One measure of a carton.</b> Every volume - what stands in the warehouse, what is held, what production orders
@@ -57,7 +57,7 @@ import java.util.UUID;
  * warehouses to theirs. The reads for a shipping-warehouse choice and a production order apply no scope of their own:
  * their callers already decided the caller may see that order or production order.</p>
  *
- * <p><b>Approval</b> ({@link #warnIfSendingTurnsNegative}): under the advisory lock {@code warehouse-capacity:<id>},
+ * <p><b>Sending</b> ({@link #warnIfSendingTurnsNegative}): under the advisory lock {@code warehouse-capacity:<id>},
  * taken after the sales order and the production order - lock order customer_order, production_order, warehouse
  * capacity - the board is read as it stands before the production order is sent, and the crossing below zero is told
  * once (C42).</p>
@@ -97,7 +97,8 @@ public class WarehouseCapacityService {
                         BigDecimal capacityM3, BigDecimal occupiedM3, BigDecimal occupiedKg, BigDecimal incomingM3,
                         @Schema(description = "capacity - occupied - incoming; may be negative")
                         BigDecimal projectedFreeM3,
-                        @Schema(description = "production orders not sent yet (DRAFT, PENDING_APPROVAL)")
+                        @Schema(description = "production orders not sent yet (DRAFT; PENDING_APPROVAL on rows of "
+                                + "before 2026-11-20)")
                         BigDecimal pendingM3,
                         @Schema(description = "projected free - pending; may be negative")
                         BigDecimal freeIfAllApprovedM3,
@@ -206,10 +207,10 @@ public class WarehouseCapacityService {
     }
 
     /**
-     * In the approval's transaction, before {@code productionOrder} is sent: when sending it turns its warehouse's
+     * In the send's transaction, before {@code productionOrder} is sent: when sending it turns its warehouse's
      * projected free room from zero or more to below zero, publishes {@link WarehouseCapacityTurnedNegative} (06 §4.6
      * step 8, C42) - told after commit, once. The board is read under {@code warehouse-capacity:<id>} with the
-     * production order still pending, so its cartons are not yet incoming: "before" is the board, "after" the board
+     * production order still a draft, so its cartons are not yet incoming: "before" is the board, "after" the board
      * less them. A production order of a SKU with no carton size cannot be judged and tells nobody.
      */
     @Transactional(propagation = Propagation.MANDATORY)

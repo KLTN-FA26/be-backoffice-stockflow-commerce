@@ -17,7 +17,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
-/** The customer hears of the Sales Manager's decision on their design, in the app, once per decision. */
+/** The customer hears of the coordinator's decision on their design, in the app, once per decision. */
 class DesignDecisionNotificationListenerTest {
 
     private final Inbox inbox = mock(Inbox.class);

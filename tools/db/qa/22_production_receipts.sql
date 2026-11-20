@@ -1,7 +1,7 @@
 -- =============================================================================
 -- Adversarial checks + happy paths: receiving against a production order (V20261108002800, team plan 4A-5;
 -- kltn-docs 03 §4.1, BR-01..BR-15 and edge cases; 17 §4.3 step 11, §5.3). Needs the demo seed (demo.editor draws up
--- and receives, demo.approver approves; the HCM warehouse and its RECEIVING area HCM-RCV01). Rolled back at the end.
+-- sends and receives, V20261211000100; the HCM warehouse and its RECEIVING area HCM-RCV01). Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -106,7 +106,7 @@ VALUES (md5('qa22:wh')::uuid, 'QA other warehouse', 'ACTIVE', 'QAW', 'Somewhere'
 SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;
 
--- A production order of the batch at HCM, drawn up, submitted and approved (so SENT), with a line of {cartons}.
+-- A production order of the batch at HCM, drawn up and sent by the coordinator, with a line of {cartons}.
 CREATE FUNCTION pg_temp.sent(po_id UUID, po_code TEXT, sample BOOLEAN, cartons INTEGER) RETURNS void
     LANGUAGE sql AS $$
     INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, customer_id, producer_id,
@@ -119,9 +119,8 @@ CREATE FUNCTION pg_temp.sent(po_id UUID, po_code TEXT, sample BOOLEAN, cartons I
                                                 design_snapshot_id, print_file_checksum)
     VALUES (md5(po_code || ':line')::uuid, po_id, md5('qa22:line')::uuid, 'QA-PRR-OWN', cartons, 50,
             md5('qa22:snap')::uuid, repeat('d', 64));
-    UPDATE ordering.production_order SET status = 'PENDING_APPROVAL', submitted_at = NOW() WHERE id = po_id;
-    UPDATE ordering.production_order SET status = 'SENT', approved_by = md5('demo:user:approver')::uuid,
-           approved_at = NOW(), sent_at = NOW() WHERE id = po_id;
+    UPDATE ordering.production_order SET status = 'SENT', sent_by = md5('demo:user:editor')::uuid, sent_at = NOW()
+     WHERE id = po_id;
 $$;
 -- A DRAFT receipt against a production order, into {warehouse_prefix}'s warehouse; registered with the production order unless
 -- {registered} is false.

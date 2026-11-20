@@ -62,7 +62,7 @@ public final class PrintSamples {
                                                ProductionSampleService samples, ProductionOrder sent,
                                                UUID coordinator, UUID customerUser) {
         ProductionOrder accepted = productionOrders.accept(sent.id(), sent.version(),
-                LocalDate.now().plusDays(10), coordinator);
+                LocalDate.now().plusDays(10), null, coordinator);
         return started(productionOrders, samples, accepted, coordinator, customerUser);
     }
 

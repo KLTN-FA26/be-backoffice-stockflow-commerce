@@ -14,7 +14,7 @@ import org.springframework.modulith.events.ApplicationModuleListener;
 import org.springframework.stereotype.Component;
 
 /**
- * Tells the customer the Sales Manager decided their design (kltn-docs 12 §4.4, §4.5): in the app, to the design's
+ * Tells the customer the coordinator decided their design (kltn-docs 12 §4.4, §4.5): in the app, to the design's
  * owner - approved with the SKU issued for it, or returned to be changed. One inbox row per decision
  * ({@code design-decision:<design>:<decided at>}), so a redelivered event tells nobody twice. System text only: the
  * reason a design was returned is read in the design itself.

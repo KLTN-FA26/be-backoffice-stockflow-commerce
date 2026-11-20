@@ -6,11 +6,11 @@ import java.time.LocalDate;
 import java.util.UUID;
 
 /**
- * Published by the <b>order</b> module when the Sales Manager approves a production order, which sends it (kltn-docs 17
- * §4.3 step 7, BR-23): once per production order. The <b>notification</b> module sends it to the producer through the
- * producer's channel - by e-mail, with links to the slip and the print files; nothing for a producer who is handed the
- * slip - and tells the warehouse manager(s) of the receiving warehouse what is coming (00 §6: cartons, volume, need-by
- * date).
+ * Published by the <b>order</b> module when the Production Coordinator sends a production order to its producer
+ * (kltn-docs 17 §4.3 step 7, BR-23; with no approval step since 2026-11-20): once per production order. The
+ * <b>notification</b> module sends it to the producer through the producer's channel - by e-mail, with links to the
+ * slip and the print files; nothing for a producer who is handed the slip - and tells the warehouse manager(s) of the
+ * receiving warehouse what is coming (00 §6: cartons, volume, need-by date).
  *
  * <p>Facts only. The producer's address, the coordinator's note and the lines are read when the e-mail is written,
  * through {@code notification.api.ProductionOrderDirectory}, which the order module implements: an event is stored, and

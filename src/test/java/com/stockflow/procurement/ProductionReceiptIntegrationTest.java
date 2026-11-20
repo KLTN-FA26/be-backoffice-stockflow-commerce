@@ -142,7 +142,6 @@ class ProductionReceiptIntegrationTest {
 
     private CurrentUser sales;
     private UUID coordinator;
-    private UUID manager;
     private UUID clerk;
     private UUID customerId;
     private IssuedSku sku;
@@ -159,7 +158,6 @@ class ProductionReceiptIntegrationTest {
         sales = new CurrentUser(salesUser, "sales-" + salesUser, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
                 Set.of(), Set.of());
         coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
-        manager = tx.execute(s -> ReferenceRows.user(entityManager));
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
         customerId = Identifiers.newId();
         tx.executeWithoutResult(s -> {
@@ -312,12 +310,11 @@ class ProductionReceiptIntegrationTest {
         return orderId;
     }
 
-    /** Drawn up for {@code batch}, submitted and approved by someone else: SENT, a print sample to approve first. */
+    /** Drawn up for {@code batch} and sent by the coordinator: SENT, a print sample to approve first. */
     private ProductionOrder sentWithSample(UUID orderId, int batch) {
         ProductionOrder draft = productionOrders.drawUp(orderId, batch, producer.id(), coordinator);
         assertThat(draft.sampleApprovalRequired()).as("BR-24: a SKU never produced wants a sample").isTrue();
-        ProductionOrder pending = productionOrders.submit(draft.id(), draft.version(), coordinator);
-        return productionOrders.approve(pending.id(), pending.version(), manager);
+        return productionOrders.send(draft.id(), draft.version(), coordinator);
     }
 
     /** As {@link #sentWithSample}, the sample waived with a reason: goods can be received while it is SENT. */
@@ -326,8 +323,7 @@ class ProductionReceiptIntegrationTest {
         ProductionOrder waived = productionOrders.edit(draft.id(), draft.version(), new ProductionOrder.Draft(
                 draft.producerId(), draft.needByDate(), draft.note(), false,
                 "The customer approved the same print on paper", null));
-        ProductionOrder pending = productionOrders.submit(waived.id(), waived.version(), coordinator);
-        ProductionOrder sent = productionOrders.approve(pending.id(), pending.version(), manager);
+        ProductionOrder sent = productionOrders.send(waived.id(), waived.version(), coordinator);
         assertThat(sent.status()).isEqualTo(ProductionOrderStatus.SENT);
         assertThat(sent.sampleApprovalRequired()).isFalse();
         return sent;
@@ -444,12 +440,9 @@ class ProductionReceiptIntegrationTest {
         assertThat(ErrorCode.PRODUCTION_ORDER_NOT_RECEIVABLE.httpStatus()).isEqualTo(409);
 
         ProductionOrder draft = productionOrders.drawUp(orderId, 2, producer.id(), coordinator);
-        assertThatThrownBy(() -> start(draft)).extracting(ProductionReceiptIntegrationTest::code)
-                .isEqualTo(ErrorCode.PRODUCTION_ORDER_NOT_RECEIVABLE);
-        ProductionOrder pending = productionOrders.submit(draft.id(), draft.version(), coordinator);
-        assertThatThrownBy(() -> start(pending)).as("PENDING_APPROVAL")
+        assertThatThrownBy(() -> start(draft)).as("a DRAFT is not sent yet")
                 .satisfies(e -> assertThat(code(e)).isEqualTo(ErrorCode.PRODUCTION_ORDER_NOT_RECEIVABLE))
-                .hasMessageContaining("PENDING_APPROVAL");
+                .hasMessageContaining("DRAFT");
         assertThatThrownBy(() -> receipts.createForProductionOrder(new GoodsReceipts.CreateForProductionOrder(
                 Identifiers.newId(), null, null), clerk)).extracting(ProductionReceiptIntegrationTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_NOT_FOUND);
@@ -481,7 +474,7 @@ class ProductionReceiptIntegrationTest {
         UUID orderId = confirmedOrderAtA();
         UUID customerUser = PrintSamples.portalUser(jdbc, tx, entityManager, customerId);
         ProductionOrder sent = sentWithSample(orderId, 1);
-        ProductionOrder accepted = productionOrders.accept(sent.id(), sent.version(), today.plusDays(10), coordinator);
+        ProductionOrder accepted = productionOrders.accept(sent.id(), sent.version(), today.plusDays(10), null, coordinator);
         assertThatThrownBy(() -> start(accepted)).as("ACCEPTED with a print sample to approve")
                 .extracting(ProductionReceiptIntegrationTest::code).isEqualTo(ErrorCode.PRODUCTION_ORDER_NOT_RECEIVABLE);
 
@@ -662,13 +655,13 @@ class ProductionReceiptIntegrationTest {
         assertThat(after.status()).isEqualTo(ProductionOrderStatus.PARTIALLY_RECEIVED);
         assertThat(after.productionStartedAt()).isNotNull();
         assertThat(after.lines().getFirst().receivedCartons()).isEqualTo(5);
-        assertThat(history(production.id())).hasSize(5).last().satisfies(h -> {
+        assertThat(history(production.id())).hasSize(4).last().satisfies(h -> {
             assertThat(h.from()).isEqualTo(ProductionOrderStatus.IN_PRODUCTION);
             assertThat(h.to()).isEqualTo(ProductionOrderStatus.PARTIALLY_RECEIVED);
             assertThat(h.by()).isEqualTo(clerk);
             assertThat(h.reason()).contains(receipt.number());
         });
-        assertThat(history(production.id()).get(3)).satisfies(h -> {
+        assertThat(history(production.id()).get(2)).satisfies(h -> {
             assertThat(h.from()).isEqualTo(ProductionOrderStatus.SENT);
             assertThat(h.to()).isEqualTo(ProductionOrderStatus.IN_PRODUCTION);
             assertThat(h.by()).isEqualTo(clerk);
@@ -683,7 +676,7 @@ class ProductionReceiptIntegrationTest {
         assertThat(replayed.status()).isEqualTo("PARTIALLY_RECEIVED");
         assertThat(replayed.lines()).singleElement().extracting(ReceivableProductionOrder.Line::receivedCartons)
                 .isEqualTo(5);
-        assertThat(history(production.id())).hasSize(5);
+        assertThat(history(production.id())).hasSize(4);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_item WHERE sku = ?", Long.class,
                 sku.sku())).isEqualTo(5);
 

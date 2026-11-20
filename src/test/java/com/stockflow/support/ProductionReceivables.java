@@ -55,7 +55,7 @@ import java.util.stream.IntStream;
  * SKUs of their own, on a confirmed contract, delivering to a warehouse the test names. The tests of putaway, cartons,
  * lots and stock lookups need a goods receipt to start from; since purchasing went (4A-8) there is no purchase order
  * to write into the tables, and a goods receipt is only ever against a production order, so they get one here - made
- * through the real services (a contract signed, a production order drawn up, approved, its print sample waived),
+ * through the real services (a contract signed, a production order drawn up, its print sample waived, sent),
  * because the database refuses a receipt whose production order is not really SENT.
  *
  * <p>Needs the upload scanner and the customer e-mail off and a mocked mail sender - see
@@ -262,17 +262,15 @@ public class ProductionReceivables {
         shippingWarehouses.choose(orderId, warehouseId, sales.userId());
 
         UUID coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
-        UUID manager = tx.execute(s -> ReferenceRows.user(entityManager));
         ProductionOrder draft = productionOrders.drawUp(orderId, 1, producer().id(), coordinator);
         ProductionOrder waived = productionOrders.edit(draft.id(), draft.version(), new ProductionOrder.Draft(
                 draft.producerId(), draft.needByDate(), draft.note(), false,
                 "The customer approved the same print on paper", null));
-        ProductionOrder pending = productionOrders.submit(waived.id(), waived.version(), coordinator);
-        ProductionOrder approved = productionOrders.approve(pending.id(), pending.version(), manager);
+        ProductionOrder production = productionOrders.send(waived.id(), waived.version(), coordinator);
         List<Goods> goods = issued.stream().map(i -> new Goods(i.sku(), i.itemId(), i.cartonUnitId(),
-                i.unitsPerCarton(), i.cartons(), approved.lines().stream().filter(l -> l.sku().equals(i.sku()))
+                i.unitsPerCarton(), i.cartons(), production.lines().stream().filter(l -> l.sku().equals(i.sku()))
                 .findFirst().orElseThrow().id())).toList();
-        return new Receivable(orderId, approved.id(), approved.code(), goods);
+        return new Receivable(orderId, production.id(), production.code(), goods);
     }
 
     /** A DRAFT goods receipt against the production order, as a clerk of the warehouse starts one. */

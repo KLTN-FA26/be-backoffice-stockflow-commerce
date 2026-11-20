@@ -57,7 +57,7 @@ public class DesignWorkflowService {
     /**
      * A design as the API shows it. {@code productSlug} is null for a product since removed; {@code sku} and
      * {@code templateCode} are null for a design staff started before customers designed; {@code reviewNotes} is the
-     * Sales Manager's reason when it was returned; {@code updatedAt} is when the design or its layout last changed.
+     * coordinator's reason when it was returned; {@code updatedAt} is when the design or its layout last changed.
      */
     public record DraftView(UUID id, UUID customerId, UUID productId, UUID ownerUserId, String name, String spec,
             String status, UUID currentArtifactId, UUID reviewedBy, String reviewNotes, long version,

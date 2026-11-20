@@ -392,10 +392,18 @@ class PermissionMatrixTest {
             Map.entry("sales-order-addresses:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("sales-order-shipping-warehouses:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
                     Role.WAREHOUSE_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
-            // 4A-2, kltn-docs 17 §4.3, BR-23: the coordinator draws production orders up, the Sales Manager approves.
+            // 4A-2, kltn-docs 17 §4.3: the coordinator draws production orders up and sends them; since V20261211000200
+            // nobody approves one (production-orders:APPROVE is gone) and the Sales Manager is told of each one sent.
             Map.entry("production-orders:CREATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("production-orders:UPDATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
-            Map.entry("production-orders:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("production-order-sends:READ", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // V20261211000200 (kltn-docs 12 §4.4, §4.10): the Production Coordinator reviews the customers' designs,
+            // and reads what they review; the Sales Manager no longer does.
+            Map.entry("design-designs:APPROVE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("design-designs:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("design-designs:VIEW_PAGE", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             // 4A-4, kltn-docs 13 BR-13: the customer sees and answers their own print samples on the storefront.
             Map.entry("production-samples:READ", Set.of(Role.CUSTOMER, Role.SYSTEM_ADMIN)),
             Map.entry("production-samples:APPROVE", Set.of(Role.CUSTOMER, Role.SYSTEM_ADMIN)),

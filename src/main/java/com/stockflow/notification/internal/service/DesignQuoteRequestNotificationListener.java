@@ -18,7 +18,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * Tells the sales staff of a customer's quote request on a design (kltn-docs 12 §4.8; 16 §4.2 step 5), and again when
- * the Sales Manager decides a design one is open on (12 §4.5 step 17: approved, it can be quoted now; returned, the
+ * the coordinator decides a design one is open on (12 §4.5 step 17: approved, it can be quoted now; returned, the
  * request stays open and follows the design - B40). The recipients are the holders of {@value #SALES}, system-wide:
  * the chat's routing to the responsible salesperson (16 §4.1) comes with the chat module; until then every one of them
  * hears, as the general queue would.

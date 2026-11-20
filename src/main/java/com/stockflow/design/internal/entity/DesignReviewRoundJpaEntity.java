@@ -10,7 +10,7 @@ import java.util.UUID;
 
 /**
  * {@code design.design_review_round}: drafts of a project submitted together (kltn-docs 12 §4.10; BR-19, BR-20), one
- * item in the Sales Manager's queue. Each design in it is decided on its own
+ * item in the Production Coordinator's queue. Each design in it is decided on its own
  * ({@link DesignReviewRoundDesignJpaEntity}); the round closes once every one is.
  */
 @Entity

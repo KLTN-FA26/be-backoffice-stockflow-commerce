@@ -216,15 +216,18 @@ and as `ck_stock_item_whole_cartons` on `inventory.stock_item` (V20261117000100;
 
 ### Production orders and receiving
 
-Stock the business does not have is not bought: Sales Manager-approved **production orders** (`ProductionOrderService`,
-`order/internal/service/`) are sent to producers outside the system, one per delivery batch, for what the batch lacks
-after the stock held for it. The order waits `AWAITING_STOCK` / `IN_PRODUCTION`. The print sample rounds
+Stock the business does not have is not bought: **production orders** the Production Coordinator draws up and sends
+(`ProductionOrderService`, `order/internal/service/`; DRAFT → SENT, no approval step since 2026-11-20, kltn-docs 17
+BR-23; `PENDING_APPROVAL` and `approved_*` are history) go to producers outside the system, one per delivery batch, for
+what the batch lacks after the stock held for it. The Sales Manager is told of each one sent
+(`production-order-sends:READ`). The order waits `AWAITING_STOCK` / `IN_PRODUCTION`. The print sample rounds
 (`ProductionSampleService`), the schedule and the delay alerts are in the same module. Every write locks the sales
-order first and the production order after it. Approving one (`ProductionOrderService.approve`, the capacity board's
-warning when the warehouse's projected free room turns negative, kltn-docs 06 §4.6, C42) takes one more lock, last:
+order first and the production order after it. Sending one (`ProductionOrderService.send`: print files checked and the
+slip drawn with no lock held, then the capacity board's warning when the warehouse's projected free room turns
+negative, kltn-docs 06 §4.6, C42) takes one more lock, last:
 
 ```
-customer_order → production_order → warehouse-capacity:<warehouseId> advisory lock   (approval only)
+customer_order → production_order → warehouse-capacity:<warehouseId> advisory lock   (sending only)
 ```
 
 Goods come back printed, in cartons, and are received against the production order: `GoodsReceiptServiceImpl`
