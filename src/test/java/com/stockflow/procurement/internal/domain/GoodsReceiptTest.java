@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -161,11 +162,24 @@ class GoodsReceiptTest {
         assertThat(closed.closedAt()).isEqualTo(NOW);
     }
 
+    private static final Set<GoodsReceiptStatus> HISTORICAL =
+            Set.of(GoodsReceiptStatus.PENDING_APPROVAL, GoodsReceiptStatus.CONFIRMED);
+
+    @Test
+    @DisplayName("the two historical statuses are refused by the constructor, as ck_goods_receipts_status refuses them")
+    void constructorRefusesTheHistoricalStatuses() {
+        for (GoodsReceiptStatus status : HISTORICAL) {
+            assertThatThrownBy(() -> new GoodsReceipt(UUID.randomUUID(), "GR-20261109-0003", PRODUCTION_ORDER,
+                    UUID.randomUUID(), NOW, USER, null, null, List.of(), status, NOW, USER, null, 0L))
+                    .as("constructed " + status).isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
     @Test
     @DisplayName("cancel takes a DRAFT only: every other status, the historical ones included, is INVALID_RECEIPT_TRANSITION")
     void cancelRefusesAnythingButDraft() {
         for (GoodsReceiptStatus status : GoodsReceiptStatus.values()) {
-            if (status == GoodsReceiptStatus.DRAFT) {
+            if (status == GoodsReceiptStatus.DRAFT || HISTORICAL.contains(status)) {
                 continue;
             }
             GoodsReceipt receipt = new GoodsReceipt(UUID.randomUUID(), "GR-20261109-0002", PRODUCTION_ORDER,

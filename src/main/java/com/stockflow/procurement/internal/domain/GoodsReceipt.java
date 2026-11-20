@@ -69,6 +69,10 @@ public final class GoodsReceipt extends AggregateRoot {
         this.note = note;
         this.lines = new ArrayList<>(lines == null ? List.of() : lines);
         this.status = Objects.requireNonNull(status, "status");
+        if (status == GoodsReceiptStatus.PENDING_APPROVAL || status == GoodsReceiptStatus.CONFIRMED) {
+            // Historical constants: ck_goods_receipts_status refuses both since V20261214000100, so no row can hold them.
+            throw new IllegalArgumentException("A goods receipt is never " + status + " (ck_goods_receipts_status)");
+        }
         this.confirmedAt = confirmedAt;
         this.confirmedBy = confirmedBy;
         this.closedAt = closedAt;
