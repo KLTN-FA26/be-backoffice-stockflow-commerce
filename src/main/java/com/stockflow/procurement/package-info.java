@@ -8,7 +8,8 @@
  * <p><b>May depend on:</b> inventory, warehouse, identity, fulfillment and order - receiving against a production
  * order reads and moves it through {@code order :: api}'s {@code ProductionOrderReceiving}; a return receipt (team plan
  * 4D-2) checks what comes back against the shipment's cartons ({@code fulfillment :: api}) or the return request
- * ({@code order :: api}). Neither order nor fulfillment depends on procurement, so there is no cycle. Plus
+ * ({@code order :: api}); the carton label asks it, through {@code inventory :: spi}, the lot of a receipt line whose
+ * cartons are still being counted. Neither order nor fulfillment depends on procurement, so there is no cycle. Plus
  * {@code common} and {@code contracts}, which are available to every module.</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
@@ -19,6 +20,6 @@
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>
  */
-@org.springframework.modulith.ApplicationModule(allowedDependencies = {"inventory :: api", "warehouse :: api",
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"inventory :: api", "inventory :: spi", "warehouse :: api",
         "identity :: api", "fulfillment :: api", "order :: api"})
 package com.stockflow.procurement;

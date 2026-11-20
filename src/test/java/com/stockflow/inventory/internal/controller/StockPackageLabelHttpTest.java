@@ -115,6 +115,29 @@ class StockPackageLabelHttpTest {
     }
 
     @Test
+    @DisplayName("a carton still being counted prints its receipt line's lot and its SKU's name, asked of procurement "
+            + "and product")
+    void printsTheLotAndTheName() throws Exception {
+        String lot = jdbc.queryForObject("SELECT lot_number FROM procurement.goods_receipt_lines WHERE id = ?",
+                String.class, receiptLineId);
+        String name = jdbc.queryForObject("""
+                SELECT v.name FROM product.variants v
+                  JOIN inventory.inventory_items i ON i.sku = v.sku
+                  JOIN inventory.stock_package p ON p.inventory_item_id = i.id
+                 WHERE p.lpn = ?""", String.class, lpns.get(0));
+        byte[] pdf = print(Role.WAREHOUSE_STAFF, clerk,
+                "{\"format\":\"A4_SHEET\",\"receiptLineId\":\"" + receiptLineId + "\"}")
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            String text = new org.apache.pdfbox.text.PDFTextStripper().getText(doc).replaceAll("\\s+", " ");
+            assertThat(text).contains(lot);
+            // A long name wraps and may be cut; its start is on the label either way.
+            assertThat(text).contains(name.length() > 20 ? name.substring(0, 20) : name);
+        }
+    }
+
+    @Test
     @DisplayName("a receipt line with an empty lpns list beside it prints the line: [] is no second selector")
     void emptyLpnsBesideTheLine() throws Exception {
         byte[] pdf = print(Role.WAREHOUSE_STAFF, clerk,

@@ -12,6 +12,8 @@ import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.repository.UomConversionRepository;
 import com.stockflow.inventory.spi.PickedNotHandedOver;
+import com.stockflow.inventory.spi.ReceiptLineLots;
+import com.stockflow.inventory.spi.SkuNames;
 import com.stockflow.support.WithCurrentUser;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -22,6 +24,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -43,12 +46,15 @@ class StockPackageLabelsTest {
     private final StockPackageRepository stockPackages = mock(StockPackageRepository.class);
     private final UomConversionRepository units = mock(UomConversionRepository.class);
     private final PickedNotHandedOver picked = mock(PickedNotHandedOver.class);
-    private final StockPackageLabels labels = new StockPackageLabels(stockPackages, units, providerOf(picked));
+    private final SkuNames names = mock(SkuNames.class);
+    private final ReceiptLineLots receiptLots = mock(ReceiptLineLots.class);
+    private final StockPackageLabels labels = new StockPackageLabels(stockPackages, units, providerOf(picked),
+            providerOf(names), providerOf(receiptLots));
 
     @SuppressWarnings("unchecked")
-    private static ObjectProvider<PickedNotHandedOver> providerOf(PickedNotHandedOver station) {
-        ObjectProvider<PickedNotHandedOver> provider = mock(ObjectProvider.class);
-        when(provider.getIfAvailable()).thenReturn(station);
+    private static <T> ObjectProvider<T> providerOf(T answer) {
+        ObjectProvider<T> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(answer);
         return provider;
     }
 
@@ -93,6 +99,38 @@ class StockPackageLabelsTest {
         assertThat(sheet.get(1).nominalQty()).isEqualTo(24);
         assertThat(sheet.get(1).unit()).isEqualTo("CARTON");
         assertThat(sheet.get(1).sku()).isEqualTo("CUP-12OZ");
+    }
+
+    @Test
+    @DisplayName("a label names the item, and takes the lot from the carton's stock row, else from its receipt line")
+    void nameAndLot() {
+        unitOfCartons();
+        StockPackage stored = carton("LPN-0001", "HCM-RCV01", StockPackageStatus.IN_STOCK);
+        StockPackage counting = carton("LPN-0002", "HCM-RCV01", StockPackageStatus.RECEIVING);
+        when(stockPackages.findByReceiptLines(List.of(RECEIPT_LINE))).thenReturn(List.of(stored, counting));
+        when(stockPackages.lotsOf(anyCollection())).thenReturn(Map.of(stored.id(), "RETURN-LOT"));
+        when(receiptLots.lotsOf(List.of(RECEIPT_LINE))).thenReturn(Map.of(RECEIPT_LINE, "PRD-20261111-0001"));
+        when(names.namesOf(List.of("CUP-12OZ"))).thenReturn(Map.of("CUP-12OZ", "Paper cup 12oz"));
+
+        List<StockPackageLabel> sheet = labels.sheetFor(RECEIPT_LINE, null);
+
+        assertThat(sheet).extracting(StockPackageLabel::name).containsOnly("Paper cup 12oz");
+        assertThat(sheet).extracting(StockPackageLabel::lot).containsExactly("RETURN-LOT", "PRD-20261111-0001");
+    }
+
+    @Test
+    @DisplayName("without the modules that answer name and lot, the label prints without them")
+    void nameAndLotUnanswered() {
+        unitOfCartons();
+        when(stockPackages.findByReceiptLines(List.of(RECEIPT_LINE))).thenReturn(List.of(
+                carton("LPN-0001", "HCM-RCV01", StockPackageStatus.RECEIVING)));
+        StockPackageLabels alone = new StockPackageLabels(stockPackages, units, providerOf(picked), providerOf(null),
+                providerOf(null));
+
+        List<StockPackageLabel> sheet = alone.sheetFor(RECEIPT_LINE, null);
+
+        assertThat(sheet.get(0).name()).isNull();
+        assertThat(sheet.get(0).lot()).isNull();
     }
 
     @Test
@@ -202,7 +240,8 @@ class StockPackageLabelsTest {
     @Test
     @DisplayName("without the station (a module test), a consumed carton is refused as before")
     void consumedWithoutStationRefused() {
-        StockPackageLabels alone = new StockPackageLabels(stockPackages, units, providerOf(null));
+        StockPackageLabels alone = new StockPackageLabels(stockPackages, units, providerOf(null), providerOf(names),
+                providerOf(receiptLots));
         when(stockPackages.findByLpns(List.of("LPN-0004"))).thenReturn(List.of(
                 carton("LPN-0004", "HCM-DISPATCH", StockPackageStatus.CONSUMED)));
 

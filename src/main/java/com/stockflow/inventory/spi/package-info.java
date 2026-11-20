@@ -14,6 +14,12 @@
  * fulfillment's: inventory asks it here too, and fulfillment answers it, as the warehouse map asks inventory what stands
  * in a bin.</p>
  *
+ * <p>The carton label asks two more questions the same way (SCRUM-473): what each SKU is called ({@link SkuNames},
+ * answered by {@code product}, which depends on {@code inventory :: api}), and which lot a goods receipt line is in
+ * ({@link ReceiptLineLots}, answered by {@code procurement}) for a carton still being counted, which has no stock row
+ * to carry its lot yet. Each is one question per label sheet, and a module test without the answering module prints
+ * the label without that field.</p>
+ *
  * <p>Like {@code api}: records and interfaces only, nothing internal.</p>
  */
 @org.springframework.modulith.NamedInterface("spi")

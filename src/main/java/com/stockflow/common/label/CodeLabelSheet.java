@@ -17,11 +17,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The one label layout every printed code label uses: the code as large bold text at the top left, two smaller
- * lines under it, a QR code at the top right and a Code 128 barcode across the bottom, all three symbols carrying
- * exactly the code. Location labels (SCRUM-97) and carton labels (SCRUM-473) differ only in their code and two lines,
- * so they are laid out here once: a change of padding, spacing or squeeze reaches both, and one printer setup keeps
- * serving both.
+ * The location label's layout (SCRUM-97): the code as large bold text at the top left, two smaller lines under it, a
+ * QR code at the top right and a Code 128 barcode across the bottom, all three symbols carrying exactly the code. The
+ * carton label shared it until it needed more fields than two lines (SCRUM-473) and got its own,
+ * {@link CartonLabelSheet}, on the same label stock ({@link LabelFormat}) and the same {@link LabelDrawing} symbols,
+ * so one printer setup and one scanner still serve both.
  *
  * <p>Knows nothing about persistence: callers render after the read-only transaction that chose the labels has
  * ended, so no connection is held while a large PDF is drawn.</p>

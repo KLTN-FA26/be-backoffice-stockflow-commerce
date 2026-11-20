@@ -9,11 +9,13 @@ import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.font.PDFont;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
- * The drawing primitives of {@link CodeLabelSheet}: a Code 128 barcode, a QR code, fitted text and the
- * millimetre/point conversion. Location labels (SCRUM-97) and carton labels (SCRUM-473) both go through
- * that one layout, so a scanner tuned on one reads the other. Public since 4A-3: the production order slip prints its
+ * The drawing primitives of the label sheets: a Code 128 barcode, a QR code, fitted and wrapped text and the
+ * millimetre/point conversion. Location labels (SCRUM-97, {@link CodeLabelSheet}), carton labels (SCRUM-473,
+ * {@link CartonLabelSheet}) and shipping labels all draw their symbols here, so a scanner tuned on one reads the others. Public since 4A-3: the production order slip prints its
  * code - the lot its goods are received under - with the same symbols, so the receiving scanner reads it too.
  *
  * <p>Every bar and every QR module is a filled vector rectangle rather than a raster image, so a
@@ -70,14 +72,19 @@ public final class LabelDrawing {
      * {@code text} must be BMP-only, so cutting at any index splits no character.
      */
     public static String cut(PDFont font, String text, double widthMm) throws IOException {
-        if (widthMm(font, text, CONTEXT_POINTS) <= widthMm) {
+        return cut(font, text, widthMm, CONTEXT_POINTS);
+    }
+
+    /** {@link #cut(PDFont, String, double)} for text drawn at {@code size} points. */
+    public static String cut(PDFont font, String text, double widthMm, float size) throws IOException {
+        if (widthMm(font, text, size) <= widthMm) {
             return text;
         }
         int fits = 0;
         int tooLong = text.length();
         while (tooLong - fits > 1) {
             int middle = (fits + tooLong) >>> 1;
-            if (widthMm(font, text.substring(0, middle) + ELLIPSIS, CONTEXT_POINTS) <= widthMm) {
+            if (widthMm(font, text.substring(0, middle) + ELLIPSIS, size) <= widthMm) {
                 fits = middle;
             } else {
                 tooLong = middle;
@@ -86,17 +93,67 @@ public final class LabelDrawing {
         return text.substring(0, Math.max(fits, 1)).strip() + ELLIPSIS;
     }
 
+    /**
+     * Greedy word wrap of drawable text into at most {@code lines} lines of {@code widthMm} at {@code size} points;
+     * what the last line cannot hold is cut with an ellipsis, and a single word wider than a line is cut likewise.
+     * Blank text gives no line.
+     */
+    public static List<String> wrap(PDFont font, String text, double widthMm, float size, int lines)
+            throws IOException {
+        String trimmed = text.trim();
+        List<String> rows = new ArrayList<>();
+        if (trimmed.isEmpty()) {
+            return rows;
+        }
+        StringBuilder current = new StringBuilder();
+        for (String word : trimmed.split("\\s+")) {
+            String candidate = current.isEmpty() ? word : current + " " + word;
+            if (current.isEmpty() || widthMm(font, candidate, size) <= widthMm) {
+                current.setLength(0);
+                current.append(candidate);
+            } else {
+                rows.add(current.toString());
+                current.setLength(0);
+                current.append(word);
+            }
+        }
+        rows.add(current.toString());
+        if (rows.size() > lines) {
+            // The rest goes on the last line, cut with an ellipsis.
+            String last = String.join(" ", rows.subList(lines - 1, rows.size()));
+            rows = new ArrayList<>(rows.subList(0, lines - 1));
+            rows.add(last);
+        }
+        List<String> drawn = new ArrayList<>(rows.size());
+        for (String row : rows) {
+            drawn.add(cut(font, row, widthMm, size));
+        }
+        return drawn;
+    }
+
+    /**
+     * How wide {@link #barcode} draws {@code code}, quiet zones included, when given {@code widthMm}: the widest
+     * printable module that fits, so a layout can centre the symbol in the room it has.
+     */
+    public static double barcodeWidthMm(String code, double widthMm) {
+        int total = new Code128Writer().encode(code).length + 2 * BARCODE_QUIET_MODULES;
+        return moduleWidth(total, widthMm) * total;
+    }
+
+    private static double moduleWidth(int totalModules, double widthMm) {
+        for (double candidate : BAR_MODULE_WIDTHS_MM) {
+            if (candidate * totalModules <= widthMm) {
+                return candidate;
+            }
+        }
+        return widthMm / totalModules;
+    }
+
     public static void barcode(PDPageContentStream out, Cell cell, String code, double leftMm, double topMm,
                                double widthMm, double heightMm) throws IOException {
         boolean[] modules = new Code128Writer().encode(code);
         int total = modules.length + 2 * BARCODE_QUIET_MODULES;
-        double module = widthMm / total;
-        for (double candidate : BAR_MODULE_WIDTHS_MM) {
-            if (candidate * total <= widthMm) {
-                module = candidate;
-                break;
-            }
-        }
+        double module = moduleWidth(total, widthMm);
         double x = leftMm + BARCODE_QUIET_MODULES * module;
         for (int i = 0; i < modules.length; ) {
             if (!modules[i]) {
