@@ -135,8 +135,8 @@ class CustomerDesignController {
      * it cannot be asked: 400 for its fields, 409 {@code CUSTOMER_NOT_ACTIVE}. 404 for anyone but the owner.
      */
     @PostMapping("/{id}/technical-review-requests")
-    @Operation(summary = "Submit the draft for review, with a quote request if any: preflight, then the Sales "
-            + "Manager's queue")
+    @Operation(summary = "Submit the draft for review, with a quote request if any: preflight, then the Production "
+            + "Coordinator's queue")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
     public ApiResponse<DesignDraftResponse> submit(@PathVariable UUID id, @Valid @RequestBody SubmitRequest request,
                                                    @AuthenticatedUser CurrentUser user) {

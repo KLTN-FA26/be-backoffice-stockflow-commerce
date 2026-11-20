@@ -32,7 +32,7 @@ import java.util.Map;
  * <p>The geometry is the studio's own ({@code geometry/element.ts}, {@code preflight/rules/area.ts}), ported so that an
  * element is checked where the customer saw it. What it cannot check: the extent of text. Text is laid out by the
  * browser with its fonts; without their metrics the server cannot know how far a line reaches, so only the point a text
- * element is anchored at is checked, and its extent is left to the studio's own preflight and the Sales Manager's eye.
+ * element is anchored at is checked, and its extent is left to the studio's own preflight and the coordinator's eye.
  * Hidden elements are not printed and are not checked.</p>
  *
  * <p>Each finding carries, besides its English message, the numbers behind it ({@code values}: the DPI reached and the

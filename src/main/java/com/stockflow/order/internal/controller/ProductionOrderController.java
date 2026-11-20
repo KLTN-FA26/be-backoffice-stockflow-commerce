@@ -58,7 +58,7 @@ import java.util.UUID;
 @Tag(name = "Production orders")
 @PermissionResource(code = OrderResources.PRODUCTION_ORDERS, group = "Production", label = "Production orders",
         route = "/production/orders", apiPath = "/api/v1/production-orders",
-        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.APPROVE})
+        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE})
 class ProductionOrderController {
 
     /** What the coordinator draws up a production order from. */

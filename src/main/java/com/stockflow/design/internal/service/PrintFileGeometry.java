@@ -15,7 +15,7 @@ import org.apache.pdfbox.pdmodel.common.PDRectangle;
 
 /**
  * Whether a design's print file is the one the studio renders for its template (plan D2), checked when the design is
- * submitted - so a file the press could not use never reaches the Sales Manager - and again when it is approved, before
+ * submitted - so a file the press could not use never reaches the coordinator - and again when it is approved, before
  * its boxes are stamped ({@link PrintReadyStamp}).
  *
  * <p>What the file holds: for a cup, one page per print area in the template's order; for a bag, one page, the flat

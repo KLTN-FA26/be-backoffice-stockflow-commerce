@@ -37,7 +37,7 @@ import org.springframework.transaction.support.TransactionOperations;
  * checked as a design submitted alone is ({@link DesignSubmissionService}: the preflight, its files, its print file); if
  * any does not pass, none goes, each failing design's history says why ({@code PREFLIGHT_FAILED}) and so does the
  * project's ({@code BATCH_PREFLIGHT_FAILED}). If all pass, they wait for review together in one round - one item of the
- * Sales Manager's queue, announced once ({@link DesignBatchSubmittedForReview}).
+ * Production Coordinator's queue, announced once ({@link DesignBatchSubmittedForReview}).
  *
  * <p>The same three steps as a design alone: short reads, the print files with no transaction held, and one short
  * transaction that locks the project, then each design in id order, and submits them only if nothing moved.</p>

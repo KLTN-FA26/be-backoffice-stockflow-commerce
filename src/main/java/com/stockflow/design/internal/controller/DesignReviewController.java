@@ -25,12 +25,13 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * The Sales Manager's review of customers' designs (kltn-docs 12 §4.4). Handlers are public so the permission proxy
- * advises them; the resource is declared once, on {@code DesignController}.
+ * The Production Coordinator's review of customers' designs (kltn-docs 12 §4.4; the Sales Manager's until
+ * V20261210000200 moved {@code design-designs:APPROVE}). Handlers are public so the permission proxy advises them; the
+ * resource is declared once, on {@code DesignController}.
  */
 @RestController
 @RequestMapping("/api/v1/designs")
-@Tag(name = "Design review", description = "Customers' designs waiting for the Sales Manager")
+@Tag(name = "Design review", description = "Customers' designs waiting for the Production Coordinator")
 class DesignReviewController {
 
     private final DesignReviewService reviews;

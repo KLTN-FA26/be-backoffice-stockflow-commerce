@@ -15,6 +15,6 @@ public record UpdateRolePermissionsRequest(
                 example = "7")
         @NotNull @PositiveOrZero Long version,
         @Schema(description = "Every permission the role grants after the save, as resource:ACTION",
-                example = "[\"procurement-goods-receipts:READ\", \"production-orders:APPROVE\"]")
+                example = "[\"procurement-goods-receipts:READ\", \"production-orders:UPDATE\"]")
         @NotNull @Size(max = 2000) List<@NotBlank String> permissions) {
 }

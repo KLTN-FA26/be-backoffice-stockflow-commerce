@@ -89,10 +89,18 @@ public final class OrderResources {
     public static final String PRODUCERS = "sales-producers";
 
     /**
-     * 4A-2 (kltn-docs 17 §4.3, BR-23): production orders - the Production Coordinator draws up, edits, submits, cancels
-     * and closes (CREATE, UPDATE); the Sales Manager approves and returns (APPROVE); Sales and the warehouse manager read.
+     * 4A-2 (kltn-docs 17 §4.3): production orders - the Production Coordinator draws up, edits, sends, cancels and
+     * closes (CREATE, UPDATE); nobody approves one since V20261210000200, which retired APPROVE; Sales, the Sales
+     * Manager and the warehouse manager read.
      */
     public static final String PRODUCTION_ORDERS = "production-orders";
+
+    /**
+     * Those told when a production order is sent (V20261210000200; kltn-docs 17 §2): the Sales Manager and the
+     * administrator, oversight after the fact now that nobody approves one. An audience only, guarding no endpoint;
+     * split from {@link #PRODUCTION_ORDERS} because its READ is held too widely to be who is told.
+     */
+    public static final String PRODUCTION_ORDER_SENDS = "production-order-sends";
 
     /**
      * 4A-4 (kltn-docs 13 §4.3 step 5, BR-13): the storefront's print samples to approve - the customer reads and

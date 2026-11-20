@@ -62,7 +62,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * The Sales Manager decides a customer's design, over HTTP (kltn-docs 12 §4.4, §4.5): they read it while it waits;
+ * The coordinator decides a customer's design, over HTTP (kltn-docs 12 §4.4, §4.5): they read it while it waits;
  * returning needs a reason and gives the customer a draft again; approving stamps the print file, draws the production
  * instruction, freezes layout, images and template in a snapshot that verifies, and issues the customer's own SKU - in
  * one step, so a SKU that cannot be issued leaves the design pending (BR-09).
@@ -88,7 +88,7 @@ class DesignReviewIntegrationTest {
     @MockitoBean CurrentUserProvider users;
 
     private UUID staff;
-    private UUID manager;
+    private UUID coordinator;
     private UUID owner;
     private UUID customerId;
     private String sku;
@@ -101,7 +101,7 @@ class DesignReviewIntegrationTest {
     @BeforeEach
     void aSubmittedDesign() throws Exception {
         staff = tx.execute(s -> ReferenceRows.user(entityManager));
-        manager = tx.execute(s -> ReferenceRows.user(entityManager));
+        coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
         as(staff, false);
         String code = "REV-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
         UUID productId = products.create(new CreateProductCommand(code, "Ly giấy 12oz", "Paper cup 12oz", null, null,
@@ -216,7 +216,7 @@ class DesignReviewIntegrationTest {
 
     @Test
     void aReviewerReadsTheDesignWhileItWaitsAndNobodyElseDoes() throws Exception {
-        as(manager, true);
+        as(coordinator, true);
         String base = "/api/v1/designs/" + design;
         mvc.perform(get(base)).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"));
         mvc.perform(get(base + "/document")).andExpect(status().isOk());
@@ -235,14 +235,14 @@ class DesignReviewIntegrationTest {
 
     @Test
     void aReturnedDesignIsADraftAgainWithTheReason() throws Exception {
-        as(manager, true);
+        as(coordinator, true);
         long version = version();
         decide(version, false, null).andExpect(status().isBadRequest());
         decide(version, false, "Logo quá sát mép, xin dời vào giữa")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("DRAFT"))
                 .andExpect(jsonPath("$.data.reviewNotes").value("Logo quá sát mép, xin dời vào giữa"))
-                .andExpect(jsonPath("$.data.reviewedBy").value(manager.toString()))
+                .andExpect(jsonPath("$.data.reviewedBy").value(coordinator.toString()))
                 .andExpect(jsonPath("$.data.reviewedAt").exists());
 
         assertThat(decisions()).last().isEqualTo("RETURNED");
@@ -258,7 +258,7 @@ class DesignReviewIntegrationTest {
 
     @Test
     void anApprovedDesignIsFrozenStampedAndGivenItsOwnSku() throws Exception {
-        as(manager, true);
+        as(coordinator, true);
         decide(version() - 1, true, null).andExpect(status().isConflict());
         decide(version(), true, "In đúng màu Pantone 186C")
                 .andExpect(status().isOk())
@@ -314,7 +314,7 @@ class DesignReviewIntegrationTest {
         }
 
         assertThat(decisions()).last().isEqualTo("APPROVED");
-        // The Sales Manager's note stays in the history with the decision (BR-13).
+        // The coordinator's note stays in the history with the decision (BR-13).
         assertThat(jdbc.queryForObject("SELECT notes FROM design.design_decision WHERE draft_id = ?::uuid AND "
                 + "decision = 'APPROVED'", String.class, design)).contains(customerSku, "In đúng màu Pantone 186C");
         assertThat(recorded.matching(DesignReviewed.class, e -> e.designId().toString().equals(design)))
@@ -332,7 +332,7 @@ class DesignReviewIntegrationTest {
     void aSkuThatCannotBeIssuedLeavesTheDesignPending() throws Exception {
         // The variant stopped being sold after the design was submitted (kltn-docs 12 edge cases): no SKU, no approval.
         tx.executeWithoutResult(s -> jdbc.update("UPDATE product.variants SET status = 'BLOCKED' WHERE sku = ?", sku));
-        as(manager, true);
+        as(coordinator, true);
 
         decide(version(), true, null)
                 .andExpect(status().isConflict())
@@ -348,7 +348,7 @@ class DesignReviewIntegrationTest {
 
     @Test
     void onlyAPendingDesignIsDecided() throws Exception {
-        as(manager, true);
+        as(coordinator, true);
         decide(version(), false, "Chưa đạt").andExpect(status().isOk());
         decide(version(), true, null).andExpect(status().isConflict());
     }

@@ -971,17 +971,20 @@ class ProductionOrderIntegrationTest {
     }
 
     @Test
-    @DisplayName("00 §2.1, BR-23: the coordinator draws up, the Sales Manager approves, Sales and the warehouse manager read")
+    @DisplayName("00 §2.1, 17 §4.3: the coordinator draws up and sends, nobody approves, the Sales Manager is told, "
+            + "Sales and the warehouse manager read")
     void grants() {
         assertThat(actions("PRODUCTION_COORDINATOR")).containsExactly("CREATE", "READ", "UPDATE", "VIEW_PAGE");
-        assertThat(actions("SALES_MANAGER")).containsExactly("APPROVE", "READ", "VIEW_PAGE");
+        assertThat(actions("SALES_MANAGER")).containsExactly("READ", "VIEW_PAGE");
         assertThat(actions("SALES_STAFF")).containsExactly("READ", "VIEW_PAGE");
         assertThat(actions("WAREHOUSE_MANAGER")).containsExactly("READ", "VIEW_PAGE");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM identity.permission WHERE code = 'production-orders:APPROVE'",
+                Long.class)).as("approval is retired (V20261210000200)").isZero();
         assertThat(jdbc.queryForList("""
                 SELECT r.code FROM identity.role_permission rp
                   JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p ON p.id = rp.permission_id
-                 WHERE p.code = 'production-orders:APPROVE' ORDER BY 1""", String.class))
-                .as("the coordinator never approves").containsExactly("SALES_MANAGER", "SYSTEM_ADMIN");
+                 WHERE p.code = 'production-order-sends:READ' AND r.is_system ORDER BY 1""", String.class))
+                .as("told of production orders sent").containsExactly("SALES_MANAGER", "SYSTEM_ADMIN");
     }
 
     private List<String> actions(String role) {

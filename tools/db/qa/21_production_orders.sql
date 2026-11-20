@@ -228,19 +228,20 @@ SELECT pg_temp.expect_fail('PO20 deleted', $q$
 SELECT pg_temp.expect_true('PO21 the 15 edges of 17 §5.3 (DRAFT -> SENT since V20261210000100)',
     (SELECT count(*) FROM ordering.production_order_status_transition) = 15);
 
-\echo '--- who does what (00 §2.1, 17 BR-23)'
+\echo '--- who does what (00 §2.1, 17 §4.3)'
 CREATE FUNCTION pg_temp.grants(role_code TEXT, permission_code TEXT) RETURNS BOOLEAN LANGUAGE sql AS $$
     SELECT EXISTS (SELECT 1 FROM identity.role_permission rp
                      JOIN identity.app_role r ON r.id = rp.role_id
                      JOIN identity.permission p ON p.id = rp.permission_id
                     WHERE r.code = role_code AND p.code = permission_code)
 $$;
-SELECT pg_temp.expect_true('PO22 the coordinator draws up, the Sales Manager approves, Sales and the warehouse read',
+SELECT pg_temp.expect_true('PO22 the coordinator draws up and sends, nobody approves, Sales and the warehouse read',
     pg_temp.grants('PRODUCTION_COORDINATOR', 'production-orders:CREATE')
     AND pg_temp.grants('PRODUCTION_COORDINATOR', 'production-orders:UPDATE')
-    AND NOT pg_temp.grants('PRODUCTION_COORDINATOR', 'production-orders:APPROVE')
-    AND pg_temp.grants('SALES_MANAGER', 'production-orders:APPROVE')
+    AND NOT EXISTS (SELECT 1 FROM identity.permission WHERE code = 'production-orders:APPROVE')
+    AND pg_temp.grants('SALES_MANAGER', 'production-order-sends:READ')
     AND NOT pg_temp.grants('SALES_MANAGER', 'production-orders:CREATE')
+    AND NOT pg_temp.grants('SALES_MANAGER', 'production-orders:UPDATE')
     AND pg_temp.grants('SALES_STAFF', 'production-orders:READ')
     AND pg_temp.grants('WAREHOUSE_MANAGER', 'production-orders:READ')
     AND pg_temp.grants('PRODUCTION_COORDINATOR', 'sales-orders:READ')
