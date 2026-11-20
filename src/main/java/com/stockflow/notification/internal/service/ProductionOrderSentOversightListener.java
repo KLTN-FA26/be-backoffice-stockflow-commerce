@@ -62,10 +62,10 @@ class ProductionOrderSentOversightListener {
     static InboxMessage message(ProductionOrderSent event) {
         ResourceBundle texts = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
         String title = texts.getString("inbox.production-order.sent-oversight.title").formatted(event.code());
-        String needBy = event.needByDate() == null ? "-" : DAY.format(event.needByDate());
         return new InboxMessage(ProductionOrderArrivalNotificationListener.CATEGORY, InboxSeverity.INFO,
                 title.length() <= InboxMessage.TITLE_MAX ? title : title.substring(0, InboxMessage.TITLE_MAX),
-                texts.getString("inbox.production-order.sent-oversight.body").formatted(event.totalCartons(), needBy),
+                texts.getString("inbox.production-order.sent-oversight.body").formatted(event.totalCartons(),
+                        DAY.format(event.needByDate())),
                 "/production/orders/" + event.productionOrderId(),
                 ProductionOrderArrivalNotificationListener.SOURCE_TYPE, event.productionOrderId().toString(),
                 "production-order-sent-oversight:" + event.productionOrderId());
