@@ -14,8 +14,6 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.util.List;
-import java.util.Locale;
-import java.util.ResourceBundle;
 
 /**
  * The shipping label of one outbound carton (team plan 4C-6; kltn-docs 08 §4.3 step 6), stuck next to the carton's LPN
@@ -43,10 +41,7 @@ public final class ShippingLabelSheet {
     private static final double RULE_MM = 0.3;
     private static final float LINE_SPACING = 1.3f;
 
-    // Captions, Vietnamese / English (RTM-LABELLANG), from the message bundles: label.shipping.* of messages_vi and of
-    // messages, printed "<vi> / <en>".
-    private static final ResourceBundle VI = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
-    private static final ResourceBundle EN = ResourceBundle.getBundle("i18n.messages", Locale.ROOT);
+    // Captions, Vietnamese / English (RTM-LABELLANG), from the message bundles: label.shipping.*, printed "<vi> / <en>".
     static final String ORDER = caption("order");
     static final String LABEL_VERSION = "%s  ·  " + caption("version") + " v%d";
     static final String SHIP_TO = caption("ship-to");
@@ -75,7 +70,7 @@ public final class ShippingLabelSheet {
     }
 
     private static String caption(String key) {
-        return VI.getString("label.shipping." + key) + " / " + EN.getString("label.shipping." + key);
+        return LabelCaptions.bilingual("label.shipping." + key);
     }
 
     /**

@@ -15,8 +15,9 @@ import java.util.List;
 /**
  * The drawing primitives of the label sheets: a Code 128 barcode, a QR code, fitted and wrapped text and the
  * millimetre/point conversion. Location labels (SCRUM-97, {@link CodeLabelSheet}), carton labels (SCRUM-473,
- * {@link CartonLabelSheet}) and shipping labels all draw their symbols here, so a scanner tuned on one reads the others. Public since 4A-3: the production order slip prints its
- * code - the lot its goods are received under - with the same symbols, so the receiving scanner reads it too.
+ * {@link CartonLabelSheet}) and shipping labels all draw their symbols here, so a scanner tuned on one reads the
+ * others. Public since 4A-3: the production order slip prints its code - the lot its goods are received under - with
+ * the same symbols, so the receiving scanner reads it too.
  *
  * <p>Every bar and every QR module is a filled vector rectangle rather than a raster image, so a
  * label is as sharp on a 203 dpi thermal printer as on a 600 dpi office printer.</p>
@@ -48,6 +49,13 @@ public final class LabelDrawing {
 
         public float y(double fromTopMm) {
             return points(pageHeightMm - fromTopMm);
+        }
+
+        /** The {@code slot}-th label of a page of {@code format}, row by row. */
+        static Cell of(LabelFormat format, int slot) {
+            return new Cell((slot % format.columns()) * format.labelWidthMm(),
+                    format.topMarginMm() + (slot / format.columns()) * format.labelHeightMm(),
+                    format.labelWidthMm(), format.labelHeightMm(), format.pageHeightMm());
         }
 
         /** Adds a rectangle given by its top-left corner; the caller fills all of them at once. */
@@ -100,6 +108,9 @@ public final class LabelDrawing {
      */
     public static List<String> wrap(PDFont font, String text, double widthMm, float size, int lines)
             throws IOException {
+        if (lines < 1) {
+            throw new IllegalArgumentException("A wrap needs at least one line, not " + lines);
+        }
         String trimmed = text.trim();
         List<String> rows = new ArrayList<>();
         if (trimmed.isEmpty()) {
@@ -132,12 +143,16 @@ public final class LabelDrawing {
     }
 
     /**
-     * How wide {@link #barcode} draws {@code code}, quiet zones included, when given {@code widthMm}: the widest
-     * printable module that fits, so a layout can centre the symbol in the room it has.
+     * {@link #barcode}, centred in {@code widthMm}: it draws at the widest printable module that fits, which usually
+     * leaves room over, and a symbol hugging the left edge looks misplaced on a label.
      */
-    public static double barcodeWidthMm(String code, double widthMm) {
-        int total = new Code128Writer().encode(code).length + 2 * BARCODE_QUIET_MODULES;
-        return moduleWidth(total, widthMm) * total;
+    public static void centredBarcode(PDPageContentStream out, Cell cell, String code, double leftMm, double topMm,
+                                      double widthMm, double heightMm) throws IOException {
+        boolean[] modules = new Code128Writer().encode(code);
+        int total = modules.length + 2 * BARCODE_QUIET_MODULES;
+        double module = moduleWidth(total, widthMm);
+        bars(out, cell, modules, leftMm + (widthMm - module * total) / 2 + BARCODE_QUIET_MODULES * module, topMm,
+                module, heightMm);
     }
 
     private static double moduleWidth(int totalModules, double widthMm) {
@@ -154,7 +169,11 @@ public final class LabelDrawing {
         boolean[] modules = new Code128Writer().encode(code);
         int total = modules.length + 2 * BARCODE_QUIET_MODULES;
         double module = moduleWidth(total, widthMm);
-        double x = leftMm + BARCODE_QUIET_MODULES * module;
+        bars(out, cell, modules, leftMm + BARCODE_QUIET_MODULES * module, topMm, module, heightMm);
+    }
+
+    private static void bars(PDPageContentStream out, Cell cell, boolean[] modules, double x, double topMm,
+                             double module, double heightMm) throws IOException {
         for (int i = 0; i < modules.length; ) {
             if (!modules[i]) {
                 i++;

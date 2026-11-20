@@ -112,6 +112,19 @@ class StockPackageLabelPdfRendererTest {
     }
 
     @Test
+    void aBadgeLeavingNoRoomDropsTheNoteRatherThanRunIntoTheQrCode() throws IOException {
+        var wide = new StockPackageLabel("LPN-20261026-000001", "CUP-12OZ", null, null, null, 1000000,
+                "CTN-24X500ML-PRT"); // the longest unit code (16) and a seven-digit count fill the header
+
+        try (PDDocument doc = render(List.of(wide), LabelFormat.THERMAL_ROLL)) {
+            assertThat(new PDFTextStripper().getText(doc)).doesNotContain(NOT_COUNTED_VI.substring(0, 1) + "…");
+            BufferedImage page = new PDFRenderer(doc).renderImageWithDPI(0, DPI, ImageType.RGB);
+            BufferedImage cell = LabelDecoding.cell(page, LabelFormat.THERMAL_ROLL, 0, DPI);
+            assertThat(LabelDecoding.decode(cell, BarcodeFormat.QR_CODE)).isEqualTo("LPN-20261026-000001");
+        }
+    }
+
+    @Test
     void aSkuTheFontCannotDrawStillPrints() throws IOException {
         var odd = new StockPackageLabel("LPN-20261026-000001", "CUP	🧊", "Cup 🧊", null, null, 1000, "CARTON");
         try (PDDocument doc = render(List.of(odd), LabelFormat.THERMAL_ROLL)) {

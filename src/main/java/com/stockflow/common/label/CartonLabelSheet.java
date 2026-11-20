@@ -13,8 +13,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.List;
-import java.util.Locale;
-import java.util.ResourceBundle;
 
 /**
  * The carton (LPN) label (SCRUM-473), on the same label stock as the location label ({@link LabelFormat}): a header of
@@ -58,14 +56,12 @@ public final class CartonLabelSheet {
     private static final float VALUE_POINTS = 7;
     private static final float NAME_POINTS = 6.5f;
 
-    private static final ResourceBundle VI = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
-    private static final ResourceBundle EN = ResourceBundle.getBundle("i18n.messages", Locale.ROOT);
-    static final String SKU = caption("sku");
-    static final String ITEM = caption("item");
-    static final String LOT = caption("lot");
-    static final String NOT_COUNTED = caption("not-counted");
+    static final String SKU = LabelCaptions.bilingual("label.carton.sku");
+    static final String ITEM = LabelCaptions.bilingual("label.carton.item");
+    static final String LOT = LabelCaptions.bilingual("label.carton.lot");
+    static final String NOT_COUNTED = LabelCaptions.bilingual("label.carton.not-counted");
     /** The Vietnamese half alone, for when the bilingual note does not fit beside a long count. */
-    static final String NOT_COUNTED_VI = VI.getString("label.carton.not-counted");
+    static final String NOT_COUNTED_VI = LabelCaptions.vietnamese("label.carton.not-counted");
 
     /**
      * One carton's label. {@code lpn} is [A-Z0-9-], what both symbols carry; the other texts are free and made
@@ -81,12 +77,6 @@ public final class CartonLabelSheet {
     }
 
     private CartonLabelSheet() {
-    }
-
-    private static String caption(String key) {
-        String vi = VI.getString("label.carton." + key);
-        String en = EN.getString("label.carton." + key);
-        return vi.equals(en) ? vi : vi + " / " + en;
     }
 
     /**
@@ -113,7 +103,7 @@ public final class CartonLabelSheet {
                 document.addPage(page);
                 try (PDPageContentStream out = new PDPageContentStream(document, page)) {
                     for (int slot = 0; slot < perPage && first + slot < labels.size(); slot++) {
-                        drawing.label(out, cellOf(format, slot), labels.get(first + slot));
+                        drawing.label(out, Cell.of(format, slot), labels.get(first + slot));
                     }
                 }
             }
@@ -123,12 +113,6 @@ public final class CartonLabelSheet {
         } catch (IOException e) {
             throw new UncheckedIOException("Could not render carton labels", e);
         }
-    }
-
-    private static Cell cellOf(LabelFormat format, int slot) {
-        return new Cell((slot % format.columns()) * format.labelWidthMm(),
-                format.topMarginMm() + (slot / format.columns()) * format.labelHeightMm(),
-                format.labelWidthMm(), format.labelHeightMm(), format.pageHeightMm());
     }
 
     private record Drawing(LabelFonts fonts, PDFont bold, PDFont regular, LabelFormat format, double captionColumn) {
@@ -173,10 +157,8 @@ public final class CartonLabelSheet {
 
             // The barcode takes whatever height is left, centred in the width it has.
             double barTop = baseline - FIELD_ROW_MM + FIELDS_TO_BARCODE_GAP_MM;
-            double room = width + 2 * BARCODE_BLEED_MM;
-            double drawn = LabelDrawing.barcodeWidthMm(label.lpn(), room);
-            LabelDrawing.barcode(out, cell, label.lpn(), left - BARCODE_BLEED_MM + (room - drawn) / 2, barTop, drawn,
-                    bottom - barTop);
+            LabelDrawing.centredBarcode(out, cell, label.lpn(), left - BARCODE_BLEED_MM, barTop,
+                    width + 2 * BARCODE_BLEED_MM, bottom - barTop);
         }
 
         /** The count as a black badge, what a picker checks first; a carton not counted yet says so beside it. */
@@ -198,7 +180,11 @@ public final class CartonLabelSheet {
                 // Bilingual when it fits; else the Vietnamese the warehouse reads, cut only if even that is too long.
                 String note = LabelDrawing.widthMm(bold, NOT_COUNTED, CAPTION_POINTS) <= room ? NOT_COUNTED
                         : LabelDrawing.cut(bold, NOT_COUNTED_VI, room, CAPTION_POINTS);
-                LabelDrawing.text(out, cell, bold, CAPTION_POINTS, note, captionLeft, baseline - 0.3);
+                // cut keeps at least a letter and the ellipsis; with no room even for that, the dash in the badge
+                // says it alone rather than the note running into the QR code.
+                if (LabelDrawing.widthMm(bold, note, CAPTION_POINTS) <= room) {
+                    LabelDrawing.text(out, cell, bold, CAPTION_POINTS, note, captionLeft, baseline - 0.3);
+                }
             }
         }
 

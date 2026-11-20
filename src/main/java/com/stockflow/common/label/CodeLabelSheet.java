@@ -68,7 +68,7 @@ public final class CodeLabelSheet {
                 document.addPage(page);
                 try (PDPageContentStream out = new PDPageContentStream(document, page)) {
                     for (int slot = 0; slot < perPage && first + slot < labels.size(); slot++) {
-                        drawLabel(out, format, cellOf(format, slot), labels.get(first + slot), fonts, loaded, fitted);
+                        drawLabel(out, format, Cell.of(format, slot), labels.get(first + slot), fonts, loaded, fitted);
                     }
                 }
             }
@@ -113,12 +113,6 @@ public final class CodeLabelSheet {
         double barTop = innerTop + qrSide + QR_TO_BARCODE_GAP_MM;
         LabelDrawing.barcode(out, cell, label.code(), innerLeft, barTop, innerWidth,
                 innerTop + innerHeight - barTop);
-    }
-
-    private static Cell cellOf(LabelFormat format, int slot) {
-        return new Cell((slot % format.columns()) * format.labelWidthMm(),
-                format.topMarginMm() + (slot / format.columns()) * format.labelHeightMm(),
-                format.labelWidthMm(), format.labelHeightMm(), format.pageHeightMm());
     }
 
     private record Fonts(PDFont bold, PDFont regular) {

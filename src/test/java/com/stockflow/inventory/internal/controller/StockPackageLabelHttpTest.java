@@ -115,6 +115,30 @@ class StockPackageLabelHttpTest {
     }
 
     @Test
+    @DisplayName("a received carton reprinted by LPN prints the lot its stock row carries")
+    void reprintPrintsTheStockRowsLot() throws Exception {
+        ProductionReceivables.Receivable goods = receivables.sent(WAREHOUSE_HCM, 1, 1000);
+        UUID receiptId = receivables.received(goods, RECEIVING, 1, clerk).id();
+        String lpn = jdbc.queryForObject("""
+                SELECT p.lpn FROM inventory.stock_package p
+                  JOIN procurement.goods_receipt_lines l ON l.id = p.goods_receipt_line_id
+                 WHERE l.receipt_id = ?""", String.class, receiptId);
+        String rowLot = jdbc.queryForObject("""
+                SELECT s.lot_number FROM inventory.stock_item s
+                  JOIN inventory.stock_package p ON p.id = s.stock_package_id
+                 WHERE p.lpn = ?""", String.class, lpn);
+        assertThat(rowLot).isEqualTo(goods.productionCode());
+
+        byte[] pdf = print(Role.WAREHOUSE_STAFF, clerk,
+                "{\"format\":\"THERMAL_ROLL\",\"lpns\":" + quoted(List.of(lpn)) + "}")
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            assertThat(new org.apache.pdfbox.text.PDFTextStripper().getText(doc)).contains(rowLot);
+        }
+    }
+
+    @Test
     @DisplayName("a carton still being counted prints its receipt line's lot and its SKU's name, asked of procurement "
             + "and product")
     void printsTheLotAndTheName() throws Exception {
