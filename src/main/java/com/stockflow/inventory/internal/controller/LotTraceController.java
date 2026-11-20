@@ -26,9 +26,10 @@ import java.util.UUID;
 
 /**
  * The lot traceability report (SCRUM-153, WBS 3.6.2.3): supplier and goods receipt, then every ledger line, then
- * the allocations, picks and customer orders, with the balance left now. Read with the stock-history permission
- * ({@code inventory-stock-movements:READ}): it is the ledger, grouped by lot. A warehouse-bound caller sees their
- * own warehouses only.
+ * the allocations, picks and customer orders, with the balance left now. Read with {@code inventory-lot-traces:READ}
+ * (V20261209000300): kltn-docs 20 §3 gives the report to the warehouse, Sales (customer care) and the Production
+ * Coordinator, and the last two do not read the stock ledger itself ({@code inventory-stock-movements:READ}). A
+ * warehouse-bound caller sees their own warehouses only.
  */
 @RestController
 @RequestMapping("/api/v1/inventory/lots")
@@ -43,7 +44,7 @@ class LotTraceController {
 
     @GetMapping
     @Operation(summary = "Lots, most recently received first; by SKU, lot number, warehouse and the days they moved")
-    @RequiresPermission(resource = InventoryResources.STOCK_MOVEMENTS, action = Action.READ, scope = DataScope.WAREHOUSE)
+    @RequiresPermission(resource = InventoryResources.LOT_TRACES, action = Action.READ, scope = DataScope.WAREHOUSE)
     public ApiResponse<PageResponse<LotTraceResponse.Lot>> lots(
             @RequestParam(required = false) String sku,
             @RequestParam(required = false) String lotNumber,
@@ -58,7 +59,7 @@ class LotTraceController {
 
     @GetMapping("/{lotId}")
     @Operation(summary = "One lot traced: origin, balances by location, allocations and holds, customer orders")
-    @RequiresPermission(resource = InventoryResources.STOCK_MOVEMENTS, action = Action.READ, scope = DataScope.WAREHOUSE)
+    @RequiresPermission(resource = InventoryResources.LOT_TRACES, action = Action.READ, scope = DataScope.WAREHOUSE)
     public ApiResponse<LotTraceResponse> trace(@PathVariable UUID lotId,
                                                @RequestParam(required = false) UUID warehouseId,
                                                @AuthenticatedUser Optional<CurrentUser> user) {
@@ -76,7 +77,7 @@ class LotTraceController {
 
     @GetMapping("/{lotId}/movements")
     @Operation(summary = "The lot's stock ledger lines, oldest first")
-    @RequiresPermission(resource = InventoryResources.STOCK_MOVEMENTS, action = Action.READ, scope = DataScope.WAREHOUSE)
+    @RequiresPermission(resource = InventoryResources.LOT_TRACES, action = Action.READ, scope = DataScope.WAREHOUSE)
     public ApiResponse<PageResponse<LotTraceResponse.Movement>> movements(
             @PathVariable UUID lotId,
             @RequestParam(required = false) UUID warehouseId,

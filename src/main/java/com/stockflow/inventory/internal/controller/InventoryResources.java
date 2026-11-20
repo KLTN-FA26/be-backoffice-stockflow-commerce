@@ -20,6 +20,8 @@ public final class InventoryResources {
     public static final String STOCK_ITEMS = "inventory-stock-items";
     public static final String RESERVATIONS = "inventory-reservations";
     public static final String STOCK_MOVEMENTS = "inventory-stock-movements";
+    /** The lot trace report (V20261209000300, kltn-docs 20 §3); split from {@link #STOCK_MOVEMENTS}. */
+    public static final String LOT_TRACES = "inventory-lot-traces";
     public static final String STOCK_ADJUSTMENTS = "inventory-stock-adjustments";
     /** Seeded by V20260903000100; read by the recounts a short pick opens (X-SHORT). */
     public static final String CYCLE_COUNTS = "inventory-cycle-counts";
