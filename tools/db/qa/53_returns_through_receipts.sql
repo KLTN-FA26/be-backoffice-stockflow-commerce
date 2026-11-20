@@ -103,10 +103,10 @@ SET LOCAL session_replication_role = origin;
 SET LOCAL session_replication_role = replica;
 INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, customer_id, producer_id,
                                        receiving_warehouse_id, need_by_date, status, sample_approval_required,
-                                       sample_required_by_default, drawn_up_by, submitted_at, approved_by, approved_at, sent_at)
+                                       sample_required_by_default, drawn_up_by, sent_by, sent_at)
 VALUES (md5('qa53:prod')::uuid, 'PRD-20261109-5301', md5('qa53:so')::uuid, md5('qa53:batch')::uuid,
         md5('qa53:cust')::uuid, md5('qa53:producer')::uuid, md5('demo:wh:HCM')::uuid, CURRENT_DATE + 30, 'SENT', FALSE,
-        FALSE, md5('demo:user:editor')::uuid, NOW(), md5('demo:user:approver')::uuid, NOW(), NOW());
+        FALSE, md5('demo:user:editor')::uuid, md5('demo:user:editor')::uuid, NOW());
 INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by, receipt_type, production_order_id)
 VALUES (md5('qa53:g:production')::uuid, 'GR-QA53-P', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(), md5('demo:user:editor')::uuid,
         'PRODUCTION', md5('qa53:prod')::uuid);
