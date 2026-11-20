@@ -20,7 +20,6 @@ import org.springframework.stereotype.Component;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -39,11 +38,6 @@ import java.util.stream.Collectors;
  */
 @Component
 public class ChatViews {
-
-    /** The moves the staff ask for by hand (Conversation#changeStatus); the others happen. */
-    private static final Set<ConversationStatus> ASKED_FOR = EnumSet.of(ConversationStatus.ACTIVE,
-            ConversationStatus.WAITING_ON_CUSTOMER, ConversationStatus.WAITING_ON_INTERNAL,
-            ConversationStatus.ESCALATED, ConversationStatus.RESOLVED);
 
     private final ConversationRepository conversations;
     private final ChatMessageRepository messages;
@@ -87,6 +81,21 @@ public class ChatViews {
      * @param staff the staff member looking, or null for the customer
      */
     public List<ChatConversationView> rows(List<Conversation> page, UUID viewerId, Actor staff) {
+        return rows(page, viewerId, staff, true);
+    }
+
+    /**
+     * The row the staff queue's realtime topic carries: one payload for every staff member, so it is no one's view. Its
+     * {@code nextStatuses} are the agent in charge's (what they always were for an assigned conversation), and the
+     * caller's own {@code canReply}, {@code canClaim}, {@code canAssign} are left null - a client reads them from its
+     * own GET.
+     */
+    public ChatConversationView staffBroadcastRow(Conversation c) {
+        UUID inCharge = c.assignedAgentId() == null ? new UUID(0L, 0L) : c.assignedAgentId();
+        return rows(List.of(c), null, Actor.agent(inCharge, false), false).get(0);
+    }
+
+    private List<ChatConversationView> rows(List<Conversation> page, UUID viewerId, Actor staff, boolean forViewer) {
         if (page.isEmpty()) {
             return List.of();
         }
@@ -107,8 +116,8 @@ public class ChatViews {
             List<ChatConversationView.Context> rows = about.getOrDefault(c.id(), List.of()).stream()
                     .map(x -> new ChatConversationView.Context(x.id(), x.ref().kind(), x.ref().id(), x.primary(), null,
                             null, x.attachedAt())).toList();
-            return view(c, staff, name(customerNames, c.customerId()), name(names, c.assignedAgentId()), now,
-                    newest == null ? null : message(newest, names), unread.getOrDefault(c.id(), 0L), rows, null);
+            return view(c, staff, forViewer, name(customerNames, c.customerId()), name(names, c.assignedAgentId()),
+                    now, newest == null ? null : message(newest, names), unread.getOrDefault(c.id(), 0L), rows, null);
         }).toList();
     }
 
@@ -117,7 +126,7 @@ public class ChatViews {
         ChatConversationView row = rows(List.of(c), viewerId, staff).get(0);
         List<ChatConversationView.Context> about = new ArrayList<>();
         for (ConversationContext x : conversations.contextsOf(c.id())) {
-            Optional<ContextResolver.Resolved> found = contexts.find(x.ref());
+            Optional<ContextResolver.Resolved> found = contexts.find(x.ref(), staff == null);
             about.add(new ChatConversationView.Context(x.id(), x.ref().kind(), x.ref().id(), x.primary(),
                     found.map(ContextResolver.Resolved::label).orElse(null),
                     found.map(ContextResolver.Resolved::status).orElse(null), x.attachedAt()));
@@ -129,7 +138,8 @@ public class ChatViews {
                 row.escalationReason(), row.firstResponseDueAt(), row.firstRespondedAt(), row.firstResponseOverdue(),
                 row.resolutionDueAt(), row.resolutionOverdue(), row.reopenUntil(), row.continuedFromId(),
                 row.createdAt(), row.lastMessageAt(), row.lastSeq(), row.unread(), row.lastMessage(), about, read,
-                row.withinBusinessHours(), row.expectedResponseAt(), row.resolvedAt(), row.canRate(), row.csatScore(), row.csatComment(), row.csatSubmittedAt());
+                row.withinBusinessHours(), row.expectedResponseAt(), row.resolvedAt(), row.canRate(), row.csatScore(), row.csatComment(), row.csatSubmittedAt(),
+                row.canReply(), row.canClaim(), row.canAssign());
     }
 
     public List<ChatLogEntryView> log(List<LogEntry> entries) {
@@ -144,22 +154,20 @@ public class ChatViews {
                 name(names, e.targetUserId()), e.note(), parse(e.detailJson()))).toList();
     }
 
-    private ChatConversationView view(Conversation c, Actor staff, String customerName, String agentName,
-                                      Instant now, ChatMessageView newest, long unread,
+    /**
+     * One conversation as {@code staff} sees it (or the customer, when null). What the staff caller is offered - the
+     * moves, replying, taking it, handing it on - is asked of the aggregate's own predicates, the ones its methods
+     * enforce, so a button the view shows is never answered with {@code CHAT_NOT_ASSIGNEE}.
+     *
+     * @param forViewer whether {@code staff} is the person looking; false for the queue's realtime row
+     */
+    private ChatConversationView view(Conversation c, Actor staff, boolean forViewer, String customerName,
+                                      String agentName, Instant now, ChatMessageView newest, long unread,
                                       List<ChatConversationView.Context> about, List<ChatReadMarkerView> read) {
         Conversation.Snapshot s = c.snapshot();
         BusinessHours hours = properties.businessHours();
-        Set<ConversationStatus> next = null;
-        if (staff != null) {
-            next = EnumSet.noneOf(ConversationStatus.class);
-            boolean allowed = s.status() != ConversationStatus.ESCALATED || staff.supervisor();
-            for (ConversationStatus target : s.status().next()) {
-                if (allowed && ASKED_FOR.contains(target)) {
-                    next.add(target);
-                }
-            }
-            next = Set.copyOf(next);
-        }
+        Set<ConversationStatus> next = staff == null ? null : c.movesOpenTo(staff);
+        boolean viewer = staff != null && forViewer;
         long lastSeq = staff != null ? s.lastMessageSeq() : newest == null ? 0 : newest.seq();
         Instant lastAt = staff != null ? s.lastMessageAt() : newest == null ? null : newest.sentAt();
         return new ChatConversationView(s.id(), s.customerId(), customerName, s.subject(), s.status(), next,
@@ -169,7 +177,9 @@ public class ChatViews {
                 staff != null && c.resolutionOverdueAt(now), s.reopenUntil(), s.continuedFromId(), s.createdAt(),
                 lastAt, lastSeq, unread, newest, about, read, hours.isOpenAt(now), expectedResponseAt(c, hours, now),
                 s.resolvedAt(), s.status() == ConversationStatus.RESOLVED && s.csatSubmittedAt() == null, s.csatScore(),
-                staff == null ? null : s.csatComment(), s.csatSubmittedAt());
+                staff == null ? null : s.csatComment(), s.csatSubmittedAt(),
+                viewer ? c.answerableBy(staff) : null, viewer ? c.claimableBy(staff) : null,
+                viewer ? c.assignableBy(staff) : null);
     }
 
     private ChatMessageView message(ChatMessage m, Map<UUID, String> names) {

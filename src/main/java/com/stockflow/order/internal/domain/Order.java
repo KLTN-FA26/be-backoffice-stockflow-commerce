@@ -363,12 +363,17 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * Its contract cancelled before it was signed, to be drawn up again (14 §4.3 step 16): PENDING_CONTRACT → DRAFT. A
-     * contract cancelled while still a draft leaves the order as it was.
+     * Its contract cancelled before it was signed, to be drawn up again (14 §4.3 step 16): PENDING_CONTRACT → DRAFT,
+     * the history saying {@code CONTRACT_CANCELLED: <reason>} so the order's timeline tells why, as every other
+     * {@code CODE: note} row does. A contract cancelled while still a draft leaves the order as it was, with no history
+     * row: the order's history holds status changes only ({@code ck_order_status_history_change}), and the contract
+     * keeps its own reason.
      */
-    public void withdrawContract(UUID by, Instant at) {
+    public void withdrawContract(UUID by, String reason, Instant at) {
         if (status == OrderStatus.PENDING_CONTRACT) {
-            transitionTo(OrderStatus.DRAFT, by, "CONTRACT_CANCELLED", at);
+            String history = withNote("CONTRACT_CANCELLED", trimmed(reason));
+            // The history column holds 500.
+            transitionTo(OrderStatus.DRAFT, by, history.length() > 500 ? history.substring(0, 500) : history, at);
         }
     }
 

@@ -52,7 +52,7 @@ class QuoteDocumentTest {
                 List.of(new Quotes.Tier(10, new BigDecimal("2000")), new Quotes.Tier(30, new BigDecimal("1900"))),
                 new BigDecimal("2000"), new BigDecimal("2000000"), acceptedCartons, acceptedUnits,
                 acceptedCartons == null ? null : new BigDecimal("1900"), acceptedNet, "STANDARD", BigDecimal.TEN,
-                new BigDecimal("200000"), acceptedNet == null ? null : acceptedNet.divide(BigDecimal.TEN));
+                new BigDecimal("200000"), acceptedNet == null ? null : acceptedNet.divide(BigDecimal.TEN), null);
     }
 
     private static Quotes.FeeView plateFee() {
@@ -135,7 +135,7 @@ class QuoteDocumentTest {
     @DisplayName("a draft says it is one; what is not priced yet is printed as such, and its total has no words")
     void draftIsMarked() throws IOException {
         Quotes.LineView unpriced = new Quotes.LineView(UUID.randomUUID(), 1, "CARTON", "LY12-ACME-01", 20, 50, 1000,
-                null, null, false, null, List.of(), null, null, null, null, null, null, null, null, null, null);
+                null, null, false, null, List.of(), null, null, null, null, null, null, null, null, null, null, null);
         Quotes.Totals unknown = new Quotes.Totals(null, new BigDecimal("500000"), null, null);
         String text = text(document.render(facts(quote(QuoteStatus.DRAFT, List.of(unpriced), unknown, null))));
         assertThat(text).contains("BẢN NHÁP - chưa gửi khách hàng",
@@ -151,7 +151,7 @@ class QuoteDocumentTest {
         Quotes.LineView legacy = new Quotes.LineView(UUID.randomUUID(), 1, "UNIT", "LY-GIAY-DEMO-12OZ-XANH", null, null,
                 100, UUID.randomUUID(), null, true, 1, List.of(new Quotes.Tier(1, new BigDecimal("1000"))),
                 new BigDecimal("1000"), new BigDecimal("100000"), null, null, null, null, null, null,
-                BigDecimal.ZERO, null);
+                BigDecimal.ZERO, null, null);
         Quotes.Totals totals = new Quotes.Totals(new BigDecimal("100000"), new BigDecimal("500000"),
                 new BigDecimal("50000"), new BigDecimal("650000"));
         String text = text(document.render(facts(quote(QuoteStatus.CANCELLED, List.of(legacy), totals, null))));

@@ -241,11 +241,14 @@ public class DesignReviewService {
             DesignArtifactJpaEntity file = submitted.get(role) == null ? null
                     : artifacts.findById(submitted.get(role)).orElse(null);
             if (file == null || !file.getDraftId().equals(id) || !layout.getChecksum().equals(file.getDocumentChecksum())
-                    || !Long.valueOf(template.version()).equals(file.getTemplateVersion())) {
-                // The template was edited after the design was submitted: its files no longer fit it. Return it.
+                    || !Long.valueOf(template.printVersion()).equals(file.getTemplateVersion())) {
+                // What the files are drawn on changed after the design was submitted (its print version moved: a
+                // rename or an activation does not move it): they no longer fit it. Return it.
+                // Only a reviewer gets here, and only the customer can render the files again: told as such, under
+                // the same code the customer's own refusal carries.
                 throw new BusinessException(ErrorCode.DESIGN_FILES_OUTDATED, "The submitted " + role
                         + " file no longer matches the layout or the template", List.of(),
-                        Map.of("roles", List.of(role.name())));
+                        Map.of("roles", List.of(role.name())), "refusal.design.filesOutdatedAtReview");
             }
         }
         DesignArtifactJpaEntity print = artifacts.findById(submitted.get(DesignArtifactRole.PRINT_READY)).orElseThrow();
@@ -270,12 +273,12 @@ public class DesignReviewService {
         }
         Instant now = clock.instant();
         // The stamped print file replaces the submitted one; the instruction is new. Both name the approved layout.
-        if (printConfigs.byId(draft.getTemplateId()).map(PrintConfig::version).orElse(-1L)
-                != approval.template().version()) {
+        if (printConfigs.byId(draft.getTemplateId()).map(PrintConfig::printVersion).orElse(-1L)
+                != approval.template().printVersion()) {
             throw new BusinessException(ErrorCode.CONFLICT, "The template changed while the design was being approved");
         }
         DesignArtifactJpaEntity stampedFile = newArtifact(id, DesignArtifactRole.PRINT_READY, print,
-                approval.layoutChecksum(), approval.template().version());
+                approval.layoutChecksum(), approval.template().printVersion());
         // The code of the SKU issued below, its product locked from here until this commits.
         String customerCode = customers.findById(draft.getCustomerId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND)).code();
@@ -284,7 +287,7 @@ public class DesignReviewService {
                 draft.getSku(), approval.template(), approval.carton(), approval.layoutChecksum(),
                 stampedFile.getChecksum(), actor, now, printPages));
         DesignArtifactJpaEntity sheetFile = drawnArtifact(id, DesignArtifactRole.PRODUCTION_INSTRUCTION, sheet,
-                "production-instruction.pdf", approval.layoutChecksum(), approval.template().version());
+                "production-instruction.pdf", approval.layoutChecksum(), approval.template().printVersion());
         draft.attachArtifact(DesignArtifactRole.PRINT_READY, stampedFile.getId());
         draft.attachArtifact(DesignArtifactRole.PRODUCTION_INSTRUCTION, sheetFile.getId());
 

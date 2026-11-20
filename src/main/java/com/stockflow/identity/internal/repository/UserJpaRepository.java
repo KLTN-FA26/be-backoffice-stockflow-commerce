@@ -89,6 +89,26 @@ public interface UserJpaRepository extends BaseJpaRepository<UserJpaEntity> {
     List<UserJpaEntity> findStaffWithRolesFor(@Param("roleCodes") Collection<String> roleCodes,
                                               @Param("warehouseId") UUID warehouseId);
 
+    /**
+     * The ACTIVE accounts that do not hold CUSTOMER whose display name - the full name, or the username when it is
+     * blank - contains the text, by that name, at most {@code limit}. Native for {@code public.unaccent}: a colleague
+     * types "nguyen" for "Nguyễn".
+     *
+     * @param pattern {@code %text%}, its backslash, percent and underscore escaped with a backslash; null for everyone
+     */
+    @Query(value = """
+            SELECT u.* FROM identity.app_user u
+             WHERE u.status = 'ACTIVE'
+               AND NOT EXISTS (SELECT 1 FROM identity.user_role ur JOIN identity.app_role r ON r.id = ur.role_id
+                                WHERE ur.user_id = u.id AND r.code = 'CUSTOMER')
+               AND (CAST(:pattern AS text) IS NULL
+                    OR lower(public.unaccent(coalesce(nullif(btrim(u.full_name), ''), u.username)))
+                       LIKE lower(public.unaccent(CAST(:pattern AS text))) ESCAPE '\\')
+             ORDER BY lower(coalesce(nullif(btrim(u.full_name), ''), u.username)), u.id
+             LIMIT :limit
+            """, nativeQuery = true)
+    List<UserJpaEntity> findActiveStaffNamed(@Param("pattern") String pattern, @Param("limit") int limit);
+
     /** The "must change password" flag alone, for the per-request gate: no entity, no joins. Empty for an unknown id. */
     @Query("select u.mustChangePassword from UserJpaEntity u where u.id = :id")
     java.util.Optional<Boolean> findMustChangePassword(@Param("id") UUID id);

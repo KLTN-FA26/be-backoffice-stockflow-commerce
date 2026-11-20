@@ -18,10 +18,14 @@ public interface CustomerInstallments {
      * @param status   {@code NOT_DUE}, {@code DUE} or {@code PARTIALLY_PAID}, the payment module's names
      * @param overdue  whether its due date has passed (overdue is derived, never stored: V20261121000100)
      * @param dueDate  null while its milestone has not been reached
+     * @param reducedAmount what a closure of the rest of the order took off it (15 §4.6 step 19), zero for most
+     * @param outstanding   what it still owes: {@code amount - paidAmount - reducedAmount}, the installment's own
+     *                      {@code outstanding()}. Given rather than left to the reader, because {@code amount -
+     *                      paidAmount} overstates a reduced installment and the chat sends that figure to the customer
      */
     record OpenInstallment(UUID id, UUID contractId, String contractNumber, UUID orderId, String orderNumber, int seq,
                            String name, BigDecimal amount, BigDecimal paidAmount, String currency, LocalDate dueDate,
-                           String status, boolean overdue) {
+                           String status, boolean overdue, BigDecimal reducedAmount, BigDecimal outstanding) {
     }
 
     /** The customer's open instalments, the earliest due first (those with no due date last), at most {@code limit}. */

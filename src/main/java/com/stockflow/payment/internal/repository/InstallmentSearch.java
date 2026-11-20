@@ -23,13 +23,29 @@ public interface InstallmentSearch {
      * false, those that are not: what the aged-receivables reading filters by, since overdue is no status
      * (WF-05 fix plan, section 8). {@code dueFrom} keeps installments due on or after that day (the overdue scan reads
      * the ones that turned overdue lately).
+     *
+     * <p>{@code customerIds} keeps the installments of those customers: null is any customer, empty is none - what a
+     * search for customers that matched nobody must answer, never every row. {@code owing} true keeps what is due and
+     * still owed (the receivables screen, FE BE-5): the milestone came ({@code reached_at} set) and it is DUE or
+     * PARTIALLY_PAID - fee items included, which are reached the moment they are opened; overdue ones included, since
+     * overdue is a flag on those two statuses, not a third. NOT_DUE never has a milestone that came
+     * ({@code ck_installment_status_facts}), and one paid early before its milestone is not due yet. False or null is
+     * no filter.</p>
      */
     record InstallmentFilter(UUID customerId, UUID orderId, InstallmentStatus status, InstallmentMilestone milestone,
                              LocalDate dueBefore, Boolean reached, Boolean overdue, LocalDate overdueOn,
-                             LocalDate dueFrom) {
+                             LocalDate dueFrom, java.util.Collection<UUID> customerIds, Boolean owing) {
 
         public InstallmentFilter {
             overdueOn = overdue == null ? null : java.util.Objects.requireNonNull(overdueOn, "overdueOn");
+            customerIds = customerIds == null ? null : java.util.List.copyOf(customerIds);
+        }
+
+        /** Without a customer search or the owing reading. */
+        public InstallmentFilter(UUID customerId, UUID orderId, InstallmentStatus status,
+                                 InstallmentMilestone milestone, LocalDate dueBefore, Boolean reached,
+                                 Boolean overdue, LocalDate overdueOn, LocalDate dueFrom) {
+            this(customerId, orderId, status, milestone, dueBefore, reached, overdue, overdueOn, dueFrom, null, null);
         }
 
         /** Without a lower bound on the due day. */

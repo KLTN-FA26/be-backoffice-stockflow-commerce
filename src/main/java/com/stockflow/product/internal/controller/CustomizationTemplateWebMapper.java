@@ -38,13 +38,15 @@ class CustomizationTemplateWebMapper {
                 surfaces);
     }
 
-    CustomizationTemplateResponse toResponse(PrintConfig config) {
+    /** {@code pendingReviewCount}: the customers' designs waiting for review on it. */
+    CustomizationTemplateResponse toResponse(PrintConfig config, long pendingReviewCount) {
         return new CustomizationTemplateResponse(config.templateId(), config.productId(), config.variantId(),
                 config.sku(), config.code(), config.name(), config.minDpi(), config.colorMode(),
                 config.allowedFileFormats(), config.maxFileSizeMb(), config.maxColors(), config.allowedFontCodes(),
                 config.active(), config.model() == null ? null : toResponse(config.model()),
                 config.printAreas().stream().map(CustomizationTemplateWebMapper::toResponse).toList(),
-                config.referenceFileName(), config.version(), toResponse(config.model3d()));
+                config.referenceFileName(), config.version(), toResponse(config.model3d()), config.printVersion(),
+                pendingReviewCount);
     }
 
     private static CustomizationTemplateResponse.Model3d toResponse(TemplateModel3d model3d) {

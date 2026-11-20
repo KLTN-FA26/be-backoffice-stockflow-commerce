@@ -199,6 +199,10 @@ class OrderThroughContractIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT string_agg(to_status, '>' ORDER BY occurred_at, id) FROM "
                 + "ordering.order_status_history WHERE order_id = ?", String.class, orderId))
                 .contains("PENDING_CONTRACT").endsWith("DRAFT");
+        assertThat(jdbc.queryForObject("SELECT reason FROM ordering.order_status_history WHERE order_id = ? AND "
+                + "from_status = 'PENDING_CONTRACT' AND to_status = 'DRAFT'", String.class, orderId))
+                .as("the timeline says why, as CODE: note").isEqualTo("CONTRACT_CANCELLED: The customer wants another "
+                        + "window");
     }
 
     @Test

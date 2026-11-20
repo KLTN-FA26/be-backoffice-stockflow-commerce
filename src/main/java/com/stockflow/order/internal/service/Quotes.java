@@ -130,12 +130,17 @@ public interface Quotes {
      * @param taxRate           its VAT rate, a percentage
      * @param proposedTax       the VAT of {@code proposedLineTotal}; null without a rate or a price
      * @param acceptedTax       the VAT of {@code acceptedLineTotal}
+     * @param purchasability    whether the SKU may go on a new quote or order now (kltn-docs 01 BR-04), read when the
+     *                          quote is shown: an accepted quote is cancelled only when a line is not
+     *                          {@code PURCHASABLE} (decision 2026-10-17); null on a legacy line, and for a SKU the
+     *                          product module did not answer for
      */
     record LineView(UUID id, int lineNo, String measure, String sku, Integer cartons, Integer unitsPerCarton,
                     int units, UUID designSnapshotId, String printSpec, boolean priced, Integer moq, List<Tier> tiers,
                     BigDecimal proposedUnitPrice, BigDecimal proposedLineTotal, Integer acceptedCartons,
                     Integer acceptedUnits, BigDecimal acceptedUnitPrice, BigDecimal acceptedLineTotal,
-                    String taxClass, BigDecimal taxRate, BigDecimal proposedTax, BigDecimal acceptedTax) {
+                    String taxClass, BigDecimal taxRate, BigDecimal proposedTax, BigDecimal acceptedTax,
+                    com.stockflow.product.api.Purchasability purchasability) {
     }
 
     record Transition(int revision, QuoteStatus fromStatus, QuoteStatus toStatus, String reason, Instant changedAt,

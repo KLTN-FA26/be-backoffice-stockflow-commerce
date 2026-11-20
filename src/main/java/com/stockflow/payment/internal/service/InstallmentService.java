@@ -271,7 +271,8 @@ public class InstallmentService {
         BigDecimal amount = command.amount();
         if (amount.signum() <= 0 || amount.stripTrailingZeros().scale() > 0) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "The fee of a failed trip is more than zero, in whole units of the currency");
+                    "The fee of a failed trip is more than zero, in whole units of the currency")
+                    .localized("refusal.payment.failedTripFee");
         }
         Installment first = ofOrder.stream().filter(i -> !i.isFeeItem()).findFirst().orElse(ofOrder.getFirst());
         int seq = ofOrder.stream().filter(Installment::isFeeItem).mapToInt(Installment::seq).max()
@@ -399,12 +400,28 @@ public class InstallmentService {
     public PageResponse<Installment> installments(UUID customerId, UUID orderId, InstallmentStatus status,
                                                   InstallmentMilestone milestone, LocalDate dueBefore, Boolean reached,
                                                   Boolean overdue, int page, int size, String sort) {
+        return installments(customerId, null, orderId, status, milestone, dueBefore, reached, overdue, null, page,
+                size, sort);
+    }
+
+    /**
+     * {@link #installments(UUID, UUID, InstallmentStatus, InstallmentMilestone, LocalDate, Boolean, Boolean, int, int,
+     * String)}, also kept to the customers {@code customerIds} (null: any; empty: none - a customer search that matched
+     * nobody) and, {@code owing} true, to what is due and still owed: the milestone came and it is DUE or PARTIALLY_PAID,
+     * fee items and overdue ones included ({@link InstallmentSearch.InstallmentFilter}).
+     */
+    @Transactional(readOnly = true)
+    public PageResponse<Installment> installments(UUID customerId, java.util.Collection<UUID> customerIds,
+                                                  UUID orderId, InstallmentStatus status,
+                                                  InstallmentMilestone milestone, LocalDate dueBefore, Boolean reached,
+                                                  Boolean overdue, Boolean owing, int page, int size, String sort) {
         if (status == InstallmentStatus.OVERDUE) {
             throw new BusinessException(ErrorCode.INSTALLMENT_OVERDUE_IS_A_FLAG,
-                    "OVERDUE is not an installment status any more; filter with overdue=true");
+                    "OVERDUE is not an installment status any more; filter with overdue=true")
+                    .localized("refusal.payment.overdueIsAFlag");
         }
         return Pages.toResponse(search.installments(new InstallmentSearch.InstallmentFilter(customerId, orderId, status,
-                milestone, dueBefore, reached, overdue, overdue == null ? null : today()),
+                milestone, dueBefore, reached, overdue, overdue == null ? null : today(), null, customerIds, owing),
                 Pages.of(page, size, SORT.parse(sort))));
     }
 
@@ -425,7 +442,7 @@ public class InstallmentService {
         if (installments.isEmpty() || ownCustomerId != null
                 && !ownCustomerId.equals(installments.getFirst().customerId())) {
             throw new BusinessException(ErrorCode.INSTALLMENT_NOT_FOUND,
-                    "Order %s has no installments".formatted(orderId));
+                    "Order %s has no installments".formatted(orderId)).localized("refusal.payment.orderNoInstallments");
         }
         return new OrderInstallments(standingOf(orderId, installments), installments);
     }
@@ -440,8 +457,11 @@ public class InstallmentService {
     public TransferInstructions transferInstructions(UUID installmentId, UUID ownCustomerId) {
         Installment installment = find(installmentId, ownCustomerId);
         if (!installment.status().takesMoney()) {
+            // The status goes in as the enum: Messages.refusal reads it as its label (label.InstallmentStatus.PAID).
             throw new BusinessException(ErrorCode.INSTALLMENT_NOT_PAYABLE, "Installment %d of contract %s is %s"
-                    .formatted(installment.seq(), installment.contractNumber(), installment.status()));
+                    .formatted(installment.seq(), installment.contractNumber(), installment.status()))
+                    .localized("refusal.payment.notPayable", installment.seq(), installment.contractNumber(),
+                            installment.status());
         }
         if (!bank.configured()) {
             throw new BusinessException(ErrorCode.TRANSFER_INSTRUCTIONS_UNAVAILABLE,
@@ -458,6 +478,6 @@ public class InstallmentService {
         Optional<Installment> found = book.find(installmentId)
                 .filter(i -> ownCustomerId == null || ownCustomerId.equals(i.customerId()));
         return found.orElseThrow(() -> new BusinessException(ErrorCode.INSTALLMENT_NOT_FOUND,
-                "No installment " + installmentId));
+                "No installment " + installmentId).localized("refusal.payment.installmentNotFound"));
     }
 }

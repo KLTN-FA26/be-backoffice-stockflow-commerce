@@ -38,12 +38,16 @@ class DesignWorkflowController {
         this.mapper = mapper;
     }
 
+    /**
+     * The caller's own designs. {@code inProject=false} lists those in no design project - the ones a project may take
+     * - and {@code true} those in one; absent, both. Filtered in the query, so a page and its total count agree.
+     */
     @GetMapping
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)
     public ApiResponse<PageResponse<DesignDraftResponse>> list(@AuthenticatedUser CurrentUser user,
-            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String status, @RequestParam(required = false) Boolean inProject,
             @RequestParam(defaultValue = "0") int page, @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(Pages.toResponse(service.list(actor(user), status, pageOf(page, size))
+        return ApiResponse.ok(Pages.toResponse(service.list(actor(user), status, inProject, pageOf(page, size))
                 .map(mapper::toResponse)));
     }
 

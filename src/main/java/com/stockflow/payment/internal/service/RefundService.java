@@ -89,7 +89,7 @@ public class RefundService {
             resourceId = "#result?.records()?.getLast()?.id()")
     public OrderRefundDetail record(RecordRefundCommand command) {
         InstallmentOrder order = orders.lockForPayment(command.orderId())
-                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + command.orderId()));
+                .orElseThrow(() -> orderNotFound(command.orderId()));
         Instant now = clock.instant();
         LocalDate today = LocalDate.ofInstant(now, InstallmentService.BUSINESS_ZONE);
         RefundRecord record = RefundRecord.record(order.orderId(), order.customerId(), order.orderNumber(),
@@ -99,7 +99,8 @@ public class RefundService {
         if (record.amount().compareTo(standing.remaining()) > 0) {
             throw new BusinessException(ErrorCode.REFUND_EXCEEDS_REFUNDABLE, ("Order %s has %s %s still to refund, "
                     + "not %s").formatted(order.orderNumber(), standing.remaining().toPlainString(), order.currency(),
-                    record.amount().toPlainString()));
+                    record.amount().toPlainString())).localized("refusal.refund.exceedsRefundable",
+                    order.orderNumber(), standing.remaining(), order.currency(), record.amount());
         }
         if (book.refundReferenceInUse(record.reference())) {
             throw referenceInUse(record.reference());
@@ -146,7 +147,7 @@ public class RefundService {
     public OrderRefundDetail detail(UUID orderId, UUID ownCustomerId) {
         InstallmentOrder order = orders.find(orderId)
                 .filter(o -> ownCustomerId == null || ownCustomerId.equals(o.customerId()))
-                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
+                .orElseThrow(() -> orderNotFound(orderId));
         List<OrderSettlement> settlements = book.ofOrder(orderId);
         List<RefundRecord> records = book.recordsOf(orderId);
         return new OrderRefundDetail(RefundStanding.of(orderId, settlements, records), order.orderNumber(),
@@ -189,11 +190,18 @@ public class RefundService {
     }
 
     private static BusinessException notFound(UUID recordId) {
-        return new BusinessException(ErrorCode.REFUND_RECORD_NOT_FOUND, "No refund record " + recordId);
+        return new BusinessException(ErrorCode.REFUND_RECORD_NOT_FOUND, "No refund record " + recordId)
+                .localized("refusal.refund.notFound");
+    }
+
+    private static BusinessException orderNotFound(UUID orderId) {
+        return new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId)
+                .localized("refusal.payment.orderNotFound");
     }
 
     private static BusinessException referenceInUse(String reference) {
         return new BusinessException(ErrorCode.REFUND_REFERENCE_IN_USE,
-                "Statement line %s is already recorded as a refund".formatted(reference));
+                "Statement line %s is already recorded as a refund".formatted(reference))
+                .localized("refusal.refund.referenceInUse", reference);
     }
 }

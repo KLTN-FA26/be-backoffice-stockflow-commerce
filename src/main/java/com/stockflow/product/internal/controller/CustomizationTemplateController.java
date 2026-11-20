@@ -14,9 +14,11 @@ import com.stockflow.product.internal.controller.dto.CustomizationTemplateReques
 import com.stockflow.product.internal.controller.dto.CustomizationTemplateResponse;
 import com.stockflow.product.internal.controller.dto.TemplateVersionRequest;
 import com.stockflow.product.internal.service.PrintConfigService;
+import com.stockflow.product.spi.PendingDesignReviews;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -33,6 +35,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.function.Function;
 
@@ -79,10 +82,27 @@ class CustomizationTemplateController {
 
     private final PrintConfigService templates;
     private final CustomizationTemplateWebMapper mapper;
+    /** Absent where the design module is not (product's own module test): nothing waits for review there. */
+    private final ObjectProvider<PendingDesignReviews> pendingReviews;
 
-    CustomizationTemplateController(PrintConfigService templates, CustomizationTemplateWebMapper mapper) {
+    CustomizationTemplateController(PrintConfigService templates, CustomizationTemplateWebMapper mapper,
+                                    ObjectProvider<PendingDesignReviews> pendingReviews) {
         this.templates = templates;
         this.mapper = mapper;
+        this.pendingReviews = pendingReviews;
+    }
+
+    /** The templates as answered, with the designs waiting for review on each counted in one query. */
+    private List<CustomizationTemplateResponse> respond(List<PrintConfig> configs) {
+        PendingDesignReviews counter = pendingReviews.getIfAvailable();
+        Map<UUID, Long> pending = counter == null || configs.isEmpty() ? Map.of()
+                : counter.countByTemplate(configs.stream().map(PrintConfig::templateId).toList());
+        return configs.stream().map(config -> mapper.toResponse(config,
+                pending.getOrDefault(config.templateId(), 0L))).toList();
+    }
+
+    private CustomizationTemplateResponse respond(PrintConfig config) {
+        return respond(List.of(config)).get(0);
     }
 
     @GetMapping
@@ -90,14 +110,14 @@ class CustomizationTemplateController {
     @RequiresPermission(resource = ProductResources.CUSTOMIZATION_TEMPLATES, action = Action.READ)
     public ApiResponse<List<CustomizationTemplateResponse>> list(@PathVariable UUID productId,
                                                                  @PathVariable UUID variantId) {
-        return ApiResponse.ok(templates.list(productId, variantId).stream().map(mapper::toResponse).toList());
+        return ApiResponse.ok(respond(templates.list(productId, variantId)));
     }
 
     @GetMapping("/{templateId}")
     @RequiresPermission(resource = ProductResources.CUSTOMIZATION_TEMPLATES, action = Action.READ)
     public ApiResponse<CustomizationTemplateResponse> get(@PathVariable UUID productId, @PathVariable UUID variantId,
                                                           @PathVariable UUID templateId) {
-        return ApiResponse.ok(mapper.toResponse(templates.get(productId, variantId, templateId)));
+        return ApiResponse.ok(respond(templates.get(productId, variantId, templateId)));
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -131,7 +151,7 @@ class CustomizationTemplateController {
     public ApiResponse<CustomizationTemplateResponse> createWithoutFile(
             @PathVariable UUID productId, @PathVariable UUID variantId,
             @Valid @RequestBody CustomizationTemplateRequest request) {
-        return ApiResponse.ok(mapper.toResponse(templates.create(productId, variantId, mapper.toDraft(request), null)));
+        return ApiResponse.ok(respond(templates.create(productId, variantId, mapper.toDraft(request), null)));
     }
 
     @PutMapping(value = "/{templateId}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -161,7 +181,7 @@ class CustomizationTemplateController {
     public ApiResponse<CustomizationTemplateResponse> updateWithoutFile(
             @PathVariable UUID productId, @PathVariable UUID variantId, @PathVariable UUID templateId,
             @Valid @RequestBody CustomizationTemplateRequest request) {
-        return ApiResponse.ok(mapper.toResponse(templates.update(productId, variantId, templateId,
+        return ApiResponse.ok(respond(templates.update(productId, variantId, templateId,
                 versionOf(request), mapper.toDraft(request), null)));
     }
 
@@ -172,7 +192,7 @@ class CustomizationTemplateController {
                                                                @PathVariable UUID variantId,
                                                                @PathVariable UUID templateId,
                                                                @Valid @RequestBody TemplateVersionRequest request) {
-        return ApiResponse.ok(mapper.toResponse(templates.activate(productId, variantId, templateId,
+        return ApiResponse.ok(respond(templates.activate(productId, variantId, templateId,
                 request.version())));
     }
 
@@ -183,7 +203,7 @@ class CustomizationTemplateController {
                                                                  @PathVariable UUID variantId,
                                                                  @PathVariable UUID templateId,
                                                                  @Valid @RequestBody TemplateVersionRequest request) {
-        return ApiResponse.ok(mapper.toResponse(templates.deactivate(productId, variantId, templateId,
+        return ApiResponse.ok(respond(templates.deactivate(productId, variantId, templateId,
                 request.version())));
     }
 
@@ -199,7 +219,7 @@ class CustomizationTemplateController {
                                                                       @RequestPart("file") MultipartFile file) {
         try (var content = file.getInputStream()) {
             var upload = new FileUpload(file.getOriginalFilename(), file.getContentType(), file.getSize(), content);
-            return ApiResponse.ok(mapper.toResponse(templates.attachReference(productId, variantId, templateId,
+            return ApiResponse.ok(respond(templates.attachReference(productId, variantId, templateId,
                     version, upload)));
         } catch (IOException ex) {
             throw new StorageException("Could not read the multipart upload", ex);
@@ -236,11 +256,11 @@ class CustomizationTemplateController {
     private ApiResponse<CustomizationTemplateResponse> withModelFile(MultipartFile file,
                                                                      Function<FileUpload, PrintConfig> save) {
         if (file == null || file.isEmpty()) {
-            return ApiResponse.ok(mapper.toResponse(save.apply(null)));
+            return ApiResponse.ok(respond(save.apply(null)));
         }
         try (var content = file.getInputStream()) {
             var upload = new FileUpload(file.getOriginalFilename(), modelType(file), file.getSize(), content);
-            return ApiResponse.ok(mapper.toResponse(save.apply(upload)));
+            return ApiResponse.ok(respond(save.apply(upload)));
         } catch (IOException ex) {
             throw new StorageException("Could not read the multipart upload", ex);
         }

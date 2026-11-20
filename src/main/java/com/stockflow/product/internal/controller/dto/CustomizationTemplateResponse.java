@@ -8,7 +8,9 @@ import java.util.UUID;
 /**
  * A customization template as the back office reads it: the storefront's shape (kltn-docs 12; the studio's
  * {@code customizationTemplateSchema}) plus what only staff see - whether it is active, its reference file, its
- * version.
+ * version. {@code version} is the optimistic lock every write echoes; {@code printVersion} moves only when what
+ * customers' files are drawn on changes (decision 1), and {@code pendingReviewCount} is how many customers' designs
+ * wait for review on the template - those an edit that moves {@code printVersion} would send back to re-render.
  */
 @Schema(description = "A customization template with its computed print areas")
 public record CustomizationTemplateResponse(
@@ -33,7 +35,12 @@ public record CustomizationTemplateResponse(
         long version,
         @Schema(description = "The template's 3D model: whether a .glb is attached, its name and SHA-256, and which "
                 + "mesh each print area is drawn on. Always present")
-        Model3d model3d
+        Model3d model3d,
+        @Schema(description = "Moves only when what customers' exported files are drawn on changes (model, areas, "
+                + "limits, fonts, 3D model); not on renaming, activation or a reference die-line")
+        long printVersion,
+        @Schema(description = "Customers' designs waiting for review on this template")
+        long pendingReviewCount
 ) {
 
     /**

@@ -204,7 +204,7 @@ public class DesignSubmissionService {
         for (DesignArtifactRole role : SUBMITTED_FILES) {
             DesignArtifactJpaEntity file = files.get(role);
             if (file == null || !layout.getChecksum().equals(file.getDocumentChecksum())
-                    || !Long.valueOf(template.version()).equals(file.getTemplateVersion())) {
+                    || !Long.valueOf(template.printVersion()).equals(file.getTemplateVersion())) {
                 outdated.add(role.name());
             }
         }
@@ -325,8 +325,9 @@ public class DesignSubmissionService {
     Instant submitOne(DesignDraftJpaEntity draft, UUID actor, long version, Plan plan, UUID roundId) {
         CustomerDesignRules.requireOwner(actor, draft.getOwnerUserId(), draft.getStatus());
         requireSubmittable(draft, version);
-        long templateNow = printConfigs.byId(draft.getTemplateId()).map(PrintConfig::version).orElse(-1L);
-        if (templateNow != plan.template().version()) {
+        // The print version, not the lock's: a template renamed or (de)activated meanwhile still fits the files.
+        long templateNow = printConfigs.byId(draft.getTemplateId()).map(PrintConfig::printVersion).orElse(-1L);
+        if (templateNow != plan.template().printVersion()) {
             throw new BusinessException(ErrorCode.DESIGN_FILES_OUTDATED,
                     "The template changed while the design was being submitted", List.of(),
                     Map.of("roles", SUBMITTED_FILES.stream().map(Enum::name).sorted().toList()),

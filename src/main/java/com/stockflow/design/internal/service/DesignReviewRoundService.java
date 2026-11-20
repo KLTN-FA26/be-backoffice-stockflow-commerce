@@ -128,10 +128,15 @@ public class DesignReviewRoundService {
                 if (refused.errorCode().isServerFault()) {
                     log.error("Approving design {} of round {} failed", design.id(), roundId, refused);
                 }
-                // A server fault's own words name files and services: the client gets the code's text instead.
+                // A server fault's own words name files and services: the client gets the code's text instead. A
+                // refusal written for people (DESIGN_FILES_OUTDATED to the reviewer) is told in the caller's language,
+                // as the single design's review answers it.
                 outcomes.add(new ApprovalOutcome(design.id(), "NOT_APPROVED", refused.errorCode().name(),
                         refused.errorCode().isServerFault() || refused.getMessage() == null
-                                ? messages.forCode(refused.errorCode()) : refused.getMessage()));
+                                ? messages.forCode(refused.errorCode())
+                                : refused.messageKey() != null ? messages.refusal(refused.messageKey(),
+                                        refused.getMessage(), refused.messageArguments())
+                                : refused.getMessage()));
             } catch (RuntimeException failed) {
                 // A lock timeout, a deadlock, a damaged file: this design stays waiting, the others still go (BR-20).
                 log.error("Approving design {} of round {} failed", design.id(), roundId, failed);

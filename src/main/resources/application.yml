@@ -537,8 +537,6 @@ stockflow:
     edit-window: ${CHAT_EDIT_WINDOW:PT5M}
     # An offline customer is told of Sales' replies at most once per conversation per period.
     customer-notice-period: ${CHAT_CUSTOMER_NOTICE_PERIOD:PT1H}
-    # How long a quote drawn up from a quote request card is valid until Sales change it.
-    draft-quote-validity: ${CHAT_DRAFT_QUOTE_VALIDITY:P14D}
     # How often the SLA, auto-close and close jobs run.
     sla-job-interval: ${CHAT_SLA_JOB_INTERVAL:PT1M}
 
@@ -637,6 +635,10 @@ stockflow:
       # (diem a) is always notified, whatever this says.
       error-notice-with-correction: ${EINVOICE_ERROR_NOTICE_WITH_CORRECTION:false}
   order:
+    quote:
+      # How long a quote drawn up from a customer's quote request - on the chat's card or in the request inbox - is
+      # valid until Sales change it.
+      draft-from-request-validity: ${QUOTE_DRAFT_FROM_REQUEST_VALIDITY:P14D}
     contract:
       # Print-sample rounds a new contract offers without charge (14 BR-18, decided 2026-11-05); Sales may change it.
       free-sample-rounds: ${CONTRACT_FREE_SAMPLE_ROUNDS:2}

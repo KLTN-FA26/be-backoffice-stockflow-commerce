@@ -5,6 +5,7 @@ import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.customer.api.DefaultPaymentSchedule;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -46,8 +47,8 @@ public final class ContractTerms {
      * An installment as Sales enters it, in order: an amount or a share of the total with tax - one of the two - and a
      * milestone.
      *
-     * @param dueDays          days after the milestone; left out: 0 on signing, the customer's credit term after
-     *                         delivery; never for BEFORE_DELIVERY, which has no due day
+     * @param dueDays          days after the milestone; left out: {@code DefaultPaymentSchedule.DEFAULT_ON_SIGNING_DUE_DAYS} (3) on
+     *                         signing, the customer's credit term after delivery; never for BEFORE_DELIVERY, which has no due day
      * @param deliveryBatchSeq the delivery batch it is tied to (BEFORE_DELIVERY / AFTER_DELIVERY only); null for none
      */
     public record InstallmentEntry(String name, PaymentMilestone milestone, BigDecimal amount, BigDecimal percent,
@@ -297,9 +298,15 @@ public final class ContractTerms {
         List<PlannedInstallment> plan = new ArrayList<>();
         for (int i = 0; i < entries.size(); i++) {
             InstallmentEntry entry = entries.get(i);
+            // Left out: an AFTER_DELIVERY installment falls due after the customer's credit term; one ON_SIGNING after
+            // the days a schedule gives when it says nothing (15 §4.1 "ngày ký + N ngày") - not 0, or the installment
+            // Sales added was overdue the morning after signing and held the customer's next contract for credit
+            // (15 BR-11), as the default plan's own deposit was before it took the same days.
             Integer dueDays = entry.milestone() == PaymentMilestone.BEFORE_DELIVERY ? null
                     : entry.dueDays() != null ? entry.dueDays()
                     : entry.milestone() == PaymentMilestone.AFTER_DELIVERY && creditTermDays != null ? creditTermDays
+                    : entry.milestone() == PaymentMilestone.ON_SIGNING
+                            ? Integer.valueOf(DefaultPaymentSchedule.DEFAULT_ON_SIGNING_DUE_DAYS)
                     : Integer.valueOf(0);
             plan.add(new PlannedInstallment(Identifiers.newId(), i + 1, entry.name().strip(), entry.milestone(),
                     entry.percent(), amounts.get(i), dueDays, entry.deliveryBatchSeq()));

@@ -89,6 +89,8 @@ class PermissionMatrixTest {
                     + "query)"),
             Map.entry("POST /api/v1/design-projects", "starts a project for the caller's own customer (resolved from "
                     + "the token; no customer id is taken from the request)"),
+            Map.entry("GET /api/v1/design-fonts", "the fonts the design studio offers (BE-18): a fixed system list, no "
+                    + "customer's data at all"),
             Map.entry("GET /api/v1/orders/me", "the caller's own orders, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/returns/me", "the caller's own returns, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/orders/credit-position/me", "the caller's own credit, selected by the customer profile of "
@@ -109,7 +111,9 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/chat/me/conversations", "the caller's own conversations (F-13), selected by the "
                     + "customer profile of the token; a document filter only narrows them"),
             Map.entry("GET /api/v1/chat/me/conversations/unread-count", "the caller's own chat badge (F-13): counts "
-                    + "over the conversations of the token's customer profile, read by the token's subject"));
+                    + "over the conversations of the token's customer profile, read by the token's subject"),
+            Map.entry("POST /api/v1/chat/socket-tickets", "a socket ticket for the caller's own token (BE-12): it "
+                    + "carries that token's claims and nothing taken from the request"));
 
     /**
      * Handlers with neither {@code @RequiresPermission} nor {@code @PreAuthorize}. They are open to anyone signed in

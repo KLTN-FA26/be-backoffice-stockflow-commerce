@@ -85,4 +85,30 @@ class DesignReviewRoundServiceTest {
 
         assertThat(outcomes).singleElement().satisfies(o -> assertThat(o.outcome()).isEqualTo("SKIPPED"));
     }
+
+    /** Files outdated at review are told to the reviewer in their language, as the single design's review tells it. */
+    @Test
+    void aRefusalWrittenForPeopleIsToldInTheirLanguage() {
+        UUID round = UUID.randomUUID();
+        UUID outdated = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        when(rounds.findById(round)).thenReturn(Optional.of(new DesignReviewRoundJpaEntity(UUID.randomUUID(), actor,
+                Instant.now())));
+        when(members.findByRoundId(round)).thenReturn(List.of(new DesignReviewRoundDesignJpaEntity(round, outdated)));
+        doThrow(new BusinessException(ErrorCode.DESIGN_FILES_OUTDATED, "The submitted PRINT_READY file no longer "
+                + "matches the layout or the template", List.of(), java.util.Map.of(),
+                "refusal.design.filesOutdatedAtReview"))
+                .when(reviews).decide(eq(outdated), any(), anyLong(), anyBoolean(), any());
+        // The refusal names no arguments: matched with none.
+        when(messages.refusal(eq("refusal.design.filesOutdatedAtReview"), any()))
+                .thenReturn("Bộ file in của thiết kế này được xuất theo cấu hình in cũ");
+
+        var outcomes = service.approveAll(round, actor,
+                List.of(new DesignBatchSubmissionService.DesignAtVersion(outdated, 2)));
+
+        assertThat(outcomes).singleElement().satisfies(o -> {
+            assertThat(o.errorCode()).isEqualTo("DESIGN_FILES_OUTDATED");
+            assertThat(o.message()).isEqualTo("Bộ file in của thiết kế này được xuất theo cấu hình in cũ");
+        });
+    }
 }

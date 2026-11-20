@@ -113,7 +113,7 @@ public class PaymentReceiptExportService {
         List<ExportedLine> lines = exports.lines(filter, XlsxTable.MAX_ROWS + 1);
         if (receipts.size() > XlsxTable.MAX_ROWS || lines.size() > XlsxTable.MAX_ROWS) {
             throw new BusinessException(ErrorCode.EXPORT_TOO_LARGE, "The filter matches more than %d receipts or lines"
-                    .formatted(XlsxTable.MAX_ROWS));
+                    .formatted(XlsxTable.MAX_ROWS)).localized("refusal.payment.exportTooLarge", XlsxTable.MAX_ROWS);
         }
         Set<UUID> customerIds = new HashSet<>();
         receipts.forEach(receipt -> customerIds.add(receipt.customerId()));

@@ -147,6 +147,32 @@ class OrderLifecycleTest {
         }
 
         @Test
+        @DisplayName("14 §4.3 step 16: a sent contract cancelled puts the order back to DRAFT with CODE: reason; a "
+                + "draft contract cancelled leaves no row")
+        void contractWithdrawnSaysWhy() {
+            Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
+                    Order.line(new Sku("CUP"), 1, Money.vnd(1_000), null)), NOW);
+            order.withdrawContract(STAFF, "never sent", NOW);
+            assertThat(order.status()).isEqualTo(OrderStatus.DRAFT);
+            assertThat(order.pullTransitions()).as("no status change, no history row").isEmpty();
+
+            order.sendContract(STAFF, NOW);
+            order.withdrawContract(STAFF, "  the customer wants another window  ", NOW);
+            order.sendContract(STAFF, NOW);
+            order.withdrawContract(STAFF, " ", NOW);
+            order.sendContract(STAFF, NOW);
+            order.withdrawContract(STAFF, "x".repeat(500), NOW);
+            assertThat(order.status()).isEqualTo(OrderStatus.DRAFT);
+            List<String> reasons = order.pullTransitions().stream()
+                    .filter(t -> t.to() == OrderStatus.DRAFT).map(OrderTransition::reason).toList();
+            assertThat(reasons).hasSize(3);
+            assertThat(reasons.get(0)).isEqualTo("CONTRACT_CANCELLED: the customer wants another window");
+            assertThat(reasons.get(1)).isEqualTo("CONTRACT_CANCELLED");
+            assertThat(reasons.get(2)).as("the history column holds 500").hasSize(500)
+                    .startsWith("CONTRACT_CANCELLED: xxx");
+        }
+
+        @Test
         @DisplayName("a packed order is not cancelled; a picking one is, by staff")
         void cancellationUpToPicking() {
             Order picking = picking();

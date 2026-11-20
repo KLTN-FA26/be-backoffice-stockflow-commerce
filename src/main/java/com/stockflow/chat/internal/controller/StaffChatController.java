@@ -11,6 +11,7 @@ import com.stockflow.chat.internal.service.ChatLogEntryView;
 import com.stockflow.chat.internal.service.ChatMessagePage;
 import com.stockflow.chat.internal.service.ChatMessageView;
 import com.stockflow.chat.internal.service.ChatReadMarkerView;
+import com.stockflow.chat.internal.service.ChatStaffView;
 import com.stockflow.chat.internal.service.CustomerChatService;
 import com.stockflow.chat.internal.service.CustomerOverviewService;
 import com.stockflow.chat.internal.service.StaffChatService;
@@ -236,6 +237,16 @@ class StaffChatController {
     @RequiresPermission(resource = ChatResources.CONVERSATIONS, action = Action.READ)
     public ApiResponse<List<ChatAgentView>> agents(@AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(chat.agents(user));
+    }
+
+    @GetMapping("/staff")
+    @Operation(summary = "Colleagues an internal note may mention, by name: active staff (any role, never a customer) "
+            + "whose name contains q, case and accents ignored; at most limit (default 20, at most 50)")
+    @RequiresPermission(resource = ChatResources.CONVERSATIONS, action = Action.READ)
+    public ApiResponse<List<ChatStaffView>> staff(@AuthenticatedUser CurrentUser user,
+                                                  @RequestParam(required = false) String q,
+                                                  @RequestParam(required = false) Integer limit) {
+        return ApiResponse.ok(chat.staff(user, q, limit));
     }
 
     @GetMapping("/customers/{customerId}/overview")

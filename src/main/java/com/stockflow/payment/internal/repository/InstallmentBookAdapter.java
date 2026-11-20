@@ -208,8 +208,20 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
                         : (root, query, cb) -> cb.greaterThanOrEqualTo(root.get("dueDate"), filter.dueFrom()))
                 .and(filter.reached() == null ? null : (root, query, cb) -> filter.reached()
                         ? cb.isNotNull(root.get("reachedAt")) : cb.isNull(root.get("reachedAt")))
-                .and(filter.overdueOn() == null ? null : overdue(filter.overdueOn(), filter.overdue()));
+                .and(filter.overdueOn() == null ? null : overdue(filter.overdueOn(), filter.overdue()))
+                // Specs.in: null is any customer, empty is none - a search that matched no customer finds nothing.
+                .and(Specs.in("customerId", filter.customerIds()))
+                .and(Boolean.TRUE.equals(filter.owing()) ? owing() : null);
         return installments.findAll(spec, pageable).map(InstallmentBookAdapter::toDomain);
+    }
+
+    /**
+     * Due and still owed ({@link InstallmentSearch.InstallmentFilter}): its milestone came and it is DUE or
+     * PARTIALLY_PAID. PAID and CANCELLED owe nothing; NOT_DUE has no milestone that came.
+     */
+    private static Specification<InstallmentJpaEntity> owing() {
+        return (root, query, cb) -> cb.and(cb.isNotNull(root.get("reachedAt")),
+                root.get("status").in(InstallmentStatus.DUE, InstallmentStatus.PARTIALLY_PAID));
     }
 
     /**

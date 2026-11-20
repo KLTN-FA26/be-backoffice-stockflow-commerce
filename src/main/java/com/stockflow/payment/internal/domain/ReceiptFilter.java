@@ -25,9 +25,12 @@ public record ReceiptFilter(UUID customerId, PaymentReceiptStatus status, String
     public ReceiptFilter {
         reference = reference == null || reference.isBlank() ? null : reference.strip();
         if (receivedFrom != null && receivedTo != null && receivedFrom.isAfter(receivedTo)) {
+            // The message and the field's both in the reader's language: the field error's code alone would be read
+            // through error.RangeInverted, which no bundle has, and fall back to this English.
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Invalid date range: 'receivedFrom' must not be "
-                    + "after 'receivedTo'", List.of(new FieldError("receivedFrom", "must not be after 'receivedTo'",
-                    "RangeInverted")));
+                    + "after 'receivedTo'", List.of(FieldError.localized("receivedFrom",
+                    "must not be after 'receivedTo'", "RangeInverted", "refusal.payment.receivedRange")))
+                    .localized("refusal.payment.receivedRange");
         }
     }
 

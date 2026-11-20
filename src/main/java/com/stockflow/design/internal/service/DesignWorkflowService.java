@@ -57,13 +57,15 @@ public class DesignWorkflowService {
     /**
      * A design as the API shows it. {@code productSlug} is null for a product since removed; {@code sku} and
      * {@code templateCode} are null for a design staff started before customers designed; {@code reviewNotes} is the
-     * Sales Manager's reason when it was returned; {@code updatedAt} is when the design or its layout last changed.
+     * Sales Manager's reason when it was returned; {@code updatedAt} is when the design or its layout last changed;
+     * {@code customerSku} is the customer's own SKU, issued at approval, so null until the design is approved;
+     * {@code customerName} names the customer whose design it is.
      */
     public record DraftView(UUID id, UUID customerId, UUID productId, UUID ownerUserId, String name, String spec,
             String status, UUID currentArtifactId, UUID reviewedBy, String reviewNotes, long version,
             UUID parentSnapshotId, String productSlug, String sku, String templateCode, Instant reviewRequestedAt,
             Instant reviewedAt, Instant updatedAt, UUID projectId, String previewUrl, String variantName,
-            String productName) { }
+            String productName, String customerSku, String customerName) { }
 
     /**
      * An approved design's snapshot. {@code document}, {@code documentChecksum}, {@code assets} and
@@ -89,13 +91,15 @@ public class DesignWorkflowService {
     /**
      * The user's own designs, newest first: in {@code status} when one is given (in any case; blank is none),
      * otherwise every one but an archived design. An archived design is listed for nobody (BR-16), so asking for
-     * {@code ARCHIVED} - or for a status that does not exist - is a 400.
+     * {@code ARCHIVED} - or for a status that does not exist - is a 400. {@code inProject} keeps only the designs in a
+     * design project ({@code true}) or in none ({@code false}); null keeps both.
      */
     @Transactional(readOnly = true)
-    public Page<DraftView> list(UUID actor, String status, Pageable page) {
+    public Page<DraftView> list(UUID actor, String status, Boolean inProject, Pageable page) {
         authenticated(actor);
-        Page<DesignDraftJpaEntity> found = drafts.findOwnedBy(actor, statuses(status), Pages.of(page.getPageNumber(),
-                page.getPageSize(), Sort.by(Sort.Direction.DESC, "createdAt", "id")));
+        Page<DesignDraftJpaEntity> found = drafts.findAll(DesignDraftJpaRepository.ownedBy(actor, statuses(status),
+                inProject), Pages.of(page.getPageNumber(), page.getPageSize(),
+                Sort.by(Sort.Direction.DESC, "createdAt", "id")));
         return new PageImpl<>(views.of(found.getContent()), found.getPageable(), found.getTotalElements());
     }
 

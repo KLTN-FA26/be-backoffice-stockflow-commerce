@@ -261,6 +261,26 @@ class CustomizationTemplateIntegrationTest {
                 .andExpect(jsonPath("$.data.templates[0].model.bottomFoldMm").value(60.0));
     }
 
+    /** FE request BE-18: a template narrows the studio's fonts only to fonts the studio offers. */
+    @Test
+    void aTemplateAllowsOnlyFontsTheStudioOffers() throws Exception {
+        String withFonts = cup("CUP12-BODY", 2, null).replace("\"maxFileSizeMb\":20,",
+                "\"maxFileSizeMb\":20,\"allowedFontCodes\":[\"montserrat\",\"comic-sans\"],");
+        mvc.perform(TemplateModelFiles.create(base, withFonts).header("Accept-Language", "vi"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("allowedFontCodes"))
+                .andExpect(jsonPath("$.fieldErrors[0].message").value(
+                        "Phông chữ comic-sans không có trong danh sách phông của công cụ thiết kế: hãy chọn trong "
+                                + "danh sách."));
+        createWithFile(withFonts.replace(",\"comic-sans\"", ",\"pacifico\""))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.allowedFontCodes[1]").value("pacifico"));
+        // No list is every font, as before.
+        createWithFile(cup("CUP12-ALL", 2, null)).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.allowedFontCodes").doesNotExist());
+    }
+
     /** BE-12: a refusal names the request field it is about, by the path the back office's form maps. */
     @Test
     void anInvalidTemplateNamesTheFieldAtFault() throws Exception {

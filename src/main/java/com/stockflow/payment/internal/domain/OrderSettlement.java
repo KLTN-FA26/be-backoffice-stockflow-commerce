@@ -59,22 +59,24 @@ public final class OrderSettlement {
             reason = reason == null || reason.isBlank() ? null : reason.strip();
             detail = detail == null || detail.isBlank() ? null : detail.strip();
             if (percent != null && amount != null) {
-                throw invalid("Keep a percentage or an agreed amount, not both");
+                throw invalid("Keep a percentage or an agreed amount, not both", "refusal.settlement.feeBoth");
             }
             if (percent != null && (percent.signum() <= 0 || percent.compareTo(HUNDRED) > 0
                     || percent.stripTrailingZeros().scale() > 2)) {
-                throw invalid("The share kept is more than 0 and at most 100 percent, to two decimals");
+                throw invalid("The share kept is more than 0 and at most 100 percent, to two decimals",
+                        "refusal.settlement.feePercent");
             }
             if (amount != null && (amount.signum() <= 0 || amount.stripTrailingZeros().scale() > 0)) {
-                throw invalid("The agreed amount is more than zero, in whole dong");
+                throw invalid("The agreed amount is more than zero, in whole dong", "refusal.settlement.feeAmount");
             }
             if (amount != null && (reason == null || reason.length() > 500 || detail == null
                     || detail.length() > 2000)) {
                 throw invalid("An agreed amount needs its reason (at most 500 characters) and its detail (at most "
-                        + "2000)");
+                        + "2000)", "refusal.settlement.feeReason", 500, 2000);
             }
             if (amount == null && (reason != null || detail != null)) {
-                throw invalid("A reason and a detail go with an agreed amount");
+                throw invalid("A reason and a detail go with an agreed amount",
+                        "refusal.settlement.feeReasonWithoutAmount");
             }
         }
 
@@ -210,11 +212,11 @@ public final class OrderSettlement {
         }
         Fee terms = fee == null ? Fee.none() : fee;
         if (terms.percent() != null) {
-            throw invalid("Closing the rest keeps an agreed amount, not a share");
+            throw invalid("Closing the rest keeps an agreed amount, not a share", "refusal.settlement.closureShare");
         }
         if (terms.amount() != null && terms.amount().compareTo(closed) > 0) {
             throw invalid("The agreed amount is at most the value of the goods closed, %s"
-                    .formatted(closed.toPlainString()));
+                    .formatted(closed.toPlainString()), "refusal.settlement.closureAmountAbove", closed);
         }
         BigDecimal collected = collected(ofOrder);
         List<Reduction> reductions = new ArrayList<>();
@@ -411,8 +413,9 @@ public final class OrderSettlement {
         return ofOrder.stream().filter(i -> !i.isFeeItem()).findFirst().orElse(ofOrder.getFirst());
     }
 
-    private static BusinessException invalid(String message) {
-        return new BusinessException(ErrorCode.VALIDATION_FAILED, message);
+    /** A refusal Sales read: {@code message} for the log, {@code key} in their language. */
+    private static BusinessException invalid(String message, String key, Object... arguments) {
+        return new BusinessException(ErrorCode.VALIDATION_FAILED, message).localized(key, arguments);
     }
 
     public UUID id() { return id; }

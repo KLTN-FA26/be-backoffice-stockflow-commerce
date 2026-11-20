@@ -310,8 +310,8 @@ class DesignSubmissionIntegrationTest {
     @Test
     void filesDrawnOnATemplateSinceEditedAreOutdated() throws Exception {
         uploadFiles(saveLogoLayout(uploadLogo(1200)));
-        tx.executeWithoutResult(s -> jdbc.update("UPDATE product.customization_templates SET version = version + 1 "
-                + "WHERE id = ?::uuid", templateId));
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE product.customization_templates SET print_version = "
+                + "print_version + 1 WHERE id = ?::uuid", templateId));
 
         submit(version())
                 .andExpect(status().isConflict())

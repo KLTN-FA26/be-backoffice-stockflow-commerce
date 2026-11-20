@@ -143,7 +143,8 @@ class ChatCardsIntegrationTest {
         assertThat(view.path("payload").path("quoteId").asText()).isEqualTo(quote.toString());
         ArgumentCaptor<QuoteCards.Draft> drafted = ArgumentCaptor.forClass(QuoteCards.Draft.class);
         verify(quotes).draft(any(), drafted.capture());
-        assertThat(drafted.getValue().requestId()).as("a retried click draws up the same quote").isEqualTo(draftId(card));
+        assertThat(drafted.getValue().requestId()).as("a retried click, or the request inbox, draws up the same quote")
+                .isEqualTo(draftId("DESIGN", requestId));
         assertThat(drafted.getValue().customerId()).isEqualTo(alice.customer());
         assertThat(drafted.getValue().lines()).containsExactly(new QuoteCards.DraftLine("ACME-CUP-01", 40));
         assertThat(drafted.getValue().requestedDeliveryDate()).isEqualTo(LocalDate.now().plusDays(30));
@@ -438,8 +439,9 @@ class ChatCardsIntegrationTest {
                 null, Actor.system()).messageId());
     }
 
-    private static UUID draftId(UUID card) {
-        return UUID.nameUUIDFromBytes(("chat-quote-request-card:" + card).getBytes(StandardCharsets.UTF_8));
+    /** The quote's request id the order module derives from the quote request's (QuoteFromRequestService). */
+    private static UUID draftId(String scope, UUID request) {
+        return UUID.nameUUIDFromBytes(("quote-from-request:" + scope + ":" + request).getBytes(StandardCharsets.UTF_8));
     }
 
     private UUID openAsCustomer(Portal who, String text) throws Exception {

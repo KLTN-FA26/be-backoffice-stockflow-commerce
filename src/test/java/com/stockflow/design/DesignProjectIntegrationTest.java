@@ -303,6 +303,33 @@ class DesignProjectIntegrationTest {
         mvc.perform(get("/api/v1/design-projects/" + project)).andExpect(status().isNotFound());
     }
 
+    /**
+     * FE request BE-15: the storefront offers a project only the designs in none, a page at a time - filtered in the
+     * query, so the page and its total agree.
+     */
+    @Test
+    void theOwnDesignsListKeepsThoseInAProjectOrThoseInNone() throws Exception {
+        String inside = draft(project, middle());
+        String alone = draft(null, middle());
+        String alsoAlone = draft(null, middle());
+
+        mvc.perform(get("/api/v1/designs").param("inProject", "false").param("size", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(2))
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(alsoAlone));
+        mvc.perform(get("/api/v1/designs").param("inProject", "false").param("page", "1").param("size", "1"))
+                .andExpect(jsonPath("$.data.items[0].id").value(alone));
+        mvc.perform(get("/api/v1/designs").param("inProject", "true"))
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(inside))
+                .andExpect(jsonPath("$.data.items[0].projectId").value(project));
+        mvc.perform(get("/api/v1/designs").param("inProject", "false").param("status", "DRAFT"))
+                .andExpect(jsonPath("$.data.totalElements").value(2));
+        mvc.perform(get("/api/v1/designs")).andExpect(jsonPath("$.data.totalElements").value(3));
+        mvc.perform(get("/api/v1/designs").param("inProject", "maybe")).andExpect(status().isBadRequest());
+    }
+
     @Test
     void aProjectHoldsAtMostTwentyDesignsArchivedOnesAside() throws Exception {
         String extra = draft(null, middle());
@@ -598,6 +625,26 @@ class DesignProjectIntegrationTest {
                 .contentType(MediaType.APPLICATION_JSON).content(sameAsk)).andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.status").value("OPEN"))
                 .andExpect(jsonPath("$.data.id").value(org.hamcrest.Matchers.not(asked.get("id").asText())));
+        // FE request BE-3: the sales staff's list in one status, counted after the filter.
+        as(tx.execute(s -> ReferenceRows.user(entityManager)), SALES);
+        mvc.perform(get("/api/v1/design-project-quote-requests").param("customerId", customerId.toString())
+                        .param("status", "CLOSED"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(asked.get("id").asText()))
+                .andExpect(jsonPath("$.data.items[0].status").value("CLOSED"));
+        mvc.perform(get("/api/v1/design-project-quote-requests").param("customerId", customerId.toString())
+                        .param("status", "OPEN"))
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].status").value("OPEN"))
+                .andExpect(jsonPath("$.data.items[0].id").value(org.hamcrest.Matchers.not(asked.get("id").asText())));
+        mvc.perform(get("/api/v1/design-project-quote-requests").param("customerId", customerId.toString()))
+                .andExpect(jsonPath("$.data.totalElements").value(2));
+        mvc.perform(get("/api/v1/design-project-quote-requests").param("status", "CLOSED"))
+                .andExpect(jsonPath("$.data.items[*].status").value(org.hamcrest.Matchers.everyItem(
+                        org.hamcrest.Matchers.is("CLOSED"))));
+        mvc.perform(get("/api/v1/design-project-quote-requests").param("status", "PENDING"))
+                .andExpect(status().isBadRequest());
 
         // A revision of an approved design joins the open project; once it is closed, a revision stands alone.
         as(owner, Set.of());

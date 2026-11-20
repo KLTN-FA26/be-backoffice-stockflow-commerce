@@ -2,10 +2,12 @@ package com.stockflow.common.websocket;
 
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
+import com.stockflow.common.security.SessionValidator;
 import com.stockflow.common.security.StockflowJwtAuthenticationConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.dao.DataAccessException;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.MessageDeliveryException;
@@ -27,15 +29,28 @@ import java.util.Optional;
 /**
  * Authentication and authorisation of the STOMP socket ({@code /ws}), on the client's inbound channel.
  *
- * <h2>CONNECT: the same token as REST</h2>
+ * <h2>CONNECT: the same token as REST, or a ticket for it</h2>
  *
  * <p>A browser cannot put an {@code Authorization} header on a WebSocket handshake, so the handshake itself is
- * anonymous ({@code ResourceServerSecurityConfig} permits {@code /ws}) and the token travels in the STOMP CONNECT
- * frame's {@code Authorization: Bearer ...} header instead. It is decoded by the application's own {@link JwtDecoder} -
- * signature, expiry and the live session ({@code SessionValidator}) - and turned into the same authentication REST
- * gets by {@link StockflowJwtAuthenticationConverter}: roles from the token, permissions and scope from the role matrix
- * (ADR-0008). The principal's name is the account id, which is what user destinations ({@code /user/queue/...}) route
- * by.</p>
+ * anonymous ({@code ResourceServerSecurityConfig} permits {@code /ws}) and the credential travels in the STOMP CONNECT
+ * frame instead, in one of two headers:</p>
+ * <ul>
+ *   <li>{@code Authorization: Bearer ...} - the access token, decoded by the application's own {@link JwtDecoder}:
+ *       signature, expiry and the live session ({@link SessionValidator});</li>
+ *   <li>{@code ticket: ...} - a single-use, 30-second ticket from {@code POST /api/v1/chat/socket-tickets}, for a
+ *       client whose script never holds the token (the back office keeps it in an HttpOnly cookie behind its BFF).
+ *       {@link SocketTickets} redeems it into the claims of the token that asked for it, which are checked as the
+ *       decoder would check them, minus the signature: expiry against the clock and the session through the same
+ *       {@link SessionValidator}. Any refusal - unknown, expired, already used, the token expired or the session ended
+ *       since - is the one code {@value #TICKET_INVALID}, the ERROR frame's {@code message} header (Spring's
+ *       {@code StompSubProtocolHandler} sends the exception's message there; no error handler is configured); the
+ *       client asks for a new ticket. A CONNECT carrying both headers is judged by its ticket. The ticket is never
+ *       logged.</li>
+ * </ul>
+ *
+ * <p>Either way the result is the authentication REST gets, built by {@link StockflowJwtAuthenticationConverter}:
+ * roles from the token, permissions and scope from the role matrix (ADR-0008). The principal's name is the account id,
+ * which is what user destinations ({@code /user/queue/...}) route by.</p>
  *
  * <h2>SUBSCRIBE and SEND: asked every time</h2>
  *
@@ -48,13 +63,17 @@ import java.util.Optional;
  * interceptor is built before them.</p>
  *
  * <p>When security is switched off ({@code stockflow.security.enabled=false}) there is no decoder, and every CONNECT
- * is refused: the socket serves only signed-in people, and there is nobody to sign in.</p>
+ * is refused, with a token or a ticket: the socket serves only signed-in people, and there is nobody to sign in.</p>
  */
 @Component
 public class StompAuthenticationInterceptor implements ChannelInterceptor {
 
     private static final Logger log = LoggerFactory.getLogger(StompAuthenticationInterceptor.class);
     private static final String BEARER = "Bearer ";
+    /** The CONNECT header a socket ticket travels in. */
+    public static final String TICKET_HEADER = "ticket";
+    /** The ERROR frame message of every refused ticket; the client's cue to ask for a new one. */
+    public static final String TICKET_INVALID = "WS_TICKET_INVALID";
     private static final String USER_QUEUES = "/user/queue/";
     private static final String APPLICATION = "/app/";
 
@@ -62,16 +81,21 @@ public class StompAuthenticationInterceptor implements ChannelInterceptor {
     private final ObjectProvider<StockflowJwtAuthenticationConverter> converter;
     private final CurrentUserProvider users;
     private final ObjectProvider<StompDestinationPolicy> policies;
+    private final ObjectProvider<SessionValidator> sessions;
+    private final SocketTickets tickets;
     private final Clock clock;
 
     public StompAuthenticationInterceptor(ObjectProvider<JwtDecoder> decoder,
                                           ObjectProvider<StockflowJwtAuthenticationConverter> converter,
                                           CurrentUserProvider users, ObjectProvider<StompDestinationPolicy> policies,
+                                          ObjectProvider<SessionValidator> sessions, SocketTickets tickets,
                                           Clock clock) {
         this.decoder = decoder;
         this.converter = converter;
         this.users = users;
         this.policies = policies;
+        this.sessions = sessions;
+        this.tickets = tickets;
         this.clock = clock;
     }
 
@@ -83,7 +107,9 @@ public class StompAuthenticationInterceptor implements ChannelInterceptor {
         }
         StompCommand command = accessor.getCommand();
         if (command == StompCommand.CONNECT) {
-            accessor.setUser(authenticate(accessor.getFirstNativeHeader("Authorization")));
+            String ticket = accessor.getFirstNativeHeader(TICKET_HEADER);
+            accessor.setUser(ticket != null ? redeem(ticket)
+                    : authenticate(accessor.getFirstNativeHeader("Authorization")));
         } else if (command == StompCommand.SUBSCRIBE) {
             String destination = accessor.getDestination();
             CurrentUser user = caller(accessor.getUser(), true);
@@ -117,6 +143,43 @@ public class StompAuthenticationInterceptor implements ChannelInterceptor {
         } catch (JwtException invalid) {
             throw new MessageDeliveryException("The token is not valid");
         }
+    }
+
+    /**
+     * The authentication of the token a ticket was issued for: the ticket redeemed (single use), then the checks the
+     * decoder makes on a bearer token, minus the signature - expiry, and the live session through the decoder's own
+     * {@link SessionValidator} - then the converter, as on the bearer path. See {@link SocketTickets}.
+     */
+    private AbstractAuthenticationToken redeem(String ticket) {
+        StockflowJwtAuthenticationConverter authorities = converter.getIfAvailable();
+        SessionValidator sessionCheck = sessions.getIfAvailable();
+        if (decoder.getIfAvailable() == null || authorities == null || sessionCheck == null) {
+            log.warn("STOMP CONNECT refused: security is switched off, so nobody can sign in to the socket");
+            throw new MessageDeliveryException("Authentication is not available");
+        }
+        Jwt jwt;
+        try {
+            jwt = tickets.redeem(ticket).orElseThrow(() -> new MessageDeliveryException(TICKET_INVALID));
+        } catch (DataAccessException unavailable) {
+            // Not "unknown": the ticket may be sound and still in Redis, so the client may try it again.
+            log.warn("STOMP CONNECT refused: socket tickets cannot be read ({})",
+                    unavailable.getClass().getSimpleName());
+            throw new MessageDeliveryException("Authentication is not available");
+        }
+        if (jwt.getExpiresAt() != null && !jwt.getExpiresAt().isAfter(clock.instant())) {
+            throw new MessageDeliveryException(TICKET_INVALID);
+        }
+        boolean ended;
+        try {
+            ended = sessionCheck.validate(jwt).hasErrors();
+        } catch (JwtException unavailable) {
+            log.warn("STOMP CONNECT refused: the session store cannot be read");
+            throw new MessageDeliveryException("Authentication is not available");
+        }
+        if (ended) {
+            throw new MessageDeliveryException(TICKET_INVALID);
+        }
+        return authorities.convert(jwt);
     }
 
     /**

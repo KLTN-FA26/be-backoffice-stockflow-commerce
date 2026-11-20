@@ -1025,9 +1025,16 @@ public enum ErrorCode {
     /** A design holds at most 100 images (Design Studio plan 2F-4). */
     DESIGN_ASSET_LIMIT_REACHED("This design already has the most images allowed", 409),
     /**
-     * A quote is asked on an approved design on its own; a draft asks with its submission (kltn-docs 12 §4.8).
+     * A quote is asked on an approved design on its own; a draft asks with its submission (kltn-docs 12 §4.8). Sales
+     * answer a quote request with a quote only once every design on it is approved and has its customer SKU (14 BR-22,
+     * 16 BR-11) - the chat's card answers that with its own {@code CHAT_DESIGN_NOT_APPROVED}.
      */
     DESIGN_NOT_APPROVED("This design is not approved", 409),
+    /**
+     * A quote request closed without a quote drawn from it (Sales settled it otherwise, or its design was deleted) is
+     * not quoted: the customer asks again. One closed by a quote answers that quote instead.
+     */
+    DESIGN_QUOTE_REQUEST_CLOSED("This quote request is closed", 409),
     /** A closed design project takes no design, batch or quote request; it never reopens (kltn-docs 12 BR-22, B42). */
     DESIGN_PROJECT_ARCHIVED("This design project is closed", 409),
     /** A design project holds at most 20 designs, archived ones not counted (kltn-docs 12 B42). */
