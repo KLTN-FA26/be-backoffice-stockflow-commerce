@@ -8,13 +8,15 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * V20261214000400 on the real upgrade path (plan 2026-11-20-receiving-redundancy-removal, task 5): a SKU has ONE active
- * carton (kltn-docs 01 BR-03). Items that, before it, had several active cartons keep one - the default shipping one,
- * else the most recently created - and the others are retired (BR-10: a unit a document used is never deleted), after
+ * carton (kltn-docs 01 BR-03). Items that, before it, had several active cartons keep one - the one a variant sells in,
+ * else the one holding an open production order's carton count, else the default shipping one, else the most recently
+ * created - and the others are retired (BR-10: a unit a document used is never deleted), after
  * which {@code uk_uom_conversions_one_carton} holds. Retired units, the base unit and items with one carton are left alone.
  */
 class CartonUnitPerItemMigrationUpgradeTest {
@@ -43,6 +45,12 @@ class CartonUnitPerItemMigrationUpgradeTest {
                 assertThat(RawSql.texts(db, units("UPG-C")))
                         .as("one carton and a retired one: nothing changes")
                         .containsExactly("EACH:true:false", "C1:true:true", "C0:false:false");
+                assertThat(RawSql.texts(db, units("UPG-D")))
+                        .as("the carton an open production order is received in stays, over the default shipping one")
+                        .containsExactly("EACH:true:false", "P12:true:false", "BOX:false:false", "DONE:false:false");
+                assertThat(RawSql.texts(db, units("UPG-E")))
+                        .as("the carton a variant sells in stays, over the default shipping one")
+                        .containsExactly("EACH:true:false", "SOLD:true:false", "SHIP:false:false");
                 assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.uom_conversions WHERE unit_of_measure = "
                         + "'BIG'")).as("retired, never deleted").isEqualTo(1);
                 assertThat(RawSql.texts(db, "SELECT indexname FROM pg_indexes WHERE indexname = "
@@ -69,7 +77,7 @@ class CartonUnitPerItemMigrationUpgradeTest {
     private static void seed(Connection db) throws SQLException {
         // Written with triggers off: what is tested is the migration on rows the old rules accepted.
         RawSql.update(db, "SET session_replication_role = replica");
-        for (String sku : new String[] {"UPG-A", "UPG-B", "UPG-C"}) {
+        for (String sku : new String[] {"UPG-A", "UPG-B", "UPG-C", "UPG-D", "UPG-E"}) {
             RawSql.update(db, "INSERT INTO inventory.inventory_items (id, sku, unit_of_measure, created_at) "
                     + "VALUES (gen_random_uuid(), ?, 'EACH', NOW())", sku);
             RawSql.update(db, "INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, "
@@ -85,7 +93,43 @@ class CartonUnitPerItemMigrationUpgradeTest {
         RawSql.update(db, unit, "NEW", true, false, "1 day", "UPG-B");
         RawSql.update(db, unit, "C0", false, false, "5 days", "UPG-C");
         RawSql.update(db, unit, "C1", true, true, "1 day", "UPG-C");
+
+        String sized = "INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active, "
+                + "default_shipping, created_at) SELECT ?::uuid, id, ?, ?, TRUE, ?, NOW() - ?::interval "
+                + "FROM inventory.inventory_items WHERE sku = ?";
+        // UPG-D: BOX (10) is the newest and the default shipping carton; P12 holds the 12 an open production order
+        // counts; DONE holds the 20 of a cancelled production order, which keeps nothing.
+        RawSql.update(db, sized, UUID.randomUUID(), "BOX", 10, true, "1 day", "UPG-D");
+        RawSql.update(db, sized, UUID.randomUUID(), "P12", 12, false, "5 days", "UPG-D");
+        RawSql.update(db, sized, UUID.randomUUID(), "DONE", 20, false, "9 days", "UPG-D");
+        productionOrder(db, "PRD-20261214-9001", "DRAFT", "UPG-D", 12);
+        productionOrder(db, "PRD-20261214-9002", "CANCELLED", "UPG-D", 20);
+        // UPG-E: SHIP is the newest and the default shipping carton; a variant sells in SOLD.
+        UUID sold = UUID.randomUUID();
+        RawSql.update(db, sized, UUID.randomUUID(), "SHIP", 10, true, "1 day", "UPG-E");
+        RawSql.update(db, sized, sold, "SOLD", 6, false, "5 days", "UPG-E");
+        RawSql.update(db, "INSERT INTO product.variant_sales_units (id, variant_id, uom_conversion_id) "
+                + "VALUES (gen_random_uuid(), gen_random_uuid(), ?)", sold);
         RawSql.update(db, "SET session_replication_role = origin");
+    }
+
+    /**
+     * A DRAFT or CANCELLED production order with one line of {@code sku} in cartons of {@code unitsPerCarton};
+     * references are not checked (triggers off), CHECKs are.
+     */
+    private static void productionOrder(Connection db, String code, String status, String sku, int unitsPerCarton)
+            throws SQLException {
+        UUID id = UUID.randomUUID();
+        RawSql.update(db, "INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, "
+                + "customer_id, producer_id, receiving_warehouse_id, need_by_date, status, sample_approval_required, "
+                + "sample_required_by_default, drawn_up_by, cancelled_at, cancelled_by, cancellation_reason) VALUES (?, ?, "
+                + "gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), "
+                + "CURRENT_DATE, ?, FALSE, FALSE, gen_random_uuid(), CASE WHEN ? = 'CANCELLED' THEN NOW() END, "
+                + "CASE WHEN ? = 'CANCELLED' THEN gen_random_uuid() END, CASE WHEN ? = 'CANCELLED' THEN 'test' END)",
+                id, code, status, status, status, status);
+        RawSql.update(db, "INSERT INTO ordering.production_order_line (id, production_order_id, order_line_id, sku, "
+                + "cartons, units_per_carton, design_snapshot_id, print_file_checksum) VALUES (gen_random_uuid(), ?, "
+                + "gen_random_uuid(), ?, 1, ?, gen_random_uuid(), 'x')", id, sku, unitsPerCarton);
     }
 
     private static Flyway flyway(PostgreSQLContainer<?> postgres, String target) {
