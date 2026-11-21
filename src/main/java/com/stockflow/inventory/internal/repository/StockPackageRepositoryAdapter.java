@@ -158,6 +158,24 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
     }
 
     @Override
+    public Map<StockPackageId, String> lotsOf(Collection<StockPackageId> ids) {
+        List<UUID> wanted = ids.stream().map(StockPackageId::value).distinct().toList();
+        if (wanted.isEmpty()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        select stock_package_id, lot_number from inventory.stock_item
+                         where stock_package_id in (:ids) and lot_number is not null""")
+                .setParameter("ids", wanted).getResultList();
+        Map<StockPackageId, String> lots = new HashMap<>();
+        for (Object[] row : rows) {
+            lots.put(new StockPackageId((UUID) row[0]), (String) row[1]);
+        }
+        return lots;
+    }
+
+    @Override
     public java.util.OptionalInt cartonFactorOf(String sku) {
         @SuppressWarnings("unchecked")
         List<Object[]> units = entityManager.createNativeQuery("""

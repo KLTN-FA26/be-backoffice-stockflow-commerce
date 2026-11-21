@@ -20,6 +20,10 @@ public interface VariantJpaRepository extends BaseJpaRepository<VariantJpaEntity
 
     List<VariantJpaEntity> findBySkuIn(java.util.Collection<String> skus);
 
+    /** {@code [sku, name]} of each variant among {@code skus}: a projection, so a label sheet loads no entity. */
+    @Query("select v.sku, v.name from VariantJpaEntity v where v.sku in :skus")
+    List<Object[]> namesBySku(@Param("skus") java.util.Collection<String> skus);
+
     Optional<VariantJpaEntity> findByDesignSnapshotId(UUID designSnapshotId);
 
     List<VariantJpaEntity> findByDesignSnapshotIdIn(java.util.Collection<UUID> designSnapshotIds);

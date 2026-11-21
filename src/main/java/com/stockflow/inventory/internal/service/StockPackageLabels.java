@@ -6,16 +6,20 @@ import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.internal.domain.StockPackage;
+import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.repository.UomConversionRepository;
 import com.stockflow.inventory.spi.PickedNotHandedOver;
+import com.stockflow.inventory.spi.ReceiptLineLots;
+import com.stockflow.inventory.spi.SkuNames;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -28,8 +32,11 @@ import java.util.stream.Collectors;
  * Chooses the cartons of a label print and reads what each label says (SCRUM-473): the live cartons of a receipt
  * line, or the cartons named by LPN to reprint.
  *
- * <p>The label has no item name: it lives in product's schema, which inventory may not read, and the SKU plus
- * the LPN scan say the rest.</p>
+ * <p>The label carries the item's name and the carton's lot for the eye (printed goods of two customers look alike).
+ * Neither is inventory's to read: the name is asked of {@code product} ({@link SkuNames}), and the lot is the carton's
+ * stock row's, or - for a carton still being counted, which has no row yet - its receipt line's, asked of
+ * {@code procurement} ({@link ReceiptLineLots}). Both are {@code inventory :: spi} questions, since both modules
+ * depend on inventory; one question each per sheet. Absent in a module test, the label prints without that field.</p>
  *
  * <p>A carton that left stock is closed and has no label to print, with one exception (kltn-docs 03 §4.1 step 4, 08 §6
  * edge case): a carton picked for an order and still at the warehouse - waiting at the dispatch area for its check, its
@@ -49,12 +56,19 @@ public class StockPackageLabels {
     private final UomConversionRepository units;
     /** Fulfillment's answer to which consumed cartons are picked and not handed over yet; absent in a module test. */
     private final ObjectProvider<PickedNotHandedOver> picked;
+    /** Product's answer to what each SKU is called; absent in a module test. */
+    private final ObjectProvider<SkuNames> names;
+    /** Procurement's answer to which lot a receipt line is in; absent in a module test. */
+    private final ObjectProvider<ReceiptLineLots> receiptLots;
 
     public StockPackageLabels(StockPackageRepository stockPackages, UomConversionRepository units,
-                              ObjectProvider<PickedNotHandedOver> picked) {
+                              ObjectProvider<PickedNotHandedOver> picked, ObjectProvider<SkuNames> names,
+                              ObjectProvider<ReceiptLineLots> receiptLots) {
         this.stockPackages = stockPackages;
         this.units = units;
         this.picked = picked;
+        this.names = names;
+        this.receiptLots = receiptLots;
     }
 
     /**
@@ -81,10 +95,41 @@ public class StockPackageLabels {
         Map<UUID, UomConversion> unitsById = units.findAll(cartons.stream().map(StockPackage::uomConversionId)
                         .distinct().toList()).stream()
                 .collect(Collectors.toMap(UomConversion::id, Function.identity()));
+        Map<String, String> namesBySku = namesOf(unitsById.values().stream().map(UomConversion::sku).toList());
+        Map<StockPackageId, String> lots = lotsOf(cartons);
         return cartons.stream().sorted(Comparator.comparing(StockPackage::lpn)).map(carton -> {
             UomConversion unit = unitsById.get(carton.uomConversionId());
-            return new StockPackageLabel(carton.lpn(), unit.sku(), carton.receivedQty(), carton.nominalQty(), unit.unitOfMeasure());
+            return new StockPackageLabel(carton.lpn(), unit.sku(), namesBySku.get(unit.sku()), lots.get(carton.id()),
+                    carton.receivedQty(), carton.nominalQty(), unit.unitOfMeasure());
         }).toList();
+    }
+
+    private Map<String, String> namesOf(Collection<String> skus) {
+        SkuNames catalogue = names.getIfAvailable();
+        return catalogue == null ? Map.of() : catalogue.namesOf(skus.stream().distinct().toList());
+    }
+
+    /**
+     * Each carton's lot: its stock row's, else - a carton still being counted has no row - its receipt line's. A
+     * returned carton's row is in its own lot, which is why the row comes first.
+     */
+    private Map<StockPackageId, String> lotsOf(List<StockPackage> cartons) {
+        Map<StockPackageId, String> lots = new HashMap<>(stockPackages.lotsOf(cartons.stream()
+                .map(StockPackage::id).toList()));
+        List<StockPackage> withoutRow = cartons.stream()
+                .filter(carton -> !lots.containsKey(carton.id()) && carton.goodsReceiptLineId() != null).toList();
+        ReceiptLineLots receiving = withoutRow.isEmpty() ? null : receiptLots.getIfAvailable();
+        if (receiving != null) {
+            Map<UUID, String> byLine = receiving.lotsOf(withoutRow.stream().map(StockPackage::goodsReceiptLineId)
+                    .distinct().toList());
+            withoutRow.forEach(carton -> {
+                String lot = byLine.get(carton.goodsReceiptLineId());
+                if (lot != null) {
+                    lots.put(carton.id(), lot);
+                }
+            });
+        }
+        return lots;
     }
 
     private List<StockPackage> liveCartonsOf(UUID receiptLineId) {

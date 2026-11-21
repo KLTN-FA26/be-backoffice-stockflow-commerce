@@ -13,10 +13,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
-import java.util.ResourceBundle;
 
 /**
  * The shipping label of one outbound carton (team plan 4C-6; kltn-docs 08 §4.3 step 6), stuck next to the carton's LPN
@@ -44,10 +41,7 @@ public final class ShippingLabelSheet {
     private static final double RULE_MM = 0.3;
     private static final float LINE_SPACING = 1.3f;
 
-    // Captions, Vietnamese / English (RTM-LABELLANG), from the message bundles: label.shipping.* of messages_vi and of
-    // messages, printed "<vi> / <en>".
-    private static final ResourceBundle VI = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
-    private static final ResourceBundle EN = ResourceBundle.getBundle("i18n.messages", Locale.ROOT);
+    // Captions, Vietnamese / English (RTM-LABELLANG), from the message bundles: label.shipping.*, printed "<vi> / <en>".
     static final String ORDER = caption("order");
     static final String LABEL_VERSION = "%s  ·  " + caption("version") + " v%d";
     static final String SHIP_TO = caption("ship-to");
@@ -76,7 +70,7 @@ public final class ShippingLabelSheet {
     }
 
     private static String caption(String key) {
-        return VI.getString("label.shipping." + key) + " / " + EN.getString("label.shipping." + key);
+        return LabelCaptions.bilingual("label.shipping." + key);
     }
 
     /**
@@ -180,34 +174,8 @@ public final class ShippingLabelSheet {
 
         /** Greedy word wrap into at most {@code lines} lines; what does not fit is cut with an ellipsis. */
         private void wrapped(PDFont font, float size, String text, double maxWidth, int lines) throws IOException {
-            String drawable = fonts.drawable(nullToEmpty(text)).trim();
-            if (drawable.isEmpty()) {
-                return;
-            }
-            List<String> rows = new ArrayList<>();
-            StringBuilder current = new StringBuilder();
-            for (String word : drawable.split("\\s+")) {
-                String candidate = current.isEmpty() ? word : current + " " + word;
-                if (current.isEmpty() || LabelDrawing.widthMm(font, candidate, size) <= maxWidth) {
-                    current.setLength(0);
-                    current.append(candidate);
-                } else {
-                    rows.add(current.toString());
-                    current.setLength(0);
-                    current.append(word);
-                }
-            }
-            if (!current.isEmpty()) {
-                rows.add(current.toString());
-            }
-            if (rows.size() > lines) {
-                // The rest goes on the last line, cut with an ellipsis.
-                String last = String.join(" ", rows.subList(lines - 1, rows.size()));
-                rows = new ArrayList<>(rows.subList(0, lines - 1));
-                rows.add(last);
-            }
-            for (String row : rows) {
-                write(font, size, LabelDrawing.cut(font, row, maxWidth * LabelDrawing.CONTEXT_POINTS / size));
+            for (String row : LabelDrawing.wrap(font, fonts.drawable(nullToEmpty(text)), maxWidth, size, lines)) {
+                write(font, size, row);
             }
         }
 

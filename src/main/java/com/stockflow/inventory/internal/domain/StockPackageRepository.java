@@ -51,6 +51,12 @@ public interface StockPackageRepository {
     Map<StockPackageId, Integer> onHandOf(Collection<StockPackageId> ids);
 
     /**
+     * The lot of each of these stock packages, read from its stock row in one query (a carton is one row, kltn-docs 20
+     * BR-18). A package with no row yet - one still being counted on a draft receipt - is absent.
+     */
+    Map<StockPackageId, String> lotsOf(Collection<StockPackageId> ids);
+
+    /**
      * What each of these stock packages still has waiting for putaway: the sum of its {@code INBOUND} rows only. A
      * package with no such row is absent. Putaway tasks are sized from this, not from {@link #onHandOf}, so a carton
      * whose units are already available (or quarantined) never opens a task.

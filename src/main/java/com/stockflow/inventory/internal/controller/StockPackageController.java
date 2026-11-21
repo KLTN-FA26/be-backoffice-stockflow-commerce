@@ -165,8 +165,8 @@ class StockPackageController {
      */
     @PostMapping(value = "/labels", produces = MediaType.APPLICATION_PDF_VALUE)
     @Operation(summary = "Print carton labels as a PDF",
-            description = "Each label carries the LPN as text, as a QR code and as a Code 128 barcode, with the SKU "
-                    + "and received / nominal unit. Send Accept: application/pdf, application/json - "
+            description = "Each label carries the LPN as text, as a QR code and as a Code 128 barcode, with the count "
+                    + "(received / nominal unit), the SKU, the item name (up to two lines) and the lot. Send Accept: application/pdf, application/json - "
                     + "errors are the usual JSON envelope: 404 STOCK_PACKAGE_NOT_FOUND, 409 "
                     + "INVALID_STOCK_PACKAGE_TRANSITION for a VOID or LOST carton, or a CONSUMED one unless it is "
                     + "picked for an order and not handed over yet (kltn-docs 03 §4.1 step 4), 422 "

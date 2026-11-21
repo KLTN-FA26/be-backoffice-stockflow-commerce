@@ -17,11 +17,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The one label layout every printed code label uses: the code as large bold text at the top left, two smaller
- * lines under it, a QR code at the top right and a Code 128 barcode across the bottom, all three symbols carrying
- * exactly the code. Location labels (SCRUM-97) and carton labels (SCRUM-473) differ only in their code and two lines,
- * so they are laid out here once: a change of padding, spacing or squeeze reaches both, and one printer setup keeps
- * serving both.
+ * The location label's layout (SCRUM-97): the code as large bold text at the top left, two smaller lines under it, a
+ * QR code at the top right and a Code 128 barcode across the bottom, all three symbols carrying exactly the code. The
+ * carton label shared it until it needed more fields than two lines (SCRUM-473) and got its own,
+ * {@link CartonLabelSheet}, on the same label stock ({@link LabelFormat}) and the same {@link LabelDrawing} symbols,
+ * so one printer setup and one scanner still serve both.
  *
  * <p>Knows nothing about persistence: callers render after the read-only transaction that chose the labels has
  * ended, so no connection is held while a large PDF is drawn.</p>
@@ -68,7 +68,7 @@ public final class CodeLabelSheet {
                 document.addPage(page);
                 try (PDPageContentStream out = new PDPageContentStream(document, page)) {
                     for (int slot = 0; slot < perPage && first + slot < labels.size(); slot++) {
-                        drawLabel(out, format, cellOf(format, slot), labels.get(first + slot), fonts, loaded, fitted);
+                        drawLabel(out, format, Cell.of(format, slot), labels.get(first + slot), fonts, loaded, fitted);
                     }
                 }
             }
@@ -92,12 +92,7 @@ public final class CodeLabelSheet {
         float codeSize = LabelDrawing.fittingSize(loaded.bold, label.code(), textWidth, CODE_MAX_POINTS,
                 CODE_MIN_POINTS, CODE_STEP_POINTS);
         double baseline = innerTop + LabelDrawing.ascentMm(loaded.bold, codeSize);
-        // Still too wide at the smallest size: squeeze the glyphs rather than cut the code or let it run over the
-        // QR code, whose finder patterns it would break.
-        float squeeze = (float) Math.min(1, textWidth / LabelDrawing.widthMm(loaded.bold, label.code(), codeSize));
-        out.setHorizontalScaling(squeeze * 100);
-        LabelDrawing.text(out, cell, loaded.bold, codeSize, label.code(), innerLeft, baseline);
-        out.setHorizontalScaling(100);
+        LabelDrawing.squeezedText(out, cell, loaded.bold, codeSize, label.code(), innerLeft, baseline, textWidth);
         for (String line : List.of(label.firstLine(), label.secondLine())) {
             String drawn = fitted.get(line);
             if (drawn == null) {
@@ -113,12 +108,6 @@ public final class CodeLabelSheet {
         double barTop = innerTop + qrSide + QR_TO_BARCODE_GAP_MM;
         LabelDrawing.barcode(out, cell, label.code(), innerLeft, barTop, innerWidth,
                 innerTop + innerHeight - barTop);
-    }
-
-    private static Cell cellOf(LabelFormat format, int slot) {
-        return new Cell((slot % format.columns()) * format.labelWidthMm(),
-                format.topMarginMm() + (slot / format.columns()) * format.labelHeightMm(),
-                format.labelWidthMm(), format.labelHeightMm(), format.pageHeightMm());
     }
 
     private record Fonts(PDFont bold, PDFont regular) {
