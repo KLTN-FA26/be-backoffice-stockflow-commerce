@@ -20,16 +20,15 @@ public record ReceiptOrigin(UUID goodsReceiptId, String goodsReceiptNumber, UUID
 
     public ReceiptOrigin {
         Objects.requireNonNull(goodsReceiptId, "goodsReceiptId");
-        if ((productionOrderId == null) != (productionOrderCode == null)) {
-            throw new IllegalArgumentException("A production order is named by its id and its code");
-        }
+        // Goods are received against production orders only: the lot is the production order's (03 BR-03).
+        Objects.requireNonNull(productionOrderId, "productionOrderId");
+        Objects.requireNonNull(productionOrderCode, "productionOrderCode");
     }
 
     /** Goods received against a production order (4A-5). */
     public static ReceiptOrigin ofProductionOrder(UUID goodsReceiptId, String goodsReceiptNumber, UUID warehouseId,
                                                   UUID productionOrderId, String productionOrderCode) {
-        return new ReceiptOrigin(goodsReceiptId, goodsReceiptNumber, warehouseId,
-                Objects.requireNonNull(productionOrderId, "productionOrderId"),
-                Objects.requireNonNull(productionOrderCode, "productionOrderCode"));
+        return new ReceiptOrigin(goodsReceiptId, goodsReceiptNumber, warehouseId, productionOrderId,
+                productionOrderCode);
     }
 }

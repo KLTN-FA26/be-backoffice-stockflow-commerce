@@ -355,15 +355,15 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     + "carton specification is set up first (01 BR-11)").formatted(line.sku()));
             return null;
         }
+        if (named.isPresent() && !named.get().id().equals(unit.id())) {
+            errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID, ("%s is not the carton of %s: it is "
+                    + "%s (01 BR-03)").formatted(code, line.sku(), unit.unitOfMeasure()));
+            return null;
+        }
         if (unit.factor() != line.unitsPerCarton()) {
             errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID, ("The carton of %s, %s, holds %d, "
                     + "not the standard %d of the production order (BR-13)").formatted(line.sku(),
                     unit.unitOfMeasure(), unit.factor(), line.unitsPerCarton()));
-            return null;
-        }
-        if (named.isPresent() && !named.get().id().equals(unit.id())) {
-            errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID, ("%s is not the carton of %s: it is "
-                    + "%s (01 BR-03)").formatted(code, line.sku(), unit.unitOfMeasure()));
             return null;
         }
         Set<String> lpns = new HashSet<>();
@@ -759,7 +759,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         // counts them - not only what was confirmed: a figure the hard stop would refuse is no figure to count to.
         Map<UUID, Integer> elsewhere = production == null || !pending ? Map.of()
                 : receipts.unitsOnOtherProductionReceipts(receipt.lines().stream()
-                        .map(ReceiptLine::productionOrderLineId).filter(Objects::nonNull).toList(), receipt.id());
+                        .map(ReceiptLine::productionOrderLineId).toList(), receipt.id());
         List<LineView> lines = receipt.lines().stream().map(line -> {
             InventoryItemPolicy item = items.get(line.inventoryItemId());
             List<PackageView> packages = cartons.getOrDefault(line.id(), List.of()).stream()
@@ -778,7 +778,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     item == null ? List.of() : unitsBySku.getOrDefault(item.sku(), List.of()).stream()
                             .map(u -> new UnitView(u.unitOfMeasure(), u.factor(), u.base(), u.active()))
                             .toList(),
-                    line.productionOrderLineId(), production == null || line.productionOrderLineId() == null ? null
+                    line.productionOrderLineId(), production == null ? null
                             : production.line(line.productionOrderLineId())
                             .map(ordered -> progress(ordered, line, pending,
                                     elsewhere.getOrDefault(ordered.id(), 0))).orElse(null));

@@ -77,7 +77,6 @@ public final class GoodsReceipt extends AggregateRoot {
         this.confirmedBy = confirmedBy;
         this.closedAt = closedAt;
         this.version = version;
-        requireLinesNameTheirProductionOrderLine(this.lines);
         requireDistinctLines(this.lines);
     }
 
@@ -106,7 +105,6 @@ public final class GoodsReceipt extends AggregateRoot {
     public void replaceLines(List<ReceiptLine> counted) {
         requireStatus(GoodsReceiptStatus.DRAFT, "change the lines of");
         requireDistinctLines(counted);
-        requireLinesNameTheirProductionOrderLine(counted);
         lines.clear();
         lines.addAll(counted);
     }
@@ -183,15 +181,6 @@ public final class GoodsReceipt extends AggregateRoot {
             if (!keys.add(line.productionOrderLineId())) {
                 throw new BusinessException(ErrorCode.DUPLICATE_RECEIPT_LINE, ("Production order line %s appears "
                         + "twice; put all its cartons on one line").formatted(line.productionOrderLineId()));
-            }
-        }
-    }
-
-    /** A line counts a production order line, always (4A-5; {@code production_order_line_id} is NOT NULL). */
-    private static void requireLinesNameTheirProductionOrderLine(List<ReceiptLine> candidate) {
-        for (ReceiptLine line : candidate) {
-            if (line.productionOrderLineId() == null) {
-                throw new IllegalArgumentException("A receipt line counts a production order line");
             }
         }
     }
