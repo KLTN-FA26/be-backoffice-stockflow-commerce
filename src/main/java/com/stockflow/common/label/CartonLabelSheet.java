@@ -68,7 +68,7 @@ public final class CartonLabelSheet {
      * drawable here.
      *
      * @param name        the item's name; null or blank leaves the field out
-     * @param lot         the lot the carton is in; null leaves the field out
+     * @param lot         the lot the carton is in; null or blank leaves the field out
      * @param receivedQty what was counted into the carton, null while it is still to be counted
      * @param unit        the packing unit's code
      */
@@ -130,12 +130,8 @@ public final class CartonLabelSheet {
                     HEADER_MM + 2 * QR_BLEED_MM);
             float lpnSize = LabelDrawing.fittingSize(bold, label.lpn(), headerText, LPN_MAX_POINTS, LPN_MIN_POINTS,
                     0.25f);
-            // Still too wide at the smallest size: squeeze the glyphs rather than cut the code or run into the QR.
-            float squeeze = (float) Math.min(1, headerText / LabelDrawing.widthMm(bold, label.lpn(), lpnSize));
-            out.setHorizontalScaling(squeeze * 100);
-            LabelDrawing.text(out, cell, bold, lpnSize, label.lpn(), left,
-                    top + LabelDrawing.ascentMm(bold, lpnSize) * 0.85);
-            out.setHorizontalScaling(100);
+            LabelDrawing.squeezedText(out, cell, bold, lpnSize, label.lpn(), left,
+                    top + LabelDrawing.ascentMm(bold, lpnSize) * 0.85, headerText);
             badge(out, cell, label, left, top + HEADER_MM - BADGE_HEIGHT_MM, headerText);
 
             double rule = top + HEADER_MM + RULE_GAP_MM;
@@ -151,7 +147,7 @@ public final class CartonLabelSheet {
             List<String> name = label.name() == null ? List.of()
                     : LabelDrawing.wrap(regular, fonts.drawable(label.name()), valueWidth, NAME_POINTS, 2);
             baseline = field(out, cell, ITEM, name, regular, NAME_POINTS, left, valueLeft, baseline);
-            List<String> lot = label.lot() == null ? List.of()
+            List<String> lot = label.lot() == null || label.lot().isBlank() ? List.of()
                     : List.of(cut(bold, label.lot(), valueWidth, VALUE_POINTS));
             baseline = field(out, cell, LOT, lot, bold, VALUE_POINTS, left, valueLeft, baseline);
 
@@ -165,8 +161,8 @@ public final class CartonLabelSheet {
         private void badge(PDPageContentStream out, Cell cell, CartonLabel label, double left, double badgeTop,
                            double maxWidth) throws IOException {
             String count = "%s / %d %s".formatted(label.receivedQty() == null ? "-" : label.receivedQty().toString(),
-                    label.nominalQty(), fonts.drawable(label.unit()));
-            count = cut(bold, count, maxWidth - 2 * BADGE_PADDING_MM, BADGE_POINTS);
+                    label.nominalQty(), label.unit());
+            count = cut(bold, count, maxWidth - 2 * BADGE_PADDING_MM, BADGE_POINTS); // cut makes it drawable
             double badgeWidth = LabelDrawing.widthMm(bold, count, BADGE_POINTS) + 2 * BADGE_PADDING_MM;
             roundedRect(out, cell, left, badgeTop, badgeWidth, BADGE_HEIGHT_MM, BADGE_RADIUS_MM);
             out.fill();

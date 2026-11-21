@@ -95,7 +95,26 @@ class StockPackageLabelPdfRendererTest {
         var wide = new StockPackageLabel("LPN-20261026-000001", "CUP-12OZ", null, null, null, 1000, "CARTON");
         try (PDDocument doc = render(List.of(wide), LabelFormat.THERMAL_ROLL)) {
             assertThat(new PDFTextStripper().getText(doc)).contains(NOT_COUNTED_VI)
-                    .doesNotContain("…");
+                    .doesNotContain("NOT COUNTED", "…");
+        }
+    }
+
+    @Test
+    void aBlankLotIsLeftOutLikeAMissingOne() throws IOException {
+        var blank = new StockPackageLabel("LPN-20261026-000001", "CUP-12OZ", null, "  ", 50, 50, "CARTON");
+        try (PDDocument doc = render(List.of(blank), LabelFormat.THERMAL_ROLL)) {
+            assertThat(new PDFTextStripper().getText(doc)).contains("CUP-12OZ").doesNotContain("LOT");
+        }
+    }
+
+    @Test
+    void aDecomposedVietnameseNameIsComposedBeforeItIsDrawn() throws IOException {
+        String composed = "Ly giấy in logo";
+        String decomposed = java.text.Normalizer.normalize(composed, java.text.Normalizer.Form.NFD);
+        assertThat(decomposed).isNotEqualTo(composed);
+        var label = new StockPackageLabel("LPN-20261026-000001", "CUP-12OZ", decomposed, null, 50, 50, "CARTON");
+        try (PDDocument doc = render(List.of(label), LabelFormat.THERMAL_ROLL)) {
+            assertThat(new PDFTextStripper().getText(doc)).contains(composed);
         }
     }
 

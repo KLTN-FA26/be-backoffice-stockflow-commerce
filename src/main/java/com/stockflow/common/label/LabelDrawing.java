@@ -75,6 +75,19 @@ public final class LabelDrawing {
     }
 
     /**
+     * Draws a code that must stay whole - a label's LPN or location code - at {@code size}, squeezing the glyphs when
+     * it is still wider than {@code widthMm}: cutting the code would make it unreadable, and letting it run over would
+     * break the finder patterns of the QR code beside it. Both code label sheets head their label this way.
+     */
+    public static void squeezedText(PDPageContentStream out, Cell cell, PDFont font, float size, String text,
+                                    double leftMm, double baselineMm, double widthMm) throws IOException {
+        float squeeze = (float) Math.min(1, widthMm / widthMm(font, text, size));
+        out.setHorizontalScaling(squeeze * 100);
+        text(out, cell, font, size, text, leftMm, baselineMm);
+        out.setHorizontalScaling(100);
+    }
+
+    /**
      * The longest prefix that fits with an ellipsis, found by bisection: width grows with length, and
      * measuring every prefix one character at a time cost a long name hundreds of measurements per label.
      * {@code text} must be BMP-only, so cutting at any index splits no character.

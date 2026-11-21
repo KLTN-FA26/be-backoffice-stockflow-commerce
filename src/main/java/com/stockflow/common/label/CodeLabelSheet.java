@@ -92,12 +92,7 @@ public final class CodeLabelSheet {
         float codeSize = LabelDrawing.fittingSize(loaded.bold, label.code(), textWidth, CODE_MAX_POINTS,
                 CODE_MIN_POINTS, CODE_STEP_POINTS);
         double baseline = innerTop + LabelDrawing.ascentMm(loaded.bold, codeSize);
-        // Still too wide at the smallest size: squeeze the glyphs rather than cut the code or let it run over the
-        // QR code, whose finder patterns it would break.
-        float squeeze = (float) Math.min(1, textWidth / LabelDrawing.widthMm(loaded.bold, label.code(), codeSize));
-        out.setHorizontalScaling(squeeze * 100);
-        LabelDrawing.text(out, cell, loaded.bold, codeSize, label.code(), innerLeft, baseline);
-        out.setHorizontalScaling(100);
+        LabelDrawing.squeezedText(out, cell, loaded.bold, codeSize, label.code(), innerLeft, baseline, textWidth);
         for (String line : List.of(label.firstLine(), label.secondLine())) {
             String drawn = fitted.get(line);
             if (drawn == null) {

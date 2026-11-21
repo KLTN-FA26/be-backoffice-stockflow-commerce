@@ -1,6 +1,5 @@
 package com.stockflow.common.label;
 
-import com.google.zxing.oned.Code128Writer;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
@@ -100,9 +99,6 @@ public final class FormDocument {
     private static final double QR_MM = 22;
     private static final double BARCODE_WIDTH_MM = 62;
     private static final double BARCODE_HEIGHT_MM = 9;
-    /** LabelDrawing's: 3 and 2 dots of a 203 dpi head, then the narrowest bar scanners resolve - to centre the bars. */
-    private static final double[] BAR_MODULES_MM = {0.375, 0.25, 0.19};
-    private static final int BARCODE_QUIET_MODULES = 10;
 
     private static final float TABLE_SIZE = 8.5f;
     private static final float TABLE_DETAIL_SIZE = 8f;
@@ -209,10 +205,9 @@ public final class FormDocument {
             }
             if (barcode) {
                 y -= 6;
-                double width = barcodeWidthMm(code);
-                LabelDrawing.barcode(out, pageCell(), code,
-                        (LabelDrawing.millimetres(PAGE_WIDTH) - width) / 2, LabelDrawing.millimetres(PAGE_HEIGHT - y),
-                        BARCODE_WIDTH_MM, BARCODE_HEIGHT_MM);
+                LabelDrawing.centredBarcode(out, pageCell(), code,
+                        (LabelDrawing.millimetres(PAGE_WIDTH) - BARCODE_WIDTH_MM) / 2,
+                        LabelDrawing.millimetres(PAGE_HEIGHT - y), BARCODE_WIDTH_MM, BARCODE_HEIGHT_MM);
                 y -= LabelDrawing.points(BARCODE_HEIGHT_MM);
             }
             y -= GAP;
@@ -625,16 +620,5 @@ public final class FormDocument {
 
     private static boolean blank(String value) {
         return value == null || value.isBlank();
-    }
-
-    /** The width the barcode's bars and quiet zones actually take, as {@link LabelDrawing#barcode} picks its module. */
-    private static double barcodeWidthMm(String code) {
-        int total = new Code128Writer().encode(code).length + 2 * BARCODE_QUIET_MODULES;
-        for (double module : BAR_MODULES_MM) {
-            if (module * total <= BARCODE_WIDTH_MM) {
-                return module * total;
-            }
-        }
-        return BARCODE_WIDTH_MM;
     }
 }
