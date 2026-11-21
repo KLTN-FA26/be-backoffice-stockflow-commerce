@@ -190,6 +190,6 @@ class StorefrontAvailabilityServiceTest {
     private static UomConversion unit(Sku sku, String code, int factor, boolean base, boolean active,
                                       boolean defaultShipping) {
         return new UomConversion(UUID.randomUUID(), sku.code(), code, factor, base, BigDecimal.ONE, null, null, null,
-                base, active, 0, defaultShipping);
+                active, 0, defaultShipping);
     }
 }

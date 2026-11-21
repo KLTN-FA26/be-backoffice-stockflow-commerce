@@ -148,9 +148,9 @@ public final class CustomerSkuRows {
             UUID carton = Identifiers.newId();
             jdbc.update("""
                     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        weight_kg, length_cm, width_cm, height_cm, default_purchase, active, version, created_at,
+                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at,
                         default_shipping)
-                    VALUES (?, ?, 'CARTON', ?, FALSE, 4.2, 60, 40, 35, FALSE, TRUE, 0, NOW(), TRUE)""",
+                    VALUES (?, ?, 'CARTON', ?, FALSE, 4.2, 60, 40, 35, TRUE, 0, NOW(), TRUE)""",
                     carton, item, unitsPerCarton);
             return new Issued(sku, variant, product.productId(), snapshot, carton, unitsPerCarton);
         });
@@ -217,15 +217,11 @@ public final class CustomerSkuRows {
             }
             // A carton of exactly {@code units} pieces: the unit {@code ConfirmedOrders.Line#units} orders it in.
             UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, sku);
-            jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        default_purchase, active, version, created_at, default_shipping)
-                    VALUES (?, ?, ?, ?, FALSE, FALSE, TRUE, 0, NOW(), FALSE)
-                    ON CONFLICT (inventory_item_id, unit_of_measure) DO NOTHING""", Identifiers.newId(), item,
-                    "PK" + units, units);
-            UUID pack = jdbc.queryForObject("SELECT id FROM inventory.uom_conversions WHERE inventory_item_id = ? "
-                    + "AND unit_of_measure = ?", UUID.class, item, "PK" + units);
+            // The item has one active carton (01 BR-03): the odd carton is made in its own unit for a moment, then the
+            // SKU's carton is its active unit again, so the odd one is still no whole carton of the SKU.
+            UUID pack = CartonRows.cartonUnit(jdbc, item, "PK" + units, units);
             CartonRows.stockOfUnit(jdbc, sku, pack, "HCM-A01-1-A", 1, null, received, "AVAILABLE");
+            CartonRows.reactivate(jdbc, unit);
         });
     }
 }

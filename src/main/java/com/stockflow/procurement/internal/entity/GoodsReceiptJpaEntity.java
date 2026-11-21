@@ -23,12 +23,13 @@ import java.util.UUID;
  *
  * <p>The purchase columns ({@code po_id}, {@code po_revision_id}, {@code supplier_id}, {@code blind_reason},
  * {@code referenced_po_id}, {@code approval_*}) went with purchasing: 4A-8 stopped mapping them and
- * {@code V20261113000200} archived the purchase receipts whole and dropped them.</p>
+ * {@code V20261113000200} archived the purchase receipts whole and dropped them, and {@code V20261214000100}
+ * deleted the PURCHASE receipts and took the type out of the CHECK.</p>
  *
  * <p>Every receipt but a RETURN one (team plan 4D-2): a return receipt shares the table and the numbering, but is
  * another document - cartons scanned by LPN, no lines, DRAFT to CLOSED - mapped by {@code ReturnReceiptJpaEntity}.
- * Without the restriction a return receipt read here would be taken for a purchase receipt with no purchase order and
- * no reason, which {@code GoodsReceipt} refuses to be.</p>
+ * Without the restriction a return receipt read here would be taken for a receipt with no production order, which
+ * {@code GoodsReceipt} refuses to be.</p>
  */
 @Entity
 @Table(name = "goods_receipts", schema = "procurement")
@@ -38,12 +39,12 @@ public class GoodsReceiptJpaEntity extends BaseEntity {
     @Column(name = "receipt_number", nullable = false, length = 30, updatable = false)
     private String receiptNumber;
 
-    /** 4A-5: PRODUCTION, or PURCHASE on a historical receipt. */
+    /** 4A-5: always PRODUCTION here; a RETURN receipt is mapped by {@code ReturnReceiptJpaEntity}. */
     @Enumerated(EnumType.STRING)
     @Column(name = "receipt_type", nullable = false, length = 16, updatable = false)
     private GoodsReceiptType receiptType;
 
-    @Column(name = "production_order_id", updatable = false)
+    @Column(name = "production_order_id", nullable = false, updatable = false)
     private UUID productionOrderId;
 
     @Column(name = "warehouse_id", nullable = false, updatable = false)

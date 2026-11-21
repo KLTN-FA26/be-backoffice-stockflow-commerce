@@ -3,13 +3,14 @@ package com.stockflow.inventory.internal.domain;
 import com.stockflow.common.domain.Sku;
 
 import java.time.Instant;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Port: the lots received goods belong to ({@code inventory.stock_lot}, SCRUM-142). A lot is one goods receipt's
- * units of one SKU and lot number — so a lot number reused by another receipt is another lot. Goods received against a
- * production order are the exception (4A-5, kltn-docs 03 BR-03): their lot is the production order's, one per
- * production order and SKU across all its receipts, numbered with its code.
+ * Port: the lots received goods belong to ({@code inventory.stock_lot}, SCRUM-142). Goods are received against
+ * production orders only (4A-5, kltn-docs 03 BR-03): the lot is the production order's, one per production order and
+ * SKU across all its receipts, numbered with its code. The other lots are UNTRACED, opened by the database for stock
+ * that arrived without one.
  */
 public interface StockLots {
 
@@ -26,10 +27,9 @@ public interface StockLots {
     }
 
     /**
-     * The lot a receipt opens for these goods: found when another line of the same receipt opened it already, made
-     * otherwise. The caller holds the SKU's advisory lock, which is what keeps two lines of one receipt from making
-     * it twice; {@code uk_stock_lot_receipt} is the last guard. Against a production order, the lot is found when an
-     * earlier receipt of it opened one for the SKU ({@code uk_stock_lot_production_order}).
+     * The lot a receipt opens for these goods: the production order's lot of the SKU, found when an earlier line or
+     * receipt of it opened one, made otherwise. The caller holds the SKU's advisory lock, which is what keeps two lines
+     * from making it twice; {@code uk_stock_lot_production_order} is the last guard.
      */
     UUID openForReceipt(ReceiptLot lot);
 
@@ -41,10 +41,17 @@ public interface StockLots {
     }
 
     /**
-     * What a receipt knows about the goods it brings in, snapshotted onto the lot. {@code productionOrderId} and
-     * {@code productionOrderCode} are set for goods received against a production order (4A-5), null otherwise.
+     * What a receipt knows about the goods it brings in, snapshotted onto the lot: the production order they were
+     * received against (4A-5), whose code numbers the lot. All of it is set.
      */
-    record ReceiptLot(Sku sku, String lotNumber, Instant receivedAt, UUID goodsReceiptId,
-                      String goodsReceiptNumber, UUID warehouseId, UUID productionOrderId, String productionOrderCode) {
+    record ReceiptLot(Sku sku, Instant receivedAt, UUID warehouseId, UUID productionOrderId,
+                      String productionOrderCode) {
+        public ReceiptLot {
+            Objects.requireNonNull(sku, "sku");
+            Objects.requireNonNull(receivedAt, "receivedAt");
+            Objects.requireNonNull(warehouseId, "warehouseId");
+            Objects.requireNonNull(productionOrderId, "productionOrderId");
+            Objects.requireNonNull(productionOrderCode, "productionOrderCode");
+        }
     }
 }

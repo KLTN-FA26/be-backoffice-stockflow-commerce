@@ -85,7 +85,7 @@ class CustomerSkuIntegrationTest {
         });
         // The variant's carton spec: what a customer orders in (kltn-docs 14 BR-08).
         units.add(new Sku(sourceSku), new UomConversionDraft("CARTON", 50, new BigDecimal("4.2"),
-                new BigDecimal("60"), new BigDecimal("40"), new BigDecimal("35"), false, true, true));
+                new BigDecimal("60"), new BigDecimal("40"), new BigDecimal("35"), true, true));
         customerId = tx.execute(s -> ReferenceRows.customer(entityManager));
     }
 

@@ -109,8 +109,7 @@ class StockSummaryReportServiceTest {
     }
 
     private static UomConversion unit(String sku, int factor, boolean base) {
-        return new UomConversion(UUID.randomUUID(), sku, base ? "PCS" : "CARTON", factor, base, null, null, null, null,
-                false, true, 0);
+        return new UomConversion(UUID.randomUUID(), sku, base ? "PCS" : "CARTON", factor, base, null, null, null, null, true, 0);
     }
 
     private static <T> Map<UUID, T> pick(Map<UUID, T> all, Collection<UUID> ids) {

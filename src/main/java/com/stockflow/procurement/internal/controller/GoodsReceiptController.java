@@ -43,8 +43,8 @@ import java.util.UUID;
  * <p>Purchasing is gone (4A-8, kltn-docs 00 of 04/11): the receipts against a purchase order or none
  * ({@code POST /goods-receipts}, {@code /without-po}), the manager's over-tolerance decisions ({@code /approval},
  * {@code /rejection}, {@code /excess-rejection}) and the PO reference of a blind receipt went with it, and so did the
- * {@code APPROVE} action of this resource. A historical purchase receipt ({@code receiptType = PURCHASE}) is still
- * listed, read and - while it has counted nothing in - cancelled.</p>
+ * {@code APPROVE} action of this resource. {@code V20261214000100} deleted the purchase receipts left over, so every
+ * receipt listed here is against a production order.</p>
  */
 @RestController
 @RequestMapping("/api/v1/goods-receipts")
@@ -85,7 +85,7 @@ class GoodsReceiptController {
 
     @GetMapping
     @Operation(summary = "Goods receipts, newest first",
-            description = "`receiptType`: PRODUCTION, or PURCHASE for the historical receipts of the purchasing there was.")
+            description = "`receiptType`: PRODUCTION (the only type of this list; return receipts have their own endpoints).")
     @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.READ)
     public ApiResponse<PageResponse<GoodsReceiptRowResponse>> list(
             @RequestParam(name = "status", required = false) List<GoodsReceiptStatus> statuses,
@@ -126,8 +126,8 @@ class GoodsReceiptController {
                     on all its receipts not cancelled, drafts included - BR-02), `PRODUCTION_ORDER_NOT_RECEIVABLE` \
                     (409), `RECEIPT_LINE_UNIT_INVALID` (422), `UOM_CONVERSION_NOT_FOUND` (404), \
                     `RECEIPT_LINE_HAS_PACKAGES` (409: a line that has had cartons left out, or a carton kept in \
-                    another unit), `STOCK_PACKAGE_NOT_FOUND` (404), `VALIDATION_FAILED`. A historical purchase \
-                    receipt answers `INVALID_RECEIPT_TRANSITION` (409): it is only cancelled.""")
+                    another unit), `STOCK_PACKAGE_NOT_FOUND` (404), `VALIDATION_FAILED`. A receipt \
+                    that is not a draft answers `INVALID_RECEIPT_TRANSITION` (409).""")
     @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<GoodsReceiptResponse> replaceLines(@PathVariable UUID receiptId,
                                                           @Valid @RequestBody ReceiptLinesRequest request) {
@@ -147,7 +147,7 @@ class GoodsReceiptController {
                     The cartons become INBOUND stock in the production order's lot and the production order moves \
                     on - to IN_PRODUCTION first when it was still SENT / ACCEPTED (BR-15), then PARTIALLY_RECEIVED, \
                     or RECEIVED once every line is in. BR-02 is checked again; there is no approval step. A \
-                    historical purchase receipt answers `INVALID_RECEIPT_TRANSITION` (409).""")
+                    receipt that is not a draft answers `INVALID_RECEIPT_TRANSITION` (409).""")
     @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<GoodsReceiptResponse> confirm(@PathVariable UUID receiptId,
                                                      @AuthenticatedUser CurrentUser user) {

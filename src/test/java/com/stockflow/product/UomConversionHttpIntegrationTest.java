@@ -74,42 +74,31 @@ class UomConversionHttpIntegrationTest {
 
     private static String update(long version, String code, int factor, Boolean defaultShipping) {
         return "{\"version\":" + version + ",\"unitOfMeasure\":\"" + code + "\",\"factor\":" + factor
-                + ",\"weightKg\":5,\"lengthCm\":50,\"widthCm\":40,\"heightCm\":30,\"defaultPurchase\":false,"
+                + ",\"weightKg\":5,\"lengthCm\":50,\"widthCm\":40,\"heightCm\":30,"
                 + "\"active\":true" + (defaultShipping == null ? "" : ",\"defaultShipping\":" + defaultShipping) + "}";
     }
 
     @Test
-    void defaultShippingIsFalseUntilAskedAndMovesToTheNewestUnit() throws Exception {
+    void defaultShippingIsFalseUntilAskedAndASecondActiveUnitIsRefused() throws Exception {
         mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(create("BOX", 10, null)))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.defaultShipping").value(false));
-        String carton = mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON)
-                        .content(create("CARTON", 50, true)))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.defaultShipping").value(true))
-                .andReturn().getResponse().getContentAsString();
-        mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(create("PALLET", 500, true)))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.defaultShipping").value(true));
-
+                .andExpect(jsonPath("$.data.defaultShipping").value(false))
+                .andExpect(jsonPath("$.data.active").value(true));
+        // 01 BR-03: the SKU has one active carton; the mark can only be on it, and a second one is refused.
+        mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(create("CARTON", 50, true)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("UOM_CARTON_ALREADY_DECLARED"));
         mvc.perform(get(base))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[?(@.unitOfMeasure=='PALLET')].defaultShipping").value(true))
-                .andExpect(jsonPath("$.data.items[?(@.unitOfMeasure=='CARTON')].defaultShipping").value(false))
                 .andExpect(jsonPath("$.data.items[?(@.unitOfMeasure=='BOX')].defaultShipping").value(false))
+                .andExpect(jsonPath("$.data.items[?(@.unitOfMeasure=='CARTON')]").isEmpty())
                 .andExpect(jsonPath("$.data.items[?(@.base==true)].defaultShipping").value(false));
-        // CARTON took the mark first and lost it to PALLET.
-        String id = carton.replaceAll(".*\"id\":\"([^\"]+)\".*", "$1");
-        mvc.perform(get(base + "/" + id))
-                .andExpect(jsonPath("$.data.defaultShipping").value(false));
     }
 
     @Test
-    void putMovesTheMarkBackAndNeedsItSpelledOut() throws Exception {
-        String box = mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(create("BOX", 10, true)))
-                .andReturn().getResponse().getContentAsString();
-        mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(create("CARTON", 50, true)))
-                .andExpect(status().isCreated());
+    void putMarksTheCartonAndNeedsItSpelledOut() throws Exception {
+        String box = mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(create("BOX", 10, null)))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
         String id = box.replaceAll(".*\"id\":\"([^\"]+)\".*", "$1");
         long version = mvc.perform(get(base + "/" + id)).andReturn().getResponse().getContentAsString()
                 .transform(body -> Long.parseLong(body.replaceAll(".*\"version\":(\\d+).*", "$1")));
@@ -121,8 +110,6 @@ class UomConversionHttpIntegrationTest {
                         .content(update(version, "BOX", 10, true)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.defaultShipping").value(true));
-        mvc.perform(get(base))
-                .andExpect(jsonPath("$.data.items[?(@.unitOfMeasure=='CARTON')].defaultShipping").value(false));
     }
 
     @Test
@@ -134,5 +121,20 @@ class UomConversionHttpIntegrationTest {
         mvc.perform(put(base + "/" + id).contentType(MediaType.APPLICATION_JSON).content(retired))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("defaultShipping"));
+    }
+
+    /** The default purchase unit is gone; a client that still sends it is not refused, and the response says the constant (base: true). */
+    @Test
+    void defaultPurchaseInTheBodyIsIgnored() throws Exception {
+        String body = create("CARTON", 50, null).replace("\"heightCm\":30", "\"heightCm\":30,\"defaultPurchase\":true");
+        String created = mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.defaultPurchase").value(false))
+                .andReturn().getResponse().getContentAsString();
+        String id = created.replaceAll(".*\"id\":\"([^\"]+)\".*", "$1");
+        String put = update(0, "CARTON", 50, false).replace("\"active\":true", "\"active\":true,\"defaultPurchase\":true");
+        mvc.perform(put(base + "/" + id).contentType(MediaType.APPLICATION_JSON).content(put))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.defaultPurchase").value(false));
     }
 }

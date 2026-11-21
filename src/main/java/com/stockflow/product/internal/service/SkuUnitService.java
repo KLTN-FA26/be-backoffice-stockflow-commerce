@@ -198,7 +198,7 @@ public class SkuUnitService {
 
     private static UomConversion withoutVersion(UomConversion c) {
         return new UomConversion(c.id(), c.sku(), c.unitOfMeasure(), c.factor(), c.base(), c.weightKg(), c.lengthCm(),
-                c.widthCm(), c.heightCm(), c.defaultPurchase(), c.active(), 0, c.defaultShipping());
+                c.widthCm(), c.heightCm(), c.active(), 0, c.defaultShipping());
     }
 
     private String actor() {

@@ -237,9 +237,9 @@ class ProductionOrderIntegrationTest {
             UUID carton = Identifiers.newId();
             jdbc.update("""
                     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        weight_kg, length_cm, width_cm, height_cm, default_purchase, active, version, created_at,
+                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at,
                         default_shipping)
-                    VALUES (?, ?, 'CARTON', ?, FALSE, 4.2, 60, 40, 35, FALSE, TRUE, 0, NOW(), TRUE)""",
+                    VALUES (?, ?, 'CARTON', ?, FALSE, 4.2, 60, 40, 35, TRUE, 0, NOW(), TRUE)""",
                     carton, item, PER_CARTON);
             return new IssuedSku(code, design.snapshotId(), design.checksum(), carton, printFileKey);
         });
