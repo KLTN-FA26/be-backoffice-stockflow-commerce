@@ -40,6 +40,6 @@ class UomConversionCartonTest {
 
     private static UomConversion unit(String code, int factor, boolean base, boolean active, boolean defaultShipping) {
         return new UomConversion(UUID.randomUUID(), "LY12-ACME-01", code, factor, base, BigDecimal.ONE, null, null, null,
-                base, active, 0, defaultShipping);
+                active, 0, defaultShipping);
     }
 }

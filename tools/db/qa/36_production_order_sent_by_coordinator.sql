@@ -4,8 +4,10 @@
 -- §5.3, BR-23 rewritten). DRAFT -> SENT is an edge, nothing leads into PENDING_APPROVAL any more; sent_at and sent_by
 -- are written together and once; acceptance_note is non-blank, only after the acceptance, and written once.
 -- Each rule is attacked by the statement that breaks only it (expect_fail_like names the rule). Needs the demo seed:
--- the fixture is a second production order drawn up for the batch of demo order SO-20261031-910010, a copy of the one
--- that order already has. Rolled back at the end.
+-- the fixture is a second production order drawn up for the batch of demo order SO-…-910010, a copy of the one
+-- that order already has. The order is found by its sequence suffix: the demo history numbers its orders by dates
+-- counted back from the day it is applied (V20261128000200, pg_temp.ymd), so the date part changes every day.
+-- Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -41,7 +43,7 @@ BEGIN
     RAISE NOTICE 'ok    %', label;
 END $$;
 
--- Fixtures: a DRAFT production order {po_code} for the batch of SO-20261031-910010, copied from the one it has.
+-- Fixtures: a DRAFT production order {po_code} for the batch of SO-…-910010, copied from the one it has.
 CREATE FUNCTION pg_temp.draft(po_id UUID, po_code TEXT) RETURNS void LANGUAGE sql AS $$
     INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, customer_id, producer_id,
                                            receiving_warehouse_id, need_by_date, status, sample_approval_required,
@@ -50,14 +52,14 @@ CREATE FUNCTION pg_temp.draft(po_id UUID, po_code TEXT) RETURNS void LANGUAGE sq
            p.receiving_warehouse_id, p.need_by_date, 'DRAFT', FALSE, p.sample_required_by_default,
            p.sample_waiver_reason, p.drawn_up_by
       FROM ordering.production_order p JOIN ordering.customer_order o ON o.id = p.sales_order_id
-     WHERE o.order_number = 'SO-20261031-910010' AND p.status <> 'DRAFT';
+     WHERE o.order_number LIKE 'SO-%-910010' AND p.status <> 'DRAFT';
     INSERT INTO ordering.production_order_line (id, production_order_id, order_line_id, sku, cartons, units_per_carton,
                                                 design_snapshot_id, print_file_checksum)
     SELECT gen_random_uuid(), po_id, l.order_line_id, l.sku, 10, l.units_per_carton, l.design_snapshot_id,
            l.print_file_checksum
       FROM ordering.production_order_line l JOIN ordering.production_order p ON p.id = l.production_order_id
       JOIN ordering.customer_order o ON o.id = p.sales_order_id
-     WHERE o.order_number = 'SO-20261031-910010' AND p.status <> 'DRAFT';
+     WHERE o.order_number LIKE 'SO-%-910010' AND p.status <> 'DRAFT';
 $$;
 SELECT pg_temp.draft(md5('qa36:po1')::uuid, 'PRD-20261120-3601');
 SELECT pg_temp.draft(md5('qa36:po2')::uuid, 'PRD-20261120-3602');

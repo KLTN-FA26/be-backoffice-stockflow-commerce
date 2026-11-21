@@ -19,6 +19,23 @@ BEGIN
     RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
 END $$;
 
+-- Refused, and for the reason named: the message says {fragment}.
+CREATE FUNCTION pg_temp.expect_fail_like(label TEXT, fragment TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    BEGIN
+        EXECUTE stmt;
+        SET CONSTRAINTS ALL IMMEDIATE;
+        SET CONSTRAINTS ALL DEFERRED;
+    EXCEPTION WHEN OTHERS THEN
+        IF position(fragment IN SQLERRM) = 0 THEN
+            RAISE EXCEPTION 'FAIL  %: refused, but for another reason: %', label, SQLERRM;
+        END IF;
+        RAISE NOTICE 'ok    %  [%]', label, left(SQLERRM, 110);
+        RETURN;
+    END;
+    RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
+END $$;
+
 CREATE FUNCTION pg_temp.expect_ok(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     EXECUTE stmt;
@@ -57,13 +74,15 @@ SELECT md5('qa22:own')::uuid, md5('qa22:product')::uuid, 'QA-PRR-OWN', 'QA ly in
   FROM customer.customer c ORDER BY c.id LIMIT 1;
 UPDATE inventory.inventory_items SET weight_kg = 0.02, length_cm = 9, width_cm = 9, height_cm = 12
  WHERE sku IN ('QA-PRR-OWN', 'QA-PRR-BLANK');
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, default_purchase, active,
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, active,
                                        version, created_at, default_shipping)
-SELECT md5('qa22:carton')::uuid, i.id, 'CARTON', 50, FALSE, FALSE, TRUE, 0, NOW(), TRUE
+SELECT md5('qa22:carton')::uuid, i.id, 'CARTON', 50, FALSE, TRUE, 0, NOW(), TRUE
   FROM inventory.inventory_items i WHERE i.sku = 'QA-PRR-OWN';
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, default_purchase, active,
+-- BOX is a retired unit: the item has one active carton (01 BR-03), the CARTON of 50. A line counted in BOX is
+-- refused for its count (PR15), not for the unit being retired: that trigger asks for the factor only.
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, active,
                                        version, created_at, default_shipping)
-SELECT md5('qa22:box')::uuid, i.id, 'BOX', 25, FALSE, FALSE, TRUE, 0, NOW(), FALSE
+SELECT md5('qa22:box')::uuid, i.id, 'BOX', 25, FALSE, FALSE, 0, NOW(), FALSE
   FROM inventory.inventory_items i WHERE i.sku = 'QA-PRR-OWN';
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
                                      currency, placed_at, created_at)
@@ -170,7 +189,7 @@ SELECT pg_temp.expect_fail('PR2 a receipt against a SENT production order whose 
     SELECT pg_temp.receipt(md5('qa22:gr0')::uuid, 'GR-QA22-0', md5('qa22:po2')::uuid, 'HCM', TRUE) $q$);
 SELECT pg_temp.expect_fail('PR3 into another warehouse than the production order is received at (BR-01)', $q$
     SELECT pg_temp.receipt(md5('qa22:gr0')::uuid, 'GR-QA22-0', md5('qa22:po1')::uuid, 'QAW', TRUE) $q$);
-SELECT pg_temp.expect_fail('PR4 a PURCHASE receipt started (purchasing was removed, V20261113000200)', $q$
+SELECT pg_temp.expect_fail('PR4 a PURCHASE receipt started (ck_goods_receipts_type, V20261214000100)', $q$
     INSERT INTO procurement.goods_receipts (id, receipt_number, receipt_type, warehouse_id, status, received_at,
                                             received_by)
     SELECT md5('qa22:gr0')::uuid, 'GR-QA22-0', 'PURCHASE', w.id, 'DRAFT', NOW(), md5('demo:user:editor')::uuid
@@ -208,7 +227,8 @@ SELECT pg_temp.expect_fail('PR13 a line with an expiry date (BR-06)', $q$
 SELECT pg_temp.expect_fail('PR14 120 units: not whole cartons of 50 (BR-12, BR-13)', $q$
     SELECT pg_temp.line(md5('qa22:l0')::uuid, md5('qa22:gr1')::uuid, 'PRD-20261109-2201', 120, 'PRD-20261109-2201',
                         md5('qa22:carton')::uuid) $q$);
-SELECT pg_temp.expect_fail('PR15 counted in boxes of 25, not cartons of the line''s 50 (BR-13)', $q$
+SELECT pg_temp.expect_fail_like('PR15 counted in boxes of 25, not cartons of the line''s 50 (BR-13)',
+                               'counted in cartons holding the line', $q$
     SELECT pg_temp.line(md5('qa22:l0')::uuid, md5('qa22:gr1')::uuid, 'PRD-20261109-2201', 100, 'PRD-20261109-2201',
                         md5('qa22:box')::uuid) $q$);
 SELECT pg_temp.expect_fail('PR16 a line naming no production order line', $q$
@@ -292,11 +312,6 @@ SELECT pg_temp.expect_ok('PR33 the first draft posted, registered confirmed, the
      WHERE id = md5('PRD-20261109-2201:line')::uuid $q$);
 SELECT pg_temp.expect_fail('PR34 a posted line recounted (BR-05)', $q$
     UPDATE procurement.goods_receipt_lines SET received_qty = 150 WHERE id = md5('qa22:l1')::uuid $q$);
-SELECT pg_temp.expect_fail('PR35 a production order lot naming a goods receipt', $q$
-    INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, production_order_id,
-                                     production_order_code, goods_receipt_id, goods_receipt_number)
-    VALUES (md5('qa22:lot0')::uuid, 'QA-PRR-OWN', 'PRD-20261109-2201', NOW(), 'PRODUCTION_ORDER',
-            md5('qa22:po1')::uuid, 'PRD-20261109-2201', md5('qa22:gr1')::uuid, 'GR-QA22-1') $q$);
 SELECT pg_temp.expect_fail('PR36 a production order lot whose number is not the code (BR-03)', $q$
     INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, production_order_id,
                                      production_order_code)
@@ -327,23 +342,10 @@ SELECT pg_temp.expect_fail('PR41 a second lot of the same production order and S
                                      production_order_code)
     VALUES (md5('qa22:lot0')::uuid, 'QA-PRR-OWN', 'PRD-20261109-2201', NOW() + INTERVAL '1 day', 'PRODUCTION_ORDER',
             md5('qa22:po1')::uuid, 'PRD-20261109-2201') $q$);
-SELECT pg_temp.expect_fail('PR42 a goods receipt lot naming a production order', $q$
-    INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, goods_receipt_id,
-                                     goods_receipt_number, production_order_id, production_order_code)
-    VALUES (md5('qa22:lot0')::uuid, 'QA-PRR-OWN', 'PRD-20261109-2201', NOW(), 'GOODS_RECEIPT', md5('qa22:gr1')::uuid,
-            'GR-QA22-1', md5('qa22:po1')::uuid, 'PRD-20261109-2201') $q$);
 SELECT pg_temp.expect_fail('PR43 an untraced lot naming a production order', $q$
     INSERT INTO inventory.stock_lot (id, sku, lot_number, origin_type, production_order_id, production_order_code)
     VALUES (md5('qa22:lot0')::uuid, 'QA-PRR-OWN', 'PRD-20261109-2201', 'UNTRACED', md5('qa22:po1')::uuid,
             'PRD-20261109-2201') $q$);
-SELECT pg_temp.expect_ok('PR44 goods receipt lots keep their rule: one per receipt, SKU, lot and expiry', $q$
-    INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, goods_receipt_id,
-                                     goods_receipt_number)
-    VALUES (md5('qa22:lot2')::uuid, 'QA-PRR-BLANK', 'L1', NOW(), 'GOODS_RECEIPT', md5('qa22:gr1')::uuid, 'GR-QA22-1') $q$);
-SELECT pg_temp.expect_fail('PR45 the same goods receipt lot twice', $q$
-    INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, goods_receipt_id,
-                                     goods_receipt_number)
-    VALUES (md5('qa22:lot3')::uuid, 'QA-PRR-BLANK', 'L1', NOW(), 'GOODS_RECEIPT', md5('qa22:gr1')::uuid, 'GR-QA22-1') $q$);
 
 \echo '--- settled receipts leave the production order free (BR-10: short is closed by hand)'
 SELECT pg_temp.expect_ok('PR46 closed short once no receipt is a draft', $q$

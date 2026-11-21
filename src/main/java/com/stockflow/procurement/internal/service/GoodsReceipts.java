@@ -15,8 +15,8 @@ import java.util.UUID;
  * warehouse (kltn-docs 03 BR-07): a confirmed receipt goes straight to putaway.
  *
  * <p>Purchasing is gone (4A-8, kltn-docs 00 of 04/11): the receipts counted against a purchase order, or none, before
- * 4A-5 ({@link GoodsReceiptType#PURCHASE}) are read as they stand and cancelled while they have counted nothing in;
- * nothing else moves them.</p>
+ * 4A-5 ({@link GoodsReceiptType#PURCHASE}) were deleted by {@code V20261214000100}; every receipt is against a
+ * production order.</p>
  *
  * <p>Not on {@code procurement :: api}: nothing outside this module drives a receipt. Other modules
  * learn about receipts from the {@code GoodsReceiptConfirmed} and {@code ReceiptStockReadyForPutaway}
@@ -34,8 +34,8 @@ public interface GoodsReceipts {
      * quantity may be left out, 0; any other count is refused, BR-13). {@code quantity} may be left out too (0): it is
      * the cartons times their count. There is no lot to give: the lot is the production order's code (BR-03), and one
      * given is refused on its field; nor an expiry date, which nothing records (01 BR-17, 03 BR-06; team plan 5-1).
-     * {@code unitOfMeasure}, when given, names the SKU's packing
-     * unit holding that count; {@code sku}, when given, must be the production order line's.
+     * {@code unitOfMeasure} is optional: when given it must be the SKU's carton, its one active packing unit (01 BR-03),
+     * which must hold that count; {@code sku}, when given, must be the production order line's.
      */
     record NewLine(UUID productionOrderLineId, int quantity, String lotNumber,
                    String locationCode, String note, String unitOfMeasure, List<NewPackage> packages, String sku) {
@@ -64,12 +64,11 @@ public interface GoodsReceipts {
      * into no carton, {@code quantity} less what the cartons were counted at ({@code receivedQty}) - none on a
      * production line. {@code packages}: the line's cartons, voided ones left out, by LPN - the client prints their
      * labels from these. {@code units}: every unit of the line's item, so the counting screen can offer the packing
-     * units without the product permission the unit catalogue sits behind. {@code lotTracked}: always true - every
-     * SKU is lot-tracked (01 BR-17, team plan 5-5) - kept for the receipt form.
+     * units without the product permission the unit catalogue sits behind.
      */
     record LineView(UUID id, UUID inventoryItemId, String sku, int quantity, String lotNumber,
-                    String locationCode, String note, boolean lotTracked,
-                    int quantityForPutaway, List<String> warnings, String unitOfMeasure, int looseQuantity,
+                    String locationCode, String note,
+                    int quantityForPutaway, String unitOfMeasure, int looseQuantity,
                     List<PackageView> packages, List<UnitView> units, UUID productionOrderLineId,
                     ProductionLineProgress production) {
     }
@@ -88,10 +87,9 @@ public interface GoodsReceipts {
 
     /**
      * A unit the line's item can be counted in, the base unit first, then by code. Cartons take an {@code active}
-     * unit that is not {@code base}; {@code factor} is what one of them holds; {@code defaultPurchase} is the unit's
-     * flag as the unit catalogue keeps it.
+     * unit that is not {@code base}; {@code factor} is what one of them holds.
      */
-    record UnitView(String unitOfMeasure, int factor, boolean base, boolean active, boolean defaultPurchase) {
+    record UnitView(String unitOfMeasure, int factor, boolean base, boolean active) {
     }
 
     /**
@@ -106,20 +104,18 @@ public interface GoodsReceipts {
     }
 
     /**
-     * The names next to the ids are for display (SCRUM-464); a name is null when its row is gone. {@code warnings} are
-     * non-blocking business warnings; none is raised any more (the expiry warning went with expiry, team plan 5-1), so
-     * the list is empty. {@code productionOrder*},
-     * {@code producer*}: the production order of a PRODUCTION receipt (4A-5), null on a historical purchase receipt.
+     * The names next to the ids are for display (SCRUM-464); a name is null when its row is gone. {@code productionOrder*},
+     * {@code producer*}: the production order of a PRODUCTION receipt (4A-5).
      */
     record ReceiptView(UUID id, String number, UUID warehouseId, String warehouseCode, String warehouseName,
                        GoodsReceiptStatus status, String deliveryNote, String note, Instant receivedAt,
                        UUID receivedBy, String receivedByName, Instant confirmedAt, UUID confirmedBy,
-                       String confirmedByName, Instant closedAt, List<LineView> lines, List<String> warnings,
+                       String confirmedByName, Instant closedAt, List<LineView> lines,
                        GoodsReceiptType receiptType, UUID productionOrderId, String productionOrderCode,
                        String productionOrderStatus, UUID producerId, String producerName) {
     }
 
-    /** {@code receiptType}, {@code productionOrder*}, {@code producerName}: 4A-5; null on a historical purchase receipt. */
+    /** {@code receiptType}, {@code productionOrder*}, {@code producerName}: 4A-5. */
     record Row(UUID id, String number, UUID warehouseId, String warehouseCode, String warehouseName,
                GoodsReceiptStatus status, String deliveryNote, Instant receivedAt, UUID receivedBy,
                String receivedByName, Instant confirmedAt, UUID confirmedBy, String confirmedByName,
@@ -140,20 +136,18 @@ public interface GoodsReceipts {
 
     /**
      * Replace the whole count of a DRAFT production receipt, and label, recount or void each line's cartons to match it
-     * (SCRUM-473). A historical purchase receipt is refused ({@code INVALID_RECEIPT_TRANSITION}): it is only cancelled.
+     * (SCRUM-473).
      */
     ReceiptView replaceLines(UUID receiptId, List<NewLine> lines);
 
     /**
      * The count is final: the cartons are counted in as INBOUND stock at their receiving locations, the production
-     * order moves on, and the receipt goes to putaway. A historical purchase receipt is refused
-     * ({@code INVALID_RECEIPT_TRANSITION}).
+     * order moves on, and the receipt goes to putaway.
      */
     ReceiptView confirm(UUID receiptId, UUID userId);
 
     /**
-     * A DRAFT, or a historical purchase receipt left waiting for the old over-tolerance approval: neither has counted
-     * anything in (BR-05).
+     * A DRAFT only: nothing is counted in yet (BR-05); a posted receipt is corrected by an adjustment.
      */
     ReceiptView cancel(UUID receiptId);
 

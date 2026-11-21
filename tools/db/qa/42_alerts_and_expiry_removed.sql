@@ -73,6 +73,9 @@ SELECT pg_temp.expect_fail('AE8 a threshold written to an item', $q$
 
 \echo '--- EXPIRED is read only (StockStatus.EXPIRED, AdjustmentReason.EXPIRED)'
 -- A carton of 3 for the rows below: a stock row with units must sit in one (ck_stock_item_whole_cartons).
+-- 01 BR-03: an item has ONE active carton. The demo seed's own is retired, so the fixture's unit below is the one.
+UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
+ WHERE NOT is_base AND active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa42:u')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_QA42', 3);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
@@ -128,22 +131,10 @@ SELECT pg_temp.expect_ok('AE18 an EXPIRED adjustment recorded before is still de
     UPDATE inventory.stock_adjustment SET status = 'REJECTED', decided_by = md5('demo:user:approver')::uuid,
            decided_at = NOW(), rejection_reason = 'qa' WHERE id = md5('qa42:adj:old')::uuid $q$);
 
-\echo '--- lots without expiry (SCRUM-142): one per receipt, SKU and lot number'
--- A historical (PURCHASE) receipt header, written with the row triggers off: purchasing was removed and
--- check_goods_receipt refuses one (QA 61), but a lot an old receipt opened is all AE20-AE22 are about.
-SET LOCAL session_replication_role = replica;
-INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, received_at, received_by, receipt_type)
-VALUES (md5('qa42:gr')::uuid, 'GR-QA42-1', md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid, 'PURCHASE');
-SET LOCAL session_replication_role = origin;
-SELECT pg_temp.expect_ok('AE20 a receipt opens a lot of the red cup', $q$
-    INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, goods_receipt_id)
-    VALUES (md5('qa42:lot:1')::uuid, 'LY-GIAY-DEMO-12OZ-DO', 'LOT-QA42', NOW(), 'GOODS_RECEIPT', md5('qa42:gr')::uuid) $q$);
-SELECT pg_temp.expect_fail('AE21 the same receipt opening a second lot of that number (the expiry no longer tells them apart)', $q$
-    INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, goods_receipt_id)
-    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-DO', 'LOT-QA42', NOW(), 'GOODS_RECEIPT', md5('qa42:gr')::uuid) $q$);
-SELECT pg_temp.expect_ok('AE22 another lot number on the same receipt', $q$
-    INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, goods_receipt_id)
-    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-DO', 'LOT-QA42-B', NOW(), 'GOODS_RECEIPT', md5('qa42:gr')::uuid) $q$);
+\echo '--- lots without expiry (SCRUM-142): a lot is found by SKU, lot number and receipt time'
+SELECT pg_temp.expect_ok('AE20 a lot of the red cup', $q$
+    INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type)
+    VALUES (md5('qa42:lot:1')::uuid, 'LY-GIAY-DEMO-12OZ-DO', 'LOT-QA42', NOW(), 'UNTRACED') $q$);
 -- Two cartons of the red cup in its own carton unit, 500 cups each (a row with units must sit in a carton).
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
 SELECT md5('qa42:po:' || k)::uuid, 'QA-QA42-DO-' || k, u.inventory_item_id, u.id, u.factor, u.factor, loc, 'IN_STOCK'

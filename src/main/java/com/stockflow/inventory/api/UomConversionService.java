@@ -10,7 +10,7 @@ import java.util.UUID;
 
 /**
  * The units of measure of a SKU's inventory item (docs 01 §3, BR-09, BR-10). Every write joins the
- * caller's transaction and takes the SKU's lock, so the one default purchase unit is switched safely.
+ * caller's transaction and takes the SKU's lock, so the one default shipping unit is switched safely.
  * Each unit has its own version (optimistic locking, {@code OPTIMISTIC_LOCK}).
  *
  * <p>Whether a variant still sells in a unit is the product module's to know: it checks before it
@@ -39,16 +39,18 @@ public interface UomConversionService {
 
     /**
      * Declare a packing unit. {@code UOM_CONVERSION_DUPLICATE} when the code is taken (the base unit's
-     * included); marking it the default purchase unit, or the default shipping unit, unmarks the previous one.
+     * included); marking it the default shipping unit unmarks the previous one. A SKU has one active packing unit, its
+     * carton (01 BR-03): {@code UOM_CARTON_ALREADY_DECLARED} when another is active - retire it first (a retired unit
+     * may be declared beside it, as history).
      */
     UomConversion add(Sku sku, UomConversionDraft draft);
 
     /**
-     * Replace a unit. Unmarking the default purchase unit hands the mark back to the base unit; a retired
-     * unit cannot be the default purchase unit or the default shipping unit. Marking the default shipping unit
+     * Replace a unit. A retired unit cannot be the default shipping unit. Marking the default shipping unit
      * unmarks the item's previous one in the same transaction (never a conflict); unmarking it leaves the item
-     * without one. On the base unit only the two marks change. {@code UOM_CONVERSION_IN_USE} when the factor
-     * or code of a unit a document counts in would change (BR-10): retire it and declare a new one instead.
+     * without one. On the base unit only the default shipping mark changes. {@code UOM_CONVERSION_IN_USE} when the factor
+     * or code of a unit a document counts in would change (BR-10): retire it, then declare the new one.
+     * {@code UOM_CARTON_ALREADY_DECLARED} when re-activating a unit while another packing unit is active (01 BR-03).
      */
     UomConversion change(Sku sku, UUID id, long expectedVersion, UomConversionDraft draft);
 

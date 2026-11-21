@@ -13,17 +13,15 @@ import java.util.UUID;
 @Schema(name = "LotTrace")
 public record LotTraceResponse(Lot lot, List<Balance> balances, List<Hold> holds, List<OrderLeg> orders) {
 
-    @Schema(name = "Lot", description = "A lot as received: one per goods receipt and (SKU, lot number); for goods "
-            + "received against a production order, one per production order and SKU across its receipts, numbered "
-            + "with the production order's code (kltn-docs 03 BR-03)")
+    @Schema(name = "Lot", description = "A lot as received: one per production order and SKU across its receipts, "
+            + "numbered with the production order's code (kltn-docs 03 BR-03); UNTRACED for stock whose receipt the "
+            + "system did not record")
     public record Lot(UUID lotId, String sku,
-                      @Schema(description = "As printed; another receipt may use the same number for another lot")
+                      @Schema(description = "As printed; for a production order's lot, the production order's code")
                       String lotNumber,
                       Instant receivedAt,
-                      @Schema(description = "GOODS_RECEIPT, PRODUCTION_ORDER, or UNTRACED for stock that entered "
-                              + "without a receipt")
+                      @Schema(description = "PRODUCTION_ORDER, or UNTRACED for stock that entered without a receipt")
                       String origin,
-                      UUID goodsReceiptId, String goodsReceiptNumber,
                       UUID receivingWarehouseId,
                       long receivedQuantity,
                       @Schema(description = "On hand now, any status, in the warehouses asked about")

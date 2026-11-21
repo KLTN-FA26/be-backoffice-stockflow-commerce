@@ -29,11 +29,9 @@ import java.util.UUID;
  * <p>There is no tolerance: BR-02 refuses what is over instead, so a receipt never waits for the warehouse manager.
  * Its lines count production order lines, in whole cartons, in the production order's lot.</p>
  *
- * <p><b>Purchase receipts are history</b> (4A-8, purchasing removed: kltn-docs 00 of 04/11). A receipt with no
- * production order ({@link GoodsReceiptType#PURCHASE}) was counted against a purchase order or none before 4A-5; it is
- * read as it stands - nothing is counted or posted against a purchase order any more. None is left counting:
- * {@code V20261113000200} refuses to run while one is DRAFT or PENDING_APPROVAL, and archived and dropped its purchase
- * order, supplier and approval columns. The cancellation of such a receipt is kept for a database migrated by hand.</p>
+ * <p>Every receipt is against a production order and every line counts one of its lines: purchasing is gone (4A-8,
+ * kltn-docs 00 of 04/11) and {@code V20261214000100} removed the purchase receipts it had left behind, so there is no
+ * receipt without a production order to read, count or cancel.</p>
  *
  * <p>What the aggregate decides: the order of the steps, and that a confirmed count is never edited (BR-05). What it
  * cannot see, and the service checks against the production order, the item and the map: BR-01, BR-02, BR-13 and the
@@ -57,17 +55,13 @@ public final class GoodsReceipt extends AggregateRoot {
     private Instant closedAt;
     private final long version;
 
-    /**
-     * {@code productionOrderId} names the production order of a PRODUCTION receipt; null on a historical purchase
-     * receipt.
-     */
     public GoodsReceipt(UUID id, String number, UUID productionOrderId, UUID warehouseId, Instant receivedAt,
                         UUID receivedBy, String deliveryNote, String note, List<ReceiptLine> lines,
                         GoodsReceiptStatus status, Instant confirmedAt, UUID confirmedBy, Instant closedAt,
                         long version) {
         this.id = Objects.requireNonNull(id, "id");
         this.number = Objects.requireNonNull(number, "number");
-        this.productionOrderId = productionOrderId;
+        this.productionOrderId = Objects.requireNonNull(productionOrderId, "productionOrderId");
         this.warehouseId = Objects.requireNonNull(warehouseId, "warehouseId");
         this.receivedAt = Objects.requireNonNull(receivedAt, "receivedAt");
         this.receivedBy = Objects.requireNonNull(receivedBy, "receivedBy");
@@ -75,17 +69,15 @@ public final class GoodsReceipt extends AggregateRoot {
         this.note = note;
         this.lines = new ArrayList<>(lines == null ? List.of() : lines);
         this.status = Objects.requireNonNull(status, "status");
-        if (productionOrderId != null && status == GoodsReceiptStatus.PENDING_APPROVAL) {
-            throw new IllegalArgumentException("A receipt against a production order never waits for approval");
+        if (status == GoodsReceiptStatus.PENDING_APPROVAL || status == GoodsReceiptStatus.CONFIRMED) {
+            // Historical constants: ck_goods_receipts_status refuses both since V20261214000100, so no row can hold them.
+            throw new IllegalArgumentException("A goods receipt is never " + status + " (ck_goods_receipts_status)");
         }
         this.confirmedAt = confirmedAt;
         this.confirmedBy = confirmedBy;
         this.closedAt = closedAt;
         this.version = version;
-        requireLinesOfItsKind(this.lines);
-        if (productionOrderId != null) {
-            requireDistinctLines(this.lines);
-        }
+        requireDistinctLines(this.lines);
     }
 
     /**
@@ -97,15 +89,6 @@ public final class GoodsReceipt extends AggregateRoot {
         return new GoodsReceipt(id, number, Objects.requireNonNull(productionOrderId, "productionOrderId"),
                 warehouseId, now, receivedBy, deliveryNote, note, List.of(), GoodsReceiptStatus.DRAFT, null, null,
                 null, 0L);
-    }
-
-    /** True for a receipt against a production order (4A-5); false for a historical purchase receipt. */
-    public boolean againstProductionOrder() {
-        return productionOrderId != null;
-    }
-
-    public GoodsReceiptType type() {
-        return productionOrderId != null ? GoodsReceiptType.PRODUCTION : GoodsReceiptType.PURCHASE;
     }
 
     /**
@@ -120,10 +103,8 @@ public final class GoodsReceipt extends AggregateRoot {
 
     /** The whole count, replaced: a draft is a worksheet, edited until it is confirmed. */
     public void replaceLines(List<ReceiptLine> counted) {
-        requireProductionOrder("change the lines of");
         requireStatus(GoodsReceiptStatus.DRAFT, "change the lines of");
         requireDistinctLines(counted);
-        requireLinesOfItsKind(counted);
         lines.clear();
         lines.addAll(counted);
     }
@@ -133,7 +114,6 @@ public final class GoodsReceipt extends AggregateRoot {
      * stock in the same transaction.
      */
     public void confirm(UUID userId, Instant now) {
-        requireProductionOrder("confirm");
         requireStatus(GoodsReceiptStatus.DRAFT, "confirm");
         if (lines.isEmpty()) {
             throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
@@ -146,14 +126,10 @@ public final class GoodsReceipt extends AggregateRoot {
 
     /**
      * Only before the count is posted: once counted in, a receipt is corrected by an adjustment or a reversal (BR-05).
-     * A historical purchase receipt that never counted anything in - a draft, or one left waiting for the old
-     * over-tolerance approval - is cancelled the same way: it is the only way it can still move.
+     * A draft is the only receipt that has counted nothing in, so it is the only one that can be cancelled.
      */
     public void cancel() {
-        if (status != GoodsReceiptStatus.DRAFT && status != GoodsReceiptStatus.PENDING_APPROVAL) {
-            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
-                    "Cannot cancel receipt %s: it is %s, not DRAFT or PENDING_APPROVAL".formatted(number, status));
-        }
+        requireStatus(GoodsReceiptStatus.DRAFT, "cancel");
         this.status = GoodsReceiptStatus.CANCELLED;
     }
 
@@ -178,18 +154,6 @@ public final class GoodsReceipt extends AggregateRoot {
         this.status = GoodsReceiptStatus.CLOSED;
         this.closedAt = Objects.requireNonNull(now, "now");
         return true;
-    }
-
-    /**
-     * Nothing is counted or posted against a purchase order any more (4A-8): a historical purchase receipt is read, or
-     * cancelled while it has counted nothing in.
-     */
-    private void requireProductionOrder(String verb) {
-        if (productionOrderId == null) {
-            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION, ("Cannot %s receipt %s: it was counted "
-                    + "against a purchase order, and purchasing is gone; such a receipt is only cancelled")
-                    .formatted(verb, number));
-        }
     }
 
     // ------------------------------------------------------------------ queries
@@ -221,19 +185,9 @@ public final class GoodsReceipt extends AggregateRoot {
         }
     }
 
-    /** A line counts a production order line exactly when its receipt is against a production order (4A-5). */
-    private void requireLinesOfItsKind(List<ReceiptLine> candidate) {
-        for (ReceiptLine line : candidate) {
-            if ((line.productionOrderLineId() != null) != againstProductionOrder()) {
-                throw new IllegalArgumentException("A line counts a production order line exactly when its receipt is"
-                        + " against a production order");
-            }
-        }
-    }
-
     public UUID id() { return id; }
     public String number() { return number; }
-    /** The production order a PRODUCTION receipt is against (4A-5); null on a historical purchase receipt. */
+    /** The production order the receipt is against (4A-5). */
     public UUID productionOrderId() { return productionOrderId; }
     public UUID warehouseId() { return warehouseId; }
     public Instant receivedAt() { return receivedAt; }

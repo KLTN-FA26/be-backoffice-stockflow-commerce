@@ -676,11 +676,10 @@ class StockOperationsServiceImpl implements StockOperations {
             }
         }
 
-        // SCRUM-142: the receipt opens the lot - one per receipt and (SKU, lot number) - so a lot number
-        // another receipt used before is a different lot, and the trace knows the documents.
-        UUID lotId = command.origin() == null ? null : lots.openForReceipt(new StockLots.ReceiptLot(command.sku(), lot,
-                command.receivedAt(), command.origin().goodsReceiptId(),
-                command.origin().goodsReceiptNumber(), command.origin().warehouseId(), command.origin().productionOrderId(),
+        // SCRUM-142: the receipt opens the lot - the production order's, one per production order and SKU - so the
+        // trace knows the production order. A receipt with no origin opens none: the database labels its rows UNTRACED.
+        UUID lotId = command.origin() == null ? null : lots.openForReceipt(new StockLots.ReceiptLot(command.sku(),
+                command.receivedAt(), command.origin().warehouseId(), command.origin().productionOrderId(),
                 command.origin().productionOrderCode()));
         Instant now = clock.instant();
 

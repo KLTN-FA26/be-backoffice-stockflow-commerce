@@ -135,10 +135,12 @@ SELECT pg_temp.expect_true('F2 unit_in_use runs', $c$
 -- Fixtures: a carton of 10 blue cups (its own unit code: the demo cup already has its THUNG of 1,000); a production order of 5 cartons of them at HCM, SENT with no sample to approve first;
 -- a DRAFT receipt against it, registered with it (as 22_production_receipts.sql does). The production order's own rows are
 -- written with the row triggers off: its rules are 21_production_orders.sql's.
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg)
-VALUES (md5('qa61:carton')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'CARTON10', 10, 60, 40, 50, 12),
-       (md5('qa61:old')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'OLDCTN', 10, NULL, NULL, NULL, NULL);
-UPDATE inventory.uom_conversions SET active = FALSE WHERE id = md5('qa61:old')::uuid;
+-- 01 BR-03: one active carton per item. The demo seed's own is retired, CARTON10 is the one, and OLDCTN is declared retired.
+UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
+ WHERE NOT is_base AND active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg, active)
+VALUES (md5('qa61:carton')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'CARTON10', 10, 60, 40, 50, 12, TRUE),
+       (md5('qa61:old')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'OLDCTN', 10, NULL, NULL, NULL, NULL, FALSE);
 SET LOCAL session_replication_role = replica;
 INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, customer_id, producer_id,
                                        receiving_warehouse_id, need_by_date, status, sample_approval_required,
@@ -190,7 +192,7 @@ SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;
 
 \echo '--- no purchase receipt is started; a receipt says what it is against'
-SELECT pg_temp.expect_fail_like('R1 a PURCHASE receipt started', 'purchasing was removed', $q$
+SELECT pg_temp.expect_fail_like('R1 a PURCHASE receipt started', 'ck_goods_receipts_type', $q$
     INSERT INTO procurement.goods_receipts (id, receipt_number, receipt_type, warehouse_id, status, received_at, received_by)
     VALUES (gen_random_uuid(), 'GR-QA61-P', 'PURCHASE', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(), md5('demo:user:editor')::uuid) $q$);
 SELECT pg_temp.expect_fail_like('R2 a receipt with no type (the PURCHASE default is gone)', 'receipt_type', $q$

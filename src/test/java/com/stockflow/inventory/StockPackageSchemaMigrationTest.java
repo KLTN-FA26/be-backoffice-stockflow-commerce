@@ -53,9 +53,16 @@ class StockPackageSchemaMigrationTest {
 
     /** A packing unit of LY-GIAY-DEMO-12OZ-XANH, factor 10. */
     private static String unit(Connection db, String name) throws SQLException {
+        // 01 BR-03: the item has one active carton, so the earlier tests' units are retired (their cartons stay).
+        update(db, "UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE WHERE "
+                + "inventory_item_id = " + BLUE_CUP + " AND NOT is_base AND active");
+        return unit(db, name, true);
+    }
+
+    private static String unit(Connection db, String name, boolean active) throws SQLException {
         String id = "md5('it:unit:" + name + "')::uuid";
-        update(db, "INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor) VALUES ("
-                + id + ", " + BLUE_CUP + ", '" + name + "', 10)");
+        update(db, "INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active) "
+                + "VALUES (" + id + ", " + BLUE_CUP + ", '" + name + "', 10, " + active + ")");
         return id;
     }
 
@@ -93,7 +100,7 @@ class StockPackageSchemaMigrationTest {
     void aUnitInUseKeepsItsFactorItemAndName() throws Exception {
         try (Connection db = connect()) {
             String carton = unit(db, "LOCKED");
-            String unused = unit(db, "UNUSED");
+            String unused = unit(db, "UNUSED", false);
             update(db, "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,"
                     + " location_code) VALUES (gen_random_uuid(), 'IT-LOCKED', " + BLUE_CUP + ", " + carton
                     + ", 10, 'HCM-A01-1-A')");

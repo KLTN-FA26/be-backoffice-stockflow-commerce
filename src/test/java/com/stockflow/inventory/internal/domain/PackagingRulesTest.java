@@ -44,19 +44,19 @@ class PackagingRulesTest {
     }
 
     private static UomConversion base() {
-        return new UomConversion(UUID.randomUUID(), "SKU", "EACH", 1, true, null, null, null, null, true, true, 0,
+        return new UomConversion(UUID.randomUUID(), "SKU", "EACH", 1, true, null, null, null, null, true, 0,
                 false);
     }
 
     private static UomConversion baseShipping() {
-        return new UomConversion(UUID.randomUUID(), "SKU", "EACH", 1, true, null, null, null, null, true, true, 0,
+        return new UomConversion(UUID.randomUUID(), "SKU", "EACH", 1, true, null, null, null, null, true, 0,
                 true);
     }
 
     private static UomConversion pack(String code, int factor, String weight, String l, String w, String h,
                                       boolean active, boolean shipping) {
         return new UomConversion(UUID.nameUUIDFromBytes(code.getBytes()), "SKU", code, factor, false, d(weight), d(l),
-                d(w), d(h), false, active, 0, shipping);
+                d(w), d(h), active, 0, shipping);
     }
 
     private static UomConversion carton(String code, int factor) {

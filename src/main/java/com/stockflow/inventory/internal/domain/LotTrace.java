@@ -19,9 +19,9 @@ public record LotTrace(Summary lot, List<Balance> balances, List<Hold> holds, Li
     /**
      * One lot and its current balance.
      *
-     * @param origin           {@code GOODS_RECEIPT}; {@code PRODUCTION_ORDER} for goods received against a production
-     *                         order, one lot per production order and SKU across its receipts (4A-5, kltn-docs 03
-     *                         BR-03), which then names the production order instead of a receipt; or
+     * @param origin           {@code PRODUCTION_ORDER} for goods received against a production order, one lot per
+     *                         production order and SKU across its receipts (4A-5, kltn-docs 03 BR-03), which then
+     *                         names the production order; or
      *                         {@code UNTRACED} for stock that entered without a receipt the system
      *                         recorded (an adjustment that found goods, stock older than lot tracking)
      * @param receivedQuantity units its receipt ledger lines brought in
@@ -30,17 +30,15 @@ public record LotTrace(Summary lot, List<Balance> balances, List<Hold> holds, Li
      * @param held             units on hand now held by allocations or other holds
      */
     public record Summary(UUID lotId, String sku, String lotNumber, Instant receivedAt,
-                          String origin, UUID goodsReceiptId, String goodsReceiptNumber, UUID receivingWarehouseId,
+                          String origin, UUID receivingWarehouseId,
                           long receivedQuantity, long onHand, long available, long held, UUID productionOrderId,
                           String productionOrderCode) {
 
         /** A lot that is not a production order's. */
         public Summary(UUID lotId, String sku, String lotNumber, Instant receivedAt, String origin,
-                       UUID goodsReceiptId, String goodsReceiptNumber, UUID receivingWarehouseId, long receivedQuantity,
-                       long onHand, long available, long held) {
-            this(lotId, sku, lotNumber, receivedAt, origin, goodsReceiptId, goodsReceiptNumber,
-                    receivingWarehouseId,
-                    receivedQuantity, onHand, available, held, null, null);
+                       UUID receivingWarehouseId, long receivedQuantity, long onHand, long available, long held) {
+            this(lotId, sku, lotNumber, receivedAt, origin, receivingWarehouseId, receivedQuantity, onHand,
+                    available, held, null, null);
         }
     }
 

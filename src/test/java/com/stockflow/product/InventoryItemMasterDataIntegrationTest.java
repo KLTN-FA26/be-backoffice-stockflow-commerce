@@ -108,43 +108,37 @@ class InventoryItemMasterDataIntegrationTest {
     // ---- units of measure ------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("an item starts with its base unit only; packing units have a factor and one default purchase unit")
+    @DisplayName("an item starts with its base unit only; packing units have a factor")
     void unitsOfMeasure() {
         var start = units.conversions(productId, variantId, 0, 20);
         assertThat(start.items()).singleElement().satisfies(base -> {
             assertThat(base.base()).isTrue();
             assertThat(base.unitOfMeasure()).isEqualTo("EACH");
             assertThat(base.factor()).isEqualTo(1);
-            assertThat(base.defaultPurchase()).isTrue();
         });
         UomConversion base = start.items().getFirst();
 
-        UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, true, true));
-        assertThat(carton.defaultPurchase()).isTrue();
-        assertThat(units.conversion(productId, variantId, base.id()).defaultPurchase()).isFalse();
+        UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, true));
         assertThat(units.conversions(productId, variantId, 0, 20).items())
                 .extracting(UomConversion::unitOfMeasure).containsExactly("EACH", "CARTON");
         assertThat(units.conversions(productId, variantId, 1, 1).items())
                 .extracting(UomConversion::unitOfMeasure).containsExactly("CARTON");
 
-        assertCode(() -> units.addConversion(productId, variantId, packing("CARTON", 500, false, true)),
+        assertCode(() -> units.addConversion(productId, variantId, packing("CARTON", 500, true)),
                 ErrorCode.UOM_CONVERSION_DUPLICATE);
-        assertCode(() -> units.addConversion(productId, variantId, packing("EACH", 2, false, true)),
+        assertCode(() -> units.addConversion(productId, variantId, packing("EACH", 2, true)),
                 ErrorCode.UOM_CONVERSION_DUPLICATE);
-        assertField(() -> units.addConversion(productId, variantId, packing("BOX", 0, false, true)), "factor");
-        assertField(() -> units.addConversion(productId, variantId, packing("bad unit", 2, false, true)),
+        assertField(() -> units.addConversion(productId, variantId, packing("BOX", 0, true)), "factor");
+        assertField(() -> units.addConversion(productId, variantId, packing("bad unit", 2, true)),
                 "unitOfMeasure");
-        assertField(() -> units.changeConversion(productId, variantId, carton.id(), carton.version(),
-                packing("CARTON", 1000, true, false)), "defaultPurchase");
         assertCode(() -> units.changeConversion(productId, variantId, carton.id(), carton.version() + 5,
-                packing("CARTON", 1000, true, true)), ErrorCode.OPTIMISTIC_LOCK);
+                packing("CARTON", 1000, true)), ErrorCode.OPTIMISTIC_LOCK);
         assertCode(() -> units.removeConversion(productId, variantId, base.id(), 0), ErrorCode.UOM_CONVERSION_IN_USE);
 
-        // Retiring the default purchase unit (BR-10) hands the mark back to the base unit.
+        // Retiring a unit is BR-10's way out.
         UomConversion retired = units.changeConversion(productId, variantId, carton.id(), carton.version(),
-                packing("CARTON", 1000, false, false));
+                packing("CARTON", 1000, false));
         assertThat(retired.active()).isFalse();
-        assertThat(units.conversion(productId, variantId, base.id()).defaultPurchase()).isTrue();
 
         // The base unit follows the item's unit code; a packing unit's code cannot be taken by it.
         var logistics = items.get(itemId());
@@ -162,7 +156,7 @@ class InventoryItemMasterDataIntegrationTest {
     @Test
     @DisplayName("a unit a document counts in keeps its factor and code (BR-10): it is retired, never changed or deleted")
     void unitInUse() {
-        UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, true, true));
+        UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, true));
         // A stock package is one of the documents inventory.unit_in_use asks about (V20261020000600).
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
@@ -171,27 +165,51 @@ class InventoryItemMasterDataIntegrationTest {
                 carton.id()));
 
         assertCode(() -> units.changeConversion(productId, variantId, carton.id(), carton.version(),
-                packing("CARTON", 500, true, true)), ErrorCode.UOM_CONVERSION_IN_USE);
+                packing("CARTON", 500, true)), ErrorCode.UOM_CONVERSION_IN_USE);
         assertCode(() -> units.changeConversion(productId, variantId, carton.id(), carton.version(),
-                packing("BOX", 1000, true, true)), ErrorCode.UOM_CONVERSION_IN_USE);
+                packing("BOX", 1000, true)), ErrorCode.UOM_CONVERSION_IN_USE);
         assertCode(() -> units.removeConversion(productId, variantId, carton.id(), carton.version()),
                 ErrorCode.UOM_CONVERSION_IN_USE);
 
         // Its size and weight are not what a document was converted with, and retiring it is BR-10's way out.
         UomConversion resized = units.changeConversion(productId, variantId, carton.id(), carton.version(),
                 new UomConversionDraft("CARTON", 1000, new BigDecimal("7"), new BigDecimal("52"),
-                        new BigDecimal("42"), new BigDecimal("60"), true, true));
+                        new BigDecimal("42"), new BigDecimal("60"), true));
         assertThat(resized.weightKg()).isEqualByComparingTo("7");
         UomConversion retired = units.changeConversion(productId, variantId, carton.id(), resized.version(),
-                packing("CARTON", 1000, false, false));
+                packing("CARTON", 1000, false));
         assertThat(retired.active()).isFalse();
         assertThat(retired.factor()).isEqualTo(1000);
     }
 
     @Test
+    @DisplayName("a SKU has one active carton (01 BR-03): the one a document uses is retired first, then the new one is declared")
+    void replacingTheCartonRetiresFirst() {
+        UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, true));
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
+                                                     location_code)
+                VALUES (?, ?, ?, ?, 1000, 'HCM-A01-1-A')""", Identifiers.newId(), "IT-" + suffix, itemId(),
+                carton.id()));
+
+        assertCode(() -> units.addConversion(productId, variantId, packing("CARTON2", 1000, true)),
+                ErrorCode.UOM_CARTON_ALREADY_DECLARED);
+        // A retired unit is history, declared beside the active one freely.
+        assertThat(units.addConversion(productId, variantId, packing("OLDBOX", 500, false)).active()).isFalse();
+
+        units.changeConversion(productId, variantId, carton.id(), carton.version(), packing("CARTON", 1000, false));
+        UomConversion replacement = units.addConversion(productId, variantId, packing("CARTON2", 1000, true));
+        assertThat(replacement.active()).isTrue();
+        // ...and the retired one cannot come back beside it.
+        UomConversion retired = units.conversion(productId, variantId, carton.id());
+        assertCode(() -> units.changeConversion(productId, variantId, carton.id(), retired.version(),
+                packing("CARTON", 1000, true)), ErrorCode.UOM_CARTON_ALREADY_DECLARED);
+    }
+
+    @Test
     @DisplayName("a unit a document is being written in right now is in use too: the document holds its lock (BR-10)")
     void unitBeingWrittenOnADocument() throws Exception {
-        UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, true, true));
+        UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, true));
         CountDownLatch held = new CountDownLatch(1);
         CountDownLatch done = new CountDownLatch(1);
         ExecutorService writer = Executors.newSingleThreadExecutor();
@@ -210,7 +228,7 @@ class InventoryItemMasterDataIntegrationTest {
         try {
             assertThat(held.await(30, TimeUnit.SECONDS)).isTrue();
             assertCode(() -> units.changeConversion(productId, variantId, carton.id(), carton.version(),
-                    packing("CARTON", 500, true, true)), ErrorCode.UOM_CONVERSION_IN_USE);
+                    packing("CARTON", 500, true)), ErrorCode.UOM_CONVERSION_IN_USE);
             assertCode(() -> units.removeConversion(productId, variantId, carton.id(), carton.version()),
                     ErrorCode.UOM_CONVERSION_IN_USE);
         } finally {
@@ -221,7 +239,7 @@ class InventoryItemMasterDataIntegrationTest {
 
         // That transaction wrote no document after all: the unit is free again.
         assertThat(units.changeConversion(productId, variantId, carton.id(), carton.version(),
-                packing("CARTON", 500, true, true)).factor()).isEqualTo(500);
+                packing("CARTON", 500, true)).factor()).isEqualTo(500);
     }
 
     // ---- sales units -----------------------------------------------------------------------------------------
@@ -236,7 +254,7 @@ class InventoryItemMasterDataIntegrationTest {
             assertThat(u.base()).isTrue();
         });
         UUID baseId = implicit.items().getFirst().uomConversionId();
-        UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, false, true));
+        UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, true));
 
         // 5-3 (kltn-docs 13 BR-04, 01 BR-11): a unit names how the variant is sold, never a price.
         assertThat(jdbc.queryForObject("""
@@ -260,7 +278,7 @@ class InventoryItemMasterDataIntegrationTest {
 
         // A unit still sold in is neither retired nor deleted.
         assertCode(() -> units.changeConversion(productId, variantId, carton.id(), carton.version(),
-                packing("CARTON", 1000, false, false)), ErrorCode.UOM_CONVERSION_IN_USE);
+                packing("CARTON", 1000, false)), ErrorCode.UOM_CONVERSION_IN_USE);
         assertCode(() -> units.removeConversion(productId, variantId, carton.id(), carton.version()),
                 ErrorCode.UOM_CONVERSION_IN_USE);
 
@@ -277,16 +295,16 @@ class InventoryItemMasterDataIntegrationTest {
 
         // A retired unit is not offered for sale.
         var cartonNow = units.conversion(productId, variantId, carton.id());
-        units.changeConversion(productId, variantId, carton.id(), cartonNow.version(), packing("CARTON", 1000, false, false));
+        units.changeConversion(productId, variantId, carton.id(), cartonNow.version(), packing("CARTON", 1000, false));
         assertField(() -> units.addSalesUnit(productId, variantId, carton.id()), "uomConversionId");
         assertThat(history()).contains("SALES_UNIT");
     }
 
     // ---- helpers ---------------------------------------------------------------------------------------------
 
-    private static UomConversionDraft packing(String code, int factor, boolean defaultPurchase, boolean active) {
+    private static UomConversionDraft packing(String code, int factor, boolean active) {
         return new UomConversionDraft(code, factor, new BigDecimal("6.5"), new BigDecimal("52"), new BigDecimal("42"),
-                new BigDecimal("60"), defaultPurchase, active);
+                new BigDecimal("60"), active);
     }
 
     private static ItemLogistics withUnit(ItemLogistics l, String unit) {

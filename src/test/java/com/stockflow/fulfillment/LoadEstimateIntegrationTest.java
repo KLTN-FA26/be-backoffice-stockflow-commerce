@@ -93,8 +93,8 @@ class LoadEstimateIntegrationTest {
                     WHERE sku = ?""", palletSku);
             jdbc.update("""
                     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        weight_kg, length_cm, width_cm, height_cm, default_purchase, active, default_shipping, created_by)
-                    SELECT ?, i.id, 'PALLET', 24, FALSE, 181, 120, 100, 150, FALSE, TRUE, TRUE, 'test'
+                        weight_kg, length_cm, width_cm, height_cm, active, default_shipping, created_by)
+                    SELECT ?, i.id, 'PALLET', 24, FALSE, 181, 120, 100, 150, TRUE, TRUE, 'test'
                     FROM inventory.inventory_items i WHERE i.sku = ?""", Identifiers.newId(), palletSku);
             // A table that ships as 2 boxes of 160 x 90 x 12 cm, 24 kg each (LP2-5).
             jdbc.update("""

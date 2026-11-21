@@ -88,6 +88,9 @@ INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, curren
 VALUES (md5('qa52:o1:l')::uuid, md5('qa52:o1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 8, 100, 'VND'),
        (md5('qa52:o2:l')::uuid, md5('qa52:o2')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 4, 100, 'VND');
 
+-- 01 BR-03: an item has ONE active carton. The demo seed's own is retired, so the fixture's unit below is the one.
+UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
+ WHERE NOT is_base AND active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa52:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA52_CTN', 4);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
@@ -150,13 +153,13 @@ SELECT pg_temp.expect_fail('RR1 a receipt of an unknown type', $q$
                                             receipt_type)
     VALUES (gen_random_uuid(), 'GR-QA52-X1', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(), md5('demo:user:editor')::uuid,
             'TRANSFER') $q$);
-SELECT pg_temp.expect_fail('RR2 a purchase receipt naming a customer order and a returned shipment', $q$
+SELECT pg_temp.expect_fail('RR2 a PURCHASE receipt (ck_goods_receipts_type, V20261214000100) naming a customer order and a returned shipment', $q$
     INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by,
                                             receipt_type, customer_order_id, return_shipment_id)
     VALUES (gen_random_uuid(), 'GR-QA52-X2', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(), md5('demo:user:editor')::uuid,
             'PURCHASE', md5('qa52:o1')::uuid, md5('qa52:s1')::uuid) $q$);
--- The supplier and blind-receipt columns and the PURCHASE default went with purchasing (V20261113000200, 4A-9): a
--- receipt names its type.
+-- The supplier and blind-receipt columns and the PURCHASE default went with purchasing (V20261113000200, 4A-9), the
+-- PURCHASE type itself with V20261214000100: a receipt names its type.
 SELECT pg_temp.expect_fail('RR3 a receipt written without a type', $q$
     INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by)
     VALUES (md5('qa52:blind')::uuid, 'GR-QA52-B1', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(),
@@ -224,7 +227,7 @@ SELECT pg_temp.expect_fail('RR23 a return receipt''s quarantine area changed', $
     UPDATE procurement.goods_receipts
        SET quarantine_location_id = (SELECT id FROM warehouse.storage_location WHERE location_code = 'HCM-RTV01')
      WHERE id = md5('qa52:r:s1')::uuid $q$);
-SELECT pg_temp.expect_fail('RR24 a return receipt turned into a purchase receipt', $q$
+SELECT pg_temp.expect_fail('RR24 a return receipt turned into a PURCHASE receipt', $q$
     UPDATE procurement.goods_receipts SET receipt_type = 'PURCHASE' WHERE id = md5('qa52:r:s1')::uuid $q$);
 
 \echo '--- only a carton picked for the receipt''s order and not put back, named as shipped (BR-03, BR-14)'
@@ -238,7 +241,7 @@ SELECT pg_temp.expect_fail('RC4 the carton with another count than it was counte
     pg_temp.scan('qa52:r:s1', 'qa52:c1', 'QA52-LPN-1', 'PO-QA52-LOT', 3));
 SELECT pg_temp.expect_fail('RC5 the carton under another LPN (a new label)',
     pg_temp.scan('qa52:r:s1', 'qa52:c1', 'QA52-LPN-9', 'PO-QA52-LOT', 4));
-SELECT pg_temp.expect_fail('RC6 a carton scanned on a purchase receipt',
+SELECT pg_temp.expect_fail('RC6 a carton scanned on a receipt that was never written (no PURCHASE receipt exists)',
     pg_temp.scan('qa52:blind', 'qa52:c1', 'QA52-LPN-1', 'PO-QA52-LOT', 4));
 SELECT pg_temp.expect_fail('RC7 a carton with a blank condition note', $q$
     INSERT INTO procurement.goods_receipt_return_cartons (id, receipt_id, stock_package_id, lpn, sku, lot_number,

@@ -8,9 +8,7 @@ import java.util.UUID;
  * packing unit with how many base units it holds ({@code factor}, BR-09) and its own size and weight.
  * For the base unit, factor is 1 and the size and weight are the item's logistics.
  *
- * <p>{@code defaultPurchase}: the unit a purchase order line starts in (glossary "Purchase UoM"); one
- * per item, the base unit until another is marked. {@code active} false: retired (BR-10), kept for the
- * documents that used it, never offered for new ones.</p>
+ * <p>{@code active} false: retired (BR-10), kept for the documents that used it, never offered for new ones.</p>
  *
  * <p>{@code defaultShipping}: the unit load planning estimates this SKU's cartons in (one per item, also
  * possible on the base unit); {@link PackagingSpecResolver} falls back to the largest packing unit with a
@@ -26,7 +24,6 @@ public record UomConversion(
         BigDecimal lengthCm,
         BigDecimal widthCm,
         BigDecimal heightCm,
-        boolean defaultPurchase,
         boolean active,
         long version,
         boolean defaultShipping
@@ -56,9 +53,8 @@ public record UomConversion(
 
     /** A unit that is not the default shipping unit. */
     public UomConversion(UUID id, String sku, String unitOfMeasure, int factor, boolean base, BigDecimal weightKg,
-                         BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm, boolean defaultPurchase,
+                         BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
                          boolean active, long version) {
-        this(id, sku, unitOfMeasure, factor, base, weightKg, lengthCm, widthCm, heightCm, defaultPurchase, active,
-                version, false);
+        this(id, sku, unitOfMeasure, factor, base, weightKg, lengthCm, widthCm, heightCm, active, version, false);
     }
 }

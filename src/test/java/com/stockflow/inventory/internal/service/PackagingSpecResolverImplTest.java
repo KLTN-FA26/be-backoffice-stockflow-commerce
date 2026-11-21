@@ -48,12 +48,12 @@ class PackagingSpecResolverImplTest {
     }
 
     private static UomConversion base() {
-        return new UomConversion(UUID.randomUUID(), SKU.code(), "PCS", 1, true, null, null, null, null, true, true, 0);
+        return new UomConversion(UUID.randomUUID(), SKU.code(), "PCS", 1, true, null, null, null, null, true, 0);
     }
 
     private static UomConversion carton(boolean shipping, BigDecimal length) {
         return new UomConversion(CARTON, SKU.code(), "CARTON", 24, false, new BigDecimal("0.300"), length,
-                new BigDecimal("20.5"), new BigDecimal("30"), false, true, 0, shipping);
+                new BigDecimal("20.5"), new BigDecimal("30"), true, 0, shipping);
     }
 
     @Test

@@ -57,18 +57,16 @@ public final class CartonRows {
         if (!found.isEmpty()) {
             return found.getFirst();
         }
-        UUID id = Identifiers.newId();
-        jdbc.update("""
-                INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-                SELECT ?, id, 'CTN', ? FROM inventory.inventory_items WHERE sku = ?""", id, factor, sku);
-        return id;
+        return cartonUnit(jdbc, itemOf(jdbc, sku), "CTN", factor);
     }
 
     /**
-     * The SKU's carton unit of exactly {@code factor} units (code {@code CTN<factor>}), made the first time: for a test
-     * that needs cartons of several sizes of one SKU - stock that was loose rows of any size before
-     * {@code ck_stock_item_whole_cartons} (V20261117000100). Make these before calling {@link #unit}, which takes
-     * whichever carton unit the SKU has first.
+     * The SKU's carton unit of exactly {@code factor} units (code {@code CTN<factor>}), made the SKU's ONE active carton
+     * (01 BR-03): made the first time, made active again when it was retired, and the SKU's other active carton is
+     * retired either way (its cartons stay, as history). For a test that needs cartons of several sizes of one SKU
+     * - stock that was loose rows of any size before {@code ck_stock_item_whole_cartons} (V20261117000100) - which
+     * therefore takes the sizes in turn: a carton made earlier stays, in a unit that is no longer the active one.
+     * {@link #unit} takes whichever carton unit the SKU has active.
      */
     public static UUID unitOf(JdbcTemplate jdbc, String sku, int factor) {
         List<UUID> found = jdbc.queryForList("""
@@ -78,10 +76,50 @@ public final class CartonRows {
         if (!found.isEmpty()) {
             return found.getFirst();
         }
-        UUID id = Identifiers.newId();
+        return cartonUnit(jdbc, itemOf(jdbc, sku), "CTN" + factor, factor);
+    }
+
+    private static UUID itemOf(JdbcTemplate jdbc, String sku) {
+        return jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, sku);
+    }
+
+    /**
+     * Makes this unit its item's ONE active packing unit (01 BR-03, {@code uk_uom_conversions_one_carton}): the item's
+     * other active packing unit is retired - its cartons stay, as history - and this one is activated if it was retired.
+     */
+    public static void reactivate(JdbcTemplate jdbc, UUID unit) {
         jdbc.update("""
-                INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-                SELECT ?, id, ?, ? FROM inventory.inventory_items WHERE sku = ?""", id, "CTN" + factor, factor, sku);
+                UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
+                 WHERE inventory_item_id = (SELECT inventory_item_id FROM inventory.uom_conversions WHERE id = ?)
+                   AND NOT is_base AND active AND id <> ?""", unit, unit);
+        jdbc.update("UPDATE inventory.uom_conversions SET active = TRUE WHERE id = ? AND NOT active", unit);
+    }
+
+    /**
+     * Makes the item's unit {@code code} of {@code factor} units its ONE active carton, as {@link #reactivate} does,
+     * made first when the item has none of that code. A unit of that code with another factor is a fixture error, not
+     * a unit to take over: it fails loudly.
+     */
+    public static UUID cartonUnit(JdbcTemplate jdbc, UUID item, String code, int factor) {
+        List<UUID> found = jdbc.queryForList("""
+                SELECT id FROM inventory.uom_conversions
+                 WHERE inventory_item_id = ? AND unit_of_measure = ? AND factor = ?""", UUID.class, item, code, factor);
+        Integer sameCode = jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.uom_conversions WHERE inventory_item_id = ? AND unit_of_measure = ?""",
+                Integer.class, item, code);
+        if (found.isEmpty() && sameCode != null && sameCode > 0) {
+            throw new IllegalStateException("The item already has a unit " + code + " of another factor than " + factor);
+        }
+        UUID id = found.isEmpty() ? Identifiers.newId() : found.getFirst();
+        if (found.isEmpty()) {
+            jdbc.update("""
+                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active)
+                    VALUES (?, ?, ?, ?, FALSE)""", id, item, code, factor);
+        }
+        jdbc.update("""
+                UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
+                 WHERE inventory_item_id = ? AND NOT is_base AND active AND id <> ?""", item, id);
+        jdbc.update("UPDATE inventory.uom_conversions SET active = TRUE WHERE id = ? AND NOT active", id);
         return id;
     }
 
