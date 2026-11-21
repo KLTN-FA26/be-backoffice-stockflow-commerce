@@ -4,8 +4,9 @@
 -- always names the production order line it counts (kltn-docs 03 §1).
 
 -- 1. Leftover purchase receipts, if a database kept one (none on a database rebuilt from the baseline, owner decision
---    QD-1): their photos, lines and header. A stock package still pointing at such a line makes the foreign key refuse
---    and the migration stop, which is the right failure.
+--    QD-1): their photos, lines and header. Only a receipt that never posted can go this way: one that did is named by
+--    rows that keep it (ON DELETE RESTRICT: stock packages, putaway tasks, production order and return request links),
+--    and the foreign key refusing stops the migration, which is the right failure.
 -- A lot a purchase receipt opened (origin GOODS_RECEIPT, fk_stock_lot_goods_receipt ON DELETE RESTRICT) would stop the
 -- delete below, and the next migration, which retires that origin, runs only after it. Such a lot is kept - stock rows and
 -- ledger lines name it - but is UNTRACED from here, naming no receipt: what the next migration does to every lot of the
