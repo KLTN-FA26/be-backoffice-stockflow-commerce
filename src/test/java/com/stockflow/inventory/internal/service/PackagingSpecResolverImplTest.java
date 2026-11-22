@@ -39,8 +39,7 @@ class PackagingSpecResolverImplTest {
     private final PackagingSpecResolverImpl resolver = new PackagingSpecResolverImpl(items, conversions);
 
     private static ItemLogistics logistics(boolean rotatable) {
-        return new ItemLogistics("PCS", null, new BigDecimal("0.010"), new BigDecimal("8"), new BigDecimal("8"),
-                new BigDecimal("12"), null, null, null, null, 1, 1, rotatable);
+        return new ItemLogistics("PCS", null, rotatable);
     }
 
     private static ItemRow row(boolean rotatable) {

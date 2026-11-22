@@ -1570,26 +1570,16 @@ Table inventory.cycle_count_line [headercolor: #3E7C4A] {
 }
 
 Table inventory.inventory_items [headercolor: #3E7C4A] {
-  id                uuid [pk]
-  sku               varchar(64) [not null, unique]
-  unit_of_measure   varchar(16) [not null, default: 'EACH']
-  barcode           varchar(64)
-  weight_kg         decimal(10,3)
-  length_cm         decimal(10,2)
-  width_cm          decimal(10,2)
-  height_cm         decimal(10,2)
-  package_weight_kg decimal(10,3)
-  package_length_cm decimal(10,2)
-  package_width_cm  decimal(10,2)
-  package_height_cm decimal(10,2)
-  package_count     int [not null, default: 1]
-  pack_size         int [not null, default: 1]
-  version           bigint [not null, default: 0]
-  created_at        timestamptz [not null, default: `now()`]
-  created_by        varchar(100)
-  last_modified_at  timestamptz
-  last_modified_by  varchar(100)
-  rotatable         boolean [not null, default: true]
+  id               uuid [pk]
+  sku              varchar(64) [not null, unique]
+  unit_of_measure  varchar(16) [not null, default: 'EACH']
+  barcode          varchar(64)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  rotatable        boolean [not null, default: true]
 }
 
 Table inventory.stock_adjustment [headercolor: #3E7C4A] {

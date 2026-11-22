@@ -39,7 +39,8 @@ public final class UomConversionRules {
 
     /**
      * The base unit: only its default shipping mark is edited here, and it can never be retired. Its code,
-     * factor, size and weight in the draft are ignored: they are the item's logistics, edited there.
+     * factor, size and weight in the draft are ignored: the code is the item's, edited there, and a base unit is never
+     * measured (only the carton is, kltn-docs 01 BR-03).
      */
     public static void validateBase(UomConversion current, UomConversionDraft d) {
         if (!d.active()) {

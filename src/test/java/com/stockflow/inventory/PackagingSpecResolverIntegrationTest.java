@@ -63,14 +63,6 @@ class PackagingSpecResolverIntegrationTest {
         });
     }
 
-    /** The item's own unit: 10 x 8 x 6 cm, 0.5 kg; box 12 x 9 x 7 cm, 0.7 kg. */
-    private void describeItem() {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                update inventory.inventory_items set weight_kg = 0.5, length_cm = 10, width_cm = 8, height_cm = 6,
-                    package_weight_kg = 0.7, package_length_cm = 12, package_width_cm = 9, package_height_cm = 7
-                where id = ?""", itemId));
-    }
-
     private static UomConversionDraft pack(String code, int factor, String weight, boolean shipping) {
         return new UomConversionDraft(code, factor, new BigDecimal(weight), new BigDecimal("50"),
                 new BigDecimal("40"), new BigDecimal("30"), true, shipping);
@@ -206,23 +198,16 @@ class PackagingSpecResolverIntegrationTest {
     // ---- the resolver on real rows ---------------------------------------------------------------------------------
 
     @Test
-    void anItemWithNoDataIsMissingNotDefaulted() {
+    void anItemWithNoCartonIsMissingNotDefaulted() {
         PackagingSpec spec = resolver.resolve(sku, 5);
         assertThat(spec.status()).isEqualTo(PackagingSpec.Status.MISSING);
-        assertThat(spec.missing().fields()).containsExactly("lengthCm", "widthCm", "heightCm", "weightKg");
+        assertThat(spec.missing().fields()).isEmpty();
         assertThat(spec.inventoryItemId()).isEqualTo(itemId);
         assertThat(spec.sku()).isEqualTo(sku.code());
     }
 
     @Test
-    void theChainFollowsTheDataOfTheItem() {
-        // Only the item: its box.
-        describeItem();
-        PackagingSpec box = resolver.resolve(sku, 3);
-        assertThat(box.level()).isEqualTo(RuleLevel.ITEM_BOX);
-        assertThat(box.carton().lengthMm()).isEqualTo(120);
-        assertThat(box.fullCartons()).isEqualTo(3);
-
+    void theChainFollowsTheCartonOfTheItem() {
         // A packing unit with its size: the largest one (the only one, 01 BR-03).
         UomConversion pallet = units.add(sku, pack("PALLET", 100, "80", false));
         PackagingSpec largest = resolver.resolve(sku, 250);
@@ -230,7 +215,7 @@ class PackagingSpecResolverIntegrationTest {
         assertThat(largest.unitOfMeasure()).isEqualTo("PALLET");
         assertThat(largest.fullCartons()).isEqualTo(2);
         assertThat(largest.partialCarton().units()).isEqualTo(50);
-        assertThat(largest.partialCarton().weightKg()).isEqualByComparingTo("45.000");   // 50 * 0.7 + (80 - 100 * 0.7)
+        assertThat(largest.partialCarton().weightKg()).isEqualByComparingTo("40.000");   // 80 * 50 / 100
 
         // The mark beats the largest unit.
         units.change(sku, pallet.id(), units.conversion(sku, pallet.id()).version(), pack("PALLET", 100, "80", true));
@@ -242,7 +227,6 @@ class PackagingSpecResolverIntegrationTest {
 
     @Test
     void sameInputSameAnswerAndByItemIdAgrees() {
-        describeItem();
         units.add(sku, pack("BOX", 10, "5.5", true));
         PackagingSpec first = resolver.resolve(sku, 37);
         assertThat(resolver.resolve(sku, 37)).isEqualTo(first);
@@ -251,7 +235,6 @@ class PackagingSpecResolverIntegrationTest {
 
     @Test
     void theBatchAnswersInRequestOrderAndRepeatsASku() {
-        describeItem();
         units.add(sku, pack("BOX", 10, "5.5", true));
         List<PackagingSpec> specs = resolver.resolveAll(List.of(new PackagingRequest(sku, 25),
                 new PackagingRequest(sku, 4)));

@@ -110,13 +110,12 @@ class CustomerSkuIntegrationTest {
     @Test
     void anApprovedDesignGetsAnActiveSkuWithTheVariantsCartonSpec() {
         // The variant's logistics as a person entered them: they follow; its barcode names its own goods and does not.
-        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.inventory_items SET weight_kg = 0.012, "
-                + "length_cm = 9, barcode = '8930000000017' WHERE sku = ?", sourceSku));
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.inventory_items SET rotatable = FALSE, "
+                + "barcode = '8930000000017' WHERE sku = ?", sourceSku));
         CustomerSku sku = issue(snapshot(), "0312345678");
-        var copied = jdbc.queryForMap("SELECT weight_kg, length_cm, barcode FROM "
-                + "inventory.inventory_items WHERE sku = ?", sku.sku());
-        assertThat((BigDecimal) copied.get("weight_kg")).isEqualByComparingTo("0.012");
-        assertThat((BigDecimal) copied.get("length_cm")).isEqualByComparingTo("9");
+        var copied = jdbc.queryForMap("SELECT rotatable, barcode FROM inventory.inventory_items WHERE sku = ?",
+                sku.sku());
+        assertThat(copied.get("rotatable")).isEqualTo(false);
         assertThat(copied.get("barcode")).isNull();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM product.product_change_log WHERE subject_id = ? AND "
                 + "change_type = 'VARIANT_ADDED'", Long.class, sku.variantId())).isEqualTo(1);

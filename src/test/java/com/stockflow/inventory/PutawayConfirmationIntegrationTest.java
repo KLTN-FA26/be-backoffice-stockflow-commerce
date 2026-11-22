@@ -357,9 +357,10 @@ class PutawayConfirmationIntegrationTest {
     @Test
     @DisplayName("a bin the weight does not fit in: LOCATION_CAPACITY_EXCEEDED")
     void weightRefused() {
-        tx.executeWithoutResult(t -> jdbc.update("update inventory.inventory_items set weight_kg = 0.5 where sku = ?",
-                sku));
-        String bin = bin(warehouse, "A01", "5", "1.2", "1.4", 4, "ACTIVE");   // 10 units of 0.5 kg weigh 5
+        tx.executeWithoutResult(t -> jdbc.update("""
+                UPDATE inventory.uom_conversions SET weight_kg = 5
+                 WHERE id = (SELECT uom_conversion_id FROM inventory.stock_package WHERE lpn = ?)""", lpn1));
+        String bin = bin(warehouse, "A01", "5", "1.2", "1.4", 4, "ACTIVE");   // the full carton weighs 5
 
         assertThat(refusal(() -> confirmCarton(cartonTask, lpn1, bin)).errorCode())
                 .isEqualTo(ErrorCode.LOCATION_CAPACITY_EXCEEDED);

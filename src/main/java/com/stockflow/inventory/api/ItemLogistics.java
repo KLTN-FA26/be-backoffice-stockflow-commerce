@@ -1,17 +1,15 @@
 package com.stockflow.inventory.api;
 
-import java.math.BigDecimal;
-
 /**
- * The physical data of one SKU's inventory item (docs 01 BR-08): what a unit weighs and measures and how it
- * ships. It used to sit
- * on the product row; it is per SKU because two variants of one product (a 12oz and a 16oz cup) weigh
- * and pack differently.
+ * The physical data of one SKU's inventory item (docs 01 BR-08) that is not the carton's: the base unit stock is
+ * counted in, the barcode, and whether its cartons may be turned.
  *
- * <p>Nullable measures mean "not known yet"; a known one is positive. {@code packageCount} is how
- * many boxes one unit ships as, {@code packSize} how many units one inner pack holds.</p>
+ * <p>The item carries no weight or size of its own, of one unit or of a shipped box (V20261215000100, kltn-docs 01 §3,
+ * BR-03, C21, chốt lại 2026-11-22): every measure the business uses is the carton's, on the item's one carton unit
+ * ({@link UomConversion}, {@link CartonSpec}). The shipped box and its kit of several boxes belonged to parcel
+ * shipping, which is gone.</p>
  *
- * <p>{@code rotatable}: whether a package of this SKU may be turned any of 6 ways when a truck or
+ * <p>{@code rotatable}: whether a carton of this SKU may be turned any of 6 ways when a truck or
  * container is loaded (docs 01 §3 "Cho phép xoay khi xếp xe", default on, E13). It is the default for
  * the package's own flag at packing (08) and is read by load planning (09). Putaway, put-back and moves
  * read it too: a rotatable carton may be turned on the horizontal to fit a bin, length for width (06 BR-01).</p>
@@ -23,24 +21,10 @@ import java.math.BigDecimal;
 public record ItemLogistics(
         String unitOfMeasure,
         String barcode,
-        BigDecimal weightKg,
-        BigDecimal lengthCm,
-        BigDecimal widthCm,
-        BigDecimal heightCm,
-        BigDecimal packageWeightKg,
-        BigDecimal packageLengthCm,
-        BigDecimal packageWidthCm,
-        BigDecimal packageHeightCm,
-        int packageCount,
-        int packSize,
         boolean rotatable
 ) {
     /** Logistics without an opinion on rotation: the documented default, rotatable (docs 01, E13). */
-    public ItemLogistics(String unitOfMeasure, String barcode, BigDecimal weightKg, BigDecimal lengthCm,
-                         BigDecimal widthCm, BigDecimal heightCm, BigDecimal packageWeightKg,
-                         BigDecimal packageLengthCm, BigDecimal packageWidthCm, BigDecimal packageHeightCm,
-                         int packageCount, int packSize) {
-        this(unitOfMeasure, barcode, weightKg, lengthCm, widthCm, heightCm, packageWeightKg, packageLengthCm,
-                packageWidthCm, packageHeightCm, packageCount, packSize, true);
+    public ItemLogistics(String unitOfMeasure, String barcode) {
+        this(unitOfMeasure, barcode, true);
     }
 }

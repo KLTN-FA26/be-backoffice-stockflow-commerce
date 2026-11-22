@@ -51,8 +51,9 @@ VALUES (md5('qa:unit:XANH-CARTON')::uuid, (SELECT id FROM inventory.inventory_it
        (md5('qa:unit:DO-CARTON')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-DO'), 'QA_CARTON', 5, 80, 60, 40, 30, TRUE),
        (md5('qa:unit:XANH-CASE')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'CASE', 4, NULL, NULL, NULL, NULL, FALSE);
 -- The supplier's old carton of 10 blue cups, retired before anything was received in it (docs 01 edge case "NCC đổi quy cách thùng").
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active)
-VALUES (md5('qa:unit:XANH-OLD')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'OLDCTN', 10, FALSE);
+-- Measured, as every carton received against a production order must be (01 BR-03, V20261215000100).
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg, active)
+VALUES (md5('qa:unit:XANH-OLD')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'OLDCTN', 10, 60, 40, 50, 12, FALSE);
 
 
 \echo '--- a stock package and its stock rows (V20261020000100, 0200)'

@@ -31,9 +31,10 @@ class EstimateCartonsTest {
                 false), 1, List.of(), null);
     }
 
-    /** 3 tables that ship as 2 boxes each (item box x package_count). */
+    /** 3 tables that ship as 2 boxes each: a kit, which the resolver no longer produces (V20261215000100) but
+     * EstimateCartons still reads. */
     private static PackagingSpec kit() {
-        return new PackagingSpec("TABLE-KIT", UUID.randomUUID(), 3, PackagingSpec.Status.RESOLVED, RuleLevel.ITEM_BOX,
+        return new PackagingSpec("TABLE-KIT", UUID.randomUUID(), 3, PackagingSpec.Status.RESOLVED, RuleLevel.LARGEST_PACKING_UNIT,
                 "SET", 1, 3, null, new PackagingSpec.CartonSpec(1600, 900, 120, new BigDecimal("24.000"), true), 2,
                 List.of(), null);
     }
@@ -98,7 +99,7 @@ class EstimateCartonsTest {
     @DisplayName("more boxes than one synchronous estimate places: 422 LOAD_ESTIMATE_TOO_MANY_CARTONS")
     void tooManyBoxes() {
         PackagingSpec loose = new PackagingSpec("CUP", UUID.randomUUID(), EstimateCartons.MAX_BOXES + 1,
-                PackagingSpec.Status.RESOLVED, RuleLevel.ITEM_UNIT, "EA", 1, EstimateCartons.MAX_BOXES + 1, null,
+                PackagingSpec.Status.RESOLVED, RuleLevel.LARGEST_PACKING_UNIT, "EA", 1, EstimateCartons.MAX_BOXES + 1, null,
                 new PackagingSpec.CartonSpec(100, 100, 100, new BigDecimal("0.1"), true), 1, List.of(), null);
         assertThatThrownBy(() -> EstimateCartons.build("o", List.of(new EstimateCartons.Line(PALLET_LINE, loose))))
                 .isInstanceOfSatisfying(BusinessException.class,

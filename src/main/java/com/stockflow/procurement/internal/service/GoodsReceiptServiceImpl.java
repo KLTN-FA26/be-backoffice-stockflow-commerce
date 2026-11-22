@@ -366,6 +366,15 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     unit.unitOfMeasure(), unit.factor(), line.unitsPerCarton()));
             return null;
         }
+        // 01 BR-03: the carton spec is the carton's size and full weight too, and since the item lost its own measures
+        // (V20261215000100) they are the only ones putaway, the capacity board and the label can read.
+        // check_receivable_item states it again.
+        if (unit.lengthCm() == null || unit.widthCm() == null || unit.heightCm() == null || unit.weightKg() == null) {
+            errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID, ("The carton of %s, %s, has no size "
+                    + "or weight yet: its carton specification is completed first (01 BR-03)").formatted(line.sku(),
+                    unit.unitOfMeasure()));
+            return null;
+        }
         Set<String> lpns = new HashSet<>();
         in.packages().forEach(carton -> Optional.ofNullable(StockPackageView.normalLpn(carton.lpn()))
                 .ifPresent(lpns::add));

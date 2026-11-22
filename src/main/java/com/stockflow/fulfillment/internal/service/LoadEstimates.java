@@ -12,7 +12,7 @@ import java.util.UUID;
 
 /**
  * The advisory load estimate (SCRUM-287 PR EST; design v2 §2, §5): how a released order's lines would load on trucks
- * or containers before anything is packed, from the item master data. Advisory only (LP2-1): it never confirms a plan
+ * or containers before anything is packed, from each SKU's carton unit. Advisory only (LP2-1): it never confirms a plan
  * and never books a vehicle - kltn-docs 09 BR-09 lets only Packed parcels into a real load plan.
  *
  * <p>Only what is still to ship is estimated: per line, its quantity less what went out in shipments not returned and
@@ -59,8 +59,8 @@ public interface LoadEstimates {
     /**
      * How one order line is packed, as the resolver decided.
      *
-     * @param rule     the rule level used (DEFAULT_SHIPPING_UNIT, LARGEST_PACKING_UNIT, ITEM_BOX, ITEM_UNIT)
-     * @param uom      the unit the carton is (PALLET, CTN, the item's unit)
+     * @param rule     the rule level used (DEFAULT_SHIPPING_UNIT, LARGEST_PACKING_UNIT)
+     * @param uom      the unit the carton is (PALLET, CTN)
      * @param factor   base units per carton
      * @param quantity the units estimated: what is still to ship (ordered less shipped less closed), in base units
      * @param cartons  cartons of the line, the partial one included; each is {@code kitParts} boxes
@@ -75,15 +75,16 @@ public interface LoadEstimates {
 
     record Partial(int units, BigDecimal weightKg) { }
 
-    /** Something the resolver skipped or noticed on a line (an incomplete packing unit, an unknown unit weight). */
+    /** Something the resolver skipped or noticed on a line (an incomplete packing unit). */
     record EstimateWarning(UUID orderLineId, String sku, String code, String unitOfMeasure, List<String> fields,
                            String message) { }
 
     /**
-     * A line blocked because its item has no size or weight at any level (LP2-3): left out of the plan; the screen
-     * links to the inventory item to complete.
+     * A line blocked because its item's carton has no full size and weight (LP2-3): left out of the plan; the screen
+     * links to the inventory item, where the carton unit is declared.
      *
-     * @param missingFields the item's empty (or zero) fields: lengthCm, widthCm, heightCm, weightKg
+     * @param missingFields the carton's empty (or zero) fields: lengthCm, widthCm, heightCm, weightKg; all four when
+     *                      the item has no active carton unit at all
      */
     record MissingLine(UUID orderLineId, String sku, UUID inventoryItemId, List<String> missingFields) { }
 

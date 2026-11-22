@@ -466,8 +466,8 @@ class LoadEstimateService implements LoadEstimates {
     }
 
     /**
-     * The item fields that keep a line from being measured (LP2-3), empty when it can be: the resolver's list when it
-     * found no level, or the carton's own zero sizes or weight (nothing is defaulted, and the planner refuses a zero).
+     * The carton fields that keep a line from being measured (LP2-3), empty when it can be: the resolver's list when it
+     * found no level (all four when it named none: no carton at all), or the carton's own zero sizes or weight (nothing is defaulted, and the planner refuses a zero).
      * Only the fields really missing are named.
      */
     static List<String> missingFields(PackagingSpec spec) {
@@ -495,13 +495,14 @@ class LoadEstimateService implements LoadEstimates {
 
     /**
      * One blocked line in a 422, pointing at its inventory item (LP2-3): {@code field} is
-     * {@code inventoryItems[<itemId>]}, so the screen links to the item to complete; the message names the SKU, the
-     * order line and the empty fields.
+     * {@code inventoryItems[<itemId>]}, so the screen links to the item, where its carton unit is declared; the message
+     * names the SKU, the order line and the carton's empty fields (all four when it has no carton at all, see
+     * {@link #missingFields}). Only the carton is measured (V20261215000100, kltn-docs 01 BR-03).
      */
     private static FieldError missingField(MissingLine line) {
         return new FieldError("inventoryItems[" + line.inventoryItemId() + "]", "SKU " + line.sku() + " (order line "
-                + line.orderLineId() + ") has no " + String.join(", ", line.missingFields())
-                + " on its inventory item", "PackagingMissing");
+                + line.orderLineId() + ") has no " + String.join(", ", line.missingFields()) + " on its carton unit",
+                "PackagingMissing");
     }
 
     /**

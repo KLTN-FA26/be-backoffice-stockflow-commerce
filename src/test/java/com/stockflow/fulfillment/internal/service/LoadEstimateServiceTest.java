@@ -104,7 +104,7 @@ class LoadEstimateServiceTest {
     }
 
     private PackagingSpec resolved(String sku, int quantity, int length, int width, int height, String kg) {
-        return new PackagingSpec(sku, itemId, quantity, PackagingSpec.Status.RESOLVED, RuleLevel.ITEM_UNIT, "EA", 1,
+        return new PackagingSpec(sku, itemId, quantity, PackagingSpec.Status.RESOLVED, RuleLevel.LARGEST_PACKING_UNIT, "EA", 1,
                 quantity, null, new PackagingSpec.CartonSpec(length, width, height, new BigDecimal(kg), true), 1,
                 List.of(), null);
     }

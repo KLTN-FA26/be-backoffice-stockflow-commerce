@@ -10,8 +10,9 @@ import com.stockflow.common.domain.Sku;
 public interface ItemSpecifications {
 
     /**
-     * Gives {@code target}'s item the logistics (weights, measures, handling), the stock policy and
-     * every active packing unit - the carton spec among them - of {@code source}'s item, in the caller's transaction.
+     * Gives {@code target}'s item the logistics (base unit, handling), the stock policy and every active packing unit -
+     * the carton spec, which holds every weight and measure (kltn-docs 01 BR-03) - of {@code source}'s item, in the
+     * caller's transaction.
      * The barcode is not copied: it names the source's goods. Meant for an item just created with its variant, which has
      * no packing unit of its own yet.
      *
