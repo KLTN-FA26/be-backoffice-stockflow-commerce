@@ -80,13 +80,16 @@ class OrderController {
     private final com.stockflow.order.internal.service.PartialShipments partialShipments;
     private final com.stockflow.order.internal.service.ShippingAddressChanges addressChanges;
     private final com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility;
+    private final com.stockflow.order.internal.service.OrderSources sources;
 
     OrderController(OrderService orderService, CustomerService customerService,
                     CustomerOrders customerOrders,
                     com.stockflow.identity.api.IdentityService identities,
                     com.stockflow.order.internal.service.PartialShipments partialShipments,
                     com.stockflow.order.internal.service.ShippingAddressChanges addressChanges,
-                    com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility) {
+                    com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility,
+                    com.stockflow.order.internal.service.OrderSources sources) {
+        this.sources = sources;
         this.addressChanges = addressChanges;
         this.warehouseVisibility = warehouseVisibility;
         this.partialShipments = partialShipments;
@@ -114,8 +117,9 @@ class OrderController {
                 .map(order -> ownCustomerId == null
                         // Staff read the customer's name on the order; a customer reads their own order as before.
                         ? OrderWebMapper.toResponse(order, true, OrderWebMapper.labelOf(
-                                customerService.labels(java.util.List.of(order.customerId())), order.customerId()))
-                        : OrderWebMapper.toResponse(order, false))
+                                customerService.labels(java.util.List.of(order.customerId())), order.customerId()),
+                                extras(order))
+                        : OrderWebMapper.toResponse(order, false, null, extras(order)))
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(
                         ErrorCode.NOT_FOUND, "No order with id " + orderId));
@@ -354,8 +358,15 @@ class OrderController {
             action = Action.READ, scope = DataScope.OWN)
     public ApiResponse<CustomerOrderDetailResponse> myOrder(@PathVariable UUID orderId,
                                                             @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(CustomerOrderWebMapper.toResponse(
-                customerOrders.myOrder(requiredOwnCustomerId(user), orderId)));
+        CustomerOrders.Detail detail = customerOrders.myOrder(requiredOwnCustomerId(user), orderId);
+        return ApiResponse.ok(CustomerOrderWebMapper.toResponse(detail, sources.of(detail.orderId(),
+                detail.lines().stream().map(CustomerOrders.Line::sku).toList())));
+    }
+
+    /** The quote an order came from and its lines' designs (R5-3, R5-7), for the one order a detail page shows. */
+    private com.stockflow.order.internal.service.OrderSources.Extras extras(com.stockflow.order.api.OrderSummary order) {
+        return sources.of(order.orderId(), order.lines().stream().map(com.stockflow.order.api.OrderSummary.LineSummary::sku)
+                .toList());
     }
 
     /**

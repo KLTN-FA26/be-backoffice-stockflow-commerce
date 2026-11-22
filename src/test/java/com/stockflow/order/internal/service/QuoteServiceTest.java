@@ -77,7 +77,8 @@ class QuoteServiceTest {
             mock(com.stockflow.order.internal.domain.SkuProductionHistory.class);
     private final QuoteService service = new QuoteService(quotes, search, customers, units, quotedOrders,
             orders, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC), catalog, events, products, customerSkus,
-            taxRates, production);
+            taxRates, production, mock(com.stockflow.design.api.SkuDesigns.class),
+            mock(com.stockflow.identity.api.IdentityService.class));
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();

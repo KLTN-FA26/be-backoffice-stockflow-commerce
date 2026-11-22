@@ -130,8 +130,34 @@ public record OrderResponse(
         BigDecimal taxAmount,
 
         @Schema(description = "4B-3: the fee lines - a plate fee per SKU produced for the first time, the shipping fee")
-        List<Fee> fees
+        List<Fee> fees,
+
+        @Schema(description = "R5-7: the quote the order was converted from; set on GET /orders/{orderId}, null "
+                + "elsewhere and for an order no quote became")
+        UUID sourceQuoteId,
+
+        @Schema(example = "QT-20261109-0007", description = "R5-7: that quote's number; set where sourceQuoteId is")
+        String sourceQuoteNumber
 ) {
+
+    /** Without the quote it came from: every list and every write answers so. */
+    public OrderResponse(UUID orderId, String orderNumber, UUID customerId, String customerName, String customerCode,
+                         String status, BigDecimal totalAmount, String currency, List<Line> lines, Instant placedAt,
+                         String createdBy, Instant lastModifiedAt, String lastModifiedBy, String contactName,
+                         String contactEmail, String contactPhone, Address shippingAddress, Address billingAddress,
+                         UUID warehouseId, Instant releasedAt, Cancellation cancellation, String holdReason,
+                         String statusBeforeHold, String holdReasonPublic, String holdNote, Instant packedAt,
+                         Instant firstLabeledAt, Instant shippedAt, Instant deliveredAt, String deliveryFailureReason,
+                         Instant completedAt, Instant closedAt, BigDecimal effectiveTotal,
+                         BigDecimal amountDueBeforeHandover, List<Shipment> shipments, Boolean allowPartialShipment,
+                         Boolean printLinesReady, BigDecimal netAmount, BigDecimal taxAmount, List<Fee> fees) {
+        this(orderId, orderNumber, customerId, customerName, customerCode, status, totalAmount, currency, lines,
+                placedAt, createdBy, lastModifiedAt, lastModifiedBy, contactName, contactEmail, contactPhone,
+                shippingAddress, billingAddress, warehouseId, releasedAt, cancellation, holdReason, statusBeforeHold,
+                holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt, deliveryFailureReason,
+                completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments, allowPartialShipment,
+                printLinesReady, netAmount, taxAmount, fees, null, null);
+    }
 
     /** A fee line with its VAT (14 BR-17, BR-20, BR-21). */
     public record Fee(String kind, String sku, BigDecimal amount, BigDecimal taxRate, BigDecimal taxAmount) {
@@ -206,8 +232,25 @@ public record OrderResponse(
             BigDecimal taxRate,
 
             @Schema(description = "4B-3: the line's VAT, rounded to the dong; null for a line without VAT")
-            BigDecimal taxAmount
+            BigDecimal taxAmount,
+
+            @Schema(description = "R5-3: the name of the design the customer's SKU was made to; set on GET "
+                    + "/orders/{orderId}, null elsewhere and for a SKU with no design")
+            String designName,
+
+            @Schema(description = "R5-3: a short-lived link showing that design's preview image; null when there is "
+                    + "none")
+            String previewUrl
     ) {
+
+        public Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
+                    List<UUID> reservationIds, UUID designSnapshotId, String designChecksum, Integer shippedQuantity,
+                    Integer deliveredQuantity, Integer cancelledQuantity, java.time.LocalDate requestedDeliveryDate,
+                    Integer cartons, Integer unitsPerCarton, BigDecimal taxRate, BigDecimal taxAmount) {
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum,
+                    shippedQuantity, deliveredQuantity, cancelledQuantity, requestedDeliveryDate, cartons,
+                    unitsPerCarton, taxRate, taxAmount, null, null);
+        }
 
         public Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
                     List<UUID> reservationIds, UUID designSnapshotId, String designChecksum, Integer shippedQuantity,

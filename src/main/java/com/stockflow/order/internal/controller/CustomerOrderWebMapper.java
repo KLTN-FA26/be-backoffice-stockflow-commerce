@@ -5,6 +5,7 @@ import com.stockflow.order.internal.controller.dto.CustomerOrderCardResponse;
 import com.stockflow.order.internal.controller.dto.CustomerOrderDetailResponse;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
 import com.stockflow.order.internal.service.CustomerOrders;
+import com.stockflow.order.internal.service.OrderSources;
 
 /** Maps what {@link CustomerOrders} returns to the customer-facing DTOs. */
 final class CustomerOrderWebMapper {
@@ -18,10 +19,15 @@ final class CustomerOrderWebMapper {
     }
 
     static CustomerOrderDetailResponse toResponse(CustomerOrders.Detail detail) {
+        return toResponse(detail, OrderSources.Extras.NONE);
+    }
+
+    /** With where the order came from: its quote and the design of each line's SKU (R5-3, R5-7). */
+    static CustomerOrderDetailResponse toResponse(CustomerOrders.Detail detail, OrderSources.Extras extras) {
         return new CustomerOrderDetailResponse(detail.orderId(), detail.orderNumber(), detail.status().name(),
                 detail.statusGroup().name(), detail.holdReasonPublic(),
                 detail.total(), detail.currency(), detail.placedAt(), toResponse(detail.shippingAddress()),
-                detail.lines().stream().map(CustomerOrderWebMapper::toResponse).toList(),
+                detail.lines().stream().map(line -> toResponse(line, extras.design(line.sku()))).toList(),
                 detail.timeline().stream().map(CustomerOrderWebMapper::toResponse).toList(),
                 detail.deliveryState().name(), detail.allowedActions() == null ? null
                         : new CustomerOrderDetailResponse.AllowedActions(detail.allowedActions().cancel(),
@@ -40,16 +46,19 @@ final class CustomerOrderWebMapper {
                                 .toList())).toList(),
                 detail.charges().netTotal(), detail.charges().taxTotal(),
                 detail.charges().fees().stream().map(fee -> new CustomerOrderDetailResponse.Fee(fee.kind(), fee.sku(),
-                        fee.amount(), fee.taxRate(), fee.taxAmount())).toList());
+                        fee.amount(), fee.taxRate(), fee.taxAmount())).toList(),
+                extras.sourceQuoteId(), extras.sourceQuoteNumber());
     }
 
-    private static CustomerOrderDetailResponse.Line toResponse(CustomerOrders.Line line) {
+    private static CustomerOrderDetailResponse.Line toResponse(CustomerOrders.Line line,
+                                                               com.stockflow.design.api.SkuDesign design) {
         return new CustomerOrderDetailResponse.Line(line.lineId(), line.sku(), line.quantity(), line.unitPrice(),
                 line.lineTotal(), line.designSnapshotId(),
                 new CustomerOrderDetailResponse.Production(line.production().state().name(),
                         line.production().goodQuantity()),
                 line.cartons(), line.unitsPerCarton(),
-                line.taxRate(), line.taxAmount());
+                line.taxRate(), line.taxAmount(), design == null ? null : design.name(),
+                design == null ? null : design.previewUrl());
     }
 
     private static CustomerOrderDetailResponse.TimelineEntry toResponse(CustomerOrders.TimelineEntry entry) {

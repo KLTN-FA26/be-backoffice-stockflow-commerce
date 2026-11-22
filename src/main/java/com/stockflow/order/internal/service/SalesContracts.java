@@ -59,11 +59,33 @@ public interface SalesContracts {
     /** @param value the batch's goods with their VAT: what an installment tied to it starts from (14 BR-13) */
     record BatchView(int seq, LocalDate windowStart, LocalDate windowEnd, BigDecimal value, List<BatchLineView> lines) { }
 
-    /** @param units the pieces: cartons x the line's pieces per carton */
-    record BatchLineView(UUID orderLineId, String sku, int cartons, int units) { }
+    /**
+     * @param units          the pieces: cartons x the line's pieces per carton
+     * @param unitsPerCarton R5-3: the line's pieces per carton; null for a line not ordered in cartons
+     * @param designName     R5-3: the name of the design the customer's SKU was made to; null when it has none
+     * @param previewUrl     R5-3: a short-lived link showing that design's preview; null when there is none
+     */
+    record BatchLineView(UUID orderLineId, String sku, int cartons, int units, Integer unitsPerCarton,
+                         String designName, String previewUrl) {
 
+        public BatchLineView(UUID orderLineId, String sku, int cartons, int units) {
+            this(orderLineId, sku, cartons, units, null, null, null);
+        }
+    }
+
+    /**
+     * @param dueDate     R5-12: when the instalment made from this row falls due; null before the contract is signed
+     *                    and while its milestone has not been reached
+     * @param daysOverdue R5-12: days past {@code dueDate} it is still owing; 0 when not overdue, and before signing
+     */
     record InstallmentView(int seq, String name, String milestone, BigDecimal percent, BigDecimal amount,
-                           Integer dueDays, Integer deliveryBatchSeq) { }
+                           Integer dueDays, Integer deliveryBatchSeq, LocalDate dueDate, int daysOverdue) {
+
+        public InstallmentView(int seq, String name, String milestone, BigDecimal percent, BigDecimal amount,
+                               Integer dueDays, Integer deliveryBatchSeq) {
+            this(seq, name, milestone, percent, amount, dueDays, deliveryBatchSeq, null, 0);
+        }
+    }
 
     /**
      * 15 BR-11: sending a contract that pays after delivery checks the customer's credit and warns, never refuses; the

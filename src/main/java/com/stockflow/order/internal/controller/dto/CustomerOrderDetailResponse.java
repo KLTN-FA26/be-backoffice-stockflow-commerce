@@ -74,7 +74,13 @@ public record CustomerOrderDetailResponse(
         BigDecimal taxAmount,
 
         @Schema(description = "4B-3: the plate fee of each SKU produced for the first time, and the shipping fee")
-        List<Fee> fees
+        List<Fee> fees,
+
+        @Schema(description = "R5-7: the quote the order was converted from; null for an order no quote became")
+        UUID sourceQuoteId,
+
+        @Schema(example = "QT-20261109-0007", description = "R5-7: that quote's number; set where sourceQuoteId is")
+        String sourceQuoteNumber
 ) {
 
     @Schema(name = "CustomerOrderFee")
@@ -166,7 +172,12 @@ public record CustomerOrderDetailResponse(
             @Schema(description = "4B-3 (14 BR-21): the line's VAT rate; null on a line placed without VAT")
             BigDecimal taxRate,
             @Schema(description = "4B-3: the line's VAT, lineTotal x taxRate rounded to the dong")
-            BigDecimal taxAmount) {
+            BigDecimal taxAmount,
+            @Schema(description = "R5-3: the name of the design the SKU was made to; null for a SKU with no design")
+            String designName,
+            @Schema(description = "R5-3: a short-lived link showing that design's preview image; null when there is "
+                    + "none")
+            String previewUrl) {
     }
 
     @Schema(name = "CustomerOrderLineProduction")
