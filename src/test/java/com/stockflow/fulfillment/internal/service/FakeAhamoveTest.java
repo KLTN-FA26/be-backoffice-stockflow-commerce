@@ -9,7 +9,9 @@ import com.stockflow.common.security.SecretCipher;
 import com.stockflow.fulfillment.internal.domain.CarrierEventKind;
 import com.stockflow.fulfillment.internal.domain.CarrierReport;
 import com.stockflow.fulfillment.internal.entity.CarrierJpaEntity;
+import com.stockflow.fulfillment.internal.repository.CarrierBookingJpaRepository;
 import com.stockflow.fulfillment.internal.repository.CarrierJpaRepository;
+import com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -67,7 +69,7 @@ class FakeAhamoveTest {
             return new CarrierEvents.Receipt(Identifiers.newId(), verdict.get(), true, false);
         };
         driver = new FakeAhamoveDriver(orders, callbacks, mock(CarrierEvents.class, Mockito.RETURNS_DEEP_STUBS),
-                carriers, JSON);
+                carriers, mock(CarrierBookingJpaRepository.class), mock(DispatchLoadJpaRepository.class), JSON);
         caller = new CarrierBookingGateway.Caller(carrierId, null, null, "0900000000", CarrierSecrets.FAKE_KEY);
     }
 

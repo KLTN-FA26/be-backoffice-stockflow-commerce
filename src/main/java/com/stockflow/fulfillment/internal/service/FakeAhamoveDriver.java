@@ -5,8 +5,11 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.fulfillment.internal.domain.CarrierEventResult;
+import com.stockflow.fulfillment.internal.repository.CarrierBookingJpaRepository;
 import com.stockflow.fulfillment.internal.repository.CarrierJpaRepository;
+import com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -45,20 +48,25 @@ class FakeAhamoveDriver implements FakeAhamove {
     private final FakeAhamoveCallbacks callbacks;
     private final CarrierEvents events;
     private final CarrierJpaRepository carriers;
+    private final CarrierBookingJpaRepository bookings;
+    private final DispatchLoadJpaRepository loads;
     private final ObjectMapper json;
 
     FakeAhamoveDriver(FakeAhamoveOrders orders, FakeAhamoveCallbacks callbacks, CarrierEvents events,
-                      CarrierJpaRepository carriers, ObjectMapper json) {
+                      CarrierJpaRepository carriers, CarrierBookingJpaRepository bookings,
+                      DispatchLoadJpaRepository loads, ObjectMapper json) {
         this.orders = orders;
         this.callbacks = callbacks;
         this.events = events;
         this.carriers = carriers;
+        this.bookings = bookings;
+        this.loads = loads;
         this.json = json;
     }
 
     @Override
     public List<OrderView> orders() {
-        return orders.all().stream().map(this::view).toList();
+        return orders.all().stream().filter(this::inScope).map(this::view).toList();
     }
 
     @Override
@@ -363,11 +371,23 @@ class FakeAhamoveDriver implements FakeAhamove {
 
     private FakeAhamoveOrders.Order require(String orderId) {
         FakeAhamoveOrders.Order order = orders.get(orderId);
-        if (order == null) {
+        if (order == null || !inScope(order)) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "The fake Ahamove holds no order " + orderId
                     + " (it keeps orders in memory: a restart forgets them)");
         }
         return order;
+    }
+
+    /**
+     * BR-SEC-002: the webhook a step sends is applied as the carrier, to any warehouse's load, so a caller limited to
+     * warehouses drives only the orders of loads of theirs; another's reads as unknown. An order no booking holds
+     * (yet) is no load's, and none of theirs.
+     */
+    private boolean inScope(FakeAhamoveOrders.Order order) {
+        return WarehouseScope.restriction().map(allowed -> bookings.findKeyByOrder(order.carrierId, order.id)
+                .flatMap(key -> loads.findById(key.getLoadId()))
+                .map(load -> allowed.ids().contains(load.getWarehouseId()))
+                .orElse(false)).orElse(true);
     }
 
     private OrderView view(FakeAhamoveOrders.Order o) {
