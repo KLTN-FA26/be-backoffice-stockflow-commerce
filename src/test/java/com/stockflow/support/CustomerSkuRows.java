@@ -157,8 +157,9 @@ public final class CustomerSkuRows {
     }
 
     /**
-     * A SKU of {@code customerId} that handles like the catalogue SKU {@code like}: the same weight, sizes, packages
-     * (a multi-package SKU is packed as a kit, LP2-6), storage class, and a barcode of its own.
+     * A SKU of {@code customerId} that handles like the catalogue SKU {@code like}: the same rotatable flag, the same
+     * carton size and weight, and a barcode of its own. The item has no weight or size of its own to copy
+     * (V20261215000100): only the carton is measured.
      * What a test of picking, packing or loading needs since every order is a contract's, whose lines are only ever the
      * customer's own SKUs (14 BR-04): the demo catalogue's goods, as the customer's.
      */
@@ -169,16 +170,9 @@ public final class CustomerSkuRows {
                 100_000_000_000L));
         tx.executeWithoutResult(s -> jdbc.update("""
                 UPDATE inventory.inventory_items i
-                   SET weight_kg = c.weight_kg, length_cm = c.length_cm, width_cm = c.width_cm, height_cm = c.height_cm,
-                       package_weight_kg = c.package_weight_kg, package_length_cm = c.package_length_cm,
-                       package_width_cm = c.package_width_cm, package_height_cm = c.package_height_cm,
-                       package_count = c.package_count, pack_size = c.pack_size,
-                       barcode = ?
+                   SET rotatable = c.rotatable, barcode = ?
                   FROM inventory.inventory_items c
                  WHERE i.sku = ? AND c.sku = ?""", barcode, issued.sku(), like));
-        // Shipped as the catalogue SKU ships (its own packages), not in the issued carton's box.
-        tx.executeWithoutResult(s -> jdbc.update(
-                "UPDATE inventory.uom_conversions SET default_shipping = FALSE WHERE id = ?", issued.uomConversionId()));
         // Since 4C-6 a parcel is a checked LPN carton, sized by its carton unit (08 BR-07): the issued carton takes the
         // catalogue SKU's carton size and weight as they are now (a test sets them first, CartonStationSupport), so a
         // load plan counts the customer's cartons as it counted the catalogue's. Kept as issued where the catalogue

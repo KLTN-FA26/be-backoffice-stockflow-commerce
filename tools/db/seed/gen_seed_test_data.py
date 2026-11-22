@@ -375,8 +375,8 @@ for pcode, pname, cat, taxc, model, axis, variants in PRODUCTS:
             bleed_mm=2, shape_json={"type": "annular-sector" if cup else "rect"}, uv_mapping_json={"meshPart": "body"})
         VARIANT[sku] = dict(id=vid, product=pcode, product_id=pid, label=label, kg=kg, tax=taxc, name=pname,
                             template=tid)
-        raw(f"UPDATE inventory.inventory_items SET weight_kg = {kg}, length_cm = 9, width_cm = 9, height_cm = 11 "
-            f"WHERE sku = '{sku}';")
+        # kg is one cup's weight, used only to work out the full carton's weight below: the item has no weight or
+        # size of its own (V20261215000100, kltn-docs 01 BR-03).
 TAX_RATE = {"STANDARD": 10, "REDUCED": 5, "EXEMPT": 0}
 
 # ============================================================================ 4. customers
@@ -531,8 +531,7 @@ def customer_sku(cust, blank, suffix, name, when, project=None):
         position=10, owner_customer_id=CUST[cust]["id"], design_snapshot_id=d["snapshot"], source_variant_id=v["id"])
     per = CARTON[v["product"]]
     barcode = "89" + f"{int(hashlib.md5(sku.encode()).hexdigest(), 16) % 10 ** 11:011d}"
-    raw(f"UPDATE inventory.inventory_items SET weight_kg = {v['kg']}, length_cm = 9, width_cm = 9, height_cm = 11, "
-        f"barcode = '{barcode}' WHERE sku = '{sku}';")
+    raw(f"UPDATE inventory.inventory_items SET barcode = '{barcode}' WHERE sku = '{sku}';")
     unit = uid("unit:" + sku)
     weight = round(per * v["kg"] + 0.6, 3)
     ins("inventory.uom_conversions", d["at"], id=unit,

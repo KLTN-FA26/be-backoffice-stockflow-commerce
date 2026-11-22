@@ -37,9 +37,7 @@ class ItemSpecificationsImpl implements ItemSpecifications {
         InventoryItems.Detail from = items.get(sourceSummary.id());
         UUID targetId = summaryOf(target).id();
         ItemLogistics l = from.logistics();
-        ItemLogistics withoutBarcode = new ItemLogistics(l.unitOfMeasure(), null, l.weightKg(), l.lengthCm(),
-                l.widthCm(), l.heightCm(), l.packageWeightKg(), l.packageLengthCm(), l.packageWidthCm(),
-                l.packageHeightCm(), l.packageCount(), l.packSize(), l.rotatable());
+        ItemLogistics withoutBarcode = new ItemLogistics(l.unitOfMeasure(), null, l.rotatable());
         // No stock policy to copy: every SKU has the same one (kltn-docs 01 BR-17, team plan 5-5).
         items.describe(targetId, items.get(targetId).version(), withoutBarcode);
         List<UomConversion> packing = units.conversionsOf(List.of(source)).getOrDefault(source.code(), List.of());

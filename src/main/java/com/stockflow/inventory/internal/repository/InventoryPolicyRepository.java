@@ -85,13 +85,7 @@ public class InventoryPolicyRepository {
     }
 
     private static ItemLogistics logistics(java.sql.ResultSet rs) throws java.sql.SQLException {
-        return new ItemLogistics(
-                rs.getString("unit_of_measure"), rs.getString("barcode"),
-                rs.getBigDecimal("weight_kg"), rs.getBigDecimal("length_cm"),
-                rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm"),
-                rs.getBigDecimal("package_weight_kg"), rs.getBigDecimal("package_length_cm"),
-                rs.getBigDecimal("package_width_cm"), rs.getBigDecimal("package_height_cm"),
-                rs.getInt("package_count"), rs.getInt("pack_size"), rs.getBoolean("rotatable"));
+        return new ItemLogistics(rs.getString("unit_of_measure"), rs.getString("barcode"), rs.getBoolean("rotatable"));
     }
 
     /** The SKU of the item with this id; empty when there is none. */
@@ -159,15 +153,11 @@ public class InventoryPolicyRepository {
     /** False when the version moved on: someone else changed the item since it was read. */
     public boolean saveLogistics(String sku, long version, ItemLogistics l, String actor) {
         return jdbc.update("""
-                update inventory.inventory_items set unit_of_measure=?, barcode=?, weight_kg=?, length_cm=?,
-                    width_cm=?, height_cm=?, package_weight_kg=?, package_length_cm=?, package_width_cm=?,
-                    package_height_cm=?, package_count=?, pack_size=?, rotatable=?, version=version+1,
+                update inventory.inventory_items set unit_of_measure=?, barcode=?, rotatable=?, version=version+1,
                     last_modified_at=now(),
                     last_modified_by=?
                 where sku=? and version=?
-                """, l.unitOfMeasure(), l.barcode(), l.weightKg(), l.lengthCm(), l.widthCm(), l.heightCm(),
-                l.packageWeightKg(), l.packageLengthCm(), l.packageWidthCm(), l.packageHeightCm(), l.packageCount(),
-                l.packSize(), l.rotatable(), actor, sku, version) == 1;
+                """, l.unitOfMeasure(), l.barcode(), l.rotatable(), actor, sku, version) == 1;
     }
 
     /** Whether a packing unit of the SKU (not its base unit) already uses this unit code. */

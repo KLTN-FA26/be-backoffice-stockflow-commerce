@@ -66,8 +66,9 @@ class InventoryItemHttpIntegrationTest {
     }
 
     private static String logisticsBody(long version) {
+        // weightKg is what an older client still sends: the item has no weight any more, so it is ignored.
         return "{\"version\":" + version + ",\"unitOfMeasure\":\"EACH\","
-                + "\"weightKg\":0.120}";
+                + "\"rotatable\":false,\"weightKg\":0.120}";
     }
 
     @Test
@@ -90,7 +91,8 @@ class InventoryItemHttpIntegrationTest {
                         .content(logisticsBody(v)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.version").value(v + 1))
-                .andExpect(jsonPath("$.data.logistics.weightKg").value(0.120))
+                .andExpect(jsonPath("$.data.logistics.rotatable").value(false))
+                .andExpect(jsonPath("$.data.logistics.weightKg").doesNotExist())
                 .andExpect(jsonPath("$.data.policy").doesNotExist());
     }
 
@@ -104,18 +106,18 @@ class InventoryItemHttpIntegrationTest {
     }
 
     @Test
-    void packagingPreviewResolvesTheItemsOwnBox() throws Exception {
+    void packagingPreviewResolvesTheItemsCarton() throws Exception {
         UUID id = item("HTTP-K-" + suffix, null);
         tx.executeWithoutResult(s -> jdbc.update("""
-                update inventory.inventory_items set weight_kg = 0.5, length_cm = 10, width_cm = 8, height_cm = 6,
-                    package_weight_kg = 0.7, package_length_cm = 12, package_width_cm = 9, package_height_cm = 7
-                where id = ?""", id));
+                insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
+                    weight_kg, length_cm, width_cm, height_cm, active, default_shipping)
+                values (gen_random_uuid(), ?, 'CARTON', 2, false, 0.7, 12, 9, 7, true, true)""", id));
         mvc.perform(get(BASE + "/" + id + "/packaging-preview").param("quantity", "4"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("RESOLVED"))
-                .andExpect(jsonPath("$.data.level").value("ITEM_BOX"))
-                .andExpect(jsonPath("$.data.unitOfMeasure").value("EACH"))
-                .andExpect(jsonPath("$.data.fullCartons").value(4))
+                .andExpect(jsonPath("$.data.level").value("DEFAULT_SHIPPING_UNIT"))
+                .andExpect(jsonPath("$.data.unitOfMeasure").value("CARTON"))
+                .andExpect(jsonPath("$.data.fullCartons").value(2))
                 .andExpect(jsonPath("$.data.partialCarton").doesNotExist())
                 .andExpect(jsonPath("$.data.carton.lengthMm").value(120))
                 .andExpect(jsonPath("$.data.carton.weightKg").value(0.7))
@@ -130,7 +132,7 @@ class InventoryItemHttpIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("MISSING"))
                 .andExpect(jsonPath("$.data.missing.code").value("PACKAGING_MISSING"))
-                .andExpect(jsonPath("$.data.missing.fields[0]").value("lengthCm"));
+                .andExpect(jsonPath("$.data.missing.fields").isEmpty());
     }
 
     @Test

@@ -137,9 +137,6 @@ class AwaitingStockPrePickIntegrationTest {
                     variant, product.productId(), code, "OWNED-SKU:" + code, DemoData.CUSTOMER_ID,
                     design.snapshotId(), product.variantId());
             UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, code);
-            jdbc.update("""
-                    UPDATE inventory.inventory_items SET weight_kg = 0.02, length_cm = 9, width_cm = 9, height_cm = 12
-                           WHERE id = ?""", item);
             UUID carton = com.stockflow.common.id.Identifiers.newId();
             jdbc.update("""
                     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,

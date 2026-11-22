@@ -43,7 +43,6 @@ import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -156,14 +155,13 @@ class ProductPimIntegrationTest {
         var before = items.get(itemId);
         assertThat(before.logistics().unitOfMeasure()).isEqualTo("EACH");
 
-        var logistics = new ItemLogistics("EACH", "893" + suffix.replaceAll("[^0-9]", "1"),
-                new BigDecimal("0.012"), new BigDecimal("8"), new BigDecimal("8"), new BigDecimal("10"),
-                new BigDecimal("6.2"), new BigDecimal("40"), new BigDecimal("30"), new BigDecimal("50"), 1, 50);
+        String barcode = "893" + suffix.replaceAll("[^0-9]", "1");
+        var logistics = new ItemLogistics("EACH", barcode, false);
         var after = items.describe(itemId, before.version(), logistics);
 
         assertThat(after.version()).isGreaterThan(before.version());
-        assertThat(after.logistics().packageHeightCm()).isEqualByComparingTo("50");
-        assertThat(after.logistics().packSize()).isEqualTo(50);
+        assertThat(after.logistics().barcode()).isEqualTo(barcode);
+        assertThat(after.logistics().rotatable()).isFalse();
         assertThatThrownBy(() -> items.describe(itemId, before.version(), logistics))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK));

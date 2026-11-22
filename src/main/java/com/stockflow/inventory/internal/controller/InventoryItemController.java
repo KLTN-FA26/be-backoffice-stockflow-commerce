@@ -83,8 +83,8 @@ class InventoryItemController {
     @GetMapping("/{id}/packaging-preview")
     @Operation(summary = "How a quantity of this item would be packed for load planning (advisory)",
             description = "quantity is in base units. Returns the carton, the full cartons and the remainder, the "
-                    + "rule level used and any warnings; status MISSING (still 200) when not even the item's own "
-                    + "unit has a size and weight. Read-only: nothing is stored.")
+                    + "rule level used and any warnings; status MISSING (still 200) when the item has no carton unit "
+                    + "with a full size and weight. Read-only: nothing is stored.")
     @RequiresPermission(resource = InventoryResources.INVENTORY_ITEMS, action = Action.READ)
     public ApiResponse<PackagingSpec> packagingPreview(@PathVariable UUID id, @RequestParam int quantity) {
         return ApiResponse.ok(packaging.resolve(id, quantity));

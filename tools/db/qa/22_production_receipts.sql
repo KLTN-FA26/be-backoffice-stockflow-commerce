@@ -72,17 +72,18 @@ INSERT INTO product.variants (id, product_id, sku, name, status, is_default, att
 SELECT md5('qa22:own')::uuid, md5('qa22:product')::uuid, 'QA-PRR-OWN', 'QA ly in logo', 'ACTIVE', FALSE,
        'OWNED-SKU:QA-PRR-OWN', 1, 0, NOW(), c.id, md5('qa22:snap')::uuid, md5('qa22:blank')::uuid
   FROM customer.customer c ORDER BY c.id LIMIT 1;
-UPDATE inventory.inventory_items SET weight_kg = 0.02, length_cm = 9, width_cm = 9, height_cm = 12
- WHERE sku IN ('QA-PRR-OWN', 'QA-PRR-BLANK');
+-- Measured: a carton is received only once its spec has its size and full weight (01 BR-03, V20261215000100).
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, active,
-                                       version, created_at, default_shipping)
-SELECT md5('qa22:carton')::uuid, i.id, 'CARTON', 50, FALSE, TRUE, 0, NOW(), TRUE
+                                       version, created_at, default_shipping, length_cm, width_cm, height_cm,
+                                       weight_kg)
+SELECT md5('qa22:carton')::uuid, i.id, 'CARTON', 50, FALSE, TRUE, 0, NOW(), TRUE, 60, 40, 35, 1.2
   FROM inventory.inventory_items i WHERE i.sku = 'QA-PRR-OWN';
 -- BOX is a retired unit: the item has one active carton (01 BR-03), the CARTON of 50. A line counted in BOX is
 -- refused for its count (PR15), not for the unit being retired: that trigger asks for the factor only.
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, active,
-                                       version, created_at, default_shipping)
-SELECT md5('qa22:box')::uuid, i.id, 'BOX', 25, FALSE, FALSE, 0, NOW(), FALSE
+                                       version, created_at, default_shipping, length_cm, width_cm, height_cm,
+                                       weight_kg)
+SELECT md5('qa22:box')::uuid, i.id, 'BOX', 25, FALSE, FALSE, 0, NOW(), FALSE, 40, 30, 35, 0.6
   FROM inventory.inventory_items i WHERE i.sku = 'QA-PRR-OWN';
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
                                      currency, placed_at, created_at)
@@ -244,6 +245,12 @@ SELECT pg_temp.expect_fail('PR17 another SKU than the production order line''s (
            'PRD-20261109-2201'
       FROM inventory.inventory_items i, warehouse.storage_location s
      WHERE i.sku = 'QA-PRR-BLANK' AND s.location_code = 'HCM-RCV01' $q$);
+-- The item carries no weight or size of its own (V20261215000100, 01 BR-03): only its carton does, and a carton
+-- without them is not received.
+SELECT pg_temp.expect_fail_like('PR17b a carton with no full weight on its spec (01 BR-03)', 'has no size or weight', $q$
+    UPDATE inventory.uom_conversions SET weight_kg = NULL WHERE id = md5('qa22:carton')::uuid;
+    SELECT pg_temp.line(md5('qa22:l1')::uuid, md5('qa22:gr1')::uuid, 'PRD-20261109-2201', 200, 'PRD-20261109-2201',
+                        md5('qa22:carton')::uuid) $q$);
 SELECT pg_temp.expect_ok('PR18 4 cartons of 50 on the draft', $q$
     SELECT pg_temp.line(md5('qa22:l1')::uuid, md5('qa22:gr1')::uuid, 'PRD-20261109-2201', 200, 'PRD-20261109-2201',
                         md5('qa22:carton')::uuid) $q$);

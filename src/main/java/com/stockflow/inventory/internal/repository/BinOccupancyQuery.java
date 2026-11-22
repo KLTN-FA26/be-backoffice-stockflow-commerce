@@ -16,15 +16,15 @@ import java.util.UUID;
 
 /**
  * What the given bins hold right now, and what a carton takes of a bin, for putting it away (SCRUM-92; kltn-docs
- * 05 BR-03, 06 BR-19). Grouped reads of the inventory schema only: sizes and weights come from the carton units and
- * the item master of the same schema, never from another module's tables.
+ * 05 BR-03, 06 BR-19). Grouped reads of the inventory schema only: sizes and weights come from the carton units (the
+ * item master gives only the rotatable flag) of the same schema, never from another module's tables.
  *
  * <p>A bin's load is every carton on its rows - any SKU, any status - because the shelf is as full of a quarantined
  * or held carton as of a sellable one. A carton takes its carton unit's length x width x height and weighs what that
- * unit says a full carton weighs (05 BR-03, decided 2026-11-05); a unit without a recorded weight falls back to the
- * item's unit weight times the units, and without either the carton weighs nothing here, so the rule cannot be
- * broken by a number nobody knows. Units outside any carton (history, before V20261111000110) take no volume and
- * weigh their unit weight.</p>
+ * unit says a full carton weighs (05 BR-03, decided 2026-11-05); a unit without a recorded weight weighs nothing here,
+ * so the rule cannot be broken by a number nobody knows. The item has no weight of its own to stand in
+ * (V20261215000100, kltn-docs 01 BR-03). Units outside any carton (history, before V20261111000110) take no volume
+ * and no weight.</p>
  */
 @Repository
 public class BinOccupancyQuery {
@@ -82,14 +82,12 @@ public class BinOccupancyQuery {
                        sum(r.on_hand) as units,
                        sum(case when r.stock_package_id is null then 0
                                 else coalesce(u.length_cm * u.width_cm * u.height_cm / 1000000, 0) end) as volume_m3,
-                       sum(case when r.stock_package_id is not null and u.weight_kg is not null then u.weight_kg
-                                else r.on_hand * coalesce(i.weight_kg, 0) end) as weight_kg,
+                       coalesce(sum(u.weight_kg), 0) as weight_kg,
                        coalesce(bool_or(r.sku = ?), false) as holds_sku,
                        coalesce(bool_or(r.sku = ? and r.same_lot and cast(? as text) is not null), false) as holds_lot
                 from r
                 left join inventory.stock_package p on p.id = r.stock_package_id
                 left join inventory.uom_conversions u on u.id = p.uom_conversion_id
-                left join inventory.inventory_items i on i.sku = r.sku
                 group by r.location_code""", ps -> {
             ps.setString(1, lotNumber);
             ps.setArray(2, ps.getConnection().createArrayOf("text", locationCodes.toArray()));
@@ -108,8 +106,7 @@ public class BinOccupancyQuery {
 
     /**
      * What each of these cartons takes of a bin: its carton unit's size, whether its item may be turned on the
-     * horizontal ({@code rotatable}, docs 01) and its full weight - the unit's, else the item's unit weight times its
-     * standard count. A carton that does not exist is absent.
+     * horizontal ({@code rotatable}, docs 01) and its full weight - the unit's, null when nobody recorded it. A carton that does not exist is absent.
      */
     public Map<UUID, Need> needsOf(Collection<UUID> cartonIds) {
         if (cartonIds.isEmpty()) {
@@ -117,8 +114,7 @@ public class BinOccupancyQuery {
         }
         Map<UUID, Need> out = new HashMap<>();
         jdbc.query("""
-                select p.id, u.length_cm, u.width_cm, u.height_cm, i.rotatable,
-                       coalesce(u.weight_kg, i.weight_kg * p.nominal_qty) as weight_kg
+                select p.id, u.length_cm, u.width_cm, u.height_cm, i.rotatable, u.weight_kg
                 from inventory.stock_package p
                 join inventory.uom_conversions u on u.id = p.uom_conversion_id
                 join inventory.inventory_items i on i.id = p.inventory_item_id
@@ -142,10 +138,9 @@ public class BinOccupancyQuery {
         }
         return jdbc.query("""
                 select coalesce(sum(u.length_cm * u.width_cm * u.height_cm / 1000000), 0) as volume_m3,
-                       coalesce(sum(coalesce(u.weight_kg, i.weight_kg * p.nominal_qty)), 0) as weight_kg
+                       coalesce(sum(u.weight_kg), 0) as weight_kg
                 from inventory.stock_package p
                 join inventory.uom_conversions u on u.id = p.uom_conversion_id
-                join inventory.inventory_items i on i.id = p.inventory_item_id
                 where p.id = any (?)
                   and exists (select 1 from inventory.stock_item s where s.stock_package_id = p.id
                                  and s.on_hand > 0 and s.lot_number = ?)""", ps -> {
@@ -176,7 +171,7 @@ public class BinOccupancyQuery {
                          where s.stock_package_id = p.id and s.on_hand > 0) as lot_number,
                        coalesce(p.received_qty, p.nominal_qty) as units,
                        coalesce(u.length_cm * u.width_cm * u.height_cm / 1000000, 0) as volume_m3,
-                       coalesce(u.weight_kg, i.weight_kg * p.nominal_qty, 0) as weight_kg
+                       coalesce(u.weight_kg, 0) as weight_kg
                 from inventory.stock_package p
                 join inventory.uom_conversions u on u.id = p.uom_conversion_id
                 join inventory.inventory_items i on i.id = p.inventory_item_id

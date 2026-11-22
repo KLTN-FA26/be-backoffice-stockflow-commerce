@@ -4,7 +4,6 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.inventory.api.ItemLogistics;
 
-import java.math.BigDecimal;
 import java.util.regex.Pattern;
 
 /**
@@ -24,23 +23,6 @@ public final class ItemLogisticsRules {
         }
         if (l.barcode() != null && (l.barcode().isBlank() || l.barcode().length() > 64)) {
             throw invalid("barcode must be 1-64 characters, or absent");
-        }
-        positive(l.weightKg(), "weightKg");
-        positive(l.lengthCm(), "lengthCm");
-        positive(l.widthCm(), "widthCm");
-        positive(l.heightCm(), "heightCm");
-        positive(l.packageWeightKg(), "packageWeightKg");
-        positive(l.packageLengthCm(), "packageLengthCm");
-        positive(l.packageWidthCm(), "packageWidthCm");
-        positive(l.packageHeightCm(), "packageHeightCm");
-        if (l.packageCount() < 1 || l.packSize() < 1) {
-            throw invalid("packageCount and packSize must be at least 1");
-        }
-    }
-
-    private static void positive(BigDecimal value, String field) {
-        if (value != null && value.signum() <= 0) {
-            throw invalid(field + " must be positive");
         }
     }
 

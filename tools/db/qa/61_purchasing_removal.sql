@@ -140,7 +140,8 @@ UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
  WHERE NOT is_base AND active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg, active)
 VALUES (md5('qa61:carton')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'CARTON10', 10, 60, 40, 50, 12, TRUE),
-       (md5('qa61:old')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'OLDCTN', 10, NULL, NULL, NULL, NULL, FALSE);
+       -- measured, so L7 is refused for being retired, not for the size and weight receiving asks of a carton (V20261215000100)
+       (md5('qa61:old')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'OLDCTN', 10, 60, 40, 50, 12, FALSE);
 SET LOCAL session_replication_role = replica;
 INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, customer_id, producer_id,
                                        receiving_warehouse_id, need_by_date, status, sample_approval_required,

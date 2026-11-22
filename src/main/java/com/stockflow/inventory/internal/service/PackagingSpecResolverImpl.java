@@ -86,8 +86,8 @@ class PackagingSpecResolverImpl implements PackagingSpecResolver {
         Map<String, List<UomConversion>> units = conversions.bySkus(skus);
         return lines.stream().map(line -> {
             ItemRow row = rows.get(line.sku().code());
-            return PackagingRules.resolve(row.id(), row.sku(), row.logistics(),
-                    units.getOrDefault(row.sku(), List.of()), line.quantity());
+            return PackagingRules.resolve(row.id(), row.sku(), units.getOrDefault(row.sku(), List.of()),
+                    row.logistics().rotatable(), line.quantity());
         }).toList();
     }
 }

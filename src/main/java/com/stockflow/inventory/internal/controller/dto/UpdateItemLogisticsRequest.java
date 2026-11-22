@@ -4,14 +4,12 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
-import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
-
-import java.math.BigDecimal;
 
 /**
  * PUT replaces the logistics of one inventory item. {@code version} is the item's, as the last read returned it.
- * A null measure means "not known yet".
+ * The item has no weight or size to send: those are the carton's, on its carton unit (kltn-docs 01 BR-03); a client
+ * still sending the old measure fields has them ignored.
  */
 public record UpdateItemLogisticsRequest(
         @NotNull(message = "version is required") @Min(0)
@@ -24,23 +22,6 @@ public record UpdateItemLogisticsRequest(
 
         @Size(min = 1, max = 64, message = "barcode must be 1-64 characters")
         String barcode,
-
-        @Positive(message = "weightKg must be positive") BigDecimal weightKg,
-        @Positive(message = "lengthCm must be positive") BigDecimal lengthCm,
-        @Positive(message = "widthCm must be positive") BigDecimal widthCm,
-        @Positive(message = "heightCm must be positive") BigDecimal heightCm,
-
-        @Schema(description = "The shipped package, distinct from the unit's own size: cups ship nested")
-        @Positive(message = "packageWeightKg must be positive") BigDecimal packageWeightKg,
-        @Positive(message = "packageLengthCm must be positive") BigDecimal packageLengthCm,
-        @Positive(message = "packageWidthCm must be positive") BigDecimal packageWidthCm,
-        @Positive(message = "packageHeightCm must be positive") BigDecimal packageHeightCm,
-
-        @Schema(description = "How many boxes one unit ships as; 1 when absent")
-        @Min(value = 1, message = "packageCount must be at least 1") Integer packageCount,
-
-        @Schema(description = "Units per inner pack; 1 when absent")
-        @Min(value = 1, message = "packSize must be at least 1") Integer packSize,
 
         @Schema(description = "Packages of this SKU may be turned 6 ways when a truck is loaded (docs 01, 08, 09), "
                 + "and its cartons turned on the horizontal to fit a bin (06 BR-01); true when absent")

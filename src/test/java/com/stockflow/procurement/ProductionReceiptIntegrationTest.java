@@ -251,9 +251,6 @@ class ProductionReceiptIntegrationTest {
                     variant, product.productId(), code, "OWNED-SKU:" + code, customerId, design.snapshotId(),
                     product.variantId());
             UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, code);
-            jdbc.update("""
-                    UPDATE inventory.inventory_items SET weight_kg = 0.02, length_cm = 9, width_cm = 9, height_cm = 12
-                           WHERE id = ?""", item);
             UUID carton = Identifiers.newId();
             jdbc.update("""
                     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
@@ -603,6 +600,25 @@ class ProductionReceiptIntegrationTest {
                 .doesNotContainAnyElementsOf(counted.stream().map(PackageView::lpn).toList());
         counted.forEach(old -> assertThat(jdbc.queryForObject("SELECT status FROM inventory.stock_package WHERE lpn = ?",
                 String.class, old.lpn())).as("the carton labelled in the retired unit").isEqualTo("VOID"));
+    }
+
+    @Test
+    @DisplayName("01 BR-03 (V20261215000100): a carton with no weight is not received, the item having none to stand in; "
+            + "once its spec is complete it is")
+    void aCartonWithoutItsWeightIsNotReceived() {
+        UUID orderId = confirmedOrderAtA();
+        ProductionOrder production = sentWithoutSample(orderId, 1);
+        ReceiptView receipt = start(production);
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.uom_conversions SET weight_kg = NULL WHERE id = ?",
+                sku.uomConversionId()));
+
+        Throwable refused = catchThrowable(() -> count(receipt, lineId(production), cartons(2)));
+        assertThat(fields(refused)).containsExactly("lines[0].unitOfMeasure:RECEIPT_LINE_UNIT_INVALID");
+        assertThat(receipts.get(receipt.id()).lines()).as("nothing counted").isEmpty();
+
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.uom_conversions SET weight_kg = 1.2 WHERE id = ?",
+                sku.uomConversionId()));
+        assertThat(count(receipt, lineId(production), cartons(2)).lines().getFirst().packages()).hasSize(2);
     }
 
     @Test

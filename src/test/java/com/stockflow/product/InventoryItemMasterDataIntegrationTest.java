@@ -97,8 +97,7 @@ class InventoryItemMasterDataIntegrationTest {
     void rotatable() {
         var before = items.get(itemId());
         assertThat(before.logistics().rotatable()).isTrue();
-        var logistics = new ItemLogistics("EACH", null, new BigDecimal("0.01"), new BigDecimal("8"),
-                new BigDecimal("8"), new BigDecimal("10"), null, null, null, null, 1, 1, false);
+        var logistics = new ItemLogistics("EACH", null, false);
         var after = items.describe(itemId(), before.version(), logistics);
         assertThat(after.logistics().rotatable()).isFalse();
         assertThat(jdbc.queryForObject("SELECT rotatable FROM inventory.inventory_items WHERE sku = ?",
@@ -308,9 +307,7 @@ class InventoryItemMasterDataIntegrationTest {
     }
 
     private static ItemLogistics withUnit(ItemLogistics l, String unit) {
-        return new ItemLogistics(unit, l.barcode(), l.weightKg(), l.lengthCm(), l.widthCm(), l.heightCm(),
-                l.packageWeightKg(), l.packageLengthCm(), l.packageWidthCm(), l.packageHeightCm(), l.packageCount(),
-                l.packSize(), l.rotatable());
+        return new ItemLogistics(unit, l.barcode(), l.rotatable());
     }
 
     private List<String> history() {

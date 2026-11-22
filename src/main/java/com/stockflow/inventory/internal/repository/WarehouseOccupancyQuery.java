@@ -39,11 +39,9 @@ public class WarehouseOccupancyQuery {
                        count(*) filter (where u.length_cm is null or u.width_cm is null or u.height_cm is null)
                            as without_size,
                        coalesce(sum(u.length_cm * u.width_cm * u.height_cm / 1000000), 0) as volume_m3,
-                       coalesce(sum(coalesce(u.weight_kg, i.weight_kg * coalesce(p.received_qty, p.nominal_qty))), 0)
-                           as weight_kg
+                       coalesce(sum(u.weight_kg), 0) as weight_kg
                   from inventory.stock_package p
                   join inventory.uom_conversions u on u.id = p.uom_conversion_id
-                  join inventory.inventory_items i on i.id = p.inventory_item_id
                  where p.status = 'IN_STOCK'
                    and p.location_code like ?
                  group by p.location_code

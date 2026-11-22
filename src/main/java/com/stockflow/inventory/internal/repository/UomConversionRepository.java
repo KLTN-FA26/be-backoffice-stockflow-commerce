@@ -15,19 +15,16 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * {@code inventory.uom_conversions} (V20261019000300), always read with its item: the SKU, and for the
- * base unit the size and weight, are the item's.
+ * {@code inventory.uom_conversions} (V20261019000300), always read with its item for the SKU. The base unit has no
+ * size or weight ({@code ck_uom_conversions_base}), and since V20261215000100 neither has the item: only the carton is
+ * measured (kltn-docs 01 BR-03).
  */
 @Repository
 public class UomConversionRepository {
 
     private static final String SELECT = """
             select c.id, i.sku, c.unit_of_measure, c.factor, c.is_base, c.active, c.version,
-                   c.default_shipping,
-                   case when c.is_base then i.weight_kg else c.weight_kg end as weight_kg,
-                   case when c.is_base then i.length_cm else c.length_cm end as length_cm,
-                   case when c.is_base then i.width_cm else c.width_cm end as width_cm,
-                   case when c.is_base then i.height_cm else c.height_cm end as height_cm
+                   c.default_shipping, c.weight_kg, c.length_cm, c.width_cm, c.height_cm
             from inventory.uom_conversions c join inventory.inventory_items i on i.id = c.inventory_item_id
             """;
 

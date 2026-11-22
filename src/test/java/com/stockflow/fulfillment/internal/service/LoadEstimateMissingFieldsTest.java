@@ -20,7 +20,7 @@ class LoadEstimateMissingFieldsTest {
     }
 
     private static PackagingSpec resolved(int length, String weight) {
-        return new PackagingSpec("CUP", UUID.randomUUID(), 5, PackagingSpec.Status.RESOLVED, RuleLevel.ITEM_UNIT, "EA",
+        return new PackagingSpec("CUP", UUID.randomUUID(), 5, PackagingSpec.Status.RESOLVED, RuleLevel.LARGEST_PACKING_UNIT, "EA",
                 1, 5, null, new PackagingSpec.CartonSpec(length, 200, 100, weight == null ? null : new BigDecimal(weight),
                 true), 1, List.of(), null);
     }
