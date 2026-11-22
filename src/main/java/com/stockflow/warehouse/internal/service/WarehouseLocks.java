@@ -2,7 +2,6 @@ package com.stockflow.warehouse.internal.service;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.warehouse.internal.domain.Warehouse;
 import com.stockflow.warehouse.internal.domain.WarehouseRepository;
 
@@ -17,10 +16,6 @@ import java.util.function.Supplier;
  * warehouse regardless of case - have no database twin, so two writers checking them at once
  * would both pass. Locking the warehouse row serialises every writer of one map; the second reads
  * what the first committed before deciding.</p>
- *
- * <p>It is also where a map write meets BR-SEC-002: a warehouse manager limited to warehouses changes only the map of
- * one they are assigned to. The check comes before the lock, so a refused caller never holds another warehouse's row;
- * a limited caller naming a warehouse that does not exist is refused the same way, as other modules do.</p>
  */
 final class WarehouseLocks {
 
@@ -29,7 +24,6 @@ final class WarehouseLocks {
 
     /** Locks a warehouse named by the request. */
     static Warehouse lock(WarehouseRepository warehouses, UUID warehouseId) {
-        WarehouseScope.requireWarehouse(warehouseId);
         return warehouses.findByIdForUpdate(warehouseId).orElseThrow(() -> warehouseNotFound(warehouseId));
     }
 
@@ -44,9 +38,7 @@ final class WarehouseLocks {
      */
     static Warehouse lockOwner(WarehouseRepository warehouses, Optional<UUID> warehouseId,
                                Supplier<BusinessException> notFound) {
-        UUID owner = warehouseId.orElseThrow(notFound);
-        WarehouseScope.requireWarehouse(owner);
-        return warehouses.findByIdForUpdate(owner).orElseThrow(notFound);
+        return warehouses.findByIdForUpdate(warehouseId.orElseThrow(notFound)).orElseThrow(notFound);
     }
 
     static BusinessException warehouseNotFound(UUID warehouseId) {

@@ -6,7 +6,6 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ConflictException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
-import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.warehouse.internal.domain.CodePart;
 import com.stockflow.warehouse.internal.domain.Footprint;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
@@ -137,10 +136,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     @Override
     @Transactional(readOnly = true)
     public ShelfSummary getShelf(UUID shelfId) {
-        Shelf shelf = require(shelfId);
-        // BR-SEC-002: a caller limited to warehouses reads the shelves of theirs; the writes check it under the lock.
-        WarehouseScope.requireWarehouse(shelf.warehouseId());
-        return ShelfSummary.of(shelf);
+        return ShelfSummary.of(require(shelfId));
     }
 
     @Override

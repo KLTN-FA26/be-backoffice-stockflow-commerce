@@ -13,6 +13,12 @@
  * capacity board it works out (BE1, kltn-docs 06 §4.6), through {@code WarehouseCapacities}. Nothing else of the map is
  * public (issue #18 D6).</p>
  *
+ * <p><b>No warehouse scope on the map.</b> Warehouse staff and managers are limited to their assigned warehouses
+ * (BR-SEC-002), but the map and its locations are not: kltn-docs 06 §2 says so in as many words ("bản đồ và vị trí
+ * không giới hạn theo kho được gán"), and a warehouse manager declares warehouses. So nothing in this module calls
+ * {@code WarehouseScope}; only putaway work is limited by warehouse, in {@code inventory}. Do not add the check here
+ * without that rule changing first - {@code WarehouseMapScopeHttpIntegrationTest} pins it.</p>
+ *
  * <p>The module has two packages and the split is the whole point:</p>
  * <ul>
  *   <li>{@code api} — the public API, exposed as a named interface. This is all any other module

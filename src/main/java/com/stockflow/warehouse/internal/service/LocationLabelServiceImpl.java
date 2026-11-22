@@ -2,7 +2,6 @@ package com.stockflow.warehouse.internal.service;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.warehouse.internal.domain.EffectiveStatus;
 import com.stockflow.warehouse.internal.domain.LabelSelection;
 import com.stockflow.warehouse.internal.repository.LocationLabelRepository;
@@ -43,7 +42,6 @@ class LocationLabelServiceImpl implements LocationLabelService {
 
     @Override
     public LocationLabelSheet sheetFor(UUID warehouseId, LabelSelection selection) {
-        WarehouseScope.requireWarehouse(warehouseId);
         WarehouseHeader warehouse = lookup.findWarehouseHeader(warehouseId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND));
         checkSelection(warehouseId, selection);
