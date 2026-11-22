@@ -82,6 +82,8 @@ class PermissionMatrixTest {
     private static final Map<String, String> OWN_DATA_ONLY = Map.ofEntries(
             Map.entry("GET /api/v1/customers/me", "the caller's own profile (resolved from the token, no id taken from the request)"),
             Map.entry("PUT /api/v1/customers/me", "edits the caller's own profile (resolved from the token)"),
+            Map.entry("GET /api/v1/customers/me/legal-profile", "R5-10: the caller's own legal profile, read-only (the "
+                    + "customer resolved from the token; no id is taken from the request)"),
             Map.entry("GET /api/v1/designs", "list filtered to designs the caller owns (owner predicate in the query)"),
             Map.entry("POST /api/v1/designs/mine", "starts a design for the caller's own customer (resolved from the "
                     + "token; no customer id is taken from the request)"),

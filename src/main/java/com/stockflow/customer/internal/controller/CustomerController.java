@@ -40,9 +40,12 @@ import java.util.UUID;
 class CustomerController {
 
     private final CustomerService customers;
+    private final com.stockflow.customer.internal.service.CustomerLegalProfileService legalProfiles;
 
-    CustomerController(CustomerService customers) {
+    CustomerController(CustomerService customers,
+                       com.stockflow.customer.internal.service.CustomerLegalProfileService legalProfiles) {
         this.customers = customers;
+        this.legalProfiles = legalProfiles;
     }
 
     @GetMapping("/me")
@@ -51,6 +54,29 @@ class CustomerController {
         return customers.findByUserId(user.userId()).map(CustomerWebMapper::toMaskedResponse)
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND));
+    }
+
+    /**
+     * R5-10: the signed-in customer's own legal profile, read-only - the customer resolved from the sign-in, never from
+     * the request, so no one reads another customer's. Read with {@code customers:READ}, the grant that already reads
+     * their own record at {@code /me}; the profile's own grant ({@code customer-legal-profiles}) stays the back office's.
+     * {@code data: null} while none is recorded.
+     */
+    @GetMapping("/me/legal-profile")
+    @io.swagger.v3.oas.annotations.Operation(summary = "The signed-in customer's own legal profile, as their contracts "
+            + "and e-invoices name them; data null while none is recorded")
+    @RequiresPermission(resource = CustomerResources.CUSTOMERS, action = Action.READ)
+    public ApiResponse<com.stockflow.customer.internal.controller.dto.OwnLegalProfileResponse> myLegalProfile(
+            @AuthenticatedUser CurrentUser user) {
+        var own = customers.findByUserId(user.userId())
+                .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND));
+        return ApiResponse.ok(legalProfiles.legalProfile(own.customerId()).map(profile -> {
+            var bank = profile.bankAccount();
+            return new com.stockflow.customer.internal.controller.dto.OwnLegalProfileResponse(profile.companyName(),
+                    profile.taxCode(), profile.registeredAddress(), profile.representativeName(),
+                    profile.representativeTitle(), profile.invoiceEmail(), bank == null ? null : bank.accountNumber(),
+                    bank == null ? null : bank.bankName(), bank == null ? null : bank.accountHolder());
+        }).orElse(null));
     }
 
     @PutMapping("/me")
