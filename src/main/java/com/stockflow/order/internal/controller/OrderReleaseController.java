@@ -17,6 +17,7 @@ import com.stockflow.order.internal.controller.dto.ResolveHoldRequest;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
 import com.stockflow.order.internal.controller.dto.ReleaseOrderRequest;
 import com.stockflow.order.internal.service.OrderReleases;
+import com.stockflow.order.internal.service.OrderWarehouseVisibility;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -52,10 +53,13 @@ class OrderReleaseController {
 
     private final OrderReleases releases;
     private final com.stockflow.order.api.OrderService orders;
+    private final OrderWarehouseVisibility visibility;
 
-    OrderReleaseController(OrderReleases releases, com.stockflow.order.api.OrderService orders) {
+    OrderReleaseController(OrderReleases releases, com.stockflow.order.api.OrderService orders,
+                           OrderWarehouseVisibility visibility) {
         this.releases = releases;
         this.orders = orders;
+        this.visibility = visibility;
     }
 
     /**
@@ -151,6 +155,9 @@ class OrderReleaseController {
     public ApiResponse<OrderReleases.ReleaseWarnings> releaseWarnings(@PathVariable UUID orderId,
                                                                       @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
+        // BR-SEC-002: the dialog opens before the release, while the order has no warehouse of its own yet, so the
+        // check is the order's shipping or released warehouse (OrderWarehouseVisibility), not requireOrdersWarehouse.
+        visibility.requireVisible(orderId, user);
         return ApiResponse.ok(releases.releaseWarnings(orderId));
     }
 
