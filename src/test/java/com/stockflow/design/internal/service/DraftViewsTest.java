@@ -40,8 +40,10 @@ class DraftViewsTest {
     private final DesignSnapshotJpaRepository snapshots = mock(DesignSnapshotJpaRepository.class);
     private final CustomerSkus customerSkus = mock(CustomerSkus.class);
     private final CustomerService customers = mock(CustomerService.class);
+    private final com.stockflow.inventory.api.UomConversionService units =
+            mock(com.stockflow.inventory.api.UomConversionService.class);
     private final DraftViews views = new DraftViews(products, documents, mock(DesignArtifactJpaRepository.class),
-            mock(FileTransfers.class), snapshots, customerSkus, customers);
+            mock(FileTransfers.class), snapshots, customerSkus, customers, units);
 
     private static DesignDraftJpaEntity design(UUID customer, UUID product, DesignStatus status) {
         return new DesignDraftJpaEntity(UUID.randomUUID(), customer, product, "Ly", null, status);
@@ -64,8 +66,17 @@ class DraftViewsTest {
         when(customerSkus.ofSnapshots(anyCollection())).thenReturn(Map.of(
                 cupSnapshot, sku(cupSnapshot, "LY12-0101-001"), mugSnapshot, sku(mugSnapshot, "LY12-0101-002")));
         when(customers.fullNames(anyCollection())).thenReturn(Map.of(customer, "Quán A", other, "Quán B"));
+        // R5-13: the cup's SKU has one carton of 1,000; the mug's has only its base unit, so no carton.
+        when(units.conversionsOf(anyCollection())).thenReturn(Map.of(
+                "LY12-0101-001", List.of(unit("LY12-0101-001", "PCS", 1, true), unit("LY12-0101-001", "CTN", 1000, false)),
+                "LY12-0101-002", List.of(unit("LY12-0101-002", "PCS", 1, true))));
 
         var shown = views.of(List.of(cup, mug, draft));
+
+        assertThat(shown).extracting(DesignWorkflowService.DraftView::unitsPerCarton)
+                .as("an approved design reads its own SKU's carton; one without a carton, or on no variant, none")
+                .containsExactly(1000, null, null);
+        verify(units, times(1)).conversionsOf(anyCollection());
 
         assertThat(shown).extracting(DesignWorkflowService.DraftView::customerSku)
                 .containsExactly("LY12-0101-001", "LY12-0101-002", null);
@@ -95,6 +106,11 @@ class DraftViewsTest {
         assertThat(shown.customerName()).isEqualTo("Quán A");
         verify(snapshots, never()).snapshotsOf(anyCollection());
         verify(customerSkus, never()).ofSnapshots(anyCollection());
+    }
+
+    private static com.stockflow.inventory.api.UomConversion unit(String sku, String code, int factor, boolean base) {
+        return new com.stockflow.inventory.api.UomConversion(UUID.randomUUID(), sku, code, factor, base, null, null,
+                null, null, true, 0);
     }
 
     private static CustomerSku sku(UUID snapshot, String code) {

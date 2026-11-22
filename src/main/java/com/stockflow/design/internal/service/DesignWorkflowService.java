@@ -65,7 +65,7 @@ public class DesignWorkflowService {
             String status, UUID currentArtifactId, UUID reviewedBy, String reviewNotes, long version,
             UUID parentSnapshotId, String productSlug, String sku, String templateCode, Instant reviewRequestedAt,
             Instant reviewedAt, Instant updatedAt, UUID projectId, String previewUrl, String variantName,
-            String productName, String customerSku, String customerName) { }
+            String productName, String customerSku, String customerName, Integer unitsPerCarton) { }
 
     /**
      * An approved design's snapshot. {@code document}, {@code documentChecksum}, {@code assets} and

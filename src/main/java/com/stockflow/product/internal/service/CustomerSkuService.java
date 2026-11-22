@@ -168,6 +168,17 @@ public class CustomerSkuService implements CustomerSkus {
 
     @Override
     @Transactional(readOnly = true)
+    public Map<String, CustomerSku> findAll(java.util.Collection<String> skus) {
+        if (skus == null || skus.isEmpty()) {
+            return Map.of();
+        }
+        // As find: the source quy cách is not read, so a page of lines costs one statement.
+        return variants.findBySkuIn(skus).stream().filter(v -> v.getOwnerCustomerId() != null)
+                .collect(Collectors.toMap(VariantJpaEntity::getSku, v -> view(v, null)));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Map<String, UUID> ownersOf(java.util.Collection<String> skus) {
         if (skus == null || skus.isEmpty()) {
             return Map.of();

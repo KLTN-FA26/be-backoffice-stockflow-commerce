@@ -13,7 +13,7 @@ class DesignWorkflowWebMapper {
                 d.status(), d.currentArtifactId(), d.reviewedBy(), d.reviewNotes(), d.version(), d.parentSnapshotId(),
                 d.productSlug(), d.sku(), d.templateCode(), d.reviewRequestedAt(), d.reviewedAt(), d.updatedAt(),
                 d.currentArtifactId(), d.projectId(), d.previewUrl(), d.variantName(), d.productName(),
-                d.customerSku(), d.customerName());
+                d.customerSku(), d.customerName(), d.unitsPerCarton());
     }
 
     DesignSnapshotResponse toResponse(DesignWorkflowService.SnapshotView s) {
