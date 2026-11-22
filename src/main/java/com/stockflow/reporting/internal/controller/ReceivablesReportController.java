@@ -47,6 +47,8 @@ class ReceivablesReportController {
     private static final String CUSTOMER = "One customer; 404 CUSTOMER_NOT_FOUND for an unknown one";
     private static final String OVERDUE_ONLY = "Only the customers with something overdue: receivable overdue, or an "
             + "installment due on signing past its due day (signingOverdue)";
+    private static final String SEARCH = "R5-11: only the customers whose name or tax code contains this, case and "
+            + "Vietnamese accents aside; 400 VALIDATION_FAILED when it matches more than 1,000 customers";
     private static final String SORT = "overdue (default, most first: overdue plus signingOverdue, what the credit "
             + "check counts), receivable, customerName or oldestDueDate, with ,asc or ,desc";
     private static final String AS_OF_TODAY = "Figures of today (Asia/Ho_Chi_Minh): what each installment still owes "
@@ -70,11 +72,12 @@ class ReceivablesReportController {
     public ApiResponse<ReceivablesReportResponse> report(
             @Parameter(description = CUSTOMER) @RequestParam(required = false) UUID customerId,
             @Parameter(description = OVERDUE_ONLY) @RequestParam(defaultValue = "false") boolean overdueOnly,
+            @Parameter(description = SEARCH) @RequestParam(required = false) String search,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @Parameter(description = SORT) @RequestParam(required = false) String sort) {
-        var report = reports.report(customerId, overdueOnly, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size,
-                sort);
+        var report = reports.report(customerId, overdueOnly, search, page,
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort);
         return ApiResponse.ok(new ReceivablesReportResponse(report.asOf(),
                 report.rows().map(ReceivablesReportController::toRow),
                 report.totals().stream().map(ReceivablesReportController::toTotals).toList()));
@@ -88,8 +91,9 @@ class ReceivablesReportController {
     public ResponseEntity<byte[]> export(
             @Parameter(description = CUSTOMER) @RequestParam(required = false) UUID customerId,
             @Parameter(description = OVERDUE_ONLY) @RequestParam(defaultValue = "false") boolean overdueOnly,
+            @Parameter(description = SEARCH) @RequestParam(required = false) String search,
             @Parameter(description = SORT) @RequestParam(required = false) String sort) {
-        return ExportResponses.xlsx(reports.export(customerId, overdueOnly, sort));
+        return ExportResponses.xlsx(reports.export(customerId, overdueOnly, search, sort));
     }
 
     private static ReceivablesReportResponse.Row toRow(ReceivableLine line) {
