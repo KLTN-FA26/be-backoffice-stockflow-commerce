@@ -29,6 +29,12 @@ public interface PaymentService {
     InstallmentStanding installmentStanding(UUID orderId);
 
     /**
+     * {@link #installmentStanding} of each of {@code orderIds} in one read, by order id; every id asked is a key. For a
+     * page of orders - the cancellation request queue (R5-6) - that would otherwise read the installments order by order.
+     */
+    java.util.Map<UUID, InstallmentStanding> installmentStandings(java.util.Collection<UUID> orderIds);
+
+    /**
      * 4B-8 (15 BR-08, 09 BR-18, 17 §4.5): what must be paid before the goods of one delivery batch leave - the
      * installments on signing, and those before delivery tied to that batch or to none. A batch's handover waits for
      * its own installment, not for those of the batches after it.

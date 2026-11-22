@@ -28,7 +28,7 @@ final class PaymentWebMapper {
                 i.transferReference(), receipts == null ? null : receipts.stream()
                         .map(r -> new com.stockflow.payment.internal.controller.dto.InstallmentResponse.Receipt(
                                 r.receiptId(), r.reference(), r.receivedOn(), r.amount(), r.status().name(),
-                                r.recordedAt())).toList());
+                                r.recordedAt())).toList(), i.daysOverdue(today));
     }
 
     static com.stockflow.payment.internal.controller.dto.OrderInstallmentsResponse toResponse(
@@ -50,13 +50,16 @@ final class PaymentWebMapper {
         return new com.stockflow.payment.internal.controller.dto.InstallmentTransferResponse(i.id(),
                 i.contractNumber(), i.orderNumber(), i.seq(), i.name(), t.account().bankName(),
                 t.account().accountNumber(), t.account().accountName(), t.amountDue(), i.currency(), t.reference(),
-                i.dueDate());
+                i.dueDate(), com.stockflow.payment.api.VietQr.forInstallment(t.account(), t.amountDue(), i.currency(),
+                        i.status().name(), t.reference()));
     }
 
+    /** @param names R5-8: display names of the staff who recorded and voided receipts, by user id */
     static com.stockflow.payment.internal.controller.dto.PaymentReceiptResponse toResponse(
             com.stockflow.payment.internal.domain.PaymentReceipt r,
             java.util.Map<java.util.UUID, com.stockflow.payment.internal.domain.Installment> installments,
-            java.util.Map<java.util.UUID, com.stockflow.customer.api.CustomerLabel> labels) {
+            java.util.Map<java.util.UUID, com.stockflow.customer.api.CustomerLabel> labels,
+            java.util.Map<java.util.UUID, String> names) {
         var label = labelOf(labels, r.customerId());
         return new com.stockflow.payment.internal.controller.dto.PaymentReceiptResponse(r.id(), r.customerId(),
                 label == null ? null : label.name(), label == null ? null : label.code(),
@@ -68,7 +71,8 @@ final class PaymentWebMapper {
                             i == null ? null : i.orderId(), i == null ? null : i.orderNumber(),
                             i == null ? null : i.seq(), i == null ? null : i.name(),
                             i == null ? null : i.milestone().name());
-                }).toList());
+                }).toList(), r.recordedBy() == null ? null : names.get(r.recordedBy()),
+                r.voidedBy() == null ? null : names.get(r.voidedBy()));
     }
 
     /** The label of a customer from a batch read; null when there is no batch (a customer's own view) or no such customer. */

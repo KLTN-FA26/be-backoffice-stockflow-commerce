@@ -21,7 +21,11 @@ public record PaymentReceiptResponse(UUID receiptId, UUID customerId,
                                      BigDecimal amount, String currency, String note,
                                      @Schema(allowableValues = {"RECORDED", "VOIDED"}) String status,
                                      UUID recordedBy, Instant recordedAt, UUID voidedBy, Instant voidedAt,
-                                     String voidReason, List<Line> lines) {
+                                     String voidReason, List<Line> lines,
+                                     @Schema(description = "R5-8: the display name of recordedBy; null when the "
+                                             + "account is gone") String recordedByName,
+                                     @Schema(description = "R5-8: the display name of voidedBy; null while not "
+                                             + "voided") String voidedByName) {
 
     /** One installment the receipt pays; the installment's facts are null when it cannot be read. */
     public record Line(UUID installmentId, BigDecimal amount, String contractNumber, UUID orderId, String orderNumber,

@@ -34,6 +34,9 @@ public interface InstallmentBook {
     /** The order's installments, in the plan's order. */
     List<Installment> ofOrder(UUID orderId);
 
+    /** {@link #ofOrder} of several orders in one read, by order then seq. */
+    List<Installment> ofOrders(Collection<UUID> orderIds);
+
     /** The same, each row locked until the transaction ends, taken in id order. */
     List<Installment> lockOfOrder(UUID orderId);
 

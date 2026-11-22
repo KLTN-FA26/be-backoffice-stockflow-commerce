@@ -56,7 +56,10 @@ public record InstallmentResponse(UUID installmentId, UUID contractId,
                                   @Schema(description = "What the customer writes in the transfer: contract number + "
                                           + "installment (15 §4.2 step 5)", example = "HD-20261108-000007-1 DOT1")
                                   String transferReference,
-                                  List<Receipt> receipts) {
+                                  List<Receipt> receipts,
+                                  @Schema(description = "R5-12: days past dueDate it is still owing, today in the "
+                                          + "business calendar; 0 when not overdue")
+                                  int daysOverdue) {
 
     /** A receipt with a line paying it. */
     public record Receipt(UUID receiptId, String reference, LocalDate receivedOn, BigDecimal amount,

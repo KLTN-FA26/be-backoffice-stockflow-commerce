@@ -78,6 +78,15 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
     }
 
     @Override
+    public List<Installment> ofOrders(Collection<UUID> orderIds) {
+        if (orderIds == null || orderIds.isEmpty()) {
+            return List.of();
+        }
+        return installments.findByOrderIdInOrderByOrderIdAscSeqAsc(orderIds).stream()
+                .map(InstallmentBookAdapter::toDomain).toList();
+    }
+
+    @Override
     public List<Installment> lockOfOrder(UUID orderId) {
         @SuppressWarnings("unchecked")
         List<UUID> ids = entityManager.createNativeQuery(
