@@ -6,7 +6,8 @@ frontend team and the supervisor see every screen with real-looking figures. It 
 holds users, warehouses or customers.
 
 What it holds and what it leaves out is in the file's header. In short: the team's staff accounts, warehouses BDG and
-HNI, 5 printable products, 40 customers with about 100 SKUs of their own, 6 producers, 3 truck carriers, and 300
+HNI drawn on the map (walls, dock doors, a walled quarantine room, an office, 24 and 16 shelves of bins in back-to-back
+pairs), 5 printable products, 40 customers with about 100 SKUs of their own, 6 producers, 3 truck carriers, and 300
 quotes. 271 of those became orders, spread over every stage from draft to delivered (186 delivered). It holds no
 e-invoices, chat or files, and no events, so nothing is mailed when it loads.
 
@@ -64,3 +65,12 @@ docker compose up -d app
   look alike.
 - The contract PDFs, signed scans and production-order slips it names do not exist in storage. Downloading one
   answers 404/503. Every other screen works.
+
+## The layout added on 2026-11-22
+
+The first load drew 10 shelves and no walls or doors. The VPS was not reset again for the new map, because people had
+started using it: a one-off script brought the layout up to what `showcase.sql` now draws, in one transaction. The 10
+existing shelves kept their ids, codes and bins and moved, 30 empty shelves were added, the areas moved and the maps
+widened, and the walls and doors went in. The script was made from the rows a fresh load of the new seed writes, and
+checked by applying it to a fresh load of the old seed: the layout came out identical. A backup taken just before it is
+`before-layout-20261122T133610.dump`.
