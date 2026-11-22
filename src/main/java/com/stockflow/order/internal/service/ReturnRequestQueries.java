@@ -5,7 +5,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
-import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.common.security.DataScopeContext;
 import com.stockflow.common.storage.FileTransfers;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
@@ -26,6 +26,7 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -135,11 +136,24 @@ public class ReturnRequestQueries {
     /**
      * BR-SEC-002 (review of #195, N10): staff limited to warehouses read the returns of orders their warehouses ship;
      * the list filters the same way. A customer reads their own, which the filter above already settled.
+     *
+     * <p>The limit is the caller's own scope ({@link OrderWarehouseVisibility#limitOf}), not
+     * {@code WarehouseScope.restriction()}: the photo link is declared scope OWN for the customer, and under OWN
+     * {@code restriction()} is empty, which let any warehouse's staff fetch any return's photos.</p>
      */
     private void requireStaffWarehouse(ReturnRequest request, UUID ownCustomerId) {
-        if (ownCustomerId == null && WarehouseScope.restriction().isPresent()) {
-            WarehouseScope.requireWarehouse(orders.findById(new OrderId(request.orderId())).map(Order::warehouseId)
-                    .orElse(null));
+        if (ownCustomerId != null) {
+            return;
+        }
+        Set<UUID> limit = DataScopeContext.current().map(DataScopeContext.Scope::user)
+                .map(OrderWarehouseVisibility::limitOf).orElse(null);
+        if (limit == null) {
+            return;
+        }
+        UUID warehouse = orders.findById(new OrderId(request.orderId())).map(Order::warehouseId).orElse(null);
+        if (warehouse == null || !limit.contains(warehouse)) {
+            throw new BusinessException(ErrorCode.OUT_OF_DATA_SCOPE,
+                    "Warehouse " + warehouse + " is not one the caller is assigned to");
         }
     }
 

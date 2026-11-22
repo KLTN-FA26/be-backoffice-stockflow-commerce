@@ -100,6 +100,7 @@ class ReturnRequestIntegrationTest {
     @Autowired OrderService orders;
     @Autowired OrderRepository orderRepository;
     @Autowired ReturnRequestService returns;
+    @Autowired com.stockflow.order.internal.service.ReturnRequestQueries returnQueries;
     @Autowired ReturnReceiptService returnReceipts;
     @Autowired com.stockflow.inventory.internal.service.CartonQuarantineService quarantine;
     @Autowired PaymentService payments;
@@ -168,6 +169,16 @@ class ReturnRequestIntegrationTest {
         CurrentUser staff = new CurrentUser(clerk, "clerk", Set.of(Role.WAREHOUSE_STAFF), Set.of(), DataScope.WAREHOUSE,
                 Set.of("HCM"), Set.of(DemoData.WAREHOUSE_HCM));
         return WithCurrentUser.call(staff, DataScope.WAREHOUSE, call);
+    }
+
+    /**
+     * As warehouse staff of a warehouse other than HCM, under scope OWN: what the photo link declares for the
+     * customer, and under which {@code WarehouseScope.restriction()} limits nothing.
+     */
+    private <T> T asOtherWarehouseClerkUnderOwn(Supplier<T> call) {
+        CurrentUser staff = new CurrentUser(clerk, "clerk", Set.of(Role.WAREHOUSE_STAFF), Set.of(), DataScope.WAREHOUSE,
+                Set.of("ELSE"), Set.of(Identifiers.newId()));
+        return WithCurrentUser.call(staff, DataScope.OWN, call);
     }
 
     private static SalesContracts.Installment share(String name, String milestone, String percent, Integer dueDays) {
@@ -759,5 +770,30 @@ class ReturnRequestIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE source_id = ?", Integer.class,
                 request.id())).isZero();
         assertThat(statusOf(orderId)).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
+    }
+
+    @Test
+    @DisplayName("BR-SEC-002: a return's photo link is refused to warehouse staff of another warehouse though the "
+            + "endpoint declares scope OWN (OUT_OF_DATA_SCOPE); staff of the order's warehouse get it")
+    void photoLinkIsLimitedToTheOrdersWarehouse() {
+        Delivered d = delivered(5, true);
+        ReturnRequest request = open(d, 50);
+        photo(request);
+        UUID evidenceId = jdbc.queryForObject(
+                "SELECT id FROM ordering.return_request_evidence WHERE return_request_id = ?", UUID.class, request.id());
+
+        assertThat(code(catchThrowable(() -> asOtherWarehouseClerkUnderOwn(
+                () -> returnQueries.evidenceLink(request.id(), evidenceId, null)))))
+                .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
+        assertThat(code(catchThrowable(() -> asOtherWarehouseClerkUnderOwn(
+                () -> returnQueries.evidenceOriginalLink(request.id(), evidenceId, null)))))
+                .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
+        // Staff of the order's warehouse pass the check and reach the object store, which the test profile does not
+        // have (local storage signs no browser link): past the scope, not refused by it.
+        CurrentUser hcm = new CurrentUser(clerk, "clerk", Set.of(Role.WAREHOUSE_STAFF), Set.of(), DataScope.WAREHOUSE,
+                Set.of("HCM"), Set.of(DemoData.WAREHOUSE_HCM));
+        assertThat(catchThrowable(() -> WithCurrentUser.call(hcm, DataScope.OWN,
+                () -> returnQueries.evidenceLink(request.id(), evidenceId, null))))
+                .isInstanceOf(com.stockflow.common.storage.StorageException.class);
     }
 }

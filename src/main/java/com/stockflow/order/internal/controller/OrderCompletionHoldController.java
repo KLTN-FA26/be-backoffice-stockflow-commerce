@@ -11,6 +11,7 @@ import com.stockflow.order.internal.controller.dto.CompletionHoldRequest;
 import com.stockflow.order.internal.controller.dto.CompletionHoldResponse;
 import com.stockflow.order.internal.controller.dto.ReleaseCompletionHoldRequest;
 import com.stockflow.order.internal.service.OrderCompletionHolds;
+import com.stockflow.order.internal.service.OrderWarehouseVisibility;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -36,9 +37,11 @@ import java.util.UUID;
 class OrderCompletionHoldController {
 
     private final OrderCompletionHolds holds;
+    private final OrderWarehouseVisibility visibility;
 
-    OrderCompletionHoldController(OrderCompletionHolds holds) {
+    OrderCompletionHoldController(OrderCompletionHolds holds, OrderWarehouseVisibility visibility) {
         this.holds = holds;
+        this.visibility = visibility;
     }
 
     @GetMapping
@@ -47,6 +50,8 @@ class OrderCompletionHoldController {
     public ApiResponse<CompletionHoldResponse> current(@PathVariable UUID orderId,
                                                        @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
+        // BR-SEC-002: a warehouse manager reads the holds of orders of their warehouses only.
+        visibility.requireVisible(orderId, user);
         return ApiResponse.ok(holds.current(orderId).map(OrderCompletionHoldController::toResponse).orElse(null));
     }
 

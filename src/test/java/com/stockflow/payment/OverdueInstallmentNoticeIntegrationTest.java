@@ -193,6 +193,7 @@ class OverdueInstallmentNoticeIntegrationTest {
     void theReleaseDialogIsWarned() throws Exception {
         SecuredMvc http = new SecuredMvc(mvc, decoder);
         String path = "/api/v1/orders/" + orderId + "/release-warnings";
+        shipsFromHcm(orderId);
 
         http.asRole(Role.WAREHOUSE_MANAGER, warehouseManager, get(path)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.creditWarning.outcome").value("OVERDUE"));
@@ -210,11 +211,25 @@ class OverdueInstallmentNoticeIntegrationTest {
                 INSERT INTO customer.customer (id, user_id, full_name, email, status, version, created_at)
                 VALUES (?, ?, 'Calm customer', ?, 'ACTIVE', 0, NOW())""", calmCustomer, calmUser,
                 "calm-" + calmCustomer + "@example.com"));
-        UUID calmOrder = confirmedOrders.draft(calmCustomer, List.of(ConfirmedOrders.Line.cartons(
-                CustomerSkuRows.issue(jdbc, tx, entityManager, calmCustomer, 50), 10, 40_000)));
+        confirmedOrders.legalProfile(calmCustomer);
+        UUID calmOrder = confirmedOrders.signed(calmCustomer, ConfirmedOrders.Line.cartons(
+                CustomerSkuRows.issue(jdbc, tx, entityManager, calmCustomer, 50), 10, 40_000)).orderId();
+        shipsFromHcm(calmOrder);
 
         new SecuredMvc(mvc, decoder).asRole(Role.WAREHOUSE_MANAGER, warehouseManager,
                         get("/api/v1/orders/" + calmOrder + "/release-warnings")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.creditWarning").doesNotExist());
+    }
+
+    /**
+     * The order, signed, ships from HCM, the warehouse manager's own: a warehouse manager reads the release dialog only
+     * for an order of their warehouses (BR-SEC-002), before it is released, so by its shipping warehouse. Set below the
+     * service: Sales choose it once the order is confirmed, and this order's installment is left unpaid on purpose.
+     */
+    private void shipsFromHcm(UUID order) {
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE ordering.customer_order SET shipping_warehouse_id = ?, shipping_warehouse_chosen_at = NOW(),
+                       shipping_warehouse_chosen_by = ? WHERE id = ?""", staff.hcm(),
+                confirmedOrders.sales().userId(), order));
     }
 }
