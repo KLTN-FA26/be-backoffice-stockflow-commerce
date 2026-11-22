@@ -5,6 +5,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.warehouse.api.WarehouseService;
 import com.stockflow.warehouse.internal.controller.dto.StorageLocationResponse;
 import com.stockflow.warehouse.internal.controller.dto.WarehouseLayoutResponse;
@@ -62,6 +63,9 @@ class LayoutController {
                 + "An unknown code, or a NON_STORAGE area, answers 404 LOCATION_NOT_FOUND.")
     @RequiresPermission(resource = WarehouseResources.LOCATIONS, action = Action.READ)
     public ApiResponse<StorageLocationResponse> location(@PathVariable String locationCode) {
+        // BR-SEC-002: a caller limited to warehouses looks up locations of theirs only. Checked here and not in
+        // WarehouseService.findLocation, which other modules call to recognise any warehouse's location.
+        WarehouseScope.requireLocation(locationCode);
         return ApiResponse.ok(locations.findLocation(locationCode)
                 .map(mapper::toResponse)
                 .orElseThrow(() -> new BusinessException(ErrorCode.LOCATION_NOT_FOUND,

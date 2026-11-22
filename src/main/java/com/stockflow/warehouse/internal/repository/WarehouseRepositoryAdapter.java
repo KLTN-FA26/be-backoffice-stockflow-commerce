@@ -3,6 +3,7 @@ package com.stockflow.warehouse.internal.repository;
 import com.stockflow.common.error.ConflictException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Specs;
+import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.warehouse.internal.domain.Footprint;
 import com.stockflow.warehouse.internal.domain.MapExtent;
 import com.stockflow.warehouse.internal.domain.Placement;
@@ -114,7 +115,9 @@ class WarehouseRepositoryAdapter implements WarehouseRepository, WarehouseSearch
         Specification<WarehouseJpaEntity> matchesTerm = Specification
                 .<WarehouseJpaEntity>where(Specs.contains("prefix", term))
                 .or(Specs.contains("name", term));
-        Specification<WarehouseJpaEntity> specification = matchesTerm.and(Specs.eq("status", status));
+        Specification<WarehouseJpaEntity> specification = matchesTerm.and(Specs.eq("status", status))
+                // BR-SEC-002: a caller limited to warehouses lists only theirs; null - no filter - for anyone else.
+                .and(WarehouseScope.warehousesIn("id"));
         return jpa.findAll(specification, pageable).map(WarehousePersistenceMapper::toDomain);
     }
 }

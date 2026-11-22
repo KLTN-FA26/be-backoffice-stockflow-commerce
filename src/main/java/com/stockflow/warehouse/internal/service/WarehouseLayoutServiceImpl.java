@@ -9,6 +9,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
+import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.warehouse.internal.domain.CodePart;
 import com.stockflow.warehouse.internal.domain.Warehouse;
 import com.stockflow.warehouse.internal.domain.WarehouseRepository;
@@ -172,6 +173,7 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
     @Override
     @Transactional(readOnly = true)
     public List<ZoneSummary> listZones(UUID warehouseId) {
+        WarehouseScope.requireWarehouse(warehouseId);
         if (!warehouses.existsById(warehouseId)) {
             throw warehouseNotFound(warehouseId);
         }
@@ -189,6 +191,7 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
     @Override
     @Transactional(readOnly = true)
     public WarehouseLayout layoutOf(UUID warehouseId) {
+        WarehouseScope.requireWarehouse(warehouseId);
         var warehouse = layoutRead.findWarehouse(warehouseId).orElseThrow(() -> warehouseNotFound(warehouseId));
         return WarehouseLayout.assemble(warehouse, layoutRead.findZones(warehouseId),
                 layoutRead.findShelves(warehouseId), layoutRead.findLevels(warehouseId),
@@ -216,7 +219,9 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
                 });
     }
 
+    /** A warehouse the caller may see (BR-SEC-002: a caller limited to warehouses, only one assigned to them). */
     private Warehouse require(UUID warehouseId) {
+        WarehouseScope.requireWarehouse(warehouseId);
         return warehouses.findById(warehouseId).orElseThrow(() -> warehouseNotFound(warehouseId));
     }
 

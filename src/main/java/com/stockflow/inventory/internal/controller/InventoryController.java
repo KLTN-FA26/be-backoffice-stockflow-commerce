@@ -20,6 +20,7 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.common.security.WarehouseScope;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -31,6 +32,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -133,9 +135,27 @@ class InventoryController {
     @RequiresPermission(resource = InventoryResources.STOCK_ITEMS, action = Action.READ)
     public ApiResponse<Integer> availableToPromise(@RequestParam("sku") String sku,
                                                    @RequestParam(value = "warehouse", required = false) String warehouse) {
-        return ApiResponse.ok(warehouse == null || warehouse.isBlank()
-                ? inventoryService.availableToPromise(new Sku(sku))
-                : inventoryService.availableToPromise(new Sku(sku), warehouse));
+        if (warehouse != null && !warehouse.isBlank()) {
+            // BR-SEC-002: a warehouse not assigned to a limited caller is refused, not answered with a silent 0.
+            WarehouseScope.requirePrefix(WarehouseScope.prefixOf(warehouse));
+            return ApiResponse.ok(inventoryService.availableToPromise(new Sku(sku), warehouse));
+        }
+        return ApiResponse.ok(WarehouseScope.restriction()
+                .map(allowed -> availableAt(new Sku(sku), allowed.prefixes()))
+                .orElseGet(() -> inventoryService.availableToPromise(new Sku(sku))));
+    }
+
+    /**
+     * The "system-wide" figure for a caller limited to warehouses: what their own warehouses can promise, never more
+     * than the system can (each warehouse's figure is capped at the system-wide one, so their sum may not be). Checked
+     * here and not in {@code InventoryService.availableToPromise(Sku)}, which other modules call for the whole system.
+     */
+    private int availableAt(Sku sku, Set<String> prefixes) {
+        int own = inventoryService.availableToPromiseByWarehouse(sku).entrySet().stream()
+                .filter(entry -> prefixes.contains(entry.getKey()))
+                .mapToInt(Map.Entry::getValue)
+                .sum();
+        return own == 0 ? 0 : Math.min(own, inventoryService.availableToPromise(sku));
     }
 
     @GetMapping("/reservations")
