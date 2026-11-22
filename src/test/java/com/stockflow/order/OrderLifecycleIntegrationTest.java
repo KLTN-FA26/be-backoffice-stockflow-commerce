@@ -331,7 +331,10 @@ class OrderLifecycleIntegrationTest {
                 String.class, order.orderId())).isEmpty();
         assertThat(jdbc.queryForObject("SELECT cancelled_quantity FROM ordering.order_line WHERE order_id = ?",
                 Integer.class, order.orderId())).as("the returned unit is no longer owed").isEqualTo(1);
-        assertThat(orders.remainderClosures(order.orderId())).as("the return closed it").hasSize(1);
+        assertThat(orders.remainderClosures(order.orderId())).as("the return closed it").singleElement()
+                .satisfies(closure -> assertThat(closure.note()).as("readable note, no shipment id shown to people")
+                        .isEqualTo("Lô giao bị hoàn về kho: phần hàng của lô không giao lại trên đơn này")
+                        .doesNotContain(s2.toString()));
         assertThat(code(catchThrowable(() -> orders.closeRemainder(order.orderId(), CancellationReasonCode.OTHER,
                 "khách không lấy lại", staff)))).as("nothing left to close").isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
         assertThat(statusOf(order.orderId())).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);

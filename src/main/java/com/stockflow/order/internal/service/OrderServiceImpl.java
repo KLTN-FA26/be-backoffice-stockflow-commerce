@@ -1010,7 +1010,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         if (closed.signum() > 0) {
             remainderClosures.save(new OrderRemainderClosureJpaEntity(Identifiers.newId(), orderId,
                     order.lastClosureId(), CancellationReasonCode.DELIVERY_FAILED.name(),
-                    "Returned shipment " + shipmentId, by, at));
+                    VIETNAMESE.getString("order.closure.returnedShipment"), by, at));
             if (order.paidByContract()) {
                 paymentService.settleRemainderClosure(new com.stockflow.payment.api.SettleRemainderClosureCommand(
                         orderId, order.lastClosureId(), closed, null, null, null, by, at, HandedOverBatches.of(order)));
