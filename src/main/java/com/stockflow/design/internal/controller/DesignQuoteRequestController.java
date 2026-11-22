@@ -12,6 +12,8 @@ import com.stockflow.design.internal.controller.dto.DesignQuoteRequestResponse;
 import com.stockflow.design.internal.domain.QuoteRequestRules;
 import com.stockflow.design.internal.domain.QuoteRequestStatus;
 import com.stockflow.design.internal.service.DesignQuoteRequestService;
+import com.stockflow.design.internal.service.RequestOutcomes;
+import com.stockflow.common.security.ScopeGuards;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -44,9 +46,11 @@ import org.springframework.web.bind.annotation.RestController;
 class DesignQuoteRequestController {
 
     private final DesignQuoteRequestService requests;
+    private final RequestOutcomes outcomes;
 
-    DesignQuoteRequestController(DesignQuoteRequestService requests) {
+    DesignQuoteRequestController(DesignQuoteRequestService requests, RequestOutcomes outcomes) {
         this.requests = requests;
+        this.outcomes = outcomes;
     }
 
     /** What a customer asks: the cartons they would like and, if any, the delivery date they would like. */
@@ -65,7 +69,7 @@ class DesignQuoteRequestController {
             @Valid @RequestBody QuoteRequestBody body, @AuthenticatedUser CurrentUser user) {
         var asked = requests.request(id, DesignWorkflowController.actor(user), body.input());
         return ResponseEntity.status(asked.created() ? HttpStatus.CREATED : HttpStatus.OK)
-                .body(ApiResponse.ok(toResponse(asked.request())));
+                .body(ApiResponse.ok(responses(List.of(asked.request()), user).get(0)));
     }
 
     /** A salesperson closes a request they have answered; the design asks again, for its next order, anew. */
@@ -74,7 +78,8 @@ class DesignQuoteRequestController {
     @RequiresPermission(resource = DesignResources.QUOTE_REQUESTS, action = Action.UPDATE)
     public ApiResponse<DesignQuoteRequestResponse> close(@PathVariable UUID requestId,
                                                          @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(toResponse(requests.close(requestId, DesignWorkflowController.actor(user))));
+        return ApiResponse.ok(responses(List.of(requests.close(requestId, DesignWorkflowController.actor(user))), user)
+                .get(0));
     }
 
     /** To whoever reads the design (plan D7): its owner, a reviewer while it waits, the sales staff answering it. */
@@ -83,9 +88,8 @@ class DesignQuoteRequestController {
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)
     public ApiResponse<List<DesignQuoteRequestResponse>> ofDesign(@PathVariable UUID id,
                                                                   @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(requests.ofDesign(id, DesignWorkflowController.actor(user),
-                DesignWorkflowController.readRights(user)).stream().map(DesignQuoteRequestController::toResponse)
-                .toList());
+        return ApiResponse.ok(responses(requests.ofDesign(id, DesignWorkflowController.actor(user),
+                DesignWorkflowController.readRights(user)), user));
     }
 
     @GetMapping("/design-quote-requests")
@@ -93,15 +97,34 @@ class DesignQuoteRequestController {
     @RequiresPermission(resource = DesignResources.QUOTE_REQUESTS, action = Action.READ)
     public ApiResponse<PageResponse<DesignQuoteRequestResponse>> list(
             @RequestParam(required = false) UUID customerId, @RequestParam(required = false) QuoteRequestStatus status,
-            @RequestParam(defaultValue = "0") int page, @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(Pages.toResponse(requests.list(customerId, status, Pages.of(page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size)).map(DesignQuoteRequestController::toResponse)));
+            @RequestParam(defaultValue = "0") int page, @RequestParam(required = false) Integer size,
+            @AuthenticatedUser CurrentUser user) {
+        var found = requests.list(customerId, status, Pages.of(page, size == null ? Pages.DEFAULT_PAGE_SIZE : size));
+        var answered = outcomes(found.getContent(), user);
+        return ApiResponse.ok(Pages.toResponse(found.map(view -> toResponse(view,
+                answered.getOrDefault(view.id(), RequestOutcomes.Outcome.NONE)))));
     }
 
-    static DesignQuoteRequestResponse toResponse(DesignQuoteRequestService.QuoteRequestView view) {
+    /** The responses of {@code views}, their outcomes read for all of them at once (R5-5). */
+    private List<DesignQuoteRequestResponse> responses(List<DesignQuoteRequestService.QuoteRequestView> views,
+                                                       CurrentUser user) {
+        var answered = outcomes(views, user);
+        return views.stream().map(view -> toResponse(view, answered.getOrDefault(view.id(),
+                RequestOutcomes.Outcome.NONE))).toList();
+    }
+
+    private java.util.Map<UUID, RequestOutcomes.Outcome> outcomes(
+            List<DesignQuoteRequestService.QuoteRequestView> views, CurrentUser user) {
+        return outcomes.ofDesignRequests(views.stream().map(view -> new RequestOutcomes.Closed(view.id(), view.status(),
+                view.closedBy())).toList(), !ScopeGuards.isBackOffice(user));
+    }
+
+    static DesignQuoteRequestResponse toResponse(DesignQuoteRequestService.QuoteRequestView view,
+                                                 RequestOutcomes.Outcome outcome) {
         return new DesignQuoteRequestResponse(view.id(), view.designId(), view.designName(), view.designStatus().name(),
                 view.customerId(), view.customerName(), view.sku(), view.customerSku(), view.returnReason(),
                 view.cartons(), view.desiredDeliveryDate(), view.status().name(), view.requestedBy(),
-                view.requestedAt(), view.closedAt(), view.closedBy());
+                view.requestedAt(), view.closedAt(), view.closedBy(), outcome.closedOutcome(), outcome.quoteId(),
+                outcome.quoteNumber());
     }
 }

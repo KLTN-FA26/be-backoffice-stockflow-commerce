@@ -10,11 +10,15 @@ import java.util.UUID;
  * sales staff see (BR-17), one delivery date, and a line per design - its own SKU and the cartons asked, a suggestion.
  * {@code status} is OPEN until the sales staff close it as answered ({@code closedAt}, {@code closedBy}); one is open
  * per project at a time.
+ *
+ * <p>R5-5: {@code closedOutcome}, {@code quoteId}, {@code quoteNumber} as on a design's request
+ * ({@code DesignQuoteRequestResponse}).</p>
  */
 public record DesignProjectQuoteRequestResponse(UUID id, UUID projectId, String projectName, UUID customerId,
                                                 String customerName, LocalDate desiredDeliveryDate, UUID requestedBy,
                                                 Instant requestedAt, String status, Instant closedAt, UUID closedBy,
-                                                List<Line> lines) {
+                                                List<Line> lines, String closedOutcome, UUID quoteId,
+                                                String quoteNumber) {
 
     /** One design of the request. */
     public record Line(UUID designId, String designName, String designStatus, String customerSku, int cartons) {
