@@ -187,6 +187,7 @@ class PaymentPapersSettlementTest {
         when(settled.shipmentId()).thenReturn(LOST);
         when(settled.refundable()).thenReturn(new BigDecimal("50"));
         when(settled.contractNumber()).thenReturn("HD-1");
+        when(settled.settledAt()).thenReturn(Instant.parse("2026-11-18T03:00:00Z"));
         when(settlements.ofOrder(ORDER)).thenReturn(List.of(settled));
 
         papers.refundConfirmation(recordId, null);
@@ -196,5 +197,41 @@ class PaymentPapersSettlementTest {
         verify(refundPaper).render(facts.capture());
         assertThat(facts.getValue().reason()).isEqualTo(T.getString("payment-papers.refund.SHIPMENT_LOST"))
                 .contains("thất lạc");
+    }
+
+    @Test
+    @DisplayName("confirmation audit CF-11: refund 1 of a carrier return, reprinted after a customer return of the same "
+            + "order was refunded months later, gives only the carrier return as its reason")
+    void aRefundsReasonIsWhatHadMadeMoneyRefundableWhenItWasRecorded() {
+        UUID recordId = UUID.randomUUID();
+        RefundRecord record = mock(RefundRecord.class);
+        when(record.status()).thenReturn(RefundRecord.Status.RECORDED);
+        when(record.customerId()).thenReturn(CUSTOMER);
+        when(record.orderId()).thenReturn(ORDER);
+        when(record.orderNumber()).thenReturn("SO-1");
+        when(record.amount()).thenReturn(new BigDecimal("50"));
+        when(record.refundedOn()).thenReturn(day(9, 20));
+        when(record.recordedAt()).thenReturn(Instant.parse("2026-09-20T03:00:00Z"));
+        when(record.reference()).thenReturn("FT-1");
+        when(settlements.findRecord(recordId)).thenReturn(Optional.of(record));
+        OrderSettlement carrierReturn = mock(OrderSettlement.class);
+        when(carrierReturn.kind()).thenReturn(OrderSettlement.Kind.SHIPMENT_RETURNED);
+        when(carrierReturn.shipmentId()).thenReturn(BACK);
+        when(carrierReturn.refundable()).thenReturn(new BigDecimal("50"));
+        when(carrierReturn.contractNumber()).thenReturn("HD-1");
+        when(carrierReturn.settledAt()).thenReturn(Instant.parse("2026-09-18T03:00:00Z"));
+        OrderSettlement customerReturn = mock(OrderSettlement.class);
+        when(customerReturn.kind()).thenReturn(OrderSettlement.Kind.GOODS_RETURNED);
+        when(customerReturn.refundable()).thenReturn(new BigDecimal("30"));
+        when(customerReturn.contractNumber()).thenReturn("HD-1");
+        when(customerReturn.settledAt()).thenReturn(Instant.parse("2026-11-25T03:00:00Z"));
+        when(settlements.ofOrder(ORDER)).thenReturn(List.of(carrierReturn, customerReturn));
+
+        papers.refundConfirmation(recordId, null);
+
+        ArgumentCaptor<RefundConfirmationDocument.Facts> facts =
+                ArgumentCaptor.forClass(RefundConfirmationDocument.Facts.class);
+        verify(refundPaper).render(facts.capture());
+        assertThat(facts.getValue().reason()).isEqualTo(T.getString("payment-papers.refund.SHIPMENT_RETURNED"));
     }
 }

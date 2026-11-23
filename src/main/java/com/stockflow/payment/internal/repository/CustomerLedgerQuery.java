@@ -109,8 +109,11 @@ public class CustomerLedgerQuery {
      *
      * @param contractValue the plan's installments at their signed amounts - what the contract is worth (14 BR-13:
      *                      they add up to the order's total with tax); fee items are not the contract's
-     * @param reduced       what settlements made by then took off its installments (returns, carrier returns, closures)
-     * @param paid          what receipts in force, recorded by then, paid on its installments
+     * @param reduced       what settlements made by then took off its installments (returns, carrier returns, closures),
+     *                      less the goods money a closure of the rest carried onto its fee item: that part is still owed
+     *                      under the contract, only on another item (confirmation audit CF-2)
+     * @param paid          what receipts in force, recorded by then, paid on its installments, and on a fee item the
+     *                      part of its receipts that paid the goods money carried onto it
      */
     public record StandingAt(BigDecimal contractValue, BigDecimal reduced, BigDecimal paid) {
     }
@@ -204,6 +207,13 @@ public class CustomerLedgerQuery {
      * signed amounts, the reductions of settlements made by then and the receipts recorded by then, so a confirmation
      * printed again later says what it said the day it was issued. A receipt voided since is not counted: a void says it
      * was recorded wrong, never paid.
+     *
+     * <p>A closure of the rest that carried goods money onto its fee item (audit r3 LM-3) recorded it as a reduction of
+     * the before-delivery installment - but it moved that money, it did not take it off: the customer still owes it, on
+     * the fee item. Counted as reduced, a confirmation printed after the closure said "nothing left to pay" while the fee
+     * item still asked for it (confirmation audit CF-2). So the carried part is taken back out of {@code reduced}, and
+     * receipts on such a fee item count as paid under the contract up to the part carried onto it by then: the goods
+     * money is the contract's and is paid first, the fee proper - no part of the contract's value - after it.</p>
      */
     public StandingAt standingAt(UUID contractId, java.time.Instant at) {
         java.sql.Timestamp moment = java.sql.Timestamp.from(at);
@@ -214,14 +224,27 @@ public class CustomerLedgerQuery {
                        (SELECT COALESCE(SUM(r.amount), 0) FROM payment.installment_reduction r
                           JOIN payment.order_settlement s ON s.id = r.settlement_id
                           JOIN payment.installment i ON i.id = r.installment_id
-                         WHERE i.contract_id = ? AND s.settled_at <= ?) AS reduced,
+                         WHERE i.contract_id = ? AND s.settled_at <= ?)
+                     - (SELECT COALESCE(SUM(s.carried_to_fee_amount), 0) FROM payment.order_settlement s
+                         WHERE s.contract_id = ? AND s.settled_at <= ?) AS reduced,
                        (SELECT COALESCE(SUM(l.amount), 0) FROM payment.payment_receipt_line l
                           JOIN payment.payment_receipt p ON p.id = l.receipt_id
                           JOIN payment.installment i ON i.id = l.installment_id
                          WHERE i.contract_id = ? AND i.milestone NOT IN ('CANCELLATION_FEE', 'FAILED_TRIP_FEE')
-                           AND p.status = 'RECORDED' AND p.recorded_at <= ?) AS paid""",
+                           AND p.status = 'RECORDED' AND p.recorded_at <= ?)
+                     + (SELECT COALESCE(SUM(LEAST(fee.carried, fee.paid)), 0) FROM (
+                            SELECT (SELECT COALESCE(SUM(s.carried_to_fee_amount), 0) FROM payment.order_settlement s
+                                     WHERE s.fee_installment_id = f.id AND s.settled_at <= ?) AS carried,
+                                   (SELECT COALESCE(SUM(l.amount), 0) FROM payment.payment_receipt_line l
+                                      JOIN payment.payment_receipt p ON p.id = l.receipt_id
+                                     WHERE l.installment_id = f.id AND p.status = 'RECORDED'
+                                       AND p.recorded_at <= ?) AS paid
+                              FROM payment.installment f
+                             WHERE f.contract_id = ? AND f.milestone IN ('CANCELLATION_FEE', 'FAILED_TRIP_FEE')) fee)
+                           AS paid""",
                 (rs, n) -> new StandingAt(rs.getBigDecimal("contract_value"), rs.getBigDecimal("reduced"),
-                        rs.getBigDecimal("paid")), contractId, contractId, moment, contractId, moment);
+                        rs.getBigDecimal("paid")), contractId, contractId, moment, contractId, moment, contractId,
+                moment, moment, moment, contractId);
     }
 
     /** The refunds in force, oldest first. */

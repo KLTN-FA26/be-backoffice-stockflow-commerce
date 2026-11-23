@@ -204,6 +204,81 @@ class ClosedBatchFeeCarryIntegrationTest {
                 .doesNotContain(t.getString("payment-papers.fee.CANCELLATION_FEE"));
     }
 
+    @Test
+    @DisplayName("confirmation audit CF-2: 15% before / 35% after each batch, batch 2 closed before its release - the "
+            + "55,000 its installment before delivery still owed is carried onto the fee item, so the confirmation of "
+            + "batch 1's payment after delivery says 55,000 is left under the contract, not 0, and so does the fee "
+            + "item's own confirmation until it is paid")
+    void goodsMoneyCarriedOntoTheFeeItemIsStillOwedOnTheConfirmation() {
+        UUID draft = confirmedOrders.draft(customer, List.of(ConfirmedOrders.Line.cartons(sku, 4, 2_000)));
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO ordering.order_fee_line (id, order_id, kind, sku, amount, tax_rate, tax_amount, currency)
+                VALUES (?, ?, 'SHIPPING_FEE', NULL, 100000, 10, 10000, 'VND')""", Identifiers.newId(), draft));
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE ordering.customer_order SET total_amount = total_amount + 110000, tax_amount = tax_amount + 10000
+                 WHERE id = ?""", draft));
+        ConfirmedOrders.Signed signed = confirmedOrders.sign(draft, List.of(
+                new SalesContracts.Installment("Before batch 1", "BEFORE_DELIVERY", null, new BigDecimal("15"), null,
+                        1),
+                new SalesContracts.Installment("After batch 1", "AFTER_DELIVERY", null, new BigDecimal("35"), 30, 1),
+                new SalesContracts.Installment("Before batch 2", "BEFORE_DELIVERY", null, new BigDecimal("15"), null,
+                        2),
+                new SalesContracts.Installment("After batch 2", "AFTER_DELIVERY", null, new BigDecimal("35"), 30, 2)),
+                2);
+        orderId = signed.orderId();
+        confirmedOrders.awaitStatus(orderId, OrderStatus.CONFIRMED);
+        assertThat(List.of(installment(1).get("amount"), installment(2).get("amount"), installment(3).get("amount"),
+                installment(4).get("amount"))).containsExactly(76_500L, 178_500L, 76_500L, 178_500L);
+
+        // Batch 1: paid before delivery, released, handed over and delivered - its installment after delivery falls due.
+        confirmedOrders.release(orderId, DemoData.WAREHOUSE_HCM, staff);
+        confirmedOrders.pay(customer, (UUID) installment(1).get("id"), new BigDecimal("76500"));
+        orders.startPicking(orderId, staff);
+        orders.markPacked(orderId, staff);
+        OrderSummary order = orders.findById(orderId).orElseThrow();
+        UUID shipment = ShipmentRows.ready(jdbc, tx, orderId, UUID.randomUUID());
+        orders.recordHandover(orderId, new ShipmentHandover(shipment,
+                List.of(new ShipmentHandover.Line(order.lines().getFirst().lineId(), 2 * 50)), Instant.now(), staff));
+        orders.recordShipmentDelivered(orderId, shipment, staff);
+
+        // Batch 2 closed before release: its 200,000 of goods come off after (178,500) and before (21,500) delivery;
+        // the 55,000 left on the installment before delivery is carried onto the fee item.
+        orders.closeRemainder(orderId, CancellationReasonCode.CUSTOMER_REQUEST, "Khach khong lay dot 2", staff);
+        Map<String, Object> fee = installment(21);
+        assertThat(fee.get("amount")).isEqualTo(55_000L);
+        assertThat(jdbc.queryForObject("""
+                SELECT reduced_amount::bigint || '/' || carried_to_fee_amount::bigint FROM payment.order_settlement
+                 WHERE order_id = ? AND kind = 'REMAINDER_CLOSED'""", String.class, orderId)).isEqualTo("255000/55000");
+
+        // The customer pays batch 1's installment after delivery and asks for its confirmation.
+        PaymentReceipt after1 = confirmedOrders.pay(customer, (UUID) installment(2).get("id"),
+                new BigDecimal("178500"));
+        // Contract 510,000 | reduced 200,000 (the goods; the 55,000 carried is still owed) | paid 255,000 | left 55,000.
+        assertThat(text("cf2-payment-confirmation-after-closure",
+                papers.paymentConfirmation((UUID) installment(2).get("id"), after1.id(), null).content()))
+                .as("the 55,000 carried onto the fee item is still owed under the contract")
+                .contains(standing(510_000, 200_000, 255_000, 55_000));
+
+        // Part of the fee item paid: its confirmation now says where the contract stands too, since it pays goods money.
+        PaymentReceipt feePart = confirmedOrders.pay(customer, (UUID) fee.get("id"), new BigDecimal("20000"));
+        assertThat(text("cf2-payment-confirmation-carried-fee-part",
+                papers.paymentConfirmation((UUID) fee.get("id"), feePart.id(), null).content()))
+                .contains(standing(510_000, 200_000, 275_000, 35_000));
+        PaymentReceipt feeRest = confirmedOrders.pay(customer, (UUID) fee.get("id"), new BigDecimal("35000"));
+        assertThat(text("cf2-payment-confirmation-carried-fee-rest",
+                papers.paymentConfirmation((UUID) fee.get("id"), feeRest.id(), null).content()))
+                .contains(standing(510_000, 200_000, 310_000, 0));
+        var standing = payments.installmentStanding(orderId);
+        assertThat(standing.total()).isEqualByComparingTo(standing.paid());
+    }
+
+    /** The standing table's one row as the text of the paper reads it: contract, reduced, paid, left. */
+    private static String standing(long contract, long reduced, long paid, long left) {
+        return java.util.stream.LongStream.of(contract, reduced, paid, left)
+                .mapToObj(amount -> com.stockflow.common.document.DocumentFormats.money(BigDecimal.valueOf(amount)))
+                .collect(java.util.stream.Collectors.joining(" "));
+    }
+
     private static String text(String sample, byte[] pdf) {
         try {
             return DocumentSamples.text(DocumentSamples.keep(sample, pdf)).replaceAll("\\s+", " ");

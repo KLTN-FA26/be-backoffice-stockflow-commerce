@@ -105,9 +105,12 @@ public class PaymentPaperService {
         // Audit r3 RAD-8: the contract as it stood when this receipt was recorded - its signed value (owner 23/11: "KHÔNG
         // đổi giá trị hợp đồng gốc"), what settlements had taken off it by then, what was paid by then, this receipt
         // included - never today's figures, which made the same paper say other things each time it was printed. A fee
-        // item is no part of the contract's value: its confirmation shows no standing.
-        CustomerLedgerQuery.StandingAt standing = installment.isFeeItem() ? null
-                : ledger.standingAt(installment.contractId(), paid.recordedAt());
+        // item is no part of the contract's value: its confirmation shows no standing - unless a closure of the rest
+        // carried goods money onto it (confirmation audit CF-2): paying it then pays the contract, and the customer asks
+        // of that paper too what is left under the contract.
+        BigDecimal carried = installment.isFeeItem() ? ledger.carriedOnto(installment.id()) : null;
+        CustomerLedgerQuery.StandingAt standing = installment.isFeeItem() && (carried == null || carried.signum() <= 0)
+                ? null : ledger.standingAt(installment.contractId(), paid.recordedAt());
         String number = "XNTT-" + NUMBER_DAY.format(paid.receivedOn()) + "-" + tail(receiptId) + "-"
                 + installment.seq();
         byte[] pdf = paymentConfirmation.render(new PaymentConfirmationDocument.Facts(number,
@@ -138,7 +141,12 @@ public class PaymentPaperService {
         ResourceBundle t = DocumentParts.bundle();
         List<OrderSettlement> ofOrder = settlements.ofOrder(record.orderId());
         Set<UUID> lost = lostAmong(ofOrder.stream().map(OrderSettlement::shipmentId).toList());
-        String reason = ofOrder.stream().filter(settlement -> settlement.refundable().signum() > 0)
+        // The settlements that had made money refundable when this refund was recorded (confirmation audit CF-11): a
+        // later one - a customer return refunded months after a carrier return - did not exist then, and a paper printed
+        // again says what it said the day the refund was made, as its account (RAD-6) and the payment confirmation's
+        // figures (RAD-8) do.
+        String reason = ofOrder.stream().filter(settlement -> settlement.refundable().signum() > 0
+                        && !settlement.settledAt().isAfter(record.recordedAt()))
                 .map(settlement -> lost.contains(settlement.shipmentId()) ? SHIPMENT_LOST
                         : settlement.kind().name()).distinct()
                 .map(kind -> "payment-papers.refund." + kind)

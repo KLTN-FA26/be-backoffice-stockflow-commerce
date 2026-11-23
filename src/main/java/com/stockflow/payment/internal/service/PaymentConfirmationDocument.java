@@ -51,9 +51,11 @@ class PaymentConfirmationDocument {
      * @param recordedAt    when the accountant recorded it against the instalment
      * @param bankReference the transfer's reference on the bank statement
      * @param contractValue what the contract was signed for (its plan's installments at their signed amounts); null
-     *                      for a fee item, which is no part of it - the paper then shows no standing
+     *                      for a fee item, which is no part of it - the paper then shows no standing - unless goods
+     *                      money of the contract was carried onto it
      * @param reducedToDate what settlements had taken off the contract's installments when this payment was recorded
-     *                      (returns, carrier returns, closures of the rest); shown as a column of its own when not 0
+     *                      (returns, carrier returns, closures of the rest), less goods money a closure only moved onto
+     *                      its fee item (still owed); shown as a column of its own when not 0
      * @param paidToDate    everything paid under the contract when this payment was recorded, this payment included
      * @param preparedBy    who recorded the payment; null to leave the name to be written in
      */
