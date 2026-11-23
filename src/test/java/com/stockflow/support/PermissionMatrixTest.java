@@ -477,6 +477,10 @@ class PermissionMatrixTest {
                     Role.SYSTEM_ADMIN)),
             Map.entry("procurement-return-receipt-approvals:APPROVE", Set.of(Role.WAREHOUSE_MANAGER,
                     Role.SYSTEM_ADMIN)),
+            // WF-05 audit round 2 M4 (V20261223000330; Q-11, docs 03 §4.2 step 10): the warehouse records goods kept in
+            // custody for the customer on a return - the dock's write; Sales kept it. No customer.
+            Map.entry("sales-rma-custody:CREATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             // V20261209000300 (permission review 2026-11-20, A2; kltn-docs 20 §3): the lot trace report is the
             // warehouse's, Sales' (customer care) and the coordinator's; the ledger itself stays the warehouse's.
             Map.entry("inventory-lot-traces:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
@@ -574,6 +578,9 @@ class PermissionMatrixTest {
                 Map.entry("POST /api/v1/returns/{returnId}/custody/uploads", uploadSlot),
                 Map.entry("POST /api/v1/returns/{returnId}/custody", "{\"uploadId\":\"" + UUID.randomUUID()
                         + "\",\"sku\":\"SKU-X\",\"quantity\":1}"),
+                // WF-05 Q-4: the customer's choice for goods held for them is recorded by Sales; a valid body, so the
+                // back-office guard - not validation - answers the customer who holds sales-rmas:UPDATE.
+                Map.entry("POST /api/v1/returns/{returnId}/custody-choice", "{\"choice\":\"SEND_BACK\",\"version\":0}"),
                 // 4A-4: a well-formed reprint request, so only the owner check can refuse another customer's round.
                 Map.entry("POST /api/v1/customer/production-samples/{roundId}/reprint-request",
                         "{\"note\":\"stolen\"}"),

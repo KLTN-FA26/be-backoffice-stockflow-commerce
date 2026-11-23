@@ -153,14 +153,15 @@ class ReturnRequestController {
             + "return receipt takes - a SKU the return did not approve (409 RETURN_CARTON_NOT_CLAIMED on the receipt), "
             + "more than approved, a parcel after the claim was settled or refused. A photo, the SKU or the LPN, how "
             + "many, a note; whatever the return's status. Not stock, not refunded, no invoice adjusted")
-    @RequiresPermission(resource = OrderResources.RMAS, action = Action.CREATE, scope = DataScope.ALL)
+    @RequiresPermission(resource = OrderResources.RMA_CUSTODY, action = Action.CREATE, scope = DataScope.ALL)
     public ApiResponse<ReturnView> addCustody(@PathVariable UUID returnId, @RequestPart("file") MultipartFile file,
                                               @RequestParam(required = false) String sku,
                                               @RequestParam(required = false) String lpn,
                                               @RequestParam int quantity,
                                               @RequestParam(required = false) String note,
                                               @AuthenticatedUser CurrentUser user) throws IOException {
-        // A customer holds sales-rmas:CREATE for their own claims; a custody note is the warehouse's, on any return.
+        // Audit round 2 M4: a custody note is the warehouse's (or Sales'), on any return - sales-rma-custody:CREATE,
+        // which no customer holds; refused for one all the same, as it always was.
         ScopeGuards.requireBackOffice(user);
         ReturnEvidence.Custody custody = custody(sku, lpn, quantity, note);
         try (InputStream content = file.getInputStream()) {
@@ -174,7 +175,7 @@ class ReturnRequestController {
     @PostMapping(value = "/returns/{returnId}/custody/uploads", consumes = MediaType.APPLICATION_JSON_VALUE)
     @Operation(summary = "Step one of a custody photo uploaded straight to storage (WF-05 Q-11); then name its uploadId "
             + "in POST /returns/{id}/custody")
-    @RequiresPermission(resource = OrderResources.RMAS, action = Action.CREATE, scope = DataScope.ALL)
+    @RequiresPermission(resource = OrderResources.RMA_CUSTODY, action = Action.CREATE, scope = DataScope.ALL)
     public ResponseEntity<ApiResponse<UploadSlot>> beginCustodyUpload(@PathVariable UUID returnId,
             @Valid @RequestBody UploadSlotRequest request, @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
@@ -185,7 +186,7 @@ class ReturnRequestController {
     @PostMapping(value = "/returns/{returnId}/custody", consumes = MediaType.APPLICATION_JSON_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "Keep a custody note whose photo was uploaded through /custody/uploads (WF-05 Q-11)")
-    @RequiresPermission(resource = OrderResources.RMAS, action = Action.CREATE, scope = DataScope.ALL)
+    @RequiresPermission(resource = OrderResources.RMA_CUSTODY, action = Action.CREATE, scope = DataScope.ALL)
     public ApiResponse<ReturnView> addUploadedCustody(@PathVariable UUID returnId,
             @Valid @RequestBody ReturnRequests.Custody body, @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
@@ -231,13 +232,36 @@ class ReturnRequestController {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResponse.ok(new EvidenceLinkResponse(url)));
     }
 
+    @PostMapping("/returns/{returnId}/custody-choice")
+    @Operation(summary = "Record what the customer chose for goods held for them (WF-05 Q-4), Sales",
+            description = "Only for a RESOLVED return that refunded nothing: its sealed cartons are out of stock, held "
+                    + "for the customer in the quarantine area. SEND_BACK (at the customer's cost) or DESTROY_ON_BEHALF "
+                    + "(note names their written consent - required). The warehouse manager carries it out from GET "
+                    + "/inventory/stock-packages/customer-custody. Recorded again, it replaces the choice while nothing "
+                    + "was carried out. 409 RETURN_INVALID_TRANSITION (not RESOLVED, units refunded, or nothing of it "
+                    + "held), INVALID_STOCK_PACKAGE_TRANSITION (already carried out), OPTIMISTIC_LOCK; 400 "
+                    + "VALIDATION_FAILED.")
+    @RequiresPermission(resource = OrderResources.RMAS, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<ReturnView> recordCustodyChoice(@PathVariable UUID returnId,
+                                                       @Valid @RequestBody ReturnRequests.CustodyChoice body,
+                                                       @AuthenticatedUser CurrentUser user) {
+        // The customer holds sales-rmas:UPDATE for withdrawing their own return; their choice is told to Sales, who
+        // record it - a destruction on their behalf rests on a signed record, not a click.
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(view(returns.recordCustodyChoice(returnId, body.choice(), body.note(), body.version(),
+                user.userId()), true));
+    }
+
     @PostMapping("/returns/{returnId}/cancellation")
     @Operation(summary = "Withdraw a return before any of its goods is back (REQUESTED or AWAITING_RETURN → "
             + "CANCELLED); the customer their own, Sales any",
             description = "409 RETURN_INVALID_TRANSITION past AWAITING_RETURN. 409 RETURN_GOODS_PARTLY_RECEIVED once a "
                     + "parcel of its goods came back (WF-05 TH-3): withdrawing it would leave those goods in the "
                     + "warehouse with nothing refunded - Sales mark the goods complete instead "
-                    + "(POST /returns/{id}/goods-complete) and decide the refund on what came.")
+                    + "(POST /returns/{id}/goods-complete) and decide the refund on what came. 409 "
+                    + "RETURN_RECEIPT_DRAFT_OPEN while the warehouse counts a parcel of it on a draft receipt "
+                    + "(receiptDraftOpen on every return response, for the customer too): withdrawn then, the order "
+                    + "would go back to DELIVERED before the parcel's receipt reopened the return.")
     @RequiresPermission(resource = OrderResources.RMAS, action = Action.UPDATE, scope = DataScope.OWN)
     public ApiResponse<ReturnView> cancel(@PathVariable UUID returnId,
                                           @Valid @RequestBody(required = false) ReturnRequests.Cancel request,

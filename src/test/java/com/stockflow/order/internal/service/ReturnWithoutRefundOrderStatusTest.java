@@ -70,7 +70,8 @@ class ReturnWithoutRefundOrderStatusTest {
     private final ReturnRequestService service = new ReturnRequestService(returns, orders,
             mock(OrderEventPublisher.class), payments, mock(CustomerService.class), mock(FileTransfers.class),
             mock(StagedUploads.class), mock(TransactionOperations.class), POLICY,
-            Clock.fixed(NOW, ZoneOffset.UTC), mock(DeliveryFailureService.class), mock(ReturnAllowances.class));
+            Clock.fixed(NOW, ZoneOffset.UTC), mock(DeliveryFailureService.class), mock(ReturnAllowances.class),
+            mock(com.stockflow.inventory.api.CartonReturns.class));
 
     private final UUID orderId = UUID.randomUUID();
     private final Order order = mock(Order.class);

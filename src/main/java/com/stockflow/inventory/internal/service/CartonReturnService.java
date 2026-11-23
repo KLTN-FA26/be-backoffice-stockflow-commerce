@@ -7,12 +7,15 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.inventory.api.CartonReturns;
+import com.stockflow.inventory.api.CustodyInstruction;
 import com.stockflow.inventory.api.ReceiveReturnedCartonsCommand;
 import com.stockflow.inventory.api.ReturnedCarton;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
+import com.stockflow.inventory.internal.domain.ReturnedCartonOwnership;
+import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovement;
@@ -27,11 +30,15 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -48,6 +55,13 @@ import java.util.stream.Collectors;
  * marked {@code return_opened_at} (it is never taken back again), with no ledger line; what it really held is the
  * receipt's record, the return refunds that, and the goods are destroyed. Quarantine holds exactly what sealed cartons
  * brought.</p>
+ *
+ * <p><b>Whose goods</b> (WF-05 Q-4; Luật Thương mại 2005 Điều 62): a sealed carton of a return request goes into
+ * quarantine, but it is the company's only once the return is agreed - its refund approved with units refunded. Until
+ * then it waits ({@code PENDING}): no release, no write-off. A return that refunds nothing leaves the goods the
+ * customer's: {@link #settleOwnership} reverses each carton's stock-in (no stock-in entry stands for goods nobody agreed
+ * to take back) and holds it for the customer where it stands, until the warehouse manager hands it back or destroys
+ * it as the customer chose ({@link CustomerGoodsCustody}). A carrier's return is the company's goods outright.</p>
  */
 @Service
 @Transactional
@@ -62,11 +76,13 @@ public class CartonReturnService implements CartonReturns {
     private final InventoryPolicyRepository policies;
     private final LocationDirectory locations;
     private final StockMovementLog ledger;
+    private final ReturnedCartonOwnership ownership;
 
     public CartonReturnService(StockPackageRepository stockPackages, StockItemRepository stockItems,
                                StockPackageContents cartons, UomConversionRepository units,
                                InventoryPolicyRepository policies, LocationDirectory locations,
-                               StockMovementLog ledger) {
+                               StockMovementLog ledger, ReturnedCartonOwnership ownership) {
+        this.ownership = ownership;
         this.stockPackages = stockPackages;
         this.stockItems = stockItems;
         this.cartons = cartons;
@@ -85,7 +101,8 @@ public class CartonReturnService implements CartonReturns {
         }
         return stockPackages.findByLpns(List.of(normal)).stream().findFirst().map(carton -> {
             UomConversion unit = unitOf(carton);
-            return view(carton, unit.sku(), lotOf(carton), stockPackages.returnOpenedAt(carton.id()).orElse(null));
+            return view(carton, unit.sku(), lotOf(carton), stockPackages.returnOpenedAt(carton.id()).orElse(null),
+                    ownership.of(carton.id()).map(Enum::name).orElse(null));
         });
     }
 
@@ -129,8 +146,17 @@ public class CartonReturnService implements CartonReturns {
         stockPackages.findAllByIdForUpdate(byLpn.values().stream().map(StockPackage::id).toList());
 
         List<ReturnedCarton> received = new ArrayList<>();
+        List<StockPackageId> stocked = new ArrayList<>();
         for (String lpn : command.lpns()) {
             StockPackage seen = byLpn.get(lpn);
+            Optional<ReturnedCartonOwnership.Ownership> owned = ownership.of(seen.id());
+            if (owned.filter(o -> o == ReturnedCartonOwnership.Ownership.CUSTOMER_HELD
+                    || o == ReturnedCartonOwnership.Ownership.CUSTOMER_DESTROYED).isPresent()) {
+                // WF-05 Q-4: the customer's goods, held for them where they stand or destroyed on their behalf - they
+                // never left, or no longer exist; a receipt does not take them in.
+                throw new BusinessException(ErrorCode.RETURN_CARTON_IN_WAREHOUSE, ("%s is the customer's, %s: it is not "
+                        + "taken back on a receipt").formatted(lpn, owned.get()), List.of(), Map.of("lpn", lpn));
+            }
             if (stockPackages.openedOnReturn(seen.id())) {
                 // WF-05 Q-18: it came back opened on an earlier receipt and stayed consumed; it does not come back twice.
                 throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION, ("%s came back opened on an "
@@ -158,14 +184,77 @@ public class CartonReturnService implements CartonReturns {
                     StockMovement.ReferenceType.GOODS_RECEIPT, command.receiptId(), null, command.actorId(),
                     command.receivedAt())
                     .ofLot(row.lotId()).forOrder(command.orderId()).arriving(seen.id()));
+            stocked.add(seen.id());
             received.add(new ReturnedCarton(seen.id().value(), lpn, skuByLpn.get(lpn), row.lotNumber(),
-                    row.onHand().value(), "IN_STOCK", to.code()));
+                    row.onHand().value(), "IN_STOCK", to.code(), null,
+                    command.returnRequestId() == null ? null : ReturnedCartonOwnership.Ownership.PENDING.name()));
             log.info("Return receipt {}: carton {} ({} x {}, lot {}) back into quarantine at {}", command.receiptId(),
                     lpn, row.onHand().value(), row.sku(), row.lotNumber(), to);
         }
         stockPackages.markOpenedOnReturn(command.openedLpns().stream().map(lpn -> byLpn.get(lpn).id()).toList(),
                 command.receivedAt());
+        // WF-05 Q-4: a return request's cartons wait for its refund decision; a carrier's return is the company's.
+        ownership.cameBack(stocked, command.returnRequestId());
         return received;
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "stock-package-return", resourceId = "#returnRequestId",
+            details = "{unitsRefunded: #unitsRefunded}")
+    public int settleOwnership(UUID returnRequestId, boolean unitsRefunded, UUID actorId, Instant at) {
+        List<StockPackageId> waiting = ownership.waitingFor(returnRequestId);
+        if (waiting.isEmpty()) {
+            return 0;
+        }
+        if (unitsRefunded) {
+            ownership.settle(waiting, ReturnedCartonOwnership.Ownership.COMPANY, at);
+            log.info("Return {}: {} carton(s) back in quarantine are the company's now", returnRequestId,
+                    waiting.size());
+            return waiting.size();
+        }
+        List<StockPackage> seen = stockPackages.findAllById(waiting);
+        // The global lock order: SKUs in code order, every carton (in id order), then each carton's row.
+        seen.stream().map(carton -> unitOf(carton).sku()).distinct().sorted().forEach(policies::lock);
+        List<StockPackage> locked = stockPackages.findAllByIdForUpdate(waiting);
+        for (StockPackage carton : locked) {
+            StockPackageContents.RowChange change = cartons.reverseReturn(carton.id(), at);
+            StockItem row = change.row();
+            // No stock-in entry stands for goods nobody agreed to take back (Q-4): the receipt's line is reversed, the
+            // whole carton out of the quarantine area it stands in, naming the return.
+            ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.ADJUSTMENT, row.sku(),
+                    row.lotNumber(), carton.location(), null, -change.delta(), StockStatus.QUARANTINE,
+                    StockStatus.QUARANTINE, StockMovement.ReferenceType.RETURN_REQUEST, returnRequestId,
+                    "Return refunded nothing: the customer's goods, held for them (WF-05 Q-4)", actorId, at)
+                    .ofLot(row.lotId()).leaving(carton.id()));
+            log.info("Return {}: carton {} ({} x {}) refunded nothing - out of stock, held for the customer at {}",
+                    returnRequestId, carton.lpn(), -change.delta(), row.sku(), carton.location());
+        }
+        ownership.settle(waiting, ReturnedCartonOwnership.Ownership.CUSTOMER_HELD, at);
+        return waiting.size();
+    }
+
+    @Override
+    public int instructCustody(UUID returnRequestId, CustodyInstruction instruction) {
+        List<ReturnedCartonOwnership.Custody> custody = ownership.custodyOf(returnRequestId);
+        custody.stream().filter(c -> c.ownership() != ReturnedCartonOwnership.Ownership.CUSTOMER_HELD).findFirst()
+                .ifPresent(ended -> {
+                    throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION, ("Carton %s of this return "
+                            + "was already %s: the customer's choice is carried out").formatted(ended.lpn(),
+                            ended.ownership()), List.of(), Map.of("lpn", ended.lpn()));
+                });
+        if (custody.isEmpty()) {
+            return 0;
+        }
+        ownership.instruct(returnRequestId, instruction.name());
+        return custody.size();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Set<String> customersGoods(Collection<String> lpns) {
+        List<String> normal = StockPackageView.normalLpns(List.copyOf(lpns));
+        return ownership.ofLpns(normal).entrySet().stream().filter(e -> e.getValue().customers())
+                .map(Map.Entry::getKey).collect(Collectors.toSet());
     }
 
     private UomConversion unitOf(StockPackage carton) {
@@ -181,9 +270,10 @@ public class CartonReturnService implements CartonReturns {
                 .map(StockItem::lotNumber).orElse(null);
     }
 
-    private static ReturnedCarton view(StockPackage carton, String sku, String lot, java.time.Instant openedAt) {
+    private static ReturnedCarton view(StockPackage carton, String sku, String lot, java.time.Instant openedAt,
+                                       String owned) {
         return new ReturnedCarton(carton.id().value(), carton.lpn(), sku, lot,
                 carton.receivedQty() == null ? 0 : carton.receivedQty(), carton.status().name(),
-                carton.location().code(), openedAt);
+                carton.location().code(), openedAt, owned);
     }
 }

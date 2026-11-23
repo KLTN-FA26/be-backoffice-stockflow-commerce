@@ -102,7 +102,8 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
         // per return (evidence, parcels, history) is not needed to count what is claimed, so it is not read.
         return ReturnClaims.of(jpa.findByOrderIdWithLines(orderId).stream()
                 .flatMap(e -> e.getLines().stream()
-                        .map(row -> ReturnClaims.Claim.of(e.getShipmentId(), e.getStatus(), toLine(row))))
+                        .map(row -> ReturnClaims.Claim.of(e.getShipmentId(), e.getStatus(), toLine(row),
+                                e.getOpenDraftReceiptId() != null)))
                 .toList());
     }
 
@@ -213,6 +214,7 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
                 r.settledBy(), r.settledAt(), r.money().refunded(), r.money().offset(), r.vatAdjustmentRequired());
         entity.applyEnd(r.cancelledBy(), r.cancellationReason(), r.closedAt());
         entity.applyRefusal(r.refusalReason(), r.refusalNote(), r.openDraftReceiptId());
+        entity.applyCustodyChoice(r.custodyChoice(), r.custodyChoiceNote(), r.custodyChoiceBy(), r.custodyChoiceAt());
         Map<UUID, ReturnRequestLineJpaEntity> rows = entity.getLines().stream()
                 .collect(Collectors.toMap(ReturnRequestLineJpaEntity::getId, Function.identity()));
         for (ReturnLine line : r.lines()) {
@@ -242,6 +244,8 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
                 new ReturnRequest.MoneyOutcome(e.getOffsetAmount(), e.getRefundedAmount()),
                 e.isVatAdjustmentRequired(), e.getCancelledBy(), e.getCancellationReason(), e.getClosedAt());
         request.restoreRefusal(e.getRefusalReason(), e.getRefusalNote(), e.getOpenDraftReceiptId());
+        request.restoreCustodyChoice(e.getCustodyChoice(), e.getCustodyChoiceNote(), e.getCustodyChoiceBy(),
+                e.getCustodyChoiceAt());
         request.restoreRecords(
                 records.evidenceOf(e.getId()).stream().map(row -> new ReturnEvidence(row.getId(),
                         ReturnEvidence.Stage.valueOf(row.getStage()), row.getFileKey(), row.getOriginalName(),

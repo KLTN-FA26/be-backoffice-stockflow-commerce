@@ -57,6 +57,13 @@ import java.util.function.Function;
  * a line of their own with nothing received - they are recorded and destroyed, never stocked. The unit cost is left
  * blank: this module does not hold what the goods left stock at, and the form's total is then left for the accountant
  * to write.</p>
+ *
+ * <p>"Actually received" is the ledger's quantity of each stocked carton - its label, the units the RECEIPT line put
+ * into stock (audit round 2 L7: receipts of before V20261218000400 stocked opened cartons at their label, and a printed
+ * count would disagree with the books). A carton whose return then refunded nothing is not received at all (WF-05 Q-4:
+ * "không có bút toán nhập kho vì không có thoả thuận trả hàng"): its stock-in was reversed and the goods are the
+ * customer's, held for them, so it is 0 with a note saying so - the voucher printed before the decision is superseded by
+ * this one.</p>
  */
 @Service
 public class ReturnReceiptPaperService {
@@ -193,10 +200,14 @@ public class ReturnReceiptPaperService {
         List<ReturnGoodsReceiptDocument.Line> lines = new ArrayList<>();
         bySku.forEach((sku, cartons) -> {
             long labelled = cartons.stream().mapToLong(ReturnReceiptService.CartonView::quantity).sum();
-            // "Thực nhập" is what went into stock (WF-05 Q-18, BE-20): a carton opened or emptied on its way back is
-            // counted on the receipt and destroyed, never stocked, so its count is a note and not a received unit.
-            long stocked = cartons.stream().filter(ReturnReceiptService.CartonView::stockEntered)
-                    .mapToLong(ReturnReceiptService.CartonView::countedQuantity).sum();
+            // "Thực nhập" is what went into stock and stayed the company's (WF-05 Q-18, BE-20, Q-4): a carton opened or
+            // emptied on its way back is counted on the receipt and destroyed, never stocked, so its count is a note and
+            // not a received unit; one held for the customer after a return that refunded nothing left the books again.
+            // A stocked carton is the ledger's line: its label (L7).
+            long stocked = cartons.stream().filter(carton -> carton.stockEntered() && !carton.heldForCustomer())
+                    .mapToLong(ReturnReceiptService.CartonView::quantity).sum();
+            List<ReturnReceiptService.CartonView> held = cartons.stream()
+                    .filter(ReturnReceiptService.CartonView::heldForCustomer).toList();
             List<ReturnReceiptService.CartonView> notStocked = cartons.stream()
                     .filter(carton -> !carton.stockEntered()).toList();
             Set<String> lots = new LinkedHashSet<>();
@@ -211,6 +222,11 @@ public class ReturnReceiptPaperService {
                 notes.add(t.getString("return-papers.notStocked").formatted(notStocked.size(),
                         DocumentFormats.number(notStocked.stream()
                                 .mapToLong(ReturnReceiptService.CartonView::countedQuantity).sum())));
+            }
+            if (!held.isEmpty()) {
+                notes.add(t.getString("return-papers.heldForCustomer").formatted(held.size(),
+                        DocumentFormats.number(held.stream().mapToLong(ReturnReceiptService.CartonView::quantity)
+                                .sum())));
             }
             lines.add(new ReturnGoodsReceiptDocument.Line(name.apply(sku), sku, unit, labelled, stocked, null,
                     String.join("; ", notes)));

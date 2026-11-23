@@ -55,7 +55,11 @@ public record CustomerReturnResponse(
         @Schema(description = "Whether the warehouse is counting a parcel of it on a DRAFT return receipt now (WF-05 "
                 + "BE-23): the return cannot be withdrawn meanwhile (409 RETURN_RECEIPT_DRAFT_OPEN), so the portal "
                 + "hides the withdraw button")
-        boolean receiptDraftOpen) implements ReturnView {
+        boolean receiptDraftOpen,
+        @Schema(description = "What the customer chose for their goods after a return that refunded nothing (WF-05 Q-4), "
+                + "as Sales recorded it: SEND_BACK or DESTROY_ON_BEHALF; null until recorded",
+                allowableValues = {"SEND_BACK", "DESTROY_ON_BEHALF"})
+        String custodyChoice) implements ReturnView {
 
     public record Line(UUID id, UUID orderLineId, String sku, int requestedQuantity, Integer approvedQuantity,
                        Integer receivedQuantity, int refundQuantity, BigDecimal refundAmount) {

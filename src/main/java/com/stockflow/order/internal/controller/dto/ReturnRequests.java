@@ -118,6 +118,14 @@ public final class ReturnRequests {
             @Size(max = 1000, message = "note is at most 1000 characters") String note) {
     }
 
+    @Schema(description = "What the customer chose for goods held for them after a return that refunded nothing (WF-05 "
+            + "Q-4): SEND_BACK (at their cost) or DESTROY_ON_BEHALF (note names their written consent)")
+    public record CustodyChoice(
+            @NotNull(message = "choice is required") com.stockflow.order.internal.domain.ReturnCustodyChoice choice,
+            @Size(max = 500, message = "note is at most 500 characters") String note,
+            Long version) {
+    }
+
     @Schema(description = "The goods of an AWAITING_RETURN return are all here, fewer than approved (WF-05 TH-3)")
     public record GoodsComplete(
             @Size(max = 500, message = "note is at most 500 characters") String note,

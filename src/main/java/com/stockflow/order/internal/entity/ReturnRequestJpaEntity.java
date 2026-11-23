@@ -163,6 +163,20 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     @Column(name = "open_draft_receipt_id")
     private UUID openDraftReceiptId;
 
+    /** WF-05 Q-4: what the customer chose for goods held for them ({@code ck_return_request_custody_choice}). */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "custody_choice", length = 24)
+    private com.stockflow.order.internal.domain.ReturnCustodyChoice custodyChoice;
+
+    @Column(name = "custody_choice_note", length = 500)
+    private String custodyChoiceNote;
+
+    @Column(name = "custody_choice_by")
+    private UUID custodyChoiceBy;
+
+    @Column(name = "custody_choice_at")
+    private Instant custodyChoiceAt;
+
     /** LAZY: a list reads the header only; the detail and every command load the lines with a fetch join. */
     @OneToMany(mappedBy = "request", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("id")
@@ -244,6 +258,15 @@ public class ReturnRequestJpaEntity extends BaseEntity {
         this.openDraftReceiptId = openDraftReceiptId;
     }
 
+    /** The customer's choice for goods held for them (WF-05 Q-4). */
+    public void applyCustodyChoice(com.stockflow.order.internal.domain.ReturnCustodyChoice choice, String note,
+                                   UUID by, Instant at) {
+        this.custodyChoice = choice;
+        this.custodyChoiceNote = note;
+        this.custodyChoiceBy = by;
+        this.custodyChoiceAt = at;
+    }
+
     public void applyEnd(UUID cancelledBy, String cancellationReason, Instant closedAt) {
         this.cancelledBy = cancelledBy;
         this.cancellationReason = cancellationReason;
@@ -291,5 +314,9 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     public ReturnRefusalReason getRefusalReason() { return refusalReason; }
     public String getRefusalNote() { return refusalNote; }
     public UUID getOpenDraftReceiptId() { return openDraftReceiptId; }
+    public com.stockflow.order.internal.domain.ReturnCustodyChoice getCustodyChoice() { return custodyChoice; }
+    public String getCustodyChoiceNote() { return custodyChoiceNote; }
+    public UUID getCustodyChoiceBy() { return custodyChoiceBy; }
+    public Instant getCustodyChoiceAt() { return custodyChoiceAt; }
     public List<ReturnRequestLineJpaEntity> getLines() { return lines; }
 }

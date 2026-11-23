@@ -16,6 +16,8 @@ import com.stockflow.common.storage.UploadSlotRequest;
 import com.stockflow.contracts.ReturnedGoodsReceived;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
+import com.stockflow.inventory.api.CartonReturns;
+import com.stockflow.inventory.api.CustodyInstruction;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.ReturnReceiptTracking;
 import com.stockflow.order.internal.domain.Order;
@@ -24,6 +26,7 @@ import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.OrderShipment;
 import com.stockflow.order.internal.domain.ReturnChannel;
 import com.stockflow.order.internal.domain.ReturnClaims;
+import com.stockflow.order.internal.domain.ReturnCustodyChoice;
 import com.stockflow.order.internal.domain.ReturnEvidence;
 import com.stockflow.order.internal.domain.ReturnPolicy;
 import com.stockflow.order.internal.domain.ReturnLine;
@@ -102,7 +105,12 @@ import java.util.UUID;
  * <p><b>A parcel being counted holds the return</b> (WF-05 BE-23): procurement tells the return when a draft receipt is
  * opened for it and when that draft is confirmed or cancelled ({@link ReturnReceiptTracking}, implemented here, in the
  * receipt's transaction); meanwhile the goods are not marked complete, the deadline does not end the return, and no
- * refund is proposed or approved.</p>
+ * refund is proposed or approved. A confirmed draft's goods are taken in that same transaction (audit round 2, M1).</p>
+ *
+ * <p><b>Whose goods</b> (WF-05 Q-4): the refund decision settles the cartons that came back sealed, in the transaction
+ * that resolves the return ({@link CartonReturns#settleOwnership}): units refunded make them the company's; none
+ * leaves them the customer's - their stock-in reversed, held for the customer - and Sales record what the customer
+ * chose for them ({@link #recordCustodyChoice}).</p>
  */
 @Service
 @Transactional
@@ -165,11 +173,14 @@ public class ReturnRequestService implements ReturnReceiptTracking {
     private final Clock clock;
     private final DeliveryFailureService deliveryFailures;
     private final ReturnAllowances allowances;
+    private final CartonReturns cartonReturns;
 
     ReturnRequestService(ReturnRequestRepository returns, OrderRepository orders, OrderEventPublisher events,
                          PaymentService payments, CustomerService customers, FileTransfers files,
                          StagedUploads staged, TransactionOperations tx, ReturnPolicy policy, Clock clock,
-                         DeliveryFailureService deliveryFailures, ReturnAllowances allowances) {
+                         DeliveryFailureService deliveryFailures, ReturnAllowances allowances,
+                         CartonReturns cartonReturns) {
+        this.cartonReturns = cartonReturns;
         this.deliveryFailures = deliveryFailures;
         this.allowances = allowances;
         this.returns = returns;
@@ -424,7 +435,9 @@ public class ReturnRequestService implements ReturnReceiptTracking {
      * A parcel of a return's goods came back on a confirmed return receipt (17 §4.10 step 39; 03 §4.2 step 12): each
      * line adds the units of its SKU among the cartons; once everything approved is back the return is RECEIVED and its
      * order RETURNED (WF-05 TH-3: until then it awaits the rest). Called by {@link ReturnedGoodsListener} after the
-     * receipt committed, in a transaction of its own; a receipt seen again changes nothing.
+     * receipt committed, in a transaction of its own; a receipt seen again changes nothing. Procurement calls it first,
+     * in the receipt's own transaction ({@link ReturnReceiptTracking#goodsReceived}, audit round 2 M1), so for a return
+     * request the listener finds the receipt taken already.
      *
      * <p>A receipt against a shipment the carrier brought back (RTO) names no return. It used to be dropped here - the
      * order was RETURNED by the shipment's outcome and nothing followed, so no money was ever settled and the order
@@ -435,6 +448,7 @@ public class ReturnRequestService implements ReturnReceiptTracking {
      * @throws BusinessException {@code RETURN_INVALID_TRANSITION} when the return takes no goods now - the event stays
      *         in the publication registry and is retried, so a defect here is seen rather than lost
      */
+    @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "return-request",
             resourceId = "#event.returnRequestId()", details = "{receipt: #event.receiptNumber()}")
     public void goodsReceived(ReturnedGoodsReceived event) {
@@ -461,6 +475,17 @@ public class ReturnRequestService implements ReturnReceiptTracking {
         finish(locked, event.receivedBy());
         log.info("Return {}: goods back on receipt {} at {}, now {}", request.rmaNumber(), event.receiptNumber(),
                 event.locationCode(), request.status());
+    }
+
+    /**
+     * Whether return {@code returnId} has taken the goods of receipt {@code receiptId} already: the receipt's own
+     * transaction takes them (audit round 2, M1), so the event after commit has nothing left to do.
+     */
+    @Transactional(readOnly = true)
+    public boolean tookReceipt(UUID returnId, UUID receiptId) {
+        return returns.findById(returnId).map(found -> receiptId.equals(found.goodsReceiptId())
+                || found.parcels().stream().anyMatch(parcel -> receiptId.equals(parcel.goodsReceiptId())))
+                .orElse(false);
     }
 
     /**
@@ -535,6 +560,7 @@ public class ReturnRequestService implements ReturnReceiptTracking {
         }
         if (request.settlementAmount().signum() == 0) {
             request.resolve(by, now, ReturnRequest.MoneyOutcome.NONE);
+            settleGoods(request, by, now);
             return finish(locked, by);
         }
         // WF-05 TH-1: the delivery batch the goods came on takes the refund first; TT-5: the batches still to come
@@ -547,7 +573,25 @@ public class ReturnRequestService implements ReturnReceiptTracking {
                         + "contract's installments: refund return %s outside the system").formatted(
                         request.orderNumber(), request.rmaNumber())));
         request.resolve(by, now, new ReturnRequest.MoneyOutcome(settled.reduced(), settled.refundable()));
+        settleGoods(request, by, now);
         return finish(locked, by);
+    }
+
+    /**
+     * WF-05 Q-4: the return's refund is decided, and with it whose its goods are - in this transaction, so no carton of a
+     * RESOLVED return waits ({@code tg_return_request_goods_settled}). Units refunded: the cartons back in quarantine are
+     * the company's, to release or write off. None: "không có thoả thuận trả hàng thì hàng vẫn là của khách" - their
+     * stock-in is reversed and they are held for the customer. Inventory takes the SKU locks after the order and the
+     * return this transaction holds, the global order.
+     */
+    private void settleGoods(ReturnRequest request, UUID by, Instant now) {
+        int settled = cartonReturns.settleOwnership(request.id(),
+                request.outcome() == ReturnRequest.Outcome.REFUNDED, by, now);
+        if (settled > 0) {
+            log.info("Return {} {}: {} carton(s) {}", request.rmaNumber(), request.outcome(), settled,
+                    request.outcome() == ReturnRequest.Outcome.REFUNDED ? "are the company's"
+                            : "held for the customer");
+        }
     }
 
     /**
@@ -558,8 +602,35 @@ public class ReturnRequestService implements ReturnReceiptTracking {
     @Auditable(action = AuditAction.TRANSITION, resourceType = "return-request", resourceId = "#returnId")
     public ReturnRequest closeWithoutRefund(UUID returnId, String note, Long version, UUID by) {
         Locked locked = lock(returnId, null, version);
-        locked.request().closeWithoutRefund(by, now(), note);
+        Instant now = now();
+        locked.request().closeWithoutRefund(by, now, note);
+        settleGoods(locked.request(), by, now);
         return finish(locked, by);
+    }
+
+    /**
+     * Sales record what the customer chose for goods of a return that refunded nothing (WF-05 Q-4): handed back at their
+     * cost, or destroyed on their behalf with their written consent. The cartons held for them take the instruction in
+     * this transaction, and the warehouse manager carries it out from the custody list (TH-6).
+     *
+     * @throws BusinessException as {@link ReturnRequest#recordCustodyChoice}; {@code RETURN_INVALID_TRANSITION} when
+     *         nothing of the return is held for the customer (nothing came back sealed - opened cartons and loose units
+     *         are destroyed on the receipt, Q-18); as {@link CartonReturns#instructCustody} once it was carried out
+     */
+    @Auditable(action = AuditAction.UPDATE, resourceType = "return-request", resourceId = "#returnId",
+            details = "{custodyChoice: #choice}")
+    public ReturnRequest recordCustodyChoice(UUID returnId, ReturnCustodyChoice choice, String note, Long version,
+                                             UUID by) {
+        Locked locked = lock(returnId, null, version);
+        ReturnRequest request = locked.request();
+        request.recordCustodyChoice(choice, note, by, now());
+        int held = cartonReturns.instructCustody(request.id(), CustodyInstruction.valueOf(choice.name()));
+        if (held == 0) {
+            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, ("Nothing of return %s is held for the "
+                    + "customer: no carton of it came back sealed").formatted(request.rmaNumber()));
+        }
+        log.info("Return {}: the customer chose {} for {} carton(s) held for them", request.rmaNumber(), choice, held);
+        return returns.save(request);
     }
 
     /** The approver sends the refund back to Sales, saying why: SETTLEMENT_PENDING → RECEIVED. */
@@ -626,7 +697,10 @@ public class ReturnRequestService implements ReturnReceiptTracking {
     @Override
     public void draftOpened(UUID returnRequestId, UUID receiptId) {
         Locked locked = lock(returnRequestId, null, null);
-        locked.request().draftReceiptOpened(receiptId);
+        // Audit round 2 M2, L-3: against the order and what its other returns claim, read under the order's lock.
+        List<ReturnRequest> all = returns.findByOrder(locked.order().id().value());
+        locked.request().draftReceiptOpened(receiptId, locked.order(), ReturnClaims.ofOthers(all, returnRequestId),
+                all);
         returns.save(locked.request());
     }
 

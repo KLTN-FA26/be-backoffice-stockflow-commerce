@@ -161,6 +161,15 @@ public final class ReturnRequest extends AggregateRoot {
     private String refusalNote;
     /** The DRAFT return receipt counting a parcel of this return now (WF-05 BE-23); null when none. */
     private UUID openDraftReceiptId;
+    /**
+     * What the customer chose for their goods when the return refunded nothing (WF-05 Q-4), as Sales recorded it; null
+     * until they did, and for a return that refunded units.
+     */
+    private ReturnCustodyChoice custodyChoice;
+    /** The record the choice rests on: required for a destruction on the customer's behalf (their written consent). */
+    private String custodyChoiceNote;
+    private UUID custodyChoiceBy;
+    private Instant custodyChoiceAt;
 
     private final List<ReturnEvidence> evidence = new ArrayList<>();
     private final List<ReturnDiscrepancy> discrepancies = new ArrayList<>();
@@ -894,6 +903,11 @@ public final class ReturnRequest extends AggregateRoot {
         ReturnParcel taken = new ReturnParcel(receiptId, parcel, receiptNumber, at, by, now);
         parcels.add(taken);
         newParcels.add(taken);
+        // Audit round 2 M1: the draft is let go of when its goods are taken, not before - the two in one step, so no
+        // refund is decided on a return whose parcel is confirmed but not yet counted here.
+        if (receiptId.equals(openDraftReceiptId)) {
+            this.openDraftReceiptId = null;
+        }
         // The first receipt stays the one the return names (it never changes, check_return_request_goods_receipt); who,
         // when and where follow the latest parcel.
         if (goodsReceiptId == null) {
@@ -1333,6 +1347,92 @@ public final class ReturnRequest extends AggregateRoot {
     }
 
     /**
+     * As {@link #draftReceiptOpened(UUID)}, also against the order and what the order's other returns claim - the path
+     * every receipt takes ({@code ReturnRequestService.draftOpened}, under the order's lock):
+     * <ul>
+     *   <li>never on a CLOSED order (audit round 2, lifecycle L-3): the return would reopen and settle money while the
+     *       order stayed CLOSED; goods arriving then are kept in custody (Q-11).</li>
+     *   <li>a return withdrawn after approval, or expired, takes its parcel back only while what it approved is still its
+     *       own (audit round 2, M2): another return may have claimed those units since - its claim fell to what came
+     *       back, 0 - and the parcel would then be refused by the line check when its goods are taken, the receipt
+     *       stuck and nobody refunded. The goods are received on that other return instead ({@code claimedBy}). Once the
+     *       draft is open, it claims them again ({@link ReturnLine#claimedUnits(ReturnStatus, boolean)}), so no return
+     *       takes them while the parcel is counted.</li>
+     * </ul>
+     * {@code tg_return_request_draft_opened} says the same.
+     *
+     * @param others what the order's other returns claim ({@link ReturnClaims#ofOthers})
+     * @throws BusinessException as {@link #draftReceiptOpened(UUID)}; {@code RETURN_NOT_AWAITING_GOODS} for a CLOSED
+     *         order, or units claimed by another return ({@code details.claimedBy})
+     */
+    public void draftReceiptOpened(UUID receiptId, Order order, ReturnClaims others, Collection<ReturnRequest> all) {
+        Objects.requireNonNull(order, "order");
+        if (receiptId != null && receiptId.equals(openDraftReceiptId)) {
+            return;
+        }
+        String refusal = receiptRefusal(order, others);
+        if (refusal != null) {
+            // Only a claim refusal names where the goods go instead; a status or a closed order names nobody.
+            boolean claimed = receiptOpenable() && order.status() != OrderStatus.CLOSED;
+            List<String> holders = all == null || !claimed ? List.<String>of() : claimHolders(all);
+            throw new BusinessException(ErrorCode.RETURN_NOT_AWAITING_GOODS, refusal, List.of(),
+                    holders.isEmpty() ? Map.of("returnStatus", status.name())
+                            : Map.of("returnStatus", status.name(), "claimedBy", holders));
+        }
+        draftReceiptOpened(receiptId);
+    }
+
+    /**
+     * The open returns of {@code all} claiming a line this one claims too: where goods of a withdrawn or expired return
+     * whose units they took are received instead (audit round 2, M2).
+     */
+    public List<String> claimHolders(Collection<ReturnRequest> all) {
+        return all.stream()
+                .filter(other -> !other.id().equals(id) && other.status().isOpen())
+                .filter(other -> other.lines().stream().anyMatch(l -> lines.stream()
+                        .anyMatch(mine -> mine.orderLineId().equals(l.orderLineId()))))
+                .map(ReturnRequest::rmaNumber).sorted().toList();
+    }
+
+    /**
+     * Why goods may not be received for this return now, beyond its own status ({@link #receiptOpenable()}): its order
+     * is CLOSED, or - withdrawn after approval or expired - what it approved is claimed by another return. Null when they
+     * may; the receipt screens read it through {@code ReturnRequestLookup} so they say it before a draft is opened.
+     */
+    public String receiptRefusal(Order order, ReturnClaims others) {
+        if (!receiptOpenable()) {
+            return ("Return %s is %s: its goods are received while it is approved and its refund not settled; anything "
+                    + "else that came back is kept in custody on the return request").formatted(rmaNumber, status);
+        }
+        if (order.status() == OrderStatus.CLOSED) {
+            return ("Order %s is closed: goods of return %s arriving now are kept in custody on the return request")
+                    .formatted(orderNumber, rmaNumber);
+        }
+        if (status != ReturnStatus.CANCELLED && status != ReturnStatus.EXPIRED) {
+            return null;
+        }
+        OrderShipment shipment = shipmentId == null ? null : order.shipments().stream()
+                .filter(s -> s.id().equals(shipmentId)).findFirst().orElse(null);
+        Map<UUID, Integer> inAll = others.inAll();
+        Map<UUID, Integer> onShipment = others.onShipment(shipmentId);
+        for (ReturnLine line : lines) {
+            OrderLine ordered = order.findLine(line.orderLineId()).orElse(null);
+            if (ordered == null) {
+                continue;
+            }
+            LineAllowance allowance = LineAllowance.of(ordered, shipment, inAll, onShipment, Set.of());
+            int own = line.claimedUnits(ReturnStatus.RECEIVED);
+            boolean free = own <= allowance.delivered() - allowance.claimed()
+                    && (allowance.onShipment() == null || own <= allowance.onShipment() - allowance.claimedOnShipment());
+            if (!free) {
+                return ("Return %s is %s and %s's units it approved are claimed by another return since: receive the "
+                        + "goods on that return, or keep them in custody").formatted(rmaNumber, status, line.sku());
+            }
+        }
+        return null;
+    }
+
+    /**
      * The draft receipt {@code receiptId} was confirmed or cancelled: the return no longer waits for it. A receipt that
      * is not the open draft (told twice, or one of before WF-05 BE-23) changes nothing.
      *
@@ -1352,6 +1452,42 @@ public final class ReturnRequest extends AggregateRoot {
                     + "counted on a return receipt: confirm or cancel it before the return can %s").formatted(rmaNumber,
                     what), List.of(), Map.of("receiptId", openDraftReceiptId));
         }
+    }
+
+    // ================================================================================================= custody
+
+    /**
+     * Sales record what the customer chose for their goods (WF-05 Q-4: "Sale hỏi khách, ghi lại một trong hai: gửi trả
+     * (khách chịu phí), hoặc khách đồng ý để công ty huỷ hộ (biên bản)"): the return refunded nothing, so whatever came
+     * back sealed is the customer's, held for them in the quarantine area; the warehouse manager carries out exactly
+     * this. A destruction on their behalf rests on their written consent, which {@code note} names. Recorded again, the
+     * new choice replaces the old while nothing was carried out (the warehouse says so,
+     * {@code CartonReturns#instructCustody}). {@code ck_return_request_custody_choice} says the same.
+     *
+     * @throws BusinessException {@code RETURN_INVALID_TRANSITION} for a return not RESOLVED, or one that refunded units
+     *         (the goods are the company's); {@code VALIDATION_FAILED} with no choice, or a destruction with no record
+     */
+    public void recordCustodyChoice(ReturnCustodyChoice choice, String note, UUID by, Instant now) {
+        Objects.requireNonNull(by, "by");
+        if (status != ReturnStatus.RESOLVED || vatAdjustmentRequired
+                || lines.stream().anyMatch(line -> line.refundQuantity() > 0)) {
+            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, ("Return %s is %s%s: only goods of a return "
+                    + "that refunded nothing are the customer's to decide on").formatted(rmaNumber, status,
+                    status == ReturnStatus.RESOLVED ? " with units refunded" : ""));
+        }
+        if (choice == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Say what the customer chose: SEND_BACK or "
+                    + "DESTROY_ON_BEHALF");
+        }
+        String text = limited(note, REASON_LIMIT, "note");
+        if (choice == ReturnCustodyChoice.DESTROY_ON_BEHALF && text == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Goods of return %s are destroyed on the "
+                    + "customer's behalf only with their written consent: name the record").formatted(rmaNumber));
+        }
+        this.custodyChoice = choice;
+        this.custodyChoiceNote = text;
+        this.custodyChoiceBy = by;
+        this.custodyChoiceAt = now;
     }
 
     /** How a RESOLVED return ended, for the screens (WF-05 Q-4): null while it is not RESOLVED. */
@@ -1517,6 +1653,15 @@ public final class ReturnRequest extends AggregateRoot {
         return this;
     }
 
+    /** Rehydration of the customer's choice for goods held for them (WF-05 Q-4). */
+    public ReturnRequest restoreCustodyChoice(ReturnCustodyChoice choice, String note, UUID by, Instant at) {
+        this.custodyChoice = choice;
+        this.custodyChoiceNote = note;
+        this.custodyChoiceBy = by;
+        this.custodyChoiceAt = at;
+        return this;
+    }
+
     /** Rehydration of the delivered shipment the return is against; null for an order delivered without shipments. */
     public ReturnRequest restoreShipment(UUID shipmentId) {
         this.shipmentId = shipmentId;
@@ -1590,6 +1735,10 @@ public final class ReturnRequest extends AggregateRoot {
     public String refusalNote() { return refusalNote; }
     /** The draft return receipt counting a parcel now (WF-05 BE-23); null when none. */
     public UUID openDraftReceiptId() { return openDraftReceiptId; }
+    public ReturnCustodyChoice custodyChoice() { return custodyChoice; }
+    public String custodyChoiceNote() { return custodyChoiceNote; }
+    public UUID custodyChoiceBy() { return custodyChoiceBy; }
+    public Instant custodyChoiceAt() { return custodyChoiceAt; }
     public List<ReturnEvidence> evidence() { return java.util.Collections.unmodifiableList(evidence); }
     public List<ReturnDiscrepancy> discrepancies() { return java.util.Collections.unmodifiableList(discrepancies); }
 }

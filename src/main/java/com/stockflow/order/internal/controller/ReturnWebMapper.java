@@ -93,7 +93,8 @@ final class ReturnWebMapper {
                         step.reason(), step.actor(), step.at())).toList(),
                 r.version(), r.outcome() == null ? null : r.outcome().name(),
                 r.refusalReason() == null ? null : r.refusalReason().name(), r.refusalNote(), r.receiptOpenable(),
-                r.openDraftReceiptId() != null);
+                r.openDraftReceiptId() != null, r.custodyChoice() == null ? null : r.custodyChoice().name(),
+                r.custodyChoiceNote(), r.custodyChoiceBy(), r.custodyChoiceAt());
     }
 
     static CustomerReturnResponse toCustomerResponse(ReturnRequest r, List<ReturnTransition> history) {
@@ -121,7 +122,8 @@ final class ReturnWebMapper {
                 r.version(), decided(r) && r.outcome() != null ? r.outcome().name() : null,
                 decided(r) && r.refusalReason() != null ? r.refusalReason().name() : null,
                 decided(r) && r.refusalReason() != null ? refusalLabel(r.refusalReason()) : null,
-                decided(r) ? r.refusalNote() : null, r.openDraftReceiptId() != null);
+                decided(r) ? r.refusalNote() : null, r.openDraftReceiptId() != null,
+                r.custodyChoice() == null ? null : r.custodyChoice().name());
     }
 
     /**

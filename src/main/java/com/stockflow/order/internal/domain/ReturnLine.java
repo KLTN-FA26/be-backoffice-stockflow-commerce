@@ -96,6 +96,21 @@ public final class ReturnLine {
         };
     }
 
+    /**
+     * As {@link #claimedUnits(ReturnStatus)}, for a return with a parcel on a draft receipt now ({@code draftOpen}): a
+     * withdrawn-after-approval or expired return whose parcel is being counted claims what it approved again - the
+     * parcel takes it back to RECEIVED (WF-05 Q-11) - so no new return takes those units meanwhile (audit round 2, M2:
+     * the parcel's goods were otherwise refused by the line check for ever, and nobody was refunded).
+     * {@code ordering.return_line_claimed} with six arguments says the same.
+     */
+    public int claimedUnits(ReturnStatus status, boolean draftOpen) {
+        if (draftOpen && (status == ReturnStatus.CANCELLED || status == ReturnStatus.EXPIRED)) {
+            return Math.max(approvedQuantity == null ? 0 : approvedQuantity,
+                    receivedQuantity == null ? 0 : receivedQuantity);
+        }
+        return claimedUnits(status);
+    }
+
     /** The most units that may be refunded: approved, and back in the warehouse. */
     public int refundableUnits() {
         int approved = approvedQuantity == null ? 0 : approvedQuantity;
