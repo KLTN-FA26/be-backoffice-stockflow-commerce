@@ -10,8 +10,10 @@ import com.stockflow.common.security.PermissionCatalog;
 import com.stockflow.common.security.PermissionCode;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.UserProfile;
+import com.stockflow.identity.internal.controller.dto.AssignedWarehouseResponse;
 import com.stockflow.identity.internal.controller.dto.MeResponse;
 import com.stockflow.identity.internal.controller.dto.MyPermissionsResponse;
+import com.stockflow.identity.internal.service.WarehouseAssignments;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.beans.factory.annotation.Value;
@@ -38,12 +40,14 @@ class MeController {
 
     private final IdentityService identityService;
     private final PermissionCatalog catalog;
+    private final WarehouseAssignments warehouseAssignments;
     private final boolean securityEnabled;
 
-    MeController(IdentityService identityService, PermissionCatalog catalog,
+    MeController(IdentityService identityService, PermissionCatalog catalog, WarehouseAssignments warehouseAssignments,
                  @Value("${stockflow.security.enabled:true}") boolean securityEnabled) {
         this.identityService = identityService;
         this.catalog = catalog;
+        this.warehouseAssignments = warehouseAssignments;
         this.securityEnabled = securityEnabled;
     }
 
@@ -62,6 +66,11 @@ class MeController {
      * hide every screen while the backend would have served all of them; answering with the whole
      * catalog tells it the truth about that environment. With security on, an unauthenticated call
      * never reaches this method: the filter chain answers 401 first.
+     *
+     * <p>The warehouses are the caller's resolved ones ({@link CurrentUser#warehouseIds()}), so the warehouse
+     * workspace offers exactly those a {@code WAREHOUSE}-scope caller may work in. They are here rather than on
+     * {@code /me} because this endpoint is refetched on focus and after a 403: a changed assignment reaches the
+     * screen on the user's next action, without signing in again.</p>
      */
     @GetMapping("/permissions")
     @Operation(summary = "The signed-in user's roles and effective permissions; refetch after a 403")
@@ -69,14 +78,20 @@ class MeController {
         if (user.isPresent()) {
             return ApiResponse.ok(new MyPermissionsResponse(roles(),
                     user.get().permissions().stream().map(PermissionCode::toString).sorted().toList(),
-                    user.get().scope()));
+                    user.get().scope(), warehouses(user.get())));
         }
         if (securityEnabled) {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
         return ApiResponse.ok(new MyPermissionsResponse(List.of(),
                 catalog.allPermissions().stream().map(PermissionCode::toString).sorted().toList(),
-                DataScope.ALL));
+                DataScope.ALL, List.of()));
+    }
+
+    private List<AssignedWarehouseResponse> warehouses(CurrentUser user) {
+        return warehouseAssignments.named(user.warehouseIds()).stream()
+                .map(warehouse -> new AssignedWarehouseResponse(warehouse.id(), warehouse.prefix()))
+                .toList();
     }
 
     /**

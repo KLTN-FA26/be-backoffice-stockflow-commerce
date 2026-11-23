@@ -6,6 +6,7 @@ import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.PermissionCatalog;
 import com.stockflow.common.security.PermissionCatalogEntry;
 import com.stockflow.identity.api.IdentityService;
+import com.stockflow.identity.internal.service.WarehouseAssignments;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -26,7 +27,8 @@ class MeControllerHttpTest {
 
     private static MockMvc mvc(boolean securityEnabled) {
         return MockMvcBuilders
-                .standaloneSetup(new MeController(mock(IdentityService.class), CATALOG, securityEnabled))
+                .standaloneSetup(new MeController(mock(IdentityService.class), CATALOG,
+                        mock(WarehouseAssignments.class), securityEnabled))
                 .setCustomArgumentResolvers(new AuthenticatedUserArgumentResolver(new CurrentUserProvider()))
                 .setControllerAdvice()
                 .build();
@@ -39,7 +41,8 @@ class MeControllerHttpTest {
                 .andExpect(jsonPath("$.data.permissions.length()").value(3))
                 .andExpect(jsonPath("$.data.permissions[0]").value("procurement-suppliers:DELETE"))
                 .andExpect(jsonPath("$.data.dataScope").value("ALL"))
-                .andExpect(jsonPath("$.data.roles.length()").value(0));
+                .andExpect(jsonPath("$.data.roles.length()").value(0))
+                .andExpect(jsonPath("$.data.warehouses.length()").value(0));
     }
 
     @Test
