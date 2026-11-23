@@ -1503,8 +1503,10 @@ public final class ReturnRequest extends AggregateRoot {
      * {@code takenBy} of the same customer. Whatever the return's status: such goods turn up at any time. Recorded
      * again, the new choice replaces the old while the warehouse has not carried it out.
      *
-     * @param takenBy the supplementary return, for TAKEN_BY_RETURN only; one rejected, withdrawn or expired takes
-     *                nothing
+     * @param takenBy the supplementary return, for TAKEN_BY_RETURN only: one that can still receive goods - asked for
+     *                (REQUESTED: its approval comes next) or approved and still taking parcels ({@link #receiptOpenable};
+     *                confirmation audit CF-5). One rejected, withdrawn, expired or resolved will receive no parcel, and
+     *                naming it left the goods with a note saying they left on a return that never took them
      * @throws BusinessException {@code NOT_FOUND} for no custody note of this return by that id;
      *         {@code RETURN_INVALID_TRANSITION} once the goods left, or for a supplementary return that takes nothing;
      *         {@code VALIDATION_FAILED} with no choice, a destruction with no record, or a supplementary return missing,
@@ -1538,7 +1540,7 @@ public final class ReturnRequest extends AggregateRoot {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("The goods kept on %s are taken on another "
                         + "return of the same customer").formatted(rmaNumber));
             }
-            if (takesNothing(takenBy.status())) {
+            if (!canTakeGoods(takenBy)) {
                 throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, "Return %s is %s: it takes no goods"
                         .formatted(takenBy.rmaNumber(), takenBy.status()));
             }
@@ -1555,11 +1557,16 @@ public final class ReturnRequest extends AggregateRoot {
      * destruction record, the receipt). Only as chosen - the goods are the customer's, and only they decide.
      *
      * @param takenByStatus the supplementary return's status now, for TAKEN_BY_RETURN; null otherwise
+     * @param takenByGot    for TAKEN_BY_RETURN, whether the goods came back on the supplementary return: the carton the
+     *                      note names was received on it, or - a note naming a SKU - it received at least the note's
+     *                      units of that SKU ({@link #receivedGoodsOf}). Ended before that, the note said the goods left
+     *                      while they still stood in the warehouse, final for good (confirmation audit CF-5)
      * @throws BusinessException {@code NOT_FOUND}; {@code RETURN_CUSTODY_CHOICE_REQUIRED} while no choice is recorded;
-     *         {@code RETURN_INVALID_TRANSITION} once ended, or when the supplementary return no longer takes goods
-     *         (Sales choose again); {@code VALIDATION_FAILED} with no record
+     *         {@code RETURN_INVALID_TRANSITION} once ended, when the supplementary return no longer takes goods
+     *         (Sales choose again), or before it received them; {@code VALIDATION_FAILED} with no record
      */
-    public CustodyOutcome endCustody(UUID evidenceId, String note, ReturnStatus takenByStatus, UUID by, Instant now) {
+    public CustodyOutcome endCustody(UUID evidenceId, String note, ReturnStatus takenByStatus, boolean takenByGot,
+                                     UUID by, Instant now) {
         Objects.requireNonNull(by, "by");
         custodyNote(evidenceId);
         CustodyOutcome chosen = custodyOutcomes.get(evidenceId);
@@ -1575,6 +1582,11 @@ public final class ReturnRequest extends AggregateRoot {
             throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, ("Return %s is %s and took no goods: Sales "
                     + "record the customer's choice again").formatted(chosen.takenByRmaNumber(), takenByStatus));
         }
+        if (chosen.choice() == ReturnCustodyNoteChoice.TAKEN_BY_RETURN && !takenByGot) {
+            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, ("The goods of custody note %s of %s have "
+                    + "not come back on return %s yet: they are ended once its receipt takes them")
+                    .formatted(evidenceId, rmaNumber, chosen.takenByRmaNumber()));
+        }
         String record = required(note, REASON_LIMIT, "Name the record of the hand-over, destruction or receipt");
         CustodyOutcome ended = new CustodyOutcome(evidenceId, chosen.choice(), chosen.choiceNote(),
                 chosen.takenByReturnId(), chosen.takenByRmaNumber(), chosen.chosenBy(), chosen.chosenAt(), now, by,
@@ -1582,6 +1594,30 @@ public final class ReturnRequest extends AggregateRoot {
         custodyOutcomes.put(evidenceId, ended);
         changedCustodyOutcomes.add(ended);
         return ended;
+    }
+
+    /**
+     * Whether {@code takenBy} can still receive the goods of a custody note: asked for, or approved and still taking
+     * parcels ({@link #receiptOpenable}) - and neither rejected, withdrawn nor expired ({@link #takesNothing}).
+     * {@code check_return_custody_outcome} says the same.
+     */
+    private static boolean canTakeGoods(ReturnRequest takenBy) {
+        return !takesNothing(takenBy.status())
+                && (takenBy.status() == ReturnStatus.REQUESTED || takenBy.receiptOpenable());
+    }
+
+    /**
+     * Whether the goods {@code custody} names came back on this return (confirmation audit CF-5), by the units of their
+     * SKU its receipts counted: at least the note's. A note naming a carton is judged by the carton, which only
+     * inventory knows ({@code ReturnCustodyNotes}); {@code check_return_custody_outcome} says the same.
+     */
+    public boolean receivedGoodsOf(ReturnEvidence.Custody custody) {
+        if (custody == null || custody.sku() == null) {
+            return false;
+        }
+        int received = lines.stream().filter(line -> line.sku().equals(custody.sku()))
+                .mapToInt(line -> line.receivedQuantity() == null ? 0 : line.receivedQuantity()).sum();
+        return received >= custody.quantity();
     }
 
     /** A rejected, withdrawn or expired return takes no goods; one not known (null) neither. */

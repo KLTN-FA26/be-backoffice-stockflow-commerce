@@ -17,10 +17,21 @@ import java.util.UUID;
  *                     refund is undecided, COMPANY, CUSTOMER_HELD (the return refunded nothing: held for the customer,
  *                     out of the books), CUSTOMER_SENT_BACK or CUSTOMER_DESTROYED; null for one that never came back on
  *                     a return request
+ * @param returnRequestId the return request it last came back on, with {@code returnOwnership}; null for one that
+ *                     never came back on a return request, and wherever it is not read (only {@link CartonReturns#find}
+ *                     reads it). A custody note ended as taken by a supplementary return asks it of the carton the
+ *                     note names (confirmation audit CF-5): the carton must have come back on that return
  */
 public record ReturnedCarton(UUID stockPackageId, String lpn, String sku, String lotNumber, int quantity,
                              String status, String locationCode, java.time.Instant returnOpenedAt,
-                             String returnOwnership) {
+                             String returnOwnership, UUID returnRequestId) {
+
+    /** With its ownership, the return it came back on not read. */
+    public ReturnedCarton(UUID stockPackageId, String lpn, String sku, String lotNumber, int quantity, String status,
+                          String locationCode, java.time.Instant returnOpenedAt, String returnOwnership) {
+        this(stockPackageId, lpn, sku, lotNumber, quantity, status, locationCode, returnOpenedAt, returnOwnership,
+                null);
+    }
 
     /** As before ownership was kept (WF-05 Q-4). */
     public ReturnedCarton(UUID stockPackageId, String lpn, String sku, String lotNumber, int quantity, String status,

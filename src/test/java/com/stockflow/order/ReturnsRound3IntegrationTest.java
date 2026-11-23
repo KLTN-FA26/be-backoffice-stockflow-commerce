@@ -26,6 +26,7 @@ import com.stockflow.order.internal.domain.ReturnReason;
 import com.stockflow.order.internal.domain.ReturnRefusalReason;
 import com.stockflow.order.internal.domain.ReturnRequest;
 import com.stockflow.order.internal.domain.ReturnResolution;
+import com.stockflow.order.internal.domain.ReturnStatus;
 import com.stockflow.order.internal.service.ReturnCustodyNotes;
 import com.stockflow.order.internal.service.ReturnRequestQueries;
 import com.stockflow.order.internal.service.ReturnRequestService;
@@ -474,6 +475,47 @@ class ReturnsRound3IntegrationTest {
                 INSERT INTO ordering.return_custody_outcome (evidence_id, return_request_id, choice, chosen_by, chosen_at)
                 VALUES (?, ?, 'DESTROY_ON_BEHALF', ?, NOW())""", second, request.id(), sales.userId()))
                 .hasMessageContaining("ck_return_custody_outcome_consent");
+    }
+
+    @Test
+    @DisplayName("confirmation audit CF-5: a custody note is ended as taken by a supplementary return only once that "
+            + "return received the carton it names - not at once, not by hand in the database; a resolved return "
+            + "is not chosen, it can receive nothing")
+    void custodyNoteIsTakenOnlyOnceItsGoodsCameBackOnTheSupplementaryReturn() {
+        Delivered d = delivered(1);
+        Delivered more = delivered(1);
+        // The carton of the other order came back with this return's parcel: kept for the customer on a note.
+        ReturnRequest request = withCustodyNote(approved(d, CARTON), more.lpn(0).toLowerCase(), CARTON);
+        UUID note = custodyNoteOf(request);
+
+        // A resolved return of the same customer receives no parcel any more: not chosen.
+        Delivered done = delivered(1);
+        ReturnRequest finished = approved(done, CARTON);
+        back(finished, done.lpn(0));
+        returns.proposeRefund(finished.id(), new ReturnRequestService.ProposeRefundCommand(
+                Map.of(lineOf(finished, sku.sku()), CARTON), "kiểm hàng", null, null, null), sales.userId());
+        ReturnRequest resolved = returns.approveSettlement(finished.id(), null, accountant);
+        assertThat(resolved.status()).isEqualTo(ReturnStatus.RESOLVED);
+        assertThat(code(catchThrowable(() -> custodyNotes.choose(request.id(), note,
+                ReturnCustodyNoteChoice.TAKEN_BY_RETURN, null, resolved.id(), sales.userId()))))
+                .isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
+
+        // The supplementary return for the other order's carton, approved and waiting for it.
+        ReturnRequest supplementary = approved(more, CARTON);
+        custodyNotes.choose(request.id(), note, ReturnCustodyNoteChoice.TAKEN_BY_RETURN, null, supplementary.id(),
+                sales.userId());
+        assertThat(code(catchThrowable(() -> asHcm(manager, () -> custodyNotes.end(request.id(), note,
+                "PN nhận hàng", manager))))).as("the carton has not come back on it yet")
+                .isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
+        assertThat(inDatabase("UPDATE ordering.return_custody_outcome SET ended_at = NOW(), ended_by = ?, "
+                + "ended_note = 'by hand' WHERE evidence_id = ?", manager, note))
+                .as("stated twice: check_return_custody_outcome").hasMessageContaining("have not come back on return");
+
+        // Its receipt takes the carton: now the note ends as taken by it.
+        back(supplementary, more.lpn(0));
+        CustodyOutcome ended = asHcm(manager, () -> custodyNotes.end(request.id(), note, "PN nhận hàng", manager));
+        assertThat(ended.ended()).isTrue();
+        assertThat(ended.takenByReturnId()).isEqualTo(supplementary.id());
     }
 
     // ---- RAD-5 ------------------------------------------------------------------------------------------------------

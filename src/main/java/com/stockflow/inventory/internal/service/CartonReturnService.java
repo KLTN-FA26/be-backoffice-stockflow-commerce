@@ -105,8 +105,13 @@ public class CartonReturnService implements CartonReturns {
         }
         return stockPackages.findByLpns(List.of(normal)).stream().findFirst().map(carton -> {
             UomConversion unit = unitOf(carton);
-            return view(carton, unit.sku(), lotOf(carton), stockPackages.returnOpenedAt(carton.id()).orElse(null),
-                    ownership.of(carton.id()).map(Enum::name).orElse(null));
+            Optional<ReturnedCartonOwnership.Owned> owned = ownership.owned(carton.id());
+            ReturnedCarton seen = view(carton, unit.sku(), lotOf(carton),
+                    stockPackages.returnOpenedAt(carton.id()).orElse(null),
+                    owned.map(o -> o.ownership().name()).orElse(null));
+            return new ReturnedCarton(seen.stockPackageId(), seen.lpn(), seen.sku(), seen.lotNumber(), seen.quantity(),
+                    seen.status(), seen.locationCode(), seen.returnOpenedAt(), seen.returnOwnership(),
+                    owned.map(ReturnedCartonOwnership.Owned::returnRequestId).orElse(null));
         });
     }
 

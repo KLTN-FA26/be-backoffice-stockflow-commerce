@@ -6,10 +6,13 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.order.internal.domain.CustodyNoteRow;
+import com.stockflow.inventory.api.CartonReturns;
+import com.stockflow.inventory.api.ReturnedCarton;
 import com.stockflow.order.internal.domain.CustodyOutcome;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.ReturnCustodyNoteChoice;
+import com.stockflow.order.internal.domain.ReturnEvidence;
 import com.stockflow.order.internal.domain.ReturnRequest;
 import com.stockflow.order.internal.domain.ReturnRequestRepository;
 import com.stockflow.order.internal.domain.ReturnStatus;
@@ -23,6 +26,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -50,14 +54,16 @@ public class ReturnCustodyNotes {
     private final OrderRepository orders;
     private final ReturnCustodyNoteSearch search;
     private final ReturnWarehouseScope warehouseScope;
+    private final CartonReturns cartons;
     private final Clock clock;
 
     ReturnCustodyNotes(ReturnRequestRepository returns, OrderRepository orders, ReturnCustodyNoteSearch search,
-                       ReturnWarehouseScope warehouseScope, Clock clock) {
+                       ReturnWarehouseScope warehouseScope, CartonReturns cartons, Clock clock) {
         this.returns = returns;
         this.orders = orders;
         this.search = search;
         this.warehouseScope = warehouseScope;
+        this.cartons = cartons;
         this.clock = clock;
     }
 
@@ -97,9 +103,14 @@ public class ReturnCustodyNotes {
             details = "{returnId: #returnId, note: #note}")
     public CustodyOutcome end(UUID returnId, UUID evidenceId, String note, UUID by) {
         ReturnRequest request = locked(returnId);
-        ReturnStatus takenByStatus = request.custodyOutcome(evidenceId).map(CustodyOutcome::takenByReturnId)
-                .flatMap(returns::findById).map(ReturnRequest::status).orElse(null);
-        CustodyOutcome ended = request.endCustody(evidenceId, note, takenByStatus, by, now());
+        Optional<ReturnRequest> takenBy = request.custodyOutcome(evidenceId).map(CustodyOutcome::takenByReturnId)
+                .flatMap(returns::findById);
+        ReturnStatus takenByStatus = takenBy.map(ReturnRequest::status).orElse(null);
+        ReturnEvidence.Custody custody = request.evidence().stream()
+                .filter(e -> e.id().equals(evidenceId) && e.stage() == ReturnEvidence.Stage.CUSTODY)
+                .map(ReturnEvidence::custody).findFirst().orElse(null);
+        boolean got = takenBy.map(taker -> cameBackOn(custody, taker)).orElse(false);
+        CustodyOutcome ended = request.endCustody(evidenceId, note, takenByStatus, got, by, now());
         returns.save(request);
         log.info("Return {}: the goods of custody note {} left - {}", request.rmaNumber(), evidenceId,
                 ended.choice());
@@ -119,6 +130,22 @@ public class ReturnCustodyNotes {
         List<CustodyNoteRow> items = total == 0 ? List.of()
                 : search.page(ended, returnRequestId, limit, safePage * safeSize, safeSize);
         return PageResponse.of(items, safePage, safeSize, total);
+    }
+
+    /**
+     * Whether the goods of a custody note came back on {@code taker} (confirmation audit CF-5): the carton the note
+     * names was received on it - the return it last came back on, as inventory keeps it - or, a note naming a SKU, the
+     * taker's receipts counted at least the note's units of it ({@link ReturnRequest#receivedGoodsOf}).
+     */
+    private boolean cameBackOn(ReturnEvidence.Custody custody, ReturnRequest taker) {
+        if (custody == null) {
+            return false;
+        }
+        if (custody.lpn() != null) {
+            return cartons.find(custody.lpn()).map(ReturnedCarton::returnRequestId).filter(taker.id()::equals)
+                    .isPresent();
+        }
+        return taker.receivedGoodsOf(custody);
     }
 
     /** The return, its order locked first and then the return itself; refused outside the caller's warehouses. */
