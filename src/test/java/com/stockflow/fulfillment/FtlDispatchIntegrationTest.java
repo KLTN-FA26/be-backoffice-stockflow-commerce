@@ -4348,6 +4348,163 @@ class FtlDispatchIntegrationTest {
                 + "WHERE order_id = ? ORDER BY seq", String.class, orderId);
     }
 
+    // ---- audit r3 LM-2: the rest of an order's fees decided again after a delivery is undone ------------------------
+
+    /** The e-invoices of the order that were not voided, oldest first. */
+    private List<Map<String, Object>> einvoices(UUID orderId) {
+        return jdbc.queryForList("""
+                SELECT id, type, status, shipment_id, original_einvoice_id, correction_basis, grand_total
+                  FROM invoicing.einvoice WHERE order_id = ? AND status <> 'VOIDED_DRAFT' ORDER BY created_at, id""",
+                orderId);
+    }
+
+    /** Sends the draft e-invoice {@code id} as the accountant does, and waits for the sandbox's answer: ISSUED. */
+    private void issueEInvoice(UUID id, UUID accountant) {
+        var issuance = context.getBean(com.stockflow.invoicing.internal.service.EInvoiceIssuance.class);
+        var queries = context.getBean(com.stockflow.invoicing.internal.service.EInvoiceQueryService.class);
+        var issued = WithCurrentUser.call(com.stockflow.support.TestUsers.admin(), DataScope.ALL,
+                () -> com.stockflow.invoicing.internal.service.FirstSend.issue(issuance, queries, id,
+                        queries.get(id).version(), accountant));
+        assertThat(issued.status()).as("e-invoice " + id + " issued")
+                .isEqualTo(com.stockflow.invoicing.internal.domain.EInvoiceStatus.ISSUED);
+    }
+
+    /** The one draft e-invoice of the order matching {@code where} (SQL over {@code invoicing.einvoice}), once drawn up. */
+    private UUID awaitDraft(UUID orderId, String what, String where, Object... args) {
+        Object[] all = new Object[args.length + 1];
+        all[0] = orderId;
+        System.arraycopy(args, 0, all, 1, args.length);
+        String sql = "SELECT id FROM invoicing.einvoice WHERE order_id = ? AND status = 'DRAFT' AND " + where;
+        Await.until(what, ASYNC, () -> jdbc.queryForList(sql, UUID.class, all).size() == 1);
+        return jdbc.queryForObject(sql, UUID.class, all);
+    }
+
+    @Test
+    @DisplayName("audit r3 LM-2 end to end (TT-5, GH-2/HĐ-3, GH-1): a plate fee and a shipping fee, two batches; batch 1 "
+            + "delivered and invoiced, the rest closed and its fee rest invoiced; the delivery corrected to a failure "
+            + "and the shipment brought back - the plate fee goes on a second rest invoice, the shipping fee waived is "
+            + "taken off the issued rest invoice, the fee rest is invoiced again, and the order closes with its "
+            + "contract liquidated")
+    void theFeeRestIsDecidedAgainOnceTheDeliveryIsUndone() throws Exception {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        UUID accountant = staff("ACCOUNTANT");
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        String taxCode = "03" + (10_000_000 + java.util.concurrent.ThreadLocalRandom.current().nextInt(89_999_999));
+        confirmedOrders().legalProfile(customer);
+        tx.executeWithoutResult(s -> {
+            jdbc.update("UPDATE customer.customer SET tax_code = ? WHERE id = ?", taxCode, customer);
+            jdbc.update("UPDATE customer.customer_legal_profile SET invoice_email = ? WHERE customer_id = ?",
+                    "ke.toan@" + customer + ".example.com", customer);
+            jdbc.update("""
+                    INSERT INTO customer.credit_profile (id, customer_id, credit_limit, credit_term_days, approved_by,
+                                                         approved_at)
+                    VALUES (?, ?, 10000000000, 30, ?, NOW())""", Identifiers.newId(), customer, accountant);
+        });
+        CustomerSkuRows.Issued cup = cupOf(customer);
+        CustomerSkuRows.stock(jdbc, tx, cup.sku(), 2 * 4);
+        // Cups at the standard rate: an invoice line at 0% is refused (TAX_EXEMPT_NOT_SUPPORTED).
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE product.products SET tax_class = 'STANDARD' WHERE id = ?",
+                cup.productId()));
+        UUID draft = confirmedOrders().draft(customer, List.of(ConfirmedOrders.Line.cartons(cup, 4, 6_000_000)
+                .withTax(BigDecimal.TEN)));
+        // TT-5: a plate fee for the customer's design and a shipping fee, both with 10% VAT.
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    INSERT INTO ordering.order_fee_line (id, order_id, kind, sku, amount, tax_rate, tax_amount, currency)
+                    VALUES (?, ?, 'PLATE_FEE', ?, 500000, 10, 50000, 'VND'),
+                           (?, ?, 'SHIPPING_FEE', NULL, 1000000, 10, 100000, 'VND')""",
+                    Identifiers.newId(), draft, cup.sku(), Identifiers.newId(), draft);
+            jdbc.update("""
+                    UPDATE ordering.customer_order SET total_amount = total_amount + 1650000,
+                           tax_amount = tax_amount + 150000 WHERE id = ?""", draft);
+        });
+        UUID orderId = confirmedOrders().sign(draft, List.of(new SalesContracts.Installment("After delivery",
+                "AFTER_DELIVERY", null, new BigDecimal("100"), 10, null)), 2).orderId();
+        confirmedOrders().awaitStatus(orderId, OrderStatus.CONFIRMED);
+        OrderSummary order = confirmedOrders().release(orderId, HCM, coordinator);
+
+        // Batch 1 delivered; its invoice carries the goods, the plate fee and its share of the shipping fee.
+        UUID shipment = handedOver(order, ghn)[0];
+        oc(body(post(BASE + "/shipments/" + shipment + "/delivery-outcome"), "{\"outcome\":\"DELIVERED\"}"))
+                .andExpect(status().isOk());
+        UUID first = awaitDraft(orderId, "batch 1's invoice", "shipment_id = ?", shipment);
+        issueEInvoice(first, accountant);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM invoicing.einvoice_line WHERE einvoice_id = ? "
+                + "AND fee_kind = 'PLATE_FEE'", Long.class, first)).as("the plate fee goes with the first delivery")
+                .isEqualTo(1L);
+
+        // Sales close batch 2: its share of the shipping fee goes on the rest invoice R.
+        orders.closeRemainder(orderId, com.stockflow.order.api.CancellationReasonCode.CUSTOMER_REQUEST,
+                "Khach khong lay dot 2", sales);
+        UUID rest = awaitDraft(orderId, "the rest invoice", "type = 'ORIGINAL' AND shipment_id IS NULL");
+        issueEInvoice(rest, accountant);
+        BigDecimal restTotal = jdbc.queryForObject("SELECT grand_total FROM invoicing.einvoice WHERE id = ?",
+                BigDecimal.class, rest);
+        assertThat(restTotal).as("batch 2's share of the shipping fee").isPositive();
+        var deliveryInvoices = context.getBean(com.stockflow.order.api.DeliveryInvoices.class);
+        assertThat(deliveryInvoices.shippingFeeUnissued(orderId)).isFalse();
+
+        // The customer disputes batch 1: corrected to a failure, its invoice reduced in full by the system.
+        String correction = BASE + "/shipments/" + shipment + "/delivery-outcome-correction";
+        as(manager, "WAREHOUSE_MANAGER", body(post(correction), "{\"outcome\":\"DELIVERY_FAILED\","
+                + "\"failureReason\":\"CUSTOMER_ABSENT\",\"reason\":\"the customer says nothing arrived\"}"))
+                .andExpect(status().isOk());
+        UUID firstReduced = awaitDraft(orderId, "the reduction of batch 1's invoice",
+                "type = 'ADJUSTMENT' AND correction_basis = 'DELIVERY_FAILED' AND original_einvoice_id = ?", first);
+        issueEInvoice(firstReduced, accountant);
+
+        // The carrier brings it back; received, the order ends with nothing delivered: the whole shipping fee is waived
+        // (Q-19), the plate fee is still owed - and only the reversed invoice carried it.
+        oc(body(post(BASE + "/shipments/" + shipment + "/delivery-outcome"), "{\"outcome\":\"RETURNED\"}"))
+                .andExpect(status().isOk());
+        assertThat(caseRow(receivedBack(shipment, null))).containsEntry("status", "CANCELLED");
+
+        UUID plate = awaitDraft(orderId, "a second rest invoice for the plate fee",
+                "type = 'ORIGINAL' AND shipment_id IS NULL");
+        assertThat(jdbc.queryForList("SELECT fee_kind || ':' || sku || ':' || amount::bigint FROM "
+                + "invoicing.einvoice_line WHERE einvoice_id = ?", String.class, plate))
+                .containsExactly("PLATE_FEE:" + cup.sku() + ":500000");
+        UUID restReduced = awaitDraft(orderId, "the reduction of the rest invoice",
+                "type = 'ADJUSTMENT' AND correction_basis = 'DELIVERY_FAILED' AND original_einvoice_id = ?", rest);
+        assertThat(jdbc.queryForObject("SELECT grand_total FROM invoicing.einvoice WHERE id = ?", BigDecimal.class,
+                restReduced)).as("the shipping fee R billed, no longer collected").isEqualByComparingTo(restTotal.negate());
+        assertThat(deliveryInvoices.shippingFeeUnissued(orderId)).as("the fee rest is not invoiced yet").isTrue();
+
+        issueEInvoice(plate, accountant);
+        issueEInvoice(restReduced, accountant);
+        assertThat(deliveryInvoices.shippingFeeUnissued(orderId)).as("the fee rest invoiced again").isFalse();
+        var drafts = context.getBean(com.stockflow.invoicing.internal.service.EInvoiceDrafts.class);
+        int before = einvoices(orderId).size();
+        WithCurrentUser.run(com.stockflow.support.TestUsers.admin(), DataScope.ALL,
+                () -> drafts.drawUpShippingFeeRest(orderId, java.time.Instant.now()));
+        assertThat(einvoices(orderId)).as("asked again, nothing new is drawn up").hasSize(before);
+
+        // The customer pays what is still owed - the plate fee - and the order closes once its delay has passed; nothing
+        // was delivered, so its contract is LIQUIDATED.
+        for (Map<String, Object> owed : jdbc.queryForList("""
+                SELECT id, amount - paid_amount - reduced_amount AS left FROM payment.installment
+                 WHERE order_id = ? AND status NOT IN ('PAID', 'CANCELLED')
+                   AND amount - paid_amount - reduced_amount > 0""", orderId)) {
+            confirmedOrders().pay(customer, (UUID) owed.get("id"), (BigDecimal) owed.get("left"));
+        }
+        var settlements = context.getBean(com.stockflow.order.internal.service.OrderSettlementService.class);
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.RETURNED);
+        assertThat(settlements.close(orderId)).as("inside the closing delay").isFalse();
+        tx.executeWithoutResult(s -> {
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            jdbc.update("""
+                    UPDATE ordering.order_shipment SET units_closed_at = units_closed_at - interval '40 days'
+                     WHERE order_id = ?""", orderId);
+            jdbc.update("""
+                    UPDATE ordering.customer_order SET remainder_closed_at = remainder_closed_at - interval '40 days'
+                     WHERE id = ?""", orderId);
+        });
+        assertThat(settlements.close(orderId)).as("nothing left: no fee rest uninvoiced, nothing owed").isTrue();
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.CLOSED);
+        assertThat(jdbc.queryForObject("SELECT status FROM ordering.sales_contract WHERE order_id = ? "
+                + "AND status <> 'CANCELLED'", String.class, orderId)).isEqualTo("LIQUIDATED");
+    }
+
     private void recordRefund(UUID orderId, BigDecimal amount) {
         UUID accountant = staff("ACCOUNTANT");
         context.getBean(com.stockflow.payment.internal.service.RefundService.class).record(
