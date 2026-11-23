@@ -46,17 +46,28 @@ public interface CartonReturns {
     List<ReturnedCarton> receive(ReceiveReturnedCartonsCommand command);
 
     /**
-     * The refund of return {@code returnRequestId} was decided (WF-05 Q-4), in the transaction that resolves it: its
-     * cartons that came back sealed and wait for the decision become the company's when {@code unitsRefunded}, and
-     * otherwise the customer's - "không có thoả thuận trả hàng thì hàng vẫn là của khách ... không có bút toán nhập
-     * kho": the stock-in of each is reversed by one ADJUSTMENT line naming the return, the carton leaves the books
-     * (CONSUMED) and stands where it is, in the quarantine area, held for the customer. Locks the SKUs, then the cartons,
-     * then their rows - after the order and the return the caller holds, the global order. Called again it finds nothing
+     * The refund of return {@code returnRequestId} was decided (WF-05 Q-4), in the transaction that resolves it, and with
+     * it whose each of its cartons that came back sealed and waits for the decision is - per SKU, as {@code refunded}
+     * says it (audit round 3, RAD-1: "không có thoả thuận trả hàng thì hàng vẫn là của khách" is about goods, not about
+     * the return as a whole). Of a SKU, the refunded units are taken first from what came back outside a sealed carton
+     * (opened cartons and loose units, never stocked, Q-18), then carton by carton in label order: a carton the refund
+     * reaches is the company's, whole (a carton is not split, 20 BR-14); one it does not reach - every carton of a SKU
+     * refunded 0 among them - stays the customer's: its stock-in is reversed by one ADJUSTMENT line naming the return,
+     * the carton leaves the books (CONSUMED) and stands where it is, in the quarantine area, held for the customer.
+     * {@code tg_return_request_goods_settled} checks the same split at commit. Locks the SKUs, then the cartons, then
+     * their rows - after the order and the return the caller holds, the global order. Called again it finds nothing
      * waiting and changes nothing.
      *
+     * @param refunded per SKU of the return, the units back and refunded; a SKU not named refunded nothing
      * @return how many cartons were settled
      */
-    int settleOwnership(UUID returnRequestId, boolean unitsRefunded, UUID actorId, Instant at);
+    int settleOwnership(UUID returnRequestId, List<RefundedSku> refunded, UUID actorId, Instant at);
+
+    /**
+     * The cartons of return {@code returnRequestId} held for the customer or whose custody ended, by LPN (WF-05 Q-4):
+     * what a custody choice on the return is about. Empty when none is.
+     */
+    List<HeldCarton> heldFor(UUID returnRequestId);
 
     /**
      * What the customer chose for the goods of return {@code returnRequestId} held for them (WF-05 Q-4), as Sales
@@ -69,8 +80,11 @@ public interface CartonReturns {
     int instructCustody(UUID returnRequestId, CustodyInstruction instruction);
 
     /**
-     * Of these LPNs, those that are the customer's goods (WF-05 Q-4): held for them, handed back, or destroyed on their
-     * behalf - never in the books, whatever a receipt once put into stock.
+     * Of these LPNs, those whose stock-in return {@code returnRequestId} reversed (WF-05 Q-4; audit round 3, RAD-5): the
+     * return refunded nothing of them, so a receipt of that return took them into stock and the refund decision took
+     * them out again - the ledger's ADJUSTMENT line naming the return says so for good. Read from the ledger, not from
+     * the carton's ownership now: a carton that came back again on a later return carries that return's ownership,
+     * which says nothing of this one.
      */
-    Set<String> customersGoods(Collection<String> lpns);
+    Set<String> reversedBy(UUID returnRequestId, Collection<String> lpns);
 }

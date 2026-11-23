@@ -254,12 +254,14 @@ class StockPackageContents {
      * @throws BusinessException {@code STOCK_PACKAGE_DECISION_PENDING}, naming the carton's {@code returnOwnership}
      */
     void requireCompanys(StockPackage carton) {
-        ownership.of(carton.id()).filter(owned -> owned == ReturnedCartonOwnership.Ownership.PENDING
-                || owned.customers()).ifPresent(owned -> {
+        ownership.owned(carton.id()).filter(owned -> owned.ownership() == ReturnedCartonOwnership.Ownership.PENDING
+                || owned.ownership().customers()).ifPresent(owned -> {
+                    // The details name the return (audit r3 RAD-4): the screen says "waiting for the refund of RMA-..."
+                    // rather than another decision under way.
                     throw new BusinessException(ErrorCode.STOCK_PACKAGE_DECISION_PENDING, ("%s came back on a return and "
                             + "is %s: it is the company's to decide on only once the return's refund made it so")
-                            .formatted(carton.lpn(), owned), List.of(), Map.of("lpn", carton.lpn(),
-                            "returnOwnership", owned.name()));
+                            .formatted(carton.lpn(), owned.ownership()), List.of(), Map.of("lpn", carton.lpn(),
+                            "returnOwnership", owned.ownership().name(), "returnRequestId", owned.returnRequestId()));
                 });
     }
 

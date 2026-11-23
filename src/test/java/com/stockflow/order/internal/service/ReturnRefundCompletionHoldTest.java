@@ -72,7 +72,7 @@ class ReturnRefundCompletionHoldTest {
             mock(OrderEventPublisher.class), payments, mock(CustomerService.class), mock(FileTransfers.class),
             mock(StagedUploads.class), mock(TransactionOperations.class), POLICY,
             Clock.fixed(NOW, ZoneOffset.UTC), deliveryFailures, mock(ReturnAllowances.class),
-            mock(CartonReturns.class));
+            mock(CartonReturns.class), mock(ReturnWarehouseScope.class));
 
     private final UUID orderId = UUID.randomUUID();
     private final Order order = mock(Order.class);

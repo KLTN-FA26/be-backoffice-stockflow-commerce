@@ -19,11 +19,33 @@ import java.util.UUID;
  * @param returnOpenedAt when a return receipt found it opened or empty (WF-05 TH-4, Q-18): never sold again - since
  *                    Q-18 it stays CONSUMED, before that it sat in quarantine to be written off; null when it never came
  *                    back so
+ * @param returnOwnership whose goods it is after it last came back on a return request (WF-05 Q-4): PENDING while the
+ *                    refund is undecided - no release, no write-off (audit round 3, RAD-4: the screen must know before
+ *                    it offers them) - COMPANY, or CUSTOMER_*; null for a carton that never came back on one
+ * @param returnRequestId the return request it last came back on; null with {@code returnOwnership}
+ * @param returnRmaNumber that return's RMA number, filled by the lookup; null when not known
  */
 public record StockPackageBalance(UUID id, String lpn, String sku, String unitOfMeasure, int nominalQty,
                                   Integer receivedQty, String locationCode, StockPackageStatus status,
                                   String lotNumber, int onHand, int reserved,
-                                  UUID goodsReceiptLineId, Instant closedAt, Instant returnOpenedAt) {
+                                  UUID goodsReceiptLineId, Instant closedAt, Instant returnOpenedAt,
+                                  String returnOwnership, UUID returnRequestId, String returnRmaNumber) {
+
+    /** As before the return's ownership was shown. */
+    public StockPackageBalance(UUID id, String lpn, String sku, String unitOfMeasure, int nominalQty,
+                               Integer receivedQty, String locationCode, StockPackageStatus status, String lotNumber,
+                               int onHand, int reserved, UUID goodsReceiptLineId, Instant closedAt,
+                               Instant returnOpenedAt) {
+        this(id, lpn, sku, unitOfMeasure, nominalQty, receivedQty, locationCode, status, lotNumber, onHand, reserved,
+                goodsReceiptLineId, closedAt, returnOpenedAt, null, null, null);
+    }
+
+    /** The same carton naming its return by its RMA number. */
+    public StockPackageBalance withReturnRmaNumber(String rmaNumber) {
+        return new StockPackageBalance(id, lpn, sku, unitOfMeasure, nominalQty, receivedQty, locationCode, status,
+                lotNumber, onHand, reserved, goodsReceiptLineId, closedAt, returnOpenedAt, returnOwnership,
+                returnRequestId, rmaNumber);
+    }
 
     /** A carton that never came back opened on a return. */
     public StockPackageBalance(UUID id, String lpn, String sku, String unitOfMeasure, int nominalQty,

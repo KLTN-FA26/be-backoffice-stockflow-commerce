@@ -50,13 +50,17 @@ class PaymentConfirmationDocument {
      * @param receivedOn    the day the money reached the account, by the bank statement
      * @param recordedAt    when the accountant recorded it against the instalment
      * @param bankReference the transfer's reference on the bank statement
-     * @param paidToDate    everything paid under the contract, this payment included
+     * @param contractValue what the contract was signed for (its plan's installments at their signed amounts); null
+     *                      for a fee item, which is no part of it - the paper then shows no standing
+     * @param reducedToDate what settlements had taken off the contract's installments when this payment was recorded
+     *                      (returns, carrier returns, closures of the rest); shown as a column of its own when not 0
+     * @param paidToDate    everything paid under the contract when this payment was recorded, this payment included
      * @param preparedBy    who recorded the payment; null to leave the name to be written in
      */
     record Facts(String number, LocalDate dated, DocumentParts.Party payer, String contractNumber, String orderNumber,
                  String installment, BigDecimal amount, LocalDate receivedOn, Instant recordedAt,
                  String bankReference,
-                 BigDecimal contractValue, BigDecimal paidToDate, String preparedBy) {
+                 BigDecimal contractValue, BigDecimal reducedToDate, BigDecimal paidToDate, String preparedBy) {
     }
 
     private final DocumentFonts fonts;
@@ -93,15 +97,29 @@ class PaymentConfirmationDocument {
                 DocumentFormats.moment(f.recordedAt())));
         blocks.add(new Fields(fields, 0));
 
-        blocks.add(Paragraph.bold(t.getString("payment-confirmation.pdf.standing").formatted(f.contractNumber()))
-                .align(Align.LEFT).after(0));
-        blocks.add(new Table(List.of(
-                new Column(t.getString("payment-confirmation.pdf.col.contract"), 150, Align.RIGHT),
-                new Column(t.getString("payment-confirmation.pdf.col.paid"), 150, Align.RIGHT),
-                new Column(t.getString("payment-confirmation.pdf.col.remaining"), 150, Align.RIGHT)),
-                List.of(List.of(Cell.of(DocumentFormats.money(f.contractValue())),
-                        Cell.of(DocumentFormats.money(f.paidToDate())),
-                        Cell.bold(DocumentFormats.money(f.contractValue().subtract(f.paidToDate())))))));
+        if (f.contractValue() != null) {
+            // As the contract stood when this payment was recorded (audit r3 RAD-8): its signed value, what settlements
+            // had taken off it - a column only when something had - and what had been paid by then.
+            boolean reduced = f.reducedToDate() != null && f.reducedToDate().signum() != 0;
+            BigDecimal remaining = f.contractValue().subtract(reduced ? f.reducedToDate() : BigDecimal.ZERO)
+                    .subtract(f.paidToDate());
+            List<Column> columns = new ArrayList<>();
+            List<Cell> cells = new ArrayList<>();
+            int width = reduced ? 112 : 150;
+            columns.add(new Column(t.getString("payment-confirmation.pdf.col.contract"), width, Align.RIGHT));
+            cells.add(Cell.of(DocumentFormats.money(f.contractValue())));
+            if (reduced) {
+                columns.add(new Column(t.getString("payment-confirmation.pdf.col.reduced"), width, Align.RIGHT));
+                cells.add(Cell.of(DocumentFormats.money(f.reducedToDate())));
+            }
+            columns.add(new Column(t.getString("payment-confirmation.pdf.col.paid"), width, Align.RIGHT));
+            cells.add(Cell.of(DocumentFormats.money(f.paidToDate())));
+            columns.add(new Column(t.getString("payment-confirmation.pdf.col.remaining"), width, Align.RIGHT));
+            cells.add(Cell.bold(DocumentFormats.money(remaining)));
+            blocks.add(Paragraph.bold(t.getString("payment-confirmation.pdf.standing").formatted(f.contractNumber()))
+                    .align(Align.LEFT).after(0));
+            blocks.add(new Table(columns, List.of(cells)));
+        }
         blocks.add(Paragraph.italic(t.getString("payment-confirmation.pdf.note")).size(-1));
 
         blocks.add(new Signatures(null, List.of(PaymentDocumentLines.preparedBy(t, f.preparedBy()),

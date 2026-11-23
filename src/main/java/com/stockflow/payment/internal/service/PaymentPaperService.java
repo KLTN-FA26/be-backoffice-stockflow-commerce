@@ -3,13 +3,11 @@ package com.stockflow.payment.internal.service;
 import com.stockflow.common.document.DocumentParts;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.customer.api.CustomerLegalProfile;
 import com.stockflow.customer.api.CustomerLegalProfiles;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.payment.api.InstallmentOrders;
-import com.stockflow.payment.api.InstallmentStanding;
 import com.stockflow.payment.internal.domain.Installment;
 import com.stockflow.payment.internal.domain.InstallmentBook;
 import com.stockflow.payment.internal.domain.OrderSettlement;
@@ -103,14 +101,20 @@ public class PaymentPaperService {
                         "No receipt %s in force paid installment %s".formatted(receiptId, installmentId)));
         UUID recordedBy = book.findReceipt(receiptId).map(PaymentReceipt::recordedBy).orElse(null);
         ResourceBundle t = DocumentParts.bundle();
-        InstallmentStanding standing = installments.standing(installment.orderId());
+        // Audit r3 RAD-8: the contract as it stood when this receipt was recorded - its signed value (owner 23/11: "KHÔNG
+        // đổi giá trị hợp đồng gốc"), what settlements had taken off it by then, what was paid by then, this receipt
+        // included - never today's figures, which made the same paper say other things each time it was printed. A fee
+        // item is no part of the contract's value: its confirmation shows no standing.
+        CustomerLedgerQuery.StandingAt standing = installment.isFeeItem() ? null
+                : ledger.standingAt(installment.contractId(), paid.recordedAt());
         String number = "XNTT-" + NUMBER_DAY.format(paid.receivedOn()) + "-" + tail(receiptId) + "-"
                 + installment.seq();
         byte[] pdf = paymentConfirmation.render(new PaymentConfirmationDocument.Facts(number,
                 LocalDate.ofInstant(paid.recordedAt(), InstallmentService.BUSINESS_ZONE),
                 party(installment.customerId()), installment.contractNumber(), installment.orderNumber(),
                 label(t, installment), paid.amount(), paid.receivedOn(), paid.recordedAt(), paid.reference(),
-                standing.total(), standing.paid(), nameOf(recordedBy)));
+                standing == null ? null : standing.contractValue(), standing == null ? null : standing.reduced(),
+                standing == null ? null : standing.paid(), nameOf(recordedBy)));
         return new Pdf(t.getString("document.file.paymentConfirmation").formatted(number), pdf);
     }
 
@@ -142,13 +146,15 @@ public class PaymentPaperService {
         String contractNumber = ofOrder.stream().map(OrderSettlement::contractNumber).findFirst()
                 .orElseGet(() -> book.ofOrder(record.orderId()).stream().map(Installment::contractNumber).findFirst()
                         .orElse(""));
-        String account = legalProfiles.legalProfile(record.customerId()).map(CustomerLegalProfile::bankAccount)
-                .filter(bank -> DocumentParts.filled(bank.accountNumber()) && DocumentParts.filled(bank.bankName()))
-                .map(bank -> DocumentParts.filled(bank.accountHolder())
-                        ? t.getString("payment-papers.account").formatted(bank.accountNumber(), bank.bankName(),
-                        bank.accountHolder())
-                        : t.getString("document.party.accountAt").formatted(bank.accountNumber(), bank.bankName()))
-                .orElse(null);
+        // Audit r3 RAD-6: the account the money went to, as recorded with the refund - never the customer's profile
+        // today, which a later change (after a bounced transfer, say) would print as the destination of a past refund.
+        // A record kept before the account was recorded names none: the transaction reference identifies the transfer.
+        RefundRecord.PayeeAccount payee = record.payeeAccount();
+        String account = payee == null ? t.getString("payment-papers.accountByReference")
+                : DocumentParts.filled(payee.accountHolder())
+                ? t.getString("payment-papers.account").formatted(payee.accountNumber(), payee.bankName(),
+                payee.accountHolder())
+                : t.getString("document.party.accountAt").formatted(payee.accountNumber(), payee.bankName());
         String number = "PHT-" + NUMBER_DAY.format(record.refundedOn()) + "-" + tail(recordId);
         byte[] pdf = refundConfirmation.render(new RefundConfirmationDocument.Facts(number,
                 LocalDate.ofInstant(record.recordedAt(), InstallmentService.BUSINESS_ZONE), party(record.customerId()),
@@ -162,7 +168,7 @@ public class PaymentPaperService {
      * The record reconciling a customer's debt over {@code from} to {@code to}, both days included.
      *
      * <p>The ledger is made of what the books hold. An installment adds to the debt the day its milestone is reached,
-     * by its whole amount; each reduction a settlement made of it ({@code payment.installment_reduction}) takes it off
+     * by its whole amount - also one its order's cancellation ended later (audit r3 RAD-7); each reduction a settlement made of it ({@code payment.installment_reduction}) takes it off
      * on the settlement's day - or the installment's, when it was reached later - so a period's opening balance is what
      * the record of the period before closed at, whatever was reduced since (audit r2 money M-3: a reduction dated
      * with its installment lowered the balance of a period both parties had signed). A receipt takes its lines off the
@@ -191,6 +197,20 @@ public class PaymentPaperService {
         List<CustomerLedgerQuery.Charge> charges = ledger.charges(customerId);
         List<DebtReconciliationDocument.Entry> all = new ArrayList<>();
         for (CustomerLedgerQuery.Charge charge : charges) {
+            BigDecimal carried = charge.carried() == null ? BigDecimal.ZERO : charge.carried();
+            if (charge.feeItem() && carried.signum() > 0) {
+                // A closure of the rest moved goods money still owed onto its fee item (group r3a): that part is the
+                // goods' price, not a fee, and a paper must say what each sum is (Luật Kế toán Điều 16).
+                all.add(entry(charge.day(), charge.contractNumber(), t.getString("payment-papers.debt.carriedToFee")
+                        .formatted(charge.orderNumber()), carried, BigDecimal.ZERO));
+                BigDecimal fee = charge.amount().subtract(carried);
+                if (fee.signum() > 0) {
+                    all.add(entry(charge.day(), charge.contractNumber(), t.getString("payment-papers.debt.fee")
+                            .formatted(t.getString("payment-papers.fee." + charge.milestone()), charge.orderNumber()),
+                            fee, BigDecimal.ZERO));
+                }
+                continue;
+            }
             String what = charge.feeItem()
                     ? t.getString("payment-papers.debt.fee").formatted(
                     t.getString("payment-papers.fee." + charge.milestone()), charge.orderNumber())
@@ -210,15 +230,19 @@ public class PaymentPaperService {
                     reduction.amount()));
         }
         for (CustomerLedgerQuery.Receipt receipt : ledger.receipts(customerId)) {
-            String what = receipt.feeItem()
+            String what = receipt.carriesGoods()
+                    ? t.getString("payment-papers.debt.receiptCarried").formatted(receipt.contractNumber())
+                    : receipt.feeItem()
                     ? t.getString("payment-papers.debt.receiptFee").formatted(receipt.contractNumber())
                     : t.getString("payment-papers.debt.receipt").formatted(receipt.seq(), receipt.contractNumber());
             all.add(entry(receipt.day(), receipt.reference(), what, BigDecimal.ZERO, receipt.amount()));
         }
         for (CustomerLedgerQuery.Settlement settlement : settled) {
             if (OrderSettlement.Kind.ORDER_CANCELLED.name().equals(settlement.kind())) {
-                // What the order's installments still charged: their amounts less what reductions, entered above,
-                // took off them.
+                // What the order's installments still charged when it was cancelled: every one reached - those the
+                // cancellation ended and those paid in full alike (audit r3 RAD-7) - less what reductions, entered
+                // above, took off them. The money paid on them stays credited: written off here, it becomes the
+                // customer's to have back, less the fee kept below, as the refund entered after settles.
                 BigDecimal charged = charges.stream().filter(charge -> !charge.feeItem()
                                 && charge.orderNumber().equals(settlement.orderNumber()))
                         .map(charge -> charge.amount().subtract(charge.reduced()))
@@ -252,7 +276,7 @@ public class PaymentPaperService {
                 .filter(entry -> !entry.date().isBefore(from) && !entry.date().isAfter(to)).toList();
         // Overdue is a fact of today: a period that ended earlier cannot say what was overdue on its last day.
         BigDecimal overdue = to.equals(today) ? charges.stream()
-                .filter(charge -> charge.dueDate() != null && charge.dueDate().isBefore(today)
+                .filter(charge -> !charge.cancelled() && charge.dueDate() != null && charge.dueDate().isBefore(today)
                         && charge.outstanding().signum() > 0)
                 .map(CustomerLedgerQuery.Charge::outstanding).reduce(BigDecimal.ZERO, BigDecimal::add) : null;
         Set<String> contracts = charges.stream().map(CustomerLedgerQuery.Charge::contractNumber)

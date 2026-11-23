@@ -162,8 +162,8 @@ public final class ReturnRequest extends AggregateRoot {
     /** The DRAFT return receipt counting a parcel of this return now (WF-05 BE-23); null when none. */
     private UUID openDraftReceiptId;
     /**
-     * What the customer chose for their goods when the return refunded nothing (WF-05 Q-4), as Sales recorded it; null
-     * until they did, and for a return that refunded units.
+     * What the customer chose for the cartons of this return held for them (WF-05 Q-4: those the refund did not take
+     * back, per SKU since audit round 3), as Sales recorded it; null until they did, and while none is held.
      */
     private ReturnCustodyChoice custodyChoice;
     /** The record the choice rests on: required for a destruction on the customer's behalf (their written consent). */
@@ -180,6 +180,10 @@ public final class ReturnRequest extends AggregateRoot {
     private final List<ReturnDiscrepancy> newDiscrepancies = new ArrayList<>();
     private final List<ReturnParcel> newParcels = new ArrayList<>();
     private final List<ReturnTransition> transitions = new ArrayList<>();
+    /** How each custody note's goods end (WF-05 Q-11, audit round 3 RAD-3), by the note's id; none until chosen. */
+    private final Map<UUID, CustodyOutcome> custodyOutcomes = new LinkedHashMap<>();
+    /** Outcomes chosen or ended since the request was loaded; drained by the repository, which writes them. */
+    private final List<CustodyOutcome> changedCustodyOutcomes = new ArrayList<>();
 
     public ReturnRequest(UUID id, String rmaNumber, UUID orderId, String orderNumber, UUID customerId, UUID requestId,
                          ReturnChannel channel, ReturnReason reason, String description,
@@ -1458,22 +1462,24 @@ public final class ReturnRequest extends AggregateRoot {
 
     /**
      * Sales record what the customer chose for their goods (WF-05 Q-4: "Sale hỏi khách, ghi lại một trong hai: gửi trả
-     * (khách chịu phí), hoặc khách đồng ý để công ty huỷ hộ (biên bản)"): the return refunded nothing, so whatever came
-     * back sealed is the customer's, held for them in the quarantine area; the warehouse manager carries out exactly
-     * this. A destruction on their behalf rests on their written consent, which {@code note} names. Recorded again, the
-     * new choice replaces the old while nothing was carried out (the warehouse says so,
-     * {@code CartonReturns#instructCustody}). {@code ck_return_request_custody_choice} says the same.
+     * (khách chịu phí), hoặc khách đồng ý để công ty huỷ hộ (biên bản)"): what came back sealed and the refund did not
+     * take back is the customer's, held for them in the quarantine area; the warehouse manager carries out exactly this.
+     * A destruction on their behalf rests on their written consent, which {@code note} names. Recorded again, the new
+     * choice replaces the old while nothing was carried out (the warehouse says so, {@code CartonReturns#instructCustody}).
      *
-     * @throws BusinessException {@code RETURN_INVALID_TRANSITION} for a return not RESOLVED, or one that refunded units
-     *         (the goods are the company's); {@code VALIDATION_FAILED} with no choice, or a destruction with no record
+     * <p>Only once the refund is decided - before, no carton is the customer's yet. Whether one is held is the
+     * cartons' to say ({@code CartonReturns#instructCustody}, {@code tg_return_request_custody_held}): since audit round
+     * 3 (RAD-1) the goods are settled per SKU, so a return that refunded units may hold another SKU's cartons, or whole
+     * cartons beyond the refunded units, for the customer. {@code ck_return_request_custody_choice} says the rest.</p>
+     *
+     * @throws BusinessException {@code RETURN_INVALID_TRANSITION} for a return not RESOLVED; {@code VALIDATION_FAILED}
+     *         with no choice, or a destruction with no record
      */
     public void recordCustodyChoice(ReturnCustodyChoice choice, String note, UUID by, Instant now) {
         Objects.requireNonNull(by, "by");
-        if (status != ReturnStatus.RESOLVED || vatAdjustmentRequired
-                || lines.stream().anyMatch(line -> line.refundQuantity() > 0)) {
-            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, ("Return %s is %s%s: only goods of a return "
-                    + "that refunded nothing are the customer's to decide on").formatted(rmaNumber, status,
-                    status == ReturnStatus.RESOLVED ? " with units refunded" : ""));
+        if (status != ReturnStatus.RESOLVED) {
+            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, ("Return %s is %s: the goods are the "
+                    + "customer's to decide on only once its refund is decided").formatted(rmaNumber, status));
         }
         if (choice == null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Say what the customer chose: SEND_BACK or "
@@ -1488,6 +1494,111 @@ public final class ReturnRequest extends AggregateRoot {
         this.custodyChoiceNote = text;
         this.custodyChoiceBy = by;
         this.custodyChoiceAt = now;
+    }
+
+    /**
+     * Sales record what the customer chose for the goods of custody note {@code evidenceId} (WF-05 Q-11 hỏi thêm: "Sale
+     * chọn: trả lại khách / mở yêu cầu bổ sung / khách đồng ý huỷ hộ (biên bản)"; audit round 3, RAD-3): handed back,
+     * destroyed on their behalf with their written consent ({@code note} names it), or taken on the supplementary return
+     * {@code takenBy} of the same customer. Whatever the return's status: such goods turn up at any time. Recorded
+     * again, the new choice replaces the old while the warehouse has not carried it out.
+     *
+     * @param takenBy the supplementary return, for TAKEN_BY_RETURN only; one rejected, withdrawn or expired takes
+     *                nothing
+     * @throws BusinessException {@code NOT_FOUND} for no custody note of this return by that id;
+     *         {@code RETURN_INVALID_TRANSITION} once the goods left, or for a supplementary return that takes nothing;
+     *         {@code VALIDATION_FAILED} with no choice, a destruction with no record, or a supplementary return missing,
+     *         not wanted, this one or another customer's
+     */
+    public void chooseForCustody(UUID evidenceId, ReturnCustodyNoteChoice choice, String note, ReturnRequest takenBy,
+                                 UUID by, Instant now) {
+        Objects.requireNonNull(by, "by");
+        custodyNote(evidenceId);
+        CustodyOutcome before = custodyOutcomes.get(evidenceId);
+        if (before != null && before.ended()) {
+            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, ("The goods of custody note %s of %s were "
+                    + "%s already").formatted(evidenceId, rmaNumber, before.choice()));
+        }
+        if (choice == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Say what the customer chose: SEND_BACK, DESTROY_ON_BEHALF or TAKEN_BY_RETURN");
+        }
+        String text = limited(note, REASON_LIMIT, "note");
+        if (choice == ReturnCustodyNoteChoice.DESTROY_ON_BEHALF && text == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Goods kept for the customer of %s are destroyed "
+                    + "on their behalf only with their written consent: name the record").formatted(rmaNumber));
+        }
+        if ((choice == ReturnCustodyNoteChoice.TAKEN_BY_RETURN) != (takenBy != null)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, takenBy == null
+                    ? "Name the supplementary return that takes the goods"
+                    : "Only goods taken on a supplementary return name one");
+        }
+        if (takenBy != null) {
+            if (takenBy.id().equals(id) || !takenBy.customerId().equals(customerId)) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("The goods kept on %s are taken on another "
+                        + "return of the same customer").formatted(rmaNumber));
+            }
+            if (takesNothing(takenBy.status())) {
+                throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, "Return %s is %s: it takes no goods"
+                        .formatted(takenBy.rmaNumber(), takenBy.status()));
+            }
+        }
+        CustodyOutcome chosen = new CustodyOutcome(evidenceId, choice, text, takenBy == null ? null : takenBy.id(),
+                takenBy == null ? null : takenBy.rmaNumber(), by, now, null, null, null);
+        custodyOutcomes.put(evidenceId, chosen);
+        changedCustodyOutcomes.add(chosen);
+    }
+
+    /**
+     * The warehouse carried out the customer's choice for the goods of custody note {@code evidenceId}: handed back,
+     * destroyed, or received on the supplementary return; {@code note} is the record of it (the hand-over note, the
+     * destruction record, the receipt). Only as chosen - the goods are the customer's, and only they decide.
+     *
+     * @param takenByStatus the supplementary return's status now, for TAKEN_BY_RETURN; null otherwise
+     * @throws BusinessException {@code NOT_FOUND}; {@code RETURN_CUSTODY_CHOICE_REQUIRED} while no choice is recorded;
+     *         {@code RETURN_INVALID_TRANSITION} once ended, or when the supplementary return no longer takes goods
+     *         (Sales choose again); {@code VALIDATION_FAILED} with no record
+     */
+    public CustodyOutcome endCustody(UUID evidenceId, String note, ReturnStatus takenByStatus, UUID by, Instant now) {
+        Objects.requireNonNull(by, "by");
+        custodyNote(evidenceId);
+        CustodyOutcome chosen = custodyOutcomes.get(evidenceId);
+        if (chosen == null) {
+            throw new BusinessException(ErrorCode.RETURN_CUSTODY_CHOICE_REQUIRED, ("Sales have not recorded what the "
+                    + "customer chose for the goods of custody note %s of %s").formatted(evidenceId, rmaNumber));
+        }
+        if (chosen.ended()) {
+            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, ("The goods of custody note %s of %s were "
+                    + "%s already").formatted(evidenceId, rmaNumber, chosen.choice()));
+        }
+        if (chosen.choice() == ReturnCustodyNoteChoice.TAKEN_BY_RETURN && takesNothing(takenByStatus)) {
+            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, ("Return %s is %s and took no goods: Sales "
+                    + "record the customer's choice again").formatted(chosen.takenByRmaNumber(), takenByStatus));
+        }
+        String record = required(note, REASON_LIMIT, "Name the record of the hand-over, destruction or receipt");
+        CustodyOutcome ended = new CustodyOutcome(evidenceId, chosen.choice(), chosen.choiceNote(),
+                chosen.takenByReturnId(), chosen.takenByRmaNumber(), chosen.chosenBy(), chosen.chosenAt(), now, by,
+                record);
+        custodyOutcomes.put(evidenceId, ended);
+        changedCustodyOutcomes.add(ended);
+        return ended;
+    }
+
+    /** A rejected, withdrawn or expired return takes no goods; one not known (null) neither. */
+    private static boolean takesNothing(ReturnStatus status) {
+        return status == null || status == ReturnStatus.REJECTED || status == ReturnStatus.CANCELLED
+                || status == ReturnStatus.EXPIRED;
+    }
+
+    private ReturnEvidence custodyNote(UUID evidenceId) {
+        return evidence.stream().filter(e -> e.id().equals(evidenceId) && e.stage() == ReturnEvidence.Stage.CUSTODY)
+                .findFirst().orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
+                        "No custody note %s on return %s".formatted(evidenceId, rmaNumber)));
+    }
+
+    /** The outcome of custody note {@code evidenceId}; empty until Sales record the customer's choice. */
+    public Optional<CustodyOutcome> custodyOutcome(UUID evidenceId) {
+        return Optional.ofNullable(custodyOutcomes.get(evidenceId));
     }
 
     /** How a RESOLVED return ended, for the screens (WF-05 Q-4): null while it is not RESOLVED. */
@@ -1548,6 +1659,13 @@ public final class ReturnRequest extends AggregateRoot {
         List<ReturnDiscrepancy> drained = List.copyOf(newDiscrepancies);
         newDiscrepancies.clear();
         return drained;
+    }
+
+    /** The custody outcomes chosen or ended since the last save, once. */
+    public List<CustodyOutcome> pullChangedCustodyOutcomes() {
+        List<CustodyOutcome> changed = List.copyOf(changedCustodyOutcomes);
+        changedCustodyOutcomes.clear();
+        return changed;
     }
 
     /** Parcels taken since the request was loaded; the repository inserts them, once. */
@@ -1659,6 +1777,13 @@ public final class ReturnRequest extends AggregateRoot {
         this.custodyChoiceNote = note;
         this.custodyChoiceBy = by;
         this.custodyChoiceAt = at;
+        return this;
+    }
+
+    /** Rehydration of how the custody notes' goods end (audit round 3, RAD-3). */
+    public ReturnRequest restoreCustodyOutcomes(Collection<CustodyOutcome> outcomes) {
+        custodyOutcomes.clear();
+        outcomes.forEach(outcome -> custodyOutcomes.put(outcome.evidenceId(), outcome));
         return this;
     }
 

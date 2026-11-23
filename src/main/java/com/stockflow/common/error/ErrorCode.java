@@ -1243,6 +1243,11 @@ public enum ErrorCode {
      */
     RETURN_CARTON_NOT_CLAIMED("This carton holds goods the return did not approve; record them in custody on the "
             + "return request instead", 409),
+    /**
+     * Q-11 (audit round 3, RAD-3): goods kept in custody on a return leave only as the customer chose, and Sales have not
+     * recorded that choice yet.
+     */
+    RETURN_CUSTODY_CHOICE_REQUIRED("Sales have not recorded what the customer chose for these goods yet", 409),
     /** BE-43, Q-18: loose units go no further than what the return approved and has not received yet. */
     RETURN_LOOSE_EXCEEDS_APPROVED("More loose units than the return approved and has not received yet", 409),
     /** BE-43, Q-18: loose units are recorded with a photo. */

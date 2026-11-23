@@ -29,7 +29,8 @@ import java.util.UUID;
  */
 @Service
 @Transactional(readOnly = true)
-public class ReturnRequestLookupService implements ReturnRequestLookup {
+public class ReturnRequestLookupService implements ReturnRequestLookup,
+        com.stockflow.inventory.api.ReturnRequestNumbers {
 
     private final ReturnRequestRepository returns;
     private final OrderRepository orders;
@@ -37,6 +38,17 @@ public class ReturnRequestLookupService implements ReturnRequestLookup {
     public ReturnRequestLookupService(ReturnRequestRepository returns, OrderRepository orders) {
         this.returns = returns;
         this.orders = orders;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>For the cartons in quarantine (audit round 3, RAD-4): no data scope - the warehouse reading its own cartons
+     * reads only the RMA numbers they name.</p>
+     */
+    @Override
+    public Map<UUID, String> rmaNumbers(java.util.Collection<UUID> returnRequestIds) {
+        return returns.rmaNumbers(returnRequestIds);
     }
 
     @Override

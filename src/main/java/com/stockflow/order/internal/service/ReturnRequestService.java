@@ -108,9 +108,10 @@ import java.util.UUID;
  * refund is proposed or approved. A confirmed draft's goods are taken in that same transaction (audit round 2, M1).</p>
  *
  * <p><b>Whose goods</b> (WF-05 Q-4): the refund decision settles the cartons that came back sealed, in the transaction
- * that resolves the return ({@link CartonReturns#settleOwnership}): units refunded make them the company's; none
- * leaves them the customer's - their stock-in reversed, held for the customer - and Sales record what the customer
- * chose for them ({@link #recordCustodyChoice}).</p>
+ * that resolves the return ({@link CartonReturns#settleOwnership}), per SKU: the cartons the refund of their SKU takes
+ * back are the company's; the others stay the customer's - their stock-in reversed, held for the customer - and Sales
+ * record what the customer chose for them ({@link #recordCustodyChoice}). Goods no receipt takes are custody notes on
+ * the return, each ended as the customer chose ({@link ReturnCustodyNotes}).</p>
  */
 @Service
 @Transactional
@@ -174,13 +175,15 @@ public class ReturnRequestService implements ReturnReceiptTracking {
     private final DeliveryFailureService deliveryFailures;
     private final ReturnAllowances allowances;
     private final CartonReturns cartonReturns;
+    private final ReturnWarehouseScope warehouseScope;
 
     ReturnRequestService(ReturnRequestRepository returns, OrderRepository orders, OrderEventPublisher events,
                          PaymentService payments, CustomerService customers, FileTransfers files,
                          StagedUploads staged, TransactionOperations tx, ReturnPolicy policy, Clock clock,
                          DeliveryFailureService deliveryFailures, ReturnAllowances allowances,
-                         CartonReturns cartonReturns) {
+                         CartonReturns cartonReturns, ReturnWarehouseScope warehouseScope) {
         this.cartonReturns = cartonReturns;
+        this.warehouseScope = warehouseScope;
         this.deliveryFailures = deliveryFailures;
         this.allowances = allowances;
         this.returns = returns;
@@ -392,6 +395,10 @@ public class ReturnRequestService implements ReturnReceiptTracking {
         ReturnRequest request = (forUpdate ? returns.findByIdForUpdate(returnId) : returns.findById(returnId))
                 .filter(found -> ownCustomerId == null || found.belongsTo(ownCustomerId))
                 .orElseThrow(() -> notFound(returnId));
+        // BR-SEC-002 (audit r3 RAD-2): the custody note is the warehouse's write since audit r2 M4, and a clerk of
+        // another warehouse is refused it as they are refused the return's detail - before the photo is checked or
+        // stored, and in the short transaction that keeps it.
+        warehouseScope.require(request.orderId(), ownCustomerId);
         request.requireEvidenceAllowed(taken, policy);
         return request;
     }
@@ -579,18 +586,28 @@ public class ReturnRequestService implements ReturnReceiptTracking {
 
     /**
      * WF-05 Q-4: the return's refund is decided, and with it whose its goods are - in this transaction, so no carton of a
-     * RESOLVED return waits ({@code tg_return_request_goods_settled}). Units refunded: the cartons back in quarantine are
-     * the company's, to release or write off. None: "không có thoả thuận trả hàng thì hàng vẫn là của khách" - their
-     * stock-in is reversed and they are held for the customer. Inventory takes the SKU locks after the order and the
-     * return this transaction holds, the global order.
+     * RESOLVED return waits ({@code tg_return_request_goods_settled}). Per SKU (audit round 3, RAD-1): the cartons the
+     * refund of their SKU reaches are the company's, to release or write off; the others - every carton of a SKU
+     * refunded 0, and whole cartons beyond the refunded units - stay the customer's: "không có thoả thuận trả hàng thì
+     * hàng vẫn là của khách", their stock-in reversed and held for them. Before, one refunded unit anywhere on the
+     * return made every carton of it the company's, a refused SKU's included, sold again with no refund and no way to
+     * hand it back. Inventory takes the SKU locks after the order and the return this transaction holds, the global
+     * order.
      */
     private void settleGoods(ReturnRequest request, UUID by, Instant now) {
-        int settled = cartonReturns.settleOwnership(request.id(),
-                request.outcome() == ReturnRequest.Outcome.REFUNDED, by, now);
+        Map<String, int[]> bySku = new java.util.LinkedHashMap<>();
+        for (ReturnLine line : request.lines()) {
+            int[] units = bySku.computeIfAbsent(line.sku(), sku -> new int[2]);
+            units[0] += line.receivedQuantity() == null ? 0 : line.receivedQuantity();
+            units[1] += line.refundQuantity();
+        }
+        List<com.stockflow.inventory.api.RefundedSku> refunded = bySku.entrySet().stream()
+                .map(e -> new com.stockflow.inventory.api.RefundedSku(e.getKey(), e.getValue()[0], e.getValue()[1]))
+                .toList();
+        int settled = cartonReturns.settleOwnership(request.id(), refunded, by, now);
         if (settled > 0) {
-            log.info("Return {} {}: {} carton(s) {}", request.rmaNumber(), request.outcome(), settled,
-                    request.outcome() == ReturnRequest.Outcome.REFUNDED ? "are the company's"
-                            : "held for the customer");
+            log.info("Return {} {}: {} carton(s) settled per SKU {}", request.rmaNumber(), request.outcome(), settled,
+                    refunded);
         }
     }
 
@@ -609,13 +626,16 @@ public class ReturnRequestService implements ReturnReceiptTracking {
     }
 
     /**
-     * Sales record what the customer chose for goods of a return that refunded nothing (WF-05 Q-4): handed back at their
-     * cost, or destroyed on their behalf with their written consent. The cartons held for them take the instruction in
-     * this transaction, and the warehouse manager carries it out from the custody list (TH-6).
+     * Sales record what the customer chose for goods of the return its refund did not take back (WF-05 Q-4): handed back
+     * at their cost, or destroyed on their behalf with their written consent. The cartons held for them take the
+     * instruction in this transaction, and the warehouse manager carries it out from the custody list (TH-6). Any
+     * RESOLVED return with a carton held for the customer takes it - one that refunded another SKU, or part of this one,
+     * too (audit round 3, RAD-1); {@code tg_return_request_custody_held} checks the same at commit.
      *
      * @throws BusinessException as {@link ReturnRequest#recordCustodyChoice}; {@code RETURN_INVALID_TRANSITION} when
-     *         nothing of the return is held for the customer (nothing came back sealed - opened cartons and loose units
-     *         are destroyed on the receipt, Q-18); as {@link CartonReturns#instructCustody} once it was carried out
+     *         no carton of the return is held for the customer (all were refunded, or nothing came back sealed -
+     *         opened cartons and loose units are destroyed on the receipt, Q-18); as
+     *         {@link CartonReturns#instructCustody} once it was carried out
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "return-request", resourceId = "#returnId",
             details = "{custodyChoice: #choice}")
@@ -627,7 +647,8 @@ public class ReturnRequestService implements ReturnReceiptTracking {
         int held = cartonReturns.instructCustody(request.id(), CustodyInstruction.valueOf(choice.name()));
         if (held == 0) {
             throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, ("Nothing of return %s is held for the "
-                    + "customer: no carton of it came back sealed").formatted(request.rmaNumber()));
+                    + "customer: every carton of it that came back sealed was refunded, or none did")
+                    .formatted(request.rmaNumber()));
         }
         log.info("Return {}: the customer chose {} for {} carton(s) held for them", request.rmaNumber(), choice, held);
         return returns.save(request);

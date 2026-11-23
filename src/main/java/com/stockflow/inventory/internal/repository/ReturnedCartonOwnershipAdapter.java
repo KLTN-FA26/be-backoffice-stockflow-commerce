@@ -96,13 +96,41 @@ class ReturnedCartonOwnershipAdapter implements ReturnedCartonOwnership {
     }
 
     @Override
-    public List<StockPackageId> waitingFor(UUID returnRequestId) {
-        @SuppressWarnings("unchecked")
-        List<Object> found = entityManager.createNativeQuery("""
-                        select id from inventory.stock_package
-                         where return_request_id = :request and return_ownership = 'PENDING' order by id""")
-                .setParameter("request", returnRequestId).getResultList();
-        return found.stream().map(id -> new StockPackageId((UUID) id)).toList();
+    public List<Waiting> waitingFor(UUID returnRequestId) {
+        entityManager.flush();
+        return jdbc.query("""
+                SELECT p.id, p.lpn, i.sku, COALESCE(p.received_qty, 0) AS quantity
+                  FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+                 WHERE p.return_request_id = :request AND p.return_ownership = 'PENDING'
+                 ORDER BY p.lpn""", new MapSqlParameterSource("request", returnRequestId),
+                (rs, n) -> new Waiting(new StockPackageId(rs.getObject("id", UUID.class)), rs.getString("lpn"),
+                        rs.getString("sku"), rs.getInt("quantity")));
+    }
+
+    @Override
+    public Optional<Owned> owned(StockPackageId id) {
+        entityManager.flush();
+        return jdbc.query("""
+                SELECT return_ownership, return_request_id FROM inventory.stock_package
+                 WHERE id = :id AND return_ownership IS NOT NULL""", new MapSqlParameterSource("id", id.value()),
+                (rs, n) -> new Owned(Ownership.valueOf(rs.getString("return_ownership")),
+                        rs.getObject("return_request_id", UUID.class))).stream().findFirst();
+    }
+
+    @Override
+    public java.util.Set<String> reversedBy(UUID returnRequestId, Collection<String> lpns) {
+        if (lpns.isEmpty()) {
+            return java.util.Set.of();
+        }
+        // The ledger, not the carton's ownership now (audit r3 RAD-5): ck_stock_movement_return_refused admits a line
+        // naming a return request only as the reversal of one carton's stock-in, and a return reverses a carton once.
+        return new java.util.HashSet<>(jdbc.queryForList("""
+                SELECT DISTINCT p.lpn FROM inventory.stock_movement m
+                  JOIN inventory.stock_package p ON p.id = m.from_stock_package_id
+                 WHERE m.reference_type = 'RETURN_REQUEST' AND m.reference_id = :request
+                   AND m.movement_type = 'ADJUSTMENT' AND p.lpn IN (:lpns)""",
+                new MapSqlParameterSource("request", returnRequestId).addValue("lpns", List.copyOf(lpns)),
+                String.class));
     }
 
     @Override

@@ -21,6 +21,13 @@ public record StockPackageResponse(
         @Schema(description = "A return receipt found it opened or empty (WF-05 Q-18): never sold again")
         boolean openedOnReturn,
         @Schema(description = "When a return receipt found it opened or empty; null when it never came back so")
-        Instant returnOpenedAt
+        Instant returnOpenedAt,
+        @Schema(description = "Whose goods it is after it last came back on a return request (WF-05 Q-4; audit r3 "
+                + "RAD-4): PENDING (refund not decided: no release, no write-off), COMPANY, CUSTOMER_HELD, "
+                + "CUSTOMER_SENT_BACK, CUSTOMER_DESTROYED; null when it never came back on one",
+                allowableValues = {"PENDING", "COMPANY", "CUSTOMER_HELD", "CUSTOMER_SENT_BACK", "CUSTOMER_DESTROYED"})
+        String returnOwnership,
+        @Schema(description = "The return request it last came back on") UUID returnRequestId,
+        @Schema(description = "That return's RMA number") String returnRmaNumber
 ) {
 }

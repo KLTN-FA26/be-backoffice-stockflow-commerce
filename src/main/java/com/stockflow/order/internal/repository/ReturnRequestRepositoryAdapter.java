@@ -3,7 +3,9 @@ package com.stockflow.order.internal.repository;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Specs;
 import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.order.internal.domain.CustodyOutcome;
 import com.stockflow.order.internal.domain.ReturnClaims;
+import com.stockflow.order.internal.domain.ReturnCustodyNoteChoice;
 import com.stockflow.order.internal.domain.ReturnDiscrepancy;
 import com.stockflow.order.internal.domain.ReturnEvidence;
 import com.stockflow.order.internal.domain.ReturnLine;
@@ -24,8 +26,11 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.sql.Types;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -51,9 +56,12 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
     private final ReturnRequestRecordsJpaRepository records;
     private final ReturnNumberSequence sequence;
     private final EntityManager entityManager;
+    private final NamedParameterJdbcTemplate jdbc;
 
     ReturnRequestRepositoryAdapter(ReturnRequestJpaRepository jpa, ReturnRequestRecordsJpaRepository records,
-                                   ReturnNumberSequence sequence, EntityManager entityManager) {
+                                   ReturnNumberSequence sequence, EntityManager entityManager,
+                                   NamedParameterJdbcTemplate jdbc) {
+        this.jdbc = jdbc;
         this.jpa = jpa;
         this.records = records;
         this.sequence = sequence;
@@ -68,6 +76,15 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
     @Override
     public Optional<UUID> orderOf(UUID returnId) {
         return jpa.findOrderIdOf(returnId);
+    }
+
+    @Override
+    public Map<UUID, String> rmaNumbers(java.util.Collection<UUID> returnIds) {
+        if (returnIds.isEmpty()) {
+            return Map.of();
+        }
+        return jpa.findRmaNumbers(returnIds).stream()
+                .collect(Collectors.toMap(row -> (UUID) row[0], row -> (String) row[1]));
     }
 
     /**
@@ -139,6 +156,38 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
                     found.kind().name(), found.sku(), found.quantity(), found.note(), found.recordedBy(),
                     found.recordedAt()));
         }
+        // Audit round 3 RAD-3: how a custody note's goods end. The note is append-only; its outcome is written once
+        // when chosen, replaced while the goods are still kept, and ended once - tg_return_custody_outcome refuses
+        // any change after that.
+        List<CustodyOutcome> outcomes = request.pullChangedCustodyOutcomes();
+        if (!outcomes.isEmpty()) {
+            // JDBC on the transaction's connection, after the entities are flushed: a native JPA query binds a null
+            // moment untyped, which PostgreSQL refuses for a timestamptz column.
+            entityManager.flush();
+            for (CustodyOutcome outcome : outcomes) {
+                jdbc.update("""
+                        INSERT INTO ordering.return_custody_outcome (evidence_id, return_request_id, choice,
+                            choice_note, taken_by_return_id, chosen_by, chosen_at, ended_at, ended_by, ended_note)
+                        VALUES (:evidence, :request, :choice, :choiceNote, :takenBy, :chosenBy, :chosenAt, :endedAt,
+                                :endedBy, :endedNote)
+                        ON CONFLICT (evidence_id) DO UPDATE SET choice = EXCLUDED.choice,
+                            choice_note = EXCLUDED.choice_note, taken_by_return_id = EXCLUDED.taken_by_return_id,
+                            chosen_by = EXCLUDED.chosen_by, chosen_at = EXCLUDED.chosen_at,
+                            ended_at = EXCLUDED.ended_at, ended_by = EXCLUDED.ended_by,
+                            ended_note = EXCLUDED.ended_note, last_modified_at = NOW(),
+                            version = ordering.return_custody_outcome.version + 1""",
+                        new MapSqlParameterSource().addValue("evidence", outcome.evidenceId())
+                                .addValue("request", request.id())
+                                .addValue("choice", outcome.choice().name())
+                                .addValue("choiceNote", outcome.choiceNote(), Types.VARCHAR)
+                                .addValue("takenBy", outcome.takenByReturnId(), Types.OTHER)
+                                .addValue("chosenBy", outcome.chosenBy())
+                                .addValue("chosenAt", at(outcome.chosenAt()), Types.TIMESTAMP_WITH_TIMEZONE)
+                                .addValue("endedAt", at(outcome.endedAt()), Types.TIMESTAMP_WITH_TIMEZONE)
+                                .addValue("endedBy", outcome.endedBy(), Types.OTHER)
+                                .addValue("endedNote", outcome.endedNote(), Types.VARCHAR));
+            }
+        }
         // History is written here, where every save passes, so no transition can forget it (as for orders).
         for (ReturnTransition step : request.pullTransitions()) {
             records.insert(new ReturnRequestStatusHistoryJpaEntity(Identifiers.newId(), request.id(),
@@ -147,6 +196,31 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
         }
         entityManager.flush();
         return findById(request.id()).orElseThrow();
+    }
+
+    /** A moment as the native queries bind it: typed even when null, which a bare null is not. */
+    private static java.time.OffsetDateTime at(Instant moment) {
+        return moment == null ? null : java.time.OffsetDateTime.ofInstant(moment, java.time.ZoneOffset.UTC);
+    }
+
+    /** The custody notes' outcomes of the return, with the RMA number of a supplementary return that takes the goods. */
+    private List<CustodyOutcome> custodyOutcomesOf(UUID returnRequestId) {
+        return jdbc.query("""
+                SELECT o.evidence_id, o.choice, o.choice_note, o.taken_by_return_id, t.rma_number, o.chosen_by,
+                       o.chosen_at, o.ended_at, o.ended_by, o.ended_note
+                  FROM ordering.return_custody_outcome o
+                  LEFT JOIN ordering.return_request t ON t.id = o.taken_by_return_id
+                 WHERE o.return_request_id = :request""", new MapSqlParameterSource("request", returnRequestId),
+                (rs, n) -> new CustodyOutcome(rs.getObject("evidence_id", UUID.class),
+                        ReturnCustodyNoteChoice.valueOf(rs.getString("choice")), rs.getString("choice_note"),
+                        rs.getObject("taken_by_return_id", UUID.class), rs.getString("rma_number"),
+                        rs.getObject("chosen_by", UUID.class), instant(rs.getTimestamp("chosen_at")),
+                        instant(rs.getTimestamp("ended_at")), rs.getObject("ended_by", UUID.class),
+                        rs.getString("ended_note")));
+    }
+
+    private static Instant instant(java.sql.Timestamp moment) {
+        return moment == null ? null : moment.toInstant();
     }
 
     @Override
@@ -255,6 +329,7 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
                 records.discrepanciesOf(e.getId()).stream().map(row -> new ReturnDiscrepancy(row.getId(),
                         row.getReturnRequestLineId(), ReturnDiscrepancy.Kind.valueOf(row.getKind()), row.getSku(),
                         row.getQuantity(), row.getNote(), row.getRecordedBy(), row.getRecordedAt())).toList());
+        request.restoreCustodyOutcomes(custodyOutcomesOf(e.getId()));
         request.restoreParcels(records.parcelsOf(e.getId()).stream().map(row -> new ReturnParcel(
                 row.getGoodsReceiptId(), row.getParcel(), row.getReceiptNumber(), row.getReceivingLocationCode(),
                 row.getReceivedBy(), row.getReceivedAt())).toList());

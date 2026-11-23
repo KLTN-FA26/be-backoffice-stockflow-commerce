@@ -118,12 +118,29 @@ public final class ReturnRequests {
             @Size(max = 1000, message = "note is at most 1000 characters") String note) {
     }
 
-    @Schema(description = "What the customer chose for goods held for them after a return that refunded nothing (WF-05 "
-            + "Q-4): SEND_BACK (at their cost) or DESTROY_ON_BEHALF (note names their written consent)")
+    @Schema(description = "What the customer chose for the cartons of a return held for them - those its refund did not "
+            + "take back (WF-05 Q-4): SEND_BACK (at their cost) or DESTROY_ON_BEHALF (note names their written consent)")
     public record CustodyChoice(
             @NotNull(message = "choice is required") com.stockflow.order.internal.domain.ReturnCustodyChoice choice,
             @Size(max = 500, message = "note is at most 500 characters") String note,
             Long version) {
+    }
+
+    @Schema(description = "What the customer chose for the goods of a custody note (WF-05 Q-11; audit r3 RAD-3): "
+            + "SEND_BACK (at their cost), DESTROY_ON_BEHALF (note names their written consent) or TAKEN_BY_RETURN "
+            + "(takenByReturnId: the supplementary return of the same customer that takes them)")
+    public record CustodyNoteChoice(
+            @NotNull(message = "choice is required")
+            com.stockflow.order.internal.domain.ReturnCustodyNoteChoice choice,
+            @Size(max = 500, message = "note is at most 500 characters") String note,
+            UUID takenByReturnId) {
+    }
+
+    @Schema(description = "The goods of a custody note left as the customer chose: note is the record of it (hand-over "
+            + "note, destruction record, the receipt of the supplementary return)")
+    public record EndCustodyNote(
+            @NotBlank(message = "note is required")
+            @Size(max = 500, message = "note is at most 500 characters") String note) {
     }
 
     @Schema(description = "The goods of an AWAITING_RETURN return are all here, fewer than approved (WF-05 TH-3)")
