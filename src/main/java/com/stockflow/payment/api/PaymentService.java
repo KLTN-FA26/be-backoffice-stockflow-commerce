@@ -57,7 +57,11 @@ public interface PaymentService {
      * lowered by the goods closed - those tied to a batch the closure closed (none of its goods handed over, WF-05
      * TT-5) first, then the latest - so the customer never
      * pays more than the goods received and the fees; what was paid above that pays the closure's fee first and the
-     * rest is to be refunded; a shortfall becomes the cancellation fee item. In the caller's transaction, after the
+     * rest is to be refunded; a shortfall becomes the cancellation fee item. The fee lines stay owed (D30, D32) - but
+     * when the closure leaves an order whose shipments came back or were lost with nothing delivered and nothing more to
+     * deliver ({@link SettleRemainderClosureCommand#shippingFee}), what they left of the shipping fee is waived with
+     * it, as with the last shipment back (Q-19 edge, owner 2026-11-23), and returned as
+     * {@link OrderSettlementResult#shippingFeeWaived} for the order to keep. In the caller's transaction, after the
      * order's lock; once per closure.
      *
      * @return empty for an order without installments
@@ -82,8 +86,10 @@ public interface PaymentService {
      * batch first, then the older debt; what was paid above that is to be refunded, up to what was collected; the
      * installments of batches still to come are lowered last. No fee. The plate fee lines are never lowered; the
      * shipping fee is, by this shipment's goods' share of the order's goods (Q-19, owner 2026-11-23: one shipment of
-     * three equal ones brought back waives a third of it, all of them the whole fee), which payment works out from
-     * {@link SettleShipmentReturnCommand#shippingFee} and the order's earlier shipments, and returns as
+     * three equal ones brought back waives a third of it, all of them the whole fee) - or by all that is left of it when
+     * the order ends with nothing delivered, even with part of it closed before it shipped (the Q-19 edge, owner
+     * 2026-11-23) - which payment works out from {@link SettleShipmentReturnCommand#shippingFee} and the order's earlier
+     * settlements, and returns as
      * {@link OrderSettlementResult#shippingFeeWaived} for the order to keep. Kind {@code SHIPMENT_RETURNED}. In the
      * caller's transaction ({@code Propagation.MANDATORY}), after the order's lock (orders, then installments); once
      * per {@code sourceId}, and once per shipment - a second closure of the same shipment settles nothing more and

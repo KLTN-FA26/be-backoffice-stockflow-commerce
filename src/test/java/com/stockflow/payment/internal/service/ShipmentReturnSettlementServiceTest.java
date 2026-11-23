@@ -1,6 +1,7 @@
 package com.stockflow.payment.internal.service;
 
 import com.stockflow.payment.api.OrderSettlementResult;
+import com.stockflow.payment.api.SettleRemainderClosureCommand;
 import com.stockflow.payment.api.SettleShipmentReturnCommand;
 import com.stockflow.payment.internal.domain.Installment;
 import com.stockflow.payment.internal.domain.InstallmentBook;
@@ -139,7 +140,7 @@ class ShipmentReturnSettlementServiceTest {
             + "read under the installments' lock - never the caller's")
     void shippingFeeShare() {
         SettleShipmentReturnCommand.ShippingFee fee = new SettleShipmentReturnCommand.ShippingFee(
-                BigDecimal.valueOf(100_000), BigDecimal.valueOf(1_200_000));
+                BigDecimal.valueOf(100_000), BigDecimal.valueOf(1_200_000), false);
         List<Installment> plan = paidPlan();
         OrderSettlement earlier = OrderSettlement.shipmentReturned(plan, UUID.randomUUID(), UUID.randomUUID(), null,
                 BigDecimal.valueOf(400_000), BigDecimal.valueOf(33_333), Set.of(), BigDecimal.ZERO, null, AT,
@@ -171,9 +172,153 @@ class ShipmentReturnSettlementServiceTest {
                 .isInstanceOf(NullPointerException.class);
         assertThat(java.util.Arrays.stream(SettleShipmentReturnCommand.class.getConstructors())
                 .map(java.lang.reflect.Constructor::getParameterCount)).containsExactly(10);
-        assertThatThrownBy(() -> new SettleShipmentReturnCommand.ShippingFee(BigDecimal.TEN, BigDecimal.ZERO))
+        assertThatThrownBy(() -> new SettleShipmentReturnCommand.ShippingFee(BigDecimal.TEN, BigDecimal.ZERO, true))
                 .as("a fee charged for no goods").isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new SettleShipmentReturnCommand.ShippingFee(new BigDecimal("0.5"), BigDecimal.TEN))
-                .as("whole units").isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new SettleShipmentReturnCommand.ShippingFee(new BigDecimal("0.5"), BigDecimal.TEN,
+                false)).as("whole units").isInstanceOf(IllegalArgumentException.class);
+        assertThat(java.util.Arrays.stream(SettleShipmentReturnCommand.ShippingFee.class.getConstructors())
+                .map(java.lang.reflect.Constructor::getParameterCount))
+                .as("the Q-19 edge: no shorter form that would take an order with nothing delivered as delivered")
+                .containsExactly(3);
+        assertThatThrownBy(() -> new SettleRemainderClosureCommand(orderId, closureId, BigDecimal.TEN, null, null,
+                null, null, AT, null, null)).isInstanceOf(NullPointerException.class);
+    }
+
+    // ---- the Q-19 edge (owner 2026-11-23): nothing delivered, the whole fee ----------------------------------------
+
+    private static final SettleShipmentReturnCommand.ShippingFee DELIVERED_OR_COMING =
+            new SettleShipmentReturnCommand.ShippingFee(BigDecimal.valueOf(100_000), BigDecimal.valueOf(1_200_000),
+                    false);
+    private static final SettleShipmentReturnCommand.ShippingFee NOTHING_DELIVERED =
+            new SettleShipmentReturnCommand.ShippingFee(BigDecimal.valueOf(100_000), BigDecimal.valueOf(1_200_000),
+                    true);
+
+    private OrderSettlement savedSettlement() {
+        ArgumentCaptor<OrderSettlement> saved = ArgumentCaptor.forClass(OrderSettlement.class);
+        verify(settlements).save(saved.capture());
+        return saved.getValue();
+    }
+
+    private void nothingSettledYet() {
+        when(settlements.find(any(), any())).thenReturn(Optional.empty());
+        when(settlements.findOfShipment(shipmentId)).thenReturn(Optional.empty());
+    }
+
+    private SettleRemainderClosureCommand closure(UUID closure, long goods,
+                                                  SettleShipmentReturnCommand.ShippingFee fee) {
+        return new SettleRemainderClosureCommand(orderId, closure, BigDecimal.valueOf(goods), null, null, null,
+                UUID.randomUUID(), AT, Set.of(), fee);
+    }
+
+    @Test
+    @DisplayName("Q-19 edge: the rest closed before it shipped, the shipped part brought back, nothing delivered - the "
+            + "whole fee is waived with it, not the third its goods are worth")
+    void nothingDeliveredWithTheRestClosedBeforeShipping() {
+        List<Installment> plan = paidPlan();
+        OrderSettlement restClosed = OrderSettlement.closeRemainder(plan, UUID.randomUUID(), BigDecimal.valueOf(800_000),
+                OrderSettlement.Fee.none(), null, AT, java.time.LocalDate.of(2026, 11, 20)).settlement();
+        when(installments.lockOfOrder(orderId)).thenReturn(plan);
+        nothingSettledYet();
+        when(settlements.ofOrder(orderId)).thenReturn(List.of(restClosed));
+
+        OrderSettlementResult result = service.settleShipmentReturn(command(closureId, 400_000, NOTHING_DELIVERED))
+                .orElseThrow();
+
+        assertThat(savedSettlement().shippingFeeWaived()).isEqualByComparingTo("100000");
+        assertThat(result.shippingFeeWaived()).as("W, for the order to keep: the whole fee").isEqualByComparingTo(
+                "100000");
+    }
+
+    @Test
+    @DisplayName("Q-19 edge: two shipments brought back, each its share; the closure of the rest that then ends the "
+            + "order with nothing delivered waives what they left - the whole fee between them, once")
+    void nothingDeliveredAfterTwoPartialReturns() {
+        List<Installment> plan = paidPlan();
+        OrderSettlement first = OrderSettlement.shipmentReturned(plan, UUID.randomUUID(), UUID.randomUUID(), null,
+                BigDecimal.valueOf(400_000), BigDecimal.valueOf(33_333), Set.of(), BigDecimal.ZERO, null, AT,
+                java.time.LocalDate.of(2026, 11, 20)).settlement();
+        OrderSettlement second = OrderSettlement.shipmentReturned(plan, UUID.randomUUID(), UUID.randomUUID(), null,
+                BigDecimal.valueOf(400_000), BigDecimal.valueOf(33_334), Set.of(), BigDecimal.ZERO, null, AT,
+                java.time.LocalDate.of(2026, 11, 20)).settlement();
+        when(installments.lockOfOrder(orderId)).thenReturn(plan);
+        when(settlements.find(any(), any())).thenReturn(Optional.empty());
+        when(settlements.ofOrder(orderId)).thenReturn(List.of(first, second));
+
+        OrderSettlementResult result = service.settleRemainderClosure(closure(closureId, 400_000, NOTHING_DELIVERED))
+                .orElseThrow();
+
+        OrderSettlement saved = savedSettlement();
+        assertThat(saved.kind()).isEqualTo(OrderSettlement.Kind.REMAINDER_CLOSED);
+        assertThat(saved.shippingFeeWaived()).isEqualByComparingTo("33333");
+        assertThat(saved.closed()).as("the goods closed and the fee waived with them").isEqualByComparingTo(
+                "433333");
+        assertThat(result.shippingFeeWaived()).isEqualByComparingTo("33333");
+        assertThat(first.shippingFeeWaived().add(second.shippingFeeWaived()).add(result.shippingFeeWaived()))
+                .isEqualByComparingTo("100000");
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(installments, settlements);
+        order.verify(installments).lockOfOrder(orderId);
+        order.verify(settlements).ofOrder(orderId);
+    }
+
+    @Test
+    @DisplayName("at least one shipment delivered: the share stays for the shipment, and the closure of the rest "
+            + "waives nothing - the fee lines stay owed")
+    void oneDeliveredStaysProRata() {
+        List<Installment> plan = paidPlan();
+        OrderSettlement back = OrderSettlement.shipmentReturned(plan, UUID.randomUUID(), UUID.randomUUID(), null,
+                BigDecimal.valueOf(400_000), BigDecimal.valueOf(33_333), Set.of(), BigDecimal.ZERO, null, AT,
+                java.time.LocalDate.of(2026, 11, 20)).settlement();
+        when(installments.lockOfOrder(orderId)).thenReturn(plan);
+        when(settlements.find(any(), any())).thenReturn(Optional.empty());
+        when(settlements.ofOrder(orderId)).thenReturn(List.of(back));
+
+        OrderSettlementResult result = service.settleRemainderClosure(closure(closureId, 400_000,
+                DELIVERED_OR_COMING)).orElseThrow();
+
+        assertThat(result.shippingFeeWaived()).isZero();
+        assertThat(savedSettlement().closed()).isEqualByComparingTo("400000");
+    }
+
+    @Test
+    @DisplayName("Q-19 edge: a replay - of the shipment's closure or of the closure of the rest - returns the first "
+            + "settlement, its waiver included, and waives nothing more")
+    void replayWaivesNothingMore() {
+        List<Installment> plan = paidPlan();
+        OrderSettlement made = OrderSettlement.shipmentReturned(plan, closureId, shipmentId, null,
+                BigDecimal.valueOf(400_000), BigDecimal.valueOf(100_000), Set.of(), BigDecimal.ZERO, null, AT,
+                java.time.LocalDate.of(2026, 11, 20)).settlement();
+        when(settlements.find(OrderSettlement.Kind.SHIPMENT_RETURNED, closureId)).thenReturn(Optional.of(made));
+        UUID restClosure = UUID.randomUUID();
+        OrderSettlement closed = OrderSettlement.closeRemainder(paidPlan(), restClosure, BigDecimal.valueOf(400_000),
+                OrderSettlement.Fee.none(), null, AT, java.time.LocalDate.of(2026, 11, 20), Set.of(),
+                BigDecimal.valueOf(50_000)).settlement();
+        when(settlements.find(OrderSettlement.Kind.REMAINDER_CLOSED, restClosure)).thenReturn(Optional.of(closed));
+
+        assertThat(service.settleShipmentReturn(command(closureId, 400_000, NOTHING_DELIVERED))).get()
+                .extracting(OrderSettlementResult::shippingFeeWaived).isEqualTo(BigDecimal.valueOf(100_000));
+        assertThat(service.settleRemainderClosure(closure(restClosure, 400_000, NOTHING_DELIVERED))).get()
+                .extracting(OrderSettlementResult::shippingFeeWaived).isEqualTo(BigDecimal.valueOf(50_000));
+        verify(settlements, never()).save(any());
+        verify(installments, never()).lockOfOrder(any());
+    }
+
+    @Test
+    @DisplayName("Q-19 edge: the last shipment back carries goods worth nothing - it still ends the order with nothing "
+            + "delivered and waives what is left of the fee; with something delivered it settles nothing")
+    void goodsWorthNothingEndingTheOrder() {
+        List<Installment> plan = paidPlan();
+        OrderSettlement first = OrderSettlement.shipmentReturned(plan, UUID.randomUUID(), UUID.randomUUID(), null,
+                BigDecimal.valueOf(400_000), BigDecimal.valueOf(33_333), Set.of(), BigDecimal.ZERO, null, AT,
+                java.time.LocalDate.of(2026, 11, 20)).settlement();
+        when(installments.lockOfOrder(orderId)).thenReturn(plan);
+        nothingSettledYet();
+        when(settlements.ofOrder(orderId)).thenReturn(List.of(first));
+
+        assertThat(service.settleShipmentReturn(command(closureId, 0, DELIVERED_OR_COMING))).isEmpty();
+        OrderSettlementResult result = service.settleShipmentReturn(command(closureId, 0, NOTHING_DELIVERED))
+                .orElseThrow();
+
+        assertThat(result.shippingFeeWaived()).isEqualByComparingTo("66667");
+        assertThat(savedSettlement().closed()).isEqualByComparingTo("66667");
     }
 }

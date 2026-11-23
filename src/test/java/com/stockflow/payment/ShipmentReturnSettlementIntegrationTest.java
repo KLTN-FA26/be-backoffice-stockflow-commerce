@@ -354,8 +354,10 @@ class ShipmentReturnSettlementIntegrationTest {
         Signed signed = signed(300_000);
         pay(signed.seq(1), 759_000);
         awaitConfirmed(signed.orderId());
+        // Two of them, and the third while it is not known yet whether anything is delivered: the share. The third is
+        // the last of the goods, so it waives what is left either way.
         SettleShipmentReturnCommand.ShippingFee fee = new SettleShipmentReturnCommand.ShippingFee(dong(330_000),
-                dong(2_200_000));
+                dong(2_200_000), false);
         UUID first = shipment(signed.orderId(), "RETURNED", "REFUSED");
         UUID second = shipment(signed.orderId(), "RETURNED", "REFUSED");
         UUID third = shipment(signed.orderId(), "DELIVERY_FAILED", "LOST");
@@ -376,7 +378,7 @@ class ShipmentReturnSettlementIntegrationTest {
         // the fee line holds, whatever a caller claims the fee is.
         UUID inflated = shipment(signed.orderId(), "RETURNED", "REFUSED");
         assertThatThrownBy(() -> settle(returned(signed.orderId(), inflated, Identifiers.newId(), 100_000,
-                new SettleShipmentReturnCommand.ShippingFee(dong(990_000), dong(2_200_000)),
+                new SettleShipmentReturnCommand.ShippingFee(dong(990_000), dong(2_200_000), false),
                 SettleShipmentReturnCommand.Cause.CARRIER_RETURN))).as("tg_order_settlement_shipping_waiver")
                 .isInstanceOf(DataAccessException.class);
 
@@ -395,6 +397,105 @@ class ShipmentReturnSettlementIntegrationTest {
                 .containsExactly(110_000L, 110_000L, 110_000L);
         assertThat(three.refundable()).as("everything collected comes back: nothing was delivered")
                 .isEqualByComparingTo(dong(759_000));
+    }
+
+    // ---- Q-19 edge (owner 2026-11-23): nothing delivered, the whole fee -------------------------------------------
+
+    @Test
+    @DisplayName("Q-19 edge (owner 2026-11-23): the rest closed before it shipped, the shipped half brought back, "
+            + "nothing delivered - the whole shipping fee is waived, not the half its goods are worth; once")
+    void nothingDeliveredRestClosedBeforeShipping() {
+        // Goods 2,200,000 with VAT, half of them on one shipment; the fee 300,000 + 30,000 VAT. The plan is of 2,530,000.
+        Signed signed = signed(300_000);
+        pay(signed.seq(1), 759_000);
+        awaitConfirmed(signed.orderId());
+        UUID shipped = shipment(signed.orderId(), "HANDED_OVER", null);
+
+        // The half never shipped is closed while the other is on its way: something may still be delivered.
+        OrderSettlementResult rest = closeRest(signed.orderId(), 1_100_000, shippingFee(false));
+        assertThat(rest.shippingFeeWaived()).as("the closing rule: the fee lines stay owed").isZero();
+
+        cameBack(shipped);
+        UUID closure = Identifiers.newId();
+        OrderSettlementResult back = settle(returned(signed.orderId(), shipped, closure, 1_100_000, shippingFee(true),
+                SettleShipmentReturnCommand.Cause.CARRIER_RETURN));
+
+        assertThat(waived(back)).as("the whole fee, not 165,000").isEqualByComparingTo(dong(330_000));
+        assertThat(back.shippingFeeWaived()).as("W for the order to keep, and for G3's fee invoice")
+                .isEqualByComparingTo(dong(330_000));
+        assertThat(back.refundable()).as("everything collected comes back: nothing was delivered")
+                .isEqualByComparingTo(dong(759_000));
+        assertThat(settle(returned(signed.orderId(), shipped, closure, 1_100_000, shippingFee(true),
+                SettleShipmentReturnCommand.Cause.CARRIER_RETURN)).shippingFeeWaived())
+                .as("a replay waives nothing more").isEqualByComparingTo(dong(330_000));
+        assertThat(jdbc.queryForObject("SELECT sum(shipping_fee_waived_amount) FROM payment.order_settlement "
+                + "WHERE order_id = ?", BigDecimal.class, signed.orderId())).isEqualByComparingTo(dong(330_000));
+        assertThat(jdbc.queryForObject("SELECT sum(closed_amount) FROM payment.order_settlement WHERE order_id = ?",
+                BigDecimal.class, signed.orderId())).as("the whole order closed, the fee with it")
+                .isEqualByComparingTo(dong(2_530_000));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE order_id = ?", Long.class,
+                signed.orderId())).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("Q-19 edge, the other way round: the shipped half brought back first waives its share, the closure "
+            + "of the rest that ends the order with nothing delivered waives the remainder - the database takes the "
+            + "closure's waiver, and refuses one while a shipment of the order is delivered")
+    void nothingDeliveredEndedByTheClosure() {
+        Signed signed = signed(300_000);
+        pay(signed.seq(1), 759_000);
+        awaitConfirmed(signed.orderId());
+        UUID shipped = shipment(signed.orderId(), "RETURNED", "REFUSED");
+
+        OrderSettlementResult back = settle(returned(signed.orderId(), shipped, Identifiers.newId(), 1_100_000,
+                shippingFee(false), SettleShipmentReturnCommand.Cause.CARRIER_RETURN));
+        assertThat(back.shippingFeeWaived()).as("the rest still to ship: its share").isEqualByComparingTo(
+                dong(165_000));
+        OrderSettlementResult rest = closeRest(signed.orderId(), 1_100_000, shippingFee(true));
+
+        assertThat(waived(rest)).as("what the shipment left of the fee").isEqualByComparingTo(dong(165_000));
+        assertThat(rest.shippingFeeWaived()).isEqualByComparingTo(dong(165_000));
+        assertThat(jdbc.queryForMap("SELECT kind, closed_amount FROM payment.order_settlement WHERE id = ?",
+                rest.settlementId())).containsEntry("kind", "REMAINDER_CLOSED")
+                .satisfies(row -> assertThat((BigDecimal) row.get("closed_amount"))
+                        .isEqualByComparingTo(dong(1_265_000)));
+        assertThat(jdbc.queryForObject("SELECT sum(shipping_fee_waived_amount) FROM payment.order_settlement "
+                + "WHERE order_id = ?", BigDecimal.class, signed.orderId())).as("the whole fee, exactly")
+                .isEqualByComparingTo(dong(330_000));
+        assertThat(refunds.detail(signed.orderId(), null).standing().refundable()).as("all that was collected")
+                .isEqualByComparingTo(dong(759_000));
+
+        // A closure that claims nothing was delivered while a shipment of the order is: the database says no.
+        Signed other = signed(300_000);
+        pay(other.seq(1), 759_000);
+        awaitConfirmed(other.orderId());
+        UUID otherBack = shipment(other.orderId(), "RETURNED", "REFUSED");
+        settle(returned(other.orderId(), otherBack, Identifiers.newId(), 1_100_000, shippingFee(false),
+                SettleShipmentReturnCommand.Cause.CARRIER_RETURN));
+        shipment(other.orderId(), "DELIVERED", null);
+        assertThatThrownBy(() -> closeRest(other.orderId(), 1_100_000, shippingFee(true)))
+                .as("tg_order_settlement_shipping_waiver").isInstanceOf(DataAccessException.class);
+        assertThat(closeRest(other.orderId(), 1_100_000, shippingFee(false)).shippingFeeWaived())
+                .as("told the truth, the closure waives nothing").isZero();
+    }
+
+    /** The order of {@link #signed(long) signed(300_000)}: its fee with VAT, its goods with VAT. */
+    private static SettleShipmentReturnCommand.ShippingFee shippingFee(boolean endsWithNothingDelivered) {
+        return new SettleShipmentReturnCommand.ShippingFee(dong(330_000), dong(2_200_000), endsWithNothingDelivered);
+    }
+
+    /** The rest of the order closed, as the order would in its transaction: goods never shipped, no agreed fee. */
+    private OrderSettlementResult closeRest(UUID orderId, long goods, SettleShipmentReturnCommand.ShippingFee fee) {
+        return tx.execute(s -> payments.settleRemainderClosure(new SettleRemainderClosureCommand(orderId,
+                Identifiers.newId(), dong(goods), null, null, null, sales.userId(), Instant.now(), Set.of(), fee)))
+                .orElseThrow();
+    }
+
+    /** The carrier brought the shipment back: RETURNED, as the order records it once the receipt is confirmed. */
+    private void cameBack(UUID shipmentId) {
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE ordering.order_shipment SET status = 'RETURNED', failure_reason = 'REFUSED', outcome_at = NOW()
+                 WHERE id = ?""", shipmentId));
     }
 
     private BigDecimal waived(OrderSettlementResult result) {

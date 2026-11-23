@@ -48,9 +48,11 @@ public record OrderRefundResponse(UUID orderId, @Schema(example = "SO-20261108-0
                              Instant settledAt,
                              @Schema(description = "SHIPMENT_RETURNED: the shipment brought back or lost; null "
                                      + "otherwise") UUID shipmentId,
-                             @Schema(description = "SHIPMENT_RETURNED: the part of closed that is the share of the "
-                                     + "order's shipping fee waived with the shipment - the fee in proportion to the "
-                                     + "shipment's goods of the order's goods, whole dong (WF-05 Q-19); 0 otherwise")
+                             @Schema(description = "The part of closed that is the order's shipping fee waived, "
+                                     + "whole dong (WF-05 Q-19). SHIPMENT_RETURNED: the fee in proportion to the "
+                                     + "shipment's goods of the order's goods, or all that is left of it when the order "
+                                     + "ends with nothing delivered; REMAINDER_CLOSED: what the shipments brought back "
+                                     + "left of it, when the closure ends the order with nothing delivered; 0 otherwise")
                              BigDecimal shippingFeeWaived) {
     }
 }
