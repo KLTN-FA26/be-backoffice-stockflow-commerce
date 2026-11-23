@@ -5,6 +5,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.ReturnApproved;
+import com.stockflow.contracts.ReturnAwaitingRefund;
 import com.stockflow.contracts.ReturnClosed;
 import com.stockflow.contracts.ReturnReceived;
 import com.stockflow.contracts.ReturnRejected;
@@ -73,6 +74,8 @@ public final class ReturnRequest extends AggregateRoot {
     private static final int NOTE_LIMIT = 1000;
     private static final int DESCRIPTION_LIMIT = 2000;
     private static final int REASON_LIMIT = 500;
+    /** {@code refusal_note}: what the customer reads beside the refusal reason. */
+    public static final int REFUSAL_NOTE_LIMIT = 500;
 
     /** Units of one order line the customer claims. */
     public record Claim(UUID orderLineId, int quantity) {
@@ -152,6 +155,12 @@ public final class ReturnRequest extends AggregateRoot {
     private UUID cancelledBy;
     private String cancellationReason;
     private Instant closedAt;
+    /** Why units that came back are withheld (WF-05 Q-4); null when everything approved and back is refunded. */
+    private ReturnRefusalReason refusalReason;
+    /** The public note shown to the customer with {@link #refusalReason}. */
+    private String refusalNote;
+    /** The DRAFT return receipt counting a parcel of this return now (WF-05 BE-23); null when none. */
+    private UUID openDraftReceiptId;
 
     private final List<ReturnEvidence> evidence = new ArrayList<>();
     private final List<ReturnDiscrepancy> discrepancies = new ArrayList<>();
@@ -286,6 +295,25 @@ public final class ReturnRequest extends AggregateRoot {
                                      Map<UUID, Integer> claimedElsewhere, Map<UUID, Integer> claimedOnShipment,
                                      Set<UUID> openElsewhere, UUID requestedBy, Instant now, ReturnPolicy policy,
                                      String windowOverride) {
+        return open(rmaNumber, requestId, order, shipmentId, channel, reason, description, requested, claims,
+                claimedElsewhere, claimedOnShipment, openElsewhere, null, requestedBy, now, policy, windowOverride);
+    }
+
+    /**
+     * As the overload without {@code refundedShipments}, the portal's rule read per delivery (WF-05 Q-15).
+     *
+     * @param refundedShipments the deliveries a return of the order already refunded units of
+     *                          ({@link ReturnClaims#refundedShipments}): the portal takes no claim on one of them
+     *                          ({@code RETURN_SHIPMENT_NOT_RETURNABLE}), and takes one on any other delivered and in
+     *                          its window, whatever the order's status. Null when not known: the order's status alone
+     *                          decides, as before.
+     */
+    public static ReturnRequest open(String rmaNumber, UUID requestId, Order order, UUID shipmentId,
+                                     ReturnChannel channel, ReturnReason reason, String description,
+                                     ReturnResolution requested, List<Claim> claims,
+                                     Map<UUID, Integer> claimedElsewhere, Map<UUID, Integer> claimedOnShipment,
+                                     Set<UUID> openElsewhere, Set<UUID> refundedShipments, UUID requestedBy,
+                                     Instant now, ReturnPolicy policy, String windowOverride) {
         Objects.requireNonNull(order, "order");
         Objects.requireNonNull(reason, "reason");
         Objects.requireNonNull(now, "now");
@@ -303,7 +331,7 @@ public final class ReturnRequest extends AggregateRoot {
         }
         // The delivery first: the order's status is read against it, and the window runs from it.
         OrderShipment shipment = deliveredShipment(order, shipmentId);
-        requireReturnable(order, shipment, now, policy, channel, override);
+        requireReturnable(order, shipment, now, policy, channel, override, refundedShipments);
         String text = trimmed(description);
         if (text != null && text.length() > DESCRIPTION_LIMIT) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
@@ -378,8 +406,8 @@ public final class ReturnRequest extends AggregateRoot {
 
     /**
      * BR-RMA-001: a delivered shipment - or a delivered order, when it has no shipments - within the window after that
-     * delivery; or, for Sales with a reason, after it. A further claim on an order a return already refunded goes
-     * through Sales; a CLOSED order takes none (BR-05).
+     * delivery; or, for Sales with a reason, after it. A further claim on a delivery a return already refunded goes
+     * through Sales (WF-05 Q-15: decided per delivery, not by the order's status); a CLOSED order takes none (BR-05).
      *
      * <p>While batches are still to come the order is PARTIALLY_FULFILLED, SHIPPED, DELIVERY_FAILED, ON_HOLD - or
      * PICKING / PACKED for the next batch - and a delivered shipment of it is returnable all the same (WF-05 TH-1:
@@ -387,8 +415,8 @@ public final class ReturnRequest extends AggregateRoot {
      * was received.</p>
      */
     private static void requireReturnable(Order order, OrderShipment shipment, Instant now, ReturnPolicy policy,
-                                          ReturnChannel channel, String override) {
-        BusinessException refusal = returnRefusal(order, shipment, now, policy, channel, override);
+                                          ReturnChannel channel, String override, Set<UUID> refundedShipments) {
+        BusinessException refusal = returnRefusal(order, shipment, now, policy, channel, override, refundedShipments);
         if (refusal != null) {
             throw refusal;
         }
@@ -398,9 +426,18 @@ public final class ReturnRequest extends AggregateRoot {
      * {@link #requireReturnable} as an answer rather than a throw: the refusal opening a return of {@code shipment}
      * would meet, or null when the delivery is returnable now. Shared by {@link #claimable}, so what the customer is
      * shown as returnable is decided by the very rule that decides the claim.
+     *
+     * <p>WF-05 Q-15 (Luật Thương mại 2005 Điều 318: the period runs from each delivery; NĐ 254/2026/NĐ-CP Điều 9 khoản 3:
+     * each delivery has its own invoice): the order's status decided whether the portal took a claim, and it says
+     * nothing reliable about one delivery - REFUNDED / PARTIALLY_REFUNDED may come from a refund of another delivery or
+     * from a shipment the carrier brought back, RETURNED from another return's goods being back. So with
+     * {@code refundedShipments} known, those statuses take a portal claim on any delivered shipment in its window, and
+     * every status refuses one on a delivery a return already refunded ({@code RETURN_SHIPMENT_NOT_RETURNABLE}): that
+     * claim was answered, a further one is Sales'.</p>
      */
     private static BusinessException returnRefusal(Order order, OrderShipment shipment, Instant now,
-                                                   ReturnPolicy policy, ReturnChannel channel, String override) {
+                                                   ReturnPolicy policy, ReturnChannel channel, String override,
+                                                   Set<UUID> refundedShipments) {
         OrderStatus status = order.status();
         boolean sales = channel == ReturnChannel.BACK_OFFICE;
         BusinessException notDelivered = new BusinessException(ErrorCode.RETURN_ORDER_NOT_DELIVERED,
@@ -412,8 +449,10 @@ public final class ReturnRequest extends AggregateRoot {
             case COMPLETED -> sales ? null : windowClosed(order, policy, false);
             case CANCELLED -> new BusinessException(ErrorCode.ORDER_CANCELLED,
                     "Order %s is cancelled; nothing was delivered to return".formatted(order.orderNumber()));
-            case REFUNDED, PARTIALLY_REFUNDED -> sales ? null : new BusinessException(
-                    ErrorCode.RETURN_ORDER_NOT_RETURNABLE,
+            // Settled by a refund - of this delivery or another one, by a return or by the carrier bringing a shipment
+            // back. Per delivery when it is known which were refunded (below); else the order as a whole, as before.
+            case REFUNDED, PARTIALLY_REFUNDED -> sales || refundedShipments != null && shipment != null ? null
+                    : new BusinessException(ErrorCode.RETURN_ORDER_NOT_RETURNABLE,
                     "Order %s was already settled by a return: ask Sales to open a further claim"
                             .formatted(order.orderNumber()));
             case CLOSED -> new BusinessException(ErrorCode.RETURN_ORDER_NOT_RETURNABLE,
@@ -421,12 +460,19 @@ public final class ReturnRequest extends AggregateRoot {
             // Batches still to come: one already delivered is returned on its own (WF-05 TH-1).
             case PICKING, PARTIALLY_FULFILLED, PACKED, ON_HOLD, SHIPPED, DELIVERY_FAILED -> shipment == null
                     ? notDelivered : null;
-            // RETURNED as an order status is goods that came back undelivered (RTO), or a return being refunded.
-            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
-                 RETURNED -> notDelivered;
+            // RETURNED as an order status is goods that came back undelivered (RTO), or another return's goods being
+            // back while its refund is decided: a delivered shipment named is returnable all the same (WF-05 Q-15).
+            case RETURNED -> shipment == null || refundedShipments == null ? notDelivered : null;
+            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL ->
+                    notDelivered;
         };
         if (refusal != null) {
             return refusal;
+        }
+        if (!sales && shipment != null && refundedShipments != null && refundedShipments.contains(shipment.id())) {
+            return new BusinessException(ErrorCode.RETURN_SHIPMENT_NOT_RETURNABLE, ("Shipment %s of order %s was "
+                    + "already settled by a return: ask Sales to open a further claim").formatted(shipment.id(),
+                    order.orderNumber()));
         }
         // Điều 318: the period runs from the delivery the goods came on.
         Instant deliveredAt = shipment != null ? shipment.outcomeAt() : order.deliveredAt();
@@ -539,8 +585,9 @@ public final class ReturnRequest extends AggregateRoot {
         Objects.requireNonNull(policy, "policy");
         ReturnClaims taken = claims == null ? ReturnClaims.NONE : claims;
         Map<UUID, Integer> inAll = taken.inAll();
+        Set<UUID> refunded = taken.refundedShipments();
         if (order.shipments().isEmpty()) {
-            boolean returnable = returnRefusal(order, null, now, policy, ReturnChannel.PORTAL, null) == null;
+            boolean returnable = returnRefusal(order, null, now, policy, ReturnChannel.PORTAL, null, refunded) == null;
             Map<UUID, Integer> onOrder = taken.onShipment(null);
             Set<UUID> open = taken.openOn(null);
             List<ClaimableLine> lines = new ArrayList<>();
@@ -557,7 +604,7 @@ public final class ReturnRequest extends AggregateRoot {
         for (OrderShipment shipment : order.shipments()) {
             // RETURN_SHIPMENT_NOT_DELIVERED first, as deliveredShipment refuses it before the order's own rules.
             boolean returnable = shipment.status() == OrderShipmentStatus.DELIVERED
-                    && returnRefusal(order, shipment, now, policy, ReturnChannel.PORTAL, null) == null;
+                    && returnRefusal(order, shipment, now, policy, ReturnChannel.PORTAL, null, refunded) == null;
             Map<UUID, Integer> onShipment = taken.onShipment(shipment.id());
             Set<UUID> open = taken.openOn(shipment.id());
             List<ClaimableLine> lines = new ArrayList<>();
@@ -593,12 +640,16 @@ public final class ReturnRequest extends AggregateRoot {
      * Whether a photo of {@code stage} is taken now and fits; the service asks before it stores the file, so a refused
      * photo leaves nothing behind in storage. Only the claim's photos are the return's since team plan 4D-3: photos of
      * the goods as they came back are the return receipt's ({@code procurement.goods_receipt_photos}), and there is no
-     * inspection to photograph.
+     * inspection to photograph. The custody note (WF-05 Q-11) is the exception: goods that came back and that no
+     * receipt takes - they are not the return's - are recorded here, on the claim they came with.
      */
     public void requireEvidenceAllowed(ReturnEvidence.Stage stage, ReturnPolicy policy) {
         boolean open = switch (Objects.requireNonNull(stage, "stage")) {
             case CLAIM -> status == ReturnStatus.REQUESTED || status == ReturnStatus.AWAITING_RETURN;
             case RECEIPT, INSPECTION -> false;
+            // WF-05 Q-11: goods the return does not take may turn up at any time - sent with the claim, more than was
+            // approved, after it was settled or refused - and are noted on it whatever its status.
+            case CUSTODY -> true;
         };
         if (!open) {
             throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, stage == ReturnEvidence.Stage.CLAIM
@@ -714,6 +765,9 @@ public final class ReturnRequest extends AggregateRoot {
                     + "goods back: mark its goods complete instead of withdrawing it").formatted(rmaNumber,
                     Math.max(parcels.size(), 1)));
         }
+        // WF-05 BE-23: a parcel being counted at the dock is goods back as much as a confirmed one. Withdrawn now, the
+        // order would go back to DELIVERED and could complete before the receipt is confirmed and reopens the return.
+        requireNoDraftReceipt("be withdrawn");
         String text = trimmed(why) == null ? "WITHDRAWN" : limited(why, REASON_LIMIT, "reason");
         this.cancelledBy = by;
         this.cancellationReason = text;
@@ -734,10 +788,17 @@ public final class ReturnRequest extends AggregateRoot {
         if (status != ReturnStatus.AWAITING_RETURN || returnDeadline == null || returnDeadline.isAfter(now)) {
             return false;
         }
+        if (openDraftReceiptId != null) {
+            // WF-05 BE-23: a parcel is being counted at the dock. Expired now, the return would end - its order back to
+            // DELIVERED and on to completion - and the receipt confirmed afterwards would reopen it. The sweep takes it
+            // up again once the receipt is confirmed or cancelled.
+            return false;
+        }
         if (anyParcel()) {
             // Recorded under who took the last parcel in: the sweep is nobody, and a discrepancy names its recorder.
             recordDiscrepancies(shortfalls(receivedBy, now, "Goods deadline passed"));
             transitionTo(ReturnStatus.RECEIVED, null, "GOODS_DEADLINE_PASSED", now);
+            announceAwaitingRefund("GOODS_DEADLINE_PASSED", now);
             return true;
         }
         close(ReturnStatus.EXPIRED, null, "RETURN_DEADLINE_PASSED", now);
@@ -759,14 +820,19 @@ public final class ReturnRequest extends AggregateRoot {
      *       ({@link #expire}), whichever comes first.</li>
      *   <li>EXPIRED, or withdrawn after approval: brought back, RECEIVED - the goods are here, on a receipt opened while
      *       the return awaited them, and nothing more is awaited.</li>
-     *   <li>Its goods back already (RECEIVED, SETTLEMENT_PENDING, RESOLVED): a parcel whose receipt was opened while the
-     *       return awaited it and confirmed after Sales said the goods were complete. Its units are added and its
-     *       discrepancies recorded; the status stays, and a refund proposed or made stays as decided. Refused instead,
-     *       the event would be retried for ever over goods already in quarantine.</li>
+     *   <li>Its goods back already (RECEIVED, SETTLEMENT_PENDING): a late parcel (WF-05 Q-11 lets a receipt be opened
+     *       until the refund is settled). Its units are added and its discrepancies recorded. A refund waiting for its
+     *       second person was proposed without them, so it is sent back to Sales (SETTLEMENT_PENDING → RECEIVED):
+     *       approved as it stood, the return would end RESOLVED with goods that came back never decided on.</li>
+     *   <li>RESOLVED: only a receipt drafted before WF-05 BE-23, when nothing kept a refund from being decided while a
+     *       parcel was counted. Its units are added; the refund stays as decided. Refused instead, the event would be
+     *       retried for ever over goods already in quarantine.</li>
      * </ul>
      * Units beyond those approved and cartons of a SKU the return does not claim are discrepancies of the parcel; units
      * short of those approved are one once no more is awaited - for Sales to follow up with the customer outside the
-     * system (03 edge cases).
+     * system (03 edge cases). Units of a SKU two lines of the return share (two order lines of one SKU) fill each line up
+     * to what it approved, in turn, the rest going to the last (WF-05 BE-48): added to every line of the SKU, the same
+     * units were received - and refundable - twice.
      *
      * @return false when this receipt was taken already (the event delivered again): nothing changes
      * @throws BusinessException {@code RETURN_INVALID_TRANSITION} for a return that takes no goods (never approved)
@@ -797,17 +863,25 @@ public final class ReturnRequest extends AggregateRoot {
         }
         String source = "Receipt %s".formatted(receiptNumber);
         List<ReturnDiscrepancy> found = new ArrayList<>();
-        Set<String> claimed = new HashSet<>();
-        for (ReturnLine line : lines) {
-            claimed.add(line.sku());
-            int before = received(line);
-            int total = before + bySku.getOrDefault(line.sku(), 0);
-            int approvedUnits = approved(line);
-            line.receive(total);
-            int excess = Math.max(0, total - approvedUnits) - Math.max(0, before - approvedUnits);
-            if (excess > 0) {
-                found.add(new ReturnDiscrepancy(Identifiers.newId(), line.id(), ReturnDiscrepancy.Kind.EXCESS,
-                        line.sku(), excess, source, by, now));
+        Map<String, List<ReturnLine>> linesBySku = new LinkedHashMap<>();
+        lines.forEach(line -> linesBySku.computeIfAbsent(line.sku(), sku -> new ArrayList<>()).add(line));
+        Set<String> claimed = linesBySku.keySet();
+        for (Map.Entry<String, List<ReturnLine>> sameSku : linesBySku.entrySet()) {
+            int arriving = bySku.getOrDefault(sameSku.getKey(), 0);
+            List<ReturnLine> sharing = sameSku.getValue();
+            for (int i = 0; i < sharing.size(); i++) {
+                ReturnLine line = sharing.get(i);
+                int before = received(line);
+                int approvedUnits = approved(line);
+                int taken = i == sharing.size() - 1 ? arriving : Math.min(arriving, Math.max(0, approvedUnits - before));
+                arriving -= taken;
+                int total = before + taken;
+                line.receive(total);
+                int excess = Math.max(0, total - approvedUnits) - Math.max(0, before - approvedUnits);
+                if (excess > 0) {
+                    found.add(new ReturnDiscrepancy(Identifiers.newId(), line.id(), ReturnDiscrepancy.Kind.EXCESS,
+                            line.sku(), excess, source, by, now));
+                }
             }
         }
         bySku.forEach((sku, units) -> {
@@ -828,6 +902,7 @@ public final class ReturnRequest extends AggregateRoot {
         this.receivedBy = by;
         this.receivedAt = now;
         this.receivingLocation = at;
+        String awaiting = null;
         if (reopening) {
             found.addAll(shortfalls(by, now, source));
             String why = status == ReturnStatus.EXPIRED ? "RECEIVED_AFTER_DEADLINE" : "RECEIVED_AFTER_WITHDRAWAL";
@@ -835,15 +910,26 @@ public final class ReturnRequest extends AggregateRoot {
             this.cancelledBy = null;
             this.cancellationReason = null;
             transitionTo(ReturnStatus.RECEIVED, by, why + " " + receiptNumber, now);
+            awaiting = why;
         } else if (status == ReturnStatus.AWAITING_RETURN && lines.stream().allMatch(l -> received(l) >= approved(l))) {
             boolean clean = found.isEmpty() && discrepancies.isEmpty();
             transitionTo(ReturnStatus.RECEIVED, by, (clean ? "RECEIVED " : "RECEIVED_WITH_DISCREPANCY ")
                     + receiptNumber, now);
+            awaiting = "GOODS_BACK";
+        } else if (status == ReturnStatus.SETTLEMENT_PENDING) {
+            clearProposal();
+            transitionTo(ReturnStatus.RECEIVED, by, "REFUND_SENT_BACK: goods of receipt %s arrived"
+                    .formatted(receiptNumber), now);
+            awaiting = "LATE_PARCEL";
         }
         recordDiscrepancies(found);
         registerEvent(new OrderEvent.ReturnChanged(id, new ReturnReceived(id, rmaNumber, orderId, orderNumber,
                 customerId, at, lines.stream().map(l -> new ReturnReceived.Line(l.orderLineId(), l.sku(), l.sku(),
-                        approved(l), received(l))).toList(), !found.isEmpty(), by, now, parcel)));
+                        approved(l), received(l))).toList(), !found.isEmpty(), by, now, parcel, status.name(),
+                receiptNumber)));
+        if (awaiting != null) {
+            announceAwaitingRefund(awaiting, now);
+        }
         return true;
     }
 
@@ -857,12 +943,18 @@ public final class ReturnRequest extends AggregateRoot {
      * <p>The only way to settle such a return before its deadline: once a parcel is in, it is no longer withdrawn
      * ({@link #cancel}).</p>
      *
+     * <p>Never while a parcel of it is being counted at the dock (WF-05 BE-23, {@code RETURN_RECEIPT_DRAFT_OPEN}): the
+     * goods are not complete while some of them are on a draft receipt, and once the refund was settled on what came
+     * before, that parcel's units would never be refunded.</p>
+     *
      * @throws BusinessException {@code RETURN_INVALID_TRANSITION} for a return not awaiting its goods, or one no parcel
-     *         of which came back yet - nothing is here to decide on; withdraw it, or let it expire
+     *         of which came back yet - nothing is here to decide on; withdraw it, or let it expire;
+     *         {@code RETURN_RECEIPT_DRAFT_OPEN}
      */
     public void markGoodsComplete(UUID by, Instant now, String note) {
         Objects.requireNonNull(by, "by");
         requireStatus(ReturnStatus.AWAITING_RETURN, "have its goods marked complete");
+        requireNoDraftReceipt("have its goods marked complete");
         if (!anyParcel()) {
             throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, ("Nothing of return %s came back yet: "
                     + "wait for its goods, or withdraw it").formatted(rmaNumber));
@@ -870,6 +962,7 @@ public final class ReturnRequest extends AggregateRoot {
         String text = limited(note, REASON_LIMIT, "note");
         recordDiscrepancies(shortfalls(by, now, "Goods marked complete"));
         transitionTo(ReturnStatus.RECEIVED, by, text == null ? "GOODS_COMPLETE" : "GOODS_COMPLETE: " + text, now);
+        announceAwaitingRefund("GOODS_COMPLETE", now);
     }
 
     /** Whether a parcel of the goods came back: a confirmed return receipt brought some. */
@@ -907,13 +1000,14 @@ public final class ReturnRequest extends AggregateRoot {
 
     /**
      * Sales propose the refund of the goods that came back (17 §4.10 step 40; 15 §4.5 step 15): per line, the units
-     * refunded - at most those approved and back - worth what the order line charged for them with its VAT
-     * ({@link OrderLine#grossOf}). Every refund waits for a second person (RECEIVED → SETTLEMENT_PENDING).
+     * refunded - at most those approved and back - worth what the order line charged for them with its VAT. Every
+     * refund waits for a second person (RECEIVED → SETTLEMENT_PENDING).
      *
      * @param units per line of the return, the units refunded; null or empty refunds every unit approved and back, a
-     *              line left out of a list refunds nothing. At least one unit is refunded: goods taken back for a defect
-     *              Sales approved are made good, at least in part
-     * @throws BusinessException {@code RETURN_INVALID_TRANSITION}; {@code RETURN_QUANTITIES_INVALID}
+     *              line left out of a list refunds nothing
+     * @throws BusinessException {@code RETURN_INVALID_TRANSITION}; {@code RETURN_QUANTITIES_INVALID};
+     *         {@code RETURN_REFUSAL_REASON_REQUIRED} for nothing refunded of what came back usable;
+     *         {@code RETURN_RECEIPT_DRAFT_OPEN}
      */
     public void proposeRefund(UUID by, Instant now, Map<UUID, Integer> units, Order order, String note) {
         proposeRefund(by, now, units, order, note, false);
@@ -929,9 +1023,44 @@ public final class ReturnRequest extends AggregateRoot {
      */
     public void proposeRefund(UUID by, Instant now, Map<UUID, Integer> units, Order order, String note,
                               boolean nothingPaid) {
+        proposeRefund(by, now, units, order, note, nothingPaid, null, null, Map.of());
+    }
+
+    /**
+     * The whole proposal: what is refunded, why anything that came back is withheld, and where on each order line the
+     * refunded units sit.
+     *
+     * <p><b>A refusal</b> (WF-05 Q-4; Luật Thương mại 2005 Điều 318, 319): goods can come back usable and still not be
+     * refunded - the customer damaged them, no defect was found, the claim is outside the policy. Sales then propose
+     * nothing for them and say why, from a fixed list ({@link ReturnRefusalReason}), with an optional note the customer
+     * reads; the accountant approves it as any refund ({@link #requireSettlementApprover}: someone else), and the return
+     * ends RESOLVED with nothing settled and no invoice adjusted. Before, every unit that came back usable had to be
+     * refunded at least in part, and a return whose goods the customer had damaged could never end. Withholding only
+     * some units may say why too; withholding all of them must ({@code RETURN_REFUSAL_REASON_REQUIRED};
+     * {@code check_return_request_refund} again).</p>
+     *
+     * <p><b>The value</b> (WF-05 BE-50): the units are valued where they sit on their order line's cumulative scale -
+     * {@link OrderLine#grossBetween} from the units other returns of the line already refunded - not by rounding their
+     * own share of the line's gross. Several returns and closures of one line then add up to the line's gross to the
+     * dong; rounded each on its own they drifted by up to a dong a time, enough to leave an order owing 1 VND for ever
+     * or a settlement refunding more than was collected. Closures take units from the top of the line
+     * ({@code Order.closeUnitsOf}), refunds from the bottom, so the two never overlap. Approval values them again on
+     * what was settled by then ({@link #revalue}), since returns of one line may be approved in another order than
+     * proposed.</p>
+     *
+     * @param refusal        why units that came back usable are withheld; required when every one of them is, refused
+     *                       when none is
+     * @param refusalNote    the note the customer reads beside the reason (at most {@value #REFUSAL_NOTE_LIMIT}
+     *                       characters); required for {@link ReturnRefusalReason#OTHER}
+     * @param refundedBefore per order line, the units other returns of it already refunded (RESOLVED)
+     */
+    public void proposeRefund(UUID by, Instant now, Map<UUID, Integer> units, Order order, String note,
+                              boolean nothingPaid, ReturnRefusalReason refusal, String refusalNote,
+                              Map<UUID, Integer> refundedBefore) {
         Objects.requireNonNull(by, "by");
         Objects.requireNonNull(order, "order");
         requireStatus(ReturnStatus.RECEIVED, "have a refund proposed");
+        requireNoDraftReceipt("have a refund proposed");
         Map<UUID, Integer> refunded = new HashMap<>();
         if (units == null || units.isEmpty()) {
             lines.forEach(line -> refunded.put(line.id(), line.refundableUnits()));
@@ -946,19 +1075,32 @@ public final class ReturnRequest extends AggregateRoot {
                 refunded.put(line.id(), value);
             }
         }
-        if (refunded.values().stream().mapToInt(Integer::intValue).sum() == 0) {
+        int total = refunded.values().stream().mapToInt(Integer::intValue).sum();
+        int refundable = lines.stream().mapToInt(ReturnLine::refundableUnits).sum();
+        String publicNote = limited(refusalNote, REFUSAL_NOTE_LIMIT, "refusal note");
+        if (total == 0 && refundable == 0) {
             throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
-                    lines.stream().allMatch(line -> line.refundableUnits() == 0)
-                            ? "Nothing approved of %s came back usable: close it without a refund".formatted(rmaNumber)
-                            : "Refund at least one unit of %s that came back".formatted(rmaNumber));
+                    "Nothing approved of %s came back usable: close it without a refund".formatted(rmaNumber));
+        }
+        if (total == 0 && refusal == null) {
+            throw new BusinessException(ErrorCode.RETURN_REFUSAL_REASON_REQUIRED, ("%d unit(s) of %s came back and none "
+                    + "is refunded: say why").formatted(refundable, rmaNumber));
+        }
+        if (refusal == null && publicNote != null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A note for the customer goes with a refusal reason");
+        }
+        if (refusal != null && total == refundable) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Every unit of %s that came back is refunded: "
+                    + "there is nothing to give a refusal reason for").formatted(rmaNumber));
+        }
+        if (refusal == ReturnRefusalReason.OTHER && publicNote == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "A refusal for another reason says what it is, for the customer");
         }
         BigDecimal value = BigDecimal.ZERO;
         for (ReturnLine line : lines) {
             int count = refunded.getOrDefault(line.id(), 0);
-            BigDecimal amount = count == 0 || nothingPaid ? BigDecimal.ZERO : order.findLine(line.orderLineId())
-                    .orElseThrow(() -> new IllegalStateException("Return %s names line %s that order %s does not have"
-                            .formatted(rmaNumber, line.orderLineId(), order.orderNumber())))
-                    .grossOf(count).amount();
+            BigDecimal amount = nothingPaid ? BigDecimal.ZERO : valueOf(order, line, count, refundedBefore);
             line.refund(count, amount);
             value = value.add(amount);
         }
@@ -968,18 +1110,66 @@ public final class ReturnRequest extends AggregateRoot {
         this.proposedBy = by;
         this.proposedAt = now;
         this.resolutionNote = limited(note, NOTE_LIMIT, "note");
-        transitionTo(ReturnStatus.SETTLEMENT_PENDING, by, "REFUND_PROPOSED %s %s%s".formatted(plain(value), currency,
-                nothingPaid ? " NOTHING_PAID" : ""), now);
+        this.refusalReason = refusal;
+        this.refusalNote = refusal == null ? null : publicNote;
+        transitionTo(ReturnStatus.SETTLEMENT_PENDING, by, "REFUND_PROPOSED %s %s%s%s".formatted(plain(value), currency,
+                nothingPaid ? " NOTHING_PAID" : "", refusal == null ? "" : " REFUSED " + refusal.name()), now);
+    }
+
+    /**
+     * The proposed refund valued again where its units sit on each order line now (WF-05 BE-50): called by the
+     * approval, under the order's lock, with what the line's other returns refunded by then. Returns of one line
+     * approved in another order than they were proposed would otherwise value overlapping ranges of the line, and
+     * their amounts would no longer add up to it. A settlement of nothing (a refusal, an order with nothing paid) has
+     * nothing to value.
+     *
+     * @return whether the amount changed - by the rounding of a dong, never more
+     */
+    public boolean revalue(Order order, Map<UUID, Integer> refundedBefore) {
+        Objects.requireNonNull(order, "order");
+        requireStatus(ReturnStatus.SETTLEMENT_PENDING, "have its refund valued");
+        if (settlementAmount.signum() == 0) {
+            return false;
+        }
+        BigDecimal value = BigDecimal.ZERO;
+        for (ReturnLine line : lines) {
+            BigDecimal amount = valueOf(order, line, line.refundQuantity(), refundedBefore);
+            line.refund(line.refundQuantity(), amount);
+            value = value.add(amount);
+        }
+        boolean changed = value.compareTo(settlementAmount) != 0;
+        this.settlementAmount = value;
+        return changed;
+    }
+
+    /** {@code count} units of {@code line} refunded after the {@code refundedBefore} its other returns refunded. */
+    private BigDecimal valueOf(Order order, ReturnLine line, int count, Map<UUID, Integer> refundedBefore) {
+        if (count == 0) {
+            return BigDecimal.ZERO;
+        }
+        OrderLine sold = order.findLine(line.orderLineId()).orElseThrow(() -> new IllegalStateException(
+                "Return %s names line %s that order %s does not have".formatted(rmaNumber, line.orderLineId(),
+                        order.orderNumber())));
+        int from = refundedBefore == null ? 0 : refundedBefore.getOrDefault(line.orderLineId(), 0);
+        if (from < 0 || from + count > sold.quantity()) {
+            throw new IllegalStateException("Return %s refunds %d unit(s) of %s after %d refunded already: more than "
+                    + "its %d".formatted(rmaNumber, count, line.sku(), from, sold.quantity()));
+        }
+        return sold.grossBetween(from, from + count).amount();
     }
 
     /**
      * Four eyes on every refund: approved by someone other than who proposed it. Checked before anything is settled,
      * so the refusal is the answer and not whatever a settlement would have failed with.
      *
-     * @throws BusinessException {@code RETURN_INVALID_TRANSITION}; {@code RETURN_SELF_APPROVAL}
+     * Never while a parcel of it is being counted (WF-05 BE-23): its units would come after the refund was settled.
+     *
+     * @throws BusinessException {@code RETURN_INVALID_TRANSITION}; {@code RETURN_SELF_APPROVAL};
+     *         {@code RETURN_RECEIPT_DRAFT_OPEN}
      */
     public void requireSettlementApprover(UUID by) {
         requireStatus(ReturnStatus.SETTLEMENT_PENDING, "have its refund approved");
+        requireNoDraftReceipt("have its refund approved");
         if (Objects.equals(by, proposedBy)) {
             throw new BusinessException(ErrorCode.RETURN_SELF_APPROVAL,
                     "The refund of %s was proposed by the same person".formatted(rmaNumber));
@@ -991,13 +1181,21 @@ public final class ReturnRequest extends AggregateRoot {
         Objects.requireNonNull(by, "by");
         requireStatus(ReturnStatus.SETTLEMENT_PENDING, "have its refund sent back");
         String text = required(why, REASON_LIMIT, "A refund sent back says why");
+        clearProposal();
+        transitionTo(ReturnStatus.RECEIVED, by, "REFUND_SENT_BACK: " + text, now);
+        announceAwaitingRefund("REFUND_SENT_BACK", now);
+    }
+
+    /** The proposal is gone: nothing refunded, no amount, no reason, nobody proposed it. */
+    private void clearProposal() {
         lines.forEach(line -> line.refund(0, BigDecimal.ZERO));
         this.settlementAmount = BigDecimal.ZERO;
         this.moneyMode = null;
         this.proposedBy = null;
         this.proposedAt = null;
         this.resolutionNote = null;
-        transitionTo(ReturnStatus.RECEIVED, by, "REFUND_SENT_BACK: " + text, now);
+        this.refusalReason = null;
+        this.refusalNote = null;
     }
 
     /**
@@ -1017,8 +1215,12 @@ public final class ReturnRequest extends AggregateRoot {
         this.money = booked;
         this.settledBy = by;
         this.settledAt = now;
-        this.vatAdjustmentRequired = settlementAmount.signum() > 0;
-        close(ReturnStatus.RESOLVED, by, "RESOLVED_REFUND %s %s".formatted(plain(settlementAmount), currency), now);
+        // WF-05 BE-44: the invoice follows the goods refunded, whatever they were worth in money - units refunded worth
+        // nothing (an order with nothing paid, TH-2) were still invoiced. A refusal refunds no unit and adjusts nothing.
+        this.vatAdjustmentRequired = lines.stream().anyMatch(line -> line.refundQuantity() > 0);
+        close(ReturnStatus.RESOLVED, by, !vatAdjustmentRequired && refusalReason != null
+                ? "RESOLVED_REFUSED " + refusalReason.name()
+                : "RESOLVED_REFUND %s %s".formatted(plain(settlementAmount), currency), now);
         announceResolved(by, now);
     }
 
@@ -1030,11 +1232,13 @@ public final class ReturnRequest extends AggregateRoot {
      * RECEIVED, since a refund proposes at least one unit. The goods themselves are the warehouse's to write off.
      *
      * @throws BusinessException {@code RETURN_INVALID_TRANSITION} for a return not RECEIVED;
-     *         {@code RETURN_QUANTITIES_INVALID} while something approved came back and is to be refunded
+     *         {@code RETURN_QUANTITIES_INVALID} while something approved came back and is to be refunded - or refused
+     *         with a reason, by two people ({@link #proposeRefund}, WF-05 Q-4); {@code RETURN_RECEIPT_DRAFT_OPEN}
      */
     public void closeWithoutRefund(UUID by, Instant now, String note) {
         Objects.requireNonNull(by, "by");
         requireStatus(ReturnStatus.RECEIVED, "be closed without a refund");
+        requireNoDraftReceipt("be closed without a refund");
         int refundable = lines.stream().mapToInt(ReturnLine::refundableUnits).sum();
         if (refundable > 0) {
             throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID, ("%d unit(s) of %s were approved and came "
@@ -1054,13 +1258,123 @@ public final class ReturnRequest extends AggregateRoot {
         announceResolved(by, now);
     }
 
-    /** {@link ReturnResolved}: what came back of each line, what was refunded, and the delivery it was against. */
+    /**
+     * {@link ReturnResolved}: what came back of each line, what was refunded, the delivery it was against, and why
+     * anything was withheld (WF-05 Q-4: the customer reads it) - its code; the public note stays on the return.
+     */
     private void announceResolved(UUID by, Instant now) {
         registerEvent(new OrderEvent.ReturnChanged(id, new ReturnResolved(id, rmaNumber, orderId, orderNumber,
                 customerId, null, null, money.offset(), money.refunded(), BigDecimal.ZERO, currency,
                 vatAdjustmentRequired, lines.stream().map(l -> new ReturnResolved.Line(l.orderLineId(), l.sku(),
                         l.receivedQuantity() == null ? 0 : l.receivedQuantity(), 0, l.refundQuantity(),
-                        l.refundNetAmount())).toList(), by, now, orderId, shipmentId)));
+                        l.refundNetAmount())).toList(), by, now, orderId, shipmentId,
+                refusalReason == null ? null : refusalReason.name())));
+    }
+
+    /**
+     * The return is RECEIVED again - its goods back, or its refund sent back - and waits for Sales to propose the
+     * refund (WF-05 BE-24): announced so Sales are told, whatever moved it there. {@code cause}: GOODS_BACK,
+     * GOODS_COMPLETE, GOODS_DEADLINE_PASSED, RECEIVED_AFTER_DEADLINE, RECEIVED_AFTER_WITHDRAWAL, LATE_PARCEL,
+     * REFUND_SENT_BACK.
+     */
+    private void announceAwaitingRefund(String cause, Instant at) {
+        registerEvent(new OrderEvent.ReturnChanged(id, new ReturnAwaitingRefund(id, rmaNumber, orderId, orderNumber,
+                customerId, cause, at)));
+    }
+
+    // ================================================================================================= receipts
+
+    /**
+     * Whether a return receipt may be opened for this return now (WF-05 Q-11; TT 91/2026/TT-BTC Điều 10 khoản 5 điểm
+     * c): it was approved and its refund is not settled - awaiting its goods, back (RECEIVED), its refund waiting for a
+     * second person, expired, or withdrawn after approval. A parcel that turns up after Sales marked the goods complete
+     * or after the deadline is then received on a document and decided on, instead of standing in the warehouse with
+     * none. Not REQUESTED (nothing was agreed to take back), REJECTED or RESOLVED: goods arriving then are the
+     * customer's, kept in custody on the return ({@link ReturnEvidence.Custody}). {@code check_return_receipt} says
+     * the same.
+     */
+    public boolean receiptOpenable() {
+        return receiptOpenable(status, returnRequired, decidedAt);
+    }
+
+    /** {@link #receiptOpenable()} from what a list row holds, so a list and the detail say the same. */
+    public static boolean receiptOpenable(ReturnStatus status, Boolean returnRequired, Instant decidedAt) {
+        return switch (status) {
+            case AWAITING_RETURN, RECEIVED, SETTLEMENT_PENDING, EXPIRED -> true;
+            case CANCELLED -> Boolean.TRUE.equals(returnRequired) && decidedAt != null;
+            case REQUESTED, INSPECTED, RESOLVED, REJECTED -> false;
+        };
+    }
+
+    /**
+     * A return receipt was opened for a parcel of this return (WF-05 BE-23): while it is a draft the goods are not
+     * marked complete, the deadline does not end the return, and no refund is proposed or approved
+     * ({@code RETURN_RECEIPT_DRAFT_OPEN}). Procurement tells the return in the receipt's own transaction
+     * ({@code ReturnReceiptTracking}). The same receipt again changes nothing.
+     *
+     * @throws BusinessException {@code RETURN_NOT_AWAITING_GOODS} when no receipt may be opened for it now
+     *         ({@link #receiptOpenable}); {@code RETURN_RECEIPT_ALREADY_OPEN} while another draft counts a parcel of it
+     */
+    public void draftReceiptOpened(UUID receiptId) {
+        Objects.requireNonNull(receiptId, "receiptId");
+        if (receiptId.equals(openDraftReceiptId)) {
+            return;
+        }
+        if (!receiptOpenable()) {
+            throw new BusinessException(ErrorCode.RETURN_NOT_AWAITING_GOODS, ("Return %s is %s: its goods are received "
+                    + "while it is approved and its refund not settled").formatted(rmaNumber, status));
+        }
+        if (openDraftReceiptId != null) {
+            throw new BusinessException(ErrorCode.RETURN_RECEIPT_ALREADY_OPEN, ("A parcel of return %s is already being "
+                    + "counted on another receipt; confirm or cancel it first").formatted(rmaNumber), List.of(),
+                    Map.of("receiptId", openDraftReceiptId));
+        }
+        this.openDraftReceiptId = receiptId;
+    }
+
+    /**
+     * The draft receipt {@code receiptId} was confirmed or cancelled: the return no longer waits for it. A receipt that
+     * is not the open draft (told twice, or one of before WF-05 BE-23) changes nothing.
+     *
+     * @return whether it was the open draft
+     */
+    public boolean draftReceiptClosed(UUID receiptId) {
+        if (receiptId == null || !receiptId.equals(openDraftReceiptId)) {
+            return false;
+        }
+        this.openDraftReceiptId = null;
+        return true;
+    }
+
+    private void requireNoDraftReceipt(String what) {
+        if (openDraftReceiptId != null) {
+            throw new BusinessException(ErrorCode.RETURN_RECEIPT_DRAFT_OPEN, ("A parcel of return %s is still being "
+                    + "counted on a return receipt: confirm or cancel it before the return can %s").formatted(rmaNumber,
+                    what), List.of(), Map.of("receiptId", openDraftReceiptId));
+        }
+    }
+
+    /** How a RESOLVED return ended, for the screens (WF-05 Q-4): null while it is not RESOLVED. */
+    public enum Outcome {
+        /** Units were refunded - worth something, or nothing on an order with nothing paid. */
+        REFUNDED,
+        /** Goods came back usable and none of them was refunded, for a reason ({@link #refusalReason}). */
+        REFUSED,
+        /** Nothing approved came back usable (WF-05 TH-4): there was nothing to refund. */
+        NOTHING_TO_REFUND
+    }
+
+    /** How the return ended; null until it is RESOLVED. */
+    public Outcome outcome() {
+        return outcomeOf(status, lines.stream().anyMatch(line -> line.refundQuantity() > 0), refusalReason);
+    }
+
+    /** {@link #outcome} from what a list row holds: whether units were refunded, and the refusal reason. */
+    public static Outcome outcomeOf(ReturnStatus status, boolean unitsRefunded, ReturnRefusalReason refusal) {
+        if (status != ReturnStatus.RESOLVED) {
+            return null;
+        }
+        return unitsRefunded ? Outcome.REFUNDED : refusal != null ? Outcome.REFUSED : Outcome.NOTHING_TO_REFUND;
     }
 
     // ================================================================================================= reading
@@ -1195,6 +1509,14 @@ public final class ReturnRequest extends AggregateRoot {
         return this;
     }
 
+    /** Rehydration of the refusal (WF-05 Q-4) and of the draft receipt counting a parcel now (WF-05 BE-23). */
+    public ReturnRequest restoreRefusal(ReturnRefusalReason refusalReason, String refusalNote, UUID openDraftReceiptId) {
+        this.refusalReason = refusalReason;
+        this.refusalNote = refusalNote;
+        this.openDraftReceiptId = openDraftReceiptId;
+        return this;
+    }
+
     /** Rehydration of the delivered shipment the return is against; null for an order delivered without shipments. */
     public ReturnRequest restoreShipment(UUID shipmentId) {
         this.shipmentId = shipmentId;
@@ -1262,6 +1584,12 @@ public final class ReturnRequest extends AggregateRoot {
     public UUID cancelledBy() { return cancelledBy; }
     public String cancellationReason() { return cancellationReason; }
     public Instant closedAt() { return closedAt; }
+    /** Why goods that came back are withheld (WF-05 Q-4); null when nothing is. */
+    public ReturnRefusalReason refusalReason() { return refusalReason; }
+    /** The note the customer reads beside {@link #refusalReason}. */
+    public String refusalNote() { return refusalNote; }
+    /** The draft return receipt counting a parcel now (WF-05 BE-23); null when none. */
+    public UUID openDraftReceiptId() { return openDraftReceiptId; }
     public List<ReturnEvidence> evidence() { return java.util.Collections.unmodifiableList(evidence); }
     public List<ReturnDiscrepancy> discrepancies() { return java.util.Collections.unmodifiableList(discrepancies); }
 }

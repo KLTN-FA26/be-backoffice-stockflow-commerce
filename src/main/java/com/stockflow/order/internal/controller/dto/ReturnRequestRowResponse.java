@@ -17,5 +17,12 @@ public record ReturnRequestRowResponse(UUID id, String rmaNumber, UUID orderId, 
                                        String requestedResolution, String channel, Instant requestedAt,
                                        Instant returnDeadline, BigDecimal settlementAmount, BigDecimal refundedAmount,
                                        BigDecimal offsetAmount, String currency, boolean vatAdjustmentRequired,
-                                       Instant closedAt, long version, UUID shipmentId) {
+                                       Instant closedAt, long version, UUID shipmentId,
+                                       @Schema(description = "How a RESOLVED return ended (WF-05 Q-4): REFUNDED, "
+                                               + "REFUSED (processed, no refund) or NOTHING_TO_REFUND; null before",
+                                               allowableValues = {"REFUNDED", "REFUSED", "NOTHING_TO_REFUND"})
+                                       String outcome,
+                                       @Schema(description = "Whether a return receipt may be opened for it now "
+                                               + "(WF-05 Q-11): approved and its refund not settled")
+                                       boolean receiptOpenable) {
 }

@@ -17,8 +17,19 @@ interface ReturnReceiptJpaRepository extends BaseJpaRepository<ReturnReceiptJpaE
     @Query("select distinct r from ReturnReceiptJpaEntity r left join fetch r.cartons where r.id = :id")
     Optional<ReturnReceiptJpaEntity> findByIdWithCartons(@Param("id") UUID id);
 
-    @Query("select r.id from ReturnReceiptJpaEntity r where r.returnShipmentId = :id and r.status <> :cancelled")
-    List<UUID> findLiveByShipment(@Param("id") UUID shipmentId, @Param("cancelled") GoodsReceiptStatus cancelled);
+    @Query("select r.id from ReturnReceiptJpaEntity r where r.returnShipmentId = :id and r.status = :status")
+    List<UUID> findByShipmentInStatus(@Param("id") UUID shipmentId, @Param("status") GoodsReceiptStatus status);
+
+    /** The LPNs on this shipment's receipts in {@code status}: what of a carrier's return came back so far. */
+    @Query("""
+            select c.lpn from ReturnReceiptCartonJpaEntity c
+             where c.receipt.returnShipmentId = :id and c.receipt.status = :status""")
+    List<String> lpnsOnShipmentReceipts(@Param("id") UUID shipmentId, @Param("status") GoodsReceiptStatus status);
+
+    /** {@code procurement.return_units_received}: units of the SKU back for the return on its receipts not cancelled. */
+    @Query(value = "SELECT procurement.return_units_received(:returnId, :sku, NULL, :exceptLoose)", nativeQuery = true)
+    long unitsReceivedForReturn(@Param("returnId") UUID returnRequestId, @Param("sku") String sku,
+                                @Param("exceptLoose") UUID exceptLooseLine);
 
     @Query("select r.id from ReturnReceiptJpaEntity r where r.returnRequestId = :id and r.status = :status")
     List<UUID> findByReturnRequestInStatus(@Param("id") UUID returnRequestId,

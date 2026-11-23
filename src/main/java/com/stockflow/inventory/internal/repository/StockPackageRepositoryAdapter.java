@@ -129,6 +129,42 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
     }
 
     @Override
+    public java.util.Map<String, Integer> returnedCartonsInQuarantine() {
+        // A return receipt's line: RECEIPT naming the receipt itself (GOODS_RECEIPT); a purchase receipt names its line.
+        List<?> rows = entityManager.createNativeQuery("""
+                        select split_part(p.location_code, '-', 1) as warehouse_code, count(*) as cartons
+                          from inventory.stock_package p
+                         where p.status = 'IN_STOCK'
+                           and exists (select 1 from inventory.stock_item s
+                                        where s.stock_package_id = p.id and s.status = 'QUARANTINE' and s.on_hand > 0)
+                           and exists (select 1 from inventory.stock_movement m
+                                        where m.to_stock_package_id = p.id and m.movement_type = 'RECEIPT'
+                                          and m.reference_type = 'GOODS_RECEIPT')
+                         group by split_part(p.location_code, '-', 1)""").getResultList();
+        java.util.Map<String, Integer> counts = new java.util.TreeMap<>();
+        for (Object row : rows) {
+            Object[] columns = (Object[]) row;
+            counts.put((String) columns[0], ((Number) columns[1]).intValue());
+        }
+        return counts;
+    }
+
+    @Override
+    public java.util.Optional<java.time.Instant> returnOpenedAt(StockPackageId id) {
+        List<?> found = entityManager.createNativeQuery("""
+                        select return_opened_at from inventory.stock_package
+                         where id = :id and return_opened_at is not null""")
+                .setParameter("id", id.value()).getResultList();
+        if (found.isEmpty()) {
+            return java.util.Optional.empty();
+        }
+        Object value = found.getFirst();
+        return java.util.Optional.of(value instanceof java.time.Instant instant ? instant
+                : value instanceof java.time.OffsetDateTime offset ? offset.toInstant()
+                : ((java.sql.Timestamp) value).toInstant());
+    }
+
+    @Override
     public boolean openedOnReturn(StockPackageId id) {
         return !entityManager.createNativeQuery("""
                         select 1 from inventory.stock_package where id = :id and return_opened_at is not null""")

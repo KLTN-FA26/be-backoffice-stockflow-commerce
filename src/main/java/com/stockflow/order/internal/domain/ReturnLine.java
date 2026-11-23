@@ -78,13 +78,21 @@ public final class ReturnLine {
 
     // ---- reading -------------------------------------------------------------------------------------------------------
 
-    /** The units this line claims of its order line now: asked for, approved, or refunded, as far as it got. */
+    /**
+     * The units this line claims of its order line now, so that no other return claims them (WF-05 BE-21): asked for,
+     * approved or refunded, as far as it got - and never fewer than came back. Units that are back in the warehouse
+     * are this return's for good, whatever it refunds for them: read off the money stage alone, a return that refunded
+     * 6 of the 10 units back (or refused all of them, Q-4) left 4 claimable by a new return, whose loose line could
+     * then refund them a second time. {@code ordering.return_line_claimed} says the same in the database.
+     */
     public int claimedUnits(ReturnStatus status) {
+        int back = receivedQuantity == null ? 0 : receivedQuantity;
         return switch (status) {
-            case REQUESTED -> requestedQuantity;
-            case AWAITING_RETURN, RECEIVED, SETTLEMENT_PENDING -> approvedQuantity == null ? 0 : approvedQuantity;
-            case RESOLVED -> refundQuantity;
-            case INSPECTED, REJECTED, CANCELLED, EXPIRED -> 0;
+            case REQUESTED -> Math.max(requestedQuantity, back);
+            case AWAITING_RETURN, RECEIVED, SETTLEMENT_PENDING ->
+                    Math.max(approvedQuantity == null ? 0 : approvedQuantity, back);
+            case RESOLVED -> Math.max(refundQuantity, back);
+            case INSPECTED, REJECTED, CANCELLED, EXPIRED -> back;
         };
     }
 

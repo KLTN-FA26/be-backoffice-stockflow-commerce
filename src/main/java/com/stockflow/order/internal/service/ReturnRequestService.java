@@ -17,6 +17,7 @@ import com.stockflow.contracts.ReturnedGoodsReceived;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.order.api.OrderStatus;
+import com.stockflow.order.api.ReturnReceiptTracking;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
@@ -25,7 +26,9 @@ import com.stockflow.order.internal.domain.ReturnChannel;
 import com.stockflow.order.internal.domain.ReturnClaims;
 import com.stockflow.order.internal.domain.ReturnEvidence;
 import com.stockflow.order.internal.domain.ReturnPolicy;
+import com.stockflow.order.internal.domain.ReturnLine;
 import com.stockflow.order.internal.domain.ReturnReason;
+import com.stockflow.order.internal.domain.ReturnRefusalReason;
 import com.stockflow.order.internal.domain.ReturnRequest;
 import com.stockflow.order.internal.domain.ReturnRequestRepository;
 import com.stockflow.order.internal.domain.ReturnResolution;
@@ -47,6 +50,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -89,10 +93,20 @@ import java.util.UUID;
  * the installments still owe, what was paid is to be refunded. An order with no installments had nothing paid in the
  * system, and its refund is worth 0 (WF-05 TH-2). Nothing is replaced and nothing kept as credit (17 §4.10 step 41: an
  * exchange is a new quote; 15 BR-05). Each step is announced with a {@code contracts.Return*} event after commit.</p>
+ *
+ * <p><b>A refund may be refused</b> (WF-05 Q-4): goods that came back usable are not refunded - damaged by the customer,
+ * no defect found, outside the policy - when Sales propose nothing for them with a reason from a fixed list, and the
+ * accountant approves it like any refund. The return ends RESOLVED with nothing settled, and its order goes back to
+ * the delivery path rather than to PARTIALLY_REFUNDED (BE-45): nothing was refunded.</p>
+ *
+ * <p><b>A parcel being counted holds the return</b> (WF-05 BE-23): procurement tells the return when a draft receipt is
+ * opened for it and when that draft is confirmed or cancelled ({@link ReturnReceiptTracking}, implemented here, in the
+ * receipt's transaction); meanwhile the goods are not marked complete, the deadline does not end the return, and no
+ * refund is proposed or approved.</p>
  */
 @Service
 @Transactional
-public class ReturnRequestService {
+public class ReturnRequestService implements ReturnReceiptTracking {
 
     private static final Logger log = LoggerFactory.getLogger(ReturnRequestService.class);
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
@@ -125,8 +139,18 @@ public class ReturnRequestService {
     public record ApproveReturnCommand(Map<UUID, Integer> approved, Boolean returnRequired, String note, Long version) {
     }
 
-    /** The refund Sales propose: units per return line (none named: every unit approved and back). */
-    public record ProposeRefundCommand(Map<UUID, Integer> units, String note, Long version) {
+    /**
+     * The refund Sales propose: units per return line (none named: every unit approved and back), and why anything that
+     * came back is withheld (WF-05 Q-4): {@code refusalReason} - required when every line is 0 while units came back
+     * usable - and {@code refusalNote}, the note the customer reads beside it. {@code note} is internal.
+     */
+    public record ProposeRefundCommand(Map<UUID, Integer> units, String note, Long version,
+                                       ReturnRefusalReason refusalReason, String refusalNote) {
+
+        /** Nothing withheld for a reason. */
+        public ProposeRefundCommand(Map<UUID, Integer> units, String note, Long version) {
+            this(units, note, version, null, null);
+        }
     }
 
     private final ReturnRequestRepository returns;
@@ -217,7 +241,8 @@ public class ReturnRequestService {
         ReturnRequest request = ReturnRequest.open(returns.nextRmaNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)),
                 command.requestId(), order, shipmentId, channel, command.reason(), command.description(),
                 command.requestedResolution(), command.lines(), claims.inAll(), claims.onShipment(shipmentId),
-                claims.openOn(shipmentId), by, now, allowances.policyOf(order.id().value()),
+                claims.openOn(shipmentId), claims.refundedShipments(), by, now,
+                allowances.policyOf(order.id().value()),
                 channel == ReturnChannel.BACK_OFFICE ? command.lateClaimReason() : null);
         if (order.requestReturn(by, now, "RETURN_REQUESTED " + request.rmaNumber())) {
             orders.save(order);
@@ -248,10 +273,23 @@ public class ReturnRequestService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public ReturnRequest addEvidence(UUID returnId, UUID ownCustomerId, ReturnEvidence.Stage stage, FileUpload upload,
                                      UUID by) {
+        return addEvidence(returnId, ownCustomerId, stage, null, upload, by);
+    }
+
+    /**
+     * As {@link #addEvidence(UUID, UUID, ReturnEvidence.Stage, FileUpload, UUID)}; a CUSTODY photo carries
+     * {@code custody}, what it shows (WF-05 Q-11): goods that came back and that the return does not take, kept for
+     * the customer - staff only.
+     */
+    @Auditable(action = AuditAction.CREATE, resourceType = "return-request", resourceId = "#returnId")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public ReturnRequest addEvidence(UUID returnId, UUID ownCustomerId, ReturnEvidence.Stage stage,
+                                     ReturnEvidence.Custody custody, FileUpload upload, UUID by) {
         ReturnEvidence.Stage taken = stageOf(stage);
+        requireCustodyFits(taken, custody, ownCustomerId);
         tx.executeWithoutResult(status -> evidenceTarget(returnId, ownCustomerId, taken, false));
         try (PreparedFiles prepared = files.prepare(FileCategory.RETURN_EVIDENCE, upload)) {
-            return keepEvidence(returnId, ownCustomerId, taken, prepared, by);
+            return keepEvidence(returnId, ownCustomerId, taken, custody, prepared, by);
         }
     }
 
@@ -274,10 +312,19 @@ public class ReturnRequestService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public ReturnRequest addUploadedEvidence(UUID returnId, UUID ownCustomerId, ReturnEvidence.Stage stage,
                                              UUID uploadId, UUID by) {
+        return addUploadedEvidence(returnId, ownCustomerId, stage, null, uploadId, by);
+    }
+
+    /** As the overload without {@code custody}, for a CUSTODY photo too (WF-05 Q-11, staff only). */
+    @Auditable(action = AuditAction.CREATE, resourceType = "return-request", resourceId = "#returnId")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public ReturnRequest addUploadedEvidence(UUID returnId, UUID ownCustomerId, ReturnEvidence.Stage stage,
+                                             ReturnEvidence.Custody custody, UUID uploadId, UUID by) {
         if (uploadId == null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "uploadId is required");
         }
         ReturnEvidence.Stage taken = stageOf(stage);
+        requireCustodyFits(taken, custody, ownCustomerId);
         // The same upload again - also after a commit whose outcome the first request never learned - answers with the
         // return it was kept on: the key is the upload's own, so a photo naming it is that upload.
         Optional<String> key = staged.keyOf(FileCategory.RETURN_EVIDENCE, by, uploadId);
@@ -289,7 +336,23 @@ public class ReturnRequestService {
         }
         tx.executeWithoutResult(status -> evidenceTarget(returnId, ownCustomerId, taken, false));
         try (PreparedFiles prepared = staged.accept(FileCategory.RETURN_EVIDENCE, by, List.of(uploadId))) {
-            return keepEvidence(returnId, ownCustomerId, taken, prepared, by);
+            return keepEvidence(returnId, ownCustomerId, taken, custody, prepared, by);
+        }
+    }
+
+    /**
+     * A custody note says what it keeps, and only a custody note does; and it is staff's - the warehouse or Sales take
+     * the goods in for the customer, the customer does not record it about themselves (WF-05 Q-11).
+     */
+    private static void requireCustodyFits(ReturnEvidence.Stage stage, ReturnEvidence.Custody custody,
+                                           UUID ownCustomerId) {
+        if (stage == ReturnEvidence.Stage.CUSTODY && ownCustomerId != null) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "Goods are taken into custody by staff, not on the portal");
+        }
+        if ((stage == ReturnEvidence.Stage.CUSTODY) != (custody != null)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, stage == ReturnEvidence.Stage.CUSTODY
+                    ? "A custody note names the goods kept: their SKU or LPN and how many"
+                    : "Only a custody note names goods kept for the customer");
         }
     }
 
@@ -300,12 +363,12 @@ public class ReturnRequestService {
 
     /** The short transaction: lock the return, check again, keep the prepared photo. */
     private ReturnRequest keepEvidence(UUID returnId, UUID ownCustomerId, ReturnEvidence.Stage taken,
-                                       PreparedFiles prepared, UUID by) {
+                                       ReturnEvidence.Custody custody, PreparedFiles prepared, UUID by) {
         StoredFile file = prepared.single().file();
         return tx.execute(status -> {
             ReturnRequest request = evidenceTarget(returnId, ownCustomerId, taken, true);
             request.addEvidence(new ReturnEvidence(Identifiers.newId(), taken, file.key(), file.originalName(),
-                    file.contentType(), file.sizeBytes(), by, now()), policy);
+                    file.contentType(), file.sizeBytes(), by, now(), custody), policy);
             ReturnRequest saved = returns.save(request);
             prepared.adopt();
             return saved;
@@ -427,8 +490,26 @@ public class ReturnRequestService {
     public ReturnRequest proposeRefund(UUID returnId, ProposeRefundCommand command, UUID by) {
         Locked locked = lock(returnId, null, command.version());
         boolean nothingPaid = !payments.installmentStanding(locked.order().id().value()).opened();
-        locked.request().proposeRefund(by, now(), command.units(), locked.order(), command.note(), nothingPaid);
+        locked.request().proposeRefund(by, now(), command.units(), locked.order(), command.note(), nothingPaid,
+                command.refusalReason(), command.refusalNote(), refundedBefore(locked.request()));
         return finish(locked, by);
+    }
+
+    /**
+     * Per order line, the units the other RESOLVED returns of the order refunded: where this return's units start on
+     * the line's cumulative scale (WF-05 BE-50). Read under the order's lock, so two approvals of one line take
+     * consecutive ranges.
+     */
+    private Map<UUID, Integer> refundedBefore(ReturnRequest request) {
+        Map<UUID, Integer> before = new HashMap<>();
+        for (ReturnRequest other : returns.findByOrder(request.orderId())) {
+            if (!other.id().equals(request.id()) && other.status() == ReturnStatus.RESOLVED) {
+                for (ReturnLine line : other.lines()) {
+                    before.merge(line.orderLineId(), line.refundQuantity(), Integer::sum);
+                }
+            }
+        }
+        return before;
     }
 
     /**
@@ -447,6 +528,11 @@ public class ReturnRequestService {
         ReturnRequest request = locked.request();
         request.requireSettlementApprover(by);
         Instant now = now();
+        // WF-05 BE-50: valued where its units sit now, after what the line's other returns settled meanwhile.
+        if (request.revalue(locked.order(), refundedBefore(request))) {
+            log.info("Return {}: refund valued again on its lines' cumulative scale, now {}", request.rmaNumber(),
+                    request.settlementAmount());
+        }
         if (request.settlementAmount().signum() == 0) {
             request.resolve(by, now, ReturnRequest.MoneyOutcome.NONE);
             return finish(locked, by);
@@ -530,6 +616,29 @@ public class ReturnRequestService {
         }
     }
 
+    // ================================================================================================= receipts
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Called by procurement inside the transaction that opens the draft; takes the order's lock, then the return's.</p>
+     */
+    @Override
+    public void draftOpened(UUID returnRequestId, UUID receiptId) {
+        Locked locked = lock(returnRequestId, null, null);
+        locked.request().draftReceiptOpened(receiptId);
+        returns.save(locked.request());
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void draftClosed(UUID returnRequestId, UUID receiptId) {
+        Locked locked = lock(returnRequestId, null, null);
+        if (locked.request().draftReceiptClosed(receiptId)) {
+            returns.save(locked.request());
+        }
+    }
+
     // ================================================================================================= expiry
 
     /** The returns whose goods should have arrived by now, for the sweep. */
@@ -608,7 +717,9 @@ public class ReturnRequestService {
      * came. A return that brought goods back to an order that had moved on (DELIVERED, COMPLETED, REFUNDED) opens the
      * claim on it again first. A RETURNED order with no return open moves on to REFUNDED (what came back covers the
      * goods it was worth) or PARTIALLY_REFUNDED once everything its settlements made refundable was refunded
-     * ({@code RefundProgress.settled}) - right away when the goods' value only came off installments still owed.
+     * ({@code RefundProgress.settled}) - right away when the goods' value only came off installments still owed. A
+     * RETURNED order none of whose returns refunded a unit, with nothing refundable on it at all, goes back to the
+     * delivery path instead (WF-05 BE-45, {@code Order.returnsEndedWithoutRefund}).
      *
      * @return whether the order changed
      */
@@ -628,11 +739,23 @@ public class ReturnRequestService {
             }
         }
         if (order.status() == OrderStatus.RETURNED && !open
-                && all.stream().anyMatch(r -> r.status() == ReturnStatus.RESOLVED)
-                && payments.refundProgress(order.id().value()).settled()) {
+                && all.stream().anyMatch(r -> r.status() == ReturnStatus.RESOLVED)) {
+            com.stockflow.payment.api.RefundProgress progress = payments.refundProgress(order.id().value());
             BigDecimal returned = all.stream().filter(r -> r.status() == ReturnStatus.RESOLVED)
                     .map(ReturnRequest::settlementAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
-            moved |= order.refunded(returned.compareTo(goodsWorth(order)) >= 0, by, now, "REFUNDED");
+            boolean unitRefunded = all.stream().filter(r -> r.status() == ReturnStatus.RESOLVED)
+                    .anyMatch(r -> r.lines().stream().anyMatch(line -> line.refundQuantity() > 0));
+            if (!unitRefunded && returned.signum() == 0 && progress.refundable().signum() == 0) {
+                // WF-05 BE-45 (Q-4): every return of the order ended with no unit refunded - refused with a reason, or
+                // nothing usable came back - and nothing else on it was ever made refundable (a carrier's return, a
+                // cancellation). "Partially refunded" would be false: the order goes back to the delivery path
+                // (DELIVERED, or COMPLETED when it had completed before the claim) and completes and closes as one
+                // nothing was returned from. Units refunded worth 0 on an order with nothing paid (TH-2) are a return
+                // all the same - the invoice is adjusted for them (BE-44) - and keep the refund path below.
+                moved |= order.returnsEndedWithoutRefund(by, now);
+            } else if (progress.settled()) {
+                moved |= order.refunded(returned.compareTo(goodsWorth(order)) >= 0, by, now, "REFUNDED");
+            }
         }
         return moved;
     }

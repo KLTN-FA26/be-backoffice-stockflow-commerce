@@ -1,6 +1,7 @@
 package com.stockflow.order.internal.controller.dto;
 
 import com.stockflow.order.internal.domain.ReturnReason;
+import com.stockflow.order.internal.domain.ReturnRefusalReason;
 import com.stockflow.order.internal.domain.ReturnResolution;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
@@ -82,14 +83,39 @@ public final class ReturnRequests {
             @Min(value = 0, message = "quantity is not negative") int quantity) {
     }
 
-    @Schema(description = "The refund Sales propose for a RECEIVED return; no lines: every unit approved and back")
+    @Schema(description = "The refund Sales propose for a RECEIVED return; no lines: every unit approved and back. "
+            + "Every line at 0 while units came back usable is a refusal (WF-05 Q-4): refusalReason is then required "
+            + "(400 RETURN_REFUSAL_REASON_REQUIRED), and the accountant approves it like any refund")
     public record Refund(
             @Size(max = 100) List<@Valid RefundLine> lines,
+            @Schema(description = "Internal: never shown to the customer")
             @Size(max = 1000, message = "note is at most 1000 characters") String note,
-            Long version) {
+            Long version,
+            @Schema(description = "Why units that came back are not refunded: required when none is, refused when all "
+                    + "are; the customer sees its label", example = "CUSTOMER_DAMAGE",
+                    allowableValues = {"CUSTOMER_DAMAGE", "NOT_DEFECTIVE", "OUT_OF_POLICY", "OTHER"})
+            ReturnRefusalReason refusalReason,
+            @Schema(description = "The note the customer reads beside the reason; required for OTHER")
+            @Size(max = 500, message = "refusalNote is at most 500 characters") String refusalNote) {
+
+        /** Nothing withheld for a reason. */
+        public Refund(List<RefundLine> lines, String note, Long version) {
+            this(lines, note, version, null, null);
+        }
     }
 
     public record Version(Long version) {
+    }
+
+    @Schema(description = "A custody note (WF-05 Q-11): goods that came back and that the return does not take - another "
+            + "SKU, more than approved, a parcel after the claim was settled or refused - kept for the customer, not in "
+            + "stock, not refunded. A photo uploaded through /custody/uploads, the SKU or the LPN, and how many")
+    public record Custody(
+            @NotNull(message = "uploadId is required") UUID uploadId,
+            @Size(max = 64, message = "sku is at most 64 characters") String sku,
+            @Size(max = 40, message = "lpn is at most 40 characters") String lpn,
+            @Min(value = 1, message = "quantity must be at least 1") int quantity,
+            @Size(max = 1000, message = "note is at most 1000 characters") String note) {
     }
 
     @Schema(description = "The goods of an AWAITING_RETURN return are all here, fewer than approved (WF-05 TH-3)")

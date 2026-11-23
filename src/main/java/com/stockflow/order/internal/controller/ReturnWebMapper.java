@@ -59,7 +59,8 @@ final class ReturnWebMapper {
                 units.put(line.lineId(), line.quantity());
             }
         }
-        return new ReturnRequestService.ProposeRefundCommand(units, body.note(), body.version());
+        return new ReturnRequestService.ProposeRefundCommand(units, body.note(), body.version(),
+                body.refusalReason(), body.refusalNote());
     }
 
     // ---- responses -----------------------------------------------------------------------------------------------------
@@ -90,7 +91,9 @@ final class ReturnWebMapper {
                 history.stream().map(step -> new ReturnRequestResponse.HistoryEntry(
                         step.from() == null ? null : step.from().name(), step.to() == null ? null : step.to().name(),
                         step.reason(), step.actor(), step.at())).toList(),
-                r.version());
+                r.version(), r.outcome() == null ? null : r.outcome().name(),
+                r.refusalReason() == null ? null : r.refusalReason().name(), r.refusalNote(), r.receiptOpenable(),
+                r.openDraftReceiptId() != null);
     }
 
     static CustomerReturnResponse toCustomerResponse(ReturnRequest r, List<ReturnTransition> history) {
@@ -115,7 +118,21 @@ final class ReturnWebMapper {
                                 e.uploadedAt(), thumbnails.apply(e.fileKey()))).toList(),
                 history.stream().filter(step -> step.to() != null)
                         .map(step -> new CustomerReturnResponse.Step(step.to().name(), step.at())).toList(),
-                r.version());
+                r.version(), decided(r) && r.outcome() != null ? r.outcome().name() : null,
+                decided(r) && r.refusalReason() != null ? r.refusalReason().name() : null,
+                decided(r) && r.refusalReason() != null ? refusalLabel(r.refusalReason()) : null,
+                decided(r) ? r.refusalNote() : null);
+    }
+
+    /**
+     * The refusal reason as the customer reads it (WF-05 Q-4): its label in the Vietnamese bundle, the language of the
+     * portal; the code itself when a label is missing.
+     */
+    static String refusalLabel(com.stockflow.order.internal.domain.ReturnRefusalReason reason) {
+        java.util.ResourceBundle texts = java.util.ResourceBundle.getBundle("i18n.messages",
+                java.util.Locale.forLanguageTag("vi"));
+        String key = "label.ReturnRefusalReason." + reason.name();
+        return texts.containsKey(key) ? texts.getString(key) : reason.name();
     }
 
     /** What the customer is told is refunded only once a second person approved it: never a proposal. */
@@ -123,20 +140,22 @@ final class ReturnWebMapper {
         return r.status() == ReturnStatus.RESOLVED;
     }
 
-    /** The customer's own list: no amount before it is approved, and no accounting flag. */
+    /** The customer's own list: no amount before it is approved, and no accounting or warehouse flag. */
     static ReturnRequestRowResponse toCustomerRow(ReturnRequestQueries.Item i) {
         boolean decided = i.status() == ReturnStatus.RESOLVED;
         return new ReturnRequestRowResponse(i.id(), i.rmaNumber(), i.orderId(), i.orderNumber(), i.customerId(),
                 i.status().name(), i.reason().name(), i.requestedResolution().name(), i.channel(), i.requestedAt(),
                 i.returnDeadline(), decided ? i.settlementAmount() : null, decided ? i.refundedAmount() : null,
-                decided ? i.offsetAmount() : null, i.currency(), false, i.closedAt(), i.version(), i.shipmentId());
+                decided ? i.offsetAmount() : null, i.currency(), false, i.closedAt(), i.version(), i.shipmentId(),
+                i.outcome() == null ? null : i.outcome().name(), false);
     }
 
     static ReturnRequestRowResponse toRow(ReturnRequestQueries.Item i) {
         return new ReturnRequestRowResponse(i.id(), i.rmaNumber(), i.orderId(), i.orderNumber(), i.customerId(),
                 i.status().name(), i.reason().name(), i.requestedResolution().name(), i.channel(), i.requestedAt(),
                 i.returnDeadline(), i.settlementAmount(), i.refundedAmount(), i.offsetAmount(), i.currency(),
-                i.vatAdjustmentRequired(), i.closedAt(), i.version(), i.shipmentId());
+                i.vatAdjustmentRequired(), i.closedAt(), i.version(), i.shipmentId(),
+                i.outcome() == null ? null : i.outcome().name(), i.receiptOpenable());
     }
 
     private static ReturnRequestResponse.Line toLine(ReturnLine l) {
@@ -148,7 +167,9 @@ final class ReturnWebMapper {
     private static ReturnRequestResponse.Evidence toEvidence(ReturnEvidence e,
                                                              java.util.function.Function<String, String> thumbnails) {
         return new ReturnRequestResponse.Evidence(e.id(), e.stage().name(), e.originalName(), e.contentType(),
-                e.sizeBytes(), e.uploadedBy(), e.uploadedAt(), thumbnails.apply(e.fileKey()));
+                e.sizeBytes(), e.uploadedBy(), e.uploadedAt(), thumbnails.apply(e.fileKey()),
+                e.custody() == null ? null : new ReturnRequestResponse.Custody(e.custody().sku(), e.custody().lpn(),
+                        e.custody().quantity(), e.custody().note()));
     }
 
     private static ReturnRequestResponse.Discrepancy toDiscrepancy(ReturnDiscrepancy d) {

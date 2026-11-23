@@ -2,6 +2,7 @@ package com.stockflow.inventory.internal.controller.dto;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 
+import java.time.Instant;
 import java.util.UUID;
 
 @Schema(name = "StockPackage", description = "One carton in a list of cartons (SCRUM-473)")
@@ -16,6 +17,10 @@ public record StockPackageResponse(
         @Schema(description = "Of onHand, the units held for orders") int reserved,
         @Schema(description = "RECEIVING, IN_STOCK, CONSUMED, LOST or VOID") String status,
         String locationCode,
-        UUID goodsReceiptLineId
+        UUID goodsReceiptLineId,
+        @Schema(description = "A return receipt found it opened or empty (WF-05 Q-18): never sold again")
+        boolean openedOnReturn,
+        @Schema(description = "When a return receipt found it opened or empty; null when it never came back so")
+        Instant returnOpenedAt
 ) {
 }

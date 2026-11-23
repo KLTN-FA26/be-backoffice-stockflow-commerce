@@ -11,7 +11,15 @@ import java.util.UUID;
  * @param status       RECEIVING, IN_STOCK, CONSUMED, LOST or VOID ({@code inventory.stock_package.status}); a carton
  *                     that left the warehouse on an order is CONSUMED
  * @param locationCode where it stands, or stood when it left stock
+ * @param returnOpenedAt when a return receipt found it opened or empty (WF-05 Q-18): it stayed CONSUMED and is never
+ *                     taken back again; null for a carton that never came back so
  */
 public record ReturnedCarton(UUID stockPackageId, String lpn, String sku, String lotNumber, int quantity,
-                             String status, String locationCode) {
+                             String status, String locationCode, java.time.Instant returnOpenedAt) {
+
+    /** A carton that never came back opened. */
+    public ReturnedCarton(UUID stockPackageId, String lpn, String sku, String lotNumber, int quantity, String status,
+                          String locationCode) {
+        this(stockPackageId, lpn, sku, lotNumber, quantity, status, locationCode, null);
+    }
 }

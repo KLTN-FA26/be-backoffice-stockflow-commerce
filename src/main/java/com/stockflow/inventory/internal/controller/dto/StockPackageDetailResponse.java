@@ -21,6 +21,11 @@ public record StockPackageDetailResponse(
         @Schema(description = "The goods receipt line it arrived on; null for one made in the warehouse")
         UUID goodsReceiptLineId,
         @Schema(description = "When it was emptied, lost or voided") Instant closedAt,
+        @Schema(description = "A return receipt found it opened or empty (WF-05 Q-18): never sold again - it stays "
+                + "CONSUMED, its goods destroyed (in quarantine to be written off, for one received before)")
+        boolean openedOnReturn,
+        @Schema(description = "When a return receipt found it opened or empty; null when it never came back so")
+        Instant returnOpenedAt,
         @Schema(description = "Its stock rows holding something, oldest receipt first") List<Content> contents
 ) {
 

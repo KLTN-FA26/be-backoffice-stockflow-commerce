@@ -35,7 +35,9 @@ class StockPackageSearchAdapter implements StockPackageSearch {
     private static final String CARTON_COLUMNS = """
             b.stock_package_id, b.lpn, b.sku, b.unit_of_measure, b.nominal_qty, b.received_qty, b.location_code,
             b.status, b.lot_number, b.on_hand, b.reserved, b.goods_receipt_line_id,
-            b.closed_at""";
+            b.closed_at,
+            (SELECT p.return_opened_at FROM inventory.stock_package p WHERE p.id = b.stock_package_id)
+                AS return_opened_at""";
 
     /** The view, one row per carton (V20261113000300); nothing expires since team plan 5-1, so nothing else is read. */
     private static final String CARTONS = "inventory.stock_package_balance b";
@@ -159,7 +161,7 @@ class StockPackageSearchAdapter implements StockPackageSearch {
                 rs.getString("unit_of_measure"), rs.getInt("nominal_qty"), rs.getObject("received_qty", Integer.class),
                 rs.getString("location_code"), StockPackageStatus.valueOf(rs.getString("status")),
                 rs.getString("lot_number"), rs.getInt("on_hand"), rs.getInt("reserved"), rs.getObject("goods_receipt_line_id", UUID.class),
-                instant(rs, "closed_at"));
+                instant(rs, "closed_at"), instant(rs, "return_opened_at"));
     }
 
     private static Instant instant(ResultSet rs, String column) throws SQLException {

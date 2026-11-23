@@ -43,6 +43,7 @@ interface ReturnRequestJpaRepository extends BaseJpaRepository<ReturnRequestJpaE
     @Query("""
             select r.id from ReturnRequestJpaEntity r
             where r.status = com.stockflow.order.internal.domain.ReturnStatus.AWAITING_RETURN and r.returnDeadline < :now
+              and r.openDraftReceiptId is null
             order by r.returnDeadline, r.id""")
     List<UUID> awaitingReturnPast(@Param("now") Instant now, Pageable page);
 }
