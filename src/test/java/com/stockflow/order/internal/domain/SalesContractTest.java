@@ -104,8 +104,10 @@ class SalesContractTest {
         java.util.Map<SalesContractStatus, java.util.Set<SalesContractStatus>> allowed = java.util.Map.of(
                 SalesContractStatus.DRAFT, java.util.Set.of(SalesContractStatus.SENT, SalesContractStatus.CANCELLED),
                 SalesContractStatus.SENT, java.util.Set.of(SalesContractStatus.SIGNED, SalesContractStatus.CANCELLED),
-                SalesContractStatus.SIGNED, java.util.Set.of(SalesContractStatus.COMPLETED),
+                SalesContractStatus.SIGNED, java.util.Set.of(SalesContractStatus.COMPLETED,
+                        SalesContractStatus.LIQUIDATED),
                 SalesContractStatus.COMPLETED, java.util.Set.of(),
+                SalesContractStatus.LIQUIDATED, java.util.Set.of(),
                 SalesContractStatus.CANCELLED, java.util.Set.of());
         for (SalesContractStatus from : SalesContractStatus.values()) {
             for (SalesContractStatus to : SalesContractStatus.values()) {

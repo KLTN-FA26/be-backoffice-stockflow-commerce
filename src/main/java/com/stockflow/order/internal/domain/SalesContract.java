@@ -55,6 +55,8 @@ public final class SalesContract {
     private UUID cancelledBy;
     private String cancellationReason;
     private Instant completedAt;
+    /** WF-05 Q-6: when it was liquidated; null otherwise. */
+    private Instant liquidatedAt;
     private final long version;
 
     private SalesContract(UUID id, String contractNumber, UUID orderId, SalesContractStatus status,
@@ -231,7 +233,7 @@ public final class SalesContract {
      * @throws BusinessException {@code SALES_CONTRACT_STATUS_INVALID} for a contract not signed
      */
     public boolean complete(Instant at) {
-        if (status == SalesContractStatus.COMPLETED) {
+        if (status == SalesContractStatus.COMPLETED || status == SalesContractStatus.LIQUIDATED) {
             return false;
         }
         if (!status.canTransitionTo(SalesContractStatus.COMPLETED)) {
@@ -341,5 +343,34 @@ public final class SalesContract {
     public UUID cancelledBy() { return cancelledBy; }
     public String cancellationReason() { return cancellationReason; }
     public Instant completedAt() { return completedAt; }
+    public Instant liquidatedAt() { return liquidatedAt; }
+
+    /** Rehydration of when it was liquidated (WF-05 Q-6). */
+    public SalesContract restoreLiquidated(Instant at) {
+        this.liquidatedAt = at;
+        return this;
+    }
+
+    /**
+     * WF-05 Q-6 (kltn-docs 14 §5.2): the order it binds ended with nothing delivered - every shipment came back from
+     * the carrier or was lost, or it was cancelled after signing - and its money is settled: SIGNED → LIQUIDATED, once.
+     * Never COMPLETED: that says the goods were delivered. The caller decides that nothing was; the database checks it
+     * again ({@code check_sales_contract_transition}).
+     *
+     * @return whether this changed the contract (false when it was liquidated, or completed, already)
+     * @throws BusinessException {@code SALES_CONTRACT_STATUS_INVALID} for a contract not signed
+     */
+    public boolean liquidate(Instant at) {
+        if (status == SalesContractStatus.LIQUIDATED || status == SalesContractStatus.COMPLETED) {
+            return false;
+        }
+        if (!status.canTransitionTo(SalesContractStatus.LIQUIDATED)) {
+            throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, "Contract %s is %s: only a signed "
+                    .formatted(contractNumber, status) + "contract is liquidated");
+        }
+        this.status = SalesContractStatus.LIQUIDATED;
+        this.liquidatedAt = Objects.requireNonNull(at, "at");
+        return true;
+    }
     public long version() { return version; }
 }

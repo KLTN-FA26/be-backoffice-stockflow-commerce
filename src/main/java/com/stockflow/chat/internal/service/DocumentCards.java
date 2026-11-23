@@ -272,7 +272,8 @@ public class DocumentCards {
         CardState state = switch (event.status()) {
             case "SIGNED" -> CardState.ACTED;
             case "CANCELLED" -> CardState.CANCELLED;
-            case "COMPLETED" -> CardState.CLOSED;
+            // WF-05 Q-6: a contract liquidated - its order delivered nothing - is closed like a completed one.
+            case "COMPLETED", "LIQUIDATED" -> CardState.CLOSED;
             default -> null;
         };
         existing.stream().filter(c -> c.card().state() != CardState.SUPERSEDED).forEach(c -> cards.update(c.id(),
@@ -294,7 +295,12 @@ public class DocumentCards {
 
     // ---- transfer details (16 §4.4, BR-06) --------------------------------------------------------------------------
 
-    /** An installment fell due: its transfer details, by the system, once per installment. */
+    /**
+     * An installment fell due: its transfer details, by the system, once per installment. Falling due again - WF-05
+     * BE-04: a carrier's return or a later delivery moved the date an installment after delivery counts from, and
+     * payment re-dated it ({@code Installment.redate}) - posts no second card: the one posted shows the new due date
+     * and amount, as after a receipt ({@link #paymentsChanged}). Before, it kept the first date.
+     */
     public void installmentDue(InstallmentDue event) {
         Optional<CustomerInstallments.Transfer> found = installments.transfer(event.installmentId());
         if (found.isEmpty() || found.get().outstanding().signum() <= 0) {
@@ -302,8 +308,11 @@ public class DocumentCards {
         }
         CustomerInstallments.Transfer transfer = found.get();
         ContextRef ref = new ContextRef(ContextKind.CONTRACT, transfer.contractId());
-        if (card(ref, CardKind.PAYMENT_INFO, "installmentId", transfer.installmentId()).isPresent()
-                || !owned(ref, transfer.customerId())) {
+        if (!owned(ref, transfer.customerId())) {
+            return;
+        }
+        if (card(ref, CardKind.PAYMENT_INFO, "installmentId", transfer.installmentId()).isPresent()) {
+            paymentsChanged(transfer.customerId());
             return;
         }
         cards.post(new ChatCards.NewCard(transfer.customerId(), ref,

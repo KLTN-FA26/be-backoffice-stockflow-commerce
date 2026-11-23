@@ -235,8 +235,12 @@ public class DeliveryBatchService {
     }
 
     /**
-     * 4B-8 (15 §4.1, 17 §4.5): the batches every unit of which is in a delivered shipment, each with the moment its last
-     * shipment was delivered - what an installment after delivery tied to the batch counts from.
+     * 4B-8 (15 §4.1, 17 §4.5), WF-05 X-3 (BE-02; Q-3): the batches each unit of which was delivered or closed - its
+     * shipment came back and its return receipt was confirmed, or it was closed as lost - with at least one shipment
+     * delivered; each with the later of the moment its last shipment was delivered and the moment its shipments that
+     * did not arrive were closed: what an installment after delivery tied to the batch counts from. A batch whose goods
+     * came back counted only its delivered units before, so it never was delivered and its installment never fell due.
+     * A batch nothing of which was delivered is not here: nothing after delivery is due for it.
      */
     @Transactional(propagation = Propagation.SUPPORTS)
     public Map<UUID, Instant> deliveredBatches(Order order) {
@@ -248,11 +252,22 @@ public class DeliveryBatchService {
         Map<UUID, OrderLine> lines = linesById(order);
         for (DeliveryBatch batch : contract.schedule()) {
             int units = unitsOf(batch, lines);
-            if (units > 0 && shippedUnits(order, batch.id(), true) >= units) {
-                order.shipments().stream().filter(s -> batch.id().equals(s.deliveryBatchId()))
-                        .filter(s -> s.status() == OrderShipmentStatus.DELIVERED && s.outcomeAt() != null)
-                        .map(com.stockflow.order.internal.domain.OrderShipment::outcomeAt)
-                        .max(Comparator.naturalOrder()).ifPresent(at -> delivered.put(batch.id(), at));
+            List<com.stockflow.order.internal.domain.OrderShipment> ofBatch = order.shipments().stream()
+                    .filter(s -> batch.id().equals(s.deliveryBatchId())).toList();
+            int done = ofBatch.stream().filter(s -> s.status() == OrderShipmentStatus.DELIVERED || !s.holdsUnits())
+                    .mapToInt(s -> s.quantities().values().stream().mapToInt(Integer::intValue).sum()).sum();
+            Optional<Instant> lastDelivery = ofBatch.stream()
+                    .filter(s -> s.status() == OrderShipmentStatus.DELIVERED && s.outcomeAt() != null)
+                    .map(com.stockflow.order.internal.domain.OrderShipment::outcomeAt).max(Comparator.naturalOrder());
+            if (units > 0 && done >= units && lastDelivery.isPresent()) {
+                Instant at = lastDelivery.get();
+                for (var shipment : ofBatch) {
+                    if (shipment.status() != OrderShipmentStatus.DELIVERED && shipment.unitsClosedAt() != null
+                            && shipment.unitsClosedAt().isAfter(at)) {
+                        at = shipment.unitsClosedAt();
+                    }
+                }
+                delivered.put(batch.id(), at);
             }
         }
         return delivered;

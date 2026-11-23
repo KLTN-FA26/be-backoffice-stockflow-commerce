@@ -26,9 +26,16 @@ public interface SettlementCandidates {
 
     /**
      * COMPLETED orders completed, and REFUNDED / PARTIALLY_REFUNDED ones refunded, at or before {@code settledBy}, the
-     * first {@code skip} left out.
+     * first {@code skip} left out. Held orders (WF-05 Q-17) are left out: closing refuses them. A superset otherwise:
+     * the return windows of the refund branch (Q-16 = b) and the money are the aggregate's to decide.
      */
     List<UUID> settledBy(Instant settledBy, int skip, int limit);
+
+    /**
+     * WF-05 Q-6 (BE-06): CANCELLED orders whose live contract is still SIGNED - cancelled after signing - the first
+     * {@code skip} left out. Their contract is liquidated once the cancellation's money is settled.
+     */
+    List<UUID> cancelledWithSignedContract(int skip, int limit);
 
     /** Whether a return request of the order is still open (BR-ORD-005: it keeps the order from completing). */
     boolean hasOpenReturn(UUID orderId);

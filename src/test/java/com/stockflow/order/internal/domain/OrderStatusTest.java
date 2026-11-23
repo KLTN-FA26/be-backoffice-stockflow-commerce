@@ -48,8 +48,12 @@ class OrderStatusTest {
             Map.entry(SHIPPED, EnumSet.of(DELIVERED, DELIVERY_FAILED, PARTIALLY_FULFILLED, ON_HOLD)),
             Map.entry(DELIVERY_FAILED, EnumSet.of(DELIVERED, RETURNED, PARTIALLY_FULFILLED, ON_HOLD)),
             Map.entry(DELIVERED, EnumSet.of(COMPLETED, RETURN_REQUESTED, DELIVERY_FAILED)),
-            Map.entry(RETURN_REQUESTED, EnumSet.of(RETURNED, DELIVERED)),
-            Map.entry(RETURNED, EnumSet.of(REFUNDED, PARTIALLY_REFUNDED)),
+            // WF-05 BE-40: back to the status the claim was opened from; BE-46: where the shipments say.
+            Map.entry(RETURN_REQUESTED, EnumSet.of(RETURNED, DELIVERED, COMPLETED, REFUNDED, PARTIALLY_REFUNDED,
+                    DELIVERY_FAILED, PARTIALLY_FULFILLED)),
+            // WF-05 X-8 (BE-45): claims ended without a refund - back to the delivery path.
+            Map.entry(RETURNED, EnumSet.of(REFUNDED, PARTIALLY_REFUNDED, DELIVERED, COMPLETED, DELIVERY_FAILED,
+                    PARTIALLY_FULFILLED)),
             // RETURNED (TT-4): a refund record was voided - the order waits for its refund again.
             Map.entry(REFUNDED, EnumSet.of(CLOSED, RETURN_REQUESTED, RETURNED)),
             Map.entry(PARTIALLY_REFUNDED, EnumSet.of(CLOSED, RETURN_REQUESTED, RETURNED, PARTIALLY_FULFILLED)),

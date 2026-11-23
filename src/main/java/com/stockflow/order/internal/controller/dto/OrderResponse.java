@@ -64,8 +64,9 @@ public record OrderResponse(
         Cancellation cancellation,
 
         @Schema(example = "ADDRESS", description = "Staff only. Set while ON_HOLD: CREDIT, PAYMENT, ADDRESS, "
-                + "INVENTORY, CUSTOMER, FRAUD, OTHER (G3-2) or DELIVERY_FAILED - a shipment came back and Sales decide its "
-                + "delivery failure case; null for a customer, who gets holdReasonPublic")
+                + "INVENTORY, CUSTOMER, FRAUD, OTHER (G3-2), or DELIVERY_FAILED on an order held before RTM-RETURNED "
+                + "(a shipment coming back no longer holds the order: it is settled when its return receipt is "
+                + "confirmed); null for a customer, who gets holdReasonPublic")
         String holdReason,
 
         @Schema(example = "PICKING", description = "Staff only. Where resolving the hold goes back to; null for a "
@@ -137,8 +138,62 @@ public record OrderResponse(
         UUID sourceQuoteId,
 
         @Schema(example = "QT-20261109-0007", description = "R5-7: that quote's number; set where sourceQuoteId is")
-        String sourceQuoteNumber
+        String sourceQuoteNumber,
+
+        @Schema(description = "WF-05 F-1: when the order last became REFUNDED / PARTIALLY_REFUNDED; set on GET "
+                + "/orders/{orderId} for staff, null elsewhere")
+        Instant refundedAt,
+
+        @Schema(description = "WF-05 F-1 (BE-34): what the order still waits for before it completes or closes - the "
+                + "conditions the nightly settlement decides by, read from the same source. Set on GET /orders/{orderId} "
+                + "for staff; null before anything of the order was delivered, and elsewhere")
+        SettlementReadiness settlementReadiness
 ) {
+
+    /**
+     * F-1. {@code branch}: COMPLETION (DELIVERED, or a claim open on it), REFUND_CLOSE (REFUNDED / PARTIALLY_REFUNDED,
+     * closing from the refund branch) or NONE. {@code blockers}: NOT_DELIVERED, RETURN_WINDOW_OPEN, OWING, OPEN_RETURN,
+     * SHIPMENT_UNINVOICED, SHIPPING_FEE_UNINVOICED, REFUND_OUTSTANDING, COMPLETION_HELD - parse tolerantly.
+     * {@code returnAdjustmentUnissued} is information only (Q-16): a return's decrease adjustment not issued yet never
+     * keeps the order open.
+     */
+    public record SettlementReadiness(String branch, Integer returnWindowDays, Instant returnWindowEndsAt,
+                                      boolean owing, boolean openReturn, List<UUID> uninvoicedShipmentIds,
+                                      boolean shippingFeeUninvoiced, boolean refundOutstanding, boolean completionHeld,
+                                      boolean returnAdjustmentUnissued, Instant completesAt, Instant closesAt,
+                                      List<String> blockers) {
+    }
+
+    /** This response with F-1's facts, as the order's detail shows them to staff. */
+    public OrderResponse withSettlement(Instant refunded, SettlementReadiness readiness) {
+        return new OrderResponse(orderId, orderNumber, customerId, customerName, customerCode, status, totalAmount,
+                currency, lines, placedAt, createdBy, lastModifiedAt, lastModifiedBy, contactName, contactEmail,
+                contactPhone, shippingAddress, billingAddress, warehouseId, releasedAt, cancellation, holdReason,
+                statusBeforeHold, holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt,
+                deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
+                allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
+                refunded, readiness);
+    }
+
+    /** With the quote it came from, without F-1's facts. */
+    public OrderResponse(UUID orderId, String orderNumber, UUID customerId, String customerName, String customerCode,
+                         String status, BigDecimal totalAmount, String currency, List<Line> lines, Instant placedAt,
+                         String createdBy, Instant lastModifiedAt, String lastModifiedBy, String contactName,
+                         String contactEmail, String contactPhone, Address shippingAddress, Address billingAddress,
+                         UUID warehouseId, Instant releasedAt, Cancellation cancellation, String holdReason,
+                         String statusBeforeHold, String holdReasonPublic, String holdNote, Instant packedAt,
+                         Instant firstLabeledAt, Instant shippedAt, Instant deliveredAt, String deliveryFailureReason,
+                         Instant completedAt, Instant closedAt, BigDecimal effectiveTotal,
+                         BigDecimal amountDueBeforeHandover, List<Shipment> shipments, Boolean allowPartialShipment,
+                         Boolean printLinesReady, BigDecimal netAmount, BigDecimal taxAmount, List<Fee> fees,
+                         UUID sourceQuoteId, String sourceQuoteNumber) {
+        this(orderId, orderNumber, customerId, customerName, customerCode, status, totalAmount, currency, lines,
+                placedAt, createdBy, lastModifiedAt, lastModifiedBy, contactName, contactEmail, contactPhone,
+                shippingAddress, billingAddress, warehouseId, releasedAt, cancellation, holdReason, statusBeforeHold,
+                holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt, deliveryFailureReason,
+                completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments, allowPartialShipment,
+                printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber, null, null);
+    }
 
     /** Without the quote it came from: every list and every write answers so. */
     public OrderResponse(UUID orderId, String orderNumber, UUID customerId, String customerName, String customerCode,
@@ -172,7 +227,10 @@ public record OrderResponse(
             Instant handedOverAt,
             Instant outcomeAt,
             String failureReason,
-            List<ShipmentLine> lines) {
+            List<ShipmentLine> lines,
+            @Schema(description = "WF-05 F-5: Sales may close it as lost now (it failed as LOST, or came back from the "
+                    + "carrier with no return receipt, and its units are still on it); false once closed")
+            boolean lostClosable) {
     }
 
     @Schema(name = "OrderShipmentLine")

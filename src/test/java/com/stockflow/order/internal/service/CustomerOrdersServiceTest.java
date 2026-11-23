@@ -49,8 +49,10 @@ class CustomerOrdersServiceTest {
     private final com.stockflow.order.internal.domain.OrderRepository orderRepository =
             mock(com.stockflow.order.internal.domain.OrderRepository.class);
     private final ReturnAllowances allowances = mock(ReturnAllowances.class);
+    private final com.stockflow.order.internal.repository.DeliveredAndReturnedUnits deliveredAndReturned =
+            mock(com.stockflow.order.internal.repository.DeliveredAndReturnedUnits.class);
     private final CustomerOrdersService service = new CustomerOrdersService(search, orders, creditChecks, requests,
-            orderRepository, allowances, java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC));
+            orderRepository, allowances, deliveredAndReturned, java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC));
 
     private CustomerOrders.Query query(LocalDate from, LocalDate to) {
         return new CustomerOrders.Query(0, 20, List.of(OrderStatus.CONFIRMED), "SO-1", from, to, null);

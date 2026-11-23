@@ -17,6 +17,16 @@ final class OrderWebMapper {
 
     private OrderWebMapper() {}
 
+    /** F-1 as the detail shows it; null when there is nothing to show (nothing delivered yet). */
+    static OrderResponse.SettlementReadiness toSettlement(
+            com.stockflow.order.internal.service.SettlementReadiness.View view) {
+        return view == null ? null : new OrderResponse.SettlementReadiness(view.branch().name(),
+                view.returnWindowDays(), view.returnWindowEndsAt(), view.owing(), view.openReturn(),
+                view.uninvoicedShipmentIds(), view.shippingFeeUninvoiced(), view.refundOutstanding(),
+                view.completionHeld(), view.returnAdjustmentUnissued(), view.completesAt(), view.closesAt(),
+                view.blockers().stream().map(Enum::name).toList());
+    }
+
     static OrderResponse toResponse(OrderSummary summary) {
         return toResponse(summary, true);
     }
@@ -123,7 +133,10 @@ final class OrderWebMapper {
                                 shipment.failureReason() == null ? null : shipment.failureReason().name(),
                                 shipment.lines().stream()
                                         .map(line -> new OrderResponse.ShipmentLine(line.lineId(), line.quantity()))
-                                        .toList()))
+                                        .toList(),
+                                // Order.closeLostShipment refuses a cancelled or closed order too.
+                                shipment.lostClosable() && summary.status() != com.stockflow.order.api.OrderStatus.CANCELLED
+                                        && summary.status() != com.stockflow.order.api.OrderStatus.CLOSED))
                         .toList(),
                 lifecycle == null ? null : lifecycle.allowPartialShipment(),
                 // Printing is outside the system: whatever an order holds is in stock, so the goods are ready.

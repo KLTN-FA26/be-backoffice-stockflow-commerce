@@ -128,6 +128,11 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     private final org.springframework.beans.factory.ObjectProvider<com.stockflow.order.spi.LabelledNotHandedOver> labelled;
     /** Every closure of the rest of an order, one row each (WF4-CLOSE-HIST-SCHEMA). */
     private final OrderRemainderClosureJpaRepository remainderClosures;
+    /**
+     * WF-05 BE-37: the returns, followed when closing the rest delivers the order. Looked up, not injected: the return
+     * service reaches this one through the delivery failures, and a constructor cycle would not start.
+     */
+    private org.springframework.beans.factory.ObjectProvider<ReturnRequestService> returnRequests;
 
     OrderServiceImpl(OrderRepository repository, OrderSearchRepository search,
                      InventoryService inventory, OrderEventPublisher events, Clock clock,
@@ -365,7 +370,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 command.cancelledBy(), now);
         resolveOpenHolds(order, command, now);
         // 17 §4.8 step 27: an order cancelled before its contract is signed takes the contract with it. A signed
-        // contract stays SIGNED: it is settled outside the system (14 §5.2, decided 2026-11-05).
+        // contract stays SIGNED until the cancellation's money is settled; the nightly run then LIQUIDATES it (WF-05
+        // Q-6, OrderSettlementService.liquidateCancelled).
         contracts.findLiveByOrderId(order.id().value())
                 .filter(contract -> contract.status().canTransitionTo(
                         com.stockflow.order.internal.domain.SalesContractStatus.CANCELLED))
@@ -790,7 +796,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         order.lines().stream().filter(line -> line.cancelledQuantity() > 0 && units.containsKey(line.id()))
                 .forEach(line -> {
                     int elsewhere = order.shipments().stream()
-                            .filter(s -> !s.isReturned() && !deliveryBatchId.equals(s.deliveryBatchId()))
+                            .filter(s -> s.holdsUnits() && !deliveryBatchId.equals(s.deliveryBatchId()))
                             .mapToInt(s -> s.quantities().getOrDefault(line.id(), 0)).sum();
                     int open = Math.max(0, line.quantity() - line.cancelledQuantity() - elsewhere);
                     units.computeIfPresent(line.id(), (id, planned) -> Math.min(planned, open));
@@ -1003,22 +1009,95 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             return toSummary(order);
         }
         // RTM-RETURNED (owner 18-19/11; kltn-docs 09 §4.3 step 4, 17 §5.1): the order is no longer held for Sales to
-        // deliver again (the WF-05 "deliver again after the return" decision is gone - a new order sends the goods
-        // again). The shipment's units were closed: the installments owe less by them, money paid above that is to be
-        // refunded (4B-9, as a closure of the rest), and the refund recorded moves the order on (followRefunds).
-        BigDecimal closed = order.closedByReturn();
-        if (closed.signum() > 0) {
-            remainderClosures.save(new OrderRemainderClosureJpaEntity(Identifiers.newId(), orderId,
-                    order.lastClosureId(), CancellationReasonCode.DELIVERY_FAILED.name(),
-                    VIETNAMESE.getString("order.closure.returnedShipment"), by, at));
-            if (order.paidByContract()) {
-                paymentService.settleRemainderClosure(new com.stockflow.payment.api.SettleRemainderClosureCommand(
-                        orderId, order.lastClosureId(), closed, null, null, null, by, at, HandedOverBatches.of(order)));
-            }
-        }
-        log.info("Order {}: shipment {} returned, {} {} closed; order {}", order.orderNumber(), shipmentId, closed,
-                order.total().currency(), order.status());
+        // deliver again - a new order sends the goods again. WF-05 Q-7 (BE-14, L-I8): nothing is closed or settled on
+        // the carrier's word; the shipment's units are closed, and payment settles them, when the warehouse confirms
+        // their return receipt (DeliveryFailureService.goodsReceived, then settleShipmentClosure).
+        log.info("Order {}: shipment {} reported back by the carrier; order {}, its units wait for the return receipt",
+                order.orderNumber(), shipmentId, order.status());
         return saved(order);
+    }
+
+    /**
+     * WF-05 X-1 / X-2 (Q-2, Q-7, Q-12): the money of a shipment whose units the order just closed without delivering
+     * them - at its return receipt, or as lost - settled by payment in this transaction, under the order's lock: the
+     * shipment's own batch first, then older debt, what was paid above that refundable (Q-2) - and the share of the
+     * shipping fee waived with it (Q-19), which payment works out from the order's fee and goods ({@link
+     * #shippingFeeOf}). Dated by this transaction's clock, never the carrier's (BE-32). The closure is an entry of the
+     * order's history like a closure of the rest ({@code order_remainder_closure}, keyed by the closure id: written
+     * once). {@code ShipmentReturnSettled}, registered by the aggregate, is published when the caller saves the order.
+     *
+     * <p>The order is written before payment is asked: payment's triggers read the order's shipments
+     * ({@code tg_order_settlement_shipping_waiver}), and they must see the closure. Payment's waiver is then kept on
+     * the shipment, which the caller's save writes ({@code order_shipment.shipping_fee_waived}, 0 to its amount
+     * once).</p>
+     */
+    void settleShipmentClosure(Order order, Order.ShipmentClosure closure,
+                               com.stockflow.payment.api.SettleShipmentReturnCommand.Cause cause, String note, UUID by,
+                               Instant settledAt) {
+        UUID orderId = order.id().value();
+        remainderClosures.save(new OrderRemainderClosureJpaEntity(Identifiers.newId(), orderId, closure.closureId(),
+                CancellationReasonCode.DELIVERY_FAILED.name(), note, by, settledAt));
+        if (order.paidByContract()) {
+            repository.save(order);
+            paymentService.settleShipmentReturn(new com.stockflow.payment.api.SettleShipmentReturnCommand(orderId,
+                    closure.shipmentId(), closure.deliveryBatchId(), closure.closureId(), closure.goodsValue(), cause,
+                    settledAt, by, HandedOverBatches.of(order), shippingFeeOf(order)))
+                    // Q-19: payment's answer is kept on the shipment, for invoicing to bill the fee less it.
+                    .ifPresent(settled -> order.recordShippingFeeWaived(closure.shipmentId(),
+                            settled.shippingFeeWaived()));
+        }
+        log.info("Order {}: shipment {} closed ({}), goods worth {} {} settled; order {}", order.orderNumber(),
+                closure.shipmentId(), cause, closure.goodsValue(), order.total().currency(), order.status());
+    }
+
+    /**
+     * WF-05 Q-19 (owner, 23/11): what payment waives the shipping fee by - the order's shipping fee line with its VAT,
+     * and every goods line with its VAT as signed (never less the units closed since: the shares of the shipments
+     * brought back add up against one fixed whole, so all of them waive the whole fee). The plate fee lines are in
+     * neither. {@code NONE} for an order without a shipping fee line.
+     *
+     * <p>{@code endsWithNothingDelivered} (Q-19 edge, owner 23/11): read from the order as this return or closure left
+     * it - nothing of it delivered ({@link Order#deliveredSomething}, the definition the contract's liquidation (Q-6)
+     * and the customer's PARTIALLY_RETURNED read too) and nothing more coming ({@link Order#deliveriesOver}). Then the
+     * order is a whole return, and payment waives what is left of the fee, whichever came last - the shipment brought
+     * back, or the rest closed before it shipped.</p>
+     */
+    static com.stockflow.payment.api.SettleShipmentReturnCommand.ShippingFee shippingFeeOf(Order order) {
+        BigDecimal fee = order.fees().stream()
+                .filter(line -> line.kind() == com.stockflow.order.api.FeeKind.SHIPPING_FEE)
+                .map(line -> line.gross().amount()).reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (fee.signum() == 0) {
+            return com.stockflow.payment.api.SettleShipmentReturnCommand.ShippingFee.NONE;
+        }
+        BigDecimal goods = order.lines().stream().map(line -> line.grossTotal().amount())
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        return new com.stockflow.payment.api.SettleShipmentReturnCommand.ShippingFee(fee, goods,
+                endsWithNothingDelivered(order));
+    }
+
+    /** Q-19 edge: the order, as it stands now, ended with nothing of it delivered and nothing more coming. */
+    static boolean endsWithNothingDelivered(Order order) {
+        return !order.deliveredSomething() && order.deliveriesOver();
+    }
+
+    /** The note a closure at the return receipt is recorded with in the order's history. */
+    static String returnedShipmentNote() {
+        return VIETNAMESE.getString("order.closure.returnedShipment");
+    }
+
+    /** The order as it stands now, read under its lock. */
+    OrderSummary summaryOf(UUID orderId) {
+        return toSummary(lockOrder(orderId));
+    }
+
+    /** Saves a locked order a closure changed, and publishes what it registered. */
+    OrderSummary saveClosed(Order order) {
+        return saved(order);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void returnRequests(org.springframework.beans.factory.ObjectProvider<ReturnRequestService> returnRequests) {
+        this.returnRequests = returnRequests;
     }
 
     /**
@@ -1145,10 +1224,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         com.stockflow.order.spi.LabelledNotHandedOver station = labelled.getIfAvailable();
         java.util.Map<UUID, Integer> waiting = station == null ? java.util.Map.of() : station.unitsOf(orderId);
         BigDecimal closed = order.closeRemainder(reasonCode, note, fee, waiting, by, now);
-        // WF4-CLOSE-HIST-SCHEMA: the closure is an entry of the order's history of its own, written whether or not it moved
-        // the order's status (the checked cartons stay and it remains PARTIALLY_FULFILLED); a refused closure threw above.
-        remainderClosures.save(new OrderRemainderClosureJpaEntity(Identifiers.newId(), orderId, order.lastClosureId(),
-                reasonCode.name(), note, by, now));
         java.util.Map<OrderLine, Integer> closedLines = order.lines().stream()
                 .filter(line -> line.cancelledQuantity() > closedBefore.get(line.id()))
                 .collect(Collectors.toMap(line -> line, line -> line.cancelledQuantity() - closedBefore.get(line.id()),
@@ -1160,14 +1235,37 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         // never the mould / print or shipping fee lines (D30, D32), which closeRemainder leaves out of `closed`; money
         // paid above the order's new worth pays the fee first and the rest is to refund. In this transaction, under the
         // order's lock. WF-05 TT-5: the batches whose goods left are named, so the installments of those closed go first.
+        // WF-05 Q-19 edge (owner 23/11): a closure that ends, after a carrier return, an order with nothing delivered
+        // waives what the shipments brought back left of the shipping fee (shippingFeeOf, read after the closure).
+        // The order is written first: payment's trigger reads its shipments (tg_order_settlement_shipping_waiver).
+        BigDecimal waived = BigDecimal.ZERO;
         if (order.paidByContract() && closed.signum() > 0) {
-            paymentService.settleRemainderClosure(new com.stockflow.payment.api.SettleRemainderClosureCommand(orderId,
-                    order.lastClosureId(), closed, fee == null ? null : fee.amount(), fee == null ? null : fee.reason(),
-                    fee == null ? null : fee.detail(), by, now, HandedOverBatches.of(order)));
+            repository.save(order);
+            waived = paymentService.settleRemainderClosure(new com.stockflow.payment.api.SettleRemainderClosureCommand(
+                    orderId, order.lastClosureId(), closed, fee == null ? null : fee.amount(),
+                    fee == null ? null : fee.reason(), fee == null ? null : fee.detail(), by, now,
+                    HandedOverBatches.of(order), shippingFeeOf(order)))
+                    .map(com.stockflow.payment.api.OrderSettlementResult::shippingFeeWaived)
+                    .orElse(BigDecimal.ZERO);
         }
+        // WF4-CLOSE-HIST-SCHEMA: the closure is an entry of the order's history of its own, written whether or not it moved
+        // the order's status (the checked cartons stay and it remains PARTIALLY_FULFILLED); a refused closure threw above.
+        // Append-only, so written once payment answered: it keeps the shipping fee waived with it (Q-19 edge), which
+        // invoicing reads (ShippingFeeWaivers).
+        remainderClosures.save(new OrderRemainderClosureJpaEntity(Identifiers.newId(), orderId, order.lastClosureId(),
+                reasonCode.name(), note, by, now, waived));
         log.info("Order {}: rest closed ({}), {} {} worth; now {}", order.orderNumber(), reasonCode, closed,
                 order.total().currency(), order.status());
-        return saved(order);
+        OrderSummary summary = saved(order);
+        // WF-05 BE-37 (L-I7): DELIVERED reached by closing the rest follows the order's open returns exactly as
+        // DELIVERED reached by a delivery does (OrderDeliveredReturnsListener): a return opened while it was partly
+        // fulfilled takes it to RETURN_REQUESTED now - before, it showed DELIVERED with a claim open.
+        ReturnRequestService returns = returnRequests == null ? null : returnRequests.getIfAvailable();
+        if (order.status() == OrderStatus.DELIVERED && returns != null) {
+            returns.followDelivery(orderId, by);
+            return toSummary(lockOrder(orderId));
+        }
+        return summary;
     }
 
     private OrderSummary saved(Order order) {
@@ -1254,7 +1352,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     static OrderSummary.Lifecycle lifecycleOf(Order order) {
         List<OrderSummary.LineProgress> progress = order.lines().stream()
                 .map(line -> new OrderSummary.LineProgress(line.id(),
-                        order.shipments().stream().filter(s -> !s.isReturned())
+                        order.shipments().stream().filter(com.stockflow.order.internal.domain.OrderShipment::holdsUnits)
                                 .mapToInt(s -> s.quantities().getOrDefault(line.id(), 0)).sum(),
                         order.shipments().stream()
                                 .filter(s -> s.status() == com.stockflow.order.api.OrderShipmentStatus.DELIVERED)
@@ -1266,7 +1364,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                         s.outcomeAt(), s.failureReason(),
                         s.quantities().entrySet().stream()
                                 .map(e -> new OrderSummary.ShipmentLine(e.getKey(), e.getValue())).toList(),
-                        s.carriage()))
+                        s.carriage(), s.unitsClosedAt()))
                 .toList();
         return new OrderSummary.Lifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(),
                 order.packedAt(), order.shippedAt(), order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(),

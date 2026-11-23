@@ -43,15 +43,25 @@ import java.util.UUID;
  * <p>Under the order's row lock, the lock the completion takes: a hold set while the night's run looks at the order
  * is either seen by it or comes after the order is completed - then refused here, as any hold of a completed order
  * is. {@code tg_order_completion_hold_respected} states the rule once more in the database.</p>
+ *
+ * <p><b>Every edge that finalises the order respects it</b> (WF-05 Q-17 = a, BE-05): completion, closing - also from
+ * the refund branch - and PARTIALLY_FULFILLED → PARTIALLY_REFUNDED, after which a delivery of the order could no longer
+ * be corrected. So a hold may be placed on any order that is not final yet and has a delivery to dispute: a REFUNDED or
+ * PARTIALLY_REFUNDED order is still corrected (BE-46) and still to be closed. An order with nothing delivered has
+ * nothing to verify, and the hold is refused there ("nothing new"). A held order is never cancelled: an order with a
+ * delivered shipment has no edge to CANCELLED, so no hold is left open on a cancelled order.</p>
  */
 @Service
 public class OrderCompletionHolds {
 
     private static final Logger log = LoggerFactory.getLogger(OrderCompletionHolds.class);
 
-    /** Statuses from which the order never completes: there is nothing left to pause. */
+    /**
+     * Statuses past every edge a hold keeps the order from: completed (its deliveries are no longer corrected), closed
+     * or cancelled - there is nothing left to pause.
+     */
     private static final Set<OrderStatus> PAST_COMPLETION = EnumSet.of(OrderStatus.COMPLETED, OrderStatus.CLOSED,
-            OrderStatus.CANCELLED, OrderStatus.RETURNED, OrderStatus.REFUNDED, OrderStatus.PARTIALLY_REFUNDED);
+            OrderStatus.CANCELLED);
 
     /** A pause of the order's completion, open while {@code releasedAt} is null. */
     public record CompletionHold(UUID id, UUID orderId, CompletionHoldReason reason, String note, Instant heldAt,
@@ -81,8 +91,8 @@ public class OrderCompletionHolds {
      * Pauses the order's completion. OTHER says why in the note.
      *
      * @throws BusinessException {@code NOT_FOUND}; {@code VALIDATION_FAILED} for OTHER without a note or a note over
-     *         1000 characters; {@code ORDER_COMPLETION_HOLD_NOT_APPLICABLE} for an order completed, closed, cancelled,
-     *         returned or refunded; {@code ORDER_COMPLETION_ALREADY_HELD}
+     *         1000 characters; {@code ORDER_COMPLETION_HOLD_NOT_APPLICABLE} for an order completed, closed or
+     *         cancelled, or with nothing delivered to dispute; {@code ORDER_COMPLETION_ALREADY_HELD}
      */
     @Transactional
     @Auditable(action = AuditAction.UPDATE, resourceType = "order", resourceId = "#orderId")
@@ -99,6 +109,18 @@ public class OrderCompletionHolds {
         if (PAST_COMPLETION.contains(order.status())) {
             throw new BusinessException(ErrorCode.ORDER_COMPLETION_HOLD_NOT_APPLICABLE,
                     "Order %s is %s: it will not be completed".formatted(order.orderNumber(), order.status()));
+        }
+        boolean delivered = order.deliveredAt() != null || order.shipments().stream()
+                .anyMatch(s -> s.status() == com.stockflow.order.api.OrderShipmentStatus.DELIVERED);
+        if (!delivered) {
+            throw new BusinessException(ErrorCode.ORDER_COMPLETION_HOLD_NOT_APPLICABLE,
+                    "Order %s has no delivery to verify".formatted(order.orderNumber()));
+        }
+        // Completed once (a late claim on it is open): its deliveries are no longer corrected, and the claim's end
+        // takes it back to COMPLETED (BE-40), which a hold would refuse in the database.
+        if (order.completedAt() != null) {
+            throw new BusinessException(ErrorCode.ORDER_COMPLETION_HOLD_NOT_APPLICABLE,
+                    "Order %s was completed on %s".formatted(order.orderNumber(), order.completedAt()));
         }
         if (holds.findFirstByOrderIdAndReleasedAtIsNull(orderId).isPresent()) {
             throw new BusinessException(ErrorCode.ORDER_COMPLETION_ALREADY_HELD,

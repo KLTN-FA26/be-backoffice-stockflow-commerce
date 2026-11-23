@@ -1,6 +1,5 @@
 package com.stockflow.order.internal.service;
 
-import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
@@ -28,10 +27,6 @@ import java.util.stream.Collectors;
 @Component
 class InstallmentOrdersAdapter implements InstallmentOrders {
 
-    /** The statuses an order reaches only once all its goods were delivered (or the rest closed after the last). */
-    private static final java.util.Set<OrderStatus> DELIVERED_IN_FULL = java.util.EnumSet.of(OrderStatus.DELIVERED,
-            OrderStatus.RETURN_REQUESTED, OrderStatus.RETURNED, OrderStatus.REFUNDED, OrderStatus.PARTIALLY_REFUNDED,
-            OrderStatus.COMPLETED, OrderStatus.CLOSED);
 
     private final OrderRepository orders;
     private final DeliveryBatchService batches;
@@ -59,12 +54,17 @@ class InstallmentOrdersAdapter implements InstallmentOrders {
         return orders.findById(new OrderId(orderId)).map(InstallmentOrdersAdapter::toInstallmentOrder);
     }
 
+    /**
+     * WF-05 X-3 (BE-02, BE-04; Q-3): from the order's facts, whatever its status ({@code Order.deliveredInFullAt}) -
+     * present once nothing of it is still coming (every unit delivered, or closed: the rest, a carrier's return at its
+     * receipt, a lost shipment) and something was delivered; the latest of the last delivery and those closures. A
+     * status set kept here before missed PARTIALLY_FULFILLED orders whose rest came back, whose installment after
+     * delivery then never fell due, and took the date of whichever delivery was recorded last.
+     */
     @Override
     @Transactional(readOnly = true)
     public Optional<java.time.Instant> deliveredInFullAt(UUID orderId) {
-        return orders.findById(new OrderId(orderId))
-                .filter(order -> DELIVERED_IN_FULL.contains(order.status()))
-                .map(Order::deliveredAt);
+        return orders.findById(new OrderId(orderId)).flatMap(Order::deliveredInFullAt);
     }
 
     /**

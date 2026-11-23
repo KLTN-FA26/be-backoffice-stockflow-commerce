@@ -82,6 +82,7 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
                 contract.sentDocumentKey(), contract.signedOn(), contract.signedFileKey(), contract.signedFileName(),
                 contract.signedAt(), contract.signedBy(), contract.cancelledAt(), contract.cancelledBy(),
                 contract.cancellationReason(), contract.completedAt());
+        entity.applyLiquidated(contract.liquidatedAt());
         entity.agreeReturnWindow(contract.returnWindowDays());
         SalesContractJpaEntity saved = jpa.saveAndFlush(entity);
         if (contract.status() == SalesContractStatus.DRAFT) {
@@ -217,6 +218,6 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
                 e.getFreeSampleRounds(), schedule, plan, e.getSentAt(), e.getSentBy(), e.getSentDocumentKey(),
                 e.getSignedOn(), e.getSignedFileKey(), e.getSignedFileName(), e.getSignedAt(), e.getSignedBy(),
                 e.getCancelledAt(), e.getCancelledBy(), e.getCancellationReason(), e.getCompletedAt(),
-                e.getVersion()).restoreReturnWindow(e.getReturnWindowDays());
+                e.getVersion()).restoreReturnWindow(e.getReturnWindowDays()).restoreLiquidated(e.getLiquidatedAt());
     }
 }

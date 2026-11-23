@@ -66,8 +66,25 @@ class SettlementCandidatesAdapter implements SettlementCandidates {
                            -- it from closing for good (BR-05): CLOSED is never changed again.
                            AND NOT EXISTS (SELECT 1 FROM ordering.return_request r WHERE r.order_id = o.id
                                               AND r.status IN (%s))
+                           -- WF-05 Q-17: a completion hold keeps the order from closing too; refused as well.
+                           AND NOT EXISTS (SELECT 1 FROM ordering.order_completion_hold h WHERE h.order_id = o.id
+                                              AND h.released_at IS NULL)
                          ORDER BY COALESCE(o.completed_at, o.refunded_at), o.id""".formatted(OPEN_RETURN))
                 .setParameter("cutoff", settledBy)
+                .setFirstResult(skip)
+                .setMaxResults(limit)
+                .getResultList();
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public List<UUID> cancelledWithSignedContract(int skip, int limit) {
+        return entityManager.createNativeQuery("""
+                        SELECT o.id FROM ordering.customer_order o
+                         WHERE o.status = 'CANCELLED'
+                           AND EXISTS (SELECT 1 FROM ordering.sales_contract c
+                                        WHERE c.order_id = o.id AND c.status = 'SIGNED')
+                         ORDER BY o.id""")
                 .setFirstResult(skip)
                 .setMaxResults(limit)
                 .getResultList();

@@ -165,14 +165,32 @@ public record OrderSummary(
      * One shipment of the order, as the order knows it (from its handover). Nothing is collected on delivery
      * (kltn-docs 09 BR-08).
      *
-     * @param carriage number, parcels and carrier as fulfillment handed it over (G4-2a); null before that
+     * @param carriage      number, parcels and carrier as fulfillment handed it over (G4-2a); null before that
+     * @param unitsClosedAt WF-05 Q-7 / Q-12: when its units were closed without being delivered - its return receipt
+     *                      confirmed, or closed as lost; null while they are still the shipment's
      */
     public record Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, Instant handedOverAt,
                            Instant outcomeAt, DeliveryFailureReason failureReason, List<ShipmentLine> lines,
-                           ShipmentHandover.Carriage carriage) {
+                           ShipmentHandover.Carriage carriage, Instant unitsClosedAt) {
 
         public Shipment {
             lines = lines == null ? List.of() : List.copyOf(lines);
+        }
+
+        /** Without when its units were closed (WF-05): callers written before it. */
+        public Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, Instant handedOverAt,
+                        Instant outcomeAt, DeliveryFailureReason failureReason, List<ShipmentLine> lines,
+                        ShipmentHandover.Carriage carriage) {
+            this(shipmentId, status, amount, handedOverAt, outcomeAt, failureReason, lines, carriage, null);
+        }
+
+        /**
+         * WF-05 F-5 (Q-12): Sales may close it as lost - it failed as LOST, or came back from the carrier with no
+         * return receipt yet - and its units are still on it. The same rule {@code Order.closeLostShipment} applies.
+         */
+        public boolean lostClosable() {
+            return unitsClosedAt == null && (status == OrderShipmentStatus.RETURNED
+                    || status == OrderShipmentStatus.DELIVERY_FAILED && failureReason == DeliveryFailureReason.LOST);
         }
 
         /** Without the carriage (G4-2a): callers written before it. */

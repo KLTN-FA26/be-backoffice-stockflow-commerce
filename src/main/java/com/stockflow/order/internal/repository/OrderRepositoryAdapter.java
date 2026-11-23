@@ -235,6 +235,7 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
                     .withDeliveryBatch(shipment.deliveryBatchId()));
             row.apply(shipment.status(), shipment.outcomeAt(), shipment.outcomeBy(), shipment.failureReason(),
                     shipment.failureNote());
+            row.applyUnitsClosed(shipment.unitsClosedAt(), shipment.closedGoodsValue(), shipment.shippingFeeWaived());
             shipments.save(row);
         }
         shipments.flush();

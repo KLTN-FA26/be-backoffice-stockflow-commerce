@@ -4178,9 +4178,10 @@ class FtlDispatchIntegrationTest {
     }
 
     @Test
-    @DisplayName("RTM-RETURNED (09 §4.3 step 4, 17 §5.1): the carrier brings the order's one shipment back - its units "
-            + "closed and settled with no fee, the order RETURNED with no hold; the return receipt takes the cartons "
-            + "into quarantine and opens a case CANCELLED at once, a record of what came back: nothing to deliver again "
+    @DisplayName("RTM-RETURNED (09 §4.3 step 4, 17 §5.1; WF-05 Q-7): the carrier brings the order's one shipment back - "
+            + "the order RETURNED with no hold, nothing closed or settled on the carrier's word; the return receipt "
+            + "takes the cartons into quarantine, closes the units and settles them with no fee (SHIPMENT_RETURNED), "
+            + "and opens a case CANCELLED at once, a record of what came back: nothing to deliver again "
             + "(no redelivery endpoint) and nothing to cancel (409); the nightly settlement leaves the order while the "
             + "refund is not made, and the refund recorded moves it to REFUNDED")
     void aReturnedShipmentReturnsTheOrderUntilItIsRefunded() throws Exception {
@@ -4199,23 +4200,45 @@ class FtlDispatchIntegrationTest {
         assertThat(back.lifecycle().holdReason()).as("no longer held for Sales to deliver again").isNull();
         assertThat(openHolds(orderId)).isEmpty();
         assertThat(statusHistory(orderId)).endsWith("DELIVERY_FAILED>RETURNED");
+        // WF-05 Q-7 (L-I8): the carrier's word closes nothing and settles nothing.
         assertThat(jdbc.queryForObject("SELECT SUM(cancelled_quantity) FROM ordering.order_line WHERE order_id = ?",
-                Integer.class, orderId)).as("the shipment's units closed").isEqualTo(4);
+                Integer.class, orderId)).as("nothing closed before the receipt").isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE order_id = ?", Long.class,
+                orderId)).as("nothing settled before the receipt").isZero();
+        assertThat(data(sales(get(failures(orderId))).andExpect(status().isOk()))).as("no goods back yet: no case")
+                .isEmpty();
+        // F-5: reported back, its receipt not confirmed - Sales may close it as lost (goods lost on the way back),
+        // with the carrier's confirmation only.
+        assertThat(data(sales(get(ORDERS + "/" + orderId)).andExpect(status().isOk())).path("shipments").get(0)
+                .path("lostClosable").asBoolean()).as("awaiting its receipt").isTrue();
+        sales(body(post(ORDERS + "/" + orderId + "/shipments/" + first[0] + "/lost-closure"),
+                "{\"note\":\"Hãng báo thất lạc trên đường hoàn\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("ORDER_SHIPMENT_LOSS_EVIDENCE_REQUIRED"));
+
+        // The return receipt: the cartons into quarantine, the units closed and settled, the case on record and
+        // closed at once.
+        UUID caseId = receivedBack(first[0], "dented corner");
+        JsonNode closedOrder = data(sales(get(ORDERS + "/" + orderId)).andExpect(status().isOk()));
+        assertThat(closedOrder.path("shipments").get(0).path("lostClosable").asBoolean())
+                .as("its units were closed at the receipt").isFalse();
+        assertThat(closedOrder.path("settlementReadiness").isMissingNode())
+                .as("F-1: nothing delivered, nothing to show (nulls are left out)").isTrue();
+        assertThat(jdbc.queryForObject("SELECT SUM(cancelled_quantity) FROM ordering.order_line WHERE order_id = ?",
+                Integer.class, orderId)).as("the shipment's units closed at its receipt").isEqualTo(4);
         // F7: by hand - 2 cartons x 2 pieces x 6,000,000, no VAT, all paid on signing: everything closed, no fee, all
         // of it refundable; nothing was owed, so nothing is reduced.
         assertThat(order.total().amount()).isEqualByComparingTo("24000000");
-        assertThat(settlement(orderId)).containsEntry("kind", "REMAINDER_CLOSED");
+        assertThat(settlement(orderId)).containsEntry("kind", "SHIPMENT_RETURNED");
         amounts(settlement(orderId), 24_000_000, 24_000_000, 0, 24_000_000, 0, 0, 24_000_000, 0);
         assertThat(settlement(orderId).get("fee_installment_id")).isNull();
         assertThat(installments(orderId)).containsExactly("1 ON_SIGNING PAID 24000000/24000000/0");
-        assertThat(data(sales(get(failures(orderId))).andExpect(status().isOk()))).as("no goods back yet: no case")
-                .isEmpty();
-
-        // The return receipt: the cartons into quarantine, the case on record and closed at once.
-        UUID caseId = receivedBack(first[0], "dented corner");
         JsonNode record = data(sales(get(failures(orderId))).andExpect(status().isOk())).get(0);
         assertThat(record.path("caseId").asText()).isEqualTo(caseId.toString());
         assertThat(record.path("status").asText()).as("nothing of the shipment is owed").isEqualTo("CANCELLED");
+        // F-4 (BE-42): closed by the system, said in a field - not the English note the back office showed as it was.
+        assertThat(record.path("closure").asText()).isEqualTo("RECORDED_ON_RETURN");
+        assertThat(record.path("decisionNote").isMissingNode()).as("no note for a system closure").isTrue();
         assertThat(record.path("failureReason").asText()).isEqualTo("CUSTOMER_ABSENT");
         assertThat(record.path("orderStatus").asText()).isEqualTo("RETURNED");
         assertThat(record.path("cartons")).hasSize(2);
@@ -4262,7 +4285,7 @@ class FtlDispatchIntegrationTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("DELIVERY_FAILURE_INVALID_TRANSITION"));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE order_id = ?", Long.class,
-                orderId)).as("settled once, when it came back").isEqualTo(1L);
+                orderId)).as("settled once, when its receipt was confirmed").isEqualTo(1L);
 
         // The nightly settlement: a candidate, left as it is while the refund is not made.
         var settlements = context.getBean(com.stockflow.order.internal.service.OrderSettlementService.class);
@@ -4360,7 +4383,10 @@ class FtlDispatchIntegrationTest {
         UUID shipment = handedOver(order, ghn)[0];
         failedAndCameBack(shipment, "CUSTOMER_ABSENT");
         assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.RETURNED);
+        assertThat(installments(orderId)).as("nothing moves on the carrier's word (Q-7)")
+                .containsExactly("1 ON_SIGNING PAID 7200000/7200000/0", "2 AFTER_DELIVERY NOT_DUE 16800000/0/0");
 
+        UUID caseId = receivedBack(shipment, null);
         Map<String, Object> settled = settlement(orderId);
         amounts(settled, 7_200_000, 24_000_000, 16_800_000, 7_200_000, 0, 0, 7_200_000, 0);
         assertThat(settled.get("fee_installment_id")).isNull();
@@ -4368,8 +4394,6 @@ class FtlDispatchIntegrationTest {
                 "2 AFTER_DELIVERY CANCELLED 16800000/0/16800000");
         assertThat(jdbc.queryForObject("SELECT amount::bigint FROM payment.installment_reduction "
                 + "WHERE settlement_id = ?", Long.class, settled.get("id"))).isEqualTo(16_800_000L);
-
-        UUID caseId = receivedBack(shipment, null);
         assertThat(caseRow(caseId)).containsEntry("status", "CANCELLED");
         sales(body(post(failures(orderId) + "/" + caseId + "/cancellation"), cancelKeeping(10_000_000)))
                 .andExpect(status().isConflict())
@@ -4416,11 +4440,14 @@ class FtlDispatchIntegrationTest {
         assertThat(back.status()).as("batch 1 arrived, batch 2 came back").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
         assertThat(back.lifecycle().holdReason()).isNull();
         assertThat(openHolds(orderId)).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE order_id = ?", Long.class,
+                orderId)).as("nothing settled on the carrier's word (Q-7)").isZero();
+        UUID caseId = receivedBack(next[0], null);
         assertThat(jdbc.queryForObject("SELECT SUM(cancelled_quantity) FROM ordering.order_line WHERE order_id = ?",
                 Integer.class, orderId)).as("batch 2's four pieces only").isEqualTo(4);
         amounts(settlement(orderId), 48_000_000, 24_000_000, 0, 24_000_000, 0, 0, 24_000_000, 0);
+        assertThat(settlement(orderId)).containsEntry("kind", "SHIPMENT_RETURNED");
         assertThat(installments(orderId)).containsExactly("1 ON_SIGNING PAID 48000000/48000000/0");
-        UUID caseId = receivedBack(next[0], null);
         assertThat(caseRow(caseId)).containsEntry("status", "CANCELLED")
                 .containsEntry("delivery_batch_id", batchIds.get(1));
 
@@ -4462,20 +4489,20 @@ class FtlDispatchIntegrationTest {
         assertThat(orders.findById(orderId).orElseThrow().status()).as("the second shipment is still out")
                 .isEqualTo(OrderStatus.SHIPPED);
         assertThat(jdbc.queryForObject("SELECT SUM(cancelled_quantity) FROM ordering.order_line WHERE order_id = ?",
-                Integer.class, orderId)).isEqualTo(2);
+                Integer.class, orderId)).as("nothing closed before its receipt (Q-7)").isZero();
         failedAndCameBack(both[1], "DAMAGED");
         assertThat(orders.findById(orderId).orElseThrow().status()).as("nothing of it was delivered")
                 .isEqualTo(OrderStatus.RETURNED);
         assertThat(openHolds(orderId)).isEmpty();
-        assertThat(jdbc.queryForObject("SELECT SUM(cancelled_quantity) FROM ordering.order_line WHERE order_id = ?",
-                Integer.class, orderId)).as("both shipments' units").isEqualTo(4);
-        assertThat(jdbc.queryForList("SELECT closed_amount::bigint || '/' || refundable_amount::bigint FROM "
-                + "payment.order_settlement WHERE order_id = ? AND kind = 'REMAINDER_CLOSED' ORDER BY created_at",
-                String.class, orderId)).as("one closure per shipment that came back")
-                .containsExactly("12000000/12000000", "12000000/12000000");
 
         UUID first = receivedBack(both[0], null);
         UUID second = receivedBack(both[1], null);
+        assertThat(jdbc.queryForObject("SELECT SUM(cancelled_quantity) FROM ordering.order_line WHERE order_id = ?",
+                Integer.class, orderId)).as("both shipments' units").isEqualTo(4);
+        assertThat(jdbc.queryForList("SELECT closed_amount::bigint || '/' || refundable_amount::bigint FROM "
+                + "payment.order_settlement WHERE order_id = ? AND kind = 'SHIPMENT_RETURNED' ORDER BY created_at",
+                String.class, orderId)).as("one closure per shipment, at its receipt")
+                .containsExactly("12000000/12000000", "12000000/12000000");
         assertThat(caseRow(first)).containsEntry("status", "CANCELLED");
         assertThat(caseRow(second)).containsEntry("status", "CANCELLED");
         releasedFromQuarantine(both[1]);
@@ -4492,7 +4519,7 @@ class FtlDispatchIntegrationTest {
     @Test
     @DisplayName("F8, RTM-RETURNED: nothing paid (everything after delivery, on credit) and the shipment comes back - "
             + "nothing collected, the installment reduced whole and CANCELLED, nothing refundable and no fee; no refund "
-            + "will come, so the nightly settlement moves the order from RETURNED to PARTIALLY_REFUNDED, not REFUNDED")
+            + "will come, so the receipt (Q-7) moves the order from RETURNED to PARTIALLY_REFUNDED, not REFUNDED")
     void anUnpaidReturnedShipmentIsSettledWithoutARefund() throws Exception {
         UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
         UUID accountant = staff("ACCOUNTANT");
@@ -4507,16 +4534,17 @@ class FtlDispatchIntegrationTest {
         UUID shipment = handedOver(order, ghn)[0];
         failedAndCameBack(shipment, "CUSTOMER_ABSENT");
         assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.RETURNED);
+        assertThat(installments(orderId)).as("nothing moves on the carrier's word (Q-7)")
+                .containsExactly("1 AFTER_DELIVERY NOT_DUE 24000000/0/0");
 
+        assertThat(caseRow(receivedBack(shipment, null))).containsEntry("status", "CANCELLED");
         amounts(settlement(orderId), 0, 24_000_000, 24_000_000, 0, 0, 0, 0, 0);
         assertThat(installments(orderId)).containsExactly("1 AFTER_DELIVERY CANCELLED 24000000/0/24000000");
         assertThat(refundRefused(orderId, BigDecimal.ONE)).as("nothing is refundable")
                 .isEqualTo(REFUND_EXCEEDS_REFUNDABLE);
-        assertThat(caseRow(receivedBack(shipment, null))).containsEntry("status", "CANCELLED");
 
+        // No refund will come: the receipt itself moved the order on (DeliveryFailureService.followRefunds).
         var settlements = context.getBean(com.stockflow.order.internal.service.OrderSettlementService.class);
-        assertThat(settlements.failedDeliveryCandidates(0, 1000)).contains(orderId);
-        assertThat(settlements.settleFailedDelivery(orderId)).isTrue();
         assertThat(orders.findById(orderId).orElseThrow().status()).as("nothing paid, so nothing went back")
                 .isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
         assertThat(settlements.failedDeliveryCandidates(0, 1000)).doesNotContain(orderId);
@@ -4592,8 +4620,9 @@ class FtlDispatchIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.order_hold WHERE order_id = ? AND reason = "
                 + "'DELIVERY_FAILED'", Long.class, orderId)).isZero();
         assertThat(jdbc.queryForObject("SELECT SUM(cancelled_quantity) FROM ordering.order_line WHERE order_id = ?",
-                Integer.class, orderId)).as("the returned shipment's units closed").isEqualTo(2);
-        amounts(settlement(orderId), 24_000_000, 12_000_000, 0, 12_000_000, 0, 0, 12_000_000, 0);
+                Integer.class, orderId)).as("nothing closed on the carrier's word (Q-7)").isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE order_id = ?", Long.class,
+                orderId)).isZero();
 
         sales(body(post(ORDERS + "/" + orderId + "/hold/resolution"), "{\"note\":\"Khách nhận phần còn lại\"}"))
                 .andExpect(status().isOk());

@@ -25,7 +25,8 @@ import java.time.Instant;
  */
 public record OrderStatusChangeResponse(
         @Schema(example = "STATUS_CHANGE",
-                description = "STATUS_CHANGE, PARTIAL_SHIPMENT_DECISION, REMAINDER_CLOSURE or ADDRESS_CHANGE")
+                description = "STATUS_CHANGE, PARTIAL_SHIPMENT_DECISION, REMAINDER_CLOSURE, ADDRESS_CHANGE or "
+                        + "REFUND_VOIDED")
         String type,
         OrderStatus from,
         OrderStatus to,
@@ -46,6 +47,17 @@ public record OrderStatusChangeResponse(
     public static final String PARTIAL_SHIPMENT_DECISION = "PARTIAL_SHIPMENT_DECISION";
     public static final String REMAINDER_CLOSURE = "REMAINDER_CLOSURE";
     public static final String ADDRESS_CHANGE = "ADDRESS_CHANGE";
+    public static final String REFUND_VOIDED = "REFUND_VOIDED";
+
+    /**
+     * WF-05 BE-52: a refund record of the order voided while a claim of it was open - no status moved ({@code from}
+     * and {@code to} null); {@code reason} is the void's. Staff only.
+     */
+    public static OrderStatusChangeResponse refundVoided(String reason, Instant voidedAt, java.util.UUID actorId,
+                                                         String actorName) {
+        return new OrderStatusChangeResponse(REFUND_VOIDED, null, null, reason, voidedAt, actorId, actorName, null,
+                null, null, null);
+    }
 
     /** A status change. */
     public OrderStatusChangeResponse(OrderStatus from, OrderStatus to, String reason, Instant occurredAt,
