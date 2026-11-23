@@ -29,7 +29,9 @@ import java.util.UUID;
  * Records a reduction of a failed delivery that the accountant made on the provider's portal because no provider can
  * send it through this system (WF-05 BE-10, Q-9; decision Q-8: "one command for every case SePay's API cannot do").
  *
- * <p>Two cases, and no other ({@code EINVOICE_EXTERNAL_REDUCTION_NOT_APPLICABLE}):</p>
+ * <p>Two cases of a shipment's invoice, and no other ({@code EINVOICE_EXTERNAL_REDUCTION_NOT_APPLICABLE}) - besides
+ * the shipping fee a rest invoice carries beyond what payment keeps, when no reduction drawn up here can take it off
+ * (confirmation audit CF-4, CF-10; {@code recordRest}):</p>
  * <ul>
  *   <li><b>An original whose own reduction no provider could send</b>, which the accountant voided as
  *       {@code UNSENDABLE_REVERSAL} ({@link EInvoiceDrafts#voidUnsendableReversal}): the original was issued through a
@@ -109,6 +111,9 @@ class EInvoicePortalReductions {
         EInvoice original = invoices.findByIdForUpdate(originalId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_FOUND));
         EInvoice.Snapshot standing = original.snapshot();
+        if (restInvoice(standing)) {
+            return recordRest(original, standing, portal, by);
+        }
         if (!reducible(standing)) {
             throw notApplicable(standing, "it is not an issued invoice of a shipment");
         }
@@ -149,6 +154,67 @@ class EInvoicePortalReductions {
                 new EInvoice.Corrections(!issuedAdjustments.isEmpty(), false, issuedTotal));
         return steps.recordExternalReduction(reduction, series(standing, portal), portal.number(), portal.taxAuthorityCode(),
                 portal.lookupCode(), portal.signedAt(), portal.documents(), by);
+    }
+
+    /**
+     * Confirmation audit CF-4, CF-10: the shipping fee a rest invoice carries beyond what payment keeps now (its share
+     * was waived after it was issued, Q-19), taken off on the provider's portal because no reduction drawn up here can
+     * do it - the rest invoice is a replacement (Q-9), or an original whose reduction the accountant voided as no
+     * provider could send it (an old provider's invoice, HĐ-5). Recorded, it takes off the rest invoice's shipping fee
+     * line by exactly the share {@link EInvoiceDrafts#portalShareOf} gives it - never the plate fees it also carries -
+     * and is counted as a reduction of the rest ({@code shippingFeeReducedOf}): the order's rest is then settled, and it
+     * closes. The rest invoice is not marked reversed: it still invoices its plate fees and the shipping fee kept.
+     * Before, a replaced rest invoice was no rest invoice at all, and an old provider's one was drawn up a reduction
+     * that was voided and drawn up again for ever, the order waiting on it.
+     */
+    private EInvoice.Snapshot recordRest(EInvoice original, EInvoice.Snapshot standing, PortalReduction portal,
+                                         UUID by) {
+        if (portal.basis() != CorrectionBasis.DELIVERY_FAILED || portal.returnRequestId() != null
+                || portal.voidedAdjustmentId() != null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "basis: DELIVERY_FAILED for the shipping fee "
+                    + "waived on an invoice of the rest of an order's fees, with no returnRequestId or "
+                    + "voidedAdjustmentId");
+        }
+        if (unissuedReductionOf(standing)) {
+            throw notApplicable(standing, "a reduction of it is not issued yet - issue it, or void it as unsendable "
+                    + "first");
+        }
+        BigDecimal share = restPortalShare(standing);
+        if (share.signum() <= 0) {
+            throw notApplicable(standing, "none of the shipping fee it carries is waived and left to the portal");
+        }
+        requireSameSeller(standing, portal);
+        EInvoiceLine line = original.lines().stream()
+                .filter(candidate -> candidate.feeKind() == EInvoiceLine.FeeKind.SHIPPING_FEE).findFirst()
+                .orElseThrow(() -> notApplicable(standing, "it carries no shipping fee"));
+        EInvoiceLine off = line.corrected(Identifiers.newId(), 1, -1, null, line.unit(), share, line.taxRate(),
+                line.itemName());
+        EInvoice reduction = EInvoice.recordedReduction(Identifiers.newId(), invoices.nextCode(portal.issueDate()),
+                original, CorrectionBasis.DELIVERY_FAILED, portal.note(), List.of(off), portal.issueDate(), null,
+                invoices.correctionsOf(standing.id()));
+        return steps.recordExternalReduction(reduction, series(standing, portal), portal.number(),
+                portal.taxAuthorityCode(), portal.lookupCode(), portal.signedAt(), portal.documents(), by);
+    }
+
+    /** {@link EInvoiceDrafts#portalShareOf} of the rest invoice as the order's fees stand now; 0 without them. */
+    private BigDecimal restPortalShare(EInvoice.Snapshot rest) {
+        return shipments.orderFees(rest.orderId(), Instant.now())
+                .map(order -> EInvoiceDrafts.portalShareOf(invoices, order, rest.id())).orElse(BigDecimal.ZERO);
+    }
+
+    /** A reduction of a failed delivery - or of a waived fee - naming {@code standing} that is not issued yet. */
+    private boolean unissuedReductionOf(EInvoice.Snapshot standing) {
+        return invoices.findUnissuedCorrectionsOf(standing.id()).stream()
+                .anyMatch(correction -> correction.correctionBasis() == CorrectionBasis.DELIVERY_FAILED);
+    }
+
+    /**
+     * An issued invoice of the rest of an order's fees: it names no shipment, and is the original of the rest or the
+     * replacement in force of it.
+     */
+    private static boolean restInvoice(EInvoice.Snapshot standing) {
+        return standing.status() == EInvoiceStatus.ISSUED && standing.type() != EInvoiceType.ADJUSTMENT
+                && standing.shipmentId() == null && standing.orderId() != null && standing.reversedAt() == null;
     }
 
     /**
@@ -338,6 +404,12 @@ class EInvoicePortalReductions {
      * were not recorded yet. Whether the invoice still holds a return's goods is left to {@link #record}, which says so.
      */
     EInvoiceIssuance.ExternalReductionOptions applicability(EInvoice.Snapshot standing) {
+        if (restInvoice(standing)) {
+            // Confirmation audit CF-4, CF-10: the waived shipping fee of a rest invoice only the portal can take off.
+            boolean waived = !unissuedReductionOf(standing) && restPortalShare(standing).signum() > 0;
+            return waived ? new EInvoiceIssuance.ExternalReductionOptions(true, List.of(), List.of())
+                    : EInvoiceIssuance.ExternalReductionOptions.NONE;
+        }
         if (!reducible(standing) || invoices.findLiveDeliveryFailedReductionOf(standing.id()).isPresent()) {
             return EInvoiceIssuance.ExternalReductionOptions.NONE;
         }

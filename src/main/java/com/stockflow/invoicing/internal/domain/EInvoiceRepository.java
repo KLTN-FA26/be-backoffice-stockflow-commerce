@@ -146,7 +146,12 @@ public interface EInvoiceRepository {
      */
     Optional<EInvoice> findUnissuedShippingFeeInvoice(UUID orderId);
 
-    /** Audit r3 LM-2: the order's issued rest invoices (originals naming no shipment), the latest first. */
+    /**
+     * Audit r3 LM-2: the order's issued rest invoices - invoices naming no shipment, the original of the rest or, once it
+     * was replaced (Q-9), the replacement in force - the latest first. A replaced original is not among them: what
+     * replaced it carries its lines (confirmation audit CF-4: read as originals only, a replaced rest invoice was no
+     * rest invoice at all, and the shipping fee it carries beyond what payment keeps was never taken off).
+     */
     List<EInvoice> findIssuedShippingFeeInvoices(UUID orderId);
 
     /**

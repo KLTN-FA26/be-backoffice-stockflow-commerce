@@ -485,8 +485,10 @@ class EInvoiceIssuanceSteps {
             draft.signatureInvalid();
         }
         EInvoice.Snapshot recorded = invoices.save(draft).snapshot();
+        // A rest invoice (no shipment) loses only its waived shipping fee (confirmation audit CF-4, CF-10): it still
+        // invoices its plate fees and the fee kept, and is not reversed.
         if (reduction.correctionBasis() == com.stockflow.invoicing.internal.domain.CorrectionBasis.DELIVERY_FAILED
-                && original.reversedAt() == null) {
+                && original.reversedAt() == null && original.shipmentId() != null) {
             invoices.markReversed(original.id(), clock.instant());
         }
         announceIssued(recorded);

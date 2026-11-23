@@ -510,7 +510,8 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
     public List<EInvoice> findIssuedShippingFeeInvoices(UUID orderId) {
         return jdbc.queryForList("""
                 SELECT id FROM invoicing.einvoice
-                 WHERE order_id = ? AND shipment_id IS NULL AND type = 'ORIGINAL' AND status = 'ISSUED'
+                 WHERE order_id = ? AND shipment_id IS NULL AND type IN ('ORIGINAL', 'REPLACEMENT')
+                   AND status = 'ISSUED'
                  ORDER BY issued_at DESC NULLS LAST, created_at DESC, id""", UUID.class, orderId).stream()
                 .map(this::findById).flatMap(Optional::stream).toList();
     }

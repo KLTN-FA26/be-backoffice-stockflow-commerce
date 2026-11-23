@@ -365,7 +365,13 @@ public class EInvoiceDrafts {
             EInvoice draft = invoices.findByIdForUpdate(unissued.get().id()).orElseThrow();
             if ((draft.status() != EInvoiceStatus.DRAFT && draft.status() != EInvoiceStatus.REJECTED)
                     || carries(draft, rest)) {
-                return Optional.of(new DrawnUp(draft.snapshot(), false));
+                // Kept as it is; shipping fee issued rest invoices over-carry is taken off them all the same. Before,
+                // an over-carry voided and drew up again a draft that carried just what it should - on every call
+                // while a share waited for the provider's portal (confirmation audit CF-4, CF-10).
+                Optional<EInvoice.Snapshot> reduction = rest.overCarried().signum() > 0
+                        ? reduceRest(order, rests, rest.overCarried(), closedAt) : Optional.empty();
+                return Optional.of(reduction.map(drawn -> new DrawnUp(drawn, true))
+                        .orElseGet(() -> new DrawnUp(draft.snapshot(), false)));
             }
             voidUnissued(draft, "The rest of the order's fees changed since this invoice was drawn up: drawn up again");
             log.info("E-invoice {} of the rest of the fees of order {} voided: the rest changed since it was drawn up",
@@ -436,9 +442,9 @@ public class EInvoiceDrafts {
                 invoiced.goodsValue());
     }
 
-    /** Whether a rest invoice not issued yet carries exactly what {@code rest} draws up, and nothing is over-carried. */
+    /** Whether a rest invoice not issued yet carries exactly what {@code rest} draws up. */
     private static boolean carries(EInvoice draft, FeeRest rest) {
-        if (rest.overCarried().signum() > 0 || shippingOn(draft).compareTo(rest.shipping()) != 0) {
+        if (shippingOn(draft).compareTo(rest.shipping()) != 0) {
             return false;
         }
         Map<String, BigDecimal> onDraft = new HashMap<>();
@@ -452,11 +458,75 @@ public class EInvoiceDrafts {
     }
 
     /**
+     * Of {@code over} - shipping fee the order's issued rest invoices carry beyond what payment keeps - what each rest
+     * invoice takes, the latest first, and whether a reduction drawn up here can take it off or only one made on the
+     * provider's portal (confirmation audit CF-4, CF-10). The one rule {@link #reduceRest} and the portal record
+     * ({@code EInvoicePortalReductions}) both apply, so what the record takes is what the draw-up left to it.
+     *
+     * <ul>
+     *   <li>A rest invoice not issued, without a shipping fee line, or carrying none of it any more takes nothing;</li>
+     *   <li>one with a replacement in progress waits for it (Q-9) and takes nothing now;</li>
+     *   <li>a replacement in force is never adjusted (Q-9; TT 91/2026 Điều 10 khoản 6 điểm a): its share is the
+     *       portal's;</li>
+     *   <li>an original whose reduction of this kind the accountant voided as no provider could send it (an old
+     *       provider's invoice, HĐ-5; or refused for good) is the portal's too - drawn up again, it would only be
+     *       voided again, for ever, with the order waiting on it;</li>
+     *   <li>every other rest invoice is reduced here.</li>
+     * </ul>
+     */
+    static List<RestShare> restShares(EInvoiceRepository invoices, RestInvoices rests, BigDecimal over) {
+        List<RestShare> shares = new ArrayList<>();
+        BigDecimal left = over;
+        for (EInvoice rest : rests.issued()) {
+            if (left.signum() <= 0) {
+                break;
+            }
+            BigDecimal carried = shippingOn(rest).add(rests.reducedOf().getOrDefault(rest.id(), BigDecimal.ZERO));
+            boolean hasLine = rest.lines().stream()
+                    .anyMatch(candidate -> candidate.feeKind() == EInvoiceLine.FeeKind.SHIPPING_FEE);
+            if (rest.status() != EInvoiceStatus.ISSUED || !hasLine || carried.signum() <= 0
+                    || invoices.correctionsOf(rest.id()).liveReplacement()) {
+                continue;
+            }
+            BigDecimal take = left.min(carried);
+            boolean onPortal = rest.type() == EInvoiceType.REPLACEMENT
+                    || invoices.hasVoidedUnsendableReversal(rest.id());
+            shares.add(new RestShare(rest, take, onPortal));
+            left = left.subtract(take);
+        }
+        return shares;
+    }
+
+    /** What rest invoice {@code rest} takes of the over-carry ({@link #restShares}), and where it is taken off. */
+    record RestShare(EInvoice rest, BigDecimal take, boolean onPortal) {
+    }
+
+    /**
+     * What of the shipping fee waived since rest invoice {@code restId} was issued only a reduction made on the
+     * provider's portal can take off it now ({@link #restShares}); 0 when nothing, or when a reduction drawn up here
+     * takes it. What the portal record of a rest invoice takes off - its shipping fee line, by that much, never its
+     * plate fees (confirmation audit CF-4, CF-10).
+     */
+    static BigDecimal portalShareOf(EInvoiceRepository invoices, OrderShippingFee order, UUID restId) {
+        RestInvoices rests = RestInvoices.of(invoices, order.orderId());
+        BigDecimal over = feeRest(order, invoices.invoicedOfOrder(order.orderId()), rests.reduced(), rests.shipping())
+                .overCarried();
+        if (over.signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return restShares(invoices, rests, over).stream()
+                .filter(share -> share.onPortal() && share.rest().id().equals(restId))
+                .map(RestShare::take).findFirst().orElse(BigDecimal.ZERO);
+    }
+
+    /**
      * Takes {@code over} - shipping fee the order's issued rest invoices carry beyond what payment keeps - off them,
-     * the latest first, each by a draft reduction of its shipping fee line ({@code DELIVERY_FAILED}: what it charged
-     * for was not delivered, Q-19), dated the day it is drawn up and re-dated to the day it is issued (Q-1). A rest
-     * invoice being replaced is not adjusted (Q-9): what is left of {@code over} then is told to the accountants, to
-     * settle on the provider's portal.
+     * the latest first ({@link #restShares}), each by a draft reduction of its shipping fee line ({@code
+     * DELIVERY_FAILED}: what it charged for was not delivered, Q-19), dated the day it is drawn up and re-dated to the
+     * day it is issued (Q-1). A share only the provider's portal can take off - a replacement, or an original whose
+     * reduction no provider could send - is told to the accountants ({@code REDUCE_ON_PROVIDER_PORTAL}), and the order
+     * waits until it is recorded ({@code EInvoicePortalReductions}): its rest is still outstanding, as
+     * {@link #feeRestOf} measures it. So is a rest invoice being replaced, waited for.
      *
      * @return the last reduction drawn up; empty when none could be
      */
@@ -467,30 +537,29 @@ public class EInvoiceDrafts {
         LocalDate day = BusinessCalendar.date(on != null ? on : clock.instant());
         BigDecimal left = over;
         Optional<EInvoice.Snapshot> last = Optional.empty();
-        for (EInvoice unlocked : issuedRests) {
-            if (left.signum() <= 0) {
-                break;
-            }
-            EInvoice rest = invoices.findByIdForUpdate(unlocked.id()).orElseThrow();
-            Optional<EInvoiceLine> line = rest.lines().stream()
-                    .filter(candidate -> candidate.feeKind() == EInvoiceLine.FeeKind.SHIPPING_FEE).findFirst();
-            BigDecimal carried = shippingOn(rest).add(rests.reducedOf().getOrDefault(rest.id(), BigDecimal.ZERO));
-            EInvoice.Corrections corrections = invoices.correctionsOf(rest.id());
-            if (rest.status() != EInvoiceStatus.ISSUED || line.isEmpty() || carried.signum() <= 0
-                    || corrections.liveReplacement()) {
+        for (RestShare share : restShares(invoices, rests, over)) {
+            left = left.subtract(share.take());
+            EInvoice rest = invoices.findByIdForUpdate(share.rest().id()).orElseThrow();
+            if (share.onPortal()) {
+                log.warn("Order {}: {} of the shipping fee its rest invoice {} carries is waived and is reduced on the "
+                        + "provider's portal", LogSafe.text(order.orderNumber()), share.take(), LogSafe.text(rest.code()));
+                events.publishEvent(new EInvoiceNeedsAttention(rest.id(), rest.code(), rest.orderId(),
+                        order.orderNumber(), EInvoiceNeedsAttention.Cause.REDUCE_ON_PROVIDER_PORTAL, null,
+                        rest.submittedAt(), rest.issueDueAt()));
                 continue;
             }
-            BigDecimal take = left.min(carried);
-            EInvoiceLine off = line.get().corrected(Identifiers.newId(), 1, -1, null, line.get().unit(), take,
-                    line.get().taxRate(), line.get().itemName());
+            EInvoiceLine line = rest.lines().stream()
+                    .filter(candidate -> candidate.feeKind() == EInvoiceLine.FeeKind.SHIPPING_FEE).findFirst()
+                    .orElseThrow();
+            EInvoiceLine off = line.corrected(Identifiers.newId(), 1, -1, null, line.unit(), share.take(),
+                    line.taxRate(), line.itemName());
             EInvoice adjustment = EInvoice.drawUpAdjustment(Identifiers.newId(), invoices.nextCode(day), rest,
                     CorrectionBasis.DELIVERY_FAILED,
                     t.getString("einvoice.correction.shippingFeeWaived").formatted(order.orderNumber()),
-                    rest.buyer(), List.of(off), day, null, List.of(), corrections);
+                    rest.buyer(), List.of(off), day, null, List.of(), invoices.correctionsOf(rest.id()));
             last = Optional.of(invoices.save(adjustment).snapshot());
-            left = left.subtract(take);
             log.info("E-invoice {}: {} of the shipping fee its rest invoice {} carries is taken off - payment waived "
-                    + "it since", LogSafe.text(last.get().code()), take, LogSafe.text(rest.code()));
+                    + "it since", LogSafe.text(last.get().code()), share.take(), LogSafe.text(rest.code()));
         }
         if (left.signum() > 0) {
             EInvoice standing = issuedRests.isEmpty() ? null : issuedRests.getFirst();

@@ -5,13 +5,18 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.invoicing.internal.domain.CorrectionBasis;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceFixtures;
+import com.stockflow.invoicing.internal.domain.EInvoiceLine;
 import com.stockflow.invoicing.internal.domain.EInvoiceProvider;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
+import com.stockflow.invoicing.internal.domain.FeeAllocation;
 import com.stockflow.order.api.DeliveredShipment;
 import com.stockflow.order.api.DeliveredShipments;
+import com.stockflow.order.api.FeeKind;
+import com.stockflow.order.api.OrderShippingFee;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -20,6 +25,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -94,6 +100,71 @@ class EInvoicePortalReductionOptionsTest {
 
         when(invoices.hasAdjustmentForReturn(ret)).thenReturn(true);
         assertThat(reductions.applicability(replacement.snapshot()).any()).as("recorded once").isFalse();
+    }
+
+    // ---- confirmation audit CF-4, CF-10: the waived shipping fee of a rest invoice --------------------------------
+
+    /**
+     * An issued invoice of the rest of an order's fees: 50,000 of shipping fee, the whole fee waived since (Q-19), and
+     * nothing of it taken off yet. {@code onPortal}: its reduction was voided as no provider could send it.
+     */
+    private EInvoice restWaived(boolean onPortal) {
+        UUID order = UUID.randomUUID();
+        EInvoice rest = EInvoiceFixtures.issued(EInvoice.drawUpOriginal(UUID.randomUUID(), "EINV-20261114-0003",
+                new EInvoice.Delivery(order, "SO-20261112-0009", "HD-20261112-0009", null, null, null,
+                        UUID.randomUUID(), EInvoiceFixtures.CORRECTED_ON), EInvoiceFixtures.SELLER,
+                EInvoiceFixtures.BUYER, List.of(EInvoiceLine.fee(UUID.randomUUID(), 1, EInvoiceLine.FeeKind.SHIPPING_FEE,
+                        null, "Phi van chuyen phan con lai", "Lan", new BigDecimal("50000"), new BigDecimal("10"))),
+                false, false), 4);
+        when(invoices.findById(rest.id())).thenReturn(Optional.of(rest));
+        when(invoices.findByIdForUpdate(rest.id())).thenReturn(Optional.of(rest));
+        when(invoices.findIssuedShippingFeeInvoices(order)).thenReturn(List.of(rest));
+        when(invoices.shippingFeeReducedOf(rest.id())).thenReturn(BigDecimal.ZERO);
+        when(invoices.correctionsOf(any())).thenReturn(EInvoice.Corrections.NONE);
+        when(invoices.hasVoidedUnsendableReversal(rest.id())).thenReturn(onPortal);
+        when(invoices.invoicedOfOrder(order)).thenReturn(new FeeAllocation.Invoiced(0, new BigDecimal("50000"),
+                java.util.Set.of(), BigDecimal.ZERO));
+        when(invoices.nextCode(any())).thenReturn("EINV-20261120-0001");
+        when(shipments.orderFees(eq(order), any())).thenReturn(Optional.of(new OrderShippingFee(order,
+                "SO-20261112-0009", rest.customerId(), "HD-20261112-0009", "VND", new DeliveredShipment.Fee(
+                FeeKind.SHIPPING_FEE, null, new BigDecimal("100000"), new BigDecimal("10"), new BigDecimal("10")), 0,
+                null, List.of(), new com.stockflow.order.api.ShippingFeeWaiver(new BigDecimal("110000"),
+                new BigDecimal("110000")))));
+        return rest;
+    }
+
+    private static EInvoicePortalReductions.PortalReduction waivedOnPortal() {
+        return new EInvoicePortalReductions.PortalReduction("1", "C26TVT", 11, EInvoiceFixtures.CORRECTED_ON.plusDays(5),
+                "M11", "L11", Instant.now(), null, new EInvoiceProvider.Documents(new byte[] {1}, new byte[] {1}),
+                "giam phi van chuyen khong thu", CorrectionBasis.DELIVERY_FAILED, null);
+    }
+
+    @Test
+    @DisplayName("confirmation audit CF-4 / CF-10: a rest invoice whose waived shipping fee only the portal can take off "
+            + "offers DELIVERY_FAILED, and the record takes off its shipping fee line by the waived share - not its "
+            + "plate fees - without reversing it; one a reduction drawn up here takes care of offers nothing")
+    void aRestInvoicesWaivedFeeIsRecordedFromThePortal() {
+        EInvoice inApp = restWaived(false);
+        assertThat(reductions.applicability(inApp.snapshot()).any()).isFalse();
+        BusinessException refused = catchThrowableOfType(BusinessException.class,
+                () -> reductions.record(inApp.id(), waivedOnPortal(), null));
+        assertThat(refused.errorCode()).isEqualTo(ErrorCode.EINVOICE_EXTERNAL_REDUCTION_NOT_APPLICABLE);
+
+        EInvoice rest = restWaived(true);
+        assertThat(reductions.applicability(rest.snapshot()).deliveryFailed()).isTrue();
+        org.mockito.ArgumentCaptor<EInvoice> recorded = org.mockito.ArgumentCaptor.forClass(EInvoice.class);
+        when(steps.recordExternalReduction(recorded.capture(), any(), org.mockito.ArgumentMatchers.anyInt(), any(),
+                any(), any(), any(), any())).thenReturn(null);
+
+        reductions.record(rest.id(), waivedOnPortal(), null);
+
+        EInvoice reduction = recorded.getValue();
+        assertThat(reduction.correctionBasis()).isEqualTo(CorrectionBasis.DELIVERY_FAILED);
+        assertThat(reduction.originalEInvoiceId()).isEqualTo(rest.id());
+        assertThat(reduction.lines()).singleElement().satisfies(line -> {
+            assertThat(line.feeKind()).isEqualTo(EInvoiceLine.FeeKind.SHIPPING_FEE);
+            assertThat(line.amount()).isEqualByComparingTo("-50000");
+        });
     }
 
     /** The return adjustment of two cartons the system drew up on {@code original}, voided by the accountant. */

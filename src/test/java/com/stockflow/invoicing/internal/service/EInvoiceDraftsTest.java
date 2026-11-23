@@ -125,9 +125,10 @@ class EInvoiceDraftsTest {
                         && invoice.type() == EInvoiceType.ORIGINAL
                         && java.util.Set.of(EInvoiceStatus.DRAFT, EInvoiceStatus.REJECTED, EInvoiceStatus.SUBMITTING)
                         .contains(invoice.status())).findFirst());
+        // An original of the rest or what replaced it (confirmation audit CF-4); a replaced one is REPLACED, not ISSUED.
         when(invoices.findIssuedShippingFeeInvoices(any())).thenAnswer(call -> saved.stream()
                 .filter(invoice -> invoice.orderId().equals(call.getArgument(0)) && invoice.shipmentId() == null
-                        && invoice.type() == EInvoiceType.ORIGINAL && invoice.status() == EInvoiceStatus.ISSUED)
+                        && invoice.type() != EInvoiceType.ADJUSTMENT && invoice.status() == EInvoiceStatus.ISSUED)
                 .toList().reversed());
         when(invoices.shippingFeeReducedOf(any())).thenAnswer(call -> saved.stream()
                 .filter(invoice -> call.getArgument(0).equals(invoice.originalEInvoiceId())
@@ -1150,6 +1151,91 @@ class EInvoiceDraftsTest {
         EInvoiceDrafts.DrawnUp waiting = drafts.drawUpShippingFeeRest(ORDER, settledAt).orElseThrow();
         assertThat(waiting.created()).isFalse();
         assertThat(waiting.invoice().id()).isEqualTo(redrawn.id());
+    }
+
+    /**
+     * LM-2's start: batch 1 (1,000 of 2,000 pieces) delivered and invoiced with the plate fee, the rest closed and its
+     * invoice issued with the other 50,000 of the shipping fee; then batch 1 undone and brought back, the whole fee
+     * waived. Returns the issued rest invoice and the fees after.
+     */
+    private EInvoice restIssuedThenWaived(Instant settledAt) {
+        EInvoice.Snapshot batchOne = drawUp(shipment(UUID.randomUUID(), 20, 0, 2000, DELIVERED_AT));
+        issue(batchOne.id(), 1);
+        Instant closedAt = DELIVERED_AT.plus(java.time.Duration.ofDays(2));
+        when(shipments.orderFees(ORDER, closedAt)).thenReturn(Optional.of(feesWaiving(1000, "0")));
+        EInvoice.Snapshot rest = drafts.drawUpShippingFeeRest(ORDER, closedAt).orElseThrow().invoice();
+        issue(rest.id(), 2);
+        reversed.add(batchOne.id());
+        when(shipments.orderFees(ORDER, settledAt)).thenReturn(Optional.of(feesWaiving(0, "110000")));
+        return saved.stream().filter(invoice -> invoice.id().equals(rest.id())).findFirst().orElseThrow();
+    }
+
+    private void verifyPortalNotice(UUID invoiceId) {
+        verify(events, org.mockito.Mockito.atLeastOnce()).publishEvent(argThat((Object e) ->
+                e instanceof EInvoiceNeedsAttention attention
+                        && attention.cause() == EInvoiceNeedsAttention.Cause.REDUCE_ON_PROVIDER_PORTAL
+                        && attention.einvoiceId().equals(invoiceId)));
+    }
+
+    @Test
+    @DisplayName("confirmation audit CF-4: the issued rest invoice was replaced before the delivery was undone - the "
+            + "replacement is the rest invoice: not adjusted (Q-9), its waived 50,000 left to the provider's portal "
+            + "with a notice, and the order waits for that record instead of closing with the fee still billed")
+    void aReplacedRestInvoicesWaivedFeeIsLeftToThePortal() {
+        Instant settledAt = DELIVERED_AT.plus(java.time.Duration.ofDays(5));
+        EInvoice original = restIssuedThenWaived(settledAt);
+        EInvoice replacement = EInvoice.drawUpReplacement(UUID.randomUUID(), "EINV-20261117-0009", original,
+                "Sai ten nguoi mua", original.buyer(), List.of(EInvoiceLine.fee(UUID.randomUUID(), 1,
+                        EInvoiceLine.FeeKind.SHIPPING_FEE, null, "Phi van chuyen phan con lai", "Lan",
+                        new BigDecimal("50000"), TEN)), LocalDate.of(2026, 11, 15), EInvoice.Corrections.NONE);
+        replacement.attachAgreement("einvoices/2026/11/15/agreement.pdf", "BB-03/2026", LocalDate.of(2026, 11, 15),
+                LocalDate.of(2026, 11, 15));
+        saved.add(replacement);
+        issue(replacement.id(), 3);
+        original.replaced();
+        OrderShippingFee after = feesWaiving(0, "110000");
+
+        drafts.drawUpShippingFeeRest(ORDER, settledAt);
+
+        assertThat(saved).as("a replacement is never adjusted").noneMatch(invoice -> invoice.type()
+                == EInvoiceType.ADJUSTMENT);
+        verifyPortalNotice(replacement.id());
+        assertThat(EInvoiceDrafts.feeRestOf(invoices, after).outstanding()).as("the order waits for the record")
+                .isTrue();
+        assertThat(EInvoiceDrafts.portalShareOf(invoices, after, replacement.id())).isEqualByComparingTo("50000");
+        assertThat(EInvoiceDrafts.portalShareOf(invoices, after, original.id())).isZero();
+
+        // A draw-up again keeps the plate fee's rest draft as it is: nothing voided and drawn up again.
+        int count = saved.size();
+        drafts.drawUpShippingFeeRest(ORDER, settledAt);
+        assertThat(saved).hasSize(count).noneMatch(invoice -> invoice.status() == EInvoiceStatus.VOIDED_DRAFT);
+    }
+
+    @Test
+    @DisplayName("confirmation audit CF-10: the rest invoice came from a provider no longer usable - its reduction, "
+            + "voided as unsendable, is not drawn up again; the waived 50,000 is the portal's and the order waits "
+            + "for it")
+    void aRestReductionVoidedAsUnsendableIsNotDrawnUpAgain() {
+        Instant settledAt = DELIVERED_AT.plus(java.time.Duration.ofDays(5));
+        EInvoice rest = restIssuedThenWaived(settledAt);
+        OrderShippingFee after = feesWaiving(0, "110000");
+        drafts.drawUpShippingFeeRest(ORDER, settledAt);
+        EInvoice reduction = saved.stream().filter(invoice -> rest.id().equals(invoice.originalEInvoiceId()))
+                .findFirst().orElseThrow();
+        assertThat(EInvoiceDrafts.portalShareOf(invoices, after, rest.id())).as("drawn up here").isZero();
+
+        // The accountant voids it: no provider can send it (EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE).
+        reduction.voidDraft("SePay khong nhan hoa don cua nha cung cap cu", EInvoice.VoidReasonCode.UNSENDABLE_REVERSAL,
+                UUID.randomUUID(), settledAt);
+        when(invoices.hasVoidedUnsendableReversal(rest.id())).thenReturn(true);
+        int count = saved.size();
+
+        drafts.drawUpShippingFeeRest(ORDER, settledAt);
+
+        assertThat(saved).as("not drawn up again, to be voided again").hasSize(count);
+        verifyPortalNotice(rest.id());
+        assertThat(EInvoiceDrafts.feeRestOf(invoices, after).outstanding()).isTrue();
+        assertThat(EInvoiceDrafts.portalShareOf(invoices, after, rest.id())).isEqualByComparingTo("50000");
     }
 
     // ---- WF-05 BE-25 (V8): the manual issue makes the automatic issue's checks ------------------------------------

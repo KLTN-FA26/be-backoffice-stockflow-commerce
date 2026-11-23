@@ -796,7 +796,9 @@ public class EInvoiceIssuance {
      * Records a reduction the accountant made on the provider's portal (WF-05 BE-10, Q-9; decision Q-8; F-13): the
      * failed delivery of an original whose own reduction no provider could send (voided {@code UNSENDABLE_REVERSAL}),
      * or of a replacement, which no provider adjusts. It is recorded as an issued adjustment taking off what the
-     * invoice still invoices, {@code issued_via} PORTAL_RECORD ({@link EInvoicePortalReductions#record}).
+     * invoice still invoices, {@code issued_via} PORTAL_RECORD ({@link EInvoicePortalReductions#record}). On an invoice
+     * of the rest of an order's fees - a replacement, or an original whose reduction no provider could send - it takes
+     * off only the shipping fee waived since it was issued (confirmation audit CF-4, CF-10).
      *
      * <p>The XML is required: it is the invoice in law (Q-8: "number and files"), and what was typed is held against it
      * - template, symbol, number, date, the tax authority's code ({@code EINVOICE_PORTAL_FILE_INVALID}). Made on the
