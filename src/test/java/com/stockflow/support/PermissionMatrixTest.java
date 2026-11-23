@@ -464,6 +464,19 @@ class PermissionMatrixTest {
             Map.entry("inventory-stock-adjustments:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
                     Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
             Map.entry("inventory-stock-adjustments:APPROVE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // V20261222000100 (owner, 2026-11-23): the Accountant views and prints the 01-VT voucher of a return
+            // receipt - the chief accountant signs it and accounting books returned goods from it - but never writes
+            // a receipt: counting, confirming and cancelling stay the warehouse's.
+            Map.entry("procurement-goods-receipts:VIEW_PAGE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("procurement-goods-receipts:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("procurement-goods-receipts:CREATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("procurement-goods-receipts:UPDATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("procurement-return-receipt-approvals:APPROVE", Set.of(Role.WAREHOUSE_MANAGER,
+                    Role.SYSTEM_ADMIN)),
             // V20261209000300 (permission review 2026-11-20, A2; kltn-docs 20 §3): the lot trace report is the
             // warehouse's, Sales' (customer care) and the coordinator's; the ledger itself stays the warehouse's.
             Map.entry("inventory-lot-traces:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,

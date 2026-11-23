@@ -1,5 +1,6 @@
 package com.stockflow.procurement.internal.service;
 
+import com.stockflow.common.document.DocumentFormats;
 import com.stockflow.common.document.DocumentParts;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -50,8 +51,9 @@ import java.util.function.Function;
  * finds no such return. Only a confirmed receipt has a voucher: a draft has put nothing into stock, and a voucher for it would be a
  * paper for goods the books do not hold (409).</p>
  *
- * <p>One line per SKU: "by the documents" is what the cartons' labels say, "actually received" what was counted in
- * them, so a carton opened and short shows as a difference on its line. Units that came back with no carton label are
+ * <p>One line per SKU: "by the documents" is what the cartons' labels say, "actually received" what went into
+ * stock - the count of the cartons stocked (WF-05 Q-18): a carton opened or emptied on its way back is counted on the
+ * receipt and destroyed, so it shows as a difference on its line with its count in the note. Units that came back with no carton label are
  * a line of their own with nothing received - they are recorded and destroyed, never stocked. The unit cost is left
  * blank: this module does not hold what the goods left stock at, and the form's total is then left for the accountant
  * to write.</p>
@@ -191,8 +193,12 @@ public class ReturnReceiptPaperService {
         List<ReturnGoodsReceiptDocument.Line> lines = new ArrayList<>();
         bySku.forEach((sku, cartons) -> {
             long labelled = cartons.stream().mapToLong(ReturnReceiptService.CartonView::quantity).sum();
-            long counted = cartons.stream().mapToLong(ReturnReceiptService.CartonView::countedQuantity).sum();
-            long opened = cartons.stream().filter(ReturnReceiptService.CartonView::opened).count();
+            // "Thực nhập" is what went into stock (WF-05 Q-18, BE-20): a carton opened or emptied on its way back is
+            // counted on the receipt and destroyed, never stocked, so its count is a note and not a received unit.
+            long stocked = cartons.stream().filter(ReturnReceiptService.CartonView::stockEntered)
+                    .mapToLong(ReturnReceiptService.CartonView::countedQuantity).sum();
+            List<ReturnReceiptService.CartonView> notStocked = cartons.stream()
+                    .filter(carton -> !carton.stockEntered()).toList();
             Set<String> lots = new LinkedHashSet<>();
             cartons.stream().map(ReturnReceiptService.CartonView::lotNumber).filter(DocumentParts::filled)
                     .forEach(lots::add);
@@ -201,16 +207,20 @@ public class ReturnReceiptPaperService {
             if (!lots.isEmpty()) {
                 notes.add(t.getString("return-papers.lot").formatted(String.join(", ", lots)));
             }
-            if (opened > 0) {
-                notes.add(t.getString("return-papers.opened").formatted(opened));
+            if (!notStocked.isEmpty()) {
+                notes.add(t.getString("return-papers.notStocked").formatted(notStocked.size(),
+                        DocumentFormats.number(notStocked.stream()
+                                .mapToLong(ReturnReceiptService.CartonView::countedQuantity).sum())));
             }
-            lines.add(new ReturnGoodsReceiptDocument.Line(name.apply(sku), sku, unit, labelled, counted, null,
+            lines.add(new ReturnGoodsReceiptDocument.Line(name.apply(sku), sku, unit, labelled, stocked, null,
                     String.join("; ", notes)));
         });
         for (ReturnReceiptService.LooseLineView loose : receipt.looseLines()) {
+            // Loose units are photographed on the receipt (Q-18, BE-43): the photo is the evidence the voucher refers
+            // to, kept with the receipt, since the units themselves are destroyed.
             lines.add(new ReturnGoodsReceiptDocument.Line(name.apply(loose.sku()), loose.sku(), unit,
-                    loose.quantity(), 0, null,
-                    t.getString("return-papers.loose")));
+                    loose.quantity(), 0, null, loose.photoId() == null ? t.getString("return-papers.loose")
+                    : t.getString("return-papers.loose") + "; " + t.getString("return-papers.loosePhoto")));
         }
         return lines;
     }

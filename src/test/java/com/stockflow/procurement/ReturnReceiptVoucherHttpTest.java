@@ -38,7 +38,9 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -65,6 +67,7 @@ class ReturnReceiptVoucherHttpTest {
     private SecuredMvc http;
     private UUID staff;
     private UUID staffElsewhere;
+    private UUID accountant;
     private UUID portalUser;
     private UUID strangerUser;
     private UUID customer;
@@ -77,6 +80,7 @@ class ReturnReceiptVoucherHttpTest {
         http = new SecuredMvc(mockMvc, decoder);
         staff = tx.execute(s -> ReferenceRows.user(entityManager));
         staffElsewhere = tx.execute(s -> ReferenceRows.user(entityManager));
+        accountant = tx.execute(s -> ReferenceRows.user(entityManager));
         portalUser = tx.execute(s -> ReferenceRows.user(entityManager));
         strangerUser = tx.execute(s -> ReferenceRows.user(entityManager));
         // A clerk acts on the receipts of the warehouses they are assigned to (BR-SEC-002).
@@ -142,6 +146,56 @@ class ReturnReceiptVoucherHttpTest {
         http.asRole(Role.WAREHOUSE_STAFF, staff, get("/api/v1/goods-receipts/returns/" + UUID.randomUUID()
                         + "/voucher")).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("GOODS_RECEIPT_NOT_FOUND"));
+    }
+
+    @Test
+    @DisplayName("WF-05 Q-18: \"actually received\" counts only the cartons that went into stock - a carton opened on "
+            + "its way back is counted on the receipt, destroyed and named in the note, never received")
+    void anOpenedCartonIsNotReceivedIntoStock() throws Exception {
+        UUID manager = tx.execute(s -> ReferenceRows.user(entityManager));
+        String opened = shipped.lpns().getLast();
+        asHcmStaff(() -> receipts.removeCarton(draft.id(), opened));
+        asHcmStaff(() -> receipts.scan(draft.id(), opened, "torn open", 400, staff));
+        asHcmStaff(() -> receipts.confirm(draft.id(), manager, true));
+
+        byte[] pdf = http.asRole(Role.WAREHOUSE_STAFF, staff,
+                        get("/api/v1/goods-receipts/returns/" + draft.id() + "/voucher"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        String text = DocumentSamples.text(DocumentSamples.keep("wired-return-goods-receipt-opened", pdf));
+        assertThat(text).as("by the labels 2,000; into stock the sealed carton's 1,000")
+                .contains("2.000", "1.000", "1 thùng bị mở hoặc rỗng khi hoàn về: đếm được 400, hủy, không nhập kho");
+    }
+
+    @Test
+    @DisplayName("owner 2026-11-23: the Accountant - who signs the 01-VT and books returned goods from it - views and "
+            + "prints the voucher and reads the receipt, assigned to no warehouse; every write to a receipt is 403")
+    void theAccountantPrintsTheVoucherButWritesNoReceipt() throws Exception {
+        String receipt = "/api/v1/goods-receipts/returns/" + draft.id();
+        ReturnReceiptView confirmed = asHcmStaff(() -> receipts.confirm(draft.id(), staff));
+
+        MockHttpServletResponse answer = http.asRole(Role.ACCOUNTANT, accountant, get(receipt + "/voucher"))
+                .andExpect(status().isOk()).andExpect(content().contentType(MediaType.APPLICATION_PDF))
+                .andReturn().getResponse();
+        assertThat(DocumentSamples.text(answer.getContentAsByteArray())).contains("PHIẾU NHẬP KHO",
+                "Số: " + draft.number());
+        http.asRole(Role.ACCOUNTANT, accountant, get(receipt)).andExpect(status().isOk());
+        http.asRole(Role.ACCOUNTANT, accountant, get("/api/v1/goods-receipts/returns")).andExpect(status().isOk());
+
+        String lpn = shipped.lpns().getFirst();
+        http.asRole(Role.ACCOUNTANT, accountant, post("/api/v1/goods-receipts/returns")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"shipmentId\":\"" + shipped.shipmentId() + "\",\"quarantineLocationCode\":\""
+                                + QUARANTINE + "\"}"))
+                .andExpect(status().isForbidden());
+        http.asRole(Role.ACCOUNTANT, accountant, post(receipt + "/cartons").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"lpn\":\"" + lpn + "\"}")).andExpect(status().isForbidden());
+        http.asRole(Role.ACCOUNTANT, accountant, delete(receipt + "/cartons/" + lpn)).andExpect(status().isForbidden());
+        http.asRole(Role.ACCOUNTANT, accountant, delete(receipt + "/loose-lines/" + UUID.randomUUID()))
+                .andExpect(status().isForbidden());
+        http.asRole(Role.ACCOUNTANT, accountant, post(receipt + "/confirmation")).andExpect(status().isForbidden());
+        http.asRole(Role.ACCOUNTANT, accountant, post(receipt + "/cancellation")).andExpect(status().isForbidden());
+        assertThat(asHcmStaff(() -> receipts.get(draft.id())).status()).as("untouched")
+                .isEqualTo(confirmed.status());
     }
 
     @Test
