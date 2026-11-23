@@ -37,7 +37,7 @@ class PaymentDocumentsTest {
                                 "Đợt 2/3 - Thanh toán trước khi giao hàng", new BigDecimal("25000000"),
                                 LocalDate.of(2026, 11, 23),
                                 Instant.parse("2026-11-23T03:20:00Z"), "FT26327000789", new BigDecimal("58320000"),
-                                new BigDecimal("42496000"), "Phạm Thu Hà")));
+                                BigDecimal.ZERO, new BigDecimal("42496000"), "Phạm Thu Hà")));
 
         assertThat(DocumentSamples.pages(pdf)).isEqualTo(1);
         assertThat(DocumentSamples.within(pdf, 20, 15)).as("inside the margins").isTrue();

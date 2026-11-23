@@ -324,7 +324,7 @@ class ReturnsRound2IntegrationTest {
 
     @Test
     @DisplayName("H1: goods of a return that refunded units are the company's - released as any quarantined carton; "
-            + "the custody choice is refused for them, by the application and the schema")
+            + "the custody choice is refused for them - none is held for the customer - by the application and the schema")
     void refundedGoodsAreTheCompanys() {
         Delivered d = delivered(1);
         ReturnRequest request = approved(d, 50);
@@ -339,7 +339,9 @@ class ReturnsRound2IntegrationTest {
                 null, null, sales.userId())))).isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
         assertThat(inDatabase("UPDATE ordering.return_request SET custody_choice = 'SEND_BACK', custody_choice_by = ?, "
                 + "custody_choice_at = NOW() WHERE id = ?", sales.userId(), request.id()))
-                .as("ck_return_request_custody_choice").hasMessageContaining("ck_return_request_custody_choice");
+                // Audit r3 RAD-1: a REFUNDED return may hold cartons for the customer, so the schema asks for a held
+                // carton (tg_return_request_custody_held) rather than for "no unit refunded".
+                .as("tg_return_request_custody_held").hasMessageContaining("no carton of it is held for the customer");
     }
 
     // ---- M1 ---------------------------------------------------------------------------------------------------------

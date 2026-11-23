@@ -121,8 +121,10 @@ public class ReturnReceiptService {
      * it ({@code countedQuantity}, recorded by {@code countedBy}); {@code opened} when fewer than its label.
      * {@code stockEntered} (WF-05 Q-18): whether it goes - or went - back into stock; false for an opened or empty one,
      * whose result is "destroyed" (true on receipts confirmed before, which stocked every carton).
-     * {@code heldForCustomer} (WF-05 Q-4): the carton entered stock, but its return refunded nothing, so the stock-in
-     * was reversed and the goods are the customer's, held for them - not stock, whatever {@code stockEntered} says.
+     * {@code heldForCustomer} (WF-05 Q-4): the carton entered stock on this receipt, but its return's refund did not
+     * take it back - refunded nothing of its SKU, or not this carton (audit r3 RAD-1) - so this return reversed the
+     * stock-in and the goods are the customer's, held for them: not stock, whatever {@code stockEntered} says. Read from
+     * that reversal in the ledger, so a later return of the same carton never changes this receipt (RAD-5).
      */
     public record CartonView(String lpn, String sku, String lotNumber, int quantity, String condition, UUID scannedBy,
                              Instant scannedAt, int countedQuantity, boolean opened, boolean stockEntered,
@@ -714,9 +716,11 @@ public class ReturnReceiptService {
                     .filter(c -> request.map(r -> r.approvedOf(c.sku()) > 0).orElse(false)).toList();
         }
         Set<String> scanned = receipt.cartons().stream().map(ReturnReceipt.Carton::lpn).collect(Collectors.toSet());
-        // One read for every carton of the receipt (WF-05 Q-4): those whose return refunded nothing.
+        // One read for every carton of the receipt (WF-05 Q-4): those whose stock-in this receipt's return reversed -
+        // from the ledger, never from the carton's ownership now, which a later return of the same carton overwrites
+        // (audit r3 RAD-5: the 01-VT of the first receipt would turn to "giữ hộ" when the carton was refused later).
         Set<String> customers = receipt.status() == GoodsReceiptStatus.CLOSED && receipt.returnRequestId() != null
-                && !scanned.isEmpty() ? cartonReturns.customersGoods(scanned) : Set.of();
+                && !scanned.isEmpty() ? cartonReturns.reversedBy(receipt.returnRequestId(), scanned) : Set.of();
         String orderNumber = orders.findById(receipt.orderId()).map(OrderSummary::orderNumber).orElse(null);
         String areaCode = warehouses.findLocation(receipt.quarantineLocationId())
                 .map(StorageLocationView::locationCode).orElse(null);

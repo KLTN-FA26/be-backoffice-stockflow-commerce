@@ -151,6 +151,7 @@ WITH reviewed(col, why) AS (
     ('fulfillment.delivery_outcome_import_row.shipment_code', 'text from an uploaded file; an unmatched row is the point'),
     ('fulfillment.delivery_outcome_import_row.carrier_code', 'text from an uploaded file; an unmatched row is the point'),
     ('customer.customer_legal_profile.bank_account_number', 'the customer''s bank account at its bank, free text'),
+    ('payment.refund_record.payee_account_number', 'snapshot of the account a refund was paid to, free text (audit r3 RAD-6)'),
     ('invoicing.einvoice.agreement_number', 'the number the two parties gave their written agreement, free text'),
     ('invoicing.einvoice.contract_number', 'copy printed on the invoice, which reaches its order by a keyed id; an issued invoice never changes'),
     ('invoicing.einvoice.order_number', 'copy printed on the invoice, which reaches its order by a keyed id; an issued invoice never changes'),

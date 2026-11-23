@@ -57,15 +57,32 @@ public record ReturnRequestResponse(
         @Schema(description = "Whether a parcel of it is being counted on a DRAFT return receipt now (WF-05 BE-23): "
                 + "goods-complete, refund proposal and approval answer 409 RETURN_RECEIPT_DRAFT_OPEN meanwhile")
         boolean receiptDraftOpen,
-        @Schema(description = "What the customer chose for goods held for them after a return that refunded nothing "
-                + "(WF-05 Q-4), as Sales recorded it: SEND_BACK or DESTROY_ON_BEHALF; null until recorded. Sales "
-                + "record it with POST /returns/{id}/custody-choice once outcome is REFUSED or NOTHING_TO_REFUND",
+        @Schema(description = "What the customer chose for the cartons of the return held for them (WF-05 Q-4), as "
+                + "Sales recorded it: SEND_BACK or DESTROY_ON_BEHALF; null until recorded. Sales record it with POST "
+                + "/returns/{id}/custody-choice once the return is RESOLVED and custodyCartons holds a CUSTOMER_HELD "
+                + "carton - also when outcome is REFUNDED: since audit r3 (RAD-1) cartons are settled per SKU, so a "
+                + "refused SKU's cartons, or whole cartons beyond the units refunded, stay the customer's",
                 allowableValues = {"SEND_BACK", "DESTROY_ON_BEHALF"})
         String custodyChoice,
         @Schema(description = "The record the choice rests on (the customer's written consent to a destruction)")
         String custodyChoiceNote,
         UUID custodyChoiceBy,
-        Instant custodyChoiceAt) implements ReturnView {
+        Instant custodyChoiceAt,
+        @Schema(description = "The cartons of the return held for the customer or whose custody ended (WF-05 Q-4), by "
+                + "LPN: what custodyChoice is about. Filled on GET /returns/{id} and on the custody-choice answer; null "
+                + "in other answers (not read), empty when none is held")
+        List<HeldCarton> custodyCartons) implements ReturnView {
+
+    /**
+     * A carton of the return held for the customer (WF-05 Q-4): {@code ownership} CUSTOMER_HELD while it waits,
+     * CUSTOMER_SENT_BACK / CUSTOMER_DESTROYED once the warehouse manager carried the choice out.
+     */
+    public record HeldCarton(String lpn, String sku, int quantity, String locationCode,
+                             @Schema(allowableValues = {"CUSTOMER_HELD", "CUSTOMER_SENT_BACK", "CUSTOMER_DESTROYED"})
+                             String ownership,
+                             @Schema(description = "The choice carried to the carton; null until recorded")
+                             String choice, Instant heldAt, Instant endedAt) {
+    }
 
     /** Sales' decision; {@code returnDeadline}: the goods must arrive by then, or the return expires. */
     public record Review(UUID decidedBy, Instant decidedAt, String note, String rejectionReason, Boolean returnRequired,
@@ -119,9 +136,26 @@ public record ReturnRequestResponse(
 
     /**
      * What a CUSTODY photo shows (WF-05 Q-11): goods that came back and are kept for the customer - not in stock, not
-     * refunded. Who took them in is the photo's {@code uploadedBy}, when its {@code uploadedAt}.
+     * refunded. Who took them in is the photo's {@code uploadedBy}, when its {@code uploadedAt}. {@code outcome}: how
+     * they end (audit r3 RAD-3) - null until Sales record the customer's choice.
      */
-    public record Custody(String sku, String lpn, int quantity, String note) {
+    public record Custody(String sku, String lpn, int quantity, String note, CustodyOutcome outcome) {
+    }
+
+    /**
+     * How the goods of a custody note end (WF-05 Q-11 hỏi thêm; audit r3 RAD-3): the customer's choice as Sales recorded
+     * it (POST /returns/{id}/custody/{evidenceId}/choice) and, once the warehouse manager carried it out (POST
+     * /returns/{id}/custody/{evidenceId}/end), who, when and the record of it.
+     */
+    public record CustodyOutcome(
+            @Schema(allowableValues = {"SEND_BACK", "DESTROY_ON_BEHALF", "TAKEN_BY_RETURN"}) String choice,
+            @Schema(description = "The record the choice rests on: the customer's written consent to a destruction")
+            String choiceNote,
+            @Schema(description = "TAKEN_BY_RETURN: the supplementary return that takes the goods") UUID takenByReturnId,
+            String takenByRmaNumber, UUID chosenBy, Instant chosenAt,
+            @Schema(description = "When the goods left as chosen; null while they are kept") Instant endedAt,
+            UUID endedBy,
+            @Schema(description = "The record of the ending: hand-over note, destruction record, receipt") String endedNote) {
     }
 
     public record Discrepancy(UUID id, UUID lineId, @Schema(example = "SHORT") String kind, String sku, int quantity,

@@ -18,6 +18,9 @@ public interface ReturnRequestRepository {
      */
     Optional<UUID> orderOf(UUID returnId);
 
+    /** By id, the RMA numbers of those of the returns that exist. */
+    java.util.Map<UUID, String> rmaNumbers(java.util.Collection<UUID> returnIds);
+
     /**
      * The request, its row locked until the caller's transaction ends, read as it is now. Callers lock the order
      * first, then the request - the order every return path takes them in.

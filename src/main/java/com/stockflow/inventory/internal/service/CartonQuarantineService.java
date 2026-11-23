@@ -162,13 +162,16 @@ public class CartonQuarantineService {
                     + "fewer units than its label and is never sold again; write it off").formatted(carton.lpn()),
                     List.of(), Map.of("lpn", carton.lpn()));
         }
-        if (ownership.of(carton.id()).filter(owned -> owned == ReturnedCartonOwnership.Ownership.PENDING)
-                .isPresent()) {
-            // WF-05 Q-4 (H1): the return it came back on has not decided its refund. Refunded nothing, the goods are
-            // the customer's and leave the books; released now, they would be sold back to the customer who owns them.
+        Optional<ReturnedCartonOwnership.Owned> waiting = ownership.owned(carton.id())
+                .filter(owned -> owned.ownership() == ReturnedCartonOwnership.Ownership.PENDING);
+        if (waiting.isPresent()) {
+            // WF-05 Q-4 (H1): the return it came back on has not decided its refund. Not refunded, the goods are the
+            // customer's and leave the books; released now, they would be sold back to the customer who owns them.
+            // The details name the return (audit r3 RAD-4), so the screen says what the carton waits for.
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_DECISION_PENDING, ("%s came back on a return whose "
                     + "refund is not decided yet: it is released once the refund makes it the company's")
-                    .formatted(carton.lpn()), List.of(), Map.of("lpn", carton.lpn(), "returnOwnership", "PENDING"));
+                    .formatted(carton.lpn()), List.of(), Map.of("lpn", carton.lpn(), "returnOwnership", "PENDING",
+                    "returnRequestId", waiting.get().returnRequestId()));
         }
         if (adjustments.findPendingForPackage(carton.id()).isPresent()) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_DECISION_PENDING,

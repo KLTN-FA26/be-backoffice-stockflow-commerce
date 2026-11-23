@@ -40,7 +40,8 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
 
     private static final String RECORD_COLUMNS = """
             id, order_id, customer_id, order_number, amount, currency, refunded_on, reference, note, status, recorded_by,
-            recorded_at, voided_by, voided_at, void_reason""";
+            recorded_at, voided_by, voided_at, void_reason, payee_account_number, payee_bank_name,
+            payee_account_holder""";
 
     private final NamedParameterJdbcTemplate jdbc;
 
@@ -161,14 +162,16 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
             rs.getObject(2, UUID.class), rs.getObject(3, UUID.class), rs.getString(4), rs.getBigDecimal(5),
             rs.getString(6), rs.getObject(7, java.time.LocalDate.class), rs.getString(8), rs.getString(9),
             RefundRecord.Status.valueOf(rs.getString(10)), rs.getObject(11, UUID.class), instant(rs.getTimestamp(12)),
-            rs.getObject(13, UUID.class), instant(rs.getTimestamp(14)), rs.getString(15));
+            rs.getObject(13, UUID.class), instant(rs.getTimestamp(14)), rs.getString(15),
+            RefundRecord.PayeeAccount.of(rs.getString(16), rs.getString(17), rs.getString(18)));
 
     @Override
     public RefundRecord record(RefundRecord r) {
         jdbc.update("INSERT INTO payment.refund_record (" + RECORD_COLUMNS + """
                         , version, created_at, created_by)
                         VALUES (:id, :order, :customer, :orderNumber, :amount, :currency, :refundedOn, :reference,
-                                :note, :status, :by, :at, NULL, NULL, NULL, 0, NOW(), :createdBy)""",
+                                :note, :status, :by, :at, NULL, NULL, NULL, :payeeNumber, :payeeBank,
+                                :payeeHolder, 0, NOW(), :createdBy)""",
                 new MapSqlParameterSource("id", r.id())
                         .addValue("order", r.orderId())
                         .addValue("customer", r.customerId())
@@ -181,6 +184,12 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
                         .addValue("status", r.status().name())
                         .addValue("by", r.recordedBy())
                         .addValue("at", utc(r.recordedAt()))
+                        .addValue("payeeNumber", r.payeeAccount() == null ? null
+                                : r.payeeAccount().accountNumber(), java.sql.Types.VARCHAR)
+                        .addValue("payeeBank", r.payeeAccount() == null ? null : r.payeeAccount().bankName(),
+                                java.sql.Types.VARCHAR)
+                        .addValue("payeeHolder", r.payeeAccount() == null ? null
+                                : r.payeeAccount().accountHolder(), java.sql.Types.VARCHAR)
                         .addValue("createdBy", r.recordedBy().toString()));
         return r;
     }

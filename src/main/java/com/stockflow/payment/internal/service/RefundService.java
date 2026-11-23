@@ -75,9 +75,12 @@ public class RefundService {
     private final InstallmentOrders orders;
     private final ApplicationEventPublisher events;
     private final Clock clock;
+    private final com.stockflow.customer.api.CustomerLegalProfiles legalProfiles;
 
     RefundService(SettlementBook book, com.stockflow.payment.internal.domain.InstallmentBook installments,
-                  RefundSearch search, InstallmentOrders orders, ApplicationEventPublisher events, Clock clock) {
+                  RefundSearch search, InstallmentOrders orders, ApplicationEventPublisher events, Clock clock,
+                  com.stockflow.customer.api.CustomerLegalProfiles legalProfiles) {
+        this.legalProfiles = legalProfiles;
         this.book = book;
         this.installments = installments;
         this.search = search;
@@ -98,9 +101,15 @@ public class RefundService {
                 .orElseThrow(() -> orderNotFound(command.orderId()));
         Instant now = clock.instant();
         LocalDate today = LocalDate.ofInstant(now, InstallmentService.BUSINESS_ZONE);
+        // Audit r3 RAD-6: the account the money went to, as the customer's profile names it now - kept with the
+        // record, so its confirmation never prints an account the customer changed to later.
+        RefundRecord.PayeeAccount payee = legalProfiles.legalProfile(order.customerId())
+                .map(com.stockflow.customer.api.CustomerLegalProfile::bankAccount)
+                .map(bank -> RefundRecord.PayeeAccount.of(bank.accountNumber(), bank.bankName(), bank.accountHolder()))
+                .orElse(null);
         RefundRecord record = RefundRecord.record(order.orderId(), order.customerId(), order.orderNumber(),
                 command.amount(), order.currency(), command.refundedOn(), command.reference(), command.note(),
-                command.recordedBy(), now, today);
+                command.recordedBy(), now, today, payee);
         RefundStanding standing = standingOf(order.orderId());
         if (record.amount().compareTo(standing.remaining()) > 0) {
             throw new BusinessException(ErrorCode.REFUND_EXCEEDS_REFUNDABLE, ("Order %s has %s %s still to refund, "

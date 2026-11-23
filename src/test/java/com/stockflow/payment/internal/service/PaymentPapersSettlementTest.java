@@ -97,7 +97,7 @@ class PaymentPapersSettlementTest {
     void eachReductionLandsInItsOwnPeriod() {
         when(ledger.charges(CUSTOMER)).thenReturn(List.of(new CustomerLedgerQuery.Charge(day(10, 5), "SO-1", "HD-1",
                 2, "Sau giao hàng", "AFTER_DELIVERY", new BigDecimal("70000000"), new BigDecimal("50000000"),
-                new BigDecimal("20000000"), day(11, 4))));
+                new BigDecimal("20000000"), day(11, 4), false)));
         when(ledger.reductions(CUSTOMER)).thenReturn(List.of(new CustomerLedgerQuery.Reduction(day(11, 10),
                 "GOODS_RETURNED", "SO-1", "HD-1", null, 2, new BigDecimal("50000000"))));
         when(ledger.settlements(CUSTOMER)).thenReturn(List.of(new CustomerLedgerQuery.Settlement(day(11, 10),
@@ -123,7 +123,7 @@ class PaymentPapersSettlementTest {
     void aLostShipmentIsWordedAsLostOnTheReconciliation() {
         when(ledger.charges(CUSTOMER)).thenReturn(List.of(new CustomerLedgerQuery.Charge(day(11, 1), "SO-1", "HD-1",
                 2, "Sau giao hàng", "AFTER_DELIVERY", new BigDecimal("1000"), new BigDecimal("300"),
-                new BigDecimal("700"), day(12, 1))));
+                new BigDecimal("700"), day(12, 1), false)));
         when(ledger.reductions(CUSTOMER)).thenReturn(List.of(
                 new CustomerLedgerQuery.Reduction(day(11, 5), "SHIPMENT_RETURNED", "SO-1", "HD-1", LOST, 2,
                         new BigDecimal("200")),
@@ -143,6 +143,29 @@ class PaymentPapersSettlementTest {
         assertThat(facts.entries()).extracting(DebtReconciliationDocument.Entry::description)
                 .containsExactly(T.getString("payment-papers.debt.charge").formatted(2, "Sau giao hàng", "SO-1"),
                         lost, lost, back, T.getString("payment-papers.debt.closed").formatted("SO-1"));
+    }
+
+    @Test
+    @DisplayName("audit r3 (with r3a): goods money a closure moved onto its fee item is worded as goods money, the fee "
+            + "as a fee, and a receipt paying that item as the closure's amount - never all of it as a cancellation fee")
+    void goodsMoneyCarriedOntoAFeeItemIsNotAFee() {
+        when(ledger.charges(CUSTOMER)).thenReturn(List.of(new CustomerLedgerQuery.Charge(day(11, 10), "SO-1", "HD-1",
+                3, "Phí", "CANCELLATION_FEE", new BigDecimal("1000"), BigDecimal.ZERO, new BigDecimal("1000"),
+                day(11, 20), false, new BigDecimal("700"))));
+        when(ledger.receipts(CUSTOMER)).thenReturn(List.of(new CustomerLedgerQuery.Receipt(day(11, 15), "FT-9",
+                "HD-1", 3, true, new BigDecimal("1000"), true)));
+
+        DebtReconciliationDocument.Facts facts = reconcile(day(11, 1), day(11, 30));
+
+        assertThat(facts.entries()).extracting(DebtReconciliationDocument.Entry::description, e -> e.debit()
+                .add(e.credit()).stripTrailingZeros().toPlainString()).containsExactly(
+                org.assertj.core.groups.Tuple.tuple(T.getString("payment-papers.debt.carriedToFee").formatted("SO-1"),
+                        "700"),
+                org.assertj.core.groups.Tuple.tuple(T.getString("payment-papers.debt.fee").formatted(
+                        T.getString("payment-papers.fee.CANCELLATION_FEE"), "SO-1"), "300"),
+                org.assertj.core.groups.Tuple.tuple(T.getString("payment-papers.debt.receiptCarried")
+                        .formatted("HD-1"), "1000"));
+        assertThat(closing(facts)).isEqualByComparingTo("0");
     }
 
     @Test

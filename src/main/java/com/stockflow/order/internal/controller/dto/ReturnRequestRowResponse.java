@@ -30,5 +30,12 @@ public record ReturnRequestRowResponse(UUID id, String rmaNumber, UUID orderId, 
                                                + "and goods-complete, refund proposal and approval answer 409 "
                                                + "RETURN_RECEIPT_DRAFT_OPEN, until the warehouse confirms or "
                                                + "cancels that receipt")
-                                       boolean receiptDraftOpen) {
+                                       boolean receiptDraftOpen,
+                                       @Schema(description = "Why units that came back were not refunded (WF-05 "
+                                               + "Q-4): the fixed reason code of the ReturnRefusalReason list, the "
+                                               + "same the detail carries. On the customer's own list only once the "
+                                               + "return is RESOLVED, and never the internal note; null when nothing "
+                                               + "was withheld for a reason",
+                                               example = "CUSTOMER_DAMAGE")
+                                       String refusalReason) {
 }

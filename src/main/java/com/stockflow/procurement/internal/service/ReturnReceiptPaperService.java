@@ -60,10 +60,12 @@ import java.util.function.Function;
  *
  * <p>"Actually received" is the ledger's quantity of each stocked carton - its label, the units the RECEIPT line put
  * into stock (audit round 2 L7: receipts of before V20261218000400 stocked opened cartons at their label, and a printed
- * count would disagree with the books). A carton whose return then refunded nothing is not received at all (WF-05 Q-4:
- * "không có bút toán nhập kho vì không có thoả thuận trả hàng"): its stock-in was reversed and the goods are the
- * customer's, held for them, so it is 0 with a note saying so - the voucher printed before the decision is superseded by
- * this one.</p>
+ * count would disagree with the books). A carton the return's refund then did not take back - nothing of its SKU
+ * refunded, or the refund ran out before it (audit round 3, RAD-1) - is not received at all (WF-05 Q-4: "không có bút
+ * toán nhập kho vì không có thoả thuận trả hàng"): this return reversed its stock-in and the goods are the customer's,
+ * held for them, so it is 0 with a note saying so - the voucher printed before the decision is superseded by this one.
+ * Which cartons those are is read from that reversal in the ledger (RAD-5), so the carton coming back again later, on
+ * another return, changes nothing printed here.</p>
  */
 @Service
 public class ReturnReceiptPaperService {
