@@ -45,11 +45,15 @@ import java.util.UUID;
  * is. {@code tg_order_completion_hold_respected} states the rule once more in the database.</p>
  *
  * <p><b>Every edge that finalises the order respects it</b> (WF-05 Q-17 = a, BE-05): completion, closing - also from
- * the refund branch - and PARTIALLY_FULFILLED → PARTIALLY_REFUNDED, after which a delivery of the order could no longer
- * be corrected. So a hold may be placed on any order that is not final yet and has a delivery to dispute: a REFUNDED or
- * PARTIALLY_REFUNDED order is still corrected (BE-46) and still to be closed. An order with nothing delivered has
- * nothing to verify, and the hold is refused there ("nothing new"). A held order is never cancelled: an order with a
- * delivered shipment has no edge to CANCELLED, so no hold is left open on a cancelled order.</p>
+ * the refund branch - and every entry into the refund branch, PARTIALLY_FULFILLED or RETURNED → PARTIALLY_REFUNDED or
+ * REFUNDED, by the carrier's path ({@code DeliveryFailureService.followRefunds}) and a customer's return's
+ * ({@code ReturnRequestService.followReturns}) alike (audit r2 L-1, audit r3 LM-1). So a hold may be placed on any
+ * order that is not final yet and has a delivery to dispute: a REFUNDED or PARTIALLY_REFUNDED order is still corrected
+ * (BE-46) and still to be closed. An order with nothing delivered has nothing to verify, and the hold is refused there
+ * ("nothing new"). A hold placed while a delivery stood stays when that delivery is then corrected to a failure and
+ * the goods come back: the order waits RETURNED, COMPLETION_HELD among its blockers, until Sales release it - the hold
+ * is their decision, never lifted by the system. A held order is never cancelled: an order with a delivered shipment
+ * has no edge to CANCELLED, so no hold is left open on a cancelled order.</p>
  */
 @Service
 public class OrderCompletionHolds {

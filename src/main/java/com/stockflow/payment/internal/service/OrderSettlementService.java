@@ -75,6 +75,8 @@ public class OrderSettlementService {
      * {@link com.stockflow.payment.api.PaymentService#settleRemainderClosure}. A closure that leaves an order whose
      * shipments came back with nothing delivered waives what they left of the shipping fee (Q-19 edge, owner
      * 2026-11-23; {@link OrderSettlement#shippingFeeShare}, the one rule for every waiver); any other waives nothing.
+     * What the installments before delivery of the batches it closed whole still owe is carried onto its fee item
+     * (audit r3 LM-3, {@code deliveringBatches}).
      */
     public Optional<OrderSettlementResult> settleRemainderClosure(SettleRemainderClosureCommand command) {
         Optional<OrderSettlement> done = settlements.find(OrderSettlement.Kind.REMAINDER_CLOSED, command.closureId());
@@ -93,12 +95,13 @@ public class OrderSettlementService {
                 settlements.ofOrder(command.orderId()), null);
         OrderSettlement.Outcome outcome = OrderSettlement.closeRemainder(ofOrder, command.closureId(),
                 command.closedAmount(), fee, command.closedBy(), command.closedAt(), day(command.closedAt()),
-                command.handedOverBatches(), waived);
+                command.handedOverBatches(), waived, command.deliveringBatches());
         OrderSettlement settlement = save(outcome);
-        log.info("Order {}: rest closed, {} {} worth, shipping fee waived {}; {} taken off {} installment(s), fee {} "
-                        + "({} of it owed), {} to refund", settlement.orderNumber(), settlement.closed(),
-                settlement.currency(), settlement.shippingFeeWaived(), settlement.reduced(),
-                settlement.reductions().size(), settlement.fee(), settlement.feeOwed(), settlement.refundable());
+        log.info("Order {}: rest closed, {} {} worth, shipping fee waived {}; {} taken off {} installment(s), {} of it "
+                        + "carried onto the fee item from the batches closed; fee {} ({} of it owed), {} to refund",
+                settlement.orderNumber(), settlement.closed(), settlement.currency(), settlement.shippingFeeWaived(),
+                settlement.reduced(), settlement.reductions().size(), settlement.carriedToFee(), settlement.fee(),
+                settlement.feeOwed(), settlement.refundable());
         return Optional.of(toResult(settlement));
     }
 

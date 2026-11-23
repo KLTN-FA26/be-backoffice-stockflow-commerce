@@ -41,7 +41,9 @@ import java.util.UUID;
  * <ul>
  *   <li>ON_SIGNING: due from the signature, by the day signed plus its days.</li>
  *   <li>BEFORE_DELIVERY: due when the order is released to be shipped ({@code OrderReleased}); no due day - it blocks
- *       the handover until paid (BR-08), which the order module reads through {@link InstallmentStanding}.</li>
+ *       the handover until paid (BR-08), which the order module reads through {@link InstallmentStanding}. One tied to
+ *       a batch a closure of the rest closed whole is never released: what it still owes is carried onto the closure's
+ *       fee item, due from the closure's day (audit r3 LM-3, {@code OrderSettlement.closeRemainder}).</li>
  *   <li>AFTER_DELIVERY: due when the order is delivered in full - the last delivery, or the rest closed after it (15
  *       D23) - by that day plus its days (BR-09): the customer's receivable.</li>
  * </ul>

@@ -53,6 +53,12 @@ public record OrderRefundResponse(UUID orderId, @Schema(example = "SO-20261108-0
                                      + "shipment's goods of the order's goods, or all that is left of it when the order "
                                      + "ends with nothing delivered; REMAINDER_CLOSED: what the shipments brought back "
                                      + "left of it, when the closure ends the order with nothing delivered; 0 otherwise")
-                             BigDecimal shippingFeeWaived) {
+                             BigDecimal shippingFeeWaived,
+                             @Schema(description = "REMAINDER_CLOSED: what the installments paid before delivery of "
+                                     + "the batches the closure closed whole still owed above the goods closed - their "
+                                     + "share of the plate and shipping fees - moved onto the closure's fee item "
+                                     + "(feeItemId), due from the closure's day (audit r3 LM-3). Part of reduced; owed "
+                                     + "on the fee item beside feeOwed. 0 otherwise")
+                             BigDecimal carriedToFee) {
     }
 }

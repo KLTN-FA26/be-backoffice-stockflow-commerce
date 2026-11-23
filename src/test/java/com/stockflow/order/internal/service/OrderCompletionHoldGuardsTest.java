@@ -234,6 +234,73 @@ class OrderCompletionHoldGuardsTest {
         assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
     }
 
+    @Test
+    @DisplayName("audit r3 LM-1: held while its deliveries stood, both corrected to failures and brought back - the "
+            + "order is RETURNED with nothing delivered and its refund recorded, a fee kept: it waits RETURNED, quietly "
+            + "(never reaching the hold trigger), and goes PARTIALLY_REFUNDED once released")
+    void heldOrderBroughtBackWholeWaitsForTheRelease() {
+        Order order = shipped();
+        order.recordShipmentDelivered(S1, day(1), STAFF);
+        order.recordShipmentDelivered(S2, day(1), STAFF);
+        assertThat(order.completionHoldable()).as("GH-2: Sales may hold it now").isTrue();
+        for (UUID shipment : List.of(S1, S2)) {
+            order.correctShipmentToFailed(shipment, DeliveryFailureReason.CUSTOMER_ABSENT, null, day(2), STAFF);
+            order.recordShipmentReturned(shipment, day(3), STAFF);
+            order.closeReturnedShipment(shipment, day(4), day(4), STAFF);
+        }
+        order.pullDomainEvents();
+        order.pullTransitions();
+        assertThat(order.status()).isEqualTo(OrderStatus.RETURNED);
+        assertThat(order.endedByCarrier()).isTrue();
+        assertThat(order.statusBeforeReturn()).as("no claim: the trigger's exemption does not apply").isNull();
+        found(order);
+        UUID id = order.id().value();
+        when(candidates.completionHeld(id)).thenReturn(true);
+        // 800,000 paid, the plate fee kept: 600,000 refundable, all of it refunded.
+        when(payments.refundProgress(id)).thenReturn(new RefundProgress(new java.math.BigDecimal("600000"),
+                new java.math.BigDecimal("600000")));
+        when(payments.installmentStanding(id)).thenReturn(new InstallmentStanding(id, true, true,
+                java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO, new java.math.BigDecimal("800000"),
+                new java.math.BigDecimal("800000"), null));
+
+        assertThat(failures(day(5)).followRefunds(id, STAFF)).as("held: the refund event and the night pass it by")
+                .isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.RETURNED);
+        assertThat(order.pullTransitions()).isEmpty();
+        verify(repository, never()).save(any());
+
+        when(candidates.completionHeld(id)).thenReturn(false);
+        assertThat(failures(day(6)).followRefunds(id, STAFF)).isTrue();
+        assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
+    }
+
+    @Test
+    @DisplayName("audit r3 LM-1: a held whole carrier return refunded in full waits too - REFUNDED is an entry into the "
+            + "refund branch as PARTIALLY_REFUNDED is, by both paths")
+    void heldOrderRefundedInFullWaitsToo() {
+        Order order = shipped();
+        for (UUID shipment : List.of(S1, S2)) {
+            order.recordShipmentDeliveryFailed(shipment, DeliveryFailureReason.REFUSED, null, day(1), STAFF);
+            order.recordShipmentReturned(shipment, day(2), STAFF);
+            order.closeReturnedShipment(shipment, day(3), day(3), STAFF);
+        }
+        found(order);
+        UUID id = order.id().value();
+        when(candidates.completionHeld(id)).thenReturn(true);
+        when(payments.refundProgress(id)).thenReturn(new RefundProgress(new java.math.BigDecimal("800000"),
+                new java.math.BigDecimal("800000")));
+        when(payments.installmentStanding(id)).thenReturn(new InstallmentStanding(id, true, true,
+                java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO,
+                new java.math.BigDecimal("800000"), null));
+
+        assertThat(failures(day(4)).followRefunds(id, STAFF)).isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.RETURNED);
+
+        when(candidates.completionHeld(id)).thenReturn(false);
+        assertThat(failures(day(5)).followRefunds(id, STAFF)).isTrue();
+        assertThat(order.status()).isEqualTo(OrderStatus.REFUNDED);
+    }
+
     private DeliveryFailureService failures(Instant now) {
         DeliveryFailureCases cases = mock(DeliveryFailureCases.class);
         when(cases.ofOrder(any())).thenReturn(List.of());

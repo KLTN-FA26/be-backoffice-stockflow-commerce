@@ -421,6 +421,11 @@ public class DeliveryFailureService {
      * request after a cancelled delivery failure left it DELIVERED, and the return request moves it
      * ({@code ReturnRequestService.followRefunds}) once it is decided - not this, while it may still be open.</p>
      *
+     * <p><b>Held, nothing moves</b> (WF-05 Q-17; audit r3 LM-1): whatever the order's status, while Sales hold its
+     * completion it waits here, quietly, and the release looks again. Before, only a PARTIALLY_FULFILLED order waited;
+     * a RETURNED one went on and met {@code tg_order_completion_hold_respected}, which rolled back the refund listener,
+     * the nightly step and the return receipt's own transaction alike.</p>
+     *
      * @return whether the order moved
      */
     public boolean followRefunds(UUID orderId, UUID by) {
@@ -436,10 +441,17 @@ public class DeliveryFailureService {
         if (!order.endedByCarrier()) {
             return false;
         }
-        boolean part = order.status() == OrderStatus.PARTIALLY_FULFILLED;
-        // WF-05 Q-17 (BE-05, L-I3): Sales hold the completion while a delivery of the order is verified - after
-        // PARTIALLY_REFUNDED it could no longer be corrected. The order stays; the night after the release moves it.
-        if (part && candidates.completionHeld(orderId)) {
+        // WF-05 Q-17 (BE-05, L-I3): Sales hold the completion while a delivery of the order is verified, and a held
+        // order goes into the refund branch by no path - from PARTIALLY_FULFILLED or from RETURNED, to REFUNDED or to
+        // PARTIALLY_REFUNDED - as a customer's return's path refuses it too (ReturnRequestService.followReturns). The
+        // order stays; releasing the hold follows it on (OrderCompletionHolds.release), and so does the nightly run.
+        // Audit r3 LM-1: this was asked of PARTIALLY_FULFILLED only, while tg_order_completion_hold_respected refuses
+        // RETURNED -> PARTIALLY_REFUNDED as well. A held order the carrier brought back whole - its one delivery
+        // corrected to a failure, then returned - came here RETURNED, moved, and every refund event and every night
+        // failed on the trigger, the receipt's own transaction included. One rule for both statuses now, the
+        // database's (V20261224000100 states it for REFUNDED too). The hold is not lifted here: it is a decision Sales
+        // made with a reason (Q-17), and the order shows COMPLETION_HELD among its blockers until they release it.
+        if (candidates.completionHeld(orderId)) {
             log.info("Order {}: its completion is held; it stays {} until the hold is released", order.orderNumber(),
                     order.status());
             return false;

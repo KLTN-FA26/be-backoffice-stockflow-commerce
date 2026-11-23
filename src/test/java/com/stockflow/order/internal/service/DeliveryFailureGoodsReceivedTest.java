@@ -260,6 +260,44 @@ class DeliveryFailureGoodsReceivedTest {
         verify(orderService, never()).closeUndelivered(any(), any(), any(), any(), any());
     }
 
+    @Test
+    @DisplayName("audit r3 LM-1, the receipt's own transaction: held while S1 stood delivered, S2's refund settled "
+            + "earlier, S1 corrected to a failure and brought back - its receipt closes and settles S1 and the order, "
+            + "RETURNED, waits for the release instead of moving (the hold trigger rolled the receipt back)")
+    void aHeldOrderIsNotMovedByTheReceipt() {
+        SettlementCandidates held = mock(SettlementCandidates.class);
+        DeliveryFailureService guarded = new DeliveryFailureService(orders, cases, orderService,
+                mock(ShippingWarehouseService.class), payments, mock(OrderEventPublisher.class),
+                mock(org.springframework.context.ApplicationEventPublisher.class), held,
+                Clock.fixed(CLOCK, ZoneOffset.UTC));
+        Order order = partlyReturned();
+        order.closeReturnedShipment(S2, day(3), day(3), STAFF);
+        order.correctShipmentToFailed(S1, DeliveryFailureReason.CUSTOMER_ABSENT, null, day(3), STAFF);
+        order.recordShipmentReturned(S1, day(4), STAFF);
+        order.pullDomainEvents();
+        order.pullTransitions();
+        UUID id = order.id().value();
+        when(held.completionHeld(id)).thenReturn(true);
+        when(cases.ofOrder(id)).thenReturn(List.of());
+        // What S2's closure made refundable was refunded before; S1's settlement makes nothing new refundable.
+        when(payments.refundProgress(id)).thenReturn(new com.stockflow.payment.api.RefundProgress(
+                new java.math.BigDecimal("200000"), new java.math.BigDecimal("200000")));
+        when(payments.installmentStanding(id)).thenReturn(new com.stockflow.payment.api.InstallmentStanding(id, true,
+                true, java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO, new java.math.BigDecimal("300000"),
+                new java.math.BigDecimal("300000"), null));
+
+        guarded.goodsReceived(new ReturnedGoodsReceived(UUID.randomUUID(), "RR-S1", UUID.randomUUID(), id,
+                order.orderNumber().value(), order.customerId(), S1, null, "Q-01",
+                List.of(new ReturnedGoodsReceived.Carton("LPN-9", "CUP-12OZ", "L1", 10, null)), STAFF, day(5),
+                List.of(), List.of()));
+
+        verify(orderService).settleShipmentClosure(eq(order), any(), eq(SettleShipmentReturnCommand.Cause.CARRIER_RETURN),
+                any(), eq(STAFF), eq(CLOCK));
+        assertThat(order.status()).isEqualTo(com.stockflow.order.api.OrderStatus.RETURNED);
+        assertThat(order.pullTransitions()).isEmpty();
+        verify(orders, never()).save(any());
+    }
+
     private static OrderShipment copy(OrderShipment s) {
         return new OrderShipment(s.id(), s.quantities(), s.amount(), s.handedOverAt(), s.handedOverBy(), s.status(),
                 s.outcomeAt(), s.outcomeBy(), s.failureReason(), s.failureNote(), s.carriage())
