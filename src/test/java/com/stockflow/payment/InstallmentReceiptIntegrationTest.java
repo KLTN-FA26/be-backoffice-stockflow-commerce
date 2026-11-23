@@ -84,6 +84,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         "stockflow.notification.email.customer.enabled=false"})
 class InstallmentReceiptIntegrationTest {
 
+    /**
+     * Order numbers of its own: a seven-digit band no other test draws from. A random pick in 600,000..699,998
+     * collided with ProductionOrderDispatchFixtures, which counts up from 600,000 on the same day in the same database.
+     */
+    private static final java.util.concurrent.atomic.AtomicLong ORDER_NUMBERS =
+            new java.util.concurrent.atomic.AtomicLong(1_600_000 + ThreadLocalRandom.current().nextInt(50_000) * 10L);
+
     private static final ZoneId VIETNAM = ZoneId.of("Asia/Ho_Chi_Minh");
     private static final Duration ASYNC = Duration.ofSeconds(15);
     /** A generous approved credit line: paying after delivery fits it, so signing holds nothing for credit. */
@@ -154,7 +161,7 @@ class InstallmentReceiptIntegrationTest {
         return tx.execute(s -> {
             OrderLine line = Order.line(Identifiers.newId(), new Sku(sku.sku()), 1000, Money.vnd(2_000), null)
                     .withCartons(sku.uomConversionId(), 20, 50).withTax(BigDecimal.TEN);
-            Order order = Order.draft(OrderNumber.of(today, 600_000 + ThreadLocalRandom.current().nextInt(99_999)),
+            Order order = Order.draft(OrderNumber.of(today, ORDER_NUMBERS.incrementAndGet()),
                     customerId, Identifiers.newId(), List.of(line), Instant.now());
             return orderRepository.save(order).id().value();
         });
