@@ -460,6 +460,20 @@ class CustomerEInvoicePortalIntegrationTest {
         http.asRole(Role.ACCOUNTANT, accountant, get("/api/v1/einvoices/" + invoice.id())).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.watchUntil").value(newer.toString()))
                 .andExpect(jsonPath("$.data.watchFoundAt").doesNotExist());
+
+        // Confirmation audit CF-9: the older watch then finds the provider holding t-old. The newer watch is still
+        // asking, and the duplicate is shown all the same.
+        Instant found = Instant.parse("2026-11-20T03:00:00Z");
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE invoicing.einvoice_transaction_watch SET found_at = ?, found_number = 41
+                 WHERE einvoice_id = ? AND transaction_id = 't-old'""", java.sql.Timestamp.from(found), invoice.id()));
+        assertThat(queries.watch(invoice)).hasValueSatisfying(watch -> {
+            assertThat(watch.transactionId()).isEqualTo("t-new");
+            assertThat(watch.watchUntil()).isEqualTo(newer);
+            assertThat(watch.foundAt()).isEqualTo(found);
+        });
+        http.asRole(Role.ACCOUNTANT, accountant, get("/api/v1/einvoices/" + invoice.id())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.watchFoundAt").value(found.toString()));
     }
 
     @Test

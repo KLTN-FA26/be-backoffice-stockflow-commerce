@@ -65,8 +65,10 @@ import java.util.UUID;
  *
  * <p>Audit r3 EINV-3 (decision §4.4 HĐ-1 step 3: "sau khi rút có dòng 'đang tra lại tới ngày ...'"): {@code watchUntil}
  * - until when the invoice's latest transaction let go (withdrawn, or refused on the provider's processing report
- * alone) is asked about again, daily, in case the provider issued it after all; {@code watchFoundAt} - when it was
- * found issued after all (the accountants were told, {@code DUPLICATE_RISK}). Both null when no transaction of it was
+ * alone) is asked about again, daily, in case the provider issued it after all; {@code watchFoundAt} - when a
+ * transaction of it let go, this one or an earlier one, was found issued after all (the accountants were told, {@code
+ * DUPLICATE_RISK}; confirmation audit CF-9: an earlier one found is not hidden by a later one still watched). Both
+ * null when no transaction of it was
  * let go. They stay on the invoice after it is reopened and sent again: the old transaction is watched all the
  * same.</p>
  */

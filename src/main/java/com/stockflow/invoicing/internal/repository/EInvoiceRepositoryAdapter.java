@@ -620,10 +620,15 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
 
     @Override
     public Optional<TransactionWatch> latestWatchOf(UUID einvoiceId) {
+        // The latest watch, but found_at of any (confirmation audit CF-9): an older transaction the provider turned out to
+        // hold is a duplicate risk whatever was sent after it, and the latest watch still asking hid it.
         return jdbc.query("""
-                SELECT transaction_id, let_go_as, watch_until, found_at FROM invoicing.einvoice_transaction_watch
-                 WHERE einvoice_id = ?
-                 ORDER BY created_at DESC, watch_until DESC LIMIT 1""",
+                SELECT w.transaction_id, w.let_go_as, w.watch_until,
+                       (SELECT max(f.found_at) FROM invoicing.einvoice_transaction_watch f
+                         WHERE f.einvoice_id = w.einvoice_id) AS found_at
+                  FROM invoicing.einvoice_transaction_watch w
+                 WHERE w.einvoice_id = ?
+                 ORDER BY w.created_at DESC, w.watch_until DESC LIMIT 1""",
                 (row, n) -> new TransactionWatch(row.getString("transaction_id"), row.getString("let_go_as"),
                         row.getTimestamp("watch_until").toInstant(),
                         row.getTimestamp("found_at") == null ? null : row.getTimestamp("found_at").toInstant()),

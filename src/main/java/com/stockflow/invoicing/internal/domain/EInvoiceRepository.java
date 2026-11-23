@@ -336,7 +336,11 @@ public interface EInvoiceRepository {
     record TransactionWatch(String transactionId, String letGoAs, Instant watchUntil, Instant foundAt) {
     }
 
-    /** {@link TransactionWatch} of the transaction of the invoice let go last; empty when none was. */
+    /**
+     * {@link TransactionWatch} of the transaction of the invoice let go last, its {@code foundAt} the latest time any
+     * watch of the invoice found the provider holding its transaction (confirmation audit CF-9: a watch found after a
+     * later one began is still a duplicate to settle); empty when none was let go.
+     */
     java.util.Optional<TransactionWatch> latestWatchOf(UUID einvoiceId);
 
     /** Up to {@code limit} watched transactions still to ask about now, not asked since {@code askedBefore}. */
