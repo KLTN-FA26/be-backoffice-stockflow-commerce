@@ -145,6 +145,59 @@ class ReturnRequestController {
                 body.uploadId(), user.userId()), own == null));
     }
 
+    // -------------------------------------------------------------- custody (WF-05 Q-11), staff only
+
+    @PostMapping(value = "/returns/{returnId}/custody", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Record goods kept in custody for the customer (WF-05 Q-11): goods that came back and that no "
+            + "return receipt takes - a SKU the return did not approve (409 RETURN_CARTON_NOT_CLAIMED on the receipt), "
+            + "more than approved, a parcel after the claim was settled or refused. A photo, the SKU or the LPN, how "
+            + "many, a note; whatever the return's status. Not stock, not refunded, no invoice adjusted")
+    @RequiresPermission(resource = OrderResources.RMAS, action = Action.CREATE, scope = DataScope.ALL)
+    public ApiResponse<ReturnView> addCustody(@PathVariable UUID returnId, @RequestPart("file") MultipartFile file,
+                                              @RequestParam(required = false) String sku,
+                                              @RequestParam(required = false) String lpn,
+                                              @RequestParam int quantity,
+                                              @RequestParam(required = false) String note,
+                                              @AuthenticatedUser CurrentUser user) throws IOException {
+        ReturnEvidence.Custody custody = custody(sku, lpn, quantity, note);
+        try (InputStream content = file.getInputStream()) {
+            FileUpload upload = new FileUpload(file.getOriginalFilename() == null ? "photo" : file.getOriginalFilename(),
+                    file.getContentType(), file.getSize(), content);
+            return ApiResponse.ok(view(returns.addEvidence(returnId, null, ReturnEvidence.Stage.CUSTODY, custody,
+                    upload, user.userId()), true));
+        }
+    }
+
+    @PostMapping(value = "/returns/{returnId}/custody/uploads", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Step one of a custody photo uploaded straight to storage (WF-05 Q-11); then name its uploadId "
+            + "in POST /returns/{id}/custody")
+    @RequiresPermission(resource = OrderResources.RMAS, action = Action.CREATE, scope = DataScope.ALL)
+    public ResponseEntity<ApiResponse<UploadSlot>> beginCustodyUpload(@PathVariable UUID returnId,
+            @Valid @RequestBody UploadSlotRequest request, @AuthenticatedUser CurrentUser user) {
+        return slot(returns.beginEvidenceUpload(returnId, null, ReturnEvidence.Stage.CUSTODY, request,
+                user.userId()));
+    }
+
+    @PostMapping(value = "/returns/{returnId}/custody", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Keep a custody note whose photo was uploaded through /custody/uploads (WF-05 Q-11)")
+    @RequiresPermission(resource = OrderResources.RMAS, action = Action.CREATE, scope = DataScope.ALL)
+    public ApiResponse<ReturnView> addUploadedCustody(@PathVariable UUID returnId,
+            @Valid @RequestBody ReturnRequests.Custody body, @AuthenticatedUser CurrentUser user) {
+        ReturnEvidence.Custody custody = custody(body.sku(), body.lpn(), body.quantity(), body.note());
+        return ApiResponse.ok(view(returns.addUploadedEvidence(returnId, null, ReturnEvidence.Stage.CUSTODY, custody,
+                body.uploadId(), user.userId()), true));
+    }
+
+    private static ReturnEvidence.Custody custody(String sku, String lpn, int quantity, String note) {
+        try {
+            return new ReturnEvidence.Custody(sku, lpn, quantity, note);
+        } catch (IllegalArgumentException invalid) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, invalid.getMessage());
+        }
+    }
+
     /** A slot carries a signed URL: a credential, never cached. */
     private static ResponseEntity<ApiResponse<UploadSlot>> slot(UploadSlot slot) {
         return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore()).body(ApiResponse.ok(slot));

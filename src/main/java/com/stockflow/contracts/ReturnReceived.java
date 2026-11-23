@@ -33,11 +33,20 @@ public record ReturnReceived(
         UUID receivedBy,
         Instant receivedAt,
         Integer parcel,
-        String status
+        String status,
+        String receiptNumber
 ) {
 
     public ReturnReceived {
         lines = lines == null ? List.of() : List.copyOf(lines);
+    }
+
+    /** As published before the receipt's number was carried (WF-05 BE-24). */
+    public ReturnReceived(UUID returnRequestId, String rmaNumber, UUID orderId, String orderNumber, UUID customerId,
+                          String locationCode, List<Line> lines, boolean discrepancy, UUID receivedBy,
+                          Instant receivedAt, Integer parcel, String status) {
+        this(returnRequestId, rmaNumber, orderId, orderNumber, customerId, locationCode, lines, discrepancy,
+                receivedBy, receivedAt, parcel, status, null);
     }
 
     /** As published before the return's status was carried (WF-05 BE-24). */
@@ -45,7 +54,7 @@ public record ReturnReceived(
                           String locationCode, List<Line> lines, boolean discrepancy, UUID receivedBy,
                           Instant receivedAt, Integer parcel) {
         this(returnRequestId, rmaNumber, orderId, orderNumber, customerId, locationCode, lines, discrepancy,
-                receivedBy, receivedAt, parcel, null);
+                receivedBy, receivedAt, parcel, null, null);
     }
 
     /** One parcel, as published before a return took several (null {@code parcel} reads as the first). */
@@ -53,7 +62,7 @@ public record ReturnReceived(
                           String locationCode, List<Line> lines, boolean discrepancy, UUID receivedBy,
                           Instant receivedAt) {
         this(returnRequestId, rmaNumber, orderId, orderNumber, customerId, locationCode, lines, discrepancy,
-                receivedBy, receivedAt, null, null);
+                receivedBy, receivedAt, null, null, null);
     }
 
     /** Which parcel of the return this was: 1 for the first; a B2B customer may ship the goods in several. */

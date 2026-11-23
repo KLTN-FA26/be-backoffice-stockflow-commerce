@@ -41,7 +41,22 @@ public record ReturnRequestResponse(
         List<Evidence> evidence,
         List<Discrepancy> discrepancies,
         List<HistoryEntry> history,
-        long version) implements ReturnView {
+        long version,
+        @Schema(description = "How a RESOLVED return ended (WF-05 Q-4): REFUNDED (units refunded), REFUSED (goods came "
+                + "back usable and none was refunded, for refusalReason) or NOTHING_TO_REFUND (nothing approved came "
+                + "back usable); null before RESOLVED", allowableValues = {"REFUNDED", "REFUSED", "NOTHING_TO_REFUND"})
+        String outcome,
+        @Schema(description = "Why units that came back are withheld, on a proposal or a resolution: CUSTOMER_DAMAGE, "
+                + "NOT_DEFECTIVE, OUT_OF_POLICY or OTHER; null when nothing is")
+        String refusalReason,
+        @Schema(description = "The note the customer reads beside refusalReason")
+        String refusalNote,
+        @Schema(description = "Whether a return receipt may be opened for it now (WF-05 Q-11): approved and its refund "
+                + "not settled")
+        boolean receiptOpenable,
+        @Schema(description = "Whether a parcel of it is being counted on a DRAFT return receipt now (WF-05 BE-23): "
+                + "goods-complete, refund proposal and approval answer 409 RETURN_RECEIPT_DRAFT_OPEN meanwhile")
+        boolean receiptDraftOpen) implements ReturnView {
 
     /** Sales' decision; {@code returnDeadline}: the goods must arrive by then, or the return expires. */
     public record Review(UUID decidedBy, Instant decidedAt, String note, String rejectionReason, Boolean returnRequired,
@@ -87,8 +102,17 @@ public record ReturnRequestResponse(
      * A photo. {@code thumbnailUrl} is a short-lived link to a small copy, set on the detail view (null in other answers,
      * or for a photo without one); the photo itself comes from {@code GET .../evidence/{evidenceId}/download-url}.
      */
-    public record Evidence(UUID id, @Schema(example = "CLAIM") String stage, String originalName, String contentType,
-                           long sizeBytes, UUID uploadedBy, Instant uploadedAt, String thumbnailUrl) {
+    public record Evidence(UUID id, @Schema(example = "CLAIM", description = "CLAIM, or CUSTODY: goods kept for the "
+                           + "customer that the return does not take (WF-05 Q-11)") String stage, String originalName,
+                           String contentType, long sizeBytes, UUID uploadedBy, Instant uploadedAt,
+                           String thumbnailUrl, Custody custody) {
+    }
+
+    /**
+     * What a CUSTODY photo shows (WF-05 Q-11): goods that came back and are kept for the customer - not in stock, not
+     * refunded. Who took them in is the photo's {@code uploadedBy}, when its {@code uploadedAt}.
+     */
+    public record Custody(String sku, String lpn, int quantity, String note) {
     }
 
     public record Discrepancy(UUID id, UUID lineId, @Schema(example = "SHORT") String kind, String sku, int quantity,

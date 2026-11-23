@@ -40,7 +40,18 @@ public record CustomerReturnResponse(
         List<Discrepancy> discrepancies,
         List<Evidence> evidence,
         List<Step> history,
-        long version) implements ReturnView {
+        long version,
+        @Schema(description = "How the return ended once RESOLVED (WF-05 Q-4): REFUNDED, REFUSED (\"processed - no "
+                + "refund\", for refusalReason) or NOTHING_TO_REFUND; null before", allowableValues = {"REFUNDED",
+                "REFUSED", "NOTHING_TO_REFUND"})
+        String outcome,
+        @Schema(description = "Why goods that came back were not refunded, once RESOLVED: CUSTOMER_DAMAGE, "
+                + "NOT_DEFECTIVE, OUT_OF_POLICY or OTHER")
+        String refusalReason,
+        @Schema(description = "refusalReason as the customer reads it (Vietnamese)", example = "Hư hỏng do bảo quản/sử dụng")
+        String refusalReasonLabel,
+        @Schema(description = "The note Sales wrote for the customer beside the reason")
+        String refusalNote) implements ReturnView {
 
     public record Line(UUID id, UUID orderLineId, String sku, int requestedQuantity, Integer approvedQuantity,
                        Integer receivedQuantity, int refundQuantity, BigDecimal refundAmount) {

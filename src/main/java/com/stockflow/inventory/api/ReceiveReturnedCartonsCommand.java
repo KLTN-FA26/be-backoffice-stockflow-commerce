@@ -14,9 +14,10 @@ import java.util.UUID;
  *                     reaches it
  * @param locationCode the receipt's QUARANTINE area
  * @param lpns         the cartons, at least one, each once (normalised as {@link StockPackageView#normalLpns})
- * @param openedLpns   those of them the receipt found opened - fewer units inside than the label (WF-05 TH-4): they
- *                     come back into quarantine whole like the rest, and are marked so they never leave it but by a
- *                     write-off. Empty when every carton came back sealed
+ * @param openedLpns   those of them the receipt found opened - fewer units inside than the label, down to none (WF-05
+ *                     TH-4): they are not put into stock at all (WF-05 Q-18) - they stay CONSUMED, marked
+ *                     {@code return_opened_at}, with no ledger line - so no stock is made from a label. Empty when
+ *                     every carton came back sealed
  */
 public record ReceiveReturnedCartonsCommand(UUID receiptId, UUID orderId, String locationCode, List<String> lpns,
                                             UUID actorId, Instant receivedAt, Set<String> openedLpns) {

@@ -48,13 +48,24 @@ public class ReturnReceiptCartonJpaEntity extends BaseEntity {
     @Column(name = "scanned_by", nullable = false, updatable = false)
     private UUID scannedBy;
 
+    /** Who recorded the count now (WF-05 Q-18). */
+    @Column(name = "counted_by", nullable = false)
+    private UUID countedBy;
+
+    /** Whether it goes back into stock on confirmation: a sealed carton only (WF-05 Q-18). */
+    @Column(name = "stock_entered", nullable = false)
+    private boolean stockEntered;
+
     protected ReturnReceiptCartonJpaEntity() {
     }
 
     public ReturnReceiptCartonJpaEntity(UUID id, UUID stockPackageId, String lpn, String sku, String lotNumber,
-                                        int quantity, String conditionNote, UUID scannedBy, int countedQty) {
+                                        int quantity, String conditionNote, UUID scannedBy, int countedQty,
+                                        UUID countedBy) {
         super(id);
         this.countedQty = countedQty;
+        this.countedBy = countedBy;
+        this.stockEntered = countedQty == quantity;
         this.stockPackageId = stockPackageId;
         this.lpn = lpn;
         this.sku = sku;
@@ -72,8 +83,10 @@ public class ReturnReceiptCartonJpaEntity extends BaseEntity {
         this.conditionNote = condition;
     }
 
-    public void recount(int units) {
+    public void recount(int units, UUID by) {
         this.countedQty = units;
+        this.countedBy = by;
+        this.stockEntered = units == quantity;
     }
 
     public UUID getStockPackageId() { return stockPackageId; }
@@ -84,6 +97,8 @@ public class ReturnReceiptCartonJpaEntity extends BaseEntity {
     public String getConditionNote() { return conditionNote; }
     public int getCountedQty() { return countedQty; }
     public UUID getScannedBy() { return scannedBy; }
+    public UUID getCountedBy() { return countedBy; }
+    public boolean isStockEntered() { return stockEntered; }
     /** When it was scanned: the row's creation time. */
     public Instant getScannedAt() { return getCreatedAt(); }
 }

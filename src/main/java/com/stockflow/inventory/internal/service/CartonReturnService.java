@@ -42,10 +42,12 @@ import java.util.stream.Collectors;
  * ({@link CartonQuarantineService#release}, or a {@code DAMAGED} write-off). No RECEIVING, no putaway task, nothing
  * opened or relabelled: a return receipt does not make a carton, it recognises one.
  *
- * <p>A carton the receipt found opened (WF-05 TH-4) comes back the same way - the books know a carton only whole, at
- * its label's count (20 BR-14) - and is marked so: it is never released, only written off, and none of its stock
- * becomes AVAILABLE again ({@code tg_stock_item_opened_return}). What it really held is the receipt's record, and the
- * return refunds that.</p>
+ * <p>A carton the receipt found opened or empty (WF-05 TH-4) is not put into stock at all (WF-05 Q-18; Luật Kế toán
+ * Điều 13 khoản 1). The books know a carton only whole, at its label's count (20 BR-14), so taking it in would make
+ * stock out of a label - 1,000 on hand for a carton counted 800, or 0 - to be written off later. It stays CONSUMED,
+ * marked {@code return_opened_at} (it is never taken back again), with no ledger line; what it really held is the
+ * receipt's record, the return refunds that, and the goods are destroyed. Quarantine holds exactly what sealed cartons
+ * brought.</p>
  */
 @Service
 @Transactional
@@ -83,7 +85,7 @@ public class CartonReturnService implements CartonReturns {
         }
         return stockPackages.findByLpns(List.of(normal)).stream().findFirst().map(carton -> {
             UomConversion unit = unitOf(carton);
-            return view(carton, unit.sku(), lotOf(carton));
+            return view(carton, unit.sku(), lotOf(carton), stockPackages.returnOpenedAt(carton.id()).orElse(null));
         });
     }
 
@@ -129,6 +131,27 @@ public class CartonReturnService implements CartonReturns {
         List<ReturnedCarton> received = new ArrayList<>();
         for (String lpn : command.lpns()) {
             StockPackage seen = byLpn.get(lpn);
+            if (stockPackages.openedOnReturn(seen.id())) {
+                // WF-05 Q-18: it came back opened on an earlier receipt and stayed consumed; it does not come back twice.
+                throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION, ("%s came back opened on an "
+                        + "earlier return receipt; it is not taken back again").formatted(lpn), List.of(),
+                        Map.of("lpn", lpn));
+            }
+            if (command.openedLpns().contains(lpn)) {
+                StockPackage locked = stockPackages.findAllByIdForUpdate(List.of(seen.id())).stream().findFirst()
+                        .orElseThrow(() -> new IllegalStateException("No stock package " + lpn));
+                if (locked.status() != com.stockflow.inventory.internal.domain.StockPackageStatus.CONSUMED) {
+                    throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION, ("%s is %s; only a carton "
+                            + "that left stock comes back on a return").formatted(lpn, locked.status()), List.of(),
+                            Map.of("lpn", lpn));
+                }
+                received.add(new ReturnedCarton(seen.id().value(), lpn, skuByLpn.get(lpn), lotOf(seen),
+                        seen.receivedQty() == null ? 0 : seen.receivedQty(), "CONSUMED", locked.location().code(),
+                        command.receivedAt()));
+                log.info("Return receipt {}: carton {} came back opened: not put into stock, destroyed",
+                        command.receiptId(), lpn);
+                continue;
+            }
             StockItem row = cartons.returnIntoQuarantine(seen.id(), to);
             ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.RECEIPT, row.sku(),
                     row.lotNumber(), null, to, row.onHand().value(), StockStatus.QUARANTINE, StockStatus.QUARANTINE,
@@ -137,9 +160,8 @@ public class CartonReturnService implements CartonReturns {
                     .ofLot(row.lotId()).forOrder(command.orderId()).arriving(seen.id()));
             received.add(new ReturnedCarton(seen.id().value(), lpn, skuByLpn.get(lpn), row.lotNumber(),
                     row.onHand().value(), "IN_STOCK", to.code()));
-            log.info("Return receipt {}: carton {} ({} x {}, lot {}) back into quarantine at {}{}", command.receiptId(),
-                    lpn, row.onHand().value(), row.sku(), row.lotNumber(), to,
-                    command.openedLpns().contains(lpn) ? ", opened: to be written off" : "");
+            log.info("Return receipt {}: carton {} ({} x {}, lot {}) back into quarantine at {}", command.receiptId(),
+                    lpn, row.onHand().value(), row.sku(), row.lotNumber(), to);
         }
         stockPackages.markOpenedOnReturn(command.openedLpns().stream().map(lpn -> byLpn.get(lpn).id()).toList(),
                 command.receivedAt());
@@ -159,9 +181,9 @@ public class CartonReturnService implements CartonReturns {
                 .map(StockItem::lotNumber).orElse(null);
     }
 
-    private static ReturnedCarton view(StockPackage carton, String sku, String lot) {
+    private static ReturnedCarton view(StockPackage carton, String sku, String lot, java.time.Instant openedAt) {
         return new ReturnedCarton(carton.id().value(), carton.lpn(), sku, lot,
                 carton.receivedQty() == null ? 0 : carton.receivedQty(), carton.status().name(),
-                carton.location().code());
+                carton.location().code(), openedAt);
     }
 }

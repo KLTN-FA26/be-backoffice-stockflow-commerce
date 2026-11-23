@@ -31,7 +31,9 @@ public interface ReturnRequestSearch {
                             ReturnStatus status, ReturnReason reason, ReturnResolution requestedResolution,
                             String channel, Instant requestedAt, Instant returnDeadline, BigDecimal settlementAmount,
                             BigDecimal refundedAmount, BigDecimal offsetAmount, String currency,
-                            boolean vatAdjustmentRequired, Instant closedAt, long version, UUID shipmentId) {
+                            boolean vatAdjustmentRequired, Instant closedAt, long version, UUID shipmentId,
+                            com.stockflow.order.internal.domain.ReturnRefusalReason refusalReason,
+                            boolean receiptOpenable) {
     }
 
     Page<ReturnRequestRow> search(Criteria criteria, Pageable pageable);

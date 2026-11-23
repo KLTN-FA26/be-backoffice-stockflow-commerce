@@ -3,6 +3,7 @@ package com.stockflow.order.internal.entity;
 import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.order.internal.domain.ReturnChannel;
 import com.stockflow.order.internal.domain.ReturnReason;
+import com.stockflow.order.internal.domain.ReturnRefusalReason;
 import com.stockflow.order.internal.domain.ReturnResolution;
 import com.stockflow.order.internal.domain.ReturnStatus;
 import jakarta.persistence.CascadeType;
@@ -152,6 +153,16 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     @Column(name = "closed_at")
     private Instant closedAt;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "refusal_reason", length = 24)
+    private ReturnRefusalReason refusalReason;
+
+    @Column(name = "refusal_note", length = 500)
+    private String refusalNote;
+
+    @Column(name = "open_draft_receipt_id")
+    private UUID openDraftReceiptId;
+
     /** LAZY: a list reads the header only; the detail and every command load the lines with a fetch join. */
     @OneToMany(mappedBy = "request", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("id")
@@ -226,6 +237,13 @@ public class ReturnRequestJpaEntity extends BaseEntity {
         this.vatAdjustmentRequired = vatAdjustmentRequired;
     }
 
+    /** The refusal (WF-05 Q-4) and the draft receipt counting a parcel now (WF-05 BE-23). */
+    public void applyRefusal(ReturnRefusalReason refusalReason, String refusalNote, UUID openDraftReceiptId) {
+        this.refusalReason = refusalReason;
+        this.refusalNote = refusalNote;
+        this.openDraftReceiptId = openDraftReceiptId;
+    }
+
     public void applyEnd(UUID cancelledBy, String cancellationReason, Instant closedAt) {
         this.cancelledBy = cancelledBy;
         this.cancellationReason = cancellationReason;
@@ -270,5 +288,8 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     public UUID getCancelledBy() { return cancelledBy; }
     public String getCancellationReason() { return cancellationReason; }
     public Instant getClosedAt() { return closedAt; }
+    public ReturnRefusalReason getRefusalReason() { return refusalReason; }
+    public String getRefusalNote() { return refusalNote; }
+    public UUID getOpenDraftReceiptId() { return openDraftReceiptId; }
     public List<ReturnRequestLineJpaEntity> getLines() { return lines; }
 }

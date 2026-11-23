@@ -48,7 +48,18 @@ public class ReturnRequestQueries {
                        ReturnStatus status, ReturnReason reason, ReturnResolution requestedResolution, String channel,
                        Instant requestedAt, Instant returnDeadline, BigDecimal settlementAmount,
                        BigDecimal refundedAmount, BigDecimal offsetAmount, String currency,
-                       boolean vatAdjustmentRequired, Instant closedAt, long version, UUID shipmentId) {
+                       boolean vatAdjustmentRequired, Instant closedAt, long version, UUID shipmentId,
+                       com.stockflow.order.internal.domain.ReturnRefusalReason refusalReason,
+                       boolean receiptOpenable) {
+
+        /**
+         * How it ended (WF-05 Q-4), as {@link com.stockflow.order.internal.domain.ReturnRequest#outcome} says it: a
+         * list does not read the lines, and {@code vatAdjustmentRequired} is exactly "units were refunded" (BE-44).
+         */
+        public com.stockflow.order.internal.domain.ReturnRequest.Outcome outcome() {
+            return com.stockflow.order.internal.domain.ReturnRequest.outcomeOf(status, vatAdjustmentRequired,
+                    refusalReason);
+        }
     }
 
     /** One return with its status history, oldest first. */
@@ -161,7 +172,8 @@ public class ReturnRequestQueries {
         return new Item(row.id(), row.rmaNumber(), row.orderId(), row.orderNumber(), row.customerId(), row.status(),
                 row.reason(), row.requestedResolution(), row.channel(), row.requestedAt(), row.returnDeadline(),
                 row.settlementAmount(), row.refundedAmount(), row.offsetAmount(), row.currency(),
-                row.vatAdjustmentRequired(), row.closedAt(), row.version(), row.shipmentId());
+                row.vatAdjustmentRequired(), row.closedAt(), row.version(), row.shipmentId(), row.refusalReason(),
+                row.receiptOpenable());
     }
 
     private static BusinessException notFound(UUID returnId) {

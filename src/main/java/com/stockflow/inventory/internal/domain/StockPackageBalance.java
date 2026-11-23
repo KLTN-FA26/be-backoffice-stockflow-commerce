@@ -16,11 +16,27 @@ import java.util.UUID;
  * @param onHand      what is left in it, the sum of its rows; 0 for a carton with none yet (RECEIVING)
  * @param reserved    of that, what orders hold
  * @param closedAt    when it was emptied, lost or voided
+ * @param returnOpenedAt when a return receipt found it opened or empty (WF-05 TH-4, Q-18): never sold again - since
+ *                    Q-18 it stays CONSUMED, before that it sat in quarantine to be written off; null when it never came
+ *                    back so
  */
 public record StockPackageBalance(UUID id, String lpn, String sku, String unitOfMeasure, int nominalQty,
                                   Integer receivedQty, String locationCode, StockPackageStatus status,
                                   String lotNumber, int onHand, int reserved,
-                                  UUID goodsReceiptLineId, Instant closedAt) {
+                                  UUID goodsReceiptLineId, Instant closedAt, Instant returnOpenedAt) {
+
+    /** A carton that never came back opened on a return. */
+    public StockPackageBalance(UUID id, String lpn, String sku, String unitOfMeasure, int nominalQty,
+                               Integer receivedQty, String locationCode, StockPackageStatus status, String lotNumber,
+                               int onHand, int reserved, UUID goodsReceiptLineId, Instant closedAt) {
+        this(id, lpn, sku, unitOfMeasure, nominalQty, receivedQty, locationCode, status, lotNumber, onHand, reserved,
+                goodsReceiptLineId, closedAt, null);
+    }
+
+    /** Whether a return receipt found it opened or empty (WF-05 BE-24). */
+    public boolean openedOnReturn() {
+        return returnOpenedAt != null;
+    }
 
     /** A carton with its stock rows holding something, oldest receipt first. */
     public record Detail(StockPackageBalance carton, List<Content> contents) {

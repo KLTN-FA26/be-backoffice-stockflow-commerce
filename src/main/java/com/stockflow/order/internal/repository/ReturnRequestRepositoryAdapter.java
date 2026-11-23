@@ -122,9 +122,12 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
         apply(request, entity);
         jpa.saveAndFlush(entity);
         for (ReturnEvidence photo : request.pullNewEvidence()) {
+            ReturnEvidence.Custody custody = photo.custody();
             records.insert(new ReturnRequestEvidenceJpaEntity(photo.id(), request.id(), photo.stage().name(),
                     photo.fileKey(), photo.originalName(), photo.contentType(), photo.sizeBytes(), photo.uploadedBy(),
-                    photo.uploadedAt()));
+                    photo.uploadedAt()).withCustody(custody == null ? null : custody.sku(),
+                    custody == null ? null : custody.lpn(), custody == null ? null : custody.quantity(),
+                    custody == null ? null : custody.note()));
         }
         for (ReturnParcel parcel : request.pullNewParcels()) {
             records.insert(new ReturnRequestReceiptJpaEntity(parcel.goodsReceiptId(), request.id(), parcel.parcel(),
@@ -209,6 +212,7 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
         entity.applyResolution(r.moneyMode(), r.settlementAmount(), r.proposedBy(), r.proposedAt(), r.resolutionNote(),
                 r.settledBy(), r.settledAt(), r.money().refunded(), r.money().offset(), r.vatAdjustmentRequired());
         entity.applyEnd(r.cancelledBy(), r.cancellationReason(), r.closedAt());
+        entity.applyRefusal(r.refusalReason(), r.refusalNote(), r.openDraftReceiptId());
         Map<UUID, ReturnRequestLineJpaEntity> rows = entity.getLines().stream()
                 .collect(Collectors.toMap(ReturnRequestLineJpaEntity::getId, Function.identity()));
         for (ReturnLine line : r.lines()) {
@@ -237,10 +241,13 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
                 e.getResolutionNote(), e.getSettledBy(), e.getSettledAt(),
                 new ReturnRequest.MoneyOutcome(e.getOffsetAmount(), e.getRefundedAmount()),
                 e.isVatAdjustmentRequired(), e.getCancelledBy(), e.getCancellationReason(), e.getClosedAt());
+        request.restoreRefusal(e.getRefusalReason(), e.getRefusalNote(), e.getOpenDraftReceiptId());
         request.restoreRecords(
                 records.evidenceOf(e.getId()).stream().map(row -> new ReturnEvidence(row.getId(),
                         ReturnEvidence.Stage.valueOf(row.getStage()), row.getFileKey(), row.getOriginalName(),
-                        row.getContentType(), row.getSizeBytes(), row.getUploadedBy(), row.getUploadedAt())).toList(),
+                        row.getContentType(), row.getSizeBytes(), row.getUploadedBy(), row.getUploadedAt(),
+                        row.getCustodyQuantity() == null ? null : new ReturnEvidence.Custody(row.getCustodySku(),
+                                row.getCustodyLpn(), row.getCustodyQuantity(), row.getCustodyNote()))).toList(),
                 records.discrepanciesOf(e.getId()).stream().map(row -> new ReturnDiscrepancy(row.getId(),
                         row.getReturnRequestLineId(), ReturnDiscrepancy.Kind.valueOf(row.getKind()), row.getSku(),
                         row.getQuantity(), row.getNote(), row.getRecordedBy(), row.getRecordedAt())).toList());
@@ -254,7 +261,9 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
         return new ReturnRequestRow(e.getId(), e.getRmaNumber(), e.getOrderId(), e.getOrderNumber(), e.getCustomerId(),
                 e.getStatus(), e.getReasonCode(), e.getRequestedResolution(), e.getChannel().name(), e.getRequestedAt(),
                 e.getReturnDeadline(), e.getSettlementAmount(), e.getRefundedAmount(), e.getOffsetAmount(),
-                e.getCurrency(), e.isVatAdjustmentRequired(), e.getClosedAt(), e.getVersion(), e.getShipmentId());
+                e.getCurrency(), e.isVatAdjustmentRequired(), e.getClosedAt(), e.getVersion(), e.getShipmentId(),
+                e.getRefusalReason(), e.getStatus() != null && com.stockflow.order.internal.domain.ReturnRequest
+                        .receiptOpenable(e.getStatus(), e.getReturnRequired(), e.getDecidedAt()));
     }
 
     private static ReturnStatus statusOrNull(String name) {

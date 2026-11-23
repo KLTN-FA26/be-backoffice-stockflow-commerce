@@ -29,16 +29,24 @@ public final class ReturnClaims {
      *                    cancelled or expired
      * @param open        whether the return is still open ({@link ReturnStatus#isOpen}): one open return per order line
      *                    and delivery
+     * @param refunded    whether units of the line were refunded on that delivery: a RESOLVED return refunded some
+     *                    (WF-05 Q-15 - such a delivery takes a further claim through Sales only)
      */
-    public record Claim(UUID shipmentId, UUID orderLineId, int units, boolean open) {
+    public record Claim(UUID shipmentId, UUID orderLineId, int units, boolean open, boolean refunded) {
 
         public Claim {
             Objects.requireNonNull(orderLineId, "orderLineId");
         }
 
+        /** A claim of a line nothing of which was refunded. */
+        public Claim(UUID shipmentId, UUID orderLineId, int units, boolean open) {
+            this(shipmentId, orderLineId, units, open, false);
+        }
+
         /** The claim a line of a return in {@code status} makes. */
         public static Claim of(UUID shipmentId, ReturnStatus status, ReturnLine line) {
-            return new Claim(shipmentId, line.orderLineId(), line.claimedUnits(status), status.isOpen());
+            return new Claim(shipmentId, line.orderLineId(), line.claimedUnits(status), status.isOpen(),
+                    status == ReturnStatus.RESOLVED && line.refundQuantity() > 0);
         }
     }
 
@@ -68,6 +76,19 @@ public final class ReturnClaims {
         claims.stream().filter(claim -> Objects.equals(claim.shipmentId(), shipmentId))
                 .forEach(claim -> units.merge(claim.orderLineId(), claim.units(), Integer::sum));
         return units;
+    }
+
+    /**
+     * The deliveries a return already refunded units of (WF-05 Q-15): a portal claim is decided per delivery, so a
+     * delivery nothing of which was refunded stays claimable on the portal whatever the order's status says - and one
+     * that was refunded takes a further claim through Sales only. The order as a whole (null) is never in it: an order
+     * delivered without shipments keeps the order-level rule.
+     */
+    public Set<UUID> refundedShipments() {
+        Set<UUID> refunded = new HashSet<>();
+        claims.stream().filter(claim -> claim.refunded() && claim.shipmentId() != null)
+                .forEach(claim -> refunded.add(claim.shipmentId()));
+        return refunded;
     }
 
     /** The order lines with a return still open against delivery {@code shipmentId} (null: the order as a whole). */

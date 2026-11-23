@@ -36,7 +36,11 @@ public interface ReturnRequestRepository {
      */
     ReturnClaims claimsOf(UUID orderId);
 
-    /** Returns waiting for goods whose deadline passed before {@code now}, oldest deadline first, at most {@code limit}. */
+    /**
+     * Returns waiting for goods whose deadline passed before {@code now}, oldest deadline first, at most {@code limit} -
+     * none of them with a parcel being counted on a draft receipt (WF-05 BE-23): such a return is not expired, and left
+     * in the batch it would take a place from one that is, every hour.
+     */
     List<UUID> awaitingReturnPast(Instant now, int limit);
 
     /** The next {@code RMA-yyyyMMdd-NNNN} of the day, from a counter that never hands a number out twice. */
