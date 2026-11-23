@@ -628,6 +628,83 @@ class Wf05DeliveryCorrectionIntegrationTest {
                 .as("one invoice in force per shipment: the new original").isEqualTo(1L);
     }
 
+    @Test
+    @DisplayName("audit r3 EINV-2, the ERROR half (Q-8, HĐ-5): an original issued through a provider that issues no "
+            + "corrections; a correction of its quantity agreed with the buyer cannot be sent, is voided and made on "
+            + "the provider's portal - offered as ERROR, recorded as the draft stated it with its agreement, once; the "
+            + "database keeps the record tied to its draft")
+    void anErrorOfAnOriginalNoProviderCanCorrectIsRecordedFromThePortal() throws Exception {
+        UUID shipment = batchOneDelivered(1);
+        EInvoice.Snapshot original = issuedOriginal(shipment);
+        // Issued through Viettel before the switch (it issues no corrections here): written with triggers off, as the
+        // row an earlier deployment left.
+        tx.executeWithoutResult(s -> {
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            jdbc.update("UPDATE invoicing.einvoice SET provider = 'VIETTEL_SINVOICE' WHERE id = ?", original.id());
+        });
+        EInvoice.Snapshot drawn = invoiceCorrections.adjust(new EInvoiceCorrections.Adjust(original.id(),
+                CorrectionBasis.ERROR, "sai so luong: giao 1 thung, ghi 2", null, List.of(
+                new EInvoiceCorrections.LineChange(original.lines().getFirst().id(), -1, null, null, null)), null,
+                List.of()));
+        java.io.ByteArrayOutputStream pdf = new java.io.ByteArrayOutputStream();
+        try (org.apache.pdfbox.pdmodel.PDDocument document = new org.apache.pdfbox.pdmodel.PDDocument()) {
+            document.addPage(new org.apache.pdfbox.pdmodel.PDPage());
+            document.save(pdf);
+        }
+        byte[] bytes = pdf.toByteArray();
+        EInvoice.Snapshot agreed = invoiceCorrections.attachAgreement(drawn.id(), drawn.version(), "BB-02/2026",
+                LocalDate.now(ConfirmedOrders.VIETNAM), new com.stockflow.common.storage.FileUpload("bien-ban.pdf",
+                        "application/pdf", bytes.length, new java.io.ByteArrayInputStream(bytes)));
+        assertThat(issuance.externalReductions(queries.get(original.id())).any())
+                .as("not while the draft stands").isFalse();
+        EInvoice.Snapshot voided = drafts.voidDraft(agreed.id(), agreed.version(), "NCC cu khong dieu chinh duoc",
+                accountant);
+
+        EInvoiceIssuance.ExternalReductionOptions options = issuance.externalReductions(queries.get(original.id()));
+        assertThat(options.errors()).singleElement().satisfies(option -> {
+            assertThat(option.voidedAdjustmentId()).isEqualTo(voided.id());
+            assertThat(option.grandTotal()).isEqualByComparingTo(voided.grandTotal());
+        });
+        LocalDate today = LocalDate.now(ConfirmedOrders.VIETNAM);
+        EInvoiceIssuance.ExternalReduction base = portalReduction(original,
+                700_000 + ThreadLocalRandom.current().nextInt(99_999));
+        assertThat(code(catchThrowable(() -> issuance.recordExternalReduction(original.id(),
+                new EInvoiceIssuance.ExternalReduction(base.templateCode(), base.symbol(), base.invoiceNumber(), today,
+                        null, null, base.xml(), base.pdf(), base.note(), CorrectionBasis.ERROR, null, null),
+                accountant)))).as("ERROR names its voided draft").isEqualTo(ErrorCode.VALIDATION_FAILED);
+        EInvoice.Snapshot recorded = issuance.recordExternalReduction(original.id(),
+                new EInvoiceIssuance.ExternalReduction(base.templateCode(), base.symbol(), base.invoiceNumber(), today,
+                        null, null, base.xml(), base.pdf(), base.note(), CorrectionBasis.ERROR, null, voided.id()),
+                accountant);
+
+        assertThat(recorded.status()).isEqualTo(EInvoiceStatus.ISSUED);
+        assertThat(recorded.type()).isEqualTo(EInvoiceType.ADJUSTMENT);
+        assertThat(recorded.correctionBasis()).isEqualTo(CorrectionBasis.ERROR);
+        assertThat(recorded.issuedVia()).isEqualTo(EInvoice.IssuedVia.PORTAL_RECORD);
+        assertThat(recorded.adjustmentReason()).isEqualTo("sai so luong: giao 1 thung, ghi 2");
+        assertThat(recorded.agreementNumber()).isEqualTo("BB-02/2026");
+        assertThat(recorded.grandTotal()).isEqualByComparingTo(voided.grandTotal());
+        assertThat(recorded.lines()).singleElement().satisfies(line -> assertThat(line.quantity()).isEqualTo(-1));
+        assertThat(queries.get(original.id()).adjusted()).isTrue();
+        assertThat(jdbc.queryForObject("SELECT recorded_einvoice_id FROM invoicing.einvoice_portal_record "
+                + "WHERE voided_draft_id = ?", UUID.class, voided.id())).isEqualTo(recorded.id());
+
+        assertThat(issuance.externalReductions(queries.get(original.id())).any()).as("recorded once").isFalse();
+        EInvoiceIssuance.ExternalReduction again = portalReduction(original, base.invoiceNumber() + 1);
+        assertThat(code(catchThrowable(() -> issuance.recordExternalReduction(original.id(),
+                new EInvoiceIssuance.ExternalReduction(again.templateCode(), again.symbol(), again.invoiceNumber(),
+                        today, null, null, again.xml(), again.pdf(), again.note(), CorrectionBasis.ERROR, null,
+                        voided.id()), accountant)))).isEqualTo(ErrorCode.EINVOICE_EXTERNAL_REDUCTION_NOT_APPLICABLE);
+
+        // Stated twice: the database keeps each voided draft recorded once, and the record tied to it.
+        assertThat(catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO invoicing.einvoice_portal_record (voided_draft_id, recorded_einvoice_id)
+                VALUES (?, ?)""", voided.id(), recorded.id())))).hasMessageContaining("duplicate key");
+        assertThat(catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update(
+                "DELETE FROM invoicing.einvoice_portal_record WHERE voided_draft_id = ?", voided.id()))))
+                .hasMessageContaining("never changed or removed");
+    }
+
     /** A reduction of {@code invoice} as the provider's portal gave it: number {@code number}, dated today. */
     private EInvoiceIssuance.ExternalReduction portalReduction(EInvoice.Snapshot invoice, int number) {
         LocalDate today = LocalDate.now(ConfirmedOrders.VIETNAM);

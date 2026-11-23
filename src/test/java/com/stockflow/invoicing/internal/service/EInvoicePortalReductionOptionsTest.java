@@ -174,6 +174,112 @@ class EInvoicePortalReductionOptionsTest {
                 any(), any(), any(), any());
     }
 
+    /** A correction of an error taking {@code cartons} cartons off {@code original}, agreed or not, then voided. */
+    private EInvoice voidedErrorAdjustment(EInvoice original, int cartons, boolean agreed) {
+        EInvoice draft = EInvoiceFixtures.adjustment(original, CorrectionBasis.ERROR, cartons);
+        if (agreed) {
+            EInvoiceFixtures.agreed(draft);
+        }
+        draft.voidDraft("the provider of the original is not usable any more: made on its portal", null,
+                EInvoiceFixtures.NOW);
+        return draft;
+    }
+
+    private EInvoicePortalReductions.PortalReduction errorOnPortal(UUID voidedAdjustmentId) {
+        return new EInvoicePortalReductions.PortalReduction("1", "C26TVT", 11, EInvoiceFixtures.CORRECTED_ON, "M11",
+                "L11", Instant.now(), null, new EInvoiceProvider.Documents(new byte[] {1}, new byte[] {1}),
+                "made on the old provider's portal", CorrectionBasis.ERROR, null, voidedAdjustmentId);
+    }
+
+    private EInvoice originalOfAnUnusableProvider() {
+        EInvoice original = EInvoiceFixtures.issued(EInvoiceFixtures.draft(), 3);
+        when(invoices.findById(original.id())).thenReturn(Optional.of(original));
+        when(invoices.findByIdForUpdate(original.id())).thenReturn(Optional.of(original));
+        when(invoices.correctionsOf(original.id())).thenReturn(EInvoice.Corrections.NONE);
+        when(invoices.nextCode(any())).thenReturn("EINV-20261113-0011");
+        return original;
+    }
+
+    @Test
+    @DisplayName("audit r3 EINV-2, the ERROR half: a correction of an error of an original whose provider is no "
+            + "longer usable, agreed and voided - ERROR is offered naming the draft, and the record states what the "
+            + "draft stated, with its agreement, and is noted against the draft so it is recorded once")
+    void anErrorOnAnOriginalOfAnUnusableProviderIsRecorded() {
+        EInvoice original = originalOfAnUnusableProvider();
+        EInvoice voided = voidedErrorAdjustment(original, -2, true);
+        when(invoices.findUnrecordedVoidedErrorAdjustmentsOf(original.id())).thenReturn(List.of(voided));
+        EInvoice.Snapshot issued = mock(EInvoice.Snapshot.class);
+        UUID recordedId = UUID.randomUUID();
+        when(issued.id()).thenReturn(recordedId);
+        when(steps.recordExternalReduction(any(), any(), org.mockito.ArgumentMatchers.anyInt(), any(), any(), any(),
+                any(), any())).thenReturn(issued);
+
+        EInvoiceIssuance.ExternalReductionOptions options = reductions.applicability(original.snapshot());
+        assertThat(options.any()).isTrue();
+        assertThat(options.returns()).isEmpty();
+        assertThat(options.errors()).containsExactly(new EInvoiceIssuance.ErrorOption(voided.id(),
+                voided.snapshot().code(), "sai so luong", voided.snapshot().grandTotal()));
+
+        reductions.record(original.id(), errorOnPortal(voided.id()), null);
+
+        var recorded = org.mockito.ArgumentCaptor.forClass(EInvoice.class);
+        verify(steps).recordExternalReduction(recorded.capture(), any(), org.mockito.ArgumentMatchers.eq(11), any(),
+                any(), any(), any(), any());
+        EInvoice.Snapshot reduction = recorded.getValue().snapshot();
+        assertThat(reduction.correctionBasis()).isEqualTo(CorrectionBasis.ERROR);
+        assertThat(reduction.issuedVia()).isEqualTo(EInvoice.IssuedVia.PORTAL_RECORD);
+        assertThat(reduction.originalEInvoiceId()).isEqualTo(original.id());
+        assertThat(reduction.returnRequestId()).isNull();
+        assertThat(reduction.adjustmentReason()).as("what the agreement corrects").isEqualTo("sai so luong");
+        assertThat(reduction.agreementFileKey()).isEqualTo(voided.snapshot().agreementFileKey());
+        assertThat(reduction.agreementNumber()).isEqualTo("BB-01/2026");
+        assertThat(reduction.grandTotal()).isEqualByComparingTo(voided.snapshot().grandTotal());
+        assertThat(reduction.lines()).singleElement().satisfies(line -> assertThat(line.quantity()).isEqualTo(-2));
+        verify(invoices).notePortalRecordOf(voided.id(), recordedId);
+
+        BusinessException other = catchThrowableOfType(BusinessException.class,
+                () -> reductions.record(original.id(), errorOnPortal(UUID.randomUUID()), null));
+        assertThat(other.errorCode()).as("a draft that is not one of its voided errors")
+                .isEqualTo(ErrorCode.EINVOICE_EXTERNAL_REDUCTION_NOT_APPLICABLE);
+    }
+
+    @Test
+    @DisplayName("audit r3 EINV-2, the ERROR half: not offered nor recorded while the provider can still send it, "
+            + "without its agreement, or when it raises; voidedAdjustmentId only with ERROR, and ERROR only with it")
+    void anErrorIsRecordedOnlyWhenNothingElseCan() {
+        EInvoice original = originalOfAnUnusableProvider();
+        EInvoice unagreed = voidedErrorAdjustment(original, -1, false);
+        EInvoice raising = voidedErrorAdjustment(original, 1, true);
+        when(invoices.findUnrecordedVoidedErrorAdjustmentsOf(original.id())).thenReturn(List.of(unagreed, raising));
+        assertThat(reductions.applicability(original.snapshot()).any()).as("no agreement; raises").isFalse();
+        for (EInvoice voided : List.of(unagreed, raising)) {
+            assertThat(catchThrowableOfType(BusinessException.class, () -> reductions.record(original.id(),
+                    errorOnPortal(voided.id()), null)).errorCode())
+                    .isEqualTo(ErrorCode.EINVOICE_EXTERNAL_REDUCTION_NOT_APPLICABLE);
+        }
+
+        EInvoice agreed = voidedErrorAdjustment(original, -1, true);
+        when(invoices.findUnrecordedVoidedErrorAdjustmentsOf(original.id())).thenReturn(List.of(agreed));
+        EInvoiceProvider provider = mock(EInvoiceProvider.class);
+        when(provider.issuesCorrections()).thenReturn(true);
+        when(providers.usable(original.provider())).thenReturn(true);
+        when(providers.find(original.provider())).thenReturn(Optional.of(provider));
+        assertThat(reductions.applicability(original.snapshot()).any()).as("the provider can send it").isFalse();
+        assertThat(catchThrowableOfType(BusinessException.class, () -> reductions.record(original.id(),
+                errorOnPortal(agreed.id()), null)).errorCode())
+                .isEqualTo(ErrorCode.EINVOICE_EXTERNAL_REDUCTION_NOT_APPLICABLE);
+
+        assertThat(catchThrowableOfType(BusinessException.class, () -> reductions.record(original.id(),
+                errorOnPortal(null), null)).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(catchThrowableOfType(BusinessException.class, () -> reductions.record(original.id(),
+                new EInvoicePortalReductions.PortalReduction("1", "C26TVT", 12, EInvoiceFixtures.CORRECTED_ON, "M12",
+                        "L12", Instant.now(), null, new EInvoiceProvider.Documents(new byte[] {1}, new byte[] {1}),
+                        "portal", CorrectionBasis.RETURN, UUID.randomUUID(), agreed.id()), null)).errorCode())
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        verify(steps, never()).recordExternalReduction(any(), any(), org.mockito.ArgumentMatchers.anyInt(), any(),
+                any(), any(), any(), any());
+    }
+
     @Test
     @DisplayName("M-10: an original in force offers nothing - DELIVERY_FAILED only once its own reduction was voided "
             + "as unsendable, RETURN never (a return on an original is adjusted through the provider)")

@@ -55,6 +55,12 @@ import java.util.UUID;
  * provider's portal. The record takes off what that voided draft took off, as far as the original still holds it -
  * before, only a replacement was taken, and the reduction made in law had no record here: the register still declared
  * the original's full output VAT and the return showed its refund with no adjustment.</p>
+ *
+ * <p>The same for <b>the correction of an error of such an original</b> (basis ERROR, with {@code voidedAdjustmentId}
+ * naming the voided draft): drawn up here and agreed in writing with the buyer, it could not be sent, the accountant
+ * voided it and made it on the portal. The record states what the voided draft stated and carries its agreement
+ * ({@link EInvoice#recordedErrorReduction}); only a correction that takes off is recorded, and each voided draft once
+ * ({@code invoicing.einvoice_portal_record}). An error has no return to key it by, hence the draft's id.</p>
  */
 @Component
 class EInvoicePortalReductions {
@@ -78,7 +84,14 @@ class EInvoicePortalReductions {
     record PortalReduction(String templateCode, String symbol, int number, LocalDate issueDate,
                            String taxAuthorityCode, String lookupCode, Instant signedAt, String sellerTaxCode,
                            EInvoiceProvider.Documents documents, String note, CorrectionBasis basis,
-                           UUID returnRequestId) {
+                           UUID returnRequestId, UUID voidedAdjustmentId) {
+
+        PortalReduction(String templateCode, String symbol, int number, LocalDate issueDate, String taxAuthorityCode,
+                        String lookupCode, Instant signedAt, String sellerTaxCode, EInvoiceProvider.Documents documents,
+                        String note, CorrectionBasis basis, UUID returnRequestId) {
+            this(templateCode, symbol, number, issueDate, taxAuthorityCode, lookupCode, signedAt, sellerTaxCode,
+                    documents, note, basis, returnRequestId, null);
+        }
     }
 
     /**
@@ -105,12 +118,19 @@ class EInvoicePortalReductions {
         }
         // An original - or a replacement whose reduction was drawn up before replacements stopped being adjusted - whose
         // own reduction was voided as unsendable; it stays reversed meanwhile.
+        if (portal.basis() == CorrectionBasis.ERROR) {
+            return recordError(original, standing, portal, by);
+        }
+        if (portal.voidedAdjustmentId() != null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "voidedAdjustmentId: only with basis ERROR, naming the voided correction of an error");
+        }
         if (portal.basis() == CorrectionBasis.RETURN) {
             return recordReturn(original, standing, portal, by);
         }
         if (portal.basis() != CorrectionBasis.DELIVERY_FAILED || portal.returnRequestId() != null) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "basis: DELIVERY_FAILED, or RETURN with the return it is for (returnRequestId)");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "basis: DELIVERY_FAILED, RETURN with the return it "
+                    + "is for (returnRequestId), or ERROR with the voided correction it is for (voidedAdjustmentId)");
         }
         if (!deliveryFailedRecordable(standing)) {
             throw notApplicable(standing, "its reduction was not voided as unsendable, and it is not a replacement of "
@@ -235,6 +255,67 @@ class EInvoicePortalReductions {
     }
 
     /**
+     * Audit r3 EINV-2, the ERROR half: a correction of an error of an original that no provider could send, voided by
+     * the accountant and made on the provider's portal (Q-8, HĐ-5), recorded as the voided draft stated it, with its
+     * agreement, once. Recorded, it takes off what the original invoices - so the pieces it takes off must still be
+     * there: a correction agreed in writing is not trimmed to fit, it is refused.
+     */
+    private EInvoice.Snapshot recordError(EInvoice original, EInvoice.Snapshot standing, PortalReduction portal,
+                                          UUID by) {
+        if (portal.voidedAdjustmentId() == null || portal.returnRequestId() != null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "voidedAdjustmentId: required for an error, and no returnRequestId");
+        }
+        EInvoice voided = errorRecordable(standing).stream()
+                .filter(draft -> draft.id().equals(portal.voidedAdjustmentId())).findFirst()
+                .orElseThrow(() -> notApplicable(standing, "only a voided correction of an error of an original no "
+                        + "provider could send, that takes off and carries its agreement, is recorded, once"));
+        requireSameSeller(standing, portal);
+        Map<UUID, Long> taken = invoices.piecesTakenOff(standing.id());
+        Map<UUID, Long> held = new java.util.HashMap<>();
+        for (EInvoiceLine line : original.lines()) {
+            if (line.kind() == EInvoiceLine.Kind.GOODS) {
+                held.merge(line.orderLineId(), line.pieces(), Long::sum);
+            }
+        }
+        Map<UUID, Long> wanted = new java.util.HashMap<>();
+        for (EInvoiceLine line : voided.lines()) {
+            if (line.kind() == EInvoiceLine.Kind.GOODS && line.quantity() < 0) {
+                wanted.merge(line.orderLineId(), -line.pieces(), Long::sum);
+            }
+        }
+        wanted.forEach((orderLine, pieces) -> {
+            if (pieces > held.getOrDefault(orderLine, 0L) - taken.getOrDefault(orderLine, 0L)) {
+                throw notApplicable(standing, "it holds fewer of those goods than the correction takes off");
+            }
+        });
+        EInvoice reduction = EInvoice.recordedErrorReduction(Identifiers.newId(),
+                invoices.nextCode(portal.issueDate()), original, voided, voided.snapshot().adjustmentReason(),
+                portal.issueDate(), invoices.correctionsOf(standing.id()));
+        EInvoice.Snapshot recorded = steps.recordExternalReduction(reduction, series(standing, portal),
+                portal.number(), portal.taxAuthorityCode(), portal.lookupCode(), portal.signedAt(),
+                portal.documents(), by);
+        invoices.notePortalRecordOf(voided.id(), recorded.id());
+        return recorded;
+    }
+
+    /**
+     * The voided corrections of an error of an original in force whose provider can correct it no more (audit r3
+     * EINV-2), not recorded yet, that {@link EInvoice#recordedErrorReduction} would take: each takes off and carries
+     * its written agreement. By the rule {@link #returnRecordable} applies to returns.
+     */
+    private List<EInvoice> errorRecordable(EInvoice.Snapshot standing) {
+        if (standing.type() != EInvoiceType.ORIGINAL || standing.reversedAt() != null) {
+            return List.of();
+        }
+        return invoices.findUnrecordedVoidedErrorAdjustmentsOf(standing.id()).stream()
+                .filter(voided -> voided.snapshot().agreementFileKey() != null
+                        && EInvoice.reducesOnly(voided.lines())
+                        && !EInvoiceDrafts.correctionSendable(providers, invoices, standing, voided.snapshot()))
+                .toList();
+    }
+
+    /**
      * The voided return adjustments of an original in force whose provider can correct it no more (audit r3 EINV-2), one
      * per return that has no live adjustment: what may be recorded from the portal against it. Empty for anything else,
      * and while the provider could still send them - the reduction then goes through it, as the void of a failed
@@ -280,7 +361,11 @@ class EInvoicePortalReductions {
             options.add(new EInvoiceIssuance.ReturnOption(returnRequestId, returns.find(returnRequestId)
                     .map(com.stockflow.order.api.ReturnRequestReference::rmaNumber).orElse(null)));
         }
-        return new EInvoiceIssuance.ExternalReductionOptions(deliveryFailed, options);
+        // Audit r3 EINV-2, the ERROR half: a correction of an error of such an original, voided to be made on the portal.
+        List<EInvoiceIssuance.ErrorOption> errors = errorRecordable(standing).stream()
+                .map(voided -> new EInvoiceIssuance.ErrorOption(voided.id(), voided.snapshot().code(),
+                        voided.snapshot().adjustmentReason(), voided.snapshot().grandTotal())).toList();
+        return new EInvoiceIssuance.ExternalReductionOptions(deliveryFailed, options, errors);
     }
 
     /** An issued invoice of a shipment that is not itself an adjustment: the only kind anything is recorded against. */

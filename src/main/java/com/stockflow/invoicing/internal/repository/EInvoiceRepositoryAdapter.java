@@ -274,6 +274,23 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
     }
 
     @Override
+    public List<EInvoice> findUnrecordedVoidedErrorAdjustmentsOf(UUID invoiceId) {
+        return jdbc.queryForList("""
+                SELECT v.id FROM invoicing.einvoice v
+                 WHERE v.original_einvoice_id = ? AND v.type = 'ADJUSTMENT' AND v.correction_basis = 'ERROR'
+                   AND v.status = 'VOIDED_DRAFT'
+                   AND NOT EXISTS (SELECT 1 FROM invoicing.einvoice_portal_record r WHERE r.voided_draft_id = v.id)
+                 ORDER BY v.voided_at DESC NULLS LAST, v.id""", UUID.class, invoiceId).stream()
+                .map(this::findById).flatMap(Optional::stream).toList();
+    }
+
+    @Override
+    public void notePortalRecordOf(UUID voidedDraftId, UUID recordedId) {
+        jdbc.update("INSERT INTO invoicing.einvoice_portal_record (voided_draft_id, recorded_einvoice_id) VALUES (?, ?)",
+                voidedDraftId, recordedId);
+    }
+
+    @Override
     public boolean hasLiveReturnAdjustment(UUID returnRequestId, UUID invoiceId) {
         return Boolean.TRUE.equals(jdbc.queryForObject("""
                 SELECT EXISTS (SELECT 1 FROM invoicing.einvoice

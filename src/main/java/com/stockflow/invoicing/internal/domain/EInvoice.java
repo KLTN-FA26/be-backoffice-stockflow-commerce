@@ -928,6 +928,77 @@ public final class EInvoice {
         return recorded;
     }
 
+    /**
+     * Audit r3 EINV-2, the ERROR half (Q-8: "Cùng một lệnh này dùng cho mọi ca SePay không làm được qua API"; HĐ-5): the
+     * correction of an error that reduces an original, drawn up here and agreed in writing with the buyer, that no
+     * provider could send - the accountant voided the draft and made it on the provider's portal - about to be recorded
+     * as {@link IssuedVia#PORTAL_RECORD}. It states what the voided draft stated, line for line, and carries its
+     * agreement: that is what both parties signed (TT 91/2026/TT-BTC Điều 10 khoản 1 điểm b), so nothing in it is
+     * recomputed or trimmed. Only a reduction is recorded this way - every line takes off, and the whole is below zero;
+     * a correction that raises or only rewords is not a reduction made on the portal.
+     *
+     * @param voided the voided ERROR adjustment of {@code original}, its agreement attached
+     * @throws BusinessException {@code EINVOICE_NOT_IN_FORCE} unless {@code original} is an issued invoice that is not
+     *         an adjustment; {@code EINVOICE_CORRECTION_NOT_APPLICABLE} for anything but a voided ERROR adjustment of
+     *         it, one with no agreement, or one with a line that adds or only words; {@code
+     *         EINVOICE_ADJUSTMENT_EXCEEDS_INVOICE} below nothing
+     */
+    public static EInvoice recordedErrorReduction(UUID id, String code, EInvoice original, EInvoice voided,
+                                                  String reason, LocalDate issueDate, Corrections corrections) {
+        Objects.requireNonNull(original, "original");
+        Objects.requireNonNull(voided, "voided");
+        if (original.status != EInvoiceStatus.ISSUED || original.type == EInvoiceType.ADJUSTMENT) {
+            throw new BusinessException(ErrorCode.EINVOICE_NOT_IN_FORCE,
+                    "Invoice %s is %s: only an issued invoice is reduced".formatted(original.code, original.status));
+        }
+        if (voided.type != EInvoiceType.ADJUSTMENT || voided.correctionBasis != CorrectionBasis.ERROR
+                || voided.status != EInvoiceStatus.VOIDED_DRAFT || !original.id.equals(voided.originalEInvoiceId)) {
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE, ("Invoice %s is not a voided "
+                    + "correction of an error of %s").formatted(voided.code, original.code));
+        }
+        if (voided.agreementFileKey == null) {
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE, ("Invoice %s carries no written "
+                    + "agreement with the buyer: a correction of an error is not made without one").formatted(voided.code));
+        }
+        if (!reducesOnly(voided.lines)) {
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE, ("Invoice %s does not only take "
+                    + "off: only a reduction made on the provider's portal is recorded").formatted(voided.code));
+        }
+        List<EInvoiceLine> lines = new ArrayList<>();
+        for (EInvoiceLine line : voided.lines) {
+            lines.add(line.corrected(Identifiers.newId(), lines.size() + 1, line.quantity(), line.unitsPerCarton(),
+                    line.unit(), line.unitPrice(), line.taxRate(), line.itemName()));
+        }
+        Totals totals = totals(lines, reason);
+        if (original.grandTotal.add(corrections.liveAdjustmentTotal()).add(totals.total()).signum() < 0) {
+            throw new BusinessException(ErrorCode.EINVOICE_ADJUSTMENT_EXCEEDS_INVOICE,
+                    "Reducing invoice %s by %s would take it below nothing".formatted(original.code,
+                            totals.total().toPlainString()));
+        }
+        EInvoice recorded = correction(id, code, EInvoiceType.ADJUSTMENT, original, CorrectionBasis.ERROR, reason,
+                voided.buyer, lines, totals, issueDate, null, List.of());
+        recorded.agreementFileKey = voided.agreementFileKey;
+        recorded.agreementNumber = voided.agreementNumber;
+        recorded.agreementDate = voided.agreementDate;
+        recorded.issuedVia = IssuedVia.PORTAL_RECORD;
+        return recorded;
+    }
+
+    /**
+     * Whether the lines of a correction only take off: none is a note, none adds to the amount or the tax, and they
+     * take something off in all - what {@link #recordedErrorReduction} records.
+     */
+    public static boolean reducesOnly(List<EInvoiceLine> lines) {
+        BigDecimal total = BigDecimal.ZERO;
+        for (EInvoiceLine line : lines) {
+            if (line.kind() == EInvoiceLine.Kind.NOTE || line.amount().signum() > 0 || line.taxAmount().signum() > 0) {
+                return false;
+            }
+            total = total.add(line.amount()).add(line.taxAmount());
+        }
+        return total.signum() < 0;
+    }
+
     /** {@link Warning#BUYER_PROFILE_INCOMPLETE} and {@link Warning#BUYER_EMAIL_MISSING}, as the buyer is now. */
     private static void buyerWarnings(InvoiceParty buyer, Set<Warning> warnings) {
         warnings.remove(Warning.BUYER_PROFILE_INCOMPLETE);

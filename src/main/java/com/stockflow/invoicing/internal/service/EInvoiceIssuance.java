@@ -546,23 +546,38 @@ public class EInvoiceIssuance {
      * @param deliveryFailed whether one of its failed delivery may be (basis DELIVERY_FAILED)
      * @param returns        the returns whose refunded goods wait on it, each recordable once (basis RETURN with that
      *                       return's id); empty when none
+     * @param errors         the voided corrections of an error of it that its provider could not send, each recordable
+     *                       once (basis ERROR with that draft's id, audit r3 EINV-2); empty when none
      */
-    public record ExternalReductionOptions(boolean deliveryFailed, List<ReturnOption> returns) {
+    public record ExternalReductionOptions(boolean deliveryFailed, List<ReturnOption> returns,
+                                           List<ErrorOption> errors) {
 
-        public static final ExternalReductionOptions NONE = new ExternalReductionOptions(false, List.of());
+        public static final ExternalReductionOptions NONE = new ExternalReductionOptions(false, List.of(), List.of());
 
         public ExternalReductionOptions {
             returns = List.copyOf(returns);
+            errors = List.copyOf(errors);
+        }
+
+        public ExternalReductionOptions(boolean deliveryFailed, List<ReturnOption> returns) {
+            this(deliveryFailed, returns, List.of());
         }
 
         /** Whether anything may be recorded. */
         public boolean any() {
-            return deliveryFailed || !returns.isEmpty();
+            return deliveryFailed || !returns.isEmpty() || !errors.isEmpty();
         }
     }
 
     /** A return whose refunded goods wait on a replacement, by its id - what {@code returnRequestId} takes - and RMA. */
     public record ReturnOption(UUID returnRequestId, String rmaNumber) {
+    }
+
+    /**
+     * A voided correction of an error that may be recorded from the portal (audit r3 EINV-2), by its id - what {@code
+     * voidedAdjustmentId} takes - its code, what it corrects, and what it takes off in all (below zero).
+     */
+    public record ErrorOption(UUID voidedAdjustmentId, String code, String reason, java.math.BigDecimal grandTotal) {
     }
 
     /** {@code EINVOICE_WITHDRAWAL_REFUSED} with what the screen shows (BE-59): from when, and what the provider said. */
@@ -759,13 +774,21 @@ public class EInvoiceIssuance {
     public record ExternalReduction(String templateCode, String symbol, Integer invoiceNumber, LocalDate issueDate,
                                     String taxAuthorityCode, String lookupCode, byte[] xml, byte[] pdf, String note,
                                     com.stockflow.invoicing.internal.domain.CorrectionBasis basis,
-                                    UUID returnRequestId) {
+                                    UUID returnRequestId, UUID voidedAdjustmentId) {
 
         /** A reduction of a failed delivery. */
         public ExternalReduction(String templateCode, String symbol, Integer invoiceNumber, LocalDate issueDate,
                                  String taxAuthorityCode, String lookupCode, byte[] xml, byte[] pdf, String note) {
             this(templateCode, symbol, invoiceNumber, issueDate, taxAuthorityCode, lookupCode, xml, pdf, note,
-                    com.stockflow.invoicing.internal.domain.CorrectionBasis.DELIVERY_FAILED, null);
+                    com.stockflow.invoicing.internal.domain.CorrectionBasis.DELIVERY_FAILED, null, null);
+        }
+
+        /** A reduction of a failed delivery, or of a return it names. */
+        public ExternalReduction(String templateCode, String symbol, Integer invoiceNumber, LocalDate issueDate,
+                                 String taxAuthorityCode, String lookupCode, byte[] xml, byte[] pdf, String note,
+                                 com.stockflow.invoicing.internal.domain.CorrectionBasis basis, UUID returnRequestId) {
+            this(templateCode, symbol, invoiceNumber, issueDate, taxAuthorityCode, lookupCode, xml, pdf, note, basis,
+                    returnRequestId, null);
         }
     }
 
@@ -816,7 +839,7 @@ public class EInvoiceIssuance {
                 xml.signedAt() != null ? xml.signedAt() : clock.instant(), xml.sellerTaxCode(),
                 new EInvoiceProvider.Documents(reduction.xml(), reduction.pdf()), reduction.note().strip(),
                 reduction.basis() == null ? com.stockflow.invoicing.internal.domain.CorrectionBasis.DELIVERY_FAILED
-                        : reduction.basis(), reduction.returnRequestId()), by);
+                        : reduction.basis(), reduction.returnRequestId(), reduction.voidedAdjustmentId()), by);
     }
 
     /**

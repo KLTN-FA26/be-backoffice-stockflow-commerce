@@ -55,6 +55,9 @@ final class InvoicingWebMapper {
         if (!external.returns().isEmpty()) {
             bases.add("RETURN");
         }
+        if (!external.errors().isEmpty()) {
+            bases.add("ERROR");
+        }
         List<String> warnings = new java.util.ArrayList<>(s.warnings().stream().sorted().map(Enum::name).toList());
         if (earlierPending != null) {
             warnings.add(EARLIER_INVOICE_PENDING);
@@ -85,7 +88,9 @@ final class InvoicingWebMapper {
                 withdrawal.evidenceRequired(), external.any(), List.copyOf(bases),
                 external.returns().stream().map(option -> new EInvoiceResponse.ExternalReductionReturn(
                         option.returnRequestId(), option.rmaNumber())).toList(),
-                watch == null ? null : watch.watchUntil(), watch == null ? null : watch.foundAt());
+                watch == null ? null : watch.watchUntil(), watch == null ? null : watch.foundAt(),
+                external.errors().stream().map(option -> new EInvoiceResponse.ExternalReductionError(
+                        option.voidedAdjustmentId(), option.code(), option.reason(), option.grandTotal())).toList());
     }
 
     static EInvoiceListItemResponse toResponse(EInvoiceQueries.Listing row, Instant now) {

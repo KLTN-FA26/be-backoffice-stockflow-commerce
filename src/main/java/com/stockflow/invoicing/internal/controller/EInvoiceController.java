@@ -381,8 +381,11 @@ class EInvoiceController {
     @PostMapping(path = "/{id}/external-reductions", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @Operation(summary = "Record a reduction of a failed delivery made on the provider's portal (WF-05 Q-8, Q-9): for an "
             + "original whose own reduction was voided as UNSENDABLE_REVERSAL, or a replacement whose shipment is not "
-            + "delivered now (basis DELIVERY_FAILED, the default); or a return's goods on a replacement (basis RETURN "
-            + "with returnRequestId: the refunded pieces kept for it). templateCode, symbol, invoiceNumber, issueDate, "
+            + "delivered now (basis DELIVERY_FAILED, the default); or a return's goods on a replacement, or on an "
+            + "original no provider can correct whose return adjustment was voided (basis RETURN with returnRequestId: "
+            + "the refunded pieces kept for it); or a correction of an error of such an original, agreed in writing and "
+            + "voided (basis ERROR with voidedAdjustmentId, one of externalReductionErrors: recorded as that draft "
+            + "stated it, with its agreement, once). templateCode, symbol, invoiceNumber, issueDate, "
             + "the files xml and pdf, and a note; "
             + "taxAuthorityCode and lookupCode when the XML does not carry them. Recorded as an issued adjustment "
             + "(issuedVia PORTAL_RECORD) of what the invoice still invoices. 409 "
@@ -402,11 +405,12 @@ class EInvoiceController {
             @RequestParam String note,
             @RequestParam(required = false) com.stockflow.invoicing.internal.domain.CorrectionBasis basis,
             @RequestParam(required = false) UUID returnRequestId,
+            @RequestParam(required = false) UUID voidedAdjustmentId,
             @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(response(issuance.recordExternalReduction(id, new EInvoiceIssuance.ExternalReduction(
                 templateCode, symbol, invoiceNumber, issueDate, taxAuthorityCode, lookupCode, bytes(xml), bytes(pdf),
-                note, basis, returnRequestId), user.userId()), clock.instant()));
+                note, basis, returnRequestId, voidedAdjustmentId), user.userId()), clock.instant()));
     }
 
     @PostMapping("/{id}/email")

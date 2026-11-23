@@ -56,7 +56,11 @@ import java.util.UUID;
  *   <li>{@code externalReductionAllowed} - "Ghi hoá đơn giảm" ({@code /external-reductions}) is accepted: {@code
  *       externalReductionBases} lists {@code DELIVERY_FAILED} when a failed delivery's reduction may be recorded, and
  *       {@code RETURN} when a return's refunded goods wait on this replacement - {@code externalReductionReturns}
- *       names each, with the id {@code returnRequestId} takes.</li>
+ *       names each, with the id {@code returnRequestId} takes; {@code RETURN} also on an original no provider can
+ *       correct any more whose return adjustment was voided (audit r3 EINV-2); {@code ERROR} when a correction of an
+ *       error of such an original, agreed in writing, was voided to be made on the provider's portal -
+ *       {@code externalReductionErrors} names each voided draft, with the id {@code voidedAdjustmentId} takes, its
+ *       code, what it corrects and what it takes off in all (below zero).</li>
  * </ul>
  *
  * <p>Audit r3 EINV-3 (decision §4.4 HĐ-1 step 3: "sau khi rút có dòng 'đang tra lại tới ngày ...'"): {@code watchUntil}
@@ -84,10 +88,17 @@ public record EInvoiceResponse(UUID id, String code, String type, String status,
                                Instant withdrawableFrom, boolean withdrawalEvidenceRequired,
                                boolean externalReductionAllowed, List<String> externalReductionBases,
                                List<ExternalReductionReturn> externalReductionReturns, Instant watchUntil,
-                               Instant watchFoundAt) {
+                               Instant watchFoundAt, List<ExternalReductionError> externalReductionErrors) {
 
     /** A return whose refunded goods wait on this replacement: {@code returnRequestId} is what the record takes. */
     public record ExternalReductionReturn(UUID returnRequestId, String rmaNumber) {
+    }
+
+    /**
+     * A voided correction of an error of this original that may be recorded from the provider's portal (audit r3
+     * EINV-2): {@code voidedAdjustmentId} is what the record takes; {@code grandTotal} is below zero.
+     */
+    public record ExternalReductionError(UUID voidedAdjustmentId, String code, String reason, BigDecimal grandTotal) {
     }
 
     public record Agreement(String number, LocalDate date) {

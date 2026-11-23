@@ -109,6 +109,19 @@ public interface EInvoiceRepository {
      */
     List<EInvoice> findVoidedReturnAdjustmentsOf(UUID invoiceId);
 
+    /**
+     * Audit r3 EINV-2, the ERROR half: the ERROR adjustments of {@code invoiceId} that were voided and that no
+     * adjustment recorded from the provider's portal stands for yet ({@code invoicing.einvoice_portal_record}), latest
+     * voided first - what the accountant may still record when the invoice's provider could not send them (Q-8, HĐ-5).
+     */
+    List<EInvoice> findUnrecordedVoidedErrorAdjustmentsOf(UUID invoiceId);
+
+    /**
+     * Notes that the adjustment {@code recordedId}, recorded from the provider's portal, stands for the voided draft
+     * {@code voidedDraftId}: each voided draft is recorded once ({@code pk_einvoice_portal_record}).
+     */
+    void notePortalRecordOf(UUID voidedDraftId, UUID recordedId);
+
     /** Whether an adjustment for this return, not voided, already names this invoice ({@code uk_einvoice_return_adjustment}). */
     boolean hasLiveReturnAdjustment(UUID returnRequestId, UUID invoiceId);
 
