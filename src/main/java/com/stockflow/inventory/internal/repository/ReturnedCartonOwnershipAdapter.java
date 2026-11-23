@@ -136,7 +136,8 @@ class ReturnedCartonOwnershipAdapter implements ReturnedCartonOwnership {
         entityManager.flush();
         return jdbc.query("SELECT " + CUSTODY_COLUMNS + """
                  FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
-                WHERE p.return_request_id = :request AND p.return_ownership LIKE 'CUSTOMER\\_%'
+                WHERE p.return_request_id = :request
+                  AND p.return_ownership IN ('CUSTOMER_HELD', 'CUSTOMER_SENT_BACK', 'CUSTOMER_DESTROYED')
                 ORDER BY p.lpn""", new MapSqlParameterSource("request", returnRequestId),
                 ReturnedCartonOwnershipAdapter::custody);
     }
@@ -155,7 +156,8 @@ class ReturnedCartonOwnershipAdapter implements ReturnedCartonOwnership {
         entityManager.flush();
         return jdbc.query("SELECT " + CUSTODY_COLUMNS + """
                  FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
-                WHERE p.id = :id AND p.return_ownership LIKE 'CUSTOMER\\_%'""",
+                WHERE p.id = :id
+                  AND p.return_ownership IN ('CUSTOMER_HELD', 'CUSTOMER_SENT_BACK', 'CUSTOMER_DESTROYED')""",
                 new MapSqlParameterSource("id", id.value()), ReturnedCartonOwnershipAdapter::custody)
                 .stream().findFirst();
     }

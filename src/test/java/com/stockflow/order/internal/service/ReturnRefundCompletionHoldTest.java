@@ -5,6 +5,7 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.storage.FileTransfers;
 import com.stockflow.common.storage.StagedUploads;
 import com.stockflow.customer.api.CustomerService;
+import com.stockflow.inventory.api.CartonReturns;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
@@ -70,7 +71,8 @@ class ReturnRefundCompletionHoldTest {
     private final ReturnRequestService service = new ReturnRequestService(returns, orders,
             mock(OrderEventPublisher.class), payments, mock(CustomerService.class), mock(FileTransfers.class),
             mock(StagedUploads.class), mock(TransactionOperations.class), POLICY,
-            Clock.fixed(NOW, ZoneOffset.UTC), deliveryFailures, mock(ReturnAllowances.class));
+            Clock.fixed(NOW, ZoneOffset.UTC), deliveryFailures, mock(ReturnAllowances.class),
+            mock(CartonReturns.class));
 
     private final UUID orderId = UUID.randomUUID();
     private final Order order = mock(Order.class);
