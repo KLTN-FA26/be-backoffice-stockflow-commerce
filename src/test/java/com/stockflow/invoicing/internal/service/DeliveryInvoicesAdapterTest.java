@@ -63,4 +63,27 @@ class DeliveryInvoicesAdapterTest {
 
         assertThat(adapter.shippingFeeUnissued(ORDER)).isFalse();
     }
+
+    @Test
+    @DisplayName("WF-05 Q-19: a share of the fee waived for a shipment that came back is owed by nobody - the order "
+            + "does not wait for it; X-6: an unissued return adjustment is reported as it stands")
+    void aWaivedShareIsNotWaitedFor() {
+        when(queries.shippingFeeInvoiceUnissued(ORDER)).thenReturn(false);
+        // 2,000 of 3,000 pieces delivered and invoiced with 66,667; the third shipment came back: payment waived
+        // 36,667 of the 110,000 with VAT, so 100,000 - round(100,000 x 36,667 / 110,000) = 66,666 is owed - which
+        // the invoices carry already (a dong of the pieces' rounding over it): no rest is waited for.
+        when(shipments.shippingFee(any(), any())).thenReturn(Optional.of(new OrderShippingFee(ORDER, "SO-1",
+                UUID.randomUUID(), "HD-1", "VND", new DeliveredShipment.Fee(FeeKind.SHIPPING_FEE, null,
+                new BigDecimal("100000"), new BigDecimal("10.00"), new BigDecimal("10.00")), 2000, NOW,
+                java.util.List.of(), new com.stockflow.order.api.ShippingFeeWaiver(new BigDecimal("36667"),
+                new BigDecimal("110000")))));
+        when(invoices.invoicedOfOrder(ORDER))
+                .thenReturn(new FeeAllocation.Invoiced(2000, new BigDecimal("66667"), Set.of()));
+
+        assertThat(adapter.shippingFeeUnissued(ORDER)).isFalse();
+
+        when(invoices.returnAdjustmentUnissued(ORDER)).thenReturn(true);
+        assertThat(adapter.returnAdjustmentUnissued(ORDER)).isTrue();
+        assertThat(adapter.returnAdjustmentUnissued(null)).isFalse();
+    }
 }

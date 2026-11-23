@@ -17,6 +17,7 @@ import com.stockflow.invoicing.internal.domain.EInvoiceProvider.Result;
 import com.stockflow.invoicing.internal.domain.EInvoiceProvider.ResultState;
 import com.stockflow.invoicing.internal.domain.EInvoiceProvider.Submission;
 import com.stockflow.invoicing.internal.domain.EInvoiceProvider.SubmissionOutcome;
+import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
 import com.stockflow.invoicing.internal.domain.ProviderCallLog;
 import com.stockflow.invoicing.internal.domain.ProviderCallLog.Operation;
@@ -32,6 +33,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.Function;
@@ -106,11 +108,17 @@ import java.util.function.Supplier;
  * {@code withdraw-after} after its last send. The price is an outage longer than that hour: an invoice nobody could
  * send is not sent again on its own once the provider is back, and waits for the accountant's withdrawal.</p>
  *
- * <p>An invoice the provider keeps calling "still working" ({@code PENDING}) has no such exit: the provider says it
- * is working on it, and may yet issue it. One it keeps calling "cannot say" ({@code UNKNOWN}) has a later one: the
- * accountant, having asked the provider (SePay's portal or support), may take it back once nothing was sent under it
- * for {@code withdraw-unknown-after} (a day) - see {@link #withdraw}. Without it, an answer that never comes would hold
- * the invoice, and every later-dated one of its series, for good.</p>
+ * <p>An invoice the provider keeps calling "still working" ({@code PENDING}) is never taken back: the provider holds
+ * it, and may yet issue it - SePay's "issued, not numbered yet" and its tracking {@code Success} are that too (WF-05
+ * BE-07, decision Q-5: "issued, no number" is waiting, never withdrawn). Of the answers that say nothing
+ * ({@code UNKNOWN}) only one may be: the provider saying in so many words that it cannot confirm the result
+ * ({@link EInvoiceProvider#resultUnconfirmed}), once nothing was sent under it for {@code withdraw-unknown-after} (a
+ * day), and only with the reference of the provider's support's written answer, kept as the refusal's message under
+ * {@link EInvoice#WITHDRAWN_RESULT_UNCONFIRMED_CODE}. A transaction let go that way, or as "no record", is asked about
+ * daily for {@code withdraw-watch-for} (30 days) afterwards ({@link #watchLetGoTransactions}): one the provider shows
+ * issued after all is recorded and the accountants told ({@code DUPLICATE_RISK}). Every other waiting state that never
+ * settles is left to the accountant's record of what the provider's portal shows ({@link #recordPortalResult},
+ * decision Q-8), and they are told once its result is overdue ({@code PROVIDER_RESULT_OVERDUE}).</p>
  *
  * <h2>A refusal nobody confirmed is recorded only once it is settled (HĐ-1)</h2>
  *
@@ -142,6 +150,9 @@ public class EInvoiceIssuance {
     private final InvoicingProperties properties;
     private final Clock clock;
     private final AsyncTaskExecutor executor;
+    private final EInvoiceDrafts drafts;
+    private final EInvoiceQuotaGate quota;
+    private final EInvoicePortalReductions portalReductions;
 
     /**
      * How long a lease on talking to the provider about an invoice lasts unless renewed. Longer than the longest single
@@ -152,7 +163,11 @@ public class EInvoiceIssuance {
 
     EInvoiceIssuance(EInvoiceIssuanceSteps steps, EInvoiceProviders providers, ProviderCallRecorder calls,
                      InvoicingProperties properties, Clock clock,
-                     @Qualifier("applicationTaskExecutor") AsyncTaskExecutor executor) {
+                     @Qualifier("applicationTaskExecutor") AsyncTaskExecutor executor, EInvoiceDrafts drafts,
+                     EInvoiceQuotaGate quota, EInvoicePortalReductions portalReductions) {
+        this.portalReductions = portalReductions;
+        this.drafts = drafts;
+        this.quota = quota;
         this.steps = steps;
         this.providers = providers;
         this.calls = calls;
@@ -172,9 +187,72 @@ public class EInvoiceIssuance {
      */
     @Auditable(action = AuditAction.APPROVE, resourceType = "einvoice", resourceId = "#id")
     public EInvoice.Snapshot issue(UUID id, Long expectedVersion, UUID by) {
+        String provider = steps.providerFor(id);
+        if (quota.exhausted(provider)) {
+            throw quotaExhausted(id);
+        }
         EInvoice.Snapshot submitting = steps.submit(id, expectedVersion, by);
+        quota.sent(provider);
         sendSoon(id);
         return submitting;
+    }
+
+    /**
+     * The accountant issues a draft (F-16): every check the automatic issuing makes is made again first (WF-05 BE-25,
+     * invariant V8), then the draft is submitted as {@link #issue(UUID, Long, UUID)} does.
+     * <ol>
+     *   <li><b>The provider's plan</b> (BE-54, decision Q-22 row BR-09): known to have no invoice left, nothing is sent -
+     *       the draft stays a draft ({@code EINVOICE_QUOTA_EXHAUSTED}); sent anyway, SePay would refuse it for good and
+     *       it would have to be reopened by hand.</li>
+     *   <li><b>The draft against the rules as they are now</b> ({@link EInvoiceDrafts#recheckForIssue}): the shipment
+     *       still delivered ({@code EINVOICE_NOT_INVOICEABLE}), the rates and tax classes of today, the buyer as the
+     *       customer's legal profile names it. Whatever is new is stored on the draft; what the accountant did not
+     *       acknowledge refuses the issue ({@code EINVOICE_DRAFT_OUT_OF_DATE}, {@code details.warnings}) - the screen
+     *       they decided on was not the draft that would have gone out.</li>
+     *   <li><b>Late</b> (decision Q-10): an original issued after its delivery day under a provider that takes only
+     *       today's date carries today's date and the label "issued late"; the accountant issuing it says why
+     *       ({@code EINVOICE_LATE_ISSUE_REASON_REQUIRED} without it), and the reason is kept in the audit log with the
+     *       acknowledged warnings. The automatic issuing is never held back for lateness: each hour waited makes it
+     *       later.</li>
+     * </ol>
+     *
+     * @param acknowledged the warnings the accountant read and accepts; may be null
+     * @param lateReason   why an original is issued after its delivery day; required only then, at most 500
+     */
+    @Auditable(action = AuditAction.APPROVE, resourceType = "einvoice", resourceId = "#id",
+            details = "{acknowledgedWarnings: #acknowledged, lateReason: #lateReason}")
+    public EInvoice.Snapshot issue(UUID id, long expectedVersion, java.util.Set<String> acknowledged,
+                                   String lateReason, UUID by) {
+        if (lateReason != null && lateReason.strip().length() > 500) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "lateReason: at most 500 characters",
+                    List.of(FieldError.of("lateReason", "at most 500 characters")));
+        }
+        String provider = steps.providerFor(id);
+        if (quota.exhausted(provider)) {
+            throw quotaExhausted(id);
+        }
+        EInvoiceDrafts.IssueCheck check = drafts.recheckForIssue(id, expectedVersion, acknowledged);
+        if (!check.unacknowledged().isEmpty()) {
+            List<String> warnings = check.unacknowledged().stream().sorted().toList();
+            throw new BusinessException(ErrorCode.EINVOICE_DRAFT_OUT_OF_DATE, ("The draft is not what was read: %s "
+                    + "to be acknowledged before it is issued").formatted(warnings), List.of(),
+                    java.util.Map.of("warnings", warnings, "version", check.version()));
+        }
+        EInvoice.Snapshot submitting = steps.submit(id, check.version(), by, true,
+                lateReason == null || lateReason.isBlank() ? null : lateReason.strip());
+        quota.sent(provider);
+        sendSoon(id);
+        return submitting;
+    }
+
+    private static BusinessException quotaExhausted(UUID id) {
+        return new BusinessException(ErrorCode.EINVOICE_QUOTA_EXHAUSTED, ("The provider's plan has no invoice left; "
+                + "%s stays a draft and is issued once the plan is topped up").formatted(id));
+    }
+
+    /** Whether the provider's plan is known to be used up (BE-54); the automatic issuing skips its batch then. */
+    boolean quotaExhausted(String provider) {
+        return quota.exhausted(provider);
     }
 
     /**
@@ -213,6 +291,10 @@ public class EInvoiceIssuance {
                 throw new BusinessException(ErrorCode.EINVOICE_INVALID_TRANSITION,
                         "Invoice %s is %s, not at the provider".formatted(invoice.code(), invoice.status()));
             }
+            // BE-54: sent again as a new transaction it would only be refused for good while the plan is used up.
+            if (quota.exhausted(invoice.provider())) {
+                throw quotaExhausted(id);
+            }
             EInvoiceProvider provider = providers.require(invoice.provider());
             if (!provider.resubmission().forgottenAt(invoice.submittedAt(), clock.instant())) {
                 throw new BusinessException(ErrorCode.EINVOICE_RESUBMISSION_REFUSED,
@@ -235,6 +317,7 @@ public class EInvoiceIssuance {
                     "The provider confirmed it holds no invoice for this transaction; sent again as a new one");
             steps.reopenUnknown(id);
             submitting = steps.submit(id, null, by);
+            quota.sent(invoice.provider());
         } finally {
             release(id, holder);
         }
@@ -243,10 +326,16 @@ public class EInvoiceIssuance {
         return submitting;
     }
 
+    /** As {@link #withdraw(UUID, long, String, String, UUID)} without a reference to the provider's support. */
+    public EInvoice.Snapshot withdraw(UUID id, long expectedVersion, String reason, UUID by) {
+        return withdraw(id, expectedVersion, reason, null, by);
+    }
+
     /**
-     * Takes back an invoice stuck at the provider (HĐ-1): SUBMITTING → REJECTED under {@link EInvoice#WITHDRAWN_CODE},
-     * with the accountant's reason as its message, so it is reopened, corrected if need be, and issued again under a new
-     * transaction like any refused invoice. Not announced as a refusal: the accountant did it.
+     * Takes back an invoice stuck at the provider (HĐ-1): SUBMITTING → REJECTED, so it is reopened, corrected if need be,
+     * and issued again under a new transaction like any refused invoice. Not announced as a refusal: the accountant did
+     * it. The old transaction is asked about daily for {@code withdraw-watch-for} (30 days) afterwards
+     * ({@link EInvoiceIssuanceSteps#rejected}, {@link #watchLetGoTransactions}).
      *
      * <h2>Why this cannot issue the invoice twice</h2>
      *
@@ -254,12 +343,20 @@ public class EInvoiceIssuance {
      * new transaction is issued too. Each of the conditions below closes a way for that to happen; all of them hold, or
      * nothing changes:</p>
      * <ol>
-     *   <li><b>The provider, asked now, has no record of the transaction</b> ({@code NOT_FOUND}) - or, the one exception,
-     *       says it cannot confirm what became of it (SePay's "chưa xác nhận được kết quả", {@code UNKNOWN}) and nothing
-     *       was sent under it for {@code stockflow.invoicing.withdraw-unknown-after} (a day by default). It holds it, is
-     *       still working on it ({@code PENDING} - SePay's tracking says {@code Pending} while it retries), says
-     *       {@code UNKNOWN} sooner, or does not answer: refused. ISSUED and REJECTED are what "check again"
-     *       ({@link #reconcile}) records, and are refused here too.</li>
+     *   <li><b>The provider, asked now, has no record of the transaction</b> ({@code NOT_FOUND}; code
+     *       {@link EInvoice#WITHDRAWN_CODE}) - or, the one exception (WF-05 BE-07, decision Q-5), says in so many words
+     *       that it cannot confirm what became of it ({@link EInvoiceProvider#resultUnconfirmed}, SePay's "chưa xác nhận
+     *       được kết quả"), nothing was sent under it for {@code withdraw-unknown-after} (a day), and the accountant gives
+     *       the reference of the provider's support's written answer ({@code supportReference}, kept as the refusal's
+     *       message under {@link EInvoice#WITHDRAWN_RESULT_UNCONFIRMED_CODE}; {@code EINVOICE_WITHDRAWAL_EVIDENCE_REQUIRED}
+     *       without it). Never anything else: it holds it or is still working on it ({@code PENDING} - SePay's
+     *       "issued, not numbered yet" and its tracking {@code Success} included), an answer that says nothing
+     *       ({@code UNKNOWN} for any other reason: unread, a 4xx, an error with no entry), no answer. Those wait, and
+     *       one that never settles is recorded from the provider's portal ({@link #recordPortalResult}). It used to be
+     *       taken back after a day on any {@code UNKNOWN} - which an invoice SePay had issued without its number yet
+     *       was - and then issued a second time.</li>
+     *   <li><b>The provider never once said it holds the transaction</b> ({@link ProviderCallLog#providerHeld}): a send
+     *       answered "already there", a look-up that found it issued. That proof outlives the answer of the moment.</li>
      *   <li><b>Nothing was sent under it for longer than the provider can still be working on it</b>
      *       ({@code stockflow.invoicing.withdraw-after}, three hours by default): longer than SePay's own retries of a
      *       request it took in ("up to 2 hours", its tracking documentation), than every provider's quiet period
@@ -274,26 +371,32 @@ public class EInvoiceIssuance {
      *       the provider. A stray send of the old one is the provider's duplicate of itself (SePay:
      *       {@code EINVOICE_DOCUMENT_EXISTED}), not a second invoice of ours.</li>
      * </ol>
-     * <p>What is left is a provider that holds a request out of sight for longer than the configured time and issues it
-     * afterwards - against its own documentation; and, through the {@code UNKNOWN} exception, a provider that holds an
-     * unconfirmed result for more than {@code withdraw-unknown-after} and confirms it as issued afterwards. That second
-     * risk is taken on purpose: without it an invoice SePay never settles stays SUBMITTING for good and holds back every
-     * later-dated invoice of its series, which is a certain breach of the issuing deadline against a possible duplicate.
-     * The reason recorded is the accountant's account of having checked on the provider's portal or with its support,
-     * and should say what they found.</p>
      *
-     * @param reason why, as the accountant states it after checking the provider's portal; required, at most 500
+     * <p>A refusal tells the screen when the invoice may be taken back and what the provider said (BE-59, F-12):
+     * {@code details.withdrawableFrom} (absent when never, or not known yet) and {@code details.providerState}
+     * ({@code PENDING}, {@code UNKNOWN}, {@code NOT_FOUND}, {@code UNCONFIRMED}, or {@code ISSUED} / {@code REJECTED} for
+     * an answer "check again" records; absent when the provider was not asked).</p>
+     *
+     * @param reason           why, as the accountant states it after checking the provider's portal; required, at most
+     *                         500; kept in the audit log, and as the refusal's message for a "no record" withdrawal
+     * @param supportReference the provider's support ticket, or the words of its written answer, at most 200; required
+     *                         only to take back a result the provider cannot confirm
      * @throws BusinessException {@code EINVOICE_NOT_FOUND}; {@code OPTIMISTIC_LOCK}; {@code VALIDATION_FAILED} without a
      *         reason; 409 {@code EINVOICE_INVALID_TRANSITION} when it is not at the provider; 409
      *         {@code EINVOICE_WITHDRAWAL_REFUSED} when it was sent too recently, the provider holds it or may, or
-     *         somebody is asking the provider about it right now; 503 {@code EINVOICE_PROVIDER_UNAVAILABLE} when the
-     *         provider does not answer
+     *         somebody is asking the provider about it right now; 409 {@code EINVOICE_WITHDRAWAL_EVIDENCE_REQUIRED}; 503
+     *         {@code EINVOICE_PROVIDER_UNAVAILABLE} when the provider does not answer
      */
-    @Auditable(action = AuditAction.REJECT, resourceType = "einvoice", resourceId = "#id")
-    public EInvoice.Snapshot withdraw(UUID id, long expectedVersion, String reason, UUID by) {
+    @Auditable(action = AuditAction.REJECT, resourceType = "einvoice", resourceId = "#id",
+            details = "{reason: #reason, supportReference: #supportReference}")
+    public EInvoice.Snapshot withdraw(UUID id, long expectedVersion, String reason, String supportReference, UUID by) {
         if (reason == null || reason.isBlank() || reason.strip().length() > 500) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "reason: required, at most 500 characters",
                     List.of(FieldError.of("reason", "required, at most 500 characters")));
+        }
+        if (supportReference != null && supportReference.strip().length() > 200) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "supportReference: at most 200 characters",
+                    List.of(FieldError.of("supportReference", "at most 200 characters")));
         }
         steps.get(id);
         UUID holder = Identifiers.newId();
@@ -315,9 +418,9 @@ public class EInvoiceIssuance {
             Instant lastSent = steps.lastSent(id, invoice.transactionId()).orElse(invoice.submittedAt());
             Instant now = clock.instant();
             if (lastSent != null && Duration.between(lastSent, now).compareTo(properties.withdrawAfter()) < 0) {
-                throw new BusinessException(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED, ("Invoice %s was last sent at %s; the "
-                        + "provider may still be working on it until %s").formatted(invoice.code(), lastSent,
-                        lastSent.plus(properties.withdrawAfter())));
+                throw refused(("Invoice %s was last sent at %s; the provider may still be working on it until %s")
+                        .formatted(invoice.code(), lastSent, lastSent.plus(properties.withdrawAfter())),
+                        lastSent.plus(properties.withdrawAfter()), null);
             }
             Result result;
             try {
@@ -326,27 +429,322 @@ public class EInvoiceIssuance {
                 throw new BusinessException(ErrorCode.EINVOICE_PROVIDER_UNAVAILABLE,
                         "The provider did not say whether it holds invoice %s".formatted(invoice.code()));
             }
-            boolean unknownLongEnough = result.state() == ResultState.UNKNOWN && lastSent != null
-                    && Duration.between(lastSent, now).compareTo(properties.withdrawUnknownAfter()) >= 0;
-            if (result.state() == ResultState.UNKNOWN && !unknownLongEnough) {
-                throw new BusinessException(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED, ("Invoice %s: the provider cannot "
-                        + "say what became of it; it may be taken back from %s, after checking with the provider")
-                        .formatted(invoice.code(), lastSent == null ? "-"
-                                : lastSent.plus(properties.withdrawUnknownAfter())));
+            boolean unconfirmed = result.state() == ResultState.UNKNOWN
+                    && provider.resultUnconfirmed(result.errorCode());
+            String state = unconfirmed ? "UNCONFIRMED" : result.state().name();
+            if (result.state() != ResultState.NOT_FOUND && !unconfirmed) {
+                throw refused(("Invoice %s: the provider does not say it has no record of it (%s%s); it is waited for, "
+                        + "or its result recorded from the provider's portal").formatted(invoice.code(),
+                        result.state(), result.errorCode() == null ? "" : ", " + result.errorCode()), null, state);
             }
-            if (result.state() != ResultState.NOT_FOUND && !unknownLongEnough) {
-                throw new BusinessException(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED, ("Invoice %s: the provider does not "
-                        + "say it has no record of it (%s%s); check it again instead").formatted(invoice.code(),
-                        result.state(), result.errorCode() == null ? "" : ", " + result.errorCode()));
+            if (calls.providerHeld(id, invoice.transactionId())) {
+                throw refused(("Invoice %s: the provider once said it holds this transaction; it is never taken back")
+                        .formatted(invoice.code()), null, state);
             }
-            steps.rejected(id, invoice.transactionId(), EInvoice.WITHDRAWN_CODE, reason.strip());
+            if (unconfirmed) {
+                Instant from = lastSent == null ? now : lastSent.plus(properties.withdrawUnknownAfter());
+                if (now.isBefore(from)) {
+                    throw refused(("Invoice %s: the provider cannot confirm what became of it; it may be taken back "
+                            + "from %s, on its support's written answer").formatted(invoice.code(), from), from, state);
+                }
+                if (supportReference == null || supportReference.isBlank()) {
+                    throw new BusinessException(ErrorCode.EINVOICE_WITHDRAWAL_EVIDENCE_REQUIRED, ("Invoice %s: the "
+                            + "provider cannot confirm its result; it is taken back only on the provider's support's "
+                            + "written answer (supportReference)").formatted(invoice.code()),
+                            List.of(FieldError.of("supportReference", "required")),
+                            java.util.Map.of("providerState", state));
+                }
+                steps.rejected(id, invoice.transactionId(), EInvoice.WITHDRAWN_RESULT_UNCONFIRMED_CODE,
+                        supportReference.strip());
+            } else {
+                steps.rejected(id, invoice.transactionId(), EInvoice.WITHDRAWN_CODE, reason.strip());
+            }
             log.warn("E-invoice {} (transaction {}) was taken back from {} by {}: the provider {}",
                     LogSafe.text(invoice.code()), LogSafe.text(invoice.transactionId()), invoice.provider(), by,
-                    unknownLongEnough ? "still cannot say what became of it" : "has no record of it");
+                    unconfirmed ? "cannot confirm its result (its support's answer recorded)" : "has no record of it");
         } finally {
             release(id, holder);
         }
         return steps.get(id);
+    }
+
+    /** {@code EINVOICE_WITHDRAWAL_REFUSED} with what the screen shows (BE-59): from when, and what the provider said. */
+    private static BusinessException refused(String message, Instant withdrawableFrom, String providerState) {
+        java.util.Map<String, Object> details = new java.util.LinkedHashMap<>();
+        if (withdrawableFrom != null) {
+            details.put("withdrawableFrom", withdrawableFrom.toString());
+        }
+        if (providerState != null) {
+            details.put("providerState", providerState);
+        }
+        return new BusinessException(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED, message, List.of(), details);
+    }
+
+    /** What the provider's portal shows for an invoice stuck at the provider (F-13). */
+    public enum PortalOutcome {
+        /** Issued, with a number, the tax authority's code and the files. */
+        ISSUED,
+        /** Refused by the tax authority: no invoice in force under the transaction. */
+        REFUSED_BY_TAX_AUTHORITY
+    }
+
+    /** What the accountant records from the provider's portal; for an issued invoice its number, codes and files. */
+    public record PortalRecord(PortalOutcome outcome, Integer invoiceNumber, String taxAuthorityCode,
+                               String lookupCode, byte[] xml, byte[] pdf, String note) {
+    }
+
+    /**
+     * Records the result of an invoice stuck at the provider as the provider's portal shows it (WF-05 BE-08, decision
+     * Q-8; F-13): the way out of every SUBMITTING state that never settles on its own - SePay holding an invoice with a
+     * number and no tax authority code, an entry the tax authority refused, an answer that keeps saying nothing, a
+     * provider that can no longer be called. The accountants are told when such an invoice is overdue
+     * ({@code PROVIDER_RESULT_OVERDUE}).
+     *
+     * <ul>
+     *   <li><b>Issued</b>: the XML handed in must be this invoice's - its template, symbol, number and seller's tax
+     *       code, and the tax authority's code where it carries one ({@code EINVOICE_PORTAL_FILE_INVALID}) - and the
+     *       provider, asked now, must not say otherwise: issued under another number or series, no record, refused
+     *       ({@code EINVOICE_PORTAL_RECORD_MISMATCH}). A provider that cannot be asked any more is not asked; the XML is
+     *       the invoice in law. Recorded ISSUED, {@code issued_via} PORTAL_RECORD, the files stored and locked, the
+     *       signature checked and the corrected invoice marked - as the provider's own answer would be
+     *       ({@link EInvoiceIssuanceSteps#issuedFromPortal}).</li>
+     *   <li><b>Refused by the tax authority</b>: never while the provider says it is issued, nor sooner than
+     *       {@code withdraw-after} after the last send; REJECTED under {@link EInvoice#REFUSED_BY_TAX_AUTHORITY_CODE}
+     *       with the note, and its transaction watched like a withdrawn one.</li>
+     * </ul>
+     *
+     * @throws BusinessException {@code EINVOICE_NOT_FOUND}; {@code OPTIMISTIC_LOCK}; {@code VALIDATION_FAILED};
+     *         {@code EINVOICE_INVALID_TRANSITION} unless SUBMITTING; {@code EINVOICE_PORTAL_FILE_INVALID};
+     *         {@code EINVOICE_PORTAL_RECORD_MISMATCH}; {@code EINVOICE_WITHDRAWAL_REFUSED} for a refusal recorded too
+     *         early; {@code EINVOICE_PROVIDER_UNAVAILABLE} when a callable provider does not answer
+     */
+    @Auditable(action = AuditAction.APPROVE, resourceType = "einvoice", resourceId = "#id",
+            details = "{portalOutcome: #record.outcome(), invoiceNumber: #record.invoiceNumber(), note: #record.note()}")
+    public EInvoice.Snapshot recordPortalResult(UUID id, long expectedVersion, PortalRecord record, UUID by) {
+        java.util.Objects.requireNonNull(record, "record");
+        if (record.outcome() == null || blank(record.note()) || record.note().strip().length() > 500) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "outcome and a note (at most 500) are required",
+                    List.of(FieldError.of("note", "required, at most 500 characters")));
+        }
+        PortalInvoiceXml xml = null;
+        if (record.outcome() == PortalOutcome.ISSUED) {
+            if (record.invoiceNumber() == null || record.invoiceNumber() < 1 || record.invoiceNumber() > 99_999_999
+                    || blank(record.taxAuthorityCode()) || blank(record.lookupCode()) || empty(record.xml())
+                    || empty(record.pdf())) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("An invoice recorded as issued names its "
+                        + "number, the tax authority's code and the look-up code, with its XML and PDF"),
+                        List.of(FieldError.of("invoiceNumber", "required with taxAuthorityCode, lookupCode, xml, pdf")));
+            }
+            xml = PortalInvoiceXml.read(record.xml());
+        }
+        steps.get(id);
+        UUID holder = Identifiers.newId();
+        if (!steps.claim(id, holder, PROVIDER_LEASE)) {
+            throw new BusinessException(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED,
+                    "The provider is being asked about this invoice right now");
+        }
+        try {
+            EInvoice.Snapshot invoice = steps.get(id);
+            if (invoice.version() != expectedVersion) {
+                throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
+                        "Invoice %s changed since it was read".formatted(invoice.code()));
+            }
+            if (invoice.status() != EInvoiceStatus.SUBMITTING) {
+                throw new BusinessException(ErrorCode.EINVOICE_INVALID_TRANSITION,
+                        "Invoice %s is %s, not at the provider".formatted(invoice.code(), invoice.status()));
+            }
+            Result lookedUp = lookUpIfCallable(invoice);
+            if (record.outcome() == PortalOutcome.ISSUED) {
+                // BE-30: a correction under a provider that chooses its series carries the provider's series - as the
+                // look-up names it, else as its XML does; every other invoice the series it was sent under.
+                String symbol = !steps.takesProviderSeries(invoice) ? invoice.symbol()
+                        : lookedUp != null && lookedUp.symbol() != null ? lookedUp.symbol() : xml.symbol();
+                requireSameInvoice(invoice, symbol, record, xml);
+                boolean contradicts = lookedUp != null && (lookedUp.state() == ResultState.NOT_FOUND
+                        || lookedUp.state() == ResultState.REJECTED
+                        || lookedUp.state() == ResultState.ISSUED
+                        && (!record.invoiceNumber().equals(lookedUp.invoiceNumber())
+                        || lookedUp.symbol() != null && !lookedUp.symbol().equals(symbol)));
+                if (contradicts) {
+                    throw new BusinessException(ErrorCode.EINVOICE_PORTAL_RECORD_MISMATCH, ("Invoice %s: the provider, "
+                            + "asked now, says %s%s - not invoice %d of %s").formatted(invoice.code(),
+                            lookedUp.state(), lookedUp.invoiceNumber() == null ? "" : " " + lookedUp.invoiceNumber(),
+                            record.invoiceNumber(), symbol));
+                }
+                Result recorded = new Result(ResultState.ISSUED, record.invoiceNumber(),
+                        record.taxAuthorityCode().strip(), record.lookupCode().strip(),
+                        xml.signedAt() != null ? xml.signedAt() : clock.instant(), null, null)
+                        .numberedUnder(null, symbol);
+                if (!steps.issuedFromPortal(id, invoice.transactionId(), recorded,
+                        new EInvoiceProvider.Documents(record.xml(), record.pdf()), by)) {
+                    throw new BusinessException(ErrorCode.EINVOICE_INVALID_TRANSITION,
+                            "Invoice %s was settled by the provider meanwhile".formatted(invoice.code()));
+                }
+            } else {
+                // Q-5: an invoice the provider holds - issued, or "issued, no number yet" / still processing (PENDING) -
+                // is never let go on the accountant's word: recorded refused, it would be sent again under a new
+                // transaction while the old one may still become an invoice. A refusal the provider itself reports is
+                // recorded by the reconciliation.
+                if (lookedUp != null && (lookedUp.state() == ResultState.ISSUED
+                        || lookedUp.state() == ResultState.PENDING
+                        && !providers.require(invoice.provider()).pendingMayBeRefusedByTaxAuthority())) {
+                    throw new BusinessException(ErrorCode.EINVOICE_PORTAL_RECORD_MISMATCH, ("Invoice %s: the provider, "
+                            + "asked now, shows it %s; check it again instead").formatted(invoice.code(),
+                            lookedUp.state()));
+                }
+                Instant lastSent = steps.lastSent(id, invoice.transactionId()).orElse(invoice.submittedAt());
+                if (lastSent != null && clock.instant().isBefore(lastSent.plus(properties.withdrawAfter()))) {
+                    throw refused(("Invoice %s was last sent at %s; the provider may still be working on it")
+                            .formatted(invoice.code(), lastSent), lastSent.plus(properties.withdrawAfter()),
+                            lookedUp == null ? null : lookedUp.state().name());
+                }
+                steps.rejected(id, invoice.transactionId(), EInvoice.REFUSED_BY_TAX_AUTHORITY_CODE,
+                        record.note().strip());
+            }
+        } finally {
+            release(id, holder);
+        }
+        return steps.get(id);
+    }
+
+    /** The provider's answer now, or null for a provider that cannot be asked any more (not configured, not usable). */
+    private Result lookUpIfCallable(EInvoice.Snapshot invoice) {
+        if (!providers.usable(invoice.provider()) || providers.find(invoice.provider()).isEmpty()) {
+            return null;
+        }
+        try {
+            return query(providers.require(invoice.provider()), invoice);
+        } catch (ProviderUnavailableException unavailable) {
+            throw new BusinessException(ErrorCode.EINVOICE_PROVIDER_UNAVAILABLE,
+                    "The provider did not say what it holds for invoice %s".formatted(invoice.code()));
+        }
+    }
+
+    /** The XML handed in is this invoice's, as entered ({@code EINVOICE_PORTAL_FILE_INVALID} otherwise). */
+    private static void requireSameInvoice(EInvoice.Snapshot invoice, String symbol, PortalRecord record,
+                                           PortalInvoiceXml xml) {
+        boolean same = java.util.Objects.equals(xml.templateCode(), invoice.templateCode())
+                && java.util.Objects.equals(xml.symbol(), symbol)
+                && record.invoiceNumber().equals(xml.number())
+                && (xml.sellerTaxCode() == null || xml.sellerTaxCode().equals(invoice.seller().taxCode()))
+                && (xml.taxAuthorityCode() == null
+                || xml.taxAuthorityCode().equals(record.taxAuthorityCode().strip()));
+        if (!same) {
+            throw new BusinessException(ErrorCode.EINVOICE_PORTAL_FILE_INVALID, ("The XML is invoice %s%s-%s of seller "
+                    + "%s, not invoice %d of %s%s (%s)").formatted(xml.templateCode(), xml.symbol(), xml.number(),
+                    xml.sellerTaxCode(), record.invoiceNumber(), invoice.templateCode(), symbol, invoice.code()));
+        }
+    }
+
+    private static boolean blank(String text) {
+        return text == null || text.isBlank();
+    }
+
+    private static boolean empty(byte[] content) {
+        return content == null || content.length == 0;
+    }
+
+    /** A reduction made on the provider's portal, as the accountant records it (F-13 external-reductions). */
+    public record ExternalReduction(String templateCode, String symbol, Integer invoiceNumber, LocalDate issueDate,
+                                    String taxAuthorityCode, String lookupCode, byte[] xml, byte[] pdf, String note,
+                                    com.stockflow.invoicing.internal.domain.CorrectionBasis basis,
+                                    UUID returnRequestId) {
+
+        /** A reduction of a failed delivery. */
+        public ExternalReduction(String templateCode, String symbol, Integer invoiceNumber, LocalDate issueDate,
+                                 String taxAuthorityCode, String lookupCode, byte[] xml, byte[] pdf, String note) {
+            this(templateCode, symbol, invoiceNumber, issueDate, taxAuthorityCode, lookupCode, xml, pdf, note,
+                    com.stockflow.invoicing.internal.domain.CorrectionBasis.DELIVERY_FAILED, null);
+        }
+    }
+
+    /**
+     * Records a reduction the accountant made on the provider's portal (WF-05 BE-10, Q-9; decision Q-8; F-13): the
+     * failed delivery of an original whose own reduction no provider could send (voided {@code UNSENDABLE_REVERSAL}),
+     * or of a replacement, which no provider adjusts. It is recorded as an issued adjustment taking off what the
+     * invoice still invoices, {@code issued_via} PORTAL_RECORD ({@link EInvoicePortalReductions#record}).
+     *
+     * <p>The XML is required: it is the invoice in law (Q-8: "number and files"), and what was typed is held against it
+     * - template, symbol, number, date, the tax authority's code ({@code EINVOICE_PORTAL_FILE_INVALID}). Made on the
+     * portal, such a reduction has no transaction of ours at the provider, so it is not looked up there.</p>
+     */
+    @Auditable(action = AuditAction.CREATE, resourceType = "einvoice", resourceId = "#originalId",
+            details = "{externalReduction: #reduction.invoiceNumber(), note: #reduction.note()}")
+    public EInvoice.Snapshot recordExternalReduction(UUID originalId, ExternalReduction reduction, UUID by) {
+        java.util.Objects.requireNonNull(reduction, "reduction");
+        if (blank(reduction.templateCode()) || blank(reduction.symbol()) || reduction.invoiceNumber() == null
+                || reduction.invoiceNumber() < 1 || reduction.invoiceNumber() > 99_999_999
+                || reduction.issueDate() == null || empty(reduction.xml()) || empty(reduction.pdf())
+                || blank(reduction.note()) || reduction.note().strip().length() > 500) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("A reduction recorded from the portal names its "
+                    + "template, symbol, number and date, with its XML, PDF and a note (at most 500)"),
+                    List.of(FieldError.of("invoiceNumber",
+                            "required with templateCode, symbol, issueDate, xml, pdf, note")));
+        }
+        if (reduction.issueDate().isAfter(com.stockflow.common.domain.BusinessCalendar.date(clock.instant()))) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "issueDate: not in the future",
+                    List.of(FieldError.of("issueDate", "not in the future")));
+        }
+        PortalInvoiceXml xml = PortalInvoiceXml.read(reduction.xml());
+        String taxAuthorityCode = !blank(reduction.taxAuthorityCode()) ? reduction.taxAuthorityCode().strip()
+                : xml.taxAuthorityCode();
+        boolean same = xml.templateCode().equals(reduction.templateCode().strip())
+                && xml.symbol().equals(reduction.symbol().strip()) && reduction.invoiceNumber().equals(xml.number())
+                && (xml.issueDate() == null || xml.issueDate().equals(reduction.issueDate()))
+                && taxAuthorityCode != null
+                && (xml.taxAuthorityCode() == null || xml.taxAuthorityCode().equals(taxAuthorityCode));
+        if (!same) {
+            throw new BusinessException(ErrorCode.EINVOICE_PORTAL_FILE_INVALID, ("The XML is invoice %s%s-%s of %s with "
+                    + "the tax authority's code %s, not what was entered").formatted(xml.templateCode(), xml.symbol(),
+                    xml.number(), xml.issueDate(), xml.taxAuthorityCode()));
+        }
+        return portalReductions.record(originalId, new EInvoicePortalReductions.PortalReduction(
+                reduction.templateCode().strip(), reduction.symbol().strip(), reduction.invoiceNumber(),
+                reduction.issueDate(), taxAuthorityCode,
+                blank(reduction.lookupCode()) ? taxAuthorityCode : reduction.lookupCode().strip(),
+                xml.signedAt() != null ? xml.signedAt() : clock.instant(), xml.sellerTaxCode(),
+                new EInvoiceProvider.Documents(reduction.xml(), reduction.pdf()), reduction.note().strip(),
+                reduction.basis() == null ? com.stockflow.invoicing.internal.domain.CorrectionBasis.DELIVERY_FAILED
+                        : reduction.basis(), reduction.returnRequestId()), by);
+    }
+
+    /**
+     * Asks the provider once more about each transaction let go without its word (WF-05 BE-07, decision Q-5): taken
+     * back, or recorded refused on its processing report or on the tax authority's refusal alone. For
+     * {@code withdraw-watch-for} (30 days), at most once a day each: one the provider shows issued after all is recorded
+     * on its watch and the accountants are told ({@code DUPLICATE_RISK}) - the invoice may stand twice for one delivery,
+     * and only they can settle that with the provider. A provider that does not answer is asked again next time.
+     *
+     * @return how many were found issued now
+     */
+    public int watchLetGoTransactions(int limit) {
+        int found = 0;
+        for (EInvoiceRepository.WatchedTransaction watched : steps.watchedToAsk(limit)) {
+            java.util.Optional<EInvoiceProvider> provider = providers.find(watched.provider());
+            if (provider.isEmpty()) {
+                continue;
+            }
+            try {
+                Result result = provider.get().query(watched.transactionId());
+                if (result.state() == ResultState.ISSUED && result.invoiceNumber() != null) {
+                    if (steps.watchedTransactionIssued(watched.einvoiceId(), watched.transactionId(), result)) {
+                        found++;
+                        log.warn("E-invoice {}: transaction {}, let go as {}, is issued at {} after all (number {})",
+                                watched.einvoiceId(), LogSafe.text(watched.transactionId()),
+                                LogSafe.text(watched.letGoAs()), watched.provider(), result.invoiceNumber());
+                    }
+                } else {
+                    steps.watchedTransactionAsked(watched.einvoiceId(), watched.transactionId());
+                }
+            } catch (ProviderUnavailableException unavailable) {
+                log.info("E-invoice {}: the provider did not answer about let-go transaction {}; asked again next time",
+                        watched.einvoiceId(), LogSafe.text(watched.transactionId()));
+            } catch (RuntimeException failure) {
+                log.warn("E-invoice {}: let-go transaction {} was not asked about: {}", watched.einvoiceId(),
+                        LogSafe.text(watched.transactionId()), failure.getClass().getSimpleName());
+            }
+        }
+        return found;
     }
 
     /**

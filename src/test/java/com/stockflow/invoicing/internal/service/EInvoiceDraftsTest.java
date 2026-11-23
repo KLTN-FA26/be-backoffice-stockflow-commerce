@@ -33,9 +33,11 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
@@ -72,13 +74,14 @@ class EInvoiceDraftsTest {
     private final Clock clock = Clock.fixed(DELIVERED_AT.plusSeconds(60), ZoneOffset.UTC);
     private final org.springframework.context.ApplicationEventPublisher events =
             mock(org.springframework.context.ApplicationEventPublisher.class);
+    private final EInvoiceProviders providers = mock(EInvoiceProviders.class);
     private EInvoiceDrafts drafts;
     /** The invoices "in the database": what a later draft of the same order sees. */
     private final List<EInvoice> saved = new java.util.ArrayList<>();
 
     @BeforeEach
     void setUp() {
-        drafts = new EInvoiceDrafts(invoices, shipments, legalProfiles, customers, seller, events, clock);
+        drafts = new EInvoiceDrafts(invoices, shipments, legalProfiles, customers, seller, events, clock, providers);
         when(invoices.findLiveOriginalOfShipment(any())).thenReturn(Optional.empty());
         when(invoices.nextCode(any())).thenReturn("EINV-20261112-0001");
         when(invoices.save(any())).thenAnswer(call -> {
@@ -90,6 +93,7 @@ class EInvoiceDraftsTest {
         // What the database answers from the order's originals that were not voided (EInvoiceRepositoryAdapter).
         when(invoices.invoicedOfOrder(any())).thenAnswer(call -> {
             long units = 0;
+            BigDecimal goods = BigDecimal.ZERO;
             BigDecimal shipping = BigDecimal.ZERO;
             java.util.Set<String> plateSkus = new java.util.HashSet<>();
             for (EInvoice invoice : saved) {
@@ -99,6 +103,7 @@ class EInvoiceDraftsTest {
                 for (EInvoiceLine line : invoice.lines()) {
                     if (line.kind() == EInvoiceLine.Kind.GOODS) {
                         units += (long) line.quantity() * (line.unitsPerCarton() == null ? 1 : line.unitsPerCarton());
+                        goods = goods.add(line.amount());
                     } else if (line.feeKind() == EInvoiceLine.FeeKind.SHIPPING_FEE) {
                         shipping = shipping.add(line.amount());
                     } else {
@@ -106,7 +111,7 @@ class EInvoiceDraftsTest {
                     }
                 }
             }
-            return new FeeAllocation.Invoiced(units, shipping, plateSkus);
+            return new FeeAllocation.Invoiced(units, shipping, plateSkus, goods);
         });
         when(legalProfiles.legalProfile(CUSTOMER)).thenReturn(Optional.of(new CustomerLegalProfile(CUSTOMER,
                 "Cong ty Tra Sua", "0398765432", "12 Nguyen Hue, TP HCM", "Tran Van B", "Giam doc",
@@ -446,7 +451,7 @@ class EInvoiceDraftsTest {
 
         when(shipments.find(ORDER, shipmentId)).thenReturn(Optional.of(shipment(shipmentId, 1, 0)));
         EInvoiceDrafts noSeller = new EInvoiceDrafts(invoices, shipments, legalProfiles, customers,
-                new SellerProperties("CONG TY", " ", "1 Le Loi", "A", "Giam doc"), events, clock);
+                new SellerProperties("CONG TY", " ", "1 Le Loi", "A", "Giam doc"), events, clock, providers);
         assertThatThrownBy(() -> noSeller.drawUp(ORDER, shipmentId)).extracting(EInvoiceDraftsTest::code)
                 .isEqualTo(ErrorCode.SELLER_PROFILE_UNAVAILABLE);
         verify(invoices, never()).save(any());
@@ -770,7 +775,8 @@ class EInvoiceDraftsTest {
         verify(invoices, times(2)).save(draft);
         assertThat(drafts.recheckForAutomaticIssue(draft.id())).as("a draft with a warning is not taken").isFalse();
 
-        // A draft drawn up before the e-mail became a warning (HĐ-8): its buyer has none.
+        // A draft drawn up before the e-mail became a warning (HĐ-8): its buyer has none. Stored, and since WF-05
+        // Q-22 (BR-06) it holds nothing back: the e-mail is not invoice content, the original leaves on its day.
         UUID other = UUID.randomUUID();
         when(legalProfiles.legalProfile(CUSTOMER)).thenReturn(Optional.of(new CustomerLegalProfile(CUSTOMER,
                 "Cong ty Tra Sua", "0398765432", "12 Nguyen Hue, TP HCM", "Tran Van B", "Giam doc", null, null, 3)));
@@ -778,7 +784,7 @@ class EInvoiceDraftsTest {
         EInvoice noEmail = saved.getLast();
         EInvoice old = EInvoice.restore(EInvoiceFixtures.withoutWarnings(noEmail.snapshot()));
         when(invoices.findByIdForUpdate(old.id())).thenReturn(Optional.of(old));
-        assertThat(drafts.recheckForAutomaticIssue(old.id())).isFalse();
+        assertThat(drafts.recheckForAutomaticIssue(old.id())).isTrue();
         assertThat(old.snapshot().warnings()).containsExactly(EInvoice.Warning.BUYER_EMAIL_MISSING);
 
         // Its delivery corrected to a failure since: not sent, left to the correction, nothing stored.
@@ -819,7 +825,7 @@ class EInvoiceDraftsTest {
         // 5,000 pieces ordered, 2,000 delivered and invoiced with 40,000 of the fee; the other 3,000 are closed.
         drawUp(shipment(UUID.randomUUID(), 40, 0, 5000, DELIVERED_AT));
         Instant closedAt = DELIVERED_AT.plus(java.time.Duration.ofDays(3));
-        when(shipments.shippingFee(ORDER, closedAt)).thenReturn(Optional.of(shippingFee(2000)));
+        when(shipments.orderFees(ORDER, closedAt)).thenReturn(Optional.of(shippingFee(2000)));
         when(invoices.findLiveShippingFeeInvoice(ORDER)).thenAnswer(call -> saved.stream()
                 .filter(invoice -> invoice.shipmentId() == null && invoice.status() != EInvoiceStatus.VOIDED_DRAFT)
                 .findFirst());
@@ -848,7 +854,7 @@ class EInvoiceDraftsTest {
     void aDeliveryStillToBeInvoicedTakesTheRest() {
         // 5,000 ordered, 2,000 invoiced, 1,000 closed: 2,000 more are on their way (or delivered, not drawn up yet).
         drawUp(shipment(UUID.randomUUID(), 40, 0, 5000, DELIVERED_AT));
-        when(shipments.shippingFee(any(), any())).thenReturn(Optional.of(shippingFee(4000)));
+        when(shipments.orderFees(any(), any())).thenReturn(Optional.of(shippingFee(4000)));
 
         assertThat(drafts.drawUpShippingFeeRest(ORDER, DELIVERED_AT)).isEmpty();
         assertThat(saved).as("nothing drawn up").hasSize(1);
@@ -856,5 +862,156 @@ class EInvoiceDraftsTest {
         EInvoice.Snapshot last = drawUp(shipment(UUID.randomUUID(), 40, 0, 4000, DELIVERED_AT));
         assertThat(last.lines().getLast().amount()).as("the last delivery makes the fee whole")
                 .isEqualByComparingTo("60000");
+    }
+
+    // ---- WF-05 BE-62 (Q-19): the plate fee of an order whose goods all came back ------------------------------------
+
+    /** The order's fees on {@code on}: the shipping fee of 100,000 and the plate fee of 500,000 for the cups. */
+    private OrderShippingFee orderFees(long orderUnits) {
+        return new OrderShippingFee(ORDER, "SO-20261101-0007", CUSTOMER, "HD-20261101-0007", "VND",
+                new DeliveredShipment.Fee(FeeKind.SHIPPING_FEE, null, new BigDecimal("100000"), TEN, TEN), orderUnits,
+                null, List.of(new DeliveredShipment.Fee(FeeKind.PLATE_FEE, CUP, new BigDecimal("500000"), TEN, TEN)));
+    }
+
+    @Test
+    @DisplayName("BE-62 (Q-19): every shipment came back - the plate fee, kept, goes on an invoice of its own (no "
+            + "shipment, fees only); the failed trip's shipping fee is waived, so not on it; drawn up once")
+    void thePlateFeeOfAnOrderWhoseGoodsAllCameBackIsInvoiced() {
+        Instant settledAt = DELIVERED_AT.plus(java.time.Duration.ofDays(5));
+        when(shipments.orderFees(ORDER, settledAt)).thenReturn(Optional.of(orderFees(0)));
+        when(invoices.findLiveShippingFeeInvoice(ORDER)).thenAnswer(call -> saved.stream()
+                .filter(invoice -> invoice.shipmentId() == null && invoice.status() != EInvoiceStatus.VOIDED_DRAFT)
+                .findFirst());
+
+        EInvoiceDrafts.DrawnUp plates = drafts.drawUpShippingFeeRest(ORDER, settledAt).orElseThrow();
+
+        assertThat(plates.created()).isTrue();
+        assertThat(plates.invoice().shipmentId()).isNull();
+        assertThat(plates.invoice().lines()).singleElement().satisfies(line -> {
+            assertThat(line.feeKind()).isEqualTo(EInvoiceLine.FeeKind.PLATE_FEE);
+            assertThat(line.sku()).isEqualTo(CUP);
+            assertThat(line.amount()).isEqualByComparingTo("500000");
+        });
+        assertThat(drafts.drawUpShippingFeeRest(ORDER, settledAt).orElseThrow().created()).as("once").isFalse();
+    }
+
+    @Test
+    @DisplayName("BE-62: a plate fee a delivery's invoice already carries is not invoiced again, nor a shipping fee "
+            + "the deliveries' invoices carry whole")
+    void aPlateFeeCarriedByADeliveryIsNotInvoicedAgain() {
+        drawUp(shipment(UUID.randomUUID(), 20, 0, 1000, DELIVERED_AT));
+        when(shipments.orderFees(any(), any())).thenReturn(Optional.of(orderFees(1000)));
+
+        assertThat(drafts.drawUpShippingFeeRest(ORDER, DELIVERED_AT)).isEmpty();
+        assertThat(saved).hasSize(1);
+    }
+
+    /** {@code d} as the order tells it once value is said: the order's goods value now and what was waived. */
+    private static DeliveredShipment withValue(DeliveredShipment d, String orderGoodsValue, String waived,
+                                               String feeGross) {
+        return new DeliveredShipment(d.orderId(), d.orderNumber(), d.customerId(), d.contractNumber(), d.shipmentId(),
+                d.shipmentCode(), d.deliveryBatchId(), d.deliveredAt(), d.currency(), d.lines(), d.fees(),
+                d.orderUnits(), d.unitsInShipment(), new BigDecimal(orderGoodsValue),
+                new com.stockflow.order.api.ShippingFeeWaiver(new BigDecimal(waived), new BigDecimal(feeGross)));
+    }
+
+    @Test
+    @DisplayName("Q-19 (owner 2026-11-23): a shipment of lids invoiced, then a shipment of cups worth far more came "
+            + "back - the fee is shared by value, so the lids' invoice carried only their share; the last delivery "
+            + "takes what payment keeps less that, and the closing draws nothing more")
+    void theShareWaivedForAReturnedShipmentIsNotInvoiced() {
+        // The order: 40 cartons of cups (4,000,000) and 10 of lids (500,000) = 4,500,000; fee 100,000 (110,000 with
+        // VAT). Lids delivered first, while nothing had come back: 500,000 of 4,500,000 -> 11,111.
+        EInvoice.Snapshot lids = drawUp(withValue(shipment(UUID.randomUUID(), 0, 10, 3000, DELIVERED_AT), "4500000",
+                "0", "110000"));
+        assertThat(lids.lines().getLast().amount()).as("by pieces it would have been a third").isEqualByComparingTo("11111");
+        // 20 cartons of cups (2,000,000 before tax) came back: payment waived round(110,000 x 2,200,000 / 4,950,000)
+        // = 48,889 with VAT -> 100,000 - round(100,000 x 48,889 / 110,000 = 44,444.5) = 55,555 kept. The other 20
+        // cartons are delivered last and take the rest: 55,555 - 11,111. With VAT the two invoices carry 61,110 of the
+        // 61,111 payment keeps: a dong of VAT rounding, never more.
+        EInvoice.Snapshot cups = drawUp(withValue(shipment(UUID.randomUUID(), 20, 0, 2000, DELIVERED_AT), "2500000",
+                "48889", "110000"));
+        assertThat(cups.lines()).extracting(EInvoiceLine::feeKind).as("the plate fee went on the lids' invoice")
+                .doesNotContain(EInvoiceLine.FeeKind.PLATE_FEE);
+        assertThat(cups.lines().getLast().amount()).isEqualByComparingTo("44444");
+        BigDecimal invoicedFee = lids.lines().getLast().amount().add(cups.lines().getLast().amount());
+        assertThat(invoicedFee).as("what payment keeps, before tax").isEqualByComparingTo("55555");
+
+        OrderShippingFee fees = shippingFee(2000);
+        when(shipments.orderFees(any(), any())).thenReturn(Optional.of(new OrderShippingFee(fees.orderId(),
+                fees.orderNumber(), fees.customerId(), fees.contractNumber(), fees.currency(), fees.fee(),
+                fees.orderUnits(), fees.lastDeliveredAt(), List.of(), new com.stockflow.order.api.ShippingFeeWaiver(
+                new BigDecimal("48889"), new BigDecimal("110000")))));
+        assertThat(drafts.drawUpShippingFeeRest(ORDER, DELIVERED_AT)).as("nothing of the fee is left to invoice")
+                .isEmpty();
+    }
+
+    @Test
+    @DisplayName("Q-19 (owner 23/11): nothing delivered after a carrier return, the rest closed before it shipped - "
+            + "the whole shipping fee is waived (W = the fee), keptNet = 0: the closing invoice carries plate fees only, "
+            + "and the order waits for no shipping rest")
+    void nothingDeliveredWaivesTheWholeFee() {
+        Instant settledAt = DELIVERED_AT.plus(java.time.Duration.ofDays(5));
+        OrderShippingFee fees = orderFees(0);
+        when(shipments.orderFees(ORDER, settledAt)).thenReturn(Optional.of(new OrderShippingFee(fees.orderId(),
+                fees.orderNumber(), fees.customerId(), fees.contractNumber(), fees.currency(), fees.fee(), 0, null,
+                fees.plateFees(), new com.stockflow.order.api.ShippingFeeWaiver(new BigDecimal("110000"),
+                new BigDecimal("110000")))));
+        when(invoices.findLiveShippingFeeInvoice(ORDER)).thenReturn(Optional.empty());
+
+        EInvoiceDrafts.DrawnUp closing = drafts.drawUpShippingFeeRest(ORDER, settledAt).orElseThrow();
+
+        assertThat(closing.invoice().lines()).extracting(EInvoiceLine::feeKind)
+                .containsExactly(EInvoiceLine.FeeKind.PLATE_FEE);
+        assertThat(FeeAllocation.shippingFeeOwed(new BigDecimal("100000"), new BigDecimal("110000"),
+                new BigDecimal("110000"))).isZero();
+    }
+
+    // ---- WF-05 BE-25 (V8): the manual issue makes the automatic issue's checks ------------------------------------
+
+    @Test
+    @DisplayName("BE-25: a draft whose shipment is no longer delivered is not issued by hand either "
+            + "(EINVOICE_NOT_INVOICEABLE)")
+    void aDraftOfAShipmentNoLongerDeliveredIsNotIssued() {
+        UUID shipmentId = UUID.randomUUID();
+        EInvoice.Snapshot draft = drawUp(shipment(shipmentId, 20, 0));
+        when(invoices.findByIdForUpdate(draft.id())).thenAnswer(call -> saved.stream()
+                .filter(invoice -> invoice.id().equals(draft.id())).findFirst());
+        when(shipments.find(ORDER, shipmentId)).thenReturn(Optional.empty());
+
+        assertThat(code(catchThrowable(() -> drafts.recheckForIssue(draft.id(), draft.version(), Set.of()))))
+                .isEqualTo(ErrorCode.EINVOICE_NOT_INVOICEABLE);
+    }
+
+    @Test
+    @DisplayName("BE-25, Q-21: a product that lost its tax class since the draft was drawn up, and a buyer the "
+            + "customer's profile now names otherwise, are what the accountant must acknowledge; the warning is "
+            + "stored on the draft either way")
+    void whatChangedSinceTheDraftMustBeAcknowledged() {
+        UUID shipmentId = UUID.randomUUID();
+        EInvoice.Snapshot draft = drawUp(shipment(shipmentId, 20, 0));
+        when(invoices.findByIdForUpdate(draft.id())).thenAnswer(call -> saved.stream()
+                .filter(invoice -> invoice.id().equals(draft.id())).findFirst());
+        DeliveredShipment now = shipment(shipmentId, 20, 0);
+        DeliveredShipment classLost = new DeliveredShipment(now.orderId(), now.orderNumber(), now.customerId(),
+                now.contractNumber(), now.shipmentId(), now.shipmentCode(), now.deliveryBatchId(), now.deliveredAt(),
+                now.currency(), List.of(new DeliveredShipment.Line(LINE_CUP, CUP, "Ly giay 12oz", 20, 50, 1000,
+                        new BigDecimal("2000"), TEN, TEN, true)), now.fees(), now.orderUnits(), now.unitsInShipment());
+        when(shipments.find(ORDER, shipmentId)).thenReturn(Optional.of(classLost));
+        when(legalProfiles.legalProfile(CUSTOMER)).thenReturn(Optional.of(new CustomerLegalProfile(CUSTOMER,
+                "Cong ty Tra Sua Moi", "0398765432", "12 Nguyen Hue, TP HCM", "Tran Van B", "Giam doc",
+                "ke.toan@trasua.example.com", null, 4)));
+
+        EInvoiceDrafts.IssueCheck check = drafts.recheckForIssue(draft.id(), draft.version(), Set.of());
+        assertThat(check.unacknowledged()).containsExactlyInAnyOrder("TAX_CLASS_UNKNOWN",
+                EInvoiceDrafts.BUYER_PROFILE_CHANGED);
+        assertThat(saved.stream().filter(invoice -> invoice.id().equals(draft.id())).findFirst().orElseThrow()
+                .snapshot().warnings()).contains(EInvoice.Warning.TAX_CLASS_UNKNOWN);
+
+        EInvoiceDrafts.IssueCheck acknowledged = drafts.recheckForIssue(draft.id(), check.version(),
+                Set.of("TAX_CLASS_UNKNOWN", EInvoiceDrafts.BUYER_PROFILE_CHANGED));
+        assertThat(acknowledged.unacknowledged()).isEmpty();
+        assertThat(code(catchThrowable(() -> drafts.recheckForIssue(draft.id(), check.version() + 7, Set.of()))))
+                .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
     }
 }

@@ -9,7 +9,7 @@ import java.util.UUID;
 /**
  * One e-invoice as staff read it (WF-05 E2). {@code version} goes back with every change. The number, symbol, the tax
  * authority's code and the look-up code are there once it is issued; {@code overdue} says it is still to issue past its
- * deadline ({@code issueDueAt}: the end of the working day after {@code issueDate}).
+ * deadline ({@code issueDueAt}: the end of {@code issueDate}, WF-05 Q-1).
  *
  * <p>On an adjustment or a replacement (WF-05 E4): {@code originalEInvoiceId} is the invoice it changes,
  * {@code correctionBasis} why (ERROR, RETURN, TRADE_DISCOUNT, or DELIVERY_FAILED - the system's full reduction of an
@@ -32,6 +32,15 @@ import java.util.UUID;
  * reduction) and a refused one is voided rather than sent again. Null on an invoice never marked - every adjustment,
  * and every invoice from before the mark existed - and again once the mark is taken back because the shipment turned
  * out delivered after all.</p>
+ *
+ * <p>WF-05 F-11, F-13, Q-1: {@code reversedAt} - when the invoice was reduced in full for a failed delivery; it is then
+ * not corrected again (adjust and replace are refused, BE-36). {@code errorNoticeSupported} - whether a Mẫu 04/SS-HĐĐT
+ * notice can be sent for it through its provider (none here can: it is filed outside the system, and the buyer is
+ * never told it was sent). {@code issuedVia} - {@code PROVIDER}, or {@code PORTAL_RECORD} when the accountant recorded
+ * it from the provider's portal (Q-8); null before it is issued. {@code deliveredOn} - the day of the delivery an
+ * original invoices; {@code issueDate} is later on one issued late ({@code warnings} has {@code ISSUED_LATE}).
+ * {@code voidReasonCode} - why a reduction of a failed delivery was voided ({@code UNSENDABLE_REVERSAL},
+ * {@code DELIVERY_CORRECTED_BACK}).</p>
  */
 public record EInvoiceResponse(UUID id, String code, String type, String status, boolean adjusted, UUID orderId,
                                String orderNumber, String contractNumber, UUID shipmentId, String shipmentCode,
@@ -45,7 +54,9 @@ public record EInvoiceResponse(UUID id, String code, String type, String status,
                                Instant voidedAt, String voidReason, boolean hasFiles, long version,
                                String correctionBasis, String correctionReason, boolean agreementRequired,
                                Agreement agreement, UUID returnRequestId, List<UUID> listedInvoiceIds,
-                               String earlierPendingInvoice, Instant deliveryFailedAt) {
+                               String earlierPendingInvoice, Instant deliveryFailedAt, Instant reversedAt,
+                               boolean errorNoticeSupported, String issuedVia, LocalDate deliveredOn,
+                               String voidReasonCode) {
 
     public record Agreement(String number, LocalDate date) {
     }

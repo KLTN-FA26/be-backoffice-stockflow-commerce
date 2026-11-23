@@ -38,8 +38,8 @@ public class EInvoiceSettingsService {
      * Turns automatic issuing on or off, against the version read.
      *
      * <p>On, a draft is issued by the system soon after it is drawn up - provided its buyer is complete and nothing on
-     * it needs a look - which is what keeps an invoice inside its deadline of the next working day when nobody is at
-     * the screen. Off, the accountant issues each one (kltn-docs 21 BR-02).</p>
+     * it needs a look - which is what keeps an invoice inside its deadline, the end of its delivery day (WF-05 Q-1),
+     * when nobody is at the screen. Off, the accountant issues each one (kltn-docs 21 BR-02).</p>
      *
      * @throws com.stockflow.common.error.BusinessException {@code OPTIMISTIC_LOCK}
      */

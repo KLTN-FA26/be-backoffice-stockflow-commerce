@@ -97,12 +97,13 @@ class InvoicingEventListenersTest {
         }
 
         @Test
-        @DisplayName("E0 M1: an issued invoice that is being corrected already is the accountant's to adjust by hand")
+        @DisplayName("E0 M1, WF-05 BE-09/BE-11: an issued invoice the system could not reduce is the accountant's, "
+                + "told why - a correction of it at the provider, or a replacement (reduced on the portal)")
         void anInvoiceBeingCorrectedIsRaised() {
             when(drafts.voidForCorrectedDelivery(corrected.orderId(), corrected.shipmentId()))
                     .thenReturn(EInvoiceDrafts.CorrectionOutcome.LEFT_FOR_ADJUSTMENT);
-            when(drafts.reverseForCorrectedDelivery(corrected.orderId(), corrected.shipmentId()))
-                    .thenReturn(Optional.empty());
+            when(drafts.reverseOrExplain(corrected.orderId(), corrected.shipmentId())).thenReturn(
+                    new EInvoiceDrafts.Reversal(null, EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_NOT_REVERSED));
             EInvoice issued = EInvoiceFixtures.in(EInvoiceStatus.ISSUED);
             when(invoices.findLiveOriginalOfShipment(corrected.shipmentId())).thenReturn(Optional.of(issued));
 
@@ -112,7 +113,7 @@ class InvoicingEventListenersTest {
             verify(events).publishEvent(published.capture());
             assertThat(published.getValue().einvoiceId()).isEqualTo(issued.snapshot().id());
             assertThat(published.getValue().cause())
-                    .isEqualTo(EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_AFTER_SUBMISSION);
+                    .isEqualTo(EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_NOT_REVERSED);
         }
 
         @Test
@@ -162,8 +163,8 @@ class InvoicingEventListenersTest {
             EInvoice.Snapshot reversal = EInvoice.drawUpDeliveryReversal(UUID.randomUUID(), "EINV-20261113-0009",
                     EInvoiceFixtures.in(EInvoiceStatus.ISSUED), "Giao khong thanh cong", EInvoiceFixtures.CORRECTED_ON,
                     EInvoice.Corrections.NONE).snapshot();
-            when(drafts.reverseForCorrectedDelivery(corrected.orderId(), corrected.shipmentId()))
-                    .thenReturn(Optional.of(reversal));
+            when(drafts.reverseOrExplain(corrected.orderId(), corrected.shipmentId()))
+                    .thenReturn(new EInvoiceDrafts.Reversal(reversal, null));
 
             listener.on(corrected);
 

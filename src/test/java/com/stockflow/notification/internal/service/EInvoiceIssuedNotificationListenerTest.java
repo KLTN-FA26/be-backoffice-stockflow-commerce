@@ -1,8 +1,10 @@
 package com.stockflow.notification.internal.service;
 
 import com.stockflow.contracts.EInvoiceIssued;
+import com.stockflow.identity.api.StaffContact;
 import com.stockflow.notification.api.CustomerDirectory;
 import com.stockflow.notification.api.EInvoiceDirectory;
+import com.stockflow.notification.api.EInvoiceMail;
 import com.stockflow.notification.api.Inbox;
 import com.stockflow.notification.api.InboxMessage;
 import com.stockflow.notification.api.InboxSeverity;
@@ -12,7 +14,9 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 
+import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -38,8 +42,9 @@ class EInvoiceIssuedNotificationListenerTest {
     private final Inbox inbox = mock(Inbox.class);
     private final CustomerEmailDelivery delivery = mock(CustomerEmailDelivery.class);
     private final EInvoiceDirectory einvoices = mock(EInvoiceDirectory.class);
+    private final StaffDirectory staff = mock(StaffDirectory.class);
     private final EInvoiceIssuedNotificationListener listener = new EInvoiceIssuedNotificationListener(customers, inbox,
-            new EInvoiceEmailComposer(einvoices, new CustomerEmailComposer(properties())), delivery);
+            new EInvoiceEmailComposer(einvoices, new CustomerEmailComposer(properties())), delivery, einvoices, staff);
 
     private final UUID customer = UUID.randomUUID();
     private final UUID account = UUID.randomUUID();
@@ -94,5 +99,49 @@ class EInvoiceIssuedNotificationListenerTest {
         InOrder order = inOrder(inbox, delivery);
         order.verify(inbox).post(eq(List.of(account)), any());
         order.verify(delivery).deliver(any());
+    }
+
+    private EInvoiceMail mailTo(String email) {
+        return new EInvoiceMail(event.einvoiceId(), customer, "Cong ty Tra Sua", email, "1C26TSE-00000589",
+                event.orderNumber(), LocalDate.of(2026, 11, 12), new BigDecimal("2740000"), "VND", "M1-26-X",
+                "REF");
+    }
+
+    @Test
+    @DisplayName("HĐ-8 (Q-22 BR-06): issued without a buyer e-mail - Sales are told once to record it and send the "
+            + "invoice on, and the mail is still handed to the delivery, which records it skipped")
+    void issuedWithoutAnEmailTellsSales() {
+        UUID sales = UUID.randomUUID();
+        when(customers.portalAccount(customer)).thenReturn(Optional.empty());
+        when(einvoices.mail(event.einvoiceId())).thenReturn(Optional.of(mailTo(null)));
+        when(staff.activeHolders(EInvoiceIssuedNotificationListener.EMAIL_MISSING_AUDIENCE, null))
+                .thenReturn(List.of(new StaffContact(sales, "sale@example.com")));
+        when(inbox.post(any(), any())).thenReturn(1);
+
+        listener.on(event);
+
+        var notice = ArgumentCaptor.forClass(InboxMessage.class);
+        verify(inbox).post(eq(List.of(sales)), notice.capture());
+        InboxMessage sent = notice.getValue();
+        assertThat(sent.category()).isEqualTo("EINVOICE_BUYER_EMAIL_MISSING");
+        assertThat(sent.severity()).isEqualTo(InboxSeverity.WARN);
+        assertThat(sent.title()).contains("SO-20261101-0007");
+        assertThat(sent.body()).contains("EINV-20261112-0001", "SO-20261101-0007");
+        assertThat(sent.link()).isEqualTo("/customers/" + customer);
+        assertThat(sent.dedupeKey()).isEqualTo("einvoice-buyer-email-missing:" + event.einvoiceId());
+        verify(delivery).deliver(any());
+    }
+
+    @Test
+    @DisplayName("an invoice with a buyer e-mail tells Sales nothing")
+    void anInvoiceWithAnEmailTellsSalesNothing() {
+        when(customers.portalAccount(customer)).thenReturn(Optional.empty());
+        when(einvoices.mail(event.einvoiceId())).thenReturn(Optional.of(mailTo("ke.toan@trasua.example.com")));
+
+        listener.on(event);
+
+        verify(staff, never()).activeHolders(any(), any());
+        verify(inbox, never()).post(any(), any());
+        verify(delivery).deliver(any());
     }
 }

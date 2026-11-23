@@ -56,7 +56,8 @@ import java.util.UUID;
  *             does not adjust a replacement: no reduction was drawn up (BE-09, Q-9).</li>
  *       </ul></li>
  * </ul>
- * For the first three the deadline of the working day after the invoice's date keeps running (NĐ 254/2026/NĐ-CP Phụ lục điểm 7).
+ * For the first three the invoice's deadline - the end of its date (NĐ 254/2026/NĐ-CP Điều 9 khoản 1; WF-05 Q-1) -
+ * keeps running.
  * Notification tells the people who issue invoices; nothing else listens.
  *
  * <p>Codes, ids and instants only: the provider's sentence about a refusal stays on the invoice, behind its

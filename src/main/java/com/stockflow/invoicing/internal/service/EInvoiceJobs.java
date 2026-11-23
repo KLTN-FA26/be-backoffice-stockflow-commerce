@@ -8,6 +8,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -21,8 +22,8 @@ import java.util.UUID;
  *   <li><b>Automatic issuing</b> - when it is turned on, drafts with a complete buyer and nothing to look at are issued
  *       here, a moment after they were drawn up. Done by the job and not by the listener that draws the draft up: the
  *       listener's transaction has to commit the draft before anything may be sent anywhere.</li>
- *   <li><b>Deadline warnings</b> - an invoice is to be signed and sent no later than the working day after its date
- *       (NĐ 254 Phụ lục điểm 7); the accountants are told once, a day ahead by default, about each one still waiting,
+ *   <li><b>Deadline warnings</b> - an invoice is to be issued by the end of its date (NĐ 254 Điều 9 khoản 1;
+ *       WF-05 Q-1); the accountants are told once, four hours ahead by default, about each one still waiting,
  *       and once its deadline has passed, reminded once a day for as long as it is not issued (HĐ-2) - an invoice left
  *       in draft or stuck at the provider is late every day it stays so. In the same sweep they are told, once per
  *       submission, of an invoice that has waited for the provider's answer for too long (WF-05 E5): the
@@ -56,13 +57,15 @@ class EInvoiceJobs {
     private final EInvoiceIssuance issuance;
     private final EInvoiceQuotaWatch quota;
     private final EInvoiceDrafts drafts;
+    private final EInvoiceQuotaGate quotaGate;
 
     EInvoiceJobs(EInvoiceWorkQueues queues, EInvoiceIssuance issuance, EInvoiceQuotaWatch quota,
-                 EInvoiceDrafts drafts) {
+                 EInvoiceDrafts drafts, EInvoiceQuotaGate quotaGate) {
         this.queues = queues;
         this.issuance = issuance;
         this.quota = quota;
         this.drafts = drafts;
+        this.quotaGate = quotaGate;
     }
 
     @Scheduled(initialDelayString = "${stockflow.invoicing.reconcile-interval:PT30S}",
@@ -83,14 +86,35 @@ class EInvoiceJobs {
         int warned = warnDue();
         int reminded = remindOverdue();
         int stuck = warnStuck();
-        if (warned > 0 || reminded > 0 || stuck > 0) {
-            log.info("E-invoices: {} close to their deadline, {} past it and {} stuck at the provider announced",
-                    warned, reminded, stuck);
+        int overdue = announceResultOverdue();
+        if (warned > 0 || reminded > 0 || stuck > 0 || overdue > 0) {
+            log.info("E-invoices: {} close to their deadline, {} past it, {} stuck at the provider and {} overdue for "
+                    + "the provider's result announced", warned, reminded, stuck, overdue);
         }
         try {
             quota.check();
         } catch (RuntimeException failure) {
             log.warn("The e-invoice provider's quota was not looked at: {}", failure.toString());
+        }
+    }
+
+    /**
+     * Asks the provider again, about once a day each, about every transaction let go without its word - withdrawn, or
+     * refused on its processing report or the tax authority's refusal alone - for 30 days (WF-05 BE-07, decision Q-5;
+     * {@link EInvoiceIssuance#watchLetGoTransactions}). Hourly, so a day's rows are spread out; each row is asked once
+     * in {@link EInvoiceIssuanceSteps#WATCH_ASKED_EVERY}.
+     */
+    @Scheduled(initialDelayString = "${stockflow.invoicing.let-go-watch-interval:PT1H}",
+            fixedDelayString = "${stockflow.invoicing.let-go-watch-interval:PT1H}")
+    @SchedulerLock(name = "invoicing.let-go-watch", lockAtMostFor = "PT30M", lockAtLeastFor = "PT5S")
+    public void watchLetGoTransactions() {
+        try {
+            int found = issuance.watchLetGoTransactions(BATCH);
+            if (found > 0) {
+                log.warn("E-invoices: {} transaction(s) let go were found issued at the provider after all", found);
+            }
+        } catch (RuntimeException failure) {
+            log.warn("Let-go e-invoice transactions were not asked about: {}", failure.toString());
         }
     }
 
@@ -122,7 +146,19 @@ class EInvoiceJobs {
      */
     int issueAutomatically() {
         int done = 0;
-        for (UUID id : queues.autoIssuable(BATCH)) {
+        List<UUID> waiting = queues.autoIssuable(BATCH);
+        if (waiting.isEmpty()) {
+            return 0;
+        }
+        String provider = queues.activeProvider();
+        if (quotaGate.exhausted(provider)) {
+            // BE-54 (Q-22, BR-09): sent now, each would be refused for good and need reopening by hand. They stay
+            // drafts and go out on their own once the plan is topped up; the accountants are told.
+            quotaGate.announceExhausted(provider);
+            log.warn("E-invoices: {} draft(s) wait - the provider's plan has no invoice left", waiting.size());
+            return 0;
+        }
+        for (UUID id : waiting) {
             try {
                 if (!drafts.recheckForAutomaticIssue(id)) {
                     log.info("E-invoice {} was not issued automatically: it no longer is what drawing it up now "
@@ -166,6 +202,22 @@ class EInvoiceJobs {
                 }
             } catch (RuntimeException failure) {
                 log.warn("E-invoice {} past its deadline was not reminded of: {}", id, failure.toString());
+            }
+        }
+        return done;
+    }
+
+    /** @return how many submissions overdue for the provider's result were announced (BE-08) */
+    int announceResultOverdue() {
+        int done = 0;
+        for (UUID id : queues.resultOverdueUnannounced(BATCH)) {
+            try {
+                if (queues.announceResultOverdue(id).isPresent()) {
+                    done++;
+                }
+            } catch (RuntimeException failure) {
+                log.warn("E-invoice {} overdue for the provider's result was not announced: {}", id,
+                        failure.toString());
             }
         }
         return done;

@@ -11,6 +11,7 @@ import com.stockflow.invoicing.internal.controller.dto.EInvoiceSettingsResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceSignatureResponse;
 import com.stockflow.invoicing.internal.controller.dto.ProviderCallResponse;
 import com.stockflow.invoicing.internal.domain.EInvoice;
+import com.stockflow.invoicing.internal.domain.EInvoiceProvider;
 import com.stockflow.invoicing.internal.domain.EInvoiceQueries;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
 import com.stockflow.invoicing.internal.domain.ErrorNotice;
@@ -35,15 +36,13 @@ final class InvoicingWebMapper {
     /** The warning shown beside the stored ones while an earlier-dated invoice of the series waits (HĐ-2). */
     static final String EARLIER_INVOICE_PENDING = "EARLIER_INVOICE_PENDING";
 
-    static EInvoiceResponse toResponse(EInvoice.Snapshot s, Instant now) {
-        return toResponse(s, now, null);
-    }
-
     /**
-     * @param earlierPending the code of an earlier-dated invoice still to be issued under the series this draft would
-     *                       take - a warning, not a refusal; null when there is none or it was not asked
+     * @param earlierPending       the code of an earlier-dated invoice still to be issued under the series this draft
+     *                             would take - a warning, not a refusal; null when there is none or it was not asked
+     * @param errorNoticeSupported whether its provider sends a Mẫu 04/SS-HĐĐT notice (F-11)
      */
-    static EInvoiceResponse toResponse(EInvoice.Snapshot s, Instant now, String earlierPending) {
+    static EInvoiceResponse toResponse(EInvoice.Snapshot s, Instant now, String earlierPending,
+                                       boolean errorNoticeSupported) {
         List<String> warnings = new java.util.ArrayList<>(s.warnings().stream().sorted().map(Enum::name).toList());
         if (earlierPending != null) {
             warnings.add(EARLIER_INVOICE_PENDING);
@@ -67,7 +66,9 @@ final class InvoicingWebMapper {
                 s.correctionBasis() != null && s.correctionBasis().requiresAgreement(),
                 s.agreementFileKey() == null ? null
                         : new EInvoiceResponse.Agreement(s.agreementNumber(), s.agreementDate()),
-                s.returnRequestId(), s.listedInvoiceIds(), earlierPending, s.deliveryFailedAt());
+                s.returnRequestId(), s.listedInvoiceIds(), earlierPending, s.deliveryFailedAt(), s.reversedAt(),
+                errorNoticeSupported, s.issuedVia() == null ? null : s.issuedVia().name(), s.deliveredOn(),
+                s.voidReasonCode() == null ? null : s.voidReasonCode().name());
     }
 
     static EInvoiceListItemResponse toResponse(EInvoiceQueries.Listing row, Instant now) {
@@ -77,7 +78,7 @@ final class InvoicingWebMapper {
                 overdue(row.status(), row.issueDueAt(), now), row.templateCode(), row.symbol(), row.invoiceNumber(),
                 row.subtotal(), row.taxTotal(), row.grandTotal(),
                 row.warnings() == null ? List.of() : Arrays.asList(row.warnings().split(",")), row.rejectionCode(),
-                row.issuedAt());
+                row.issuedAt(), row.correctionBasis(), row.reversedAt(), row.deliveredOn());
     }
 
     /** The row as its buyer sees it: nothing of the seller's work on the invoice. */
@@ -131,16 +132,22 @@ final class InvoicingWebMapper {
                         series.symbol(), series.year())).toList(), provider.version());
     }
 
-    static EInvoiceProviderResponse toResponse(ProviderAccounts.Account account) {
+    static EInvoiceProviderResponse toResponse(ProviderAccounts.Account account,
+                                               java.util.Optional<EInvoiceProvider> port) {
         return new EInvoiceProviderResponse(account.provider(), account.environment(), account.username(),
-                account.secretSealed() != null, account.active(), account.autoIssue(), account.version());
+                account.secretSealed() != null, account.active(), account.autoIssue(), account.version(),
+                port.map(EInvoiceProvider::accountInDeployment).orElse(false),
+                port.map(EInvoiceProvider::deploymentAccountReady).orElse(false),
+                port.map(EInvoiceProvider::issuesCorrections).orElse(false),
+                port.map(EInvoiceProvider::adjustsReplacements).orElse(false),
+                port.map(EInvoiceProvider::sendsErrorNotices).orElse(false));
     }
 
     private static EInvoiceResponse.Party party(InvoiceParty party) {
         return new EInvoiceResponse.Party(party.name(), party.taxCode(), party.address(), party.email());
     }
 
-    /** Still to issue, past the end of the working day after its date (NĐ 254 Phụ lục điểm 7). */
+    /** Still to issue, past the end of its date (NĐ 254 Điều 9 khoản 1; WF-05 Q-1). */
     private static boolean overdue(EInvoiceStatus status, Instant dueAt, Instant now) {
         return !status.wasIssued() && status != EInvoiceStatus.VOIDED_DRAFT && !now.isBefore(dueAt);
     }

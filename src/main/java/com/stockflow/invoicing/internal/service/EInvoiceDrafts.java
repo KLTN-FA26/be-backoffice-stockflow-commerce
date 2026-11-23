@@ -7,6 +7,7 @@ import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.logging.LogSafe;
 import com.stockflow.contracts.EInvoiceBuyerIncomplete;
 import com.stockflow.contracts.EInvoiceNeedsAttention;
 import com.stockflow.customer.api.CustomerLegalProfile;
@@ -15,6 +16,7 @@ import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceLine;
+import com.stockflow.invoicing.internal.domain.EInvoiceProvider;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
 import com.stockflow.invoicing.internal.domain.EInvoiceType;
@@ -92,9 +94,11 @@ public class EInvoiceDrafts {
     private final SellerProperties seller;
     private final ApplicationEventPublisher events;
     private final Clock clock;
+    private final EInvoiceProviders providers;
 
     EInvoiceDrafts(EInvoiceRepository invoices, DeliveredShipments shipments, CustomerLegalProfiles legalProfiles,
-                   CustomerService customers, SellerProperties seller, ApplicationEventPublisher events, Clock clock) {
+                   CustomerService customers, SellerProperties seller, ApplicationEventPublisher events, Clock clock,
+                   EInvoiceProviders providers) {
         this.invoices = invoices;
         this.shipments = shipments;
         this.legalProfiles = legalProfiles;
@@ -102,6 +106,7 @@ public class EInvoiceDrafts {
         this.seller = seller;
         this.events = events;
         this.clock = clock;
+        this.providers = providers;
     }
 
     /**
@@ -170,16 +175,18 @@ public class EInvoiceDrafts {
                         delivered.customerId(), deliveredOn),
                 new InvoiceParty(seller.name(), seller.taxCode(), seller.address(), null),
                 buyerOf(delivered.customerId()), lines.lines(), lines.rateDiffersFromContract(),
-                lines.rateNotOnContract());
+                lines.rateNotOnContract(), lines.taxClassUnknown());
         EInvoice.Snapshot drawn = invoices.save(invoice).snapshot();
         announceIncompleteBuyer(drawn);
         return new DrawnUp(drawn, true);
     }
 
     /**
-     * The invoice of the rest of an order's shipping fee, once its undelivered rest was closed: the one standing if
-     * there is one, else a new draft when some of the fee is on no invoice and no delivery is left to carry it
-     * ({@link FeeAllocation#shippingRest}); empty when there is nothing to draw up.
+     * The invoice of the rest of an order's fees, once its deliveries are over - its undelivered rest closed, or its
+     * last shipment come back or lost (WF-05 BE-62, {@code ShipmentReturnSettledListener}): the one standing if there is
+     * one, else a new draft when some of the shipping fee is on no invoice and no delivery is left to carry it
+     * ({@link FeeAllocation#shippingRest}), or a plate fee is on none (Q-19: an order whose goods all came back keeps
+     * its plate fee, which only a delivery's invoice ever carried); empty when there is nothing to draw up.
      *
      * <h2>Why an original of its own, and why dated the day the order's rest was closed</h2>
      *
@@ -217,14 +224,24 @@ public class EInvoiceDrafts {
         if (standing.isPresent()) {
             return Optional.of(new DrawnUp(standing.get().snapshot(), false));
         }
-        Optional<OrderShippingFee> found = shipments.shippingFee(orderId, closedAt);
+        Optional<OrderShippingFee> found = shipments.orderFees(orderId, closedAt);
         if (found.isEmpty()) {
             return Optional.empty();
         }
         OrderShippingFee order = found.get();
-        BigDecimal rest = FeeAllocation.shippingRest(order.fee().amount(), order.orderUnits(),
-                invoices.invoicedOfOrder(orderId));
-        if (rest.signum() <= 0) {
+        FeeAllocation.Invoiced invoiced = invoices.invoicedOfOrder(orderId);
+        // The share waived for shipments that came back (Q-19, owner 2026-11-23) is owed by nobody and not invoiced;
+        // nothing delivered, nothing invoiced, no part of it is owed (FeeAllocation.shippingRest answers 0 then).
+        BigDecimal rest = order.fee() == null ? BigDecimal.ZERO
+                : FeeAllocation.shippingRest(FeeAllocation.shippingFeeOwed(order.fee().amount(),
+                        order.shippingFeeWaiver().feeGross(), order.shippingFeeWaiver().waived()),
+                        order.orderUnits(), invoiced);
+        // BE-62 (Q-19): a plate fee no invoice of the order carries - its goods never reached the customer, so no
+        // delivery's invoice took it - is owed all the same (the plates were made) and goes on this invoice.
+        List<DeliveredShipment.Fee> plates = order.plateFees().stream()
+                .filter(fee -> fee.amount().signum() > 0 && FeeAllocation.carriesPlateFee(fee.sku(), invoiced))
+                .toList();
+        if (rest.signum() <= 0 && plates.isEmpty()) {
             return Optional.empty();
         }
         if (!EInvoice.VND.equals(order.currency())) {
@@ -237,17 +254,33 @@ public class EInvoiceDrafts {
                     "stockflow.seller.* is not configured in this deployment");
         }
         ResourceBundle t = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
-        DeliveredShipment.Fee fee = order.fee();
-        EInvoiceLine line = EInvoiceLine.fee(Identifiers.newId(), 1, EInvoiceLine.FeeKind.SHIPPING_FEE, null,
-                t.getString("einvoice.line.shippingFee.rest"), t.getString("einvoice.unit.fee"), rest, fee.taxRate());
+        List<EInvoiceLine> lines = new ArrayList<>();
+        boolean differs = false;
+        boolean notOnContract = false;
+        boolean classUnknown = false;
+        if (rest.signum() > 0) {
+            DeliveredShipment.Fee fee = order.fee();
+            lines.add(EInvoiceLine.fee(Identifiers.newId(), 1, EInvoiceLine.FeeKind.SHIPPING_FEE, null,
+                    t.getString("einvoice.line.shippingFee.rest"), t.getString("einvoice.unit.fee"), rest,
+                    fee.taxRate()));
+            differs = differs(fee.taxRate(), fee.contractTaxRate());
+            notOnContract = fee.contractTaxRate() == null;
+        }
+        for (DeliveredShipment.Fee plate : plates) {
+            lines.add(EInvoiceLine.fee(Identifiers.newId(), lines.size() + 1, EInvoiceLine.FeeKind.PLATE_FEE,
+                    plate.sku(), t.getString("einvoice.line.plateFee").formatted(plate.sku()),
+                    t.getString("einvoice.unit.fee"), plate.amount(), plate.taxRate()));
+            differs |= differs(plate.taxRate(), plate.contractTaxRate());
+            notOnContract |= plate.contractTaxRate() == null;
+            classUnknown |= plate.taxClassUnknown();
+        }
         Instant completedAt = closedAt != null ? closedAt : clock.instant();
         LocalDate completedOn = BusinessCalendar.date(completedAt);
         EInvoice invoice = EInvoice.drawUpOriginal(Identifiers.newId(), invoices.nextCode(completedOn),
                 new EInvoice.Delivery(order.orderId(), order.orderNumber(), order.contractNumber(), null, null, null,
                         order.customerId(), completedOn),
                 new InvoiceParty(seller.name(), seller.taxCode(), seller.address(), null),
-                buyerOf(order.customerId()), List.of(line), differs(fee.taxRate(), fee.contractTaxRate()),
-                fee.contractTaxRate() == null);
+                buyerOf(order.customerId()), lines, differs, notOnContract, classUnknown);
         EInvoice.Snapshot drawn = invoices.save(invoice).snapshot();
         announceIncompleteBuyer(drawn);
         return Optional.of(new DrawnUp(drawn, true));
@@ -321,6 +354,83 @@ public class EInvoiceDrafts {
         EInvoice invoice = lock(id, expectedVersion);
         invoice.voidDraft(reason, by, clock.instant());
         return invoices.save(invoice).snapshot();
+    }
+
+    /**
+     * The accountant voids the reduction of a failed delivery that no provider can send (WF-05 BE-10, decision Q-8;
+     * F-14), to make it on the provider's portal and record it there ({@code EInvoiceIssuance.recordExternalReduction}).
+     * Such a reduction used to be neither sendable nor voidable, and the order it belonged to waited on it for good.
+     *
+     * <p><b>Only when it really cannot be sent</b> - otherwise the reduction would leave the system for a portal by
+     * choice, and the two would drift: the provider that issued the invoice it reduces is not usable here any more
+     * (every correction goes through it, HĐ-5), or issues no corrections at all (Viettel's adapter), or it reduces a
+     * replacement, which no provider here adjusts (Q-9: one drawn up before that rule), or the provider refused it
+     * {@value #REFUSED_FOR_GOOD} times under the same code. A draft or a refused one; one at the provider is
+     * waited for. The invoice it reduces stays reversed - the shipment, delivered again, still takes its own original -
+     * and the accountants are told to reduce it on the portal ({@code REDUCE_ON_PROVIDER_PORTAL}), in this
+     * transaction.</p>
+     *
+     * @throws BusinessException {@code EINVOICE_NOT_FOUND}; {@code OPTIMISTIC_LOCK}; {@code
+     *         EINVOICE_CORRECTION_NOT_APPLICABLE} for anything but the reduction of a failed delivery; {@code
+     *         EINVOICE_INVALID_TRANSITION} once it is at the provider or issued; {@code EINVOICE_REVERSAL_STILL_SENDABLE}
+     *         while a provider can still send it
+     */
+    @Transactional
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "einvoice", resourceId = "#id",
+            details = "{reasonCode: 'UNSENDABLE_REVERSAL', reason: #reason}")
+    public EInvoice.Snapshot voidUnsendableReversal(UUID id, long expectedVersion, String reason, UUID by) {
+        EInvoice.Snapshot unlocked = invoices.findById(id)
+                .orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_FOUND)).snapshot();
+        invoices.lockOrder(unlocked.orderId());
+        EInvoice reduction = lock(id, expectedVersion);
+        if (reduction.correctionBasis() != com.stockflow.invoicing.internal.domain.CorrectionBasis.DELIVERY_FAILED) {
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE,
+                    "Invoice %s does not reduce a failed delivery".formatted(reduction.code()));
+        }
+        if (reduction.status() != EInvoiceStatus.DRAFT && reduction.status() != EInvoiceStatus.REJECTED) {
+            throw new BusinessException(ErrorCode.EINVOICE_INVALID_TRANSITION, ("Invoice %s is %s: only a draft or a "
+                    + "refused reduction is voided").formatted(reduction.code(), reduction.status()));
+        }
+        EInvoice.Snapshot reduced = invoices.findById(reduction.originalEInvoiceId()).orElseThrow().snapshot();
+        if (sendable(reduced, reduction.snapshot())) {
+            throw new BusinessException(ErrorCode.EINVOICE_REVERSAL_STILL_SENDABLE, ("Invoice %s can still be sent "
+                    + "through %s: issue it, or reopen and issue it again").formatted(reduction.code(),
+                    reduced.provider()));
+        }
+        if (reduction.status() == EInvoiceStatus.REJECTED) {
+            reduction.reopen();
+            reduction = invoices.save(reduction);
+        }
+        reduction.voidDraft(reason, EInvoice.VoidReasonCode.UNSENDABLE_REVERSAL, by, clock.instant());
+        EInvoice.Snapshot voided = invoices.save(reduction).snapshot();
+        events.publishEvent(new EInvoiceNeedsAttention(reduced.id(), reduced.code(), reduced.orderId(),
+                reduced.orderNumber(), EInvoiceNeedsAttention.Cause.REDUCE_ON_PROVIDER_PORTAL, null,
+                reduced.submittedAt(), reduced.issueDueAt()));
+        return voided;
+    }
+
+    /** How many refusals under one code make a reduction "refused for good" (BE-10). */
+    static final int REFUSED_FOR_GOOD = 2;
+
+    /**
+     * Whether a reduction of {@code reduced} can still go through a provider: the one that issued it, usable here, issuing
+     * corrections, and not having refused this reduction {@value #REFUSED_FOR_GOOD} times under the same code.
+     */
+    private boolean sendable(EInvoice.Snapshot reduced, EInvoice.Snapshot reduction) {
+        String provider = reduced.provider();
+        if (provider == null || !providers.usable(provider)) {
+            return false;
+        }
+        Optional<EInvoiceProvider> port = providers.find(provider);
+        if (port.isEmpty() || !port.get().issuesCorrections()) {
+            return false;
+        }
+        if (reduced.type() == EInvoiceType.REPLACEMENT && !port.get().adjustsReplacements()) {
+            // Drawn up before a replacement stopped being adjusted (Q-9): no provider here takes it (SePay 422, T-5).
+            return false;
+        }
+        return reduction.rejectionCode() == null
+                || invoices.refusalsUnder(reduction.id(), reduction.rejectionCode()) < REFUSED_FOR_GOOD;
     }
 
     /** REJECTED → DRAFT, to correct what the provider refused and issue again. */
@@ -431,15 +541,75 @@ public class EInvoiceDrafts {
      */
     @Transactional
     public Optional<EInvoice.Snapshot> reverseForCorrectedDelivery(UUID orderId, UUID shipmentId) {
+        return Optional.ofNullable(reverseOrExplain(orderId, shipmentId).drawn());
+    }
+
+    /**
+     * {@link #reverseForCorrectedDelivery}, saying why nothing was drawn up: the listener tells the accountants the
+     * cause ({@code REPLACEMENT_NOT_REDUCIBLE}, {@code DELIVERY_FAILED_NOT_REVERSED}) instead of a notice that names
+     * none (BE-09, BE-11).
+     */
+    @Transactional
+    public Reversal reverseOrExplain(UUID orderId, UUID shipmentId) {
         invoices.lockOrder(orderId);
         if (deliveredNow(orderId, shipmentId)) {
-            return Optional.empty();
+            return Reversal.NOTHING;
         }
         Optional<EInvoice> inForce = invoices.findLiveOriginalOfShipment(shipmentId);
         if (inForce.isEmpty()) {
-            return Optional.empty();
+            return Reversal.NOTHING;
         }
         return reverse(invoices.findByIdForUpdate(inForce.get().id()).orElseThrow());
+    }
+
+    /**
+     * The accountant's "reduce for the failed delivery" (WF-05 BE-11, F-15): the system's reduction run again for an
+     * issued invoice of a shipment that is not delivered now - once a correction that was at the provider is settled,
+     * or when the system's own attempt could not reduce it. The same rules as the system's ({@link #reverse}).
+     *
+     * @throws BusinessException {@code EINVOICE_NOT_FOUND}; {@code OPTIMISTIC_LOCK}; {@code
+     *         EINVOICE_REVERSAL_NOT_APPLICABLE} for an invoice that is not issued, not an original of a shipment, no
+     *         longer stands for it, is reversed already, whose shipment is delivered now, or that cannot be reduced
+     *         yet (a correction at the provider) or by the system at all; {@code EINVOICE_REPLACEMENT_NOT_ADJUSTABLE}
+     *         for a replacement (Q-9)
+     */
+    @Transactional
+    @Auditable(action = AuditAction.CREATE, resourceType = "einvoice", resourceId = "#id")
+    public EInvoice.Snapshot reduceForFailedDelivery(UUID id, long expectedVersion) {
+        EInvoice.Snapshot unlocked = invoices.findById(id)
+                .orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_FOUND)).snapshot();
+        invoices.lockOrder(unlocked.orderId());
+        EInvoice invoice = lock(id, expectedVersion);
+        EInvoice.Snapshot standing = invoice.snapshot();
+        if (standing.status() != EInvoiceStatus.ISSUED || standing.type() == EInvoiceType.ADJUSTMENT
+                || standing.shipmentId() == null || standing.reversedAt() != null) {
+            throw new BusinessException(ErrorCode.EINVOICE_REVERSAL_NOT_APPLICABLE, ("Invoice %s is not an issued "
+                    + "invoice of a shipment still in force").formatted(standing.code()));
+        }
+        if (shipments.find(standing.orderId(), standing.shipmentId()).isPresent()) {
+            throw new BusinessException(ErrorCode.EINVOICE_REVERSAL_NOT_APPLICABLE,
+                    "The shipment of invoice %s is delivered: nothing failed".formatted(standing.code()));
+        }
+        Optional<EInvoice> inForce = invoices.findLiveOriginalOfShipment(standing.shipmentId());
+        if (inForce.isEmpty() || !inForce.get().id().equals(id)) {
+            throw new BusinessException(ErrorCode.EINVOICE_REVERSAL_NOT_APPLICABLE,
+                    "Invoice %s no longer stands for its shipment".formatted(standing.code()));
+        }
+        Reversal reversal = reverse(invoice);
+        if (reversal.drawn() != null) {
+            EInvoice.Snapshot drawn = reversal.drawn();
+            events.publishEvent(new EInvoiceNeedsAttention(drawn.id(), drawn.code(), drawn.orderId(),
+                    drawn.orderNumber(), EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_REVERSAL_DRAWN_UP, null, null,
+                    drawn.issueDueAt()));
+            return drawn;
+        }
+        if (reversal.notReversed() == EInvoiceNeedsAttention.Cause.REPLACEMENT_NOT_REDUCIBLE) {
+            throw new BusinessException(ErrorCode.EINVOICE_REPLACEMENT_NOT_ADJUSTABLE, ("Invoice %s is a replacement: "
+                    + "its failed delivery is reduced on the provider's portal and recorded").formatted(standing.code()));
+        }
+        throw new BusinessException(ErrorCode.EINVOICE_REVERSAL_NOT_APPLICABLE, ("Invoice %s cannot be reduced now: a "
+                + "correction of it is at the provider, or an adjustment took a line below what it invoiced")
+                .formatted(standing.code()));
     }
 
     /**
@@ -584,7 +754,60 @@ public class EInvoiceDrafts {
                 restored++;
             }
         }
+        if (shipmentId != null && shipments.find(orderId, shipmentId).isPresent() && takeBackReversal(shipmentId)) {
+            restored++;
+        }
         return restored;
+    }
+
+    /**
+     * WF-05 BE-29: the delivery of a shipment whose issued invoice had been reduced for its failure is corrected back to
+     * delivered while that reduction has not left - a draft, or refused. Nothing failed after all: the reduction is
+     * voided ({@code DELIVERY_CORRECTED_BACK}) and the invoice stands for the shipment again ({@code reversed_at} taken
+     * back), in this one transaction - the only way {@code tg_einvoice_guard} lets the mark go. Without it the shipment
+     * got the old invoice, its reduction (which could not be voided) and a new original: three invoices for one
+     * delivery (V1).
+     *
+     * <p>A new original already drawn up for the redelivery is a second invoice of the same delivery: voided too if it
+     * never left. Once it, or the reduction, is at the provider or issued, nothing is taken back - the reduction is
+     * issued and the new original stands, which is lawful, only longer. Called under the order's lock, and only while
+     * the shipment is delivered now (an event heard late changes nothing).</p>
+     *
+     * @return whether the reversal was taken back
+     */
+    private boolean takeBackReversal(UUID shipmentId) {
+        Optional<EInvoice> reversed = invoices.findReversedOfShipment(shipmentId);
+        if (reversed.isEmpty()) {
+            return false;
+        }
+        Optional<EInvoice> reduction = invoices.findLiveDeliveryFailedReductionOf(reversed.get().id());
+        if (reduction.isEmpty() || (reduction.get().status() != EInvoiceStatus.DRAFT
+                && reduction.get().status() != EInvoiceStatus.REJECTED)) {
+            return false;
+        }
+        Optional<EInvoice> redelivery = invoices.findLiveOriginalOfShipment(shipmentId);
+        if (redelivery.isPresent() && redelivery.get().status() != EInvoiceStatus.DRAFT
+                && redelivery.get().status() != EInvoiceStatus.REJECTED) {
+            return false;
+        }
+        EInvoice original = invoices.findByIdForUpdate(reversed.get().id()).orElseThrow();
+        if (redelivery.isPresent()) {
+            EInvoice duplicate = invoices.findByIdForUpdate(redelivery.get().id()).orElseThrow();
+            voidUnissued(duplicate, "The delivery was corrected back to delivered: invoice %s stands for it again"
+                    .formatted(original.code()));
+        }
+        EInvoice draft = invoices.findByIdForUpdate(reduction.get().id()).orElseThrow();
+        if (draft.status() == EInvoiceStatus.REJECTED) {
+            draft.reopen();
+            draft = invoices.save(draft);
+        }
+        draft.voidDraft("The delivery was corrected back to delivered before this reduction was issued",
+                EInvoice.VoidReasonCode.DELIVERY_CORRECTED_BACK, null, clock.instant());
+        invoices.save(draft);
+        invoices.clearReversed(original.id());
+        log.info("E-invoice {} stands for its shipment again: its delivery was corrected back to delivered and its "
+                + "reduction {} voided", LogSafe.text(original.code()), LogSafe.text(draft.code()));
+        return true;
     }
 
     private Settlement settlementOf(EInvoice invoice) {
@@ -625,36 +848,40 @@ public class EInvoiceDrafts {
             return Settlement.DONE_BEFORE;
         }
         EInvoice invoice = invoices.findByIdForUpdate(expected).orElseThrow();
-        Optional<EInvoice.Snapshot> reversal = reverse(invoice);
+        Reversal reversal = reverse(invoice);
         EInvoice.Snapshot issued = invoice.snapshot();
-        if (reversal.isPresent()) {
-            EInvoice.Snapshot drawn = reversal.get();
+        if (reversal.drawn() != null) {
+            EInvoice.Snapshot drawn = reversal.drawn();
             events.publishEvent(new EInvoiceNeedsAttention(drawn.id(), drawn.code(), drawn.orderId(),
                     drawn.orderNumber(), EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_REVERSAL_DRAWN_UP, null, null,
                     drawn.issueDueAt()));
             return Settlement.REVERSED;
         }
+        if (reversal.notReversed() == null) {
+            return Settlement.DONE_BEFORE;
+        }
         events.publishEvent(new EInvoiceNeedsAttention(issued.id(), issued.code(), issued.orderId(),
-                issued.orderNumber(), EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_AFTER_SUBMISSION, null,
-                issued.submittedAt(), issued.issueDueAt()));
+                issued.orderNumber(), reversal.notReversed(), null, issued.submittedAt(), issued.issueDueAt()));
         return Settlement.LEFT_FOR_ADJUSTMENT;
     }
 
     /**
      * Whether a draft about to be issued automatically still is what drawing it up now would give (WF-05 review,
-     * defect 4). The automatic issuing takes drafts without warnings, and warnings are decided when a draft is drawn
-     * up: a draft drawn up before a rule existed - the e-mail warning (HĐ-8), the VAT reduction period
-     * (V20261201000200) - would be issued as if it never did. So, just before it is sent:
+     * defect 4). The automatic issuing takes drafts with no warning that {@linkplain EInvoice.Warning#blocksAutomaticIssue
+     * holds it back}, and warnings are decided when a draft is drawn up: a draft drawn up before a rule existed - the VAT
+     * reduction period (V20261201000200), a product's tax class (Q-21) - would be issued as if it never did. So, just
+     * before it is sent, the same checks as a manual issue ({@link #recheckForIssue}):
      * <ul>
      *   <li>the buyer's gaps and a line at 0% are worked out again on the draft as it stands;</li>
      *   <li>each line's rate is compared with the one a draft drawn up now for the same delivery would carry, and with
      *       the rate its order fixed ({@link EInvoice.Warning#TAX_RATE_OUT_OF_DATE},
-     *       {@link EInvoice.Warning#TAX_RATE_DIFFERS_FROM_CONTRACT}, {@link EInvoice.Warning#TAX_RATE_NOT_ON_CONTRACT}).
-     *       The lines carry no tax class; the delivery's facts do, and are what drawing it up reads.</li>
+     *       {@link EInvoice.Warning#TAX_RATE_DIFFERS_FROM_CONTRACT}, {@link EInvoice.Warning#TAX_RATE_NOT_ON_CONTRACT}),
+     *       and whether its product has a tax class now ({@link EInvoice.Warning#TAX_CLASS_UNKNOWN}). The lines carry no
+     *       tax class; the delivery's facts do, and are what drawing it up reads.</li>
      * </ul>
-     * Anything found is stored on the draft, which then waits for the accountant like any draft with a warning. A
-     * shipment no longer delivered - its delivery corrected to a failure - is not issued either, and is left to the
-     * correction, which voids its draft.
+     * Anything found is stored on the draft. A missing e-mail is stored and holds nothing back (Q-22, BR-06: the e-mail
+     * is not invoice content, and the original must leave on its delivery day, Q-1). A shipment no longer delivered -
+     * its delivery corrected to a failure - is not issued either, and is left to the correction, which voids its draft.
      *
      * @return true when it may be sent now; false when it may not, or is no longer a draft the automatic issuing takes
      */
@@ -662,32 +889,120 @@ public class EInvoiceDrafts {
     public boolean recheckForAutomaticIssue(UUID id) {
         EInvoice invoice = invoices.findByIdForUpdate(id).orElse(null);
         if (invoice == null || invoice.status() != EInvoiceStatus.DRAFT || invoice.type() != EInvoiceType.ORIGINAL
-                || !invoice.snapshot().warnings().isEmpty()) {
+                || blocking(invoice.warnings())) {
             return false;
         }
+        Recheck recheck = recheck(invoice);
+        if (!recheck.invoiceable()) {
+            return false;
+        }
+        if (!recheck.found().isEmpty()) {
+            invoices.save(invoice);
+        }
+        return !blocking(recheck.found());
+    }
+
+    /**
+     * What a manual issue found (WF-05 BE-25, F-16): what the accountant must acknowledge before the draft is sent -
+     * a warning that holds the automatic issuing back and was not on the draft the accountant read, or
+     * {@link #BUYER_PROFILE_CHANGED} - and the version the draft is at now (one more when anything was stored).
+     */
+    public record IssueCheck(java.util.Set<String> unacknowledged, long version) {
+    }
+
+    /**
+     * Not a stored warning: the customer's legal profile names the buyer otherwise than the draft does (BE-25). The
+     * draft is not refreshed behind the accountant's back - a buyer they corrected by hand would be overwritten - so
+     * they refresh it ({@code /buyer-refresh}) or acknowledge it.
+     */
+    public static final String BUYER_PROFILE_CHANGED = "BUYER_PROFILE_CHANGED";
+
+    /**
+     * The checks of the automatic issuing, before the accountant's issue (WF-05 BE-25, invariant V8: a manual issue
+     * applies every check the automatic one does). It used to apply none: an old draft went out at a rate a reduction
+     * period had changed, for a product that had lost its class, for a shipment whose delivery was corrected to a
+     * failure meanwhile, or to a buyer the customer's profile no longer names.
+     * <ul>
+     *   <li>An original's shipment must be delivered now ({@code EINVOICE_NOT_INVOICEABLE}); a draft of a delivery
+     *       corrected to a failure is voided by the correction, not issued.</li>
+     *   <li>Its rates and tax classes are compared again and whatever is new is stored on the draft - in this
+     *       transaction of its own, committed whatever the accountant does next.</li>
+     *   <li>A new warning that holds the automatic issue back, or a buyer the profile names otherwise, must be in
+     *       {@code acknowledged}; the caller refuses otherwise ({@code EINVOICE_DRAFT_OUT_OF_DATE}, listing them).</li>
+     * </ul>
+     * A correction is not checked here: its lines are the original's, at the original's rates (NĐ 174 keeps the rate
+     * of the invoice corrected). A draft that is not one any more is left to the submission, which refuses it.
+     *
+     * @param expectedVersion the version the accountant read; null when the system issues
+     * @throws BusinessException {@code EINVOICE_NOT_FOUND}; {@code OPTIMISTIC_LOCK}; {@code EINVOICE_NOT_INVOICEABLE}
+     */
+    @Transactional
+    public IssueCheck recheckForIssue(UUID id, Long expectedVersion, java.util.Set<String> acknowledged) {
+        EInvoice invoice = invoices.findByIdForUpdate(id)
+                .orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_FOUND));
+        if (expectedVersion != null && invoice.version() != expectedVersion) {
+            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
+                    "Invoice %s changed since it was read".formatted(invoice.code()));
+        }
+        if (invoice.status() != EInvoiceStatus.DRAFT || invoice.type() != EInvoiceType.ORIGINAL) {
+            return new IssueCheck(java.util.Set.of(), invoice.version());
+        }
+        Recheck recheck = recheck(invoice);
+        if (!recheck.invoiceable()) {
+            throw new BusinessException(ErrorCode.EINVOICE_NOT_INVOICEABLE, ("The shipment of invoice %s is not "
+                    + "delivered now: its draft is voided by the correction, not issued").formatted(invoice.code()));
+        }
+        java.util.Set<String> unacknowledged = new java.util.TreeSet<>();
+        recheck.found().stream().filter(EInvoice.Warning::blocksAutomaticIssue).map(Enum::name)
+                .forEach(unacknowledged::add);
+        InvoiceParty profile = buyerOf(invoice.customerId());
+        if (!sameBuyer(profile, invoice.buyer())) {
+            unacknowledged.add(BUYER_PROFILE_CHANGED);
+        }
+        if (acknowledged != null) {
+            unacknowledged.removeAll(acknowledged);
+        }
+        long version = invoice.version();
+        if (!recheck.found().isEmpty()) {
+            version = invoices.save(invoice).version();
+        }
+        return new IssueCheck(java.util.Set.copyOf(unacknowledged), version);
+    }
+
+    private static boolean sameBuyer(InvoiceParty a, InvoiceParty b) {
+        return java.util.Objects.equals(a.name(), b.name()) && java.util.Objects.equals(a.taxCode(), b.taxCode())
+                && java.util.Objects.equals(a.address(), b.address());
+    }
+
+    private static boolean blocking(java.util.Set<EInvoice.Warning> warnings) {
+        return warnings.stream().anyMatch(EInvoice.Warning::blocksAutomaticIssue);
+    }
+
+    /** What re-checking a draft found: whether its shipment is still delivered, and the warnings added now. */
+    private record Recheck(boolean invoiceable, java.util.Set<EInvoice.Warning> found) {
+    }
+
+    /** The rate and class checks of {@link #recheckForAutomaticIssue}, shared with the manual issue. */
+    private Recheck recheck(EInvoice invoice) {
         EInvoice.Snapshot draft = invoice.snapshot();
         RateCheck rates;
         if (draft.shipmentId() != null) {
             Optional<DeliveredShipment> delivered = shipments.find(draft.orderId(), draft.shipmentId());
             if (delivered.isEmpty()) {
-                return false;
+                return new Recheck(false, java.util.Set.of());
             }
             rates = rates(draft.lines(), delivered.get());
         } else {
-            Optional<OrderShippingFee> fee = shipments.shippingFee(draft.orderId(),
+            Optional<OrderShippingFee> fees = shipments.orderFees(draft.orderId(),
                     draft.issueDate().atStartOfDay(BusinessCalendar.ZONE).toInstant());
-            rates = fee.isEmpty() ? new RateCheck(false, false, false) : feeRest(draft.lines(), fee.get().fee());
+            rates = fees.isEmpty() ? new RateCheck(false, false, false, false) : feeRest(draft.lines(), fees.get());
         }
-        java.util.Set<EInvoice.Warning> found = invoice.recheckBeforeAutomaticIssue(rates.outOfDate(),
-                rates.differsFromContract(), rates.notOnContract());
-        if (found.isEmpty()) {
-            return true;
-        }
-        invoices.save(invoice);
-        return false;
+        return new Recheck(true, invoice.recheckBeforeIssue(rates.outOfDate(), rates.differsFromContract(),
+                rates.notOnContract(), rates.taxClassUnknown()));
     }
 
-    private record RateCheck(boolean outOfDate, boolean differsFromContract, boolean notOnContract) {
+    private record RateCheck(boolean outOfDate, boolean differsFromContract, boolean notOnContract,
+                             boolean taxClassUnknown) {
     }
 
     /** The draft's lines against the delivery's: goods by order line, fees by kind and SKU. */
@@ -695,15 +1010,18 @@ public class EInvoiceDrafts {
         boolean outOfDate = false;
         boolean differs = false;
         boolean notOnContract = false;
+        boolean classUnknown = false;
         for (EInvoiceLine line : lines) {
             BigDecimal now = null;
             BigDecimal contract = null;
+            boolean unknown = false;
             boolean found = false;
             if (line.kind() == EInvoiceLine.Kind.GOODS) {
                 for (DeliveredShipment.Line goods : delivered.lines()) {
                     if (goods.orderLineId().equals(line.orderLineId())) {
                         now = goods.taxRate();
                         contract = goods.contractTaxRate();
+                        unknown = goods.taxClassUnknown();
                         found = true;
                     }
                 }
@@ -713,6 +1031,7 @@ public class EInvoiceDrafts {
                             && java.util.Objects.equals(fee.sku(), line.sku())) {
                         now = fee.taxRate();
                         contract = fee.contractTaxRate();
+                        unknown = fee.taxClassUnknown();
                         found = true;
                     }
                 }
@@ -723,48 +1042,110 @@ public class EInvoiceDrafts {
             outOfDate |= now.compareTo(line.taxRate()) != 0;
             differs |= differs(line.taxRate(), contract);
             notOnContract |= contract == null;
+            classUnknown |= unknown;
         }
-        return new RateCheck(outOfDate, differs, notOnContract);
-    }
-
-    /** The rest of a shipping fee: one fee line, against the fee as the order has it on the invoice's day. */
-    private static RateCheck feeRest(List<EInvoiceLine> lines, DeliveredShipment.Fee fee) {
-        boolean outOfDate = false;
-        for (EInvoiceLine line : lines) {
-            if (line.kind() == EInvoiceLine.Kind.FEE) {
-                outOfDate |= fee.taxRate().compareTo(line.taxRate()) != 0;
-            }
-        }
-        BigDecimal rate = lines.stream().filter(line -> line.kind() == EInvoiceLine.Kind.FEE)
-                .map(EInvoiceLine::taxRate).findFirst().orElse(fee.taxRate());
-        return new RateCheck(outOfDate, differs(rate, fee.contractTaxRate()), fee.contractTaxRate() == null);
+        return new RateCheck(outOfDate, differs, notOnContract, classUnknown);
     }
 
     /**
-     * The full reduction of the issued invoice standing for a shipment, and the mark that it no longer stands for it;
-     * empty when it is not issued, or something corrects it already. Under the order's lock and the invoice's.
+     * The rest of an order's fees - the shipping fee no delivery carried and the plate fees none did (BE-62) - against
+     * the fees as the order has them on the invoice's day.
      */
-    private Optional<EInvoice.Snapshot> reverse(EInvoice inForce) {
+    private static RateCheck feeRest(List<EInvoiceLine> lines, OrderShippingFee fees) {
+        boolean outOfDate = false;
+        boolean differs = false;
+        boolean notOnContract = false;
+        boolean classUnknown = false;
+        for (EInvoiceLine line : lines) {
+            if (line.kind() != EInvoiceLine.Kind.FEE) {
+                continue;
+            }
+            DeliveredShipment.Fee fee = line.feeKind() == EInvoiceLine.FeeKind.SHIPPING_FEE ? fees.fee()
+                    : fees.plateFees().stream().filter(plate -> java.util.Objects.equals(plate.sku(), line.sku()))
+                    .findFirst().orElse(null);
+            if (fee == null) {
+                continue;
+            }
+            outOfDate |= fee.taxRate().compareTo(line.taxRate()) != 0;
+            differs |= differs(line.taxRate(), fee.contractTaxRate());
+            notOnContract |= fee.contractTaxRate() == null;
+            classUnknown |= fee.taxClassUnknown();
+        }
+        return new RateCheck(outOfDate, differs, notOnContract, classUnknown);
+    }
+
+    /**
+     * What {@link #reverse} did: the reduction drawn up, or - when none could be - why, as the notice the accountants
+     * are given ({@code REPLACEMENT_NOT_REDUCIBLE}: a replacement is never adjusted, Q-9; {@code
+     * DELIVERY_FAILED_NOT_REVERSED}: a correction of it is at the provider, or an adjustment took a line below what it
+     * invoiced). Both null when there was nothing to reduce (not issued, or reversed already).
+     */
+    record Reversal(EInvoice.Snapshot drawn, EInvoiceNeedsAttention.Cause notReversed) {
+
+        static final Reversal NOTHING = new Reversal(null, null);
+    }
+
+    /**
+     * The reduction of what the issued invoice standing for a shipment still invoices, and the mark that it no longer
+     * stands for it (WF-05 HĐ-3, BE-11). Under the order's lock and the invoice's; the same for the system, hearing of
+     * the failure, and for the accountant's command ({@link #reduceForFailedDelivery}), so the two never decide
+     * differently.
+     * <ul>
+     *   <li><b>A replacement</b> is never adjusted (Q-9): nothing is drawn up, and the accountants settle the failure on
+     *       the provider's portal and record it.</li>
+     *   <li><b>Corrections not issued yet</b> - a draft or refused adjustment naming it, a replacement being drawn up -
+     *       are voided first: nothing was delivered for them to correct (BE-11). One at the provider, or a draft that
+     *       lists it among others (a trade discount), is waited for: nothing is drawn up until it is settled, and the
+     *       accountant runs the command again.</li>
+     *   <li><b>Issued adjustments</b> no longer stop it (BE-11): what the invoice still comes to, line by line, is taken
+     *       off ({@link EInvoice#drawUpDeliveryReversal(UUID, String, EInvoice, String, LocalDate, EInvoice.Corrections,
+     *       List)}), and the invoice is always marked reversed, so a shipment delivered again takes its own original.</li>
+     * </ul>
+     */
+    private Reversal reverse(EInvoice inForce) {
         if (inForce.status() != EInvoiceStatus.ISSUED || inForce.type() == EInvoiceType.ADJUSTMENT
-                || inForce.adjusted()) {
-            return Optional.empty();
+                || inForce.reversedAt() != null) {
+            return Reversal.NOTHING;
         }
-        EInvoice.Corrections corrections = invoices.correctionsOf(inForce.id());
-        if (corrections.liveAdjustment() || corrections.liveReplacement()) {
-            return Optional.empty();
+        if (inForce.type() == EInvoiceType.REPLACEMENT) {
+            return new Reversal(null, EInvoiceNeedsAttention.Cause.REPLACEMENT_NOT_REDUCIBLE);
         }
+        List<EInvoice> unissued = invoices.findUnissuedCorrectionsOf(inForce.id());
+        for (EInvoice correction : unissued) {
+            if (correction.status() == EInvoiceStatus.SUBMITTING
+                    || !inForce.id().equals(correction.originalEInvoiceId())) {
+                return new Reversal(null, EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_NOT_REVERSED);
+            }
+        }
+        List<EInvoiceLine> issuedLines = invoices.issuedAdjustmentLinesOf(inForce.id());
+        BigDecimal issuedTotal = issuedLines.stream().map(line -> line.amount().add(line.taxAmount()))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        // What corrects it once the unissued corrections are voided: only the issued adjustments.
+        EInvoice.Corrections afterVoiding = new EInvoice.Corrections(!issuedLines.isEmpty() || inForce.adjusted(),
+                false, issuedTotal);
         Instant now = clock.instant();
         LocalDate today = BusinessCalendar.date(now);
         ResourceBundle t = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
         String shipmentCode = inForce.snapshot().shipmentCode();
         String reason = t.getString("einvoice.correction.deliveryFailed").formatted(inForce.code(),
                 shipmentCode == null ? "-" : shipmentCode);
-        EInvoice reversal = EInvoice.drawUpDeliveryReversal(Identifiers.newId(), invoices.nextCode(today), inForce,
-                reason.substring(0, Math.min(500, reason.length())), today, corrections);
+        EInvoice reversal;
+        try {
+            // Decided before anything is voided: a reduction that cannot be drawn up leaves every draft as it was.
+            reversal = EInvoice.drawUpDeliveryReversal(Identifiers.newId(), invoices.nextCode(today), inForce,
+                    reason.substring(0, Math.min(500, reason.length())), today, afterVoiding, issuedLines);
+        } catch (BusinessException notReducible) {
+            log.warn("E-invoice {} of a failed delivery is not reduced by the system: {}",
+                    LogSafe.text(inForce.code()), notReducible.errorCode());
+            return new Reversal(null, EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_NOT_REVERSED);
+        }
+        for (EInvoice correction : unissued) {
+            voidUnissued(invoices.findByIdForUpdate(correction.id()).orElseThrow());
+        }
         EInvoice.Snapshot drawn = invoices.save(reversal).snapshot();
         // After the reduction is written: tg_einvoice_guard lets an invoice be reversed only while one names it.
         invoices.markReversed(inForce.id(), now);
-        return Optional.of(drawn);
+        return new Reversal(drawn, null);
     }
 
     /**
@@ -773,12 +1154,16 @@ public class EInvoiceDrafts {
      * never straight from one to the other ({@code tg_einvoice_guard}), and one save would be one UPDATE.
      */
     private void voidUnissued(EInvoice invoice) {
+        voidUnissued(invoice, "The delivery was corrected to a failure: nothing was delivered");
+    }
+
+    private void voidUnissued(EInvoice invoice, String reason) {
         EInvoice draft = invoice;
         if (draft.status() == EInvoiceStatus.REJECTED) {
             draft.reopen();
             draft = invoices.save(draft);
         }
-        draft.voidDraft("The delivery was corrected to a failure: nothing was delivered", null, clock.instant());
+        draft.voidDraft(reason, null, clock.instant());
         invoices.save(draft);
     }
 
@@ -807,7 +1192,8 @@ public class EInvoiceDrafts {
         return new InvoiceParty(customer.fullName(), customer.taxCode(), null, customer.email());
     }
 
-    private record Lines(List<EInvoiceLine> lines, boolean rateDiffersFromContract, boolean rateNotOnContract) {
+    private record Lines(List<EInvoiceLine> lines, boolean rateDiffersFromContract, boolean rateNotOnContract,
+                         boolean taxClassUnknown) {
     }
 
     /** The goods of the delivery, then the fees this invoice carries given what the order's invoices carry already. */
@@ -816,6 +1202,7 @@ public class EInvoiceDrafts {
         List<EInvoiceLine> lines = new ArrayList<>();
         boolean differs = false;
         boolean notOnContract = false;
+        boolean classUnknown = false;
         for (DeliveredShipment.Line goods : delivered.lines()) {
             boolean cartons = goods.cartons() != null;
             lines.add(EInvoiceLine.goods(Identifiers.newId(), lines.size() + 1, goods.orderLineId(), goods.sku(),
@@ -825,9 +1212,10 @@ public class EInvoiceDrafts {
                     goods.taxRate()));
             differs |= differs(goods.taxRate(), goods.contractTaxRate());
             notOnContract |= goods.contractTaxRate() == null;
+            classUnknown |= goods.taxClassUnknown();
         }
         if (lines.isEmpty()) {
-            return new Lines(lines, false, false);
+            return new Lines(lines, false, false, false);
         }
         for (DeliveredShipment.Fee fee : delivered.fees()) {
             BigDecimal amount;
@@ -836,8 +1224,16 @@ public class EInvoiceDrafts {
                 amount = FeeAllocation.carriesPlateFee(fee.sku(), invoiced) ? fee.amount() : BigDecimal.ZERO;
                 name = t.getString("einvoice.line.plateFee").formatted(fee.sku());
             } else {
-                amount = FeeAllocation.shippingShare(fee.amount(), delivered.orderUnits(),
-                        delivered.unitsInShipment(), invoiced);
+                // Q-19: the share waived for shipments that came back is not invoiced - payment does not collect it -
+                // and the rest is shared by the goods' value, as payment waives it, so no invoice carries more than
+                // is collected; in pieces only for a caller that gives no value.
+                BigDecimal owed = FeeAllocation.shippingFeeOwed(fee.amount(), delivered.shippingFeeWaiver().feeGross(),
+                        delivered.shippingFeeWaiver().waived());
+                amount = delivered.orderGoodsValue() != null
+                        ? FeeAllocation.shippingShareByValue(owed, delivered.orderGoodsValue(),
+                                delivered.goodsValue(), invoiced)
+                        : FeeAllocation.shippingShare(owed, delivered.orderUnits(), delivered.unitsInShipment(),
+                                invoiced);
                 name = delivered.shipmentCode() == null ? t.getString("einvoice.line.shippingFee.plain")
                         : t.getString("einvoice.line.shippingFee").formatted(delivered.shipmentCode());
             }
@@ -849,8 +1245,9 @@ public class EInvoiceDrafts {
                     amount, fee.taxRate()));
             differs |= differs(fee.taxRate(), fee.contractTaxRate());
             notOnContract |= fee.contractTaxRate() == null;
+            classUnknown |= fee.taxClassUnknown();
         }
-        return new Lines(lines, differs, notOnContract);
+        return new Lines(lines, differs, notOnContract, classUnknown);
     }
 
     private static boolean differs(BigDecimal rate, BigDecimal contractRate) {

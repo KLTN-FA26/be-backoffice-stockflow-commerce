@@ -42,6 +42,16 @@ class ProviderCallLogAdapter implements ProviderCallLog {
     }
 
     @Override
+    public boolean providerHeld(UUID einvoiceId, String transactionId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM invoicing.einvoice_provider_call
+                                WHERE einvoice_id = ? AND transaction_id = ?
+                                  AND ((operation = 'SUBMIT' AND outcome = 'DUPLICATE')
+                                       OR (operation = 'QUERY' AND outcome = 'ISSUED')))""", Boolean.class,
+                einvoiceId, transactionId));
+    }
+
+    @Override
     public List<Call> of(UUID einvoiceId) {
         return jdbc.query("""
                 SELECT einvoice_id, provider, transaction_id, operation, outcome, http_status, error_code,

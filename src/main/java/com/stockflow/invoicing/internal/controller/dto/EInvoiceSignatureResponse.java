@@ -7,7 +7,10 @@ import java.time.Instant;
  *
  * @param status                    VALID (the content is what was signed and the signature is the certificate's);
  *                                  CONTENT_CHANGED (signed, then changed); SIGNATURE_INVALID; NOT_SIGNED (no seller's
- *                                  signature - the built-in sandbox provider signs nothing); UNREADABLE (not an XML)
+ *                                  signature - the built-in sandbox provider signs nothing); UNREADABLE (not an XML);
+ *                                  SHA1_UNCHECKED (signed with SHA-1, which this system's JDK does not check: neither
+ *                                  valid nor invalid - the tax authority's code is what says it was accepted; the buyer
+ *                                  is still sent the invoice, WF-05 BE-56)
  * @param valid                     {@code status == VALID}
  * @param signer                    the certificate's holder (its common name)
  * @param signerTaxCode             the tax code in the certificate

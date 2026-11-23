@@ -63,7 +63,7 @@ class EInvoiceIssuanceStepsTest {
     private final EInvoiceProviders providers = mock(EInvoiceProviders.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final EInvoiceIssuanceSteps steps = new EInvoiceIssuanceSteps(invoices, sending, settings, providers, files, events,
-            Clock.fixed(EInvoiceFixtures.NOW, ZoneOffset.UTC));
+            Clock.fixed(EInvoiceFixtures.NOW, ZoneOffset.UTC), new InvoicingProperties(java.time.Duration.ofDays(1), null));
     private EInvoice invoice;
 
     @BeforeEach

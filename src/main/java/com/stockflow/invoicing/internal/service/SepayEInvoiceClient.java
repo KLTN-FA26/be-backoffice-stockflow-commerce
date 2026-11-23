@@ -34,7 +34,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * GET  /v1/provider-accounts                      the account's invoicing registrations
  * POST /v1/invoices/create                        an invoice; is_draft false issues it → data.tracking_code
  * POST /v1/invoices/adjust, /v1/invoices/replace  a correction of an issued invoice
- * GET  /v1/invoices/{create|adjust|replace}/check/{tracking_code}   Pending, Success or Failed, with a message
+ * GET  /v1/invoices/create/check/{tracking_code}  Pending, Success or Failed, with a message - for a create, an
+ *                                                adjust and a replace alike
  * GET  /v1/invoices/{reference_code}              the invoice under our reference; 404 when SePay never recorded one
  * GET  /v1/invoices/{reference_code}/download?type=pdf|xml   data.content, base64
  * GET  /v1/provider-accounts/{id}                 one registration, with its templates and series
@@ -115,10 +116,17 @@ class SepayEInvoiceClient {
     }
 
     /**
-     * Where a submission SePay took in stands.
+     * Where a submission SePay took in stands, asked at {@code /v1/invoices/create/check/{tracking_code}} whatever the
+     * submission was (WF-05 BE-61). SePay's tracking page gives that one path as "dùng chung cho cả ba luồng", and the
+     * {@code tracking_url} an adjust or a replace answers with points to it; {@code /adjust/check/} and
+     * {@code /replace/check/} answer 404 with an empty body every time (sandbox run X-4, 23/11/2026, 20 calls each).
+     * Asked there, an adjustment's or a replacement's tracking said nothing, so a {@code Failed} was never seen and a
+     * correction SePay was still processing - its look-up not showing it yet - was taken for "never received" and sent
+     * again, which SePay's error page warns can make a second invoice.
      *
      * @param reference {@code <create|adjust|replace>/<tracking_code>}, as {@link SepayEInvoiceAnswers#trackingReference}
-     *                  wrote it
+     *                  wrote it; the kind is kept in the call log for people reading it, and rows written before this
+     *                  fix name {@code adjust} or {@code replace} - both are still read
      * @throws IllegalArgumentException for anything else: nothing read back from a log goes into a path unchecked
      */
     Answer tracking(String reference) {
@@ -128,7 +136,7 @@ class SepayEInvoiceClient {
         if (!java.util.Set.of("create", "adjust", "replace").contains(kind) || !code.matches("[0-9A-Za-z-]{1,64}")) {
             throw new IllegalArgumentException("Not a SePay tracking reference");
         }
-        return authorised("GET", "/v1/invoices/" + kind + "/check/" + segment(code), null);
+        return authorised("GET", "/v1/invoices/create/check/" + segment(code), null);
     }
 
     Answer create(String body) {

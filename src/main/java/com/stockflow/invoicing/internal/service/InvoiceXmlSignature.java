@@ -32,7 +32,7 @@ import java.util.Base64;
 import java.util.List;
 
 /**
- * Checks the seller's digital signature on an e-invoice's XML (TT 78 / Tổng cục Thuế's format: the signatures are in
+ * Checks the seller's digital signature on an e-invoice's XML (the tax authority's XML format: the signatures are in
  * {@code HDon / DSCKS}, the seller's under {@code NBan}, signing {@code DLHDon} by its {@code Id}) with the JDK's XML
  * Digital Signature API, and says who signed and when.
  *
@@ -45,6 +45,13 @@ import java.util.List;
  * <p>The XML may come from a person (the check of an uploaded file), so it is parsed with no DTD and no external
  * entity of any kind, and the signature is validated in the JDK's secure mode (no XSLT, bounded references, no weak
  * algorithms).</p>
+ *
+ * <p><b>SHA-1 is not checked, and says so</b> (WF-05 BE-56). The secure mode refuses {@code rsa-sha1} and the
+ * {@code sha1} digest ({@code jdk.xml.dsig.secureValidationPolicy}), so an XML signed that way - a provider whose
+ * certificate software still uses it - came out SIGNATURE_INVALID whatever it held: the buyer's mail withheld and a
+ * replacement asked for on every invoice. It is {@link Status#SHA1_UNCHECKED} instead, which is not taken for an
+ * invalid signature ({@link Check#invalid()}); the secure mode is not turned off for it, since the same check reads
+ * files anyone uploads. The tax authority's code on the invoice is what says it was accepted.</p>
  */
 public final class InvoiceXmlSignature {
 
@@ -71,7 +78,12 @@ public final class InvoiceXmlSignature {
         /** The XML has no seller's signature. */
         NOT_SIGNED,
         /** Not an XML document, or not one that can be checked. */
-        UNREADABLE
+        UNREADABLE,
+        /**
+         * Signed with SHA-1 (the signature method or a reference's digest), which this JDK's secure validation does not
+         * check: neither valid nor invalid as far as this check can say.
+         */
+        SHA1_UNCHECKED
     }
 
     /**
@@ -94,6 +106,15 @@ public final class InvoiceXmlSignature {
 
         public boolean valid() {
             return status == Status.VALID;
+        }
+
+        /**
+         * Whether the signature is known not to hold - the content changed, a signature its certificate did not make,
+         * none at all, or no readable XML - as opposed to holding ({@link Status#VALID}) or not being checkable here
+         * ({@link Status#SHA1_UNCHECKED}). What withholds an issued invoice's mail (HĐ-8).
+         */
+        public boolean invalid() {
+            return status != Status.VALID && status != Status.SHA1_UNCHECKED;
         }
     }
 
@@ -132,6 +153,9 @@ public final class InvoiceXmlSignature {
     }
 
     private static Status validate(Element signature, X509Certificate certificate) {
+        if (signedWithSha1(signature)) {
+            return Status.SHA1_UNCHECKED;
+        }
         try {
             DOMValidateContext context = new DOMValidateContext(
                     KeySelector.singletonKeySelector(certificate.getPublicKey()), signature);
@@ -152,6 +176,25 @@ public final class InvoiceXmlSignature {
         } catch (MarshalException | XMLSignatureException | RuntimeException cannotCheck) {
             return Status.SIGNATURE_INVALID;
         }
+    }
+
+    /**
+     * Whether the signature method, or the digest of any reference, is SHA-1 ({@code ...#rsa-sha1}, {@code ...#sha1},
+     * {@code ...-sha1}): what the secure validation refuses to check.
+     */
+    private static boolean signedWithSha1(Element signature) {
+        NodeList all = signature.getElementsByTagNameNS(XMLSignature.XMLNS, "*");
+        for (int i = 0; i < all.getLength(); i++) {
+            Node node = all.item(i);
+            String name = localName(node);
+            if (("SignatureMethod".equals(name) || "DigestMethod".equals(name)) && node instanceof Element method) {
+                String algorithm = method.getAttribute("Algorithm").strip().toLowerCase(java.util.Locale.ROOT);
+                if (algorithm.endsWith("#sha1") || algorithm.endsWith("-sha1")) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** No DTD, no external entity, no XInclude: the document may be anyone's. */

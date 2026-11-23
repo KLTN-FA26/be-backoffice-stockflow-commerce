@@ -46,8 +46,9 @@ class DeliveryInvoicesAdapter implements DeliveryInvoices {
     /**
      * An invoice of the fee's rest drawn up and not issued, or - WF05-E0 L11 - a rest owed that no invoice carries at
      * all: its draft was refused when the order's rest was closed (the seller not configured, say) and nobody has drawn
-     * it up by hand since. The rest is measured exactly as {@link EInvoiceDrafts#drawUpShippingFeeRest} measures it, so
-     * the order waits for precisely what that method would draw up.
+     * it up by hand since. The rest is measured exactly as {@link EInvoiceDrafts#drawUpShippingFeeRest} measures it -
+     * the share waived for shipments that came back left out (Q-19, {@link FeeAllocation#shippingFeeOwed}) - so the
+     * order waits for precisely what that method would draw up, never for a waived share nobody invoices.
      */
     @Override
     @Transactional(readOnly = true)
@@ -56,8 +57,22 @@ class DeliveryInvoicesAdapter implements DeliveryInvoices {
             return true;
         }
         return shipments.shippingFee(orderId, clock.instant())
-                .map(fee -> FeeAllocation.shippingRest(fee.fee().amount(), fee.orderUnits(),
+                .map(fee -> FeeAllocation.shippingRest(FeeAllocation.shippingFeeOwed(fee.fee().amount(),
+                        fee.shippingFeeWaiver().feeGross(), fee.shippingFeeWaiver().waived()), fee.orderUnits(),
                         invoices.invoicedOfOrder(orderId)).signum() > 0)
                 .orElse(false);
+    }
+
+    /**
+     * WF-05 X-6 under decision Q-16 b: a return's decrease adjustment drawn up and not issued - information on the
+     * order's settlement readiness, never a reason to hold its close. The adjustment is a decrease (the business
+     * declares more output tax than it owes until it is issued), TT 91/2026/TT-BTC sets no deadline for it, and it can
+     * still be issued after the order closes - nothing in invoicing refuses an invoice of a closed order - while the
+     * overdue reminders keep coming until it is.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public boolean returnAdjustmentUnissued(UUID orderId) {
+        return orderId != null && invoices.returnAdjustmentUnissued(orderId);
     }
 }

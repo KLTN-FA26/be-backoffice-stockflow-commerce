@@ -2,7 +2,10 @@ package com.stockflow.notification.internal.service;
 
 import com.stockflow.common.logging.LogSafe;
 import com.stockflow.contracts.EInvoiceIssued;
+import com.stockflow.identity.api.StaffContact;
 import com.stockflow.notification.api.CustomerDirectory;
+import com.stockflow.notification.api.EInvoiceDirectory;
+import com.stockflow.notification.api.EInvoiceMail;
 import com.stockflow.notification.api.Inbox;
 import com.stockflow.notification.api.InboxMessage;
 import com.stockflow.notification.api.InboxSeverity;
@@ -15,6 +18,8 @@ import org.springframework.transaction.event.TransactionalEventListener;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.ResourceBundle;
 import java.util.UUID;
 
@@ -36,6 +41,12 @@ import java.util.UUID;
  *       ({@code EINVOICE_EMAIL_DISABLED}).</li>
  * </ol>
  *
+ * <p><b>Issued without a buyer e-mail</b> (HĐ-8; WF-05 Q-22 BR-06): a missing e-mail no longer holds an invoice back -
+ * it is not invoice content (NĐ 254/2026/NĐ-CP Điều 10 khoản 1) and the invoice goes out on its day - so the mail has
+ * nowhere to go and is recorded as skipped. Sales, who keep the customer's legal profile, are told in their inbox
+ * (once per invoice, {@code einvoice-buyer-email-missing:<id>}) to record the e-mail and send the invoice on; the
+ * buyer still has it on the portal.</p>
+ *
  * <p>The notice first: an e-mail attempt worth retrying throws to keep the publication for the retry, and the buyer
  * must not wait for a mail provider to come back before the portal says anything. A redelivery posts nothing twice and
  * sends nothing twice.</p>
@@ -51,18 +62,26 @@ class EInvoiceIssuedNotificationListener {
 
     static final String CATEGORY = "EINVOICE_ISSUED";
     static final String SOURCE_TYPE = "EINVOICE";
+    static final String EMAIL_MISSING_CATEGORY = "EINVOICE_BUYER_EMAIL_MISSING";
+    /** Who records the missing e-mail: the customer's legal profile, as for a draft's missing data. */
+    static final String EMAIL_MISSING_AUDIENCE = EInvoiceBuyerIncompleteNotificationListener.AUDIENCE;
 
     private final CustomerDirectory customers;
     private final Inbox inbox;
     private final EInvoiceEmailComposer composer;
     private final CustomerEmailDelivery delivery;
+    private final EInvoiceDirectory einvoices;
+    private final StaffDirectory staff;
 
     EInvoiceIssuedNotificationListener(CustomerDirectory customers, Inbox inbox, EInvoiceEmailComposer composer,
-                                       CustomerEmailDelivery delivery) {
+                                       CustomerEmailDelivery delivery, EInvoiceDirectory einvoices,
+                                       StaffDirectory staff) {
         this.customers = customers;
         this.inbox = inbox;
         this.composer = composer;
         this.delivery = delivery;
+        this.einvoices = einvoices;
+        this.staff = staff;
     }
 
     @Async
@@ -76,7 +95,39 @@ class EInvoiceIssuedNotificationListener {
             log.info("E-invoice {} issued: customer {} on the portal", LogSafe.text(event.code()),
                     told == 1 ? "told" : "already told");
         }
+        tellSalesIfNoEmail(event);
         composer.issued(event).ifPresent(delivery::deliver);
+    }
+
+    /** Before the mail is handed over: a mail attempt kept for the retry throws, and Sales must hear either way. */
+    private void tellSalesIfNoEmail(EInvoiceIssued event) {
+        Optional<EInvoiceMail> mail = einvoices.mail(event.einvoiceId());
+        if (mail.isEmpty() || mail.get().recipientEmail() != null && !mail.get().recipientEmail().isBlank()) {
+            return;
+        }
+        List<UUID> recipients = staff.activeHolders(EMAIL_MISSING_AUDIENCE, null).stream().map(StaffContact::userId)
+                .filter(Objects::nonNull).toList();
+        if (recipients.isEmpty()) {
+            log.warn("E-invoice {} was issued without a buyer e-mail and nobody may record one",
+                    LogSafe.text(event.code()));
+            return;
+        }
+        int told = inbox.post(recipients, emailMissing(event));
+        log.info("E-invoice {} was issued without a buyer e-mail: {} recipient(s), {} newly told",
+                LogSafe.text(event.code()), recipients.size(), told);
+    }
+
+    /** System text only: the invoice's code and the order's number. */
+    static InboxMessage emailMissing(EInvoiceIssued event) {
+        ResourceBundle texts = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+        return new InboxMessage(EMAIL_MISSING_CATEGORY, InboxSeverity.WARN,
+                texts.getString("inbox.einvoice.buyer-email-missing.title").formatted(event.orderNumber()),
+                texts.getString("inbox.einvoice.buyer-email-missing.body").formatted(event.code(),
+                        event.orderNumber()),
+                event.customerId() == null ? "/einvoices/" + event.einvoiceId() : "/customers/" + event.customerId(),
+                event.customerId() == null ? SOURCE_TYPE : "CUSTOMER_PROFILE",
+                (event.customerId() == null ? event.einvoiceId() : event.customerId()).toString(),
+                "einvoice-buyer-email-missing:" + event.einvoiceId());
     }
 
     /** System text only: the order's number. The invoice's number and amounts are read on the portal page. */

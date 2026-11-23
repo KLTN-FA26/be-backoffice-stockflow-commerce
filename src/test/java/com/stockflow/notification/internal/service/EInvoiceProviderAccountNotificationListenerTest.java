@@ -55,8 +55,9 @@ class EInvoiceProviderAccountNotificationListenerTest {
         assertThat(sent.category()).isEqualTo("EINVOICE_PROVIDER_ACCOUNT");
         assertThat(sent.severity()).isEqualTo(InboxSeverity.CRITICAL);
         assertThat(sent.title()).isEqualTo("Gói hoá đơn điện tử ở SEPAY_EINVOICE đã hết lượt");
-        assertThat(sent.body()).contains("SEPAY_QUOTA_EXHAUSTED", "mở lại các hoá đơn bị từ chối");
-        assertThat(sent.link()).isEqualTo("/invoicing/einvoices?status=REJECTED");
+        // WF-05 BE-54 (Q-22 BR-09): issuing pauses, the drafts wait as drafts and go out once the plan is topped up.
+        assertThat(sent.body()).contains("SEPAY_QUOTA_EXHAUSTED", "tạm dừng phát hành", "các nháp giữ nguyên");
+        assertThat(sent.link()).isEqualTo("/invoicing/einvoices?status=DRAFT");
         assertThat(sent.dedupeKey()).isEqualTo("einvoice-account:SEPAY_EINVOICE:QUOTA_EXHAUSTED:2026-11-12");
     }
 

@@ -568,9 +568,11 @@ stockflow:
     # issuing is on.
     reconcile-interval: ${EINVOICE_RECONCILE_INTERVAL:PT30S}
     # How often drafts close to their deadline are looked for, and how long before it the accountants are told. An
-    # invoice is signed and sent no later than the working day after its date (ND 254/2026 Phu luc diem 7).
+    # invoice is issued by the end of its date (ND 254/2026 Dieu 9 khoan 1; WF-05 Q-1: the next working day of Phu luc
+    # diem 7 is for night sales without automatic issuing, not this system), so the warning comes within the day: four
+    # hours ahead.
     deadline-sweep-interval: ${EINVOICE_DEADLINE_SWEEP_INTERVAL:PT15M}
-    due-warning-lead: ${EINVOICE_DUE_WARNING_LEAD:P1D}
+    due-warning-lead: ${EINVOICE_DUE_WARNING_LEAD:PT4H}
     # How long an invoice may wait for the provider's answer before the accountants are told it is stuck (the same
     # sweep). The reconciliation keeps asking either way.
     stuck-after: ${EINVOICE_STUCK_AFTER:PT30M}

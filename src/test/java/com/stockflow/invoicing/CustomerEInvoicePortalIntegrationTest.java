@@ -226,6 +226,15 @@ class CustomerEInvoicePortalIntegrationTest {
             }
         }
 
+        // BE-60: one invoice by its id, the same shape as its row on the list.
+        JsonNode one = body(http.asCustomer(mine.account(), get(MINE + "/" + first.id())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(first.id().toString()))
+                .andExpect(jsonPath("$.data.status").value("ISSUED"))
+                .andExpect(jsonPath("$.data.invoiceNumber").value(first.invoiceNumber())));
+        assertThat(one.path("data")).as("the list item, field for field").isEqualTo(item);
+        assertThat(one.toString()).doesNotContain("issueDueAt", "warnings", "rejection", "transactionId",
+                "lookupCode", "FileKey");
+
         // The other customer sees its own one, and only that.
         JsonNode theirPage = body(http.asCustomer(other.account(), get(MINE)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items.length()").value(1))
@@ -358,6 +367,13 @@ class CustomerEInvoicePortalIntegrationTest {
                 assertThat(notMine == null ? shape : notMine).as("one answer for all three").isEqualTo(shape);
                 notMine = shape;
             }
+            // BE-60: reading one invoice by its id answers the same 404.
+            String read = http.asCustomer(mine.account(), get(MINE + "/" + id))
+                    .andExpect(status().isNotFound())
+                    .andExpect(jsonPath("$.errorCode").value("EINVOICE_NOT_FOUND"))
+                    .andExpect(jsonPath("$.data").doesNotExist())
+                    .andReturn().getResponse().getContentAsString();
+            assertThat(read).doesNotContain(theirs.orderNumber(), theirs.code(), myDraft.code());
             // WF-05 item b: the notices of an invoice are read under the same rule as its files.
             http.asCustomer(mine.account(), get(MINE + "/" + id + "/error-notices"))
                     .andExpect(status().isNotFound())
@@ -367,6 +383,8 @@ class CustomerEInvoicePortalIntegrationTest {
         http.asCustomer(mine.account(), get(MINE)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items.length()").value(0));
         // Its owner reads it.
+        http.asCustomer(other.account(), get(MINE + "/" + theirs.id())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(theirs.id().toString()));
         http.asCustomer(other.account(), get(MINE + "/" + theirs.id() + "/files/PDF")).andExpect(status().isOk());
         http.asCustomer(other.account(), get(MINE + "/" + theirs.id() + "/error-notices")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(0));
