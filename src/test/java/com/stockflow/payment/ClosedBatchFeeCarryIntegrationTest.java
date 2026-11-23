@@ -12,7 +12,10 @@ import com.stockflow.order.api.ShipmentHandover;
 import com.stockflow.order.internal.service.SalesContracts;
 import com.stockflow.payment.api.PaymentService;
 import com.stockflow.payment.internal.domain.PaymentReceipt;
+import com.stockflow.payment.internal.service.PaymentPaperService;
 import com.stockflow.payment.internal.service.PaymentReceiptService;
+import com.stockflow.common.document.DocumentParts;
+import com.stockflow.common.document.DocumentSamples;
 import com.stockflow.support.ConfirmedOrders;
 import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
@@ -65,6 +68,7 @@ class ClosedBatchFeeCarryIntegrationTest {
     @Autowired OrderService orders;
     @Autowired PaymentService payments;
     @Autowired PaymentReceiptService receipts;
+    @Autowired PaymentPaperService papers;
     @Autowired ApplicationContext context;
     @Autowired TransactionTemplate tx;
     @Autowired JdbcTemplate jdbc;
@@ -186,9 +190,25 @@ class ClosedBatchFeeCarryIntegrationTest {
                 .as("stated twice: tg_payment_receipt_void").hasMessageContaining("no milestone");
 
         // Paid, the order owes nothing more.
-        confirmedOrders.pay(customer, (UUID) fee.get("id"), new BigDecimal("35000"));
+        PaymentReceipt feePaid = confirmedOrders.pay(customer, (UUID) fee.get("id"), new BigDecimal("35000"));
         assertThat(installment(21).get("status")).isEqualTo("PAID");
         var standing = payments.installmentStanding(orderId);
         assertThat(standing.total()).isEqualByComparingTo(standing.paid());
+
+        // The confirmation of that payment says what the 35,000 is - goods money of batch 2, carried - as the debt
+        // reconciliation does, not "Phí hủy đơn hàng" (after the round-3 merge).
+        var t = DocumentParts.bundle();
+        String paper = text("r3-payment-confirmation-carried-fee",
+                papers.paymentConfirmation((UUID) fee.get("id"), feePaid.id(), null).content());
+        assertThat(paper).contains(t.getString("payment-papers.fee.carried"))
+                .doesNotContain(t.getString("payment-papers.fee.CANCELLATION_FEE"));
+    }
+
+    private static String text(String sample, byte[] pdf) {
+        try {
+            return DocumentSamples.text(DocumentSamples.keep(sample, pdf)).replaceAll("\\s+", " ");
+        } catch (java.io.IOException unreadable) {
+            throw new java.io.UncheckedIOException(unreadable);
+        }
     }
 }

@@ -1,5 +1,6 @@
 package com.stockflow.payment.internal.service;
 
+import com.stockflow.common.document.DocumentFormats;
 import com.stockflow.common.document.DocumentParts;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -288,6 +289,9 @@ public class PaymentPaperService {
         return new Pdf(t.getString("document.file.debtReconciliation").formatted(number), pdf);
     }
 
+    /** Lower-cases a fee's name inside a sentence, by Vietnamese rules (the papers are printed in Vietnamese). */
+    private static final Locale VIETNAMESE = Locale.forLanguageTag("vi");
+
     /** The refund reason of a settlement of a shipment Sales closed as lost (Q-12). */
     private static final String SHIPMENT_LOST = "SHIPMENT_LOST";
 
@@ -317,10 +321,23 @@ public class PaymentPaperService {
         return new DebtReconciliationDocument.Entry(day, reference, description, debit, credit);
     }
 
-    /** "Đợt 2/3 - Thanh toán trước khi giao hàng"; a fee item by what it is a fee for. */
+    /**
+     * "Đợt 2/3 - Thanh toán trước khi giao hàng"; a fee item by what it is a fee for - and, when a closure of the rest
+     * carried goods money onto it (audit r3 LM-3), by that first: the debt reconciliation splits such an item into the
+     * goods' price and the fee, and a confirmation of its payment that called it all "Phí hủy đơn hàng" would contradict
+     * it (Luật Kế toán Điều 16: a paper says what each sum is).
+     */
     private String label(ResourceBundle t, Installment installment) {
         if (installment.isFeeItem()) {
-            return t.getString("payment-papers.fee." + installment.milestone().name());
+            String fee = t.getString("payment-papers.fee." + installment.milestone().name());
+            BigDecimal carried = ledger.carriedOnto(installment.id());
+            if (carried == null || carried.signum() <= 0) {
+                return fee;
+            }
+            BigDecimal rest = installment.amount().subtract(carried);
+            return rest.signum() <= 0 ? t.getString("payment-papers.fee.carried")
+                    : t.getString("payment-papers.fee.carriedWithFee").formatted(DocumentFormats.money(carried),
+                    fee.toLowerCase(VIETNAMESE), DocumentFormats.money(rest));
         }
         long planned = book.ofOrder(installment.orderId()).stream().filter(other -> !other.isFeeItem()).count();
         return t.getString("payment-papers.installment").formatted(installment.seq(), planned, installment.name());

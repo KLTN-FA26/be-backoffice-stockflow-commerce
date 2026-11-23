@@ -62,13 +62,22 @@ public class CustomerLedgerQuery {
     }
 
     /**
-     * The goods money closures moved onto fee item {@code i} (audit round 3, with group r3a's
-     * {@code order_settlement.carried_to_fee_amount}). Read through {@code to_jsonb} so the statement runs whether or
-     * not that column exists yet in the schema it meets: absent, nothing was carried.
+     * The goods money closures of the rest moved onto fee item {@code i} (audit r3 LM-3,
+     * {@code order_settlement.carried_to_fee_amount}): a before-delivery installment of a batch the closure closed whole
+     * still owed it, and its milestone never comes. One statement for every paper that names such an item.
      */
     private static final String CARRIED = """
-            (SELECT COALESCE(SUM((to_jsonb(s) ->> 'carried_to_fee_amount')::numeric), 0)
+            (SELECT COALESCE(SUM(s.carried_to_fee_amount), 0)
                FROM payment.order_settlement s WHERE s.fee_installment_id = i.id)""";
+
+    /**
+     * Of fee item {@code installmentId}, the goods money closures of the rest moved onto it ({@link #CARRIED}); 0 for
+     * any other installment. A paper naming the item must say which part is the goods' price and which a fee.
+     */
+    public BigDecimal carriedOnto(UUID installmentId) {
+        return jdbc.queryForObject("SELECT " + CARRIED + " FROM payment.installment i WHERE i.id = ?",
+                BigDecimal.class, installmentId);
+    }
 
     /**
      * A settlement: what it kept of the money collected as a fee, and what it made refundable.
