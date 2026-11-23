@@ -53,6 +53,8 @@ class InvoicingModuleTest {
     @MockitoBean com.stockflow.product.api.ProductService productServiceMock;
     @MockitoBean com.stockflow.product.api.CustomerSkus customerSkusMock;
     @MockitoBean com.stockflow.payment.api.PaymentService paymentServiceMock;
+    // The contract liquidation reads payment's books for the order's papers (business documents).
+    @MockitoBean com.stockflow.payment.api.ContractLedger contractLedgerMock;
     @MockitoBean com.stockflow.catalog.api.CatalogService catalogServiceMock;
     @MockitoBean com.stockflow.identity.api.IdentityService identityServiceMock;
     @MockitoBean com.stockflow.identity.api.PortalAccountService portalAccountServiceMock;
