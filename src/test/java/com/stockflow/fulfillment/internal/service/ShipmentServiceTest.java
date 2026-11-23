@@ -70,7 +70,15 @@ class ShipmentServiceTest {
             mock(com.stockflow.fulfillment.internal.repository.FailureReasonCorrectionJpaRepository.class),
             Clock.fixed(NOW, ZoneOffset.UTC));
 
-    private final com.stockflow.common.security.CurrentUser actor = FulfillmentFixtures.user();
+    /**
+     * The warehouse manager: every outcome recorded by hand takes {@code fulfillment-delivery-outcomes:APPROVE} (09
+     * BR-02; WF-05 Q-7 - RETURNED too).
+     */
+    private final com.stockflow.common.security.CurrentUser actor = new com.stockflow.common.security.CurrentUser(
+            UUID.randomUUID(), "manager", Set.of(com.stockflow.common.security.Role.WAREHOUSE_MANAGER),
+            Set.of(com.stockflow.common.security.PermissionCode.of(FulfillmentPermissions.DELIVERY_OUTCOMES,
+                    com.stockflow.common.security.Action.APPROVE)),
+            DataScope.ALL, Set.of(), Set.of());
 
     @BeforeEach
     void rowsEchoWhatTheyAreSaved() {

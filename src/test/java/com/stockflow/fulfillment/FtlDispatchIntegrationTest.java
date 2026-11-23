@@ -1230,6 +1230,34 @@ class FtlDispatchIntegrationTest {
                 fields.isEmpty() ? "" : fields + ",", stop1.isEmpty() ? "\"status\":\"\"" : stop1);
     }
 
+    /**
+     * A carrier's time {@code millis} after the latest handover of {@code shipments}, as ISO-8601: a delivery is held to
+     * what a person could enter (WF-05 BE-38) - not before the handover, not in the future - so a report's time is
+     * taken just after the vehicle left, and the reports keep their order by the offsets.
+     */
+    private String afterHandover(long millis, UUID... shipments) {
+        Instant latest = null;
+        for (UUID shipment : shipments) {
+            Instant at = jdbc.queryForObject("SELECT handed_over_at FROM fulfillment.shipment WHERE id = ?",
+                    java.sql.Timestamp.class, shipment).toInstant();
+            latest = latest == null || at.isAfter(latest) ? at : latest;
+        }
+        return latest.plusMillis(millis).toString();
+    }
+
+    /**
+     * The first whole second after the shipment's handover, in epoch seconds - Ahamove gives whole seconds - once the
+     * clock has passed it, so the time is neither before the handover nor in the future (WF-05 BE-38).
+     */
+    private long secondAfterHandover(UUID shipment) throws InterruptedException {
+        long second = jdbc.queryForObject("SELECT handed_over_at FROM fulfillment.shipment WHERE id = ?",
+                java.sql.Timestamp.class, shipment).toInstant().getEpochSecond() + 1;
+        while (Instant.now().getEpochSecond() <= second) {
+            Thread.sleep(50);
+        }
+        return second;
+    }
+
     private String carrierCode(UUID carrier) {
         return jdbc.queryForObject("SELECT code FROM fulfillment.carrier WHERE id = ?", String.class, carrier);
     }
@@ -1325,20 +1353,22 @@ class FtlDispatchIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT milestone FROM fulfillment.tracking_milestone WHERE load_id = ?::uuid",
                 String.class, loadId)).isEqualTo("PICKED_UP");
 
-        // Drop-off 1 completed: its shipment delivered at the carrier's time (E25), recorded by nobody.
+        // Drop-off 1 completed: its shipment delivered at the carrier's time (E25), recorded by nobody. A delivery time
+        // is held to what a person could enter (WF-05 BE-38): after the handover, not in the future.
+        long completed = secondAfterHandover(shipment);
         ahamoveSays("AHA-W1", "IN PROCESS", "COMPLETED");
-        aha(code, ahamove("AHA-W1-1", "IN PROCESS", "", "", "\"status\":\"COMPLETED\",\"complete_time\":1800003600.5"))
-                .andExpect(jsonPath("$.data.result").value("APPLIED"));
+        aha(code, ahamove("AHA-W1-1", "IN PROCESS", "", "", "\"status\":\"COMPLETED\",\"complete_time\":" + completed
+                + ".5")).andExpect(jsonPath("$.data.result").value("APPLIED"));
         assertThat(shipmentStatus(shipment)).isEqualTo("DELIVERED");
         assertThat(jdbc.queryForObject("SELECT outcome_at FROM fulfillment.shipment WHERE id = ?", java.sql.Timestamp.class,
-                shipment).toInstant()).isEqualTo(Instant.ofEpochSecond(1_800_003_600L, 500_000_000L));
+                shipment).toInstant()).isEqualTo(Instant.ofEpochSecond(completed, 500_000_000L));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.shipment_event WHERE shipment_id = ? AND "
                 + "status = 'DELIVERED' AND source = 'CARRIER_WEBHOOK' AND recorded_by IS NULL", Long.class, shipment))
                 .isOne();
         assertThat(lastEvent(aha).path("shipment_id").asText()).isEqualTo(shipment.toString());
         // A failure the carrier reports for an earlier time: outdated, ignored, still logged.
-        aha(code, ahamove("AHA-W1-1", "IN PROCESS", "", "", "\"status\":\"FAILED\",\"fail_time\":1800003000,"
-                + "\"fail_comment\":\"Khách vắng\"")).andExpect(jsonPath("$.data.result").value("STALE"));
+        aha(code, ahamove("AHA-W1-1", "IN PROCESS", "", "", "\"status\":\"FAILED\",\"fail_time\":" + (completed - 600)
+                + ",\"fail_comment\":\"Khách vắng\"")).andExpect(jsonPath("$.data.result").value("STALE"));
         assertThat(shipmentStatus(shipment)).isEqualTo("DELIVERED");
         // A drop-off the order never had: for review.
         aha(code, ahamove("AHA-W1-2", "IN PROCESS", "", "", "\"status\":\"COMPLETED\"")).andExpect(status().isOk())
@@ -1562,8 +1592,17 @@ class FtlDispatchIntegrationTest {
                 .andExpect(jsonPath("$.data.result").value("NEEDS_REVIEW")));
 
         loadAndSign(loadId, "51C-WL.01");
-        String back = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"RETURNED\",\"reportedAt\":"
+        // WF-05 Q-7 (BE-14): a report for the whole load does not force back a shipment with no report of its own - it
+        // may be at its customer, its delivery report not in yet, and RETURNED is final. For review instead.
+        String loadBack = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"RETURNED\",\"reportedAt\":"
                 + "\"2026-11-21T10:00:00Z\"}";
+        hook(code, loadBack, "X-Signature", signed.apply(loadBack))
+                .andExpect(jsonPath("$.data.result").value("NEEDS_REVIEW"));
+        assertThat(shipmentStatus(shipment)).isEqualTo("HANDED_OVER");
+        String shipmentCode = jdbc.queryForObject("SELECT code FROM fulfillment.shipment WHERE id = ?", String.class,
+                shipment);
+        String back = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"RETURNED\",\"reportedAt\":"
+                + "\"2026-11-21T10:00:00Z\",\"shipmentCode\":\"" + shipmentCode + "\"}";
         hook(code, back, "X-Signature", signed.apply(back)).andExpect(jsonPath("$.data.result").value("APPLIED"));
         assertThat(shipmentStatus(shipment)).isEqualTo("RETURNED");
         assertThat(jdbc.queryForList("SELECT status FROM fulfillment.shipment_event WHERE shipment_id = ? AND "
@@ -1610,11 +1649,12 @@ class FtlDispatchIntegrationTest {
         as(manager, "WAREHOUSE_MANAGER", body(post(reasonFix), "{\"failureReason\":\"REFUSED\",\"reason\":\"again\"}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.reasonCorrections.length()").value(1));
 
-        // The error list: the manager resolves the early outcome once; an applied event is not the list's.
+        // The error list: the manager resolves the early outcome once; an applied event is not the list's. The
+        // load-wide RETURNED is on it too (Q-7).
         String reviewId = review.path("eventId").asText();
         as(manager, "WAREHOUSE_MANAGER", get(EVENTS).param("result", "ERRORS").param("open", "true")
                 .param("carrierId", carrier.toString())).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items.length()").value(3));
+                .andExpect(jsonPath("$.data.items.length()").value(4));
         as(manager, "WAREHOUSE_MANAGER", body(post(EVENTS + "/" + reviewId + "/resolution"), "{\"note\":\"\"}"))
                 .andExpect(status().isBadRequest());
         as(manager, "WAREHOUSE_MANAGER", body(post(EVENTS + "/" + reviewId + "/resolution"),
@@ -1664,8 +1704,9 @@ class FtlDispatchIntegrationTest {
         String code = carrierCode(aha);
         Object[] road = ahamoveLoadOnTheRoad(aha, "AHA-V1", "51C-AHA.07");
         UUID shipment = (UUID) road[0];
+        // After the handover, not in the future (WF-05 BE-38).
         String delivered = ahamove("AHA-V1-1", "IN PROCESS", "", "", "\"status\":\"COMPLETED\","
-                + "\"complete_time\":1800003600");
+                + "\"complete_time\":" + secondAfterHandover(shipment));
 
         // Ahamove's API gives the drop-off as still under way: whoever sent this, it is not applied.
         ahamoveSays("AHA-V1", "IN PROCESS", "");
@@ -2159,15 +2200,15 @@ class FtlDispatchIntegrationTest {
                 "pod-signed.pdf");
 
         // Not an https address: the event is unreadable and goes to the error list, nothing is applied.
-        String plain = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":"
-                + "\"2026-11-21T09:00:00Z\",\"shipmentCode\":\"" + shipmentCode + "\",\"podUrl\":"
+        String plain = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":\""
+                + afterHandover(1, shipment) + "\",\"shipmentCode\":\"" + shipmentCode + "\",\"podUrl\":"
                 + "\"http://files.example.com/pod.pdf\"}";
         hook(code, plain, "X-Signature", com.stockflow.fulfillment.internal.service.CarrierWebhookTestSigner
                 .sign(secret, plain)).andExpect(jsonPath("$.data.result").value("NEEDS_REVIEW"));
         assertThat(shipmentStatus(shipment)).isEqualTo("HANDED_OVER");
 
-        String delivered = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":"
-                + "\"2026-11-21T09:00:00Z\",\"shipmentCode\":\"" + shipmentCode + "\",\"podUrl\":"
+        String delivered = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":\""
+                + afterHandover(1, shipment) + "\",\"shipmentCode\":\"" + shipmentCode + "\",\"podUrl\":"
                 + "\"https://files.example.com/pod/123/pod-signed.pdf\"}";
         String eventId = data(hook(code, delivered, "X-Signature", com.stockflow.fulfillment.internal.service
                 .CarrierWebhookTestSigner.sign(secret, delivered)).andExpect(jsonPath("$.data.result").value("APPLIED")))
@@ -2358,8 +2399,8 @@ class FtlDispatchIntegrationTest {
                 + "\",\"vehiclePlate\":\"51C-WC.01\",\"driverName\":\"Tai\",\"waybillNo\":\"WC-" + loadId
                 + "\"}")).andExpect(status().isOk());
         loadAndSign(loadId, "51C-WC.01");
-        String delivered = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":"
-                + "\"2026-11-21T09:00:00Z\",\"shipmentCode\":\"" + shipmentCode + "\"}";
+        String delivered = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":\""
+                + afterHandover(1, shipment) + "\",\"shipmentCode\":\"" + shipmentCode + "\"}";
         hook(code, delivered, "X-Signature", com.stockflow.fulfillment.internal.service.CarrierWebhookTestSigner
                 .sign(secret, delivered)).andExpect(jsonPath("$.data.result").value("APPLIED"));
         assertThat(shipmentStatus(shipment)).isEqualTo("DELIVERED");
@@ -2378,8 +2419,8 @@ class FtlDispatchIntegrationTest {
                 .isEqualTo("DELIVERED>DELIVERY_FAILED:the customer says nothing arrived");
 
         // E17: the carrier reports it again - not applied, the manager looks at it.
-        String again = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":"
-                + "\"2026-11-21T11:00:00Z\",\"shipmentCode\":\"" + shipmentCode + "\"}";
+        String again = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":\""
+                + afterHandover(3, shipment) + "\",\"shipmentCode\":\"" + shipmentCode + "\"}";
         hook(code, again, "X-Signature", com.stockflow.fulfillment.internal.service.CarrierWebhookTestSigner
                 .sign(secret, again)).andExpect(jsonPath("$.data.result").value("NEEDS_REVIEW"));
         assertThat(shipmentStatus(shipment)).isEqualTo("DELIVERY_FAILED");
@@ -2413,8 +2454,8 @@ class FtlDispatchIntegrationTest {
                 + "\"}")).andExpect(status().isOk());
         loadAndSign(loadId, "51C-WF.01");
         java.util.function.BiFunction<UUID, String, String> report = (shipment, type) -> "{\"loadCode\":\""
-                + loadCode + "\",\"type\":\"" + type + "\",\"reportedAt\":\"2026-11-2" + (type.equals("DELIVERED")
-                ? "2" : "1") + "T09:00:00Z\",\"shipmentCode\":\"" + jdbc.queryForObject("SELECT code FROM "
+                + loadCode + "\",\"type\":\"" + type + "\",\"reportedAt\":\"" + afterHandover(type.equals("DELIVERED")
+                ? 2 : 1, shipment) + "\",\"shipmentCode\":\"" + jdbc.queryForObject("SELECT code FROM "
                 + "fulfillment.shipment WHERE id = ?", String.class, shipment) + "\",\"failureReason\":\"x\"}";
         java.util.function.Function<String, String> signed = content -> com.stockflow.fulfillment.internal.service
                 .CarrierWebhookTestSigner.sign(secret, content);
@@ -2459,15 +2500,15 @@ class FtlDispatchIntegrationTest {
         loadAndSign(loadId, "51C-WE.01");
         java.util.function.Function<String, String> signed = content -> com.stockflow.fulfillment.internal.service
                 .CarrierWebhookTestSigner.sign(secret, content);
-        String one = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":"
-                + "\"2026-11-21T09:00:00Z\",\"shipmentCode\":\"" + firstCode + "\"}";
+        String one = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":\""
+                + afterHandover(1, first, second) + "\",\"shipmentCode\":\"" + firstCode + "\"}";
         hook(code, one, "X-Signature", signed.apply(one)).andExpect(jsonPath("$.data.result").value("APPLIED"));
         as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/shipments/" + first + "/delivery-outcome-correction"),
                 "{\"outcome\":\"DELIVERY_FAILED\",\"failureReason\":\"REFUSED\",\"reason\":\"the customer refused\"}"))
                 .andExpect(status().isOk());
 
-        String all = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":"
-                + "\"2026-11-21T10:00:00Z\"}";
+        String all = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":\""
+                + afterHandover(2, first, second) + "\"}";
         hook(code, all, "X-Signature", signed.apply(all)).andExpect(jsonPath("$.data.result").value("APPLIED"));
         assertThat(shipmentStatus(first)).isEqualTo("DELIVERY_FAILED");
         assertThat(shipmentStatus(second)).isEqualTo("DELIVERED");

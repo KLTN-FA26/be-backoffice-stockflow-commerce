@@ -4,6 +4,7 @@ import com.stockflow.payment.api.OrderSettlementResult;
 import com.stockflow.payment.api.SettleCancellationCommand;
 import com.stockflow.payment.api.SettleRemainderClosureCommand;
 import com.stockflow.payment.api.SettleReturnCommand;
+import com.stockflow.payment.api.SettleShipmentReturnCommand;
 import com.stockflow.payment.api.RefundProgress;
 import com.stockflow.payment.internal.domain.RefundStanding;
 import com.stockflow.payment.internal.domain.Installment;
@@ -23,8 +24,8 @@ import java.util.Optional;
 /**
  * Settles a contract order's money when it is cancelled or its rest closed (4B-9; kltn-docs 15 §4.6 steps 18-19,
  * BR-14..BR-16; 17 §4.8 steps 30 and 33), and when goods that came back on a return are refunded (4D-3; 17 §4.10
- * step 40). The arithmetic is {@link OrderSettlement}'s; this class locks, saves and
- * replays.
+ * step 40), and when the units of a shipment the carrier brought back or lost were closed (WF-05 Q-2). The arithmetic
+ * is {@link OrderSettlement}'s; this class locks, saves and replays.
  *
  * <p><b>Synchronous, in the order's transaction</b> ({@code MANDATORY}). The order module calls it right after it
  * cancelled or closed the order and still holds the order's row lock, so the lock order every money movement keeps -
@@ -32,8 +33,8 @@ import java.util.Optional;
  * between the cancellation and its settlement. Settled after commit instead, a receipt recorded in that gap would have
  * been taken on an installment the cancellation had already ruled out, and the refund worked out without it.</p>
  *
- * <p>Idempotent per cancellation (the order), per closure (its id) and per return (its id): a replay returns the
- * settlement already made.</p>
+ * <p>Idempotent per cancellation (the order), per closure (its id), per return (its id) and per shipment brought back
+ * (its closure, and the shipment): a replay returns the settlement already made.</p>
  */
 @Service("paymentOrderSettlementService")
 @Transactional(propagation = Propagation.MANDATORY)
@@ -113,6 +114,45 @@ public class OrderSettlementService {
         OrderSettlement settlement = save(outcome);
         log.info("Order {}: goods returned worth {} {}; {} taken off {} installment(s), {} to refund",
                 settlement.orderNumber(), settlement.closed(), settlement.currency(), settlement.reduced(),
+                settlement.reductions().size(), settlement.refundable());
+        return Optional.of(toResult(settlement));
+    }
+
+    /**
+     * {@link com.stockflow.payment.api.PaymentService#settleShipmentReturn}: the return's rule
+     * ({@link OrderSettlement#shipmentReturned}). Once per closure and once per shipment: a replay of the closure, or a
+     * second closure of a shipment already settled (a second return receipt of the same shipment), returns the first
+     * settlement - a shipment's units close once, so its money settles once ({@code uk_order_settlement_shipment}
+     * says it again).
+     */
+    public Optional<OrderSettlementResult> settleShipmentReturn(SettleShipmentReturnCommand command) {
+        Optional<OrderSettlement> done = settlements.find(OrderSettlement.Kind.SHIPMENT_RETURNED, command.sourceId())
+                .or(() -> settlements.findOfShipment(command.shipmentId()));
+        if (done.isPresent()) {
+            if (!done.get().sourceId().equals(command.sourceId())) {
+                log.warn("Order {}: shipment {} was settled by closure {} already; closure {} settles nothing more",
+                        done.get().orderNumber(), command.shipmentId(), done.get().sourceId(), command.sourceId());
+            }
+            return done.map(OrderSettlementService::toResult);
+        }
+        if (command.goodsValue().add(command.shippingFeeWaived()).signum() == 0) {
+            return Optional.empty();
+        }
+        List<Installment> ofOrder = installments.lockOfOrder(command.orderId());
+        if (ofOrder.isEmpty()) {
+            return Optional.empty();
+        }
+        // As a return (TT-5): what earlier settlements made refundable is not refundable again (15 BR-14).
+        java.math.BigDecimal refundableBefore = settlements.ofOrder(command.orderId()).stream()
+                .map(OrderSettlement::refundable).reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
+        OrderSettlement.Outcome outcome = OrderSettlement.shipmentReturned(ofOrder, command.sourceId(),
+                command.shipmentId(), command.deliveryBatchId(), command.goodsValue(), command.shippingFeeWaived(),
+                command.handedOverBatches(), refundableBefore, command.settledBy(), command.settledAt(),
+                day(command.settledAt()));
+        OrderSettlement settlement = save(outcome);
+        log.info("Order {}: shipment {} {} - goods worth {} {}, shipping fee waived {}; {} taken off {} installment(s), "
+                        + "{} to refund", settlement.orderNumber(), command.shipmentId(), command.cause(),
+                command.goodsValue(), settlement.currency(), settlement.shippingFeeWaived(), settlement.reduced(),
                 settlement.reductions().size(), settlement.refundable());
         return Optional.of(toResult(settlement));
     }

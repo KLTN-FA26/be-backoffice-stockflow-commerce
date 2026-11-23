@@ -139,8 +139,16 @@ class ShipmentService implements Shipments {
         return detail(row);
     }
 
+    /**
+     * Every outcome a person records takes {@code fulfillment-delivery-outcomes:APPROVE} (09 BR-02, 17 BR-27; WF-05
+     * Q-7, BE-14) - RETURNED too. RETURNED used to need UPDATE only, from when it merely held the order for Sales; it
+     * now closes the shipment's units, starts the return receipt the money is settled at, and has no correction back,
+     * so it is the warehouse manager's to record. Checked here, where every caller passes, rather than in the
+     * controller alone.
+     */
     @Override
     public ShipmentDetail recordOutcome(UUID shipmentId, Outcome outcome, CurrentUser actor) {
+        actor.require(FulfillmentPermissions.DELIVERY_OUTCOMES, com.stockflow.common.security.Action.APPROVE);
         ShipmentJpaEntity row = lock(shipmentId);
         Shipment shipment = row.toDomain();
         ShipmentStatus before = shipment.status();
@@ -281,7 +289,8 @@ class ShipmentService implements Shipments {
      * @return whether it changed anything; false when the shipment already had that outcome
      * @throws BusinessException {@code SHIPMENT_STATE_CONFLICT} when the shipment cannot take it (not handed over, or
      *         already further along), or reported delivered after a person recorded it failed (09 edge: another outcome
-     *         than the one recorded by hand goes to the error list) - the caller's NEEDS_REVIEW
+     *         than the one recorded by hand goes to the error list); {@code SHIPMENT_DELIVERY_TIME_*} for a delivery
+     *         time a person could not have entered either (BE-38) - each the caller's NEEDS_REVIEW
      */
     public boolean carrierOutcome(UUID shipmentId, ShipmentStatus target, DeliveryFailureReason reason, String note,
                                   Instant at, UUID carrierEventId) {
@@ -304,7 +313,7 @@ class ShipmentService implements Shipments {
         String trimmed = note == null || note.isBlank() ? null : note.strip();
         String kept = trimmed == null || trimmed.length() <= 500 ? trimmed : trimmed.substring(0, 497) + "...";
         boolean changed = switch (target) {
-            case DELIVERED -> shipment.carrierDelivered(at);
+            case DELIVERED -> shipment.carrierDelivered(at, clock.instant());
             case DELIVERY_FAILED -> shipment.carrierFailed(Objects.requireNonNull(reason, "reason"), kept, at);
             case RETURNED -> shipment.carrierReturned(at);
             default -> throw new IllegalArgumentException(target.name());
@@ -312,7 +321,9 @@ class ShipmentService implements Shipments {
         if (!changed) {
             return false;
         }
-        OrderSummary order = tellOrder(row, target, reason, kept, null, at);
+        // A delivery a carrier's clock dated a moment ahead of ours is dated now (BE-38): the order hears the same time.
+        OrderSummary order = tellOrder(row, target, reason, kept, null,
+                target == ShipmentStatus.DELIVERED ? shipment.snapshot().outcomeAt() : at);
         row.apply(shipment);
         shipments.saveAndFlush(row);
         String carrierName = row.getCarrierId() == null ? null

@@ -161,11 +161,11 @@ class OverdueInstallmentNoticeIntegrationTest {
     @DisplayName("the scan tells every active holder of the hold permission once; a second run, and the other roles, "
             + "get nothing more or nothing at all")
     void salesAreToldOncePerInstallment() {
-        installments.announceNewlyOverdue(7);
+        installments.announceNewlyOverdue();
         Await.until("Sales A is told", ASYNC, () -> told(salesA) >= 1);
         Await.until("Sales B is told", ASYNC, () -> told(salesB) >= 1);
 
-        installments.announceNewlyOverdue(7);
+        installments.announceNewlyOverdue();
         afterMarker();
 
         assertThat(told(salesA)).as("run twice, told once").isEqualTo(1);
@@ -179,13 +179,27 @@ class OverdueInstallmentNoticeIntegrationTest {
     }
 
     @Test
-    @DisplayName("the scan reads back only its look-back: an installment overdue longer ago is not announced")
-    void theHistoryIsNotAnnounced() {
-        // Due three days ago; a look-back of one day starts yesterday.
-        installments.announceNewlyOverdue(1);
-        afterMarker();
+    @DisplayName("WF-05 BE-49: the scan writes down the due date it announced; the same installment overdue again on a "
+            + "new due date is announced again, once")
+    void aNewDueDateIsAnnouncedAgain() {
+        installments.announceNewlyOverdue();
+        Await.until("Sales A is told", ASYNC, () -> told(salesA) >= 1);
+        assertThat(jdbc.queryForObject("SELECT overdue_announced_for = due_date FROM payment.installment WHERE id = ?",
+                Boolean.class, installmentId)).as("the due date announced is written down").isTrue();
 
-        assertThat(told(salesA)).isZero();
+        // Its due date moves a day back - as a corrected delivery moves an installment after delivery - and it is
+        // still overdue. Written below the domain, its triggers off: an installment on signing is never moved by the
+        // application, only one after delivery is.
+        tx.executeWithoutResult(s -> {
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            jdbc.update("UPDATE payment.installment SET due_date = due_date - 1 WHERE id = ?", installmentId);
+        });
+        installments.announceNewlyOverdue();
+        Await.until("Sales A is told again", ASYNC, () -> told(salesA) >= 2);
+
+        installments.announceNewlyOverdue();
+        afterMarker();
+        assertThat(told(salesA)).as("once per due date").isEqualTo(2);
     }
 
     @Test

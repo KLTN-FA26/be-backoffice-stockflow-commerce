@@ -80,30 +80,18 @@ public interface PaymentService {
      * WF-05 decisions Q-2, Q-7, Q-12 (BE-03, BE-14, BE-17): the units of a shipment the carrier brought back, or lost,
      * were closed. Settled as a customer's return is: their value comes off the installments of the shipment's own
      * batch first, then the older debt; what was paid above that is to be refunded, up to what was collected; the
-     * installments of batches still to come are lowered last. No fee, and the plate and shipping fee lines are not
-     * lowered (Q-19). Kind {@code SHIPMENT_RETURNED}. In the caller's transaction ({@code Propagation.MANDATORY}), after
-     * the order's lock (orders, then installments); once per {@code sourceId}.
+     * installments of batches still to come are lowered last. No fee. The plate fee lines are never lowered; the
+     * shipping fee line is, only by what the command waives ({@link SettleShipmentReturnCommand#shippingFeeWaived},
+     * Q-19). Kind {@code SHIPMENT_RETURNED}. In the caller's transaction ({@code Propagation.MANDATORY}), after the
+     * order's lock (orders, then installments); once per {@code sourceId}, and once per shipment - a second closure
+     * of the same shipment settles nothing more and returns the first.
      *
-     * <p>Declared by the WF-05 shared base (PR-0); the payment module overrides it. Until then it refuses, so no caller
-     * can settle a shipment's money by accident.</p>
+     * <p>The installments paid after delivery are not reached here: that waits for the order's
+     * {@code ShipmentReturnSettled}, after commit, which reads when the order counts as delivered.</p>
      *
-     * @return empty for an order without installments (no signed contract)
+     * @return empty for an order without installments (no signed contract), or for a closure worth nothing
      */
-    default java.util.Optional<OrderSettlementResult> settleShipmentReturn(SettleShipmentReturnCommand command) {
-        throw new UnsupportedOperationException("settleShipmentReturn is implemented by the payment module (WF-05 G2)");
-    }
-
-    /**
-     * WF-05 fix plan, section 2 (09 §4.3): the customer made a trip fail - refused the goods, or gave a wrong address -
-     * and the goods are delivered again. The trip is charged to them as a fee item of the order's contract: an
-     * installment with no plan row, due from that day, paid by receipt like any other and never refunded or lowered by
-     * a closure. In the caller's transaction, after the order's lock (orders, then installments).
-     *
-     * @return the fee item's id; empty for an order without installments (no signed contract) - nothing to charge it on
-     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} for an amount not more than zero
-     *         or not in whole units of the currency
-     */
-    java.util.Optional<UUID> chargeFailedDelivery(ChargeFailedDeliveryCommand command);
+    java.util.Optional<OrderSettlementResult> settleShipmentReturn(SettleShipmentReturnCommand command);
 
     /** 4D-3 (15 §5.3): what the order's settlements made refundable and what was refunded; zero for none. */
     RefundProgress refundProgress(UUID orderId);

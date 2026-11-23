@@ -97,11 +97,12 @@ final class PaymentWebMapper {
                     return new com.stockflow.payment.internal.controller.dto.OrderRefundResponse.Settlement(s.id(),
                             s.kind().name(), s.collected(), s.closed(), s.reduced(), s.surplus(), s.fee(),
                             terms.percent(), forCustomer ? null : terms.reason(), forCustomer ? null : terms.detail(),
-                            s.feeCovered(), s.refundable(), s.feeOwed(), s.feeItemId(), s.settledAt());
+                            s.feeCovered(), s.refundable(), s.feeOwed(), s.feeItemId(), s.settledAt(), s.shipmentId(),
+                            s.shippingFeeWaived());
                 }).toList(), d.records().stream()
                 .filter(r -> !forCustomer
                         || r.status() == com.stockflow.payment.internal.domain.RefundRecord.Status.RECORDED)
-                .map(r -> forCustomer ? forCustomer(r) : toResponse(r)).toList());
+                .map(r -> forCustomer ? forCustomer(r) : toResponse(r)).toList(), d.feeOwed());
     }
 
     /** What the customer sees of a refund made: the money and the statement line, not the accountant's note or name. */
@@ -118,7 +119,8 @@ final class PaymentWebMapper {
         var standing = com.stockflow.payment.internal.domain.RefundStanding.of(o.orderId(), o.refundable(),
                 o.refunded());
         return new com.stockflow.payment.internal.controller.dto.OrderRefundResponse(o.orderId(), o.orderNumber(),
-                o.currency(), standing.status().name(), o.refundable(), o.refunded(), o.remaining(), null, null);
+                o.currency(), standing.status().name(), o.refundable(), o.refunded(), o.remaining(), null, null,
+                o.feeOwed());
     }
 
     static com.stockflow.payment.internal.controller.dto.RefundRecordResponse toResponse(

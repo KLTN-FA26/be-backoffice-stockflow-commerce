@@ -80,14 +80,21 @@ class PaymentServiceImpl implements PaymentService {
     }
 
     @Override
-    public java.util.Optional<UUID> chargeFailedDelivery(com.stockflow.payment.api.ChargeFailedDeliveryCommand command) {
-        return installments.chargeFailedDelivery(command);
-    }
-
-    @Override
     public java.util.Optional<com.stockflow.payment.api.OrderSettlementResult> settleReturn(
             com.stockflow.payment.api.SettleReturnCommand command) {
         return settlements.settleReturn(command);
+    }
+
+    /**
+     * MANDATORY here as well as on {@link OrderSettlementService}: this class's REQUIRED would otherwise open a
+     * transaction of its own for a caller that has none, and the settlement would commit apart from the closure of the
+     * shipment's units it settles - the one thing the synchronous call is for.
+     */
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public java.util.Optional<com.stockflow.payment.api.OrderSettlementResult> settleShipmentReturn(
+            com.stockflow.payment.api.SettleShipmentReturnCommand command) {
+        return settlements.settleShipmentReturn(command);
     }
 
     @Override

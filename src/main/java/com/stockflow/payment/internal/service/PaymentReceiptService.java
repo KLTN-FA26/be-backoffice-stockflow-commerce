@@ -10,6 +10,7 @@ import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.contracts.PaymentReceiptRecorded;
 import com.stockflow.contracts.PaymentReceiptVoided;
 import com.stockflow.customer.api.CustomerService;
+import com.stockflow.payment.api.HandedOverGoods;
 import com.stockflow.payment.api.InstallmentOrders;
 import com.stockflow.payment.api.InstallmentOrder;
 import com.stockflow.payment.internal.domain.Installment;
@@ -55,7 +56,8 @@ import java.util.stream.Collectors;
  *   <li><b>Void</b>: kept, with who, when and why (BR-04); the installments it paid say again what is left. Refused
  *       for an order cancelled, completed, closed, being returned or refunded, or one whose closure left money to
  *       refund (§4.4 step 13; 4B-9) - unless the receipt paid a cancellation fee item, whose money no settlement
- *       counted. A confirmed order left
+ *       counted. Refused too for a receipt that paid an installment on signing, or before delivery, once the goods it
+ *       let go were handed over (WF-05 Q-20, BE-33). A confirmed order left
  *       short of its installment on signing must be put on hold - the accountant says so ({@code holdOrders}), or the
  *       void is refused (BR-13); {@code PaymentReceiptVoided} then holds it.</li>
  * </ul>
@@ -187,8 +189,8 @@ public class PaymentReceiptService {
 
     /**
      * @throws BusinessException {@code PAYMENT_RECEIPT_NOT_FOUND}; {@code PAYMENT_RECEIPT_ALREADY_VOIDED};
-     *         {@code PAYMENT_RECEIPT_VOID_NOT_ALLOWED} (§4.4 step 13); {@code PAYMENT_RECEIPT_VOID_NEEDS_HOLD} (BR-13);
-     *         {@code VALIDATION_FAILED} without a reason
+     *         {@code PAYMENT_RECEIPT_VOID_NOT_ALLOWED} (§4.4 step 13); {@code PAYMENT_RECEIPT_VOID_AFTER_HANDOVER}
+     *         (WF-05 Q-20); {@code PAYMENT_RECEIPT_VOID_NEEDS_HOLD} (BR-13); {@code VALIDATION_FAILED} without a reason
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "payment-receipt", resourceId = "#command.receiptId()")
     public ReceiptDetail voidReceipt(VoidReceiptCommand command) {
@@ -221,6 +223,9 @@ public class PaymentReceiptService {
                 .map(OrderSettlement::settledAt).max(Instant::compareTo)
                 .filter(last -> !receipt.recordedAt().isAfter(last))
                 .ifPresent(last -> settledOnPaid.add(orderId)));
+        // WF-05 Q-20: read under the orders' locks taken above - a handover of one of them waits for this void, or went
+        // first and is seen here.
+        Map<UUID, HandedOverGoods> handedOver = new HashMap<>();
         Map<UUID, Boolean> paidOnSigningBefore = new HashMap<>();
         orderIds.forEach(orderId -> paidOnSigningBefore.put(orderId, paidOnSigning(orderId, installments)));
         for (PaymentReceipt.Line line : receipt.lines()) {
@@ -238,6 +243,13 @@ public class PaymentReceiptService {
                         + "which is %s: its money is settled with the order").formatted(receipt.reference(),
                         order.orderNumber(), order.status())).localized("refusal.payment.voidSettled",
                         receipt.reference(), order.orderNumber());
+            }
+            if (letGoodsGo(installment, handedOver.computeIfAbsent(installment.orderId(), orders::handedOverGoods))) {
+                throw new BusinessException(ErrorCode.PAYMENT_RECEIPT_VOID_AFTER_HANDOVER, ("Receipt %s paid installment "
+                        + "%d (%s) of contract %s, and the goods it let go were handed over to a carrier")
+                        .formatted(receipt.reference(), installment.seq(), installment.milestone(),
+                                installment.contractNumber()), List.of(),
+                        Map.of("installmentId", installment.id(), "orderNumber", order.orderNumber()));
             }
             installment.unpay(line.amount());
         }
@@ -266,6 +278,24 @@ public class PaymentReceiptService {
                 leftShort.isEmpty() ? "" : "; order(s) " + leftShort + " to be put on hold");
         return new ReceiptDetail(saved, receipt.lines().stream().map(line -> installments.get(line.installmentId()))
                 .collect(Collectors.toMap(Installment::id, Function.identity())));
+    }
+
+    /**
+     * WF-05 decision Q-20 (BE-33): whether the money on {@code installment} is what let goods leave that have left - an
+     * installment on signing once any goods of the order were handed over, one before delivery once its own batch was
+     * (or, tied to no batch, once any goods were). Such a receipt is not voided: the handover was decided on it (BR-08),
+     * and taken back it left an installment before delivery owing with no due day - never overdue, outside the credit
+     * figure and the aged receivables (audit M-5). A receipt recorded against the wrong customer after the goods left
+     * is corrected in the accounting software with an adjusting entry (Luật Kế toán Điều 27; a known limit, docs 15).
+     * An installment after delivery, or a fee item, never let goods go.
+     */
+    static boolean letGoodsGo(Installment installment, HandedOverGoods handedOver) {
+        return switch (installment.milestone()) {
+            case ON_SIGNING -> handedOver.any();
+            case BEFORE_DELIVERY -> installment.deliveryBatchId() == null ? handedOver.any()
+                    : handedOver.batchIds().contains(installment.deliveryBatchId());
+            case AFTER_DELIVERY, CANCELLATION_FEE, FAILED_TRIP_FEE -> false;
+        };
     }
 
     private static boolean paidOnSigning(UUID orderId, Map<UUID, Installment> installments) {

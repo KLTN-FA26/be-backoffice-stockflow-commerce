@@ -55,9 +55,13 @@ public class RefundService {
 
     private static final Logger log = LoggerFactory.getLogger(RefundService.class);
 
-    /** An order's refund: where it stands, the settlements that made it, and the records against it. */
+    /**
+     * An order's refund: where it stands, the settlements that made it, and the records against it; and what the
+     * order's fee items still owe ({@code feeOwed}, WF-05 BE-51: shown beside the refund, never set off by itself).
+     */
     public record OrderRefundDetail(RefundStanding standing, String orderNumber, String currency,
-                                    List<OrderSettlement> settlements, List<RefundRecord> records) {
+                                    List<OrderSettlement> settlements, List<RefundRecord> records,
+                                    java.math.BigDecimal feeOwed) {
     }
 
     /** What the accountant records. */
@@ -66,14 +70,16 @@ public class RefundService {
     }
 
     private final SettlementBook book;
+    private final com.stockflow.payment.internal.domain.InstallmentBook installments;
     private final RefundSearch search;
     private final InstallmentOrders orders;
     private final ApplicationEventPublisher events;
     private final Clock clock;
 
-    RefundService(SettlementBook book, RefundSearch search, InstallmentOrders orders, ApplicationEventPublisher events,
-                  Clock clock) {
+    RefundService(SettlementBook book, com.stockflow.payment.internal.domain.InstallmentBook installments,
+                  RefundSearch search, InstallmentOrders orders, ApplicationEventPublisher events, Clock clock) {
         this.book = book;
+        this.installments = installments;
         this.search = search;
         this.orders = orders;
         this.events = events;
@@ -150,8 +156,13 @@ public class RefundService {
                 .orElseThrow(() -> orderNotFound(orderId));
         List<OrderSettlement> settlements = book.ofOrder(orderId);
         List<RefundRecord> records = book.recordsOf(orderId);
+        // WF-05 BE-51: the fee items still owed on this order - a cancellation fee a closure left - beside the refund.
+        java.math.BigDecimal feeOwed = installments.ofOrder(orderId).stream()
+                .filter(com.stockflow.payment.internal.domain.Installment::isFeeItem)
+                .map(com.stockflow.payment.internal.domain.Installment::outstanding)
+                .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
         return new OrderRefundDetail(RefundStanding.of(orderId, settlements, records), order.orderNumber(),
-                order.currency(), settlements, records);
+                order.currency(), settlements, records, feeOwed);
     }
 
     @Transactional(readOnly = true)

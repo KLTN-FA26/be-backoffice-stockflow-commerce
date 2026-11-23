@@ -138,6 +138,19 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
         return new Overdue(decimal(row[0]), localDate(row[1]));
     }
 
+    @Override
+    public boolean markOverdueAnnounced(UUID installmentId, LocalDate dueDate) {
+        return entityManager.createNativeQuery("""
+                        UPDATE payment.installment SET overdue_announced_for = :due
+                         WHERE id = (SELECT id FROM payment.installment
+                                      WHERE id = :id AND due_date = :due AND status IN ('DUE', 'PARTIALLY_PAID')
+                                        AND overdue_announced_for IS DISTINCT FROM :due
+                                        FOR UPDATE SKIP LOCKED)""")
+                .setParameter("due", dueDate)
+                .setParameter("id", installmentId)
+                .executeUpdate() == 1;
+    }
+
     // ---- receipts ---------------------------------------------------------------------------------------------------
 
     @Override
@@ -220,7 +233,10 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
                 .and(filter.overdueOn() == null ? null : overdue(filter.overdueOn(), filter.overdue()))
                 // Specs.in: null is any customer, empty is none - a search that matched no customer finds nothing.
                 .and(Specs.in("customerId", filter.customerIds()))
-                .and(Boolean.TRUE.equals(filter.owing()) ? owing() : null);
+                .and(Boolean.TRUE.equals(filter.owing()) ? owing() : null)
+                .and(Boolean.TRUE.equals(filter.unannounced()) ? (root, query, cb) -> cb.or(
+                        cb.isNull(root.get("overdueAnnouncedFor")),
+                        cb.notEqual(root.get("overdueAnnouncedFor"), root.get("dueDate"))) : null);
         return installments.findAll(spec, pageable).map(InstallmentBookAdapter::toDomain);
     }
 
