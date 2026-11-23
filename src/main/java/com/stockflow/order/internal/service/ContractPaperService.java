@@ -165,14 +165,23 @@ public class ContractPaperService {
         if (!ended && !ended(order.status())) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, ("Contract %s is still being "
                     + "performed (order %s is %s): it is liquidated once the order is completed, cancelled, refunded "
-                    + "or closed").formatted(contract.contractNumber(), order.orderNumber().value(), order.status()));
+                    + "or closed").formatted(contract.contractNumber(), order.orderNumber().value(), order.status()),
+                    List.of(), Map.of("reason", "STILL_PERFORMED"))
+                    .localized("refusal.contract.liquidationStillPerformed", contract.contractNumber(),
+                            order.orderNumber().value());
         }
         ContractLedger.Standing money = ledger.of(contract.orderId());
         if (money.outstanding().signum() != 0 || money.toRefund().signum() != 0) {
+            // No error code of its own (owner 2026-11-23, "Còn lại phải = 0"): the contract is not in a state that can
+            // be liquidated, which SALES_CONTRACT_STATUS_INVALID already says. details.reason tells it apart from the
+            // contract still being performed, and the two amounts say what is left on each side.
             throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, ("Contract %s is not settled: "
                     + "the customer still owes %s and is still owed %s back. A liquidation states that nothing is left; "
                     + "it is drawn once the money is settled").formatted(contract.contractNumber(),
-                    money.outstanding().toPlainString(), money.toRefund().toPlainString()));
+                    money.outstanding().toPlainString(), money.toRefund().toPlainString()), List.of(),
+                    Map.of("reason", "NOT_SETTLED", "outstanding", money.outstanding(), "toRefund", money.toRefund()))
+                    .localized("refusal.contract.liquidationNotSettled", contract.contractNumber(),
+                            DocumentFormats.money(money.outstanding()), DocumentFormats.money(money.toRefund()));
         }
         ResourceBundle t = DocumentParts.bundle();
         boolean deliveredSomething = order.deliveredSomething();

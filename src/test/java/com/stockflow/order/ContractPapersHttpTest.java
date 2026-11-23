@@ -189,13 +189,19 @@ class ContractPapersHttpTest {
         String ownPath = "/api/v1/orders/me/" + signed.orderId() + "/contract/liquidation";
         ConfirmedOrders.Confirmed paid = orders.pay(signed);
         http.asRole(Role.SALES_STAFF, sales, get(staffPath)).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("SALES_CONTRACT_STATUS_INVALID"));
+                .andExpect(jsonPath("$.errorCode").value("SALES_CONTRACT_STATUS_INVALID"))
+                .andExpect(jsonPath("$.details.reason").value("STILL_PERFORMED"));
 
         WithCurrentUser.run(orders.sales(), DataScope.ALL, () -> orderService.cancel(signed.orderId(),
                 new CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST, "agreed with the customer", null,
                         orders.sales().userId(), null)));
         http.asRole(Role.SALES_STAFF, sales, get(staffPath)).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("SALES_CONTRACT_STATUS_INVALID"));
+                .andExpect(jsonPath("$.errorCode").value("SALES_CONTRACT_STATUS_INVALID"))
+                .andExpect(jsonPath("$.details.reason").value("NOT_SETTLED"))
+                .andExpect(jsonPath("$.details.outstanding").value(0))
+                .andExpect(jsonPath("$.details.toRefund").value(signed.total().doubleValue()));
+        http.asCustomer(owner, get(ownPath)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.details.reason").value("NOT_SETTLED"));
 
         refunds.record(new RefundService.RecordRefundCommand(signed.orderId(), signed.total(), LocalDate.now(),
                 "FT-REFUND-" + signed.orderId().toString().substring(0, 8), null, sales));
