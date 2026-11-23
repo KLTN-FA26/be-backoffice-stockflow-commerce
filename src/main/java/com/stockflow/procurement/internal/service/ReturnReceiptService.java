@@ -83,6 +83,18 @@ import java.util.stream.Collectors;
  * return is told when its draft is opened and closed ({@link ReturnReceiptTracking}, WF-05 BE-23), in the receipt's
  * transaction.</p>
  *
+ * <p><b>Never above the approval</b> (WF-05 Q-11 add-on, audit round 2 M3/L6): a carton's units - its label sealed,
+ * its count opened - and what the return's receipts already brought never exceed what the return approved, on the scan
+ * and on a recount. A carton is never split: one that does not fit is the customer's, kept in custody on the return
+ * request, as are goods held for the customer after a return that refunded nothing (Q-4).</p>
+ *
+ * <p><b>The return takes the goods in this transaction</b> (audit round 2 M1): confirming a return request's receipt
+ * applies its goods to the return ({@link ReturnReceiptTracking#goodsReceived}) before inventory takes the cartons, so
+ * the draft flag and the goods change together - a refund can never be approved between the two, and a return that
+ * cannot take them (its units claimed by another return since, M2) refuses the confirmation instead of leaving an event
+ * that fails for ever. {@link ReturnedGoodsReceived} still goes out after commit, for payment, the carrier's return and
+ * the return's own listener, which finds the receipt taken already.</p>
+ *
  * <p>Lock order: the receipt row ({@code FOR UPDATE}), then the order's row and the return's (telling the return), then
  * - on confirmation, inside inventory - the SKU advisory locks, the cartons, their rows: the global order (receipt
  * before order before SKU locks before cartons before stock rows), as the order's own paths take the order before the
@@ -109,10 +121,12 @@ public class ReturnReceiptService {
      * it ({@code countedQuantity}, recorded by {@code countedBy}); {@code opened} when fewer than its label.
      * {@code stockEntered} (WF-05 Q-18): whether it goes - or went - back into stock; false for an opened or empty one,
      * whose result is "destroyed" (true on receipts confirmed before, which stocked every carton).
+     * {@code heldForCustomer} (WF-05 Q-4): the carton entered stock, but its return refunded nothing, so the stock-in
+     * was reversed and the goods are the customer's, held for them - not stock, whatever {@code stockEntered} says.
      */
     public record CartonView(String lpn, String sku, String lotNumber, int quantity, String condition, UUID scannedBy,
                              Instant scannedAt, int countedQuantity, boolean opened, boolean stockEntered,
-                             UUID countedBy) {
+                             UUID countedBy, boolean heldForCustomer) {
     }
 
     /**
@@ -229,10 +243,14 @@ public class ReturnReceiptService {
             // WF-05 Q-11: until its refund is settled - a parcel after the goods were marked complete or the deadline
             // passed is received on a document, not left in the warehouse with none.
             if (!request.receiptOpenable()) {
-                throw new BusinessException(ErrorCode.RETURN_NOT_AWAITING_GOODS, ("Return request %s is %s; its goods "
-                        + "are received while it is approved and its refund not settled - anything else that came back "
-                        + "is kept in custody on the return request").formatted(request.rmaNumber(),
-                        request.status()));
+                // Audit round 2: also a CLOSED order (L-3), or units another return claimed since (M2) - its RMA number
+                // in claimedBy, where the goods are received instead.
+                throw new BusinessException(ErrorCode.RETURN_NOT_AWAITING_GOODS, request.receiptRefusal() != null
+                        ? request.receiptRefusal() : ("Return request %s is %s; its goods are received while it is "
+                        + "approved and its refund not settled - anything else that came back is kept in custody on "
+                        + "the return request").formatted(request.rmaNumber(), request.status()), List.of(),
+                        request.claimedBy().isEmpty() ? Map.of("returnStatus", request.status())
+                                : Map.of("returnStatus", request.status(), "claimedBy", request.claimedBy()));
             }
             // WF-05 TH-3: a further parcel of the return gets a receipt of its own; one is counted at a time.
             receipts.findDraftForReturnRequest(request.id()).ifPresent(ReturnReceiptService::alreadyOpen);
@@ -310,14 +328,26 @@ public class ReturnReceiptService {
                         + "earlier return receipt and was destroyed; it is not taken back again").formatted(normal),
                         List.of(), Map.of("lpn", normal));
             }
+            if (carton.customersGoods()) {
+                // WF-05 Q-4: its return refunded nothing - held for the customer here, or destroyed on their behalf.
+                throw new BusinessException(ErrorCode.RETURN_CARTON_IN_WAREHOUSE, ("Carton %s is the customer's, held "
+                        + "for them after a return that refunded nothing; it is not taken back on a receipt")
+                        .formatted(normal), List.of(), Map.of("lpn", normal));
+            }
             if (receipt.returnRequestId() != null) {
-                requireClaimed(receipt, carton.sku(), normal);
+                requireClaimed(receipt, carton.sku(), normal,
+                        countedQuantity == null ? carton.quantity() : countedQuantity, 0);
             }
             receipt.scan(new ReturnReceipt.Carton(Identifiers.newId(), carton.stockPackageId(), carton.lpn(),
                     carton.sku(), carton.lotNumber(), carton.quantity(), condition, userId, clock.instant(),
                     countedQuantity == null ? carton.quantity() : countedQuantity, userId), countedQuantity != null);
         } else {
             ReturnReceipt.Carton held = already.get();
+            if (receipt.returnRequestId() != null && countedQuantity != null
+                    && countedQuantity > held.countedQuantity()) {
+                // Audit round 2 L6: a recount is held to the approval as the scan was.
+                requireClaimed(receipt, held.sku(), normal, countedQuantity, held.countedQuantity());
+            }
             receipt.scan(new ReturnReceipt.Carton(held.id(), held.stockPackageId(), held.lpn(), held.sku(),
                     held.lotNumber(), held.quantity(), condition, held.scannedBy(), held.scannedAt(),
                     countedQuantity == null ? held.countedQuantity() : countedQuantity, userId),
@@ -398,19 +428,25 @@ public class ReturnReceiptService {
     }
 
     /**
-     * WF-05 Q-11 (BE-22): a return's receipt takes a carton of a SKU the return approved, while some of those units are
-     * still to come back on its receipts - the database checks the same ({@code check_return_receipt_carton}).
+     * WF-05 Q-11 (BE-22; audit round 2 M3, L6): a return's receipt takes a carton of a SKU the return approved, and only
+     * while its {@code units} - the label of a sealed carton, the count of an opened one - fit in what is still to come
+     * back on the return's receipts. A sealed 1,000 on a 500 approval went into stock whole before, the 500 over it
+     * company stock; a carton is never split, so one that does not fit is the customer's, kept in custody on the return
+     * request (Q-11 add-on: "Hàng vượt số duyệt ... giữ hộ, không nhập tồn"). {@code already}: what this carton counts on
+     * the receipt now (a recount), 0 for a new one. The database checks the same ({@code check_return_receipt_carton}).
      */
-    private void requireClaimed(ReturnReceipt receipt, String sku, String lpn) {
+    private void requireClaimed(ReturnReceipt receipt, String sku, String lpn, int units, int already) {
         long approved = approvedOf(receipt, sku);
-        long back = approved == 0 ? 0 : receipts.unitsReceivedForReturn(receipt.returnRequestId(), sku, null);
-        if (approved == 0 || back >= approved) {
+        long back = approved == 0 ? 0
+                : receipts.unitsReceivedForReturn(receipt.returnRequestId(), sku, null) - already;
+        if (approved == 0 || back + units > approved) {
             throw new BusinessException(ErrorCode.RETURN_CARTON_NOT_CLAIMED, approved == 0
                     ? "Carton %s holds %s, which the return did not approve: keep it in custody on the return request"
                             .formatted(lpn, sku)
-                    : ("Carton %s holds %s, of which the %d unit(s) the return approved are all back: keep it in "
-                            + "custody on the return request").formatted(lpn, sku, approved), List.of(),
-                    Map.of("lpn", lpn, "sku", sku, "approved", approved, "alreadyBack", back));
+                    : ("Carton %s brings %d unit(s) of %s; %d of the %d the return approved are back already, so it "
+                            + "does not fit: keep it in custody on the return request").formatted(lpn, units, sku,
+                            back, approved), List.of(),
+                    Map.of("lpn", lpn, "sku", sku, "approved", approved, "alreadyBack", back, "units", units));
         }
     }
 
@@ -479,36 +515,47 @@ public class ReturnReceiptService {
         }
         Instant now = clock.instant();
         receipt.confirm(userId, now, managerApproval);
-        if (receipt.returnRequestId() != null) {
-            // WF-05 BE-23: before the SKU locks inventory takes, as the order's own paths take the order first.
-            tracking.draftClosed(receipt.returnRequestId(), receipt.id());
-        }
         String area = location(receipt.quarantineLocationId()).locationCode();
-        // A sealed carton goes into quarantine whole; an opened or empty one stays out of stock (WF-05 Q-18).
-        List<ReturnedCarton> received = receipt.cartons().isEmpty() ? List.of()
-                : cartonReturns.receive(new ReceiveReturnedCartonsCommand(receipt.id(), receipt.orderId(), area,
-                        receipt.cartons().stream().map(ReturnReceipt.Carton::lpn).toList(), userId, now,
-                        receipt.cartons().stream().filter(ReturnReceipt.Carton::opened)
-                                .map(ReturnReceipt.Carton::lpn).collect(Collectors.toSet())));
+        OrderSummary order = order(receipt.orderId());
+        // CLOSED first: the return names only a confirmed receipt (check_return_request_goods_receipt). What it closes
+        // with - every carton in stock or kept out as opened, the return having taken the goods - is checked at commit.
         ReturnReceipt saved = receipts.save(receipt);
-        OrderSummary order = order(saved.orderId());
-        Map<String, ReturnReceipt.Carton> scanned = saved.cartons().stream()
-                .collect(Collectors.toMap(ReturnReceipt.Carton::lpn, c -> c));
-        List<String> missing = saved.shipmentId() == null ? List.of() : missingCartons(saved.shipmentId());
-        events.publishEvent(new ReturnedGoodsReceived(saved.id(), saved.number(), saved.warehouseId(), saved.orderId(),
-                order.orderNumber(), order.customerId(), saved.shipmentId(), saved.returnRequestId(), area,
-                received.stream().map(c -> {
-                    ReturnReceipt.Carton on = scanned.get(c.lpn());
-                    return new ReturnedGoodsReceived.Carton(c.lpn(), c.sku(), c.lotNumber(), on.quantity(),
-                            on.condition(), on.opened() ? on.countedQuantity() : null, on.stockEntered());
-                }).toList(), userId, now,
-                saved.looseLines().stream().map(l -> new ReturnedGoodsReceived.LooseLine(l.sku(), l.lotNumber(),
-                        l.quantity())).toList(), missing));
+        if (saved.returnRequestId() != null) {
+            // Audit round 2 M1 (WF-05 BE-23): the return takes the goods and lets go of its draft together, here - the
+            // order and return locks before the SKU locks inventory takes, as the order's own paths take them.
+            tracking.goodsReceived(goodsOf(saved, order, area, userId, now, List.of()));
+        }
+        // A sealed carton goes into quarantine whole; an opened or empty one stays out of stock (WF-05 Q-18). One of a
+        // return request waits there for its refund decision before it is the company's (Q-4).
+        List<ReturnedCarton> received = saved.cartons().isEmpty() ? List.of()
+                : cartonReturns.receive(new ReceiveReturnedCartonsCommand(saved.id(), saved.orderId(), area,
+                        saved.cartons().stream().map(ReturnReceipt.Carton::lpn).toList(), userId, now,
+                        saved.cartons().stream().filter(ReturnReceipt.Carton::opened)
+                                .map(ReturnReceipt.Carton::lpn).collect(Collectors.toSet()),
+                        saved.returnRequestId()));
+        // A carrier's return names the cartons of its shipment on no confirmed receipt yet, this one now included.
+        events.publishEvent(goodsOf(saved, order, area, userId, now,
+                saved.shipmentId() == null ? List.of() : missingCartons(saved.shipmentId())));
         log.info("Return receipt {} confirmed and closed: {} carton(s) ({} opened) and {} loose line(s) of order {} "
                         + "into quarantine at {}", saved.number(), received.size(),
                 saved.cartons().stream().filter(ReturnReceipt.Carton::opened).count(), saved.looseLines().size(),
                 order.orderNumber(), area);
         return view(saved);
+    }
+
+    /**
+     * What came back on the receipt, as it counted it: the cartons as scanned - LPN, SKU, label and lot, checked against
+     * the carton by {@code check_return_receipt_carton} - with the units found in an opened one, and the loose units.
+     */
+    private static ReturnedGoodsReceived goodsOf(ReturnReceipt receipt, OrderSummary order, String area, UUID userId,
+                                                 Instant now, List<String> missing) {
+        return new ReturnedGoodsReceived(receipt.id(), receipt.number(), receipt.warehouseId(), receipt.orderId(),
+                order.orderNumber(), order.customerId(), receipt.shipmentId(), receipt.returnRequestId(), area,
+                receipt.cartons().stream().map(on -> new ReturnedGoodsReceived.Carton(on.lpn(), on.sku(),
+                        on.lotNumber(), on.quantity(), on.condition(), on.opened() ? on.countedQuantity() : null,
+                        on.stockEntered())).toList(), userId, now,
+                receipt.looseLines().stream().map(l -> new ReturnedGoodsReceived.LooseLine(l.sku(), l.lotNumber(),
+                        l.quantity())).toList(), missing);
     }
 
     /**
@@ -667,6 +714,9 @@ public class ReturnReceiptService {
                     .filter(c -> request.map(r -> r.approvedOf(c.sku()) > 0).orElse(false)).toList();
         }
         Set<String> scanned = receipt.cartons().stream().map(ReturnReceipt.Carton::lpn).collect(Collectors.toSet());
+        // One read for every carton of the receipt (WF-05 Q-4): those whose return refunded nothing.
+        Set<String> customers = receipt.status() == GoodsReceiptStatus.CLOSED && receipt.returnRequestId() != null
+                && !scanned.isEmpty() ? cartonReturns.customersGoods(scanned) : Set.of();
         String orderNumber = orders.findById(receipt.orderId()).map(OrderSummary::orderNumber).orElse(null);
         String areaCode = warehouses.findLocation(receipt.quarantineLocationId())
                 .map(StorageLocationView::locationCode).orElse(null);
@@ -677,7 +727,7 @@ public class ReturnReceiptService {
                 receipt.cartons().stream().map(c -> new CartonView(c.lpn(), c.sku(), c.lotNumber(), c.quantity(),
                         c.condition(), c.scannedBy(), c.scannedAt(), c.countedQuantity(), c.opened(),
                         receipt.stockEntered(c),
-                        c.countedBy())).toList(),
+                        c.countedBy(), customers.contains(c.lpn()))).toList(),
                 expected.stream().map(c -> new ExpectedCarton(c.lpn(), c.sku(), c.lotNumber(), c.quantity(),
                         scanned.contains(StockPackageView.normalLpn(c.lpn())))).toList(),
                 receipt.version(),

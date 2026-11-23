@@ -3,6 +3,7 @@ package com.stockflow.inventory.internal.service;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
+import com.stockflow.inventory.internal.domain.ReturnedCartonOwnership;
 import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockPackage;
@@ -50,12 +51,14 @@ class StockPackageContents {
     private final StockPackageRepository stockPackages;
     private final StockItemRepository stockItems;
     private final LocationDirectory locations;
+    private final ReturnedCartonOwnership ownership;
 
     StockPackageContents(StockPackageRepository stockPackages, StockItemRepository stockItems,
-                         LocationDirectory locations) {
+                         LocationDirectory locations, ReturnedCartonOwnership ownership) {
         this.stockPackages = stockPackages;
         this.stockItems = stockItems;
         this.locations = locations;
+        this.ownership = ownership;
     }
 
 
@@ -141,6 +144,7 @@ class StockPackageContents {
         if (rows.isEmpty()) {
             throw new IllegalStateException("Stock package %s has no stock row to adjust".formatted(carton.lpn()));
         }
+        requireCompanys(carton);
         if (Math.abs(delta) != carton.nominalQty()) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE,
                     "%s holds %d; it is adjusted whole, not by %d".formatted(carton.lpn(), carton.nominalQty(), delta),
@@ -240,6 +244,57 @@ class StockPackageContents {
         stockPackages.save(carton);
         stockItems.saveMerged(row);
         return row;
+    }
+
+    /**
+     * WF-05 Q-4 (H1): a carton back on a return whose refund is undecided is not the company's to write off, count short
+     * or release yet - the refund may still leave it the customer's - and one held for the customer is not in the books
+     * at all. Every adjustment of a carton (requested, approved, a count's variance) asks here.
+     *
+     * @throws BusinessException {@code STOCK_PACKAGE_DECISION_PENDING}, naming the carton's {@code returnOwnership}
+     */
+    void requireCompanys(StockPackage carton) {
+        ownership.of(carton.id()).filter(owned -> owned == ReturnedCartonOwnership.Ownership.PENDING
+                || owned.customers()).ifPresent(owned -> {
+                    throw new BusinessException(ErrorCode.STOCK_PACKAGE_DECISION_PENDING, ("%s came back on a return and "
+                            + "is %s: it is the company's to decide on only once the return's refund made it so")
+                            .formatted(carton.lpn(), owned), List.of(), Map.of("lpn", carton.lpn(),
+                            "returnOwnership", owned.name()));
+                });
+    }
+
+    /**
+     * A carton a return receipt put into quarantine leaves the books again (WF-05 Q-4): its return refunded nothing, so
+     * the goods were never agreed back and are the customer's. IN_STOCK → CONSUMED where it stands
+     * ({@link StockPackage#consume}), its one row emptied - the whole carton, QUARANTINE, held for nobody. The caller
+     * writes the reversing ledger line from the change returned. Call under the SKU lock; the carton and then its row are
+     * locked here.
+     *
+     * @throws BusinessException {@code INVALID_STOCK_PACKAGE_TRANSITION} when it is not in stock;
+     *         {@code STOCK_PACKAGE_TAKEN_WHOLE} when it is not one row of its whole count, in quarantine
+     */
+    RowChange reverseReturn(StockPackageId id, Instant now) {
+        StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(id)).stream().findFirst()
+                .orElseThrow(() -> new IllegalStateException("No stock package " + id.value()));
+        if (carton.status() != StockPackageStatus.IN_STOCK) {
+            throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION, ("%s is %s; only a carton in stock "
+                    + "leaves it again").formatted(carton.lpn(), carton.status()), List.of(),
+                    Map.of("lpn", carton.lpn()));
+        }
+        List<com.stockflow.inventory.internal.domain.StockItemId> rowIds = stockItems.findIdsInStockPackage(id);
+        StockItem row = rowIds.size() != 1 ? null : stockItems.findByIdForUpdate(rowIds.get(0)).orElse(null);
+        if (row == null || carton.receivedQty() == null || row.onHand().value() != carton.receivedQty()
+                || !row.reserved().isZero() || row.status() != StockStatus.QUARANTINE) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("%s cannot leave whole: it is not one "
+                    + "row of %s unit(s) in quarantine").formatted(carton.lpn(), carton.receivedQty()), List.of(),
+                    Map.of("lpn", carton.lpn()));
+        }
+        int units = row.onHand().value();
+        row.adjustBy(-units);
+        carton.consume(now);
+        stockPackages.save(carton);
+        stockItems.save(row);
+        return new RowChange(row, -units);
     }
 
     /**

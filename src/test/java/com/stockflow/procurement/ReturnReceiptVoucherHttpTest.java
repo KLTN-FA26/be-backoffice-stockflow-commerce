@@ -255,6 +255,9 @@ class ReturnReceiptVoucherHttpTest {
                            'PORTAL', ?, TRUE, NOW() + INTERVAL '14 days', ?, NOW()
                       FROM ordering.customer_order o WHERE o.id = ?""", id, rma, UUID.randomUUID(), portalUser, staff,
                     order);
+            // The order delivered what the return claims: its goods are taken by the return when the receipt is
+            // confirmed (audit round 2, M1), and the line check refuses a return of more than was delivered.
+            jdbc.update("UPDATE ordering.order_line SET quantity = ? WHERE order_id = ?", units, order);
             jdbc.update("""
                     INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, quantity, sku,
                         custom_printed, unit_price, approved_quantity)

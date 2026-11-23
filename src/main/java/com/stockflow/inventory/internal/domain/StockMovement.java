@@ -178,6 +178,12 @@ public record StockMovement(
          * quarantine, one RECEIPT line per carton naming it ({@code ck_stock_movement_return_receipt}). The receipt
          * itself, not a line of it: a return receipt has cartons, not lines.
          */
-        GOODS_RECEIPT
+        GOODS_RECEIPT,
+        /**
+         * A return request that refunded nothing (WF-05 Q-4): its goods were never agreed back, so the stock-in of each
+         * of its cartons is reversed - one {@code ADJUSTMENT} line out of quarantine, the whole carton
+         * ({@code ck_stock_movement_return_refused}) - and the carton is held for the customer.
+         */
+        RETURN_REQUEST
     }
 }

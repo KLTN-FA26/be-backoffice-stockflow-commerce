@@ -69,7 +69,8 @@ class CartonQuarantineServiceTest {
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final CartonQuarantineService service = new CartonQuarantineService(operations, stockPackages, stockItems,
             mock(StockAdjustmentRepository.class), mock(UomConversionRepository.class),
-            mock(InventoryPolicyRepository.class), tasks, warehouses, events);
+            mock(InventoryPolicyRepository.class), tasks, warehouses, events,
+            mock(com.stockflow.inventory.internal.domain.ReturnedCartonOwnership.class));
 
     private final StockPackageId cartonId = new StockPackageId(UUID.randomUUID());
     private final UUID areaId = UUID.randomUUID();

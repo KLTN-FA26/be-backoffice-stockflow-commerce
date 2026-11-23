@@ -43,7 +43,8 @@ class StockPackageContentsTest {
     private final StockItemRepository stockItems = mock(StockItemRepository.class);
     private final com.stockflow.inventory.internal.domain.LocationDirectory locations =
             mock(com.stockflow.inventory.internal.domain.LocationDirectory.class);
-    private final StockPackageContents contents = new StockPackageContents(stockPackages, stockItems, locations);
+    private final StockPackageContents contents = new StockPackageContents(stockPackages, stockItems, locations,
+            mock(com.stockflow.inventory.internal.domain.ReturnedCartonOwnership.class));
 
     private static StockPackage carton(StockPackageId id, int counted) {
         return new StockPackage(id, "LPN-0001", UUID.randomUUID(), UUID.randomUUID(), 24, counted,

@@ -43,9 +43,17 @@ public final class ReturnClaims {
             this(shipmentId, orderLineId, units, open, false);
         }
 
-        /** The claim a line of a return in {@code status} makes. */
+        /** The claim a line of a return in {@code status} makes, with no parcel of it on a draft receipt. */
         public static Claim of(UUID shipmentId, ReturnStatus status, ReturnLine line) {
-            return new Claim(shipmentId, line.orderLineId(), line.claimedUnits(status), status.isOpen(),
+            return of(shipmentId, status, line, false);
+        }
+
+        /**
+         * The claim a line of a return in {@code status} makes; {@code draftOpen}: a parcel of it is counted on a draft
+         * receipt now ({@link ReturnLine#claimedUnits(ReturnStatus, boolean)}).
+         */
+        public static Claim of(UUID shipmentId, ReturnStatus status, ReturnLine line, boolean draftOpen) {
+            return new Claim(shipmentId, line.orderLineId(), line.claimedUnits(status, draftOpen), status.isOpen(),
                     status == ReturnStatus.RESOLVED && line.refundQuantity() > 0);
         }
     }
@@ -58,6 +66,17 @@ public final class ReturnClaims {
 
     public static ReturnClaims of(Collection<Claim> claims) {
         return claims == null || claims.isEmpty() ? NONE : new ReturnClaims(List.copyOf(claims));
+    }
+
+    /**
+     * What {@code returns} claim, leaving out return {@code except}: the bound a closed return's parcel is checked
+     * against before it takes back what it approved (WF-05 Q-11, audit round 2 M2).
+     */
+    public static ReturnClaims ofOthers(Collection<ReturnRequest> returns, UUID except) {
+        return of(returns.stream().filter(other -> !other.id().equals(except))
+                .flatMap(other -> other.lines().stream().map(line -> Claim.of(other.shipmentId(), other.status(),
+                        line, other.openDraftReceiptId() != null)))
+                .toList());
     }
 
     /** Per order line, the units every return claims, whatever delivery it is against. */

@@ -1664,7 +1664,9 @@ def return_request(o, key, when, reason, status, cartons=0, channel="PORTAL", no
         for pk in back:
             r = pk["row"]
             raw(f"SELECT set_config('stockflow.same_receipt_merge', '{r['id']}', true);")
-            upd("inventory.stock_package", pk["package"], status="IN_STOCK", location_code=qrt, closed_at=None)
+            # WF-05 Q-4 (V20261223000300): back on a return, the carton waits for the refund decision.
+            upd("inventory.stock_package", pk["package"], status="IN_STOCK", location_code=qrt, closed_at=None,
+                return_request_id=rid, return_ownership="PENDING")
             upd("inventory.stock_item", r["id"], location_code=qrt, on_hand=pk["qty"], status="QUARANTINE")
             r.update(loc=qrt, on_hand=pk["qty"], status="QUARANTINE", consumed=False)
             ins("inventory.stock_movement", t, id=uid(f"mv:return:{gid}:{pk['id']}"), movement_type="RECEIPT",
@@ -1675,7 +1677,7 @@ def return_request(o, key, when, reason, status, cartons=0, channel="PORTAL", no
         raw("SELECT set_config('stockflow.same_receipt_merge', '', true);")
         upd("procurement.goods_receipts", gid, status="CLOSED", confirmed_at=t + timedelta(hours=1),
             confirmed_by=U[STAFF_OF[p][0]], closed_at=t + timedelta(hours=1))
-        commit()
+        # The return takes the goods in the receipt's own transaction (audit round 2 M1): no commit in between.
         upd("ordering.return_request", rid, status="RECEIVED", goods_receipt_id=gid, received_at=t + timedelta(hours=1),
             received_by=staff, receiving_location_code=qrt)
         upd("ordering.return_request_line", lid, received_quantity=units)

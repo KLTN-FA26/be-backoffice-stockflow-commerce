@@ -56,7 +56,16 @@ public record ReturnRequestResponse(
         boolean receiptOpenable,
         @Schema(description = "Whether a parcel of it is being counted on a DRAFT return receipt now (WF-05 BE-23): "
                 + "goods-complete, refund proposal and approval answer 409 RETURN_RECEIPT_DRAFT_OPEN meanwhile")
-        boolean receiptDraftOpen) implements ReturnView {
+        boolean receiptDraftOpen,
+        @Schema(description = "What the customer chose for goods held for them after a return that refunded nothing "
+                + "(WF-05 Q-4), as Sales recorded it: SEND_BACK or DESTROY_ON_BEHALF; null until recorded. Sales "
+                + "record it with POST /returns/{id}/custody-choice once outcome is REFUSED or NOTHING_TO_REFUND",
+                allowableValues = {"SEND_BACK", "DESTROY_ON_BEHALF"})
+        String custodyChoice,
+        @Schema(description = "The record the choice rests on (the customer's written consent to a destruction)")
+        String custodyChoiceNote,
+        UUID custodyChoiceBy,
+        Instant custodyChoiceAt) implements ReturnView {
 
     /** Sales' decision; {@code returnDeadline}: the goods must arrive by then, or the return expires. */
     public record Review(UUID decidedBy, Instant decidedAt, String note, String rejectionReason, Boolean returnRequired,

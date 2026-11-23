@@ -18,10 +18,15 @@ import java.util.UUID;
  * @param claimedLines    what it approved, per SKU (WF-05 Q-11, BE-22): its receipt takes only goods of those SKUs, up to
  *                        those units; anything else is the customer's, kept in custody on the return request
  * @param draftReceiptId  the DRAFT return receipt counting a parcel of it now, null when none (WF-05 BE-23)
+ * @param receiptRefusal  why no receipt may be opened for it now, in words for the warehouse; null when one may
+ *                        (audit round 2: also its order CLOSED, L-3, or its approved units claimed by another return, M2)
+ * @param claimedBy       when another return claimed the units it approved (M2): those returns' RMA numbers - the goods
+ *                        are received on one of them instead; empty otherwise
  */
 public record ReturnRequestReference(UUID id, String rmaNumber, UUID orderId, String orderNumber, UUID customerId,
                                      String status, boolean awaitingGoods, UUID shipmentId, boolean receiptOpenable,
-                                     List<ClaimedLine> claimedLines, UUID draftReceiptId) {
+                                     List<ClaimedLine> claimedLines, UUID draftReceiptId, String receiptRefusal,
+                                     List<String> claimedBy) {
 
     /**
      * Units of one SKU the return approved, its lines of that SKU together: the most of it a receipt brings back for
@@ -36,6 +41,15 @@ public record ReturnRequestReference(UUID id, String rmaNumber, UUID orderId, St
 
     public ReturnRequestReference {
         claimedLines = claimedLines == null ? List.of() : List.copyOf(claimedLines);
+        claimedBy = claimedBy == null ? List.of() : List.copyOf(claimedBy);
+    }
+
+    /** As named before the refusal was said (audit round 2): openable or not, by the return's own status. */
+    public ReturnRequestReference(UUID id, String rmaNumber, UUID orderId, String orderNumber, UUID customerId,
+                                  String status, boolean awaitingGoods, UUID shipmentId, boolean receiptOpenable,
+                                  List<ClaimedLine> claimedLines, UUID draftReceiptId) {
+        this(id, rmaNumber, orderId, orderNumber, customerId, status, awaitingGoods, shipmentId, receiptOpenable,
+                claimedLines, draftReceiptId, null, List.of());
     }
 
     /** As named before late parcels and claimed lines (WF-05 Q-11): a receipt is opened while it awaits its goods. */
