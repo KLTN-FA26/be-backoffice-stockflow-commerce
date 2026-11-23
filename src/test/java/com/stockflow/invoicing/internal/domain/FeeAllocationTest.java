@@ -118,4 +118,99 @@ class FeeAllocationTest {
         // the second of two), and is drawn up again: 200 of 300 invoiced with it -> 66,667 owed, 33,333 here.
         assertThat(share("100000", 300, 100, invoiced(100, "33334"))).isEqualByComparingTo("33333");
     }
+
+    // ---- WF-05 Q-19 (owner 2026-11-23): the fee waived for shipments that came back, and sharing by value ----------
+
+    /** What the invoices carry when {@code value} of the order's goods, before tax, carrying {@code shipping}, is on them. */
+    private static Invoiced byValue(String value, String shipping) {
+        return new Invoiced(1, new BigDecimal(shipping), Set.of(), new BigDecimal(value));
+    }
+
+    private static BigDecimal owed(String feeNet, String feeGross, String waivedGross) {
+        return FeeAllocation.shippingFeeOwed(new BigDecimal(feeNet), new BigDecimal(feeGross),
+                new BigDecimal(waivedGross));
+    }
+
+    @Test
+    @DisplayName("Q-19: the invoices carry feeNet - round_half_up(feeNet x W / feeGross); nothing waived, all of it; "
+            + "everything waived, nothing - the rest invoice then carries plate fees only")
+    void theFeeLessTheShareWaived() {
+        assertThat(owed("100000", "108000", "0")).isEqualByComparingTo("100000");
+        // One of three equal shipments back: payment waived round(108,000 / 3) = 36,000.
+        assertThat(owed("100000", "108000", "36000")).isEqualByComparingTo("66667");
+        assertThat(owed("100000", "108000", "108000")).isEqualByComparingTo("0");
+        assertThat(FeeAllocation.shippingFeeOwed(null, null, null)).isEqualByComparingTo("0");
+        // A whole return: no rest of the shipping fee, whatever was invoiced.
+        assertThat(FeeAllocation.shippingRest(owed("100000", "108000", "108000"), 0, Invoiced.NOTHING))
+                .isEqualByComparingTo("0");
+    }
+
+    @Test
+    @DisplayName("Q-19 rounding pinned: the fee kept on one invoice line, with its VAT, is what payment keeps "
+            + "(feeGross - W) to within a dong, for every fee, rate and share tried")
+    void theInvoiceAndPaymentAgreeToADong() {
+        for (long feeNet : new long[] {1, 7, 99_999, 100_000, 100_001, 123_457, 999_999, 1_234_567}) {
+            for (String rate : new String[] {"0", "5", "8", "10"}) {
+                BigDecimal net = BigDecimal.valueOf(feeNet);
+                BigDecimal gross = net.add(EInvoiceLine.vat(net, new BigDecimal(rate)));
+                for (int share = 0; share <= 12; share++) {
+                    // payment: round_half_up(feeGross x returned / order goods), here share/12 of the goods
+                    BigDecimal waived = gross.multiply(BigDecimal.valueOf(share))
+                            .divide(BigDecimal.valueOf(12), 0, java.math.RoundingMode.HALF_UP);
+                    BigDecimal kept = FeeAllocation.shippingFeeOwed(net, gross, waived);
+                    BigDecimal invoiced = kept.add(EInvoiceLine.vat(kept, new BigDecimal(rate)));
+                    assertThat(invoiced.subtract(gross.subtract(waived)).abs())
+                            .as("fee %d at %s%%, %d/12 back", feeNet, rate, share).isLessThanOrEqualTo(BigDecimal.ONE);
+                }
+            }
+        }
+        // The example the report gives: 100,000 at 8%, a third back - 66,667 + 5,333 = 72,000 = 108,000 - 36,000.
+        BigDecimal kept = owed("100000", "108000", "36000");
+        assertThat(kept.add(EInvoiceLine.vat(kept, new BigDecimal("8")))).isEqualByComparingTo("72000");
+    }
+
+    @Test
+    @DisplayName("Q-19: shared by value, a delivery of many cheap pieces invoiced before a shipment of a few dear ones "
+            + "came back carries its value's share - never more than payment keeps (by pieces it carried half)")
+    void aCheapDeliveryInvoicedBeforeADearReturnIsNotOverInvoiced() {
+        // Fee 100,000 (8%: 108,000 with VAT). A: 100 pieces worth 100,000; B: 100 pieces worth 900,000.
+        BigDecimal a = FeeAllocation.shippingShareByValue(new BigDecimal("100000"), new BigDecimal("1000000"),
+                new BigDecimal("100000"), Invoiced.NOTHING);
+        assertThat(a).as("a tenth by value, not half by pieces").isEqualByComparingTo("10000");
+        assertThat(share("100000", 200, 100, Invoiced.NOTHING)).as("by pieces it was half").isEqualByComparingTo("50000");
+        // B comes back: payment waives 9/10 of 108,000 = 97,200; the invoices may carry 100,000 - 90,000 = 10,000.
+        BigDecimal kept = owed("100000", "108000", "97200");
+        assertThat(kept).isEqualByComparingTo("10000");
+        assertThat(a).isLessThanOrEqualTo(kept);
+        // Nothing is left for a rest: 100 of the 100 pieces still meant to be delivered are invoiced.
+        assertThat(FeeAllocation.shippingRest(kept, 100, new Invoiced(100, a, Set.of(), new BigDecimal("100000"))))
+                .isEqualByComparingTo("0");
+    }
+
+    @Test
+    @DisplayName("Q-19: three deliveries of different value share the fee by value and add up to it to the dong; the "
+            + "last takes the rest; a shipment back before or after makes no difference to what the others carry")
+    void sharesByValueAddUp() {
+        BigDecimal fee = new BigDecimal("100000");
+        BigDecimal first = FeeAllocation.shippingShareByValue(fee, new BigDecimal("3000000"), new BigDecimal("700000"),
+                Invoiced.NOTHING);
+        BigDecimal second = FeeAllocation.shippingShareByValue(fee, new BigDecimal("3000000"),
+                new BigDecimal("1100000"), byValue("700000", first.toPlainString()));
+        BigDecimal third = FeeAllocation.shippingShareByValue(fee, new BigDecimal("3000000"),
+                new BigDecimal("1200000"), byValue("1800000", first.add(second).toPlainString()));
+        assertThat(first).isEqualByComparingTo("23333");
+        assertThat(second).isEqualByComparingTo("36667");
+        assertThat(first.add(second).add(third)).isEqualByComparingTo("100000");
+
+        // The second came back first instead (1,100,000 of 3,000,000 with the same rate: 11/30 of the fee waived):
+        // the other two carry 100,000 - 36,666 = 63,334 between them, the first its own share as before to a dong
+        // (63,334 x 7/19 = 23,333.6).
+        BigDecimal kept = owed("100000", "110000", "40333");
+        BigDecimal firstAfter = FeeAllocation.shippingShareByValue(kept, new BigDecimal("1900000"),
+                new BigDecimal("700000"), Invoiced.NOTHING);
+        BigDecimal thirdAfter = FeeAllocation.shippingShareByValue(kept, new BigDecimal("1900000"),
+                new BigDecimal("1200000"), byValue("700000", firstAfter.toPlainString()));
+        assertThat(firstAfter).isEqualByComparingTo("23334");
+        assertThat(firstAfter.add(thirdAfter)).isEqualByComparingTo(kept);
+    }
 }

@@ -39,8 +39,9 @@ import java.util.regex.Pattern;
  * other 5xx, a 401 after a fresh token, a 429 or an answer that is not JSON say nothing about the invoice.</p>
  *
  * <p><b>The result after it was taken in</b> is SePay's tracking call
- * ({@code GET /v1/invoices/{create|adjust|replace}/check/{tracking_code}},
- * developer.sepay.vn/vi/einvoice-api/v1/theo-doi-trang-thai-xuat-hoa-don): {@code Pending} (SePay retries its own
+ * ({@code GET /v1/invoices/create/check/{tracking_code}} for a create, an adjust and a replace alike - the page says the
+ * path is shared by the three, and {@code /adjust/check/}, {@code /replace/check/} answer 404 on the sandbox (WF-05
+ * BE-61, run X-4); developer.sepay.vn/vi/einvoice-api/v1/theo-doi-trang-thai-xuat-hoa-don): {@code Pending} (SePay retries its own
  * errors for up to two hours), {@code Success}, {@code Failed} with a {@code message}. A {@code Failed} whose message
  * says SePay could not confirm the result with the invoicing provider ("chưa xác nhận được kết quả phát hành") is not a
  * failure: the documentation says the result is unknown and the request must not be sent again
@@ -51,8 +52,8 @@ import java.util.regex.Pattern;
  * read without accents, case or extra spacing ({@link #unconfirmed}), and narrowly: the phrase "result not confirmed
  * yet", its words next to each other - Vietnamese with or without accents, or English. Narrowly on purpose: a reading
  * too loose takes a real refusal ("chưa xác nhận được MST người mua theo kết quả tra cứu") for "not known", and an
- * unknown result is left to the provider's own answer for a day before the accountant may take it back
- * ({@code EInvoiceIssuance.withdraw}), holding its series back meanwhile. A {@code Failed}
+ * unknown result ({@link #RESULT_UNCONFIRMED}) is taken back by the accountant only with SePay support's written answer
+ * (decision Q-5, {@code EInvoiceIssuance.withdraw}), holding its series back meanwhile. A {@code Failed}
  * without words is unconfirmed. And a refusal read from the words is still not trusted on its own: it carries
  * {@link #ISSUANCE_FAILED}, which {@code SepayEInvoiceProvider.refusalUnconfirmedByLookup} names, so the invoice is
  * recorded as refused only once SePay can no longer be working on the transaction and, asked again, still says so
@@ -64,7 +65,10 @@ import java.util.regex.Pattern;
  *   <li><b>The invoice's state.</b> The look-up by {@code reference_code} returns {@code status}; the documentation
  *       shows {@code draft} and {@code issued} and lists no other value (/chi-tiet-hoa-don, /danh-sach-hoa-don).
  *       {@code issued} with a number is taken for issued, as are {@code replaced} and {@code adjusted} (an invoice
- *       later corrected was issued). {@code draft} is still being processed. {@link #REFUSED} - {@code failed},
+ *       later corrected was issued). The same words <b>without</b> a number are SePay holding the invoice while it is
+ *       numbered: PENDING, never UNKNOWN (WF-05 BE-07, decision Q-5) - an UNKNOWN invoice could once be withdrawn
+ *       and issued again, which would have made a second invoice of one SePay already holds. {@code draft} is still
+ *       being processed. {@link #REFUSED} - {@code failed},
  *       {@code rejected}, {@code cancelled}, {@code deleted} - are taken for "no invoice in force exists under this
  *       reference", i.e. REJECTED: under each of those words the invoice is refused or void, so the accountant
  *       correcting it and issuing it again under a new reference issues the only invoice in force. That is the
@@ -190,7 +194,8 @@ final class SepayEInvoiceAnswers {
 
     /**
      * The handle a create, adjust or replace answer gives: {@code <kind>/<tracking_code>}; null when it gives none that
-     * can be put in a path safely.
+     * can be put in a path safely. The kind says which call took the submission in, for the person reading the call
+     * log; the tracking is asked at {@code /create/check/} for every kind ({@code SepayEInvoiceClient.tracking}).
      */
     static String trackingReference(String kind, JsonNode body) {
         JsonNode data = body == null ? null : body.get("data");
@@ -308,7 +313,8 @@ final class SepayEInvoiceAnswers {
         String state = text(data, "status");
         state = state == null ? "" : state.toLowerCase(Locale.ROOT);
         if (ISSUED.contains(state)) {
-            return invoiceNumber(data) != null ? ResultState.ISSUED : ResultState.UNKNOWN;
+            // Issued at SePay and not numbered yet: SePay holds it, so it is waited for (Q-5), never "cannot say".
+            return invoiceNumber(data) != null ? ResultState.ISSUED : ResultState.PENDING;
         }
         if (REFUSED.contains(state)) {
             return ResultState.REJECTED;
@@ -317,7 +323,19 @@ final class SepayEInvoiceAnswers {
     }
 
     /**
-     * An issued invoice as the system records it, or null while it lacks the tax authority's code.
+     * Whether a look-up's {@code data} names the invoice issued (or corrected since), number or not: SePay holds it, so
+     * no tracking word may turn it into a refusal ({@code SepayEInvoiceProvider.query}).
+     */
+    static boolean saysIssued(JsonNode data) {
+        String state = text(data, "status");
+        return state != null && ISSUED.contains(state.toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * An issued invoice as the system records it, or null while it lacks the tax authority's code. It carries the
+     * series SePay says it numbered the invoice under ({@code template_code}, {@code invoice_series}; WF-05 BE-30): an
+     * adjustment or a replacement is sent naming no series, and SePay picks one (sandbox run T-4: {@code C26TSE}, the
+     * original's), so what is recorded is checked against what SePay says rather than assumed.
      *
      * @param data      the look-up's {@code data}
      * @param xml       the signed XML, when SePay hands it over; null otherwise
@@ -342,7 +360,8 @@ final class SepayEInvoiceAnswers {
         }
         Instant signedAt = xmlText == null ? null : instant(match(SIGNING_TIME, xmlText));
         return new Result(ResultState.ISSUED, invoiceNumber(data), limit(taxAuthorityCode), limit(lookupCode),
-                signedAt != null ? signedAt : now, null, null);
+                signedAt != null ? signedAt : now, null, null)
+                .numberedUnder(text(data, "template_code"), text(data, "invoice_series"));
     }
 
     /** The number SePay gave, 1 to 99 999 999; null for a draft's {@code "0"} or anything else. */

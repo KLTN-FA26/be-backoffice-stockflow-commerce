@@ -93,9 +93,9 @@ class DeliveryCorrectionListener {
                                 invoice.submittedAt(), invoice.issueDueAt())));
             }
             case LEFT_FOR_ADJUSTMENT -> {
-                var reversal = drafts.reverseForCorrectedDelivery(event.orderId(), event.shipmentId());
-                if (reversal.isPresent()) {
-                    EInvoice.Snapshot drawn = reversal.get();
+                EInvoiceDrafts.Reversal reversal = drafts.reverseOrExplain(event.orderId(), event.shipmentId());
+                if (reversal.drawn() != null) {
+                    EInvoice.Snapshot drawn = reversal.drawn();
                     log.info("Shipment {} of order {} was corrected to a failed delivery after its e-invoice was "
                             + "issued: the full reduction {} is drawn up", LogSafe.text(event.shipmentCode()),
                             LogSafe.text(event.orderNumber()), LogSafe.text(drawn.code()));
@@ -104,14 +104,21 @@ class DeliveryCorrectionListener {
                             null, drawn.issueDueAt()));
                     return;
                 }
-                log.warn("Shipment {} of order {} was corrected to a failed delivery after its e-invoice was issued "
-                        + "and is being corrected already: the invoice needs an adjustment by hand",
-                        LogSafe.text(event.shipmentCode()), LogSafe.text(event.orderNumber()));
+                if (reversal.notReversed() == null) {
+                    // Nothing to reduce: delivered again meanwhile, or reversed already (a replayed event).
+                    return;
+                }
+                // WF-05 BE-09, BE-11: told why, so the accountant knows the way out - a replacement is settled on the
+                // provider's portal and recorded (Q-9, Q-8); anything else is reduced with "reduce for the failed
+                // delivery" once the correction holding it back is settled.
+                log.warn("Shipment {} of order {} was corrected to a failed delivery after its e-invoice was issued, "
+                        + "and the system could not reduce it: {}", LogSafe.text(event.shipmentCode()),
+                        LogSafe.text(event.orderNumber()), reversal.notReversed());
                 // Same transaction as the correction's handling: told once, or not at all if this rolls back.
                 invoices.findLiveOriginalOfShipment(event.shipmentId()).map(EInvoice::snapshot).ifPresent(invoice ->
                         events.publishEvent(new EInvoiceNeedsAttention(invoice.id(), invoice.code(), invoice.orderId(),
-                                invoice.orderNumber(), EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_AFTER_SUBMISSION,
-                                null, invoice.submittedAt(), invoice.issueDueAt())));
+                                invoice.orderNumber(), reversal.notReversed(), null, invoice.submittedAt(),
+                                invoice.issueDueAt())));
             }
             case NO_INVOICE -> { /* nothing was drawn up for it */ }
         }

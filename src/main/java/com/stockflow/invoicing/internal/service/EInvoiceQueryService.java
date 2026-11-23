@@ -9,6 +9,7 @@ import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.storage.DownloadLink;
 import com.stockflow.common.storage.FileTransfers;
 import com.stockflow.invoicing.internal.domain.EInvoice;
+import com.stockflow.invoicing.internal.domain.EInvoiceProvider;
 import com.stockflow.invoicing.internal.domain.EInvoiceQueries;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
 import com.stockflow.invoicing.internal.domain.InvoiceSettings;
@@ -46,14 +47,16 @@ public class EInvoiceQueryService {
     private final ProviderCallLog calls;
     private final FileTransfers files;
     private final InvoiceSettings settings;
+    private final EInvoiceProviders providers;
 
     EInvoiceQueryService(EInvoiceRepository invoices, EInvoiceQueries queries, ProviderCallLog calls,
-                         FileTransfers files, InvoiceSettings settings) {
+                         FileTransfers files, InvoiceSettings settings, EInvoiceProviders providers) {
         this.invoices = invoices;
         this.queries = queries;
         this.calls = calls;
         this.files = files;
         this.settings = settings;
+        this.providers = providers;
     }
 
     public PageResponse<EInvoiceQueries.Listing> list(EInvoiceQueries.Filter filter, int page, int size) {
@@ -77,9 +80,27 @@ public class EInvoiceQueryService {
      * every later one. Empty for anything but a draft - nothing else is waiting to be sent - and when no series is in
      * use for the draft's year: issuing is refused for that ({@code EINVOICE_SERIES_NOT_CONFIGURED}), and there is no
      * series to share.
+     *
+     * <p>Empty too under a provider that dates an invoice only on the day it is sent
+     * ({@link EInvoiceProvider#datesOnlyToday()}, SePay; WF-05 Q-1 §1.5 step 7, HĐ-2): there the earlier draft is dated
+     * today when it is sent, so its number and its date both come after this one's and nothing runs out of order -
+     * naming it would tell the accountant of a block that does not exist.</p>
      */
+    /**
+     * Whether a Mẫu 04/SS-HĐĐT notice for the invoice can be sent through the provider it was issued through - or, not
+     * issued yet, the one in use (WF-05 F-11, Q-22 row 04/SS). None here can: the notice is filed outside the system,
+     * and the screens never tell the buyer it was sent.
+     */
+    public boolean errorNoticeSupported(EInvoice.Snapshot invoice) {
+        String provider = invoice.provider() != null ? invoice.provider() : settings.active().provider();
+        return providers.find(provider).map(EInvoiceProvider::sendsErrorNotices).orElse(false);
+    }
+
     public java.util.Optional<String> earlierPending(EInvoice.Snapshot invoice) {
         if (invoice.status() != com.stockflow.invoicing.internal.domain.EInvoiceStatus.DRAFT) {
+            return java.util.Optional.empty();
+        }
+        if (providers.find(settings.active().provider()).map(EInvoiceProvider::datesOnlyToday).orElse(false)) {
             return java.util.Optional.empty();
         }
         return settings.seriesInUse(settings.active().provider(), invoice.issueDate().getYear())
@@ -151,6 +172,20 @@ public class EInvoiceQueryService {
         return PageResponse.of(rows.stream().map(row -> new IssuedInvoice(row,
                         links.getOrDefault(row.id(), EInvoiceQueries.Replacements.NONE))).toList(),
                 page, size, queries.countIssuedTo(customerId, orderId));
+    }
+
+    /**
+     * One invoice issued to {@code customerId}, as a row of the portal's list with its replacement links (WF-05 BE-60):
+     * the portal opens an invoice by its id instead of searching the customer's latest ones for it.
+     *
+     * @throws BusinessException {@code EINVOICE_NOT_FOUND} for another customer's invoice, one not issued, and no
+     *         invoice alike - the customer learns nothing of invoices that are not its own
+     */
+    public IssuedInvoice issuedInvoice(UUID customerId, UUID id) {
+        EInvoiceQueries.Listing row = queries.findIssuedTo(customerId, id)
+                .orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_FOUND));
+        return new IssuedInvoice(row, queries.replacementsOf(customerId, List.of(row.id()))
+                .getOrDefault(row.id(), EInvoiceQueries.Replacements.NONE));
     }
 
     /**

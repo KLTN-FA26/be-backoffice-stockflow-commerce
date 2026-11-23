@@ -103,22 +103,15 @@ class EInvoiceDeliveryReversalTest {
     }
 
     @Test
-    @DisplayName("WF-05 review, defect 5: the replacement standing for the shipment is reduced in full like an "
-            + "original - an adjustment of the replacement, basis DELIVERY_FAILED, no agreement")
-    void aReplacementInForceIsReducedToo() {
+    @DisplayName("WF-05 Q-9 (BE-09): the replacement standing for the shipment is never adjusted - not even for a "
+            + "failed delivery (TT 91 Điều 10 khoản 6 điểm a; SePay refuses it, sandbox T-5): refused at draw-up, the "
+            + "failure is reduced on the provider's portal and recorded")
+    void aReplacementInForceIsNotReducedBySystem() {
         EInvoice replacement = EInvoiceFixtures.issued(EInvoiceFixtures.agreed(EInvoiceFixtures.replacement(
                 EInvoiceFixtures.in(EInvoiceStatus.ISSUED), 18)), 2);
 
-        EInvoice.Snapshot s = reversalOf(replacement, EInvoice.Corrections.NONE).snapshot();
-
-        assertThat(s.type()).isEqualTo(EInvoiceType.ADJUSTMENT);
-        assertThat(s.correctionBasis()).isEqualTo(CorrectionBasis.DELIVERY_FAILED);
-        assertThat(s.originalEInvoiceId()).as("it adjusts the replacement, the invoice in force")
-                .isEqualTo(replacement.id());
-        assertThat(s.shipmentId()).isEqualTo(replacement.snapshot().shipmentId());
-        assertThat(s.agreementFileKey()).isNull();
-        assertThat(s.grandTotal().add(replacement.snapshot().grandTotal())).isEqualByComparingTo(BigDecimal.ZERO);
-        assertRefused(() -> reversalOf(replacement, new EInvoice.Corrections(false, true, BigDecimal.ZERO)),
-                ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE);
+        assertRefused(() -> reversalOf(replacement, EInvoice.Corrections.NONE),
+                ErrorCode.EINVOICE_REPLACEMENT_NOT_ADJUSTABLE);
     }
+
 }

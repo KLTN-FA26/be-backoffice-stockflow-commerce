@@ -27,7 +27,8 @@ class EInvoiceQueriesAdapter implements EInvoiceQueries {
     private static final String LIST_COLUMNS = """
             id, code, type, status, adjusted, order_id, order_number, shipment_id, shipment_code, customer_id,
             buyer_name, buyer_tax_code, issue_date, issue_due_at, template_code, symbol, invoice_number, subtotal,
-            tax_total, grand_total, warnings, rejection_code, issued_at""";
+            tax_total, grand_total, warnings, rejection_code, issued_at, correction_basis, reversed_at,
+            delivered_on""";
 
     private static final RowMapper<Listing> LISTING = (row, n) -> new Listing(row.getObject("id", UUID.class),
             row.getString("code"), EInvoiceType.valueOf(row.getString("type")),
@@ -39,7 +40,10 @@ class EInvoiceQueriesAdapter implements EInvoiceQueries {
             row.getString("template_code"), row.getString("symbol"), row.getObject("invoice_number", Integer.class),
             row.getBigDecimal("subtotal"), row.getBigDecimal("tax_total"), row.getBigDecimal("grand_total"),
             row.getString("warnings"), row.getString("rejection_code"),
-            row.getTimestamp("issued_at") == null ? null : row.getTimestamp("issued_at").toInstant());
+            row.getTimestamp("issued_at") == null ? null : row.getTimestamp("issued_at").toInstant(),
+            row.getString("correction_basis"),
+            row.getTimestamp("reversed_at") == null ? null : row.getTimestamp("reversed_at").toInstant(),
+            row.getObject("delivered_on", LocalDate.class));
 
     private final JdbcTemplate jdbc;
 
@@ -108,6 +112,12 @@ class EInvoiceQueriesAdapter implements EInvoiceQueries {
         if (filter.dueBefore() != null) {
             predicates.add("status IN ('DRAFT', 'REJECTED', 'SUBMITTING') AND issue_due_at < ?");
             arguments.add(Timestamp.from(filter.dueBefore()));
+        }
+        if (filter.warning() != null) {
+            // The column holds the codes comma-joined: matched as a whole code, never as part of another. WF-05 Q-10:
+            // "issued late" is ISSUED_LATE, which ck_einvoice_issued_late ties to the dates.
+            predicates.add("(',' || warnings || ',') LIKE ?");
+            arguments.add("%," + filter.warning().name() + ",%");
         }
         return predicates.isEmpty() ? "" : " WHERE " + String.join(" AND ", predicates);
     }

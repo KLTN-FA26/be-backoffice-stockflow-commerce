@@ -1,5 +1,7 @@
 package com.stockflow.invoicing.internal.service;
 
+import com.stockflow.common.api.FieldError;
+import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.storage.Checksums;
@@ -27,6 +29,8 @@ import java.io.ByteArrayInputStream;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -49,10 +53,11 @@ class EInvoiceIssuanceSteps {
     private final FileTransfers files;
     private final ApplicationEventPublisher events;
     private final Clock clock;
+    private final InvoicingProperties properties;
 
     EInvoiceIssuanceSteps(EInvoiceRepository invoices, EInvoiceSending sending, InvoiceSettings settings,
                           EInvoiceProviders providers, FileTransfers files, ApplicationEventPublisher events,
-                          Clock clock) {
+                          Clock clock, InvoicingProperties properties) {
         this.invoices = invoices;
         this.sending = sending;
         this.settings = settings;
@@ -60,6 +65,7 @@ class EInvoiceIssuanceSteps {
         this.files = files;
         this.events = events;
         this.clock = clock;
+        this.properties = properties;
     }
 
     @Transactional(readOnly = true)
@@ -90,10 +96,15 @@ class EInvoiceIssuanceSteps {
      * for the correction's year; otherwise the correction is refused ({@code EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE})
      * and never sent to another provider.</p>
      *
-     * <p>What this does not prevent: an invoice dated before invoices already issued - a delivery recorded late, a
-     * draft issued after a later one - is still issued, with the next number and its own date (the delivery's). A rule
-     * "no date before the series' last issued one" would leave such an invoice unissuable for good, which the law
-     * forbids more plainly than it forbids the order of numbers; it is the exception the accountant can explain.</p>
+     * <p><b>Dated the day it is issued, where it must be</b> (WF-05 Q-1, BE-01; {@link EInvoice#dateForIssue}): a
+     * correction always, an original under a provider that takes only today's date (SePay: anything else is refused
+     * for good, sandbox T-1, T-6) - flagged {@code ISSUED_LATE} when that is after its delivery day, and the accountants
+     * told ({@link EInvoiceNeedsAttention.Cause#ISSUED_LATE}). Done first, in this transaction, so the series is the
+     * one of the day it is issued (a delivery of 31/12 issued on 2/1 goes under the new year's series) and a refusal
+     * below leaves the draft as it was. Under such a provider numbers and dates of a series rise together by
+     * themselves (sandbox T-2), so the date order the law asks for holds; under one that takes a past date an original
+     * keeps its delivery's date and may still come after invoices already issued - the exception the accountant can
+     * explain, since one that could never be issued would be worse (decision Q-10: no series comparison).</p>
      *
      * <p>The check runs under the series' submission lock ({@link EInvoiceRepository#lockSeries}), taken after the
      * invoice's own row lock and held until this transaction commits: two invoices of one series submitted at the same
@@ -112,6 +123,31 @@ class EInvoiceIssuanceSteps {
      */
     @Transactional
     public EInvoice.Snapshot submit(UUID id, Long expectedVersion, UUID by) {
+        return submit(id, expectedVersion, by, false, null);
+    }
+
+    /**
+     * The provider an invoice is sent through when it is issued now: the original's for a correction (HĐ-5), the one
+     * in use otherwise. For the quota asked before it is sent (BE-54), outside any transaction that holds a lock.
+     */
+    @Transactional(readOnly = true)
+    public String providerFor(UUID id) {
+        EInvoice invoice = invoices.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_FOUND));
+        if (invoice.originalEInvoiceId() == null) {
+            return settings.active().provider();
+        }
+        return invoices.findById(invoice.originalEInvoiceId()).map(original -> original.snapshot().provider())
+                .orElse(settings.active().provider());
+    }
+
+    /**
+     * {@link #submit(UUID, Long, UUID)}, and for the accountant's issue ({@code manual}) the reason an original goes out
+     * after its delivery day (WF-05 Q-10, F-16): required then ({@code EINVOICE_LATE_ISSUE_REASON_REQUIRED}), decided
+     * under the invoice's lock on the day it is sent, and kept in the audit log by the caller. The automatic issuing is
+     * never refused for lateness.
+     */
+    @Transactional
+    public EInvoice.Snapshot submit(UUID id, Long expectedVersion, UUID by, boolean manual, String lateReason) {
         EInvoice invoice = invoices.findByIdForUpdate(id)
                 .orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_FOUND));
         if (expectedVersion != null && expectedVersion != invoice.version()) {
@@ -124,6 +160,13 @@ class EInvoiceIssuanceSteps {
             // says the same.
             throw new BusinessException(ErrorCode.EINVOICE_NOT_INVOICEABLE, ("Invoice %s invoices a delivery that was "
                     + "corrected to a failure: it is voided, not sent again").formatted(invoice.code()));
+        }
+        if (invoices.watchFound(id)) {
+            // BE-07 (Q-5, invariant V1): a transaction let go earlier was issued by the provider after all - the
+            // delivery has its invoice in law under the old transaction (DUPLICATE_RISK was told). Another attempt
+            // would be a second invoice for it: the accountant settles it with the provider's support first.
+            throw new BusinessException(ErrorCode.EINVOICE_RESUBMISSION_REFUSED, ("Invoice %s: an earlier transaction of "
+                    + "it was issued by the provider after all; it is not sent again").formatted(invoice.code()));
         }
         String active = settings.active().provider();
         String provider = active;
@@ -143,6 +186,14 @@ class EInvoiceIssuanceSteps {
             throw new BusinessException(ErrorCode.EINVOICE_PROVIDER_CANNOT_CORRECT,
                     "%s issues no adjustment or replacement; %s is not sent".formatted(provider, invoice.code()));
         }
+        LocalDate today = BusinessCalendar.date(clock.instant());
+        if (manual && (lateReason == null || lateReason.isBlank())
+                && invoice.lateIfIssuedOn(today, port.datesOnlyToday())) {
+            throw new BusinessException(ErrorCode.EINVOICE_LATE_ISSUE_REASON_REQUIRED, ("Invoice %s is issued after the "
+                    + "day of its delivery (%s): say why (lateReason)").formatted(invoice.code(),
+                    invoice.deliveredOn()), List.of(FieldError.of("lateReason", "required")));
+        }
+        boolean late = invoice.dateForIssue(today, port.datesOnlyToday());
         String at = provider;
         InvoiceSeries series = settings.seriesInUse(at, invoice.issueDate().getYear())
                 .orElseThrow(() -> new BusinessException(at.equals(active) ? ErrorCode.EINVOICE_SERIES_NOT_CONFIGURED
@@ -155,7 +206,13 @@ class EInvoiceIssuanceSteps {
                     invoice.code(), series.templateCode(), series.symbol(), invoice.code()));
         });
         invoice.submit(series, by, clock.instant());
-        return invoices.save(invoice).snapshot();
+        EInvoice.Snapshot submitted = invoices.save(invoice).snapshot();
+        if (late) {
+            events.publishEvent(new EInvoiceNeedsAttention(submitted.id(), submitted.code(), submitted.orderId(),
+                    submitted.orderNumber(), EInvoiceNeedsAttention.Cause.ISSUED_LATE, null, submitted.submittedAt(),
+                    submitted.issueDueAt(), submitted.deliveredOn(), submitted.issueDate()));
+        }
+        return submitted;
     }
 
     /**
@@ -190,8 +247,16 @@ class EInvoiceIssuanceSteps {
         if (deliveryFailed) {
             events.publishEvent(new DeliveryFailedInvoiceAnswered(refused.id()));
         }
+        if (letGoWithoutTheProvidersWord(refused)) {
+            // BE-07 (Q-5): the provider never confirmed that this transaction holds nothing. Its next attempt is a new
+            // transaction, so the old one is asked about daily for a while: issued after all, it is a second invoice.
+            invoices.watchTransaction(refused.id(), refused.transactionId(), refused.provider(),
+                    refused.rejectionCode(), clock.instant().plus(properties.withdrawWatchFor()));
+        }
         if (EInvoice.UNKNOWN_TO_PROVIDER_CODE.equals(refused.rejectionCode())
-                || EInvoice.WITHDRAWN_CODE.equals(refused.rejectionCode())) {
+                || EInvoice.WITHDRAWN_CODE.equals(refused.rejectionCode())
+                || EInvoice.WITHDRAWN_RESULT_UNCONFIRMED_CODE.equals(refused.rejectionCode())
+                || EInvoice.REFUSED_BY_TAX_AUTHORITY_CODE.equals(refused.rejectionCode())) {
             return;
         }
         Optional<EInvoiceProvider.AccountProblem> account = providers.find(refused.provider())
@@ -208,6 +273,19 @@ class EInvoiceIssuanceSteps {
         events.publishEvent(new EInvoiceNeedsAttention(refused.id(), refused.code(), refused.orderId(),
                 refused.orderNumber(), EInvoiceNeedsAttention.Cause.REJECTED, refused.rejectionCode(),
                 refused.submittedAt(), refused.issueDueAt()));
+    }
+
+    /**
+     * Whether a refusal was recorded without the provider's look-up standing behind it (WF-05 BE-07, Q-5): a withdrawal
+     * - the provider had no record, or its support wrote that the result cannot be confirmed - an accountant's record of
+     * the tax authority's refusal from the portal, or a refusal read from the provider's processing report alone
+     * ({@link EInvoiceProvider#refusalUnconfirmedByLookup}).
+     */
+    private boolean letGoWithoutTheProvidersWord(EInvoice.Snapshot refused) {
+        String code = refused.rejectionCode();
+        return EInvoice.WITHDRAWN_CODE.equals(code) || EInvoice.WITHDRAWN_RESULT_UNCONFIRMED_CODE.equals(code)
+                || EInvoice.REFUSED_BY_TAX_AUTHORITY_CODE.equals(code)
+                || providers.find(refused.provider()).map(p -> p.refusalUnconfirmedByLookup(code)).orElse(false);
     }
 
     /**
@@ -244,35 +322,72 @@ class EInvoiceIssuanceSteps {
      * ({@link EInvoiceRepository#markDeliveryFailed}; WF-05 HĐ-3) exists in law from here and invoices goods nobody
      * received: it is handed on, in this transaction, to be reduced in full ({@link DeliveryFailedInvoiceAnswered}).</p>
      *
+     * <p><b>Under the series it was sent under, or not at all</b> (WF-05 BE-30). The provider says which series it
+     * numbered the invoice under (SePay's look-up: {@code invoice_series}); one that names another symbol is not
+     * recorded - the stored reference would be wrong, and the number could collide with ours under the symbol the
+     * system thinks it has. It stays SUBMITTING and the accountants are told once per submission
+     * ({@link EInvoiceNeedsAttention.Cause#SERIES_MISMATCH}): the series declared here differs from the provider's.</p>
+     *
+     * <p>Both files are stored before either is locked (BE-57): a storing that fails rolls back and the stored copies
+     * are deleted with it; only a lock that fails half way leaves a locked copy behind, which the retry cannot reuse.</p>
+     *
      * @throws com.stockflow.common.storage.StorageException when a file cannot be stored or locked
      */
     @Transactional
     public void issued(UUID id, String transactionId, EInvoiceProvider.Result result,
                        EInvoiceProvider.Documents documents) {
         EInvoice unlocked = invoices.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_FOUND));
-        java.util.List<EInvoice> corrected = new java.util.ArrayList<>();
-        if (unlocked.originalEInvoiceId() != null) {
-            java.util.TreeSet<UUID> ids = new java.util.TreeSet<>(unlocked.listedInvoiceIds());
-            ids.add(unlocked.originalEInvoiceId());
-            for (UUID correctedId : ids) {
-                corrected.add(invoices.findByIdForUpdate(correctedId).orElseThrow());
-            }
-        }
+        List<EInvoice> corrected = lockCorrected(unlocked);
         EInvoice invoice = waitingFor(id, transactionId);
         if (invoice == null) {
             return;
         }
-        for (EInvoice target : corrected) {
-            if (invoice.type() == EInvoiceType.REPLACEMENT) {
-                target.replaced();
-            } else if (!target.adjusted()) {
-                target.markAdjusted();
-            } else {
-                continue;
-            }
-            invoices.save(target);
+        if (result.symbol() != null && !result.symbol().equals(invoice.symbol()) && takesProviderSeries(invoice)) {
+            // BE-30: a correction the provider numbered under a series it chose (SePay picks it, sandbox T-4).
+            invoice.numberedUnder(result.symbol());
         }
-        String name = "%s%s-%08d".formatted(invoice.templateCode(), invoice.symbol(), result.invoiceNumber());
+        if (result.symbol() != null && !result.symbol().equals(invoice.symbol())) {
+            if (invoices.markSeriesMismatchAnnounced(id, transactionId, clock.instant())) {
+                EInvoice.Snapshot waiting = invoice.snapshot();
+                events.publishEvent(new EInvoiceNeedsAttention(waiting.id(), waiting.code(), waiting.orderId(),
+                        waiting.orderNumber(), EInvoiceNeedsAttention.Cause.SERIES_MISMATCH, result.symbol(),
+                        waiting.submittedAt(), waiting.issueDueAt()));
+            }
+            return;
+        }
+        markCorrected(invoice, corrected);
+        StoredFile[] stored = storeAndRetain(invoice, result.invoiceNumber(), documents);
+        invoice.issued(result.invoiceNumber(), result.taxAuthorityCode(), result.lookupCode(), result.signedAt(),
+                stored[0].key(), stored[1].key(), clock.instant());
+        boolean signed = providers.find(invoice.provider()).map(EInvoiceProvider::signsDocuments).orElse(false);
+        if (signed && InvoiceXmlSignature.check(documents.xml()).invalid()) {
+            invoice.signatureInvalid();
+        }
+        EInvoice.Snapshot issued = invoices.save(invoice).snapshot();
+        announceIssued(issued);
+    }
+
+    /** Whether the invoice is a correction whose provider numbers corrections under a series it chooses (BE-30). */
+    boolean takesProviderSeries(EInvoice invoice) {
+        return takesProviderSeries(invoice.type(), invoice.provider());
+    }
+
+    /** As {@link #takesProviderSeries(EInvoice)} for a snapshot. */
+    boolean takesProviderSeries(EInvoice.Snapshot invoice) {
+        return takesProviderSeries(invoice.type(), invoice.provider());
+    }
+
+    private boolean takesProviderSeries(com.stockflow.invoicing.internal.domain.EInvoiceType type, String provider) {
+        return type != com.stockflow.invoicing.internal.domain.EInvoiceType.ORIGINAL && provider != null
+                && providers.find(provider).map(EInvoiceProvider::picksCorrectionSeries).orElse(false);
+    }
+
+    /**
+     * The XML and the PDF stored under the invoice's number, then locked for ten years with the agreement, if any. All
+     * stored before any is locked (BE-57).
+     */
+    private StoredFile[] storeAndRetain(EInvoice invoice, int number, EInvoiceProvider.Documents documents) {
+        String name = "%s%s-%08d".formatted(invoice.templateCode(), invoice.symbol(), number);
         StoredFile xml = store(name + ".xml", "application/xml", documents.xml());
         StoredFile pdf = store(name + ".pdf", "application/pdf", documents.pdf());
         files.retainNow(xml.key(), RecordRetention.EINVOICE);
@@ -280,14 +395,12 @@ class EInvoiceIssuanceSteps {
         if (invoice.agreementFileKey() != null) {
             files.retainNow(invoice.agreementFileKey(), RecordRetention.EINVOICE);
         }
-        invoice.issued(result.invoiceNumber(), result.taxAuthorityCode(), result.lookupCode(), result.signedAt(),
-                xml.key(), pdf.key(), clock.instant());
-        boolean signed = providers.find(invoice.provider()).map(EInvoiceProvider::signsDocuments).orElse(false);
-        if (signed && !InvoiceXmlSignature.check(documents.xml()).valid()) {
-            invoice.signatureInvalid();
-        }
-        EInvoice.Snapshot issued = invoices.save(invoice).snapshot();
-        if (invoices.deliveryFailed(id)) {
+        return new StoredFile[] {xml, pdf};
+    }
+
+    /** What issuing tells, in the transaction that issued it. */
+    private void announceIssued(EInvoice.Snapshot issued) {
+        if (invoices.deliveryFailed(issued.id())) {
             events.publishEvent(new DeliveryFailedInvoiceAnswered(issued.id()));
         }
         if (issued.warnings().contains(EInvoice.Warning.SIGNATURE_INVALID)) {
@@ -298,6 +411,137 @@ class EInvoiceIssuanceSteps {
         }
         events.publishEvent(new EInvoiceIssued(issued.id(), issued.code(), issued.orderId(), issued.orderNumber(),
                 issued.shipmentId(), issued.customerId(), issued.issuedAt()));
+    }
+
+    /**
+     * Records an invoice stuck at the provider as issued from what the provider's portal shows (WF-05 BE-08, decision
+     * Q-8; {@link EInvoiceIssuance#recordPortalResult}): SUBMITTING → ISSUED with the number, codes and files the
+     * accountant gives, {@code issued_via} PORTAL_RECORD, the corrected invoice marked as {@link #issued} marks it.
+     * The caller has checked them against a fresh look-up and the XML itself, outside this transaction; here the
+     * invoice must still wait for {@code transactionId} - a provider's answer that came in meanwhile wins.
+     *
+     * @return false when it no longer waits for that transaction
+     */
+    @Transactional
+    public boolean issuedFromPortal(UUID id, String transactionId, EInvoiceProvider.Result result,
+                                    EInvoiceProvider.Documents documents, UUID by) {
+        EInvoice unlocked = invoices.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_FOUND));
+        java.util.List<EInvoice> corrected = lockCorrected(unlocked);
+        EInvoice invoice = waitingFor(id, transactionId);
+        if (invoice == null) {
+            return false;
+        }
+        if (result.symbol() != null && !result.symbol().equals(invoice.symbol())) {
+            // The caller checked it against the provider's look-up and the XML: only a correction under a provider that
+            // chooses its series itself gets here with another symbol (BE-30).
+            invoice.numberedUnder(result.symbol());
+        }
+        markCorrected(invoice, corrected);
+        StoredFile[] stored = storeAndRetain(invoice, result.invoiceNumber(), documents);
+        invoice.issuedFromPortal(result.invoiceNumber(), result.taxAuthorityCode(), result.lookupCode(),
+                result.signedAt(), stored[0].key(), stored[1].key(), by, clock.instant());
+        if (InvoiceXmlSignature.check(documents.xml()).invalid()) {
+            invoice.signatureInvalid();
+        }
+        EInvoice.Snapshot issued = invoices.save(invoice).snapshot();
+        announceIssued(issued);
+        return true;
+    }
+
+    /**
+     * Records a reduction the accountant made on the provider's portal (WF-05 BE-10, Q-9; decision Q-8): drawn up as a
+     * draft marked PORTAL_RECORD, submitted under the series the portal gave it and recorded issued with its files, in
+     * this one transaction - it is never sent anywhere, and no job ever finds it waiting. A reduction of a failed
+     * delivery marks the invoice it reduces reversed, as the system's own reduction does (when it is not already).
+     */
+    @Transactional
+    public EInvoice.Snapshot recordExternalReduction(EInvoice reduction, InvoiceSeries series, int number,
+                                                     String taxAuthorityCode, String lookupCode, Instant signedAt,
+                                                     EInvoiceProvider.Documents documents, UUID by) {
+        EInvoice original = invoices.findByIdForUpdate(reduction.originalEInvoiceId()).orElseThrow();
+        EInvoice draft = invoices.save(reduction);
+        draft.submit(series, by, clock.instant());
+        draft = invoices.save(draft);
+        if (!original.adjusted()) {
+            original.markAdjusted();
+            invoices.save(original);
+        }
+        StoredFile[] stored = storeAndRetain(draft, number, documents);
+        draft.issuedFromPortal(number, taxAuthorityCode, lookupCode, signedAt, stored[0].key(), stored[1].key(), by,
+                clock.instant());
+        if (InvoiceXmlSignature.check(documents.xml()).invalid()) {
+            draft.signatureInvalid();
+        }
+        EInvoice.Snapshot recorded = invoices.save(draft).snapshot();
+        if (reduction.correctionBasis() == com.stockflow.invoicing.internal.domain.CorrectionBasis.DELIVERY_FAILED
+                && original.reversedAt() == null) {
+            invoices.markReversed(original.id(), clock.instant());
+        }
+        announceIssued(recorded);
+        return recorded;
+    }
+
+    /**
+     * What the provider holds under a transaction let go and watched (WF-05 BE-07): issued after all. Recorded on the
+     * watch - the number, series and tax authority's code - and the accountants told once
+     * ({@link EInvoiceNeedsAttention.Cause#DUPLICATE_RISK}): the invoice may stand twice for one delivery, and only they
+     * can settle it with the provider.
+     */
+    @Transactional
+    public boolean watchedTransactionIssued(UUID id, String transactionId, EInvoiceProvider.Result result) {
+        if (!invoices.markWatchFound(id, transactionId, clock.instant(), result.invoiceNumber(), result.templateCode(),
+                result.symbol(), result.taxAuthorityCode())) {
+            return false;
+        }
+        EInvoice.Snapshot invoice = invoices.findById(id).orElseThrow().snapshot();
+        events.publishEvent(new EInvoiceNeedsAttention(invoice.id(), invoice.code(), invoice.orderId(),
+                invoice.orderNumber(), EInvoiceNeedsAttention.Cause.DUPLICATE_RISK, transactionId,
+                invoice.submittedAt(), invoice.issueDueAt()));
+        return true;
+    }
+
+    /**
+     * Up to {@code limit} transactions let go and still watched, not asked about for most of a day (BE-07): asked at
+     * most once a day each, whichever instance runs the job.
+     */
+    @Transactional(readOnly = true)
+    public List<EInvoiceRepository.WatchedTransaction> watchedToAsk(int limit) {
+        Instant now = clock.instant();
+        return invoices.findWatchedToAsk(now, now.minus(WATCH_ASKED_EVERY), limit);
+    }
+
+    /** How often a let-go transaction is asked about again: daily, give or take the job's own run. */
+    static final Duration WATCH_ASKED_EVERY = Duration.ofHours(20);
+
+    /** A watched transaction was asked about now, and is not issued. */
+    @Transactional
+    public void watchedTransactionAsked(UUID id, String transactionId) {
+        invoices.markWatchAsked(id, transactionId, clock.instant());
+    }
+
+    private java.util.List<EInvoice> lockCorrected(EInvoice unlocked) {
+        java.util.List<EInvoice> corrected = new java.util.ArrayList<>();
+        if (unlocked.originalEInvoiceId() != null) {
+            java.util.TreeSet<UUID> ids = new java.util.TreeSet<>(unlocked.listedInvoiceIds());
+            ids.add(unlocked.originalEInvoiceId());
+            for (UUID correctedId : ids) {
+                corrected.add(invoices.findByIdForUpdate(correctedId).orElseThrow());
+            }
+        }
+        return corrected;
+    }
+
+    private void markCorrected(EInvoice invoice, java.util.List<EInvoice> corrected) {
+        for (EInvoice target : corrected) {
+            if (invoice.type() == EInvoiceType.REPLACEMENT) {
+                target.replaced();
+            } else if (!target.adjusted()) {
+                target.markAdjusted();
+            } else {
+                continue;
+            }
+            invoices.save(target);
+        }
     }
 
     /**

@@ -25,7 +25,7 @@ import java.util.ResourceBundle;
  * corrected to a failure after it went to the provider and needs a decrease adjustment (kltn-docs 21 §4.5; plan
  * §1.4 "Bị từ chối hoặc lỗi thì báo kế toán"), or was issued with a seller's signature that does not hold and was not
  * sent to the buyer (HĐ-8). Without it a refusal is seen only by whoever happens to open the list,
- * while the invoice's deadline - the working day after its date - keeps running. An in-app message, as the deadline
+ * while the invoice's deadline - the end of its date (WF-05 Q-1) - keeps running. An in-app message, as the deadline
  * warning is ({@link EInvoiceDueNotificationListener}); nothing by e-mail.
  *
  * <p>Who is told is decided by permission: the holders of {@link EInvoiceDueNotificationListener#AUDIENCE}. One message
