@@ -27,11 +27,33 @@ import java.util.UUID;
  *                          first, the return or the closure. Otherwise the closure waives nothing and the fee stays
  *                          owed (D30, D32). {@link SettleShipmentReturnCommand.ShippingFee#NONE} for an order without a
  *                          shipping fee line; never null
+ * @param deliveringBatches the batches among those with nothing handed over that still have goods to hand over after
+ *                          this closure - labelled cartons it keeps (WF4-CLOSE-REST); empty for none. Every other
+ *                          batch with nothing handed over is closed whole, and what its installment before delivery
+ *                          still owes above the goods closed - its share of the fee lines - is carried onto the
+ *                          closure's fee item, due from the closure's day (audit r3 LM-3): that installment's milestone
+ *                          and its gate never come. Null when not known: nothing is carried, as before
  */
 public record SettleRemainderClosureCommand(UUID orderId, UUID closureId, BigDecimal closedAmount,
                                             BigDecimal feeAmount, String feeReason, String feeDetail, UUID closedBy,
                                             Instant closedAt, Set<UUID> handedOverBatches,
-                                            SettleShipmentReturnCommand.ShippingFee shippingFee) {
+                                            SettleShipmentReturnCommand.ShippingFee shippingFee,
+                                            Set<UUID> deliveringBatches) {
+
+    /**
+     * Without the batches still delivering: nothing carried onto the fee item.
+     *
+     * @deprecated audit r3 LM-3: pass {@code deliveringBatches}; this form leaves what an installment before delivery of
+     *             a batch closed whole still owes on it, with no milestone and no due day
+     */
+    @Deprecated
+    public SettleRemainderClosureCommand(UUID orderId, UUID closureId, BigDecimal closedAmount, BigDecimal feeAmount,
+                                         String feeReason, String feeDetail, UUID closedBy, Instant closedAt,
+                                         Set<UUID> handedOverBatches,
+                                         SettleShipmentReturnCommand.ShippingFee shippingFee) {
+        this(orderId, closureId, closedAmount, feeAmount, feeReason, feeDetail, closedBy, closedAt, handedOverBatches,
+                shippingFee, null);
+    }
 
     /**
      * Without knowing which batches left - the latest installments first - nor the shipping fee: nothing waived.
@@ -67,5 +89,6 @@ public record SettleRemainderClosureCommand(UUID orderId, UUID closureId, BigDec
         Objects.requireNonNull(closedAt, "closedAt");
         Objects.requireNonNull(shippingFee, "shippingFee (ShippingFee.NONE for an order without one)");
         handedOverBatches = handedOverBatches == null ? null : Set.copyOf(handedOverBatches);
+        deliveringBatches = deliveringBatches == null ? null : Set.copyOf(deliveringBatches);
     }
 }

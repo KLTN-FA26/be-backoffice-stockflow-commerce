@@ -279,6 +279,11 @@ public class PaymentReceiptService {
      *       cancellation or a closure that left money to refund was worked out on after the receipt was recorded -
      *       taking that money back would leave the refund wrong. A fee item's money is the fee's alone - no settlement
      *       counted it - so a receipt recorded wrong against one is voided whatever its order became.</li>
+     *   <li>{@code PAYMENT_RECEIPT_VOID_NOT_ALLOWED} too (audit r3 LM-3): it paid an installment before delivery of a
+     *       batch a closure of the rest closed, before that closure ({@link #closedBatchSettled}). The closure took what
+     *       it still owed off it - onto its fee item, or as the goods closed - and its batch will never be released or
+     *       handed over: the money taken back would be owed on an installment with no milestone and no due day, the
+     *       debt LM-3 is about, reached by a void instead of a closure.</li>
      *   <li>{@code PAYMENT_RECEIPT_VOID_AFTER_HANDOVER} (Q-20, BE-33): it paid an installment on signing, or before
      *       delivery, and the goods that money let go were handed over to a carrier ({@link #letGoodsGo}).</li>
      * </ul>
@@ -300,8 +305,10 @@ public class PaymentReceiptService {
         // 4B-9 (section 4.4 step 13): a cancellation, or a closure that left money to refund, worked the refund out
         // from what had been paid by then. A receipt recorded after the last such settlement was counted by none.
         // tg_payment_receipt_void says it again.
+        Map<UUID, List<OrderSettlement>> settledOf = new HashMap<>();
+        ofInstallments.keySet().forEach(orderId -> settledOf.put(orderId, settlements.ofOrder(orderId)));
         Set<UUID> settledOnPaid = new java.util.HashSet<>();
-        ofInstallments.keySet().forEach(orderId -> settlements.ofOrder(orderId).stream()
+        settledOf.forEach((orderId, ofOrder) -> ofOrder.stream()
                 .filter(s -> s.kind() == OrderSettlement.Kind.ORDER_CANCELLED || s.surplus().signum() > 0)
                 .map(OrderSettlement::settledAt).max(Instant::compareTo)
                 .filter(last -> !receipt.recordedAt().isAfter(last))
@@ -321,7 +328,16 @@ public class PaymentReceiptService {
                                 receipt.reference(), order.orderNumber(), order.status()))
                         .localized("refusal.payment.voidSettled", receipt.reference(), order.orderNumber()));
             }
-            if (letGoodsGo(installment, handedOver.computeIfAbsent(installment.orderId(), orders::handedOverGoods))) {
+            HandedOverGoods left = handedOver.computeIfAbsent(installment.orderId(), orders::handedOverGoods);
+            if (closedBatchSettled(installment, left, settledOf.getOrDefault(installment.orderId(), List.of()),
+                    receipt.recordedAt())) {
+                return java.util.Optional.of(new BusinessException(ErrorCode.PAYMENT_RECEIPT_VOID_NOT_ALLOWED,
+                        ("Receipt %s paid installment %d of contract %s before delivery of a batch the rest's closure "
+                                + "closed: its money is settled with the order").formatted(receipt.reference(),
+                                installment.seq(), installment.contractNumber()))
+                        .localized("refusal.payment.voidSettled", receipt.reference(), order.orderNumber()));
+            }
+            if (letGoodsGo(installment, left)) {
                 return java.util.Optional.of(new BusinessException(ErrorCode.PAYMENT_RECEIPT_VOID_AFTER_HANDOVER,
                         ("Receipt %s paid installment %d (%s) of contract %s, and the goods it let go were handed over "
                                 + "to a carrier").formatted(receipt.reference(), installment.seq(),
@@ -362,6 +378,24 @@ public class PaymentReceiptService {
                     : handedOver.batchIds().contains(installment.deliveryBatchId());
             case AFTER_DELIVERY, CANCELLATION_FEE, FAILED_TRIP_FEE -> false;
         };
+    }
+
+    /**
+     * Audit r3 LM-3: whether {@code installment} is one before delivery, tied to a batch none of whose goods left, that a
+     * closure of the rest recorded after {@code recordedAt} lowered - for the goods it closed, or by carrying what it
+     * still owed onto its fee item - and left owing nothing. That batch was closed: it is released and handed over never,
+     * so an installment owing again on it would have no milestone, no due day and no gate. One the closure left owing
+     * is a batch whose labelled cartons it kept: it still gates their handover (BR-08), and a void there is Q-20's to
+     * decide once they leave. {@code tg_payment_receipt_void} says it again.
+     */
+    static boolean closedBatchSettled(Installment installment, HandedOverGoods handedOver,
+                                      List<OrderSettlement> ofOrder, Instant recordedAt) {
+        return installment.milestone() == InstallmentMilestone.BEFORE_DELIVERY && installment.deliveryBatchId() != null
+                && installment.outstanding().signum() == 0
+                && !handedOver.batchIds().contains(installment.deliveryBatchId())
+                && ofOrder.stream().anyMatch(s -> s.kind() == OrderSettlement.Kind.REMAINDER_CLOSED
+                        && !recordedAt.isAfter(s.settledAt())
+                        && s.reductions().stream().anyMatch(r -> r.installmentId().equals(installment.id())));
     }
 
     private static boolean paidOnSigning(UUID orderId, Map<UUID, Installment> installments) {

@@ -1238,13 +1238,19 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         // WF-05 Q-19 edge (owner 23/11): a closure that ends, after a carrier return, an order with nothing delivered
         // waives what the shipments brought back left of the shipping fee (shippingFeeOf, read after the closure).
         // The order is written first: payment's trigger reads its shipments (tg_order_settlement_shipping_waiver).
+        // Audit r3 LM-3: the batches still delivering are named too - only the one in flight, and only when labelled
+        // cartons of it stay on the order (everything else still wanted was closed just now) - so payment carries what
+        // the installments before delivery of the batches closed whole still owe onto the closure's fee item.
         BigDecimal waived = BigDecimal.ZERO;
         if (order.paidByContract() && closed.signum() > 0) {
             repository.save(order);
+            java.util.Set<UUID> delivering = order.outstandingUnits() == 0 ? java.util.Set.of()
+                    : batches.inFlight(order).map(com.stockflow.order.internal.domain.BatchInFlight::batchId)
+                            .map(java.util.Set::of).orElse(java.util.Set.of());
             waived = paymentService.settleRemainderClosure(new com.stockflow.payment.api.SettleRemainderClosureCommand(
                     orderId, order.lastClosureId(), closed, fee == null ? null : fee.amount(),
                     fee == null ? null : fee.reason(), fee == null ? null : fee.detail(), by, now,
-                    HandedOverBatches.of(order), shippingFeeOf(order)))
+                    HandedOverBatches.of(order), shippingFeeOf(order), delivering))
                     .map(com.stockflow.payment.api.OrderSettlementResult::shippingFeeWaived)
                     .orElse(BigDecimal.ZERO);
         }

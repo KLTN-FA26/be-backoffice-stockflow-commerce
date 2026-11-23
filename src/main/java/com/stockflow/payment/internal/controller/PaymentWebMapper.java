@@ -104,7 +104,7 @@ final class PaymentWebMapper {
                             s.kind().name(), s.collected(), s.closed(), s.reduced(), s.surplus(), s.fee(),
                             terms.percent(), forCustomer ? null : terms.reason(), forCustomer ? null : terms.detail(),
                             s.feeCovered(), s.refundable(), s.feeOwed(), s.feeItemId(), s.settledAt(), s.shipmentId(),
-                            s.shippingFeeWaived());
+                            s.shippingFeeWaived(), s.carriedToFee());
                 }).toList(), d.records().stream()
                 .filter(r -> !forCustomer
                         || r.status() == com.stockflow.payment.internal.domain.RefundRecord.Status.RECORDED)
