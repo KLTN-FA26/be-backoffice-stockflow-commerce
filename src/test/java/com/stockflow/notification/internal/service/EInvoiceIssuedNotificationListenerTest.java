@@ -128,8 +128,37 @@ class EInvoiceIssuedNotificationListenerTest {
         assertThat(sent.title()).contains("SO-20261101-0007");
         assertThat(sent.body()).contains("EINV-20261112-0001", "SO-20261101-0007");
         assertThat(sent.link()).isEqualTo("/customers/" + customer);
+        assertThat(sent.sourceType()).as("audit r2 M-1: Sales send the invoice on from the notice").isEqualTo("EINVOICE");
+        assertThat(sent.sourceId()).isEqualTo(event.einvoiceId().toString());
         assertThat(sent.dedupeKey()).isEqualTo("einvoice-buyer-email-missing:" + event.einvoiceId());
         verify(delivery).deliver(any());
+    }
+
+    @Test
+    @DisplayName("audit r2 M-1 (HĐ-8 step 2): the invoice sent again at staff's request is a new mail, under its own "
+            + "reference per request, addressed as invoicing says now (the e-mail Sales recorded), with its files; the "
+            + "portal is not told again")
+    void anInvoiceSentAgainIsANewMailToTheCurrentAddress() {
+        Instant asked = Instant.parse("2026-11-13T02:00:00Z");
+        com.stockflow.contracts.EInvoiceMailRequested again = new com.stockflow.contracts.EInvoiceMailRequested(
+                event.einvoiceId(), event.code(), event.orderId(), event.orderNumber(), customer, asked,
+                UUID.randomUUID());
+        when(einvoices.mailAgain(event.einvoiceId())).thenReturn(Optional.of(mailTo("moi@trasua.example.com")));
+
+        listener.on(again);
+
+        var mail = ArgumentCaptor.forClass(CustomerMessage.class);
+        verify(delivery).deliver(mail.capture());
+        CustomerMessage sent = mail.getValue();
+        assertThat(sent.reference()).isEqualTo("customer-mail:einvoice.resent:" + event.einvoiceId() + ":"
+                + asked.getEpochSecond());
+        assertThat(sent.reference()).as("never the first mail's, which stays settled")
+                .isNotEqualTo("customer-mail:einvoice.issued:" + event.einvoiceId());
+        assertThat(sent.recipient().resolve()).hasValueSatisfying(contact ->
+                assertThat(contact.email()).isEqualTo("moi@trasua.example.com"));
+        assertThat(sent.attachments()).isNotNull();
+        verify(einvoices, never()).mail(any());
+        verify(inbox, never()).post(any(), any());
     }
 
     @Test

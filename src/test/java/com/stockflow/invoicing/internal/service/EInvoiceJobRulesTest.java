@@ -128,6 +128,72 @@ class EInvoiceJobRulesTest {
     }
 
     @Test
+    @DisplayName("audit r2 M-2: a draft held back for its warnings is announced at once, AUTO_ISSUE_HELD with the "
+            + "warnings as the reason - once per reason, and never for an invoice that is no longer a draft")
+    void aHeldDraftIsAnnouncedOncePerReason() {
+        EInvoice draft = EInvoiceFixtures.draft();
+        when(invoices.findById(draft.id())).thenReturn(Optional.of(draft));
+        when(invoices.markHeldForWarnings(eq(draft.id()), any()))
+                .thenReturn(Optional.of("TAX_CLASS_UNKNOWN"), Optional.empty());
+
+        Optional<EInvoiceNeedsAttention> told = queues(EInvoiceFixtures.NOW).announceHeld(draft.id(), null);
+        assertThat(told).hasValueSatisfying(event -> {
+            assertThat(event.cause()).isEqualTo(EInvoiceNeedsAttention.Cause.AUTO_ISSUE_HELD);
+            assertThat(event.rejectionCode()).isEqualTo("TAX_CLASS_UNKNOWN");
+            assertThat(event.issueDueAt()).isEqualTo(draft.snapshot().issueDueAt());
+            assertThat(event.submittedAt()).isNull();
+        });
+        assertThat(queues(EInvoiceFixtures.NOW).announceHeld(draft.id(), null)).as("once").isEmpty();
+
+        when(invoices.markHeldAnnounced(draft.id(), "EINVOICE_SERIES_NOT_CONFIGURED", EInvoiceFixtures.NOW))
+                .thenReturn(true, false);
+        assertThat(queues(EInvoiceFixtures.NOW).announceHeld(draft.id(), "EINVOICE_SERIES_NOT_CONFIGURED"))
+                .as("a new reason is told").isPresent();
+        assertThat(queues(EInvoiceFixtures.NOW).announceHeld(draft.id(), "EINVOICE_SERIES_NOT_CONFIGURED"))
+                .isEmpty();
+
+        EInvoice sent = EInvoiceFixtures.in(EInvoiceStatus.SUBMITTING);
+        when(invoices.findById(sent.id())).thenReturn(Optional.of(sent));
+        assertThat(queues(EInvoiceFixtures.NOW).announceHeld(sent.id(), "EINVOICE_SERIES_NOT_CONFIGURED")).isEmpty();
+        verify(invoices, never()).markHeldAnnounced(eq(sent.id()), any(), any());
+        verify(events, times(2)).publishEvent(any(EInvoiceNeedsAttention.class));
+    }
+
+    @Test
+    @DisplayName("audit r2 M-2: the automatic issuing refused for a draft's own reason tells the accountant at once; a "
+            + "passing refusal (a concurrent change, the provider down) or a used-up plan is not told per draft")
+    void anAutomaticIssueRefusedIsAnnounced() {
+        EInvoiceWorkQueues queues = mock(EInvoiceWorkQueues.class);
+        EInvoiceIssuance issuance = mock(EInvoiceIssuance.class);
+        EInvoiceDrafts drafts = mock(EInvoiceDrafts.class);
+        EInvoiceQuotaGate gate = mock(EInvoiceQuotaGate.class);
+        UUID noSeries = UUID.randomUUID();
+        UUID raced = UUID.randomUUID();
+        UUID held = UUID.randomUUID();
+        when(queues.autoIssuable(anyInt())).thenReturn(List.of(noSeries, raced));
+        when(queues.activeProvider()).thenReturn("SANDBOX");
+        when(drafts.recheckForAutomaticIssue(any())).thenReturn(true);
+        when(issuance.issue(noSeries, null, null)).thenThrow(new com.stockflow.common.error.BusinessException(
+                com.stockflow.common.error.ErrorCode.EINVOICE_SERIES_NOT_CONFIGURED, "no series"));
+        when(issuance.issue(raced, null, null)).thenThrow(new com.stockflow.common.error.BusinessException(
+                com.stockflow.common.error.ErrorCode.OPTIMISTIC_LOCK, "raced"));
+        when(queues.heldUnannounced(anyInt())).thenReturn(List.of(held));
+        when(queues.announceHeld(any(), any())).thenReturn(Optional.of(mock(EInvoiceNeedsAttention.class)));
+        EInvoiceJobs jobs = new EInvoiceJobs(queues, issuance, mock(EInvoiceQuotaWatch.class), drafts, gate);
+
+        jobs.reconcileAndIssue();
+
+        verify(queues).announceHeld(noSeries, "EINVOICE_SERIES_NOT_CONFIGURED");
+        verify(queues, never()).announceHeld(eq(raced), any());
+        verify(queues).announceHeld(held, null);
+        assertThat(EInvoiceJobs.worthTelling(com.stockflow.common.error.ErrorCode.EINVOICE_QUOTA_EXHAUSTED)).isFalse();
+        assertThat(EInvoiceJobs.worthTelling(com.stockflow.common.error.ErrorCode.EINVOICE_PROVIDER_UNAVAILABLE))
+                .isFalse();
+        assertThat(EInvoiceJobs.worthTelling(com.stockflow.common.error.ErrorCode.EINVOICE_OLDER_DRAFT_PENDING))
+                .isTrue();
+    }
+
+    @Test
     @DisplayName("BE-54: a provider that does not tell its quota, or does not answer, holds nothing back")
     void anUnknownQuotaHoldsNothingBack() {
         EInvoiceProviders providers = mock(EInvoiceProviders.class);

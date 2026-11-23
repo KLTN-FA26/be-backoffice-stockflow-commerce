@@ -306,7 +306,13 @@ public class EInvoiceCorrections {
         }
         if (resolved.shipmentId() != null) {
             Optional<EInvoice> own = invoices.findLiveOriginalOfShipment(resolved.shipmentId());
-            if (own.isEmpty() || own.get().status() != EInvoiceStatus.ISSUED) {
+            // Audit r2 L-1: decided on the row locked, never on the read above. The answer that issues it locks the
+            // same row (EInvoiceIssuanceSteps.issued): either it committed first and is read ISSUED here, or it waits
+            // for this transaction, so the pieces kept below are committed before its EInvoiceIssued is published and
+            // PendingReturnAdjustmentListener finds them. Read unlocked, the two could cross and the pieces stay kept
+            // for an invoice already issued, with nothing ever to take them off.
+            EInvoice invoice = own.isEmpty() ? null : invoices.findByIdForUpdate(own.get().id()).orElse(null);
+            if (invoice == null || !invoice.status().wasIssued()) {
                 // Not issued yet (or not even drawn up): kept, and taken off it once it is (BE-28).
                 Instant now = clock.instant();
                 remaining.forEach((orderLine, pieces) -> invoices.keepPendingReturn(
@@ -315,8 +321,8 @@ public class EInvoiceCorrections {
                         now));
                 return new ReturnAdjustments(List.of(), Map.of(), remaining, Map.of());
             }
-            EInvoice invoice = invoices.findByIdForUpdate(own.get().id()).orElseThrow();
             if (invoice.status() != EInvoiceStatus.ISSUED) {
+                // Replaced meanwhile: the replacement stands for the shipment now - the accountant's.
                 return new ReturnAdjustments(List.of(), Map.copyOf(remaining));
             }
             if (invoice.type() == EInvoiceType.REPLACEMENT) {

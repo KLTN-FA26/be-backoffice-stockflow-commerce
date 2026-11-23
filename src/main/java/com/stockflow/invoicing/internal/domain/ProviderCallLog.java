@@ -60,4 +60,10 @@ public interface ProviderCallLog {
      * says - such a transaction is never taken back.
      */
     boolean providerHeld(UUID einvoiceId, String transactionId);
+
+    /**
+     * The provider's last answer to a look-up of the transaction - what the screen goes by to offer taking the invoice
+     * back (audit r2 H-2) without calling the provider on every read; empty when it was never asked.
+     */
+    Optional<Call> lastQuery(UUID einvoiceId, String transactionId);
 }

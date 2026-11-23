@@ -41,6 +41,23 @@ import java.util.UUID;
  * original invoices; {@code issueDate} is later on one issued late ({@code warnings} has {@code ISSUED_LATE}).
  * {@code voidReasonCode} - why a reduction of a failed delivery was voided ({@code UNSENDABLE_REVERSAL},
  * {@code DELIVERY_CORRECTED_BACK}).</p>
+ *
+ * <p>What the accountant may do now, decided by the rules the actions themselves apply, so a button the screen shows
+ * is one the server accepts (audit r2 H-2, M-10):</p>
+ * <ul>
+ *   <li>{@code withdrawable} - "Rút" ({@code /withdrawal}) would be taken now, judged on the provider's last answer on
+ *       record. False with {@code withdrawalBlockedBy}: {@code NOT_AT_PROVIDER} (not SUBMITTING), {@code PROVIDER_HOLDS}
+ *       (the provider holds it, issued without its number yet or still processing - never withdrawn, decision Q-5:
+ *       "Kiểm tra lại" only), {@code TOO_RECENT} (possible from {@code withdrawableFrom}), {@code
+ *       PROVIDER_STATE_UNCLEAR} (the provider does not say it has no record of it - waited for, or recorded from its
+ *       portal). {@code withdrawalEvidenceRequired}: the provider cannot confirm its result, so the withdrawal needs
+ *       {@code supportReference}, the provider's support's written answer. The withdrawal still asks the provider again
+ *       and may refuse what changed since.</li>
+ *   <li>{@code externalReductionAllowed} - "Ghi hoá đơn giảm" ({@code /external-reductions}) is accepted: {@code
+ *       externalReductionBases} lists {@code DELIVERY_FAILED} when a failed delivery's reduction may be recorded, and
+ *       {@code RETURN} when a return's refunded goods wait on this replacement - {@code externalReductionReturns}
+ *       names each, with the id {@code returnRequestId} takes.</li>
+ * </ul>
  */
 public record EInvoiceResponse(UUID id, String code, String type, String status, boolean adjusted, UUID orderId,
                                String orderNumber, String contractNumber, UUID shipmentId, String shipmentCode,
@@ -56,7 +73,14 @@ public record EInvoiceResponse(UUID id, String code, String type, String status,
                                Agreement agreement, UUID returnRequestId, List<UUID> listedInvoiceIds,
                                String earlierPendingInvoice, Instant deliveryFailedAt, Instant reversedAt,
                                boolean errorNoticeSupported, String issuedVia, LocalDate deliveredOn,
-                               String voidReasonCode) {
+                               String voidReasonCode, boolean withdrawable, String withdrawalBlockedBy,
+                               Instant withdrawableFrom, boolean withdrawalEvidenceRequired,
+                               boolean externalReductionAllowed, List<String> externalReductionBases,
+                               List<ExternalReductionReturn> externalReductionReturns) {
+
+    /** A return whose refunded goods wait on this replacement: {@code returnRequestId} is what the record takes. */
+    public record ExternalReductionReturn(UUID returnRequestId, String rmaNumber) {
+    }
 
     public record Agreement(String number, LocalDate date) {
     }

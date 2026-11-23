@@ -96,6 +96,31 @@ class EInvoiceCorrectionIssueDateTest {
     }
 
     @Test
+    @DisplayName("T-8 (24/11): SePay refused the invoice dated its delivery day because the shared series already has "
+            + "one dated the next day - an ordinary refusal: reopened, it goes out dated today, flagged ISSUED_LATE, "
+            + "under a new transaction, never stuck")
+    void aRefusalForTheSeriesDateOrderIsReissuedDatedToday() {
+        EInvoice invoice = EInvoiceFixtures.draft();
+        invoice.dateForIssue(EInvoiceFixtures.DELIVERED_ON, true);
+        invoice.submit(EInvoiceFixtures.SERIES, null, EInvoiceFixtures.NOW);
+        String first = invoice.snapshot().transactionId();
+        // Look-up "status": "failed", "invoice_number": "0" (debate/sandbox/p8.out), read as SEPAY_INVOICE_FAILED.
+        invoice.rejected("SEPAY_INVOICE_FAILED", "SePay eInvoice shows the invoice as failed");
+        assertThat(invoice.status()).isEqualTo(EInvoiceStatus.REJECTED);
+
+        invoice.reopen();
+        assertThat(invoice.dateForIssue(ISSUED_ON, true)).as("flagged late now").isTrue();
+        invoice.submit(EInvoiceFixtures.SERIES, null, EInvoiceFixtures.NOW);
+
+        EInvoice.Snapshot again = invoice.snapshot();
+        assertThat(again.status()).isEqualTo(EInvoiceStatus.SUBMITTING);
+        assertThat(again.issueDate()).isEqualTo(ISSUED_ON);
+        assertThat(again.deliveredOn()).isEqualTo(EInvoiceFixtures.DELIVERED_ON);
+        assertThat(again.transactionId()).as("a new reference at SePay").isNotEqualTo(first);
+        assertThat(again.warnings()).contains(EInvoice.Warning.ISSUED_LATE);
+    }
+
+    @Test
     @DisplayName("Q-1: an original issued on its delivery day is not late; under a provider that takes a past date it "
             + "keeps the delivery day whenever it is issued")
     void anOriginalOnItsDayIsNotLate() {

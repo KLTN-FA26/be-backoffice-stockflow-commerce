@@ -42,7 +42,17 @@ final class InvoicingWebMapper {
      * @param errorNoticeSupported whether its provider sends a Mẫu 04/SS-HĐĐT notice (F-11)
      */
     static EInvoiceResponse toResponse(EInvoice.Snapshot s, Instant now, String earlierPending,
-                                       boolean errorNoticeSupported) {
+                                       boolean errorNoticeSupported,
+                                       com.stockflow.invoicing.internal.service.WithdrawalRule.Decision withdrawal,
+                                       com.stockflow.invoicing.internal.service.EInvoiceIssuance
+                                               .ExternalReductionOptions external) {
+        List<String> bases = new java.util.ArrayList<>();
+        if (external.deliveryFailed()) {
+            bases.add("DELIVERY_FAILED");
+        }
+        if (!external.returns().isEmpty()) {
+            bases.add("RETURN");
+        }
         List<String> warnings = new java.util.ArrayList<>(s.warnings().stream().sorted().map(Enum::name).toList());
         if (earlierPending != null) {
             warnings.add(EARLIER_INVOICE_PENDING);
@@ -68,7 +78,11 @@ final class InvoicingWebMapper {
                         : new EInvoiceResponse.Agreement(s.agreementNumber(), s.agreementDate()),
                 s.returnRequestId(), s.listedInvoiceIds(), earlierPending, s.deliveryFailedAt(), s.reversedAt(),
                 errorNoticeSupported, s.issuedVia() == null ? null : s.issuedVia().name(), s.deliveredOn(),
-                s.voidReasonCode() == null ? null : s.voidReasonCode().name());
+                s.voidReasonCode() == null ? null : s.voidReasonCode().name(), withdrawal.allowed(),
+                withdrawal.blocked() == null ? null : withdrawal.blocked().name(), withdrawal.from(),
+                withdrawal.evidenceRequired(), external.any(), List.copyOf(bases),
+                external.returns().stream().map(option -> new EInvoiceResponse.ExternalReductionReturn(
+                        option.returnRequestId(), option.rmaNumber())).toList());
     }
 
     static EInvoiceListItemResponse toResponse(EInvoiceQueries.Listing row, Instant now) {

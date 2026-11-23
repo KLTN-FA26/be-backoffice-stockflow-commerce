@@ -58,6 +58,49 @@ class EInvoiceWorkQueues {
         return settings.active().autoIssue() ? invoices.findAutoIssuable(limit) : List.of();
     }
 
+    /**
+     * Drafts the automatic issuing holds back for a warning, whose accountants were not told of it (audit r2 M-2); none
+     * while the automatic issuing is off - every draft waits for the accountant then, and the deadline warning tells.
+     */
+    @Transactional(readOnly = true)
+    public List<UUID> heldUnannounced(int limit) {
+        return settings.active().autoIssue() ? invoices.findHeldUnannounced(limit) : List.of();
+    }
+
+    /**
+     * Tells the accountants at once that the automatic issuing holds a draft back (audit r2 M-2; kltn-docs 21 §4.2
+     * step 3 "báo Kế toán ngay"; decision §1.5 step 5: the word must reach them the same day, or the warning itself
+     * makes the invoice late). Before, the first word was the deadline warning at 20:00. {@code refusal} null: held for
+     * the warnings it carries now ({@code TAX_CLASS_UNKNOWN} ...); otherwise the error code the automatic issuing was
+     * refused for. The note and the event are written in one transaction, once per draft and reason
+     * ({@link EInvoiceRepository#markHeldForWarnings}, {@link EInvoiceRepository#markHeldAnnounced}), so the
+     * 30-second job tells nobody twice; the deadline warning and the overdue reminders still follow.
+     *
+     * @return the announcement, or empty when it is no longer a draft the automatic issuing takes, or was told already
+     */
+    @Transactional
+    public Optional<EInvoiceNeedsAttention> announceHeld(UUID id, String refusal) {
+        Optional<EInvoice> found = invoices.findById(id);
+        if (found.isEmpty()) {
+            return Optional.empty();
+        }
+        EInvoice.Snapshot draft = found.get().snapshot();
+        if (draft.status() != EInvoiceStatus.DRAFT) {
+            return Optional.empty();
+        }
+        Instant now = clock.instant();
+        Optional<String> reason = refusal == null ? invoices.markHeldForWarnings(id, now)
+                : invoices.markHeldAnnounced(id, refusal, now) ? Optional.of(refusal) : Optional.empty();
+        if (reason.isEmpty()) {
+            return Optional.empty();
+        }
+        EInvoiceNeedsAttention held = new EInvoiceNeedsAttention(draft.id(), draft.code(), draft.orderId(),
+                draft.orderNumber(), EInvoiceNeedsAttention.Cause.AUTO_ISSUE_HELD, reason.get(), null,
+                draft.issueDueAt());
+        events.publishEvent(held);
+        return Optional.of(held);
+    }
+
     /** Invoices still to issue whose deadline comes within the warning lead, and whose accountant was not told. */
     @Transactional(readOnly = true)
     public List<UUID> dueUnwarned(int limit) {

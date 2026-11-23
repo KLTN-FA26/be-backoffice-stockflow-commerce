@@ -214,6 +214,28 @@ public interface EInvoiceRepository {
      */
     boolean markStuckAnnounced(UUID id, String transactionId, Instant now);
 
+    /**
+     * Up to {@code limit} drafts the automatic issuing would take but for a warning that holds them back - originals,
+     * never sent, whose warnings are more than a missing e-mail ({@link #findAutoIssuable}'s complement) - and whose
+     * accountants were not told of these warnings yet (audit r2 M-2), the earliest dated first.
+     */
+    List<UUID> findHeldUnannounced(int limit);
+
+    /**
+     * Notes that the accountants were told that a draft is held back for the warnings it carries now - the draft read
+     * in the same statement, so the reason noted is exactly the one {@link #findHeldUnannounced} compares.
+     *
+     * @return the warnings noted; empty when the draft is no longer held back, or was told of them before
+     */
+    Optional<String> markHeldForWarnings(UUID id, Instant now);
+
+    /**
+     * Notes that the accountants were told that the automatic issuing was refused for {@code reason} (an error code).
+     *
+     * @return false when that was noted before: a draft is told of one reason once
+     */
+    boolean markHeldAnnounced(UUID id, String reason, Instant now);
+
     /** The next internal invoice code of {@code day}: {@code EINV-yyyyMMdd-nnnn}. */
     String nextCode(java.time.LocalDate day);
 

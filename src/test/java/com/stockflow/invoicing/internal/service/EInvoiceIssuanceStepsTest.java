@@ -28,6 +28,7 @@ import org.springframework.context.ApplicationEventPublisher;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.Optional;
 
@@ -200,6 +201,24 @@ class EInvoiceIssuanceStepsTest {
         order.verify(invoices).findByIdForUpdate(draft.id());
         order.verify(invoices).lockSeries(EInvoiceFixtures.SERIES);
         order.verify(invoices).findEarlierSubmitting(draft.id(), EInvoiceFixtures.SERIES, draft.issueDate());
+    }
+
+    @Test
+    @DisplayName("audit r2 M-4 (HĐ-2): under a provider that takes only today's date (SePay), an invoice stuck at the "
+            + "provider since an earlier day keeps nothing back - the provider dates and numbers it when it issues it")
+    void anEarlierInvoiceStuckAtAProviderThatDatesOnlyTodayKeepsNothingBack() {
+        EInvoice draft = aDraftToSendAtTheSandbox(EInvoiceFixtures.draft());
+        EInvoiceProvider sepay = mock(EInvoiceProvider.class);
+        when(sepay.datesOnlyToday()).thenReturn(true);
+        when(providers.require("SANDBOX")).thenReturn(sepay);
+        LocalDate today = com.stockflow.common.domain.BusinessCalendar.date(EInvoiceFixtures.NOW);
+        when(settings.seriesInUse("SANDBOX", today.getYear())).thenReturn(Optional.of(EInvoiceFixtures.SERIES));
+        when(invoices.findEarlierSubmitting(any(), any(), any())).thenReturn(Optional.of("EINV-20261110-0003"));
+
+        assertThat(steps.submit(draft.id(), null, null).status()).isEqualTo(EInvoiceStatus.SUBMITTING);
+
+        verify(invoices).lockSeries(EInvoiceFixtures.SERIES);
+        verify(invoices, never()).findEarlierSubmitting(any(), any(), any());
     }
 
     @Test

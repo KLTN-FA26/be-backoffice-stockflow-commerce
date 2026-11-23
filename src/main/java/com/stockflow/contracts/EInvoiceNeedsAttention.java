@@ -54,6 +54,12 @@ import java.util.UUID;
  *             {@code deliveredOn} and {@code issueDate} are set.</li>
  *         <li>{@link Cause#REPLACEMENT_NOT_REDUCIBLE} - a delivery invoiced by a replacement failed, and the provider
  *             does not adjust a replacement: no reduction was drawn up (BE-09, Q-9).</li>
+ *         <li>{@link Cause#AUTO_ISSUE_HELD} - audit r2 M-2: a draft original the automatic issuing holds back - a warning
+ *             that needs a person (decision §1.5 step 5), or a refusal the automatic issuing met when it tried. Told at
+ *             once, not at the deadline warning four hours before midnight (kltn-docs 21 §4.2 step 3): the invoice is
+ *             due by the end of its delivery day (Q-1). Once per draft and reason, which {@code rejectionCode} carries -
+ *             the draft's warnings as stored ({@code TAX_CLASS_UNKNOWN}, ...) or the error code
+ *             ({@code EINVOICE_SERIES_NOT_CONFIGURED}, ...); {@code submittedAt} is null.</li>
  *       </ul></li>
  * </ul>
  * For the first three the invoice's deadline - the end of its date (NĐ 254/2026/NĐ-CP Điều 9 khoản 1; WF-05 Q-1) -
@@ -65,7 +71,8 @@ import java.util.UUID;
  * contract.</p>
  *
  * @param code          the invoice's internal code
- * @param rejectionCode the provider's code for the refusal; null for any other cause
+ * @param rejectionCode the provider's code for the refusal; for {@link Cause#AUTO_ISSUE_HELD} the reason it is held;
+ *                      null for any other cause
  * @param submittedAt   when this submission was sent
  * @param issueDueAt    the instant the invoice must have been issued by; never null
  * @param deliveredOn   the delivery day (Asia/Ho_Chi_Minh) for {@link Cause#ISSUED_LATE}; null otherwise and in
@@ -86,6 +93,6 @@ public record EInvoiceNeedsAttention(UUID einvoiceId, String code, UUID orderId,
         REJECTED, STUCK_SUBMITTING, UNKNOWN_TO_PROVIDER, DELIVERY_FAILED_AFTER_SUBMISSION, SIGNATURE_INVALID,
         DELIVERY_FAILED_REVERSAL_DRAWN_UP, DELIVERY_FAILED_AWAITING_PROVIDER,
         DUPLICATE_RISK, PROVIDER_RESULT_OVERDUE, REDUCE_ON_PROVIDER_PORTAL, DELIVERY_FAILED_NOT_REVERSED,
-        SERIES_MISMATCH, ISSUED_LATE, REPLACEMENT_NOT_REDUCIBLE
+        SERIES_MISMATCH, ISSUED_LATE, REPLACEMENT_NOT_REDUCIBLE, AUTO_ISSUE_HELD
     }
 }

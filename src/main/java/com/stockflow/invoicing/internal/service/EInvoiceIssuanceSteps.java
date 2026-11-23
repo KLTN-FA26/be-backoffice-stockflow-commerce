@@ -88,6 +88,16 @@ class EInvoiceIssuanceSteps {
      * overdue for one stuck invoice. The draft's screen still names such an invoice
      * ({@code EInvoiceQueryService.earlierPending}), and the automatic issuing takes drafts earliest dated first.</p>
      *
+     * <p><b>Except under a provider that takes only today's date</b> ({@link EInvoiceProvider#datesOnlyToday()},
+     * SePay; WF-05 audit r2 M-4, decision §3 HĐ-2 "một hoá đơn treo không chặn cả công ty"). There the check protects
+     * nothing: an earlier-dated invoice still at the provider is numbered and dated by the provider on the day it
+     * issues it, and the provider keeps its numbers and dates rising together (sandbox T-1/T-2, 23/11/2026: an original
+     * dated yesterday is refused with ISSUED_DATE_INVALID and creates nothing; two sent the same day got 358902 and
+     * 358903 under C26TSE, both dated that day). And it costs everything: an invoice SePay holds "issued, no number"
+     * (never withdrawn, Q-5), or one whose result it cannot confirm, stays SUBMITTING for days, and every delivery of
+     * the business after it would be refused here - the automatic ones included - and go out late. The same rule the
+     * draft's screen already follows ({@code EInvoiceQueryService.earlierPending}).</p>
+     *
      * <p><b>A correction goes through the provider that issued the invoice it corrects</b> (HĐ-5), whichever provider
      * is in use now: the adjustment or replacement names that invoice in the provider's own terms (SePay: by the
      * reference it was issued under), and the provider in use since a switch has never heard of it - SePay refuses
@@ -200,11 +210,13 @@ class EInvoiceIssuanceSteps {
                         : ErrorCode.EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE, "No series is in use at %s for %d".formatted(
                         at, invoice.issueDate().getYear())));
         invoices.lockSeries(series);
-        invoices.findEarlierSubmitting(invoice.id(), series, invoice.issueDate()).ifPresent(earlier -> {
-            throw new BusinessException(ErrorCode.EINVOICE_OLDER_DRAFT_PENDING, ("%s is dated before %s and is at the "
-                    + "provider under %s%s; wait for its result, or check it again, then issue %s").formatted(earlier,
-                    invoice.code(), series.templateCode(), series.symbol(), invoice.code()));
-        });
+        if (!port.datesOnlyToday()) {
+            invoices.findEarlierSubmitting(invoice.id(), series, invoice.issueDate()).ifPresent(earlier -> {
+                throw new BusinessException(ErrorCode.EINVOICE_OLDER_DRAFT_PENDING, ("%s is dated before %s and is at "
+                        + "the provider under %s%s; wait for its result, or check it again, then issue %s").formatted(
+                        earlier, invoice.code(), series.templateCode(), series.symbol(), invoice.code()));
+            });
+        }
         invoice.submit(series, by, clock.instant());
         EInvoice.Snapshot submitted = invoices.save(invoice).snapshot();
         if (late) {
@@ -403,7 +415,7 @@ class EInvoiceIssuanceSteps {
         if (invoices.deliveryFailed(issued.id())) {
             events.publishEvent(new DeliveryFailedInvoiceAnswered(issued.id()));
         }
-        if (issued.warnings().contains(EInvoice.Warning.SIGNATURE_INVALID)) {
+        if (!issued.sendableToBuyer()) {
             events.publishEvent(new EInvoiceNeedsAttention(issued.id(), issued.code(), issued.orderId(),
                     issued.orderNumber(), EInvoiceNeedsAttention.Cause.SIGNATURE_INVALID, null, issued.submittedAt(),
                     issued.issueDueAt()));

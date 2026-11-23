@@ -200,6 +200,27 @@ class EInvoiceCorrectionsReturnTest {
     }
 
     @Test
+    @DisplayName("audit r2 L-1: the shipment's invoice read at the provider, but issued by the time its lock is held - "
+            + "decided on the locked row: taken off it now, never kept for an EInvoiceIssued already published")
+    void aReturnIsDecidedOnTheLockedInvoice() {
+        UUID order = UUID.randomUUID();
+        UUID line = UUID.randomUUID();
+        EInvoice issuedNow = issued(line, 3);
+        EInvoice readEarlier = EInvoice.drawUpOriginal(issuedNow.id(), issuedNow.code(), EInvoiceFixtures.delivery(),
+                EInvoiceFixtures.SELLER, EInvoiceFixtures.BUYER, issuedNow.lines(), false, false);
+        readEarlier.submit(EInvoiceFixtures.SERIES, null, RESOLVED_AT);
+        when(invoices.findLiveOriginalOfShipment(issuedNow.shipmentId())).thenReturn(Optional.of(readEarlier));
+        ReturnResolved resolved = returnedFrom(order, issuedNow.shipmentId(), List.of(refunded(line, 30)));
+
+        EInvoiceCorrections.ReturnAdjustments placed = corrections.drawUpForReturn(resolved);
+
+        assertThat(placed.drafts()).singleElement()
+                .satisfies(draft -> assertThat(draft.originalEInvoiceId()).isEqualTo(issuedNow.id()));
+        verify(invoices, never()).keepPendingReturn(any(), any());
+        verify(invoices).findByIdForUpdate(issuedNow.id());
+    }
+
+    @Test
     @DisplayName("WF-05 Q-9: the goods are on a replacement, which no provider adjusts - reported for the portal, "
             + "nothing drawn up, the pieces kept for the record of the reduction made on the portal")
     void aReturnOnAReplacementIsReported() {
