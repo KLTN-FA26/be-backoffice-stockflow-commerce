@@ -19,12 +19,14 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * The A4 layout of the documents the system draws as letters - the quote, the sales contract (4B-4), the delivery note
- * and the sandbox e-invoice (WF-05 E2): lines of text flowing down as many pages as they need, each wrapped at the page's
- * width, in the Noto Sans the labels use, which has the Vietnamese glyphs. One layout, so a change of margin or spacing
- * reaches every such document; it lives beside the label primitives because several modules draw with it. A paper
- * people work from - boxes, a table over pages, page numbers: the production order slip (4A-3) - is drawn with
- * {@link FormDocument} instead.
+ * The A4 layout of the documents the system draws as plain lines - the delivery note and the sandbox e-invoice (WF-05
+ * E2): lines of text flowing down as many pages as they need, each wrapped at the page's width, in the Noto Sans the
+ * labels use, which has the Vietnamese glyphs. One layout, so a change of margin or spacing reaches every such
+ * document; it lives beside the label primitives because several modules draw with it. A paper people work from -
+ * boxes, a table over pages, page numbers: the production order slip (4A-3) - is drawn with {@link FormDocument}
+ * instead, and a paper one company sends another to be signed - the quotation, the sales contract - with
+ * {@link com.stockflow.common.document.BusinessDocument}, which sets what such a paper needs and lines of text
+ * cannot: a letterhead, ruled tables of figures, numbered clauses, signature blocks side by side.
  *
  * <p>A document that names a code a scanner reads - the delivery note's shipment code - carries it at the top of its
  * first page as a Code 128 barcode and a QR code, drawn by the label primitives

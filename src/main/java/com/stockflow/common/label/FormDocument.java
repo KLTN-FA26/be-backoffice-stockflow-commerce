@@ -20,8 +20,8 @@ import java.util.List;
  * rather than a letter. Where {@link PrintedDocument} flows lines of text down the page, this lays out blocks: a
  * masthead, a title, a row of key facts in boxes, a boxed party, a table that runs over as many pages as it needs, a
  * list of requirements and a closing note, with "page x / N" on every page. The production order slip (4A-3) is drawn
- * with it; the documents that read as letters - quote, contract, delivery note, sandbox invoice - keep
- * {@link PrintedDocument}.
+ * with it; the delivery note and the sandbox invoice keep {@link PrintedDocument}, and the papers that are signed -
+ * quotation, sales contract - are set by {@link com.stockflow.common.document.BusinessDocument}.
  *
  * <p>Same fonts (Noto Sans, which has the Vietnamese glyphs) and the same code drawing as every label and document, so
  * the scanners tuned on labels read the code here too: a QR in the masthead and a Code 128 barcode under the title, on

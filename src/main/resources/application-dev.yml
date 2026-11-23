@@ -97,19 +97,29 @@ logging:
 
 stockflow:
   payment:
-    # Obviously not a real account (SCRUM-193): demo values so the transfer instructions render here.
+    # A fictional account (SCRUM-193) - the demo seller's, as its contracts name it - so the transfer instructions render here.
     company-bank:
-      bank-name: ${COMPANY_BANK_NAME:DEMO BANK (not a real bank)}
-      account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:0000000000}
-      account-name: ${COMPANY_BANK_ACCOUNT_NAME:DEMO STOCKFLOW CO LTD}
-      bank-bin: ${COMPANY_BANK_BIN:970000}   # not a bank's BIN: the demo VietQR code names no real bank
-  # Obviously not a real company (4B-4, WF-05 E1): demo values so a contract and an invoice can be drawn up here.
+      bank-name: ${COMPANY_BANK_NAME:Ngân hàng TMCP Ngoại thương Việt Nam (Vietcombank)}
+      account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:0071001234567}
+      account-name: ${COMPANY_BANK_ACCOUNT_NAME:CONG TY TNHH SAN XUAT BAO BI AN PHAT}
+      bank-bin: ${COMPANY_BANK_BIN:970000}   # not a bank's BIN, on purpose: the demo VietQR code can be paid to nobody
+  # A fictional company (4B-4, WF-05 E1; the tax code is made up, only its shape is real): demo values so a contract and an invoice can be drawn up here.
   seller:
-    name: ${SELLER_NAME:CÔNG TY TNHH STOCKFLOW}
-    tax-code: ${SELLER_TAX_CODE:0000000000}
-    address: ${SELLER_ADDRESS:Số 1 Đường Demo, Phường Bến Nghé, TP. Hồ Chí Minh}
-    representative: ${SELLER_REPRESENTATIVE:Nguyễn Văn Demo}
+    name: ${SELLER_NAME:CÔNG TY TNHH SẢN XUẤT BAO BÌ AN PHÁT}
+    tax-code: ${SELLER_TAX_CODE:0312345678}
+    address: ${SELLER_ADDRESS:Số 268 Đường số 7, Phường Tân Tạo, Thành phố Hồ Chí Minh}
+    representative: ${SELLER_REPRESENTATIVE:Trần Quốc An}
     representative-title: ${SELLER_REPRESENTATIVE_TITLE:Giám đốc}
+    # The letterhead (business documents, common.document): printed at the head of a quotation and in a contract's
+    # party block. Fictional, like the five above: the phone prefix and the .example domain reach nobody.
+    phone: ${SELLER_PHONE:(028) 3765 0000}
+    email: ${SELLER_EMAIL:kinhdoanh@baobianphat.example}
+    website: ${SELLER_WEBSITE:www.baobianphat.example}
+    bank-account-number: ${SELLER_BANK_ACCOUNT_NUMBER:${COMPANY_BANK_ACCOUNT_NUMBER:0071001234567}}
+    bank-name: ${SELLER_BANK_NAME:${COMPANY_BANK_NAME:Ngân hàng TMCP Ngoại thương Việt Nam (Vietcombank)}}
+    bank-branch: ${SELLER_BANK_BRANCH:Chi nhánh Bình Tây}
+    city: ${SELLER_CITY:Thành phố Hồ Chí Minh}
+    logo: ${SELLER_LOGO:classpath:branding/seller-logo.png}
   security:
     # ON. A server never runs with security off — that is what the `local` profile is for, and it
     # must never leave a laptop.

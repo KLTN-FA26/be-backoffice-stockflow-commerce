@@ -73,4 +73,14 @@ class VietnameseAmountInWordsTest {
         assertThat(VietnameseAmountInWords.ofWhole(new BigDecimal("2750000.50"))).isEmpty();
         assertThat(VietnameseAmountInWords.ofWhole(null)).isEmpty();
     }
+
+    @Test
+    @DisplayName("an accounting voucher closes the words with 'chẵn', up to thousands of billions")
+    void voucherAmountIsClosed() {
+        assertThat(VietnameseAmountInWords.ofVoucher(new BigDecimal("133100000")))
+                .isEqualTo("Một trăm ba mươi ba triệu một trăm nghìn đồng chẵn");
+        assertThat(VietnameseAmountInWords.ofVoucher(BigDecimal.ZERO)).isEqualTo("Không đồng chẵn");
+        assertThat(VietnameseAmountInWords.ofVoucher(new BigDecimal("2500000000000")))
+                .isEqualTo("Hai nghìn năm trăm tỷ đồng chẵn");
+    }
 }

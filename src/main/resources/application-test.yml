@@ -47,6 +47,9 @@ stockflow:
     address: ${SELLER_ADDRESS:1 Demo Street, Ho Chi Minh City}
     representative: ${SELLER_REPRESENTATIVE:Demo Director}
     representative-title: ${SELLER_REPRESENTATIVE_TITLE:Director}
+    # The letterhead: the logo and the place, so the documents the tests draw go through the image and the dated line.
+    city: Thành phố Hồ Chí Minh
+    logo: classpath:branding/seller-logo.png
   invoicing:
     # The tests drive reconciliation, automatic issuing and the deadline sweep by hand: a job firing in the middle of
     # a test would answer for the provider before the test asked. The sandbox answers at once.

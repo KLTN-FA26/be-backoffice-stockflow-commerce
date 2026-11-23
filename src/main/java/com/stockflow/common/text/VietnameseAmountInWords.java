@@ -64,6 +64,18 @@ public final class VietnameseAmountInWords {
         return Optional.of(of(amount));
     }
 
+    /**
+     * {@link #of} as an accounting voucher closes it: "Một triệu hai trăm năm mươi nghìn đồng chẵn". A receipt, a
+     * payment voucher and a stock voucher state their total in words (Thông tư 99/2025/TT-BTC); "chẵn" after the dong
+     * says the amount ends there, so nothing can be written in after it. An invoice, a quotation and a contract do not
+     * use it and keep {@link #of}.
+     *
+     * @throws IllegalArgumentException for an amount that is not whole dong
+     */
+    public static String ofVoucher(BigDecimal amount) {
+        return of(amount) + " chẵn";
+    }
+
     /** A positive number: what is above a billion read as a number of its own, then "tỷ", then the rest. */
     private static String number(BigInteger value) {
         BigInteger[] parts = value.divideAndRemainder(BILLION);

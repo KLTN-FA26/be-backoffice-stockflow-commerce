@@ -23,6 +23,10 @@ import java.util.regex.Pattern;
  * invoiced, every event retried for ever. So the shape is checked here too: the tax code as an organisation's is
  * written (10 digits, or 10-3 for a dependent unit - a seller is not a household business), and each length against
  * its column.</p>
+ *
+ * <p>The letterhead - phone, e-mail, website, bank account, logo - is not required: a paper is drawn without what is
+ * blank. A logo that is set but cannot be read stops the start in every profile
+ * ({@link com.stockflow.common.document.SellerLetterhead}).</p>
  */
 @Component
 @Profile("prod")

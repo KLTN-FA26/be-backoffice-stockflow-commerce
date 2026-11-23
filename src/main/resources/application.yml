@@ -554,13 +554,24 @@ stockflow:
 
   # The seller a sales contract names (4B-4, kltn-docs 14 §4.3 step 11) and an e-invoice is issued by (WF-05 E1/E2).
   # Blank here on purpose: local, dev and test carry a demo one, and in the prod profile the application refuses
-  # to start until all five are set (SellerProfileRequirement), so no contract or invoice names a made-up company.
+  # to start until the five legal fields are set (SellerProfileRequirement), so no contract or invoice names a made-up company.
   seller:
     name: ${SELLER_NAME:}
     tax-code: ${SELLER_TAX_CODE:}
     address: ${SELLER_ADDRESS:}
     representative: ${SELLER_REPRESENTATIVE:}
     representative-title: ${SELLER_REPRESENTATIVE_TITLE:}
+    # The letterhead of business documents (quotation, contract): optional, each left out of the paper when blank. The
+    # account is the one customers pay into, so it follows payment.company-bank unless set apart. logo is a Spring
+    # resource location of a PNG (classpath:..., file:/...); the application refuses to start on one it cannot read.
+    phone: ${SELLER_PHONE:}
+    email: ${SELLER_EMAIL:}
+    website: ${SELLER_WEBSITE:}
+    bank-account-number: ${SELLER_BANK_ACCOUNT_NUMBER:${COMPANY_BANK_ACCOUNT_NUMBER:}}
+    bank-name: ${SELLER_BANK_NAME:${COMPANY_BANK_NAME:}}
+    bank-branch: ${SELLER_BANK_BRANCH:}
+    city: ${SELLER_CITY:}
+    logo: ${SELLER_LOGO:}
   invoicing:
     # E-invoices (WF-05 E2). Which provider issues and whether complete drafts are issued automatically are data
     # (invoicing.einvoice_provider_config), changed at runtime by the administrator - not here.
@@ -642,6 +653,12 @@ stockflow:
     contract:
       # Print-sample rounds a new contract offers without charge (14 BR-18, decided 2026-11-05); Sales may change it.
       free-sample-rounds: ${CONTRACT_FREE_SAMPLE_ROUNDS:2}
+      # Standing terms printed on a quotation and a contract. The tolerance of a printed run's quantity, either way
+      # (0 prints no clause, at most 10); the warranty of the print after delivery, in months (0 prints none); the
+      # penalty for a breach, which Luat Thuong mai 2005 Dieu 301 caps at 8% - more is refused at startup.
+      quantity-tolerance-percent: ${CONTRACT_QUANTITY_TOLERANCE_PERCENT:5}
+      warranty-months: ${CONTRACT_WARRANTY_MONTHS:6}
+      penalty-percent: ${CONTRACT_PENALTY_PERCENT:8}
     production-order:
       # How long the links e-mailed to a producer - its production order slip and print files - work (4A-3). Every use
       # is checked again (the production order still open, the file still the approved one) and gets a presigned URL
