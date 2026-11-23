@@ -97,6 +97,8 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/returns/me", "the caller's own returns, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/orders/credit-position/me", "the caller's own credit, selected by the customer profile of "
                     + "the token (4B-10: replaces GET /orders/payment-terms)"),
+            Map.entry("GET /api/v1/installments/me/debt-reconciliation", "the record reconciling the caller's own debt, "
+                    + "drawn from the books of the customer profile of the token; it takes a period, no customer id"),
             Map.entry("GET /api/v1/installments/me", "the caller's own installments, selected by the customer profile of the "
                     + "token (4B-6)"),
             Map.entry("GET /api/v1/einvoices/me", "the e-invoices issued to the caller's own customer, selected by the "
