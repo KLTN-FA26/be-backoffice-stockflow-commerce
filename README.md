@@ -329,10 +329,10 @@ Workflows live in `.github/workflows/`; every pull request runs them.
 
 Until both exist the Sonar step prints a notice and is skipped, and the build stays green.
 
-**Dependabot** (`.github/dependabot.yml`) opens pull requests against `develop` every Monday at
-08:00 Vietnam time for Maven, GitHub Actions and the Dockerfile. Minor and patch updates are grouped
-into one pull request per ecosystem, majors are separate, at most 5 open at a time, titled
-`chore(deps): ...` and labelled `dependencies`.
+**No Dependabot.** Dependency versions are held still while the codebase is stabilised:
+`.github/dependabot.yml` is removed and Dependabot security-fix pull requests are turned off in the
+repository settings (vulnerability alerts stay on, in the Security tab). Upgrade a dependency by hand,
+in its own pull request, when there is a reason to.
 
 ---
 
