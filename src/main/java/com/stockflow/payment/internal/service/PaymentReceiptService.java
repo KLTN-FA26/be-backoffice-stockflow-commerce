@@ -331,11 +331,17 @@ public class PaymentReceiptService {
             HandedOverGoods left = handedOver.computeIfAbsent(installment.orderId(), orders::handedOverGoods);
             if (closedBatchSettled(installment, left, settledOf.getOrDefault(installment.orderId(), List.of()),
                     receipt.recordedAt())) {
+                // Confirmation audit CF-3: the refusal says how a receipt recorded wrongly here is corrected. The
+                // closure settled on that money (settlements are kept as made), so a void would leave the installment
+                // owing with no milestone; the error is corrected in the books with an adjusting entry, as a receipt
+                // recorded wrongly after its goods left is (Q-20).
                 return java.util.Optional.of(new BusinessException(ErrorCode.PAYMENT_RECEIPT_VOID_NOT_ALLOWED,
                         ("Receipt %s paid installment %d of contract %s before delivery of a batch the rest's closure "
                                 + "closed: its money is settled with the order").formatted(receipt.reference(),
                                 installment.seq(), installment.contractNumber()))
-                        .localized("refusal.payment.voidSettled", receipt.reference(), order.orderNumber()));
+                        .localized("refusal.payment.voidClosedBatch", receipt.reference(),
+                                String.valueOf(installment.seq()), installment.contractNumber(),
+                                order.orderNumber()));
             }
             if (letGoodsGo(installment, left)) {
                 return java.util.Optional.of(new BusinessException(ErrorCode.PAYMENT_RECEIPT_VOID_AFTER_HANDOVER,

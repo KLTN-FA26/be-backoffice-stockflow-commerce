@@ -181,9 +181,11 @@ class ClosedBatchFeeCarryIntegrationTest {
 
         // The early receipt is not voided: batch 2's installment would owe 20,000 again with no milestone, no due day.
         assertThat(receipts.receipt(early.id()).voidBlockedBy()).isEqualTo(ErrorCode.PAYMENT_RECEIPT_VOID_NOT_ALLOWED);
-        assertThat(code(catchThrowable(() -> receipts.voidReceipt(new PaymentReceiptService.VoidReceiptCommand(
-                early.id(), "Recorded against the wrong statement line", true, accountant)))))
-                .isEqualTo(ErrorCode.PAYMENT_RECEIPT_VOID_NOT_ALLOWED);
+        Throwable refused = catchThrowable(() -> receipts.voidReceipt(new PaymentReceiptService.VoidReceiptCommand(
+                early.id(), "Recorded against the wrong statement line", true, accountant)));
+        assertThat(code(refused)).isEqualTo(ErrorCode.PAYMENT_RECEIPT_VOID_NOT_ALLOWED);
+        assertThat(((BusinessException) refused).messageKey()).as("confirmation audit CF-3: it says how a receipt "
+                + "recorded wrongly is corrected").isEqualTo("refusal.payment.voidClosedBatch");
         assertThat(catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update("""
                 UPDATE payment.payment_receipt SET status = 'VOIDED', voided_at = NOW(), voided_by = ?,
                        void_reason = 'by hand' WHERE id = ?""", accountant, early.id()))))
