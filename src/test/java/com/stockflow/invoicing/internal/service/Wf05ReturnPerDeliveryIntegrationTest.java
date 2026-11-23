@@ -324,9 +324,10 @@ class Wf05ReturnPerDeliveryIntegrationTest {
         assertThat(reduced(2)).as("batch 1's installment").isEqualByComparingTo("88000");
         assertThat(reduced(3)).as("batch 2's installment").isEqualByComparingTo("0");
         assertThat(status()).as("resolved, still nothing moves").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
-        // Closed, the return claims the 40 refunded, not the 50 approved: 60 of shipment 1's line are left, and opening
-        // agrees to the unit.
-        assertThat(shown(first).returnableQuantity()).isEqualTo(60);
+        // Closed, the return claims the 40 refunded, not the 50 approved: 60 of shipment 1's line are left - for Sales,
+        // to the unit. The portal offers none of them: a delivery already settled by a return is Sales' to reopen
+        // (WF-05 BE-18, RETURN_SHIPMENT_NOT_RETURNABLE on the portal).
+        assertThat(shown(first).returnableQuantity()).as("settled by a return: not the portal's").isZero();
         assertThat(code(catchThrowable(() -> open(first, 61)))).isEqualTo(ErrorCode.RETURN_QUANTITY_EXCEEDED);
         Await.until("the adjustment of shipment 1's invoice", ASYNC, () -> jdbc.queryForObject("""
                 SELECT count(*) FROM invoicing.einvoice WHERE type = 'ADJUSTMENT' AND original_einvoice_id = ?""",

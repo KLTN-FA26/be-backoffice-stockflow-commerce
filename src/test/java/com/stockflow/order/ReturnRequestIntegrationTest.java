@@ -466,6 +466,22 @@ class ReturnRequestIntegrationTest {
                 + "make_interval(days => ?) WHERE id = ?", days, orderId));
     }
 
+    /**
+     * Time passes for the delivery too: the order was delivered {@code days} ago - its shipments, or the order itself
+     * when, as here, its goods were written as rows without shipments of the order. A refunded order closes
+     * only once every delivered shipment's return window has ended (WF-05 Q-16 = b), and that window counts from the
+     * shipment's outcome, not from the refund.
+     */
+    private void deliveredDaysAgo(UUID orderId, int days) {
+        tx.executeWithoutResult(s -> {
+            jdbc.execute("SET LOCAL session_replication_role = replica");   // a test's clock, not a transition
+            jdbc.update("UPDATE ordering.order_shipment SET outcome_at = NOW() - make_interval(days => ?) "
+                    + "WHERE order_id = ? AND status = 'DELIVERED'", days, orderId);
+            jdbc.update("UPDATE ordering.customer_order SET delivered_at = NOW() - make_interval(days => ?) "
+                    + "WHERE id = ?", days, orderId);
+        });
+    }
+
     /** {@code count} OrderRefundRecorded of the order published, and every one handled by its listener. */
     private void refundEventsHandled(UUID orderId, int count) {
         Await.until(count + " refund events handled", ASYNC, () -> Boolean.TRUE.equals(jdbc.queryForObject("""
@@ -483,6 +499,7 @@ class ReturnRequestIntegrationTest {
         UUID first = recordRefund(d, reference());
         Await.until("the order follows the refund", ASYNC, () -> statusOf(d.orderId()) == OrderStatus.REFUNDED);
         refundedDaysAgo(d.orderId(), 40);
+        deliveredDaysAgo(d.orderId(), 60);
 
         refunds.voidRecord(first, "  wrong statement line ", accountant);
         Await.until("the order follows the void", ASYNC, () -> statusOf(d.orderId()) == OrderStatus.RETURNED);
@@ -532,6 +549,7 @@ class ReturnRequestIntegrationTest {
         UUID record = recordRefund(older, reference());
         Await.until("the order follows the refund", ASYNC, () -> statusOf(older.orderId()) == OrderStatus.REFUNDED);
         refundedDaysAgo(older.orderId(), 31);
+        deliveredDaysAgo(older.orderId(), 60);
         assertThat(settlements.close(older.orderId())).isTrue();
 
         refunds.voidRecord(record, "the bank sent the transfer back", accountant);
