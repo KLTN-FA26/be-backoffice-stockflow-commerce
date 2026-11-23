@@ -2,7 +2,8 @@ package com.stockflow.design.internal.service;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.common.label.LabelFonts;
+import com.stockflow.common.document.DocumentFonts;
+import com.stockflow.common.document.DocumentSamples;
 import com.stockflow.design.api.DesignArtifactRole;
 import com.stockflow.design.internal.domain.DesignSnapshotArtifact;
 import com.stockflow.design.internal.domain.DesignSnapshotAsset;
@@ -233,21 +234,23 @@ class ApprovalFilesTest {
     void theProductionInstructionStatesTheJobInVietnamese() throws Exception {
         var carton = new UomConversion(UUID.randomUUID(), "CUP-12", "CARTON", 50, false, new BigDecimal("4.2"),
                 new BigDecimal("60"), new BigDecimal("40"), new BigDecimal("35"), true, 0);
-        byte[] sheet = new ProductionInstructionSheet(new LabelFonts(), INTERIM).render(new ProductionInstructionSheet.Facts(
+        byte[] sheet = new ProductionInstructionSheet(new DocumentFonts(), DocumentSamples.seller(), INTERIM).render(new ProductionInstructionSheet.Facts(
                 "CUP12-0312345678-01", "Ly giấy 12oz", "CUP-12", cup(), carton, "a".repeat(64), "b".repeat(64),
                 UUID.randomUUID(), Instant.parse("2026-11-08T03:00:00Z"), 1));
 
         try (PDDocument document = Loader.loadPDF(sheet)) {
             String text = new PDFTextStripper().getText(document);
-            assertThat(text).contains("Lệnh sản xuất in", "CUP12-0312345678-01", "Ly giấy 12oz", "CARTON 50",
-                    "Thân ly", "PDF/X-4", "IEC61966-2.1", "10:00");
+            assertThat(text).contains("LỆNH SẢN XUẤT IN", "CUP12-0312345678-01", "Ly giấy 12oz", "CARTON 50",
+                    "Thân ly", "PDF/X-4", "IEC61966-2.1", "10:00", "CÔNG TY TNHH SẢN XUẤT BAO BÌ AN PHÁT",
+                    "NGƯỜI LẬP", "BỘ PHẬN SẢN XUẤT", "NGƯỜI DUYỆT");
+            DocumentSamples.keep("production-instruction-sample", sheet);
         }
     }
 
     /** BE-10: for a bag, the producer reads the flat sheet's die-cut size and the folds the sides do not show. */
     @Test
     void theProductionInstructionOfABagSubmittedSideBySideStatesNoFlatSheet() throws Exception {
-        byte[] sheet = new ProductionInstructionSheet(new LabelFonts(), INTERIM).render(new ProductionInstructionSheet.Facts(
+        byte[] sheet = new ProductionInstructionSheet(new DocumentFonts(), DocumentSamples.seller(), INTERIM).render(new ProductionInstructionSheet.Facts(
                 "BAG-0312345678-01", "Túi giấy M", "BAG-M", bag(), null, "a".repeat(64), "b".repeat(64),
                 UUID.randomUUID(), Instant.parse("2026-11-18T03:00:00Z"), 4));
 
@@ -261,7 +264,7 @@ class ApprovalFilesTest {
     /** BE-10: for a bag, the producer reads the flat sheet's die-cut size and the folds the sides do not show. */
     @Test
     void theProductionInstructionOfABagStatesItsFlatSheet() throws Exception {
-        byte[] sheet = new ProductionInstructionSheet(new LabelFonts(), INTERIM).render(new ProductionInstructionSheet.Facts(
+        byte[] sheet = new ProductionInstructionSheet(new DocumentFonts(), DocumentSamples.seller(), INTERIM).render(new ProductionInstructionSheet.Facts(
                 "BAG-0312345678-01", "Túi giấy M", "BAG-M", bag(), null, "a".repeat(64), "b".repeat(64),
                 UUID.randomUUID(), Instant.parse("2026-11-18T03:00:00Z"), 1));
 

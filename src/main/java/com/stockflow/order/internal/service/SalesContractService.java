@@ -96,6 +96,8 @@ class SalesContractService implements SalesContracts {
     private final com.stockflow.order.internal.domain.ReturnPolicy returnPolicy;
     private final com.stockflow.design.api.SkuDesigns skuDesigns;
     private final com.stockflow.payment.api.CustomerInstallments installments;
+    /** The letterhead and the products' names a contract's paper prints, as the quotation's does. */
+    private final SalesDocumentFacts shared;
 
     SalesContractService(OrderRepository orders, SalesContractRepository contracts, CustomerService customers,
                          CustomerLegalProfiles legalProfiles, CustomerPaymentSchedules paymentSchedules,
@@ -105,7 +107,9 @@ class SalesContractService implements SalesContracts {
                          com.stockflow.order.internal.repository.OrderHoldJpaRepository holds,
                          com.stockflow.order.internal.domain.ReturnPolicy returnPolicy,
                          com.stockflow.design.api.SkuDesigns skuDesigns,
-                         com.stockflow.payment.api.CustomerInstallments installments) {
+                         com.stockflow.payment.api.CustomerInstallments installments,
+                         SalesDocumentFacts shared) {
+        this.shared = shared;
         this.returnPolicy = returnPolicy;
         this.skuDesigns = skuDesigns;
         this.installments = installments;
@@ -232,8 +236,7 @@ class SalesContractService implements SalesContracts {
             Instant now = clock.instant();
             contract.requireSendable(order, now);
             requireCreditFor(order, contract);
-            return new SalesContractDocument.Facts(view(contract, order, null), order, LocalDate.ofInstant(now,
-                    VIETNAM));
+            return facts(contract, order, LocalDate.ofInstant(now, VIETNAM), true);
         });
         byte[] pdf = document.render(facts);
         try (PreparedFiles prepared = IncomingFiles.sent(List.of(new FileUpload(facts.contract().contractNumber()
@@ -702,7 +705,13 @@ class SalesContractService implements SalesContracts {
 
     /** What the PDF shows; dated the day it was sent, or today for a draft's preview. */
     private SalesContractDocument.Facts facts(SalesContract contract, Order order) {
-        return new SalesContractDocument.Facts(view(contract, order, null), order, LocalDate.ofInstant(
-                contract.sentAt() == null ? clock.instant() : contract.sentAt(), VIETNAM));
+        return facts(contract, order, LocalDate.ofInstant(
+                contract.sentAt() == null ? clock.instant() : contract.sentAt(), VIETNAM), false);
+    }
+
+    /** @param issued the copy that goes to the customer, which a draft's watermark must not cross */
+    private SalesContractDocument.Facts facts(SalesContract contract, Order order, LocalDate dated, boolean issued) {
+        return new SalesContractDocument.Facts(view(contract, order, null), order, dated, shared.head(),
+                shared.names(order.lines().stream().map(line -> line.sku().code()).toList()), issued);
     }
 }

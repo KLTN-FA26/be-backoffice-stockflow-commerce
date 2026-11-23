@@ -89,7 +89,12 @@ public class LabelFonts {
         return out.toString();
     }
 
-    private static byte[] withoutGsub(String path, BitSet coverage) {
+    /**
+     * The font at {@code path} rebuilt without {@code GSUB}, and every code point it draws set in {@code coverage}.
+     * Public because the fonts of business documents ({@code common.document}) are embedded the same way, for the same
+     * reason: one rebuild, so the two sets cannot come to differ in what they keep.
+     */
+    public static byte[] withoutGsub(String path, BitSet coverage) {
         try (InputStream in = new ClassPathResource(path).getInputStream();
              TrueTypeFont font = new TTFParser().parse(new RandomAccessReadBuffer(in.readAllBytes()))) {
             CmapLookup cmap = font.getUnicodeCmapLookup();
