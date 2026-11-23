@@ -37,6 +37,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -119,6 +120,8 @@ public class PutawayService {
      * @param quantity           what the task was opened for
      * @param left               what is still to put away
      * @param sourceLocationCode where the goods stand now
+     * @param warehouseId        the warehouse of the source location: the task's own, since stock never changes
+     *                           warehouse; null only when that location is unknown
      * @param lpn                the carton's, null for a loose task
      * @param targetLocationCode the bin (or OVERFLOW area) of the latest putaway; null until something was put away
      * @param suggestions        ranked bins; filled by {@link #get} only
@@ -127,8 +130,8 @@ public class PutawayService {
      * @param source             why the task exists; a {@code QUARANTINE_RELEASE} has no receipt or receipt line
      */
     public record TaskView(UUID id, UUID goodsReceiptId, UUID goodsReceiptLineId, String sku, String lotNumber,
-                           int quantity, int left, String sourceLocationCode, String lpn, String status,
-                           String targetLocationCode, List<PutawayRanker.Suggestion> suggestions,
+                           int quantity, int left, String sourceLocationCode, UUID warehouseId, String lpn,
+                           String status, String targetLocationCode, List<PutawayRanker.Suggestion> suggestions,
                            List<String> overflowLocationCodes, PutawaySource source) {
     }
 
@@ -141,6 +144,7 @@ public class PutawayService {
         final Map<UUID, Optional<StockMovement>> receiptLine = new HashMap<>();
         final Map<UUID, Optional<StockMovement>> looseReceiptLine = new HashMap<>();
         final Map<UUID, String> locationCodes = new HashMap<>();
+        final Map<String, Optional<UUID>> locationWarehouses = new HashMap<>();
         final Map<UUID, Optional<String>> cartonLot = new HashMap<>();
     }
 
@@ -165,7 +169,7 @@ public class PutawayService {
         List<PutawayRanker.Suggestion> suggestions = suggest(sourceLocation.warehouseId(), task, view.lotNumber());
         List<String> overflow = suggestions.isEmpty() ? overflowAreas(sourceLocation.warehouseId()) : List.of();
         return new TaskView(view.id(), view.goodsReceiptId(), view.goodsReceiptLineId(), view.sku(), view.lotNumber(),
-                view.quantity(), view.left(), view.sourceLocationCode(), view.lpn(), view.status(),
+                view.quantity(), view.left(), view.sourceLocationCode(), view.warehouseId(), view.lpn(), view.status(),
                 view.targetLocationCode(), suggestions, overflow, view.source());
     }
 
@@ -434,10 +438,10 @@ public class PutawayService {
             List<PutawayTaskView> open = tasks.openTasks();
             sources = locate(open, reads, true);
             Map<UUID, Source> all = sources;
-            Set<String> inWarehouse = warehouses.findLocations(all.values().stream()
-                            .map(Source::locationCode).collect(Collectors.toSet())).stream()
-                    .filter(location -> warehouseId.equals(location.warehouseId()))
-                    .map(StorageLocationView::locationCode).collect(Collectors.toSet());
+            knowWarehouses(all.values().stream().map(Source::locationCode).toList(), reads);
+            Set<String> inWarehouse = all.values().stream().map(Source::locationCode)
+                    .filter(code -> reads.locationWarehouses.get(code).filter(warehouseId::equals).isPresent())
+                    .collect(Collectors.toSet());
             found = open.stream().filter(task -> all.containsKey(task.id())
                     && inWarehouse.contains(all.get(task.id()).locationCode())).toList();
         } else {
@@ -449,15 +453,40 @@ public class PutawayService {
         int from = (int) Math.min((long) page * size, matching.size());
         int to = Math.min(from + size, matching.size());
         Map<UUID, Source> located = sources;
+        knowWarehouses(matching.subList(from, to).stream().map(task -> located.get(task.id()).locationCode())
+                .toList(), reads);
         return PageResponse.of(matching.subList(from, to).stream()
                 .map(task -> view(task, located.get(task.id()), reads)).toList(), page, size, matching.size());
     }
 
     private TaskView view(PutawayTaskView task, Source source, Reads reads) {
         return new TaskView(task.id(), task.goodsReceiptId(), task.goodsReceiptLineId(), task.sku(),
-                lotOf(task, reads), task.quantity(), leftOf(task), source.locationCode(), source.lpn(), task.status(),
+                lotOf(task, reads), task.quantity(), leftOf(task), source.locationCode(),
+                warehouseOf(source.locationCode(), reads), source.lpn(), task.status(),
                 task.targetLocationId() == null ? null : locationCodeOf(task.targetLocationId(), reads), List.of(),
                 List.of(), task.source());
+    }
+
+    /**
+     * The warehouse a task belongs to, read from where its goods stand: a task has no warehouse column, and stock
+     * never changes warehouse. Read from the location rather than from its code's prefix, which is only a naming
+     * convention.
+     */
+    private UUID warehouseOf(String locationCode, Reads reads) {
+        return reads.locationWarehouses.computeIfAbsent(locationCode, code -> warehouses.findLocation(code)
+                .map(StorageLocationView::warehouseId)).orElse(null);
+    }
+
+    /** The warehouses of a page's locations in one read, so a list does not look them up row by row. */
+    private void knowWarehouses(Collection<String> locationCodes, Reads reads) {
+        Set<String> unknown = locationCodes.stream().filter(code -> !reads.locationWarehouses.containsKey(code))
+                .collect(Collectors.toSet());
+        if (unknown.isEmpty()) {
+            return;
+        }
+        unknown.forEach(code -> reads.locationWarehouses.put(code, Optional.empty()));
+        warehouses.findLocations(unknown).forEach(location -> reads.locationWarehouses.put(location.locationCode(),
+                Optional.ofNullable(location.warehouseId())));
     }
 
     /**
