@@ -688,15 +688,19 @@ public class EInvoiceDrafts {
                 .orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_FOUND)).snapshot();
         invoices.lockOrder(unlocked.orderId());
         EInvoice invoice = invoices.findByIdForUpdate(invoiceId).orElseThrow();
-        boolean deliveredAgain = unlocked.shipmentId() != null
-                && shipments.find(unlocked.orderId(), unlocked.shipmentId()).isPresent();
-        Settlement settlement = deliveredAgain ? deliveredAfterAll(invoice) : settlementOf(invoice);
-        return new Settled(settlement, unlocked.orderId(), unlocked.shipmentId(), deliveredAgain);
+        Optional<DeliveredShipment> delivered = unlocked.shipmentId() == null ? Optional.empty()
+                : shipments.find(unlocked.orderId(), unlocked.shipmentId());
+        // Audit r2 M-3: delivered again on another day is a new delivery, not the old one after all - the invoice of
+        // the failed day is settled as if it had stayed failed, and the caller draws the new day's original up.
+        Settlement settlement = delivered.isPresent() && !redeliveredOnAnotherDay(invoice.snapshot(), delivered.get())
+                ? deliveredAfterAll(invoice) : settlementOf(invoice);
+        return new Settled(settlement, unlocked.orderId(), unlocked.shipmentId(), delivered.isPresent());
     }
 
     /**
-     * Review finding 5: the shipment of a marked invoice is delivered now - the failure was itself corrected, or the
-     * carrier delivered it on a retry - before the provider's answer was settled. Nothing failed after all: an issued
+     * Review finding 5: the shipment of a marked invoice is delivered now, on the day the invoice stands for - the
+     * failure was itself corrected, or the carrier delivered it on a retry that day - before the provider's answer was
+     * settled (on another day it is a new delivery, audit r2 M-3: settled as a failure). Nothing failed after all: an issued
      * invoice stands (reducing it and drawing the same delivery up again would give the customer three invoices for
      * one delivery), and a refused one goes the way of any refusal - its mark taken back, so it can be corrected and
      * sent again, and the accountants told of the refusal its mark kept quiet ({@code EInvoiceIssuanceSteps.rejected}).
@@ -746,23 +750,69 @@ public class EInvoiceDrafts {
     @Transactional
     public int restoreDelivered(UUID orderId, UUID shipmentId) {
         invoices.lockOrder(orderId);
+        Optional<DeliveredShipment> delivered = shipmentId == null ? Optional.empty()
+                : shipments.find(orderId, shipmentId);
         int restored = 0;
         for (EInvoice marked : invoices.findUnsettledDeliveryFailedOfShipment(shipmentId)) {
             EInvoice invoice = invoices.findByIdForUpdate(marked.id()).orElseThrow();
+            if (delivered.isPresent() && redeliveredOnAnotherDay(invoice.snapshot(), delivered.get())) {
+                // Audit r2 M-3: the mark stays - once the provider answers, the invoice of the failed day is reduced
+                // or voided and the new day's original drawn up ({@link #settleCorrectedDelivery}).
+                continue;
+            }
             if (invoices.clearDeliveryFailed(invoice.id())) {
                 announceRefusal(invoice.snapshot());
                 restored++;
             }
         }
-        if (shipmentId != null && shipments.find(orderId, shipmentId).isPresent() && takeBackReversal(shipmentId)) {
+        if (delivered.isPresent() && takeBackReversal(shipmentId, delivered.get())) {
             restored++;
         }
         return restored;
     }
 
     /**
+     * Audit r2 M-3 (decision §3 HĐ-3 "giao lại thành công thì lập hoá đơn gốc mới"; NĐ 254/2026 Điều 9 khoản 1: an
+     * invoice is dated the day ownership passed): whether the shipment, delivered now, was delivered on another day than
+     * the one {@code invoice} stands for. A delivery corrected back to delivered on the same day is the same delivery,
+     * and its invoice stands for it again; one delivered on a later day is a new delivery, which takes an original of
+     * its own dated that day - the old invoice, dated the failed day, would say the goods changed hands when they did
+     * not, and the payment and return windows, which count from the new day, would disagree with it. The one rule for
+     * every path that may take a failure back: the reduction of an issued invoice ({@link #takeBackReversal}), the mark
+     * of one at the provider ({@link #restoreDelivered}) and the provider's answer for it
+     * ({@link #settleCorrectedDelivery}).
+     *
+     * <p>False when the day cannot be told - no delivery time, no delivery day on the invoice or its original - so such
+     * an invoice is treated as before: taken back.</p>
+     */
+    private boolean redeliveredOnAnotherDay(EInvoice.Snapshot invoice, DeliveredShipment delivered) {
+        LocalDate day = deliveryDayOf(invoice);
+        return day != null && delivered.deliveredAt() != null
+                && !day.equals(BusinessCalendar.date(delivered.deliveredAt()));
+    }
+
+    /**
+     * The day of the delivery an invoice stands for: an original's {@code deliveredOn}, or - drawn up before that
+     * column (V20261219000400) - its own date, which was its delivery's then; a replacement's is its original's.
+     */
+    private LocalDate deliveryDayOf(EInvoice.Snapshot invoice) {
+        if (invoice.deliveredOn() != null) {
+            return invoice.deliveredOn();
+        }
+        if (invoice.type() == EInvoiceType.ORIGINAL) {
+            return invoice.issueDate();
+        }
+        return invoice.type() == EInvoiceType.REPLACEMENT && invoice.originalEInvoiceId() != null
+                ? invoices.findById(invoice.originalEInvoiceId()).map(original -> deliveryDayOf(original.snapshot()))
+                .orElse(null)
+                : null;
+    }
+
+    /**
      * WF-05 BE-29: the delivery of a shipment whose issued invoice had been reduced for its failure is corrected back to
-     * delivered while that reduction has not left - a draft, or refused. Nothing failed after all: the reduction is
+     * delivered, on the day that invoice stands for, while that reduction has not left - a draft, or refused. Delivered
+     * on another day it is a new delivery (audit r2 M-3, {@link #redeliveredOnAnotherDay}): nothing is taken back, the
+     * reduction is issued and the new day's original stands. On the same day nothing failed after all: the reduction is
      * voided ({@code DELIVERY_CORRECTED_BACK}) and the invoice stands for the shipment again ({@code reversed_at} taken
      * back), in this one transaction - the only way {@code tg_einvoice_guard} lets the mark go. Without it the shipment
      * got the old invoice, its reduction (which could not be voided) and a new original: three invoices for one
@@ -775,9 +825,15 @@ public class EInvoiceDrafts {
      *
      * @return whether the reversal was taken back
      */
-    private boolean takeBackReversal(UUID shipmentId) {
+    private boolean takeBackReversal(UUID shipmentId, DeliveredShipment delivered) {
         Optional<EInvoice> reversed = invoices.findReversedOfShipment(shipmentId);
         if (reversed.isEmpty()) {
+            return false;
+        }
+        if (redeliveredOnAnotherDay(reversed.get().snapshot(), delivered)) {
+            // Audit r2 M-3: a new delivery - the reduction stands and the new day's original is the delivery's own.
+            log.info("E-invoice {} stays reduced: its shipment was delivered again on another day, which takes an "
+                    + "original of its own", LogSafe.text(reversed.get().code()));
             return false;
         }
         Optional<EInvoice> reduction = invoices.findLiveDeliveryFailedReductionOf(reversed.get().id());
@@ -1181,6 +1237,23 @@ public class EInvoiceDrafts {
      * The buyer as its legal profile names it; for a customer without one, what its record has - the company name, the
      * tax code and the contact e-mail, which is the invoice e-mail's default - and no address.
      */
+    /**
+     * Where the customer's e-invoices are sent now: the invoice e-mail of its legal profile, else its contact e-mail -
+     * the address a draft drawn up now would carry ({@link #buyerOf}). Null when it has none, or the customer is gone.
+     * Read when an invoice issued without an address is mailed, or mailed again (audit r2 M-1).
+     */
+    public String currentInvoiceEmail(UUID customerId) {
+        if (customerId == null) {
+            return null;
+        }
+        try {
+            String email = buyerOf(customerId).email();
+            return email == null || email.isBlank() ? null : email.strip();
+        } catch (BusinessException gone) {
+            return null;
+        }
+    }
+
     private InvoiceParty buyerOf(UUID customerId) {
         Optional<CustomerLegalProfile> profile = legalProfiles.legalProfile(customerId);
         if (profile.isPresent()) {

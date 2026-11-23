@@ -2,6 +2,7 @@ package com.stockflow.notification.internal.service;
 
 import com.stockflow.common.logging.LogSafe;
 import com.stockflow.contracts.EInvoiceIssued;
+import com.stockflow.contracts.EInvoiceMailRequested;
 import com.stockflow.identity.api.StaffContact;
 import com.stockflow.notification.api.CustomerDirectory;
 import com.stockflow.notification.api.EInvoiceDirectory;
@@ -43,9 +44,10 @@ import java.util.UUID;
  *
  * <p><b>Issued without a buyer e-mail</b> (HĐ-8; WF-05 Q-22 BR-06): a missing e-mail no longer holds an invoice back -
  * it is not invoice content (NĐ 254/2026/NĐ-CP Điều 10 khoản 1) and the invoice goes out on its day - so the mail has
- * nowhere to go and is recorded as skipped. Sales, who keep the customer's legal profile, are told in their inbox
- * (once per invoice, {@code einvoice-buyer-email-missing:<id>}) to record the e-mail and send the invoice on; the
- * buyer still has it on the portal.</p>
+ * nowhere to go and is recorded as skipped - unless Sales recorded the customer's invoice e-mail meanwhile, which it then
+ * goes to ({@code EInvoiceDirectory#mail}). Sales, who keep the customer's legal profile, are told in their inbox
+ * (once per invoice, {@code einvoice-buyer-email-missing:<id>}) to record the e-mail and send the invoice on - the
+ * latter is {@code EInvoiceMailRequested}, handled here too (audit r2 M-1); the buyer still has it on the portal.</p>
  *
  * <p>The notice first: an e-mail attempt worth retrying throws to keep the publication for the retry, and the buyer
  * must not wait for a mail provider to come back before the portal says anything. A redelivery posts nothing twice and
@@ -99,6 +101,18 @@ class EInvoiceIssuedNotificationListener {
         composer.issued(event).ifPresent(delivery::deliver);
     }
 
+    /**
+     * The invoice e-mailed again at staff's request (audit r2 M-1; HĐ-8: Sales recorded the e-mail and sends it on) -
+     * by e-mail only: the portal told the buyer when it was issued. Delivered, logged and retried as the first
+     * ({@link CustomerEmailDelivery}, {@link CustomerEmailRetry}); a redelivery sends nothing twice. Asynchronous after
+     * the request commits, for the reason the class gives.
+     */
+    @Async
+    @TransactionalEventListener
+    public void on(EInvoiceMailRequested event) {
+        composer.resent(event).ifPresent(delivery::deliver);
+    }
+
     /** Before the mail is handed over: a mail attempt kept for the retry throws, and Sales must hear either way. */
     private void tellSalesIfNoEmail(EInvoiceIssued event) {
         Optional<EInvoiceMail> mail = einvoices.mail(event.einvoiceId());
@@ -117,7 +131,11 @@ class EInvoiceIssuedNotificationListener {
                 LogSafe.text(event.code()), recipients.size(), told);
     }
 
-    /** System text only: the invoice's code and the order's number. */
+    /**
+     * System text only: the invoice's code and the order's number. It links to the customer's profile, where the
+     * e-mail is recorded, and names the invoice as its source (audit r2 M-1): the notice is the one place Sales staff,
+     * who hold no e-invoice permission, find the invoice to send on ({@code POST /api/v1/einvoices/{sourceId}/email}).
+     */
     static InboxMessage emailMissing(EInvoiceIssued event) {
         ResourceBundle texts = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
         return new InboxMessage(EMAIL_MISSING_CATEGORY, InboxSeverity.WARN,
@@ -125,9 +143,7 @@ class EInvoiceIssuedNotificationListener {
                 texts.getString("inbox.einvoice.buyer-email-missing.body").formatted(event.code(),
                         event.orderNumber()),
                 event.customerId() == null ? "/einvoices/" + event.einvoiceId() : "/customers/" + event.customerId(),
-                event.customerId() == null ? SOURCE_TYPE : "CUSTOMER_PROFILE",
-                (event.customerId() == null ? event.einvoiceId() : event.customerId()).toString(),
-                "einvoice-buyer-email-missing:" + event.einvoiceId());
+                SOURCE_TYPE, event.einvoiceId().toString(), "einvoice-buyer-email-missing:" + event.einvoiceId());
     }
 
     /** System text only: the order's number. The invoice's number and amounts are read on the portal page. */

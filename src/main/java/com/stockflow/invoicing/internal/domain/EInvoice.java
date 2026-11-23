@@ -244,6 +244,16 @@ public final class EInvoice {
             listedInvoiceIds = listedInvoiceIds == null ? List.of() : List.copyOf(listedInvoiceIds);
         }
 
+        /**
+         * Whether the buyer is sent this invoice (WF-05 E5, HĐ-8): issued - or replaced since, the buyer was issued it
+         * all the same - and its seller's signature holds. One whose signature does not is announced to the
+         * accountants and replaced, never mailed: "Chữ ký sai thì báo Kế toán ngay, không gửi khách hoá đơn lỗi"
+         * (decision §3 HĐ-8). The one rule for the first mail and every mail sent again (audit r2 M-1).
+         */
+        public boolean sendableToBuyer() {
+            return status.wasIssued() && !warnings.contains(Warning.SIGNATURE_INVALID);
+        }
+
         /** As every snapshot was before WF-05: no delivery day, never reversed, issued through the provider. */
         public Snapshot(UUID id, String code, EInvoiceType type, EInvoiceStatus status, boolean adjusted,
                         UUID orderId, String orderNumber, String contractNumber, UUID shipmentId,

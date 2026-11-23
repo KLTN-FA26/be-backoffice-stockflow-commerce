@@ -238,6 +238,11 @@ class EInvoiceIntegrationTest {
             public boolean providerHeld(UUID einvoiceId, String transactionId) {
                 return logged.providerHeld(einvoiceId, transactionId);
             }
+
+            @Override
+            public java.util.Optional<Call> lastQuery(UUID einvoiceId, String transactionId) {
+                return logged.lastQuery(einvoiceId, transactionId);
+            }
         };
         String transaction = draft.id() + "-1";
         java.time.Instant at = java.time.Instant.now();
@@ -261,6 +266,23 @@ class EInvoiceIntegrationTest {
                 com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome.PENDING, 200, null, null, null, at, 5,
                 "create/third"))).as("ck_einvoice_provider_call_reference")
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+
+        // Audit r2 H-2: the last look-up of the transaction, what the screen's "withdrawable" goes by.
+        assertThat(log.lastQuery(draft.id(), transaction)).isEmpty();
+        java.time.Instant asked = at;
+        for (var outcome : List.of(com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome.NOT_FOUND,
+                com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome.PENDING)) {
+            log.record(new com.stockflow.invoicing.internal.domain.ProviderCallLog.Call(draft.id(), "SEPAY_EINVOICE",
+                    transaction, com.stockflow.invoicing.internal.domain.ProviderCallLog.Operation.QUERY, outcome,
+                    200, null, null, null, asked = asked.plusSeconds(30), 5));
+        }
+        log.record(new com.stockflow.invoicing.internal.domain.ProviderCallLog.Call(draft.id(), "SEPAY_EINVOICE",
+                draft.id() + "-2", com.stockflow.invoicing.internal.domain.ProviderCallLog.Operation.QUERY,
+                com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome.NOT_FOUND, 200, null, null, null,
+                asked.plusSeconds(30), 5));
+        assertThat(log.lastQuery(draft.id(), transaction)).hasValueSatisfying(last ->
+                assertThat(last.outcome()).as("the newest of this transaction")
+                        .isEqualTo(com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome.PENDING));
     }
 
     private List<org.assertj.core.groups.Tuple> calls(UUID invoiceId) {

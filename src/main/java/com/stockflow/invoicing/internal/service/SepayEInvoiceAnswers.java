@@ -207,7 +207,17 @@ final class SepayEInvoiceAnswers {
     }
 
     /**
-     * What a tracking answer says ({@code data.status}, {@code data.message}).
+     * What a tracking answer says ({@code data.status}, {@code data.message}), the invoice it carries
+     * ({@code data.invoice.status}) first.
+     *
+     * <p><b>The top-level status reports the request, not the invoice</b> (sandbox run T-8, 24/11/2026: for a draft
+     * whose issue failed, {@code /create/check} answered {@code "status": "Success"}, "Xuất hóa đơn điện tử thành
+     * công", while its {@code invoice.status} was {@code "failed"}, number {@code "0"}). So an invoice the answer shows
+     * issued is never read as a refusal, whatever the top level says, and one it shows refused is never read as
+     * done - SUCCESS only ever means "wait for the look-up" here ({@code SepayEInvoiceProvider.query}), and nothing is
+     * recorded ISSUED from a tracking answer: only a look-up with a number and the tax authority's code does
+     * ({@link #state}, {@link #issued}). The invoice-level status is a code, not words: nothing here reads its
+     * message.</p>
      *
      * @throws ProviderUnavailableException when the answer says nothing (a 5xx, a 401 after a fresh token, a 429)
      */
@@ -219,12 +229,26 @@ final class SepayEInvoiceAnswers {
         if (status < 200 || status >= 300 || data == null || !data.isObject()) {
             return Tracking.NONE;
         }
+        String invoiceState = text(data.get("invoice"), "status");
+        invoiceState = invoiceState == null ? "" : invoiceState.toLowerCase(Locale.ROOT);
+        if (ISSUED.contains(invoiceState)) {
+            // Held at SePay: waited for until the look-up shows its number (Q-5), never a refusal.
+            return Tracking.SUCCESS;
+        }
         String state = text(data, "status");
         state = state == null ? "" : state.toLowerCase(Locale.ROOT);
+        if ("failed".equals(state) && unconfirmed(trackingMessage(body))) {
+            // Still the one case read from words (Q-5, accepted): "not confirmed" is never taken for a refusal.
+            return Tracking.UNCONFIRMED;
+        }
+        if (REFUSED.contains(invoiceState)) {
+            // The invoice itself failed, whatever the request's own status says (T-8): nothing issued under it.
+            return Tracking.FAILED;
+        }
         return switch (state) {
             case "pending" -> Tracking.PENDING;
             case "success" -> Tracking.SUCCESS;
-            case "failed" -> unconfirmed(trackingMessage(body)) ? Tracking.UNCONFIRMED : Tracking.FAILED;
+            case "failed" -> Tracking.FAILED;
             default -> Tracking.NONE;
         };
     }

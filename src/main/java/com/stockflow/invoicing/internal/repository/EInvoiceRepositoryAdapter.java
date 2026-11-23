@@ -409,6 +409,37 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
     }
 
     @Override
+    public List<UUID> findHeldUnannounced(int limit) {
+        // The complement of findAutoIssuable among the drafts it would take: warnings beyond a missing e-mail.
+        return jdbc.queryForList("""
+                SELECT i.id FROM invoicing.einvoice i
+                 WHERE i.status = 'DRAFT' AND i.type = 'ORIGINAL' AND i.attempt = 0
+                   AND i.warnings IS NOT NULL AND i.warnings <> 'BUYER_EMAIL_MISSING'
+                   AND NOT EXISTS (SELECT 1 FROM invoicing.einvoice_held_notice n
+                                    WHERE n.einvoice_id = i.id AND n.reason = i.warnings)
+                 ORDER BY i.issue_date, i.id LIMIT ?""", UUID.class, limit);
+    }
+
+    @Override
+    public Optional<String> markHeldForWarnings(UUID id, Instant now) {
+        return jdbc.queryForList("""
+                INSERT INTO invoicing.einvoice_held_notice (einvoice_id, reason, notified_at)
+                SELECT i.id, i.warnings, ? FROM invoicing.einvoice i
+                 WHERE i.id = ? AND i.status = 'DRAFT' AND i.type = 'ORIGINAL' AND i.attempt = 0
+                   AND i.warnings IS NOT NULL AND i.warnings <> 'BUYER_EMAIL_MISSING'
+                ON CONFLICT (einvoice_id, reason) DO NOTHING
+                RETURNING reason""", String.class, Timestamp.from(now), id).stream().findFirst();
+    }
+
+    @Override
+    public boolean markHeldAnnounced(UUID id, String reason, Instant now) {
+        return jdbc.update("""
+                INSERT INTO invoicing.einvoice_held_notice (einvoice_id, reason, notified_at)
+                VALUES (?, ?, ?) ON CONFLICT (einvoice_id, reason) DO NOTHING""", id, reason,
+                Timestamp.from(now)) == 1;
+    }
+
+    @Override
     public String nextCode(LocalDate day) {
         Long value = jdbc.queryForObject("""
                 INSERT INTO platform.document_sequence (document_type, sequence_date, last_value)

@@ -83,8 +83,7 @@ class EInvoicePortalReductions {
         EInvoice original = invoices.findByIdForUpdate(originalId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_FOUND));
         EInvoice.Snapshot standing = original.snapshot();
-        if (standing.status() != EInvoiceStatus.ISSUED || standing.type() == EInvoiceType.ADJUSTMENT
-                || standing.shipmentId() == null) {
+        if (!reducible(standing)) {
             throw notApplicable(standing, "it is not an issued invoice of a shipment");
         }
         if (invoices.findLiveDeliveryFailedReductionOf(originalId).isPresent()) {
@@ -100,10 +99,7 @@ class EInvoicePortalReductions {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "basis: DELIVERY_FAILED, or RETURN with the return it is for (returnRequestId)");
         }
-        boolean unsendableVoided = standing.reversedAt() != null && invoices.hasVoidedUnsendableReversal(originalId);
-        boolean replacementFailed = standing.type() == EInvoiceType.REPLACEMENT && standing.reversedAt() == null
-                && shipments.find(standing.orderId(), standing.shipmentId()).isEmpty();
-        if (!unsendableVoided && !replacementFailed) {
+        if (!deliveryFailedRecordable(standing)) {
             throw notApplicable(standing, "its reduction was not voided as unsendable, and it is not a replacement of "
                     + "a delivery that failed");
         }
@@ -133,8 +129,7 @@ class EInvoicePortalReductions {
         if (portal.returnRequestId() == null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "returnRequestId: required for a return");
         }
-        if (standing.type() != EInvoiceType.REPLACEMENT || standing.reversedAt() != null
-                || invoices.hasAdjustmentForReturn(portal.returnRequestId())) {
+        if (!replacementInForce(standing) || invoices.hasAdjustmentForReturn(portal.returnRequestId())) {
             throw notApplicable(standing, "only a return's goods on a replacement in force are recorded, once");
         }
         List<EInvoiceRepository.PendingReturnPieces> kept = invoices.findPendingReturnsOfShipment(standing.shipmentId())
@@ -174,6 +169,55 @@ class EInvoicePortalReductions {
                 portal.documents(), by);
         invoices.settlePendingReturn(portal.returnRequestId(), standing.shipmentId(), recorded.issuedAt());
         return recorded;
+    }
+
+    /**
+     * What may be recorded against the invoice now (audit r2 M-10: the screen offered "Ghi hoá đơn giảm" on every
+     * replacement in force, and anything but a failed delivery or a return waiting on it answered 409), by the same
+     * checks {@link #record} makes, read without the order's lock: a failed delivery's reduction while one is recordable
+     * and the invoice still invoices something; the returns whose refunded goods wait on a replacement in force and
+     * were not recorded yet. Whether the invoice still holds a return's goods is left to {@link #record}, which says so.
+     */
+    EInvoiceIssuance.ExternalReductionOptions applicability(EInvoice.Snapshot standing) {
+        if (!reducible(standing) || invoices.findLiveDeliveryFailedReductionOf(standing.id()).isPresent()) {
+            return EInvoiceIssuance.ExternalReductionOptions.NONE;
+        }
+        boolean deliveryFailed = deliveryFailedRecordable(standing) && invoices.findById(standing.id())
+                .map(original -> !EInvoice.whatIsLeft(original, invoices.issuedAdjustmentLinesOf(standing.id()))
+                        .isEmpty()).orElse(false);
+        List<EInvoiceIssuance.ReturnOption> returns = new ArrayList<>();
+        if (replacementInForce(standing)) {
+            java.util.Set<UUID> seen = new java.util.HashSet<>();
+            for (EInvoiceRepository.PendingReturnPieces pieces : invoices.findPendingReturnsOfShipment(
+                    standing.shipmentId())) {
+                if (seen.add(pieces.returnRequestId()) && !invoices.hasAdjustmentForReturn(pieces.returnRequestId())) {
+                    returns.add(new EInvoiceIssuance.ReturnOption(pieces.returnRequestId(), pieces.rmaNumber()));
+                }
+            }
+        }
+        return new EInvoiceIssuance.ExternalReductionOptions(deliveryFailed, returns);
+    }
+
+    /** An issued invoice of a shipment that is not itself an adjustment: the only kind anything is recorded against. */
+    private static boolean reducible(EInvoice.Snapshot standing) {
+        return standing.status() == EInvoiceStatus.ISSUED && standing.type() != EInvoiceType.ADJUSTMENT
+                && standing.shipmentId() != null;
+    }
+
+    /**
+     * A failed delivery's reduction is recorded for an original whose own was voided as unsendable, or a replacement
+     * in force whose shipment is not delivered now.
+     */
+    private boolean deliveryFailedRecordable(EInvoice.Snapshot standing) {
+        boolean unsendableVoided = standing.reversedAt() != null
+                && invoices.hasVoidedUnsendableReversal(standing.id());
+        boolean replacementFailed = replacementInForce(standing)
+                && shipments.find(standing.orderId(), standing.shipmentId()).isEmpty();
+        return unsendableVoided || replacementFailed;
+    }
+
+    private static boolean replacementInForce(EInvoice.Snapshot standing) {
+        return standing.type() == EInvoiceType.REPLACEMENT && standing.reversedAt() == null;
     }
 
     private static InvoiceSeries series(EInvoice.Snapshot standing, PortalReduction portal) {

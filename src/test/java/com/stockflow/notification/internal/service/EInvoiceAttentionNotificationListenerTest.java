@@ -68,6 +68,26 @@ class EInvoiceAttentionNotificationListenerTest {
     }
 
     @Test
+    @DisplayName("audit r2 M-2 AUTO_ISSUE_HELD: critical, says why and by when it must be issued today; told once per "
+            + "draft and reason - a draft has no submission to tell notices apart by")
+    void aDraftHeldBackIsAnnouncedPerReason() {
+        InboxMessage sent = told(event(Cause.AUTO_ISSUE_HELD, "TAX_CLASS_UNKNOWN", null));
+
+        assertThat(sent.severity()).isEqualTo(InboxSeverity.CRITICAL);
+        assertThat(sent.title()).isEqualTo("Hoá đơn EINV-20261112-0001 không tự phát hành được");
+        assertThat(sent.body()).contains("EINV-20261112-0001", "SO-20261101-0007", "TAX_CLASS_UNKNOWN",
+                "00:00 14/11/2026", "Lập trễ");
+        assertThat(sent.dedupeKey()).isEqualTo("einvoice-auto-issue-held:" + INVOICE + ":TAX_CLASS_UNKNOWN");
+
+        String everyWarning = "BUYER_EMAIL_MISSING,TAX_RATE_DIFFERS_FROM_CONTRACT,TAX_RATE_NOT_ON_CONTRACT,"
+                + "TAX_CLASS_UNKNOWN,TAX_RATE_OUT_OF_DATE,TAX_EXEMPT_NOT_SUPPORTED,BUYER_PROFILE_INCOMPLETE";
+        InboxMessage long_ = EInvoiceAttentionNotificationListener.message(
+                event(Cause.AUTO_ISSUE_HELD, everyWarning, null));
+        assertThat(long_.dedupeKey()).hasSizeLessThanOrEqualTo(InboxMessage.DEDUPE_KEY_MAX)
+                .doesNotContain(everyWarning);
+    }
+
+    @Test
     @DisplayName("a refusal without a provider code is still announced")
     void aRefusalWithoutACode() {
         InboxMessage sent = told(event(Cause.REJECTED, null, SUBMITTED));

@@ -661,6 +661,73 @@ class SepayEInvoiceContractTest {
         sepay.verify(0, getRequestedFor(urlPathEqualTo("/v1/invoices/create/check/" + TRACKING)));
     }
 
+    /**
+     * Sandbox run T-8 (24/11/2026, debate/sandbox/p8.out): the invoice SePay shows as the look-up and the tracking both
+     * carried it, the reference put in place of the sandbox's own. Its issue failed - "Ngày lập (23/11/2026) phải lớn hơn
+     * hoặc bằng ngày lập của hóa đơn số 358927 (24/11/2026) liền kề trước cùng ký hiệu C26TSE" - number "0".
+     */
+    private static String t8Invoice() {
+        return """
+                {"reference_code": "%s", "invoice_number": "0", "invoice_series": "C26TSE", "document_type": 1,
+                 "issued_date": "2026-11-23", "xml_url": null, "status": "failed", "tax_authority_code": null,
+                 "provider_status": null, "payment_method": "CK", "total_before_tax": 100000, "tax_amount": 8000,
+                 "total_amount": 108000, "source": "api"}""".formatted(REFERENCE);
+    }
+
+    /** T-8's /create/check answer: the request's own status Success, its invoice failed. */
+    private void t8CreateCheck() {
+        when(calls.lastProviderReference(SepayEInvoiceProvider.CODE, TRANSACTION))
+                .thenReturn(Optional.of("create/" + TRACKING));
+        sepay.stubFor(get(urlEqualTo("/v1/invoices/create/check/" + TRACKING)).willReturn(okJson("""
+                {"success": true, "data": {"reference_code": "%s", "status": "Success",
+                 "message": "Xuất hóa đơn điện tử thành công", "invoice": %s}}""".formatted(REFERENCE, t8Invoice()))));
+    }
+
+    @Test
+    void T8_aFailedIssueIsRejectedFromTheLookUp_neverTakenFromCreateCheckSuccess() {
+        signsIn();
+        sepay.stubFor(get(urlEqualTo("/v1/invoices/" + REFERENCE)).willReturn(okJson(
+                "{\"success\": true, \"data\": " + t8Invoice() + "}")));
+        t8CreateCheck();
+
+        Result result = provider().query(TRANSACTION);
+
+        assertThat(result.state()).as("the invoice failed: no invoice in force, never ISSUED").isEqualTo(
+                ResultState.REJECTED);
+        assertThat(result.errorCode()).isEqualTo("SEPAY_INVOICE_FAILED");
+        assertThat(result.invoiceNumber()).isNull();
+        sepay.verify(0, getRequestedFor(urlPathEqualTo("/v1/invoices/create/check/" + TRACKING)));
+    }
+
+    @Test
+    void T8_createCheckSuccessWithItsInvoiceFailed_isAFailureNotAWait() {
+        signsIn();
+        notRecorded();
+        t8CreateCheck();
+
+        Result result = provider().query(TRANSACTION);
+
+        assertThat(result.state()).as("the top level reports the create step only (T-8)")
+                .isEqualTo(ResultState.REJECTED);
+        assertThat(result.errorCode()).isEqualTo(SepayEInvoiceAnswers.ISSUANCE_FAILED);
+        assertThat(result.invoiceNumber()).isNull();
+    }
+
+    @Test
+    void T8_aTrackingWhoseInvoiceIsIssuedIsNeverARefusal_andNeverIssuedByItself() {
+        signsIn();
+        notRecorded();
+        when(calls.lastProviderReference(SepayEInvoiceProvider.CODE, TRANSACTION))
+                .thenReturn(Optional.of("create/" + TRACKING));
+        sepay.stubFor(get(urlEqualTo("/v1/invoices/create/check/" + TRACKING)).willReturn(okJson("""
+                {"success": true, "data": {"reference_code": "%s", "status": "Failed", "message": "x",
+                 "invoice": {"reference_code": "%s", "invoice_number": "358930", "status": "issued"}}}"""
+                .formatted(REFERENCE, REFERENCE))));
+
+        assertThat(provider().query(TRANSACTION).state()).as("held at SePay: waited for until the look-up shows it")
+                .isEqualTo(ResultState.PENDING);
+    }
+
     @Test
     void HD1_noTrackingCodeKeptLeavesTheLookUpToSay() {
         signsIn();

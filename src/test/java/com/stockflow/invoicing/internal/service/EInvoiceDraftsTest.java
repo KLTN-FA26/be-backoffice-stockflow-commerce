@@ -673,6 +673,61 @@ class EInvoiceDraftsTest {
     }
 
     @Test
+    @DisplayName("audit r2 M-3 (HĐ-3 step 4): delivered again on a LATER day is a new delivery - the issued invoice of "
+            + "the failed day is reduced and released for a new original, never kept as if the goods passed that day")
+    void aRedeliveryOnAnotherDayIsSettledAsAFailure() {
+        when(invoices.correctionsOf(any())).thenReturn(EInvoice.Corrections.NONE);
+        EInvoice issued = EInvoiceFixtures.in(EInvoiceStatus.ISSUED);
+        UUID shipment = issued.snapshot().shipmentId();
+        when(invoices.findById(issued.id())).thenReturn(Optional.of(issued));
+        when(invoices.findByIdForUpdate(issued.id())).thenReturn(Optional.of(issued));
+        when(invoices.findLiveOriginalOfShipment(shipment)).thenReturn(Optional.of(issued));
+        when(invoices.deliveryFailed(issued.id())).thenReturn(true);
+        when(shipments.find(issued.orderId(), shipment)).thenReturn(Optional.of(
+                shipment(shipment, 20, 0, 3000, Instant.parse("2026-11-14T03:00:00Z"))));
+
+        EInvoiceDrafts.Settled settled = drafts.settleCorrectedDelivery(issued.id());
+
+        assertThat(settled.settlement()).isEqualTo(EInvoiceDrafts.Settlement.REVERSED);
+        assertThat(settled.released()).isTrue();
+        assertThat(settled.deliveredAgain()).as("the caller draws the 14th's original up").isTrue();
+        verify(invoices).markReversed(issued.id(), clock.instant());
+    }
+
+    @Test
+    @DisplayName("audit r2 M-3: delivered again on a later day while the invoice is at the provider - its mark stays, "
+            + "so the provider's answer settles it as a failure and the new day gets its own original")
+    void aRedeliveryOnAnotherDayKeepsTheMark() {
+        EInvoice atProvider = EInvoiceFixtures.in(EInvoiceStatus.SUBMITTING);
+        UUID shipment = atProvider.snapshot().shipmentId();
+        when(invoices.findUnsettledDeliveryFailedOfShipment(shipment)).thenReturn(List.of(atProvider));
+        when(invoices.findByIdForUpdate(atProvider.id())).thenReturn(Optional.of(atProvider));
+        when(shipments.find(atProvider.orderId(), shipment)).thenReturn(Optional.of(
+                shipment(shipment, 20, 0, 3000, Instant.parse("2026-11-14T03:00:00Z"))));
+
+        assertThat(drafts.restoreDelivered(atProvider.orderId(), shipment)).isZero();
+
+        verify(invoices, never()).clearDeliveryFailed(any());
+    }
+
+    @Test
+    @DisplayName("audit r2 M-3 (BE-29 kept for the same day): an issued invoice reduced for a failure, delivered again "
+            + "on a later day - the reduction stands and the invoice stays reversed; nothing of the new day is voided")
+    void aRedeliveryOnAnotherDayTakesNoReductionBack() {
+        EInvoice reversed = EInvoiceFixtures.in(EInvoiceStatus.ISSUED);
+        UUID shipment = reversed.snapshot().shipmentId();
+        when(invoices.findReversedOfShipment(shipment)).thenReturn(Optional.of(reversed));
+        when(shipments.find(reversed.orderId(), shipment)).thenReturn(Optional.of(
+                shipment(shipment, 20, 0, 3000, Instant.parse("2026-11-14T03:00:00Z"))));
+
+        assertThat(drafts.restoreDelivered(reversed.orderId(), shipment)).isZero();
+
+        verify(invoices, never()).clearReversed(any());
+        verify(invoices, never()).findLiveDeliveryFailedReductionOf(any());
+        assertThat(saved).as("nothing voided").isEmpty();
+    }
+
+    @Test
     @DisplayName("second review, finding 1: a correction to a failure heard after the shipment was corrected back to "
             + "delivered changes nothing - its draft is not voided, its invoice not reduced or marked")
     void aLateFailureOfADeliveredShipmentChangesNothing() {

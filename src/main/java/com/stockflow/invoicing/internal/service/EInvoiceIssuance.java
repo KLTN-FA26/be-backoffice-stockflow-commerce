@@ -417,10 +417,11 @@ public class EInvoiceIssuance {
             EInvoiceProvider provider = providers.require(invoice.provider());
             Instant lastSent = steps.lastSent(id, invoice.transactionId()).orElse(invoice.submittedAt());
             Instant now = clock.instant();
-            if (lastSent != null && Duration.between(lastSent, now).compareTo(properties.withdrawAfter()) < 0) {
+            Instant earliest = WithdrawalRule.earliest(lastSent, properties);
+            if (earliest != null && now.isBefore(earliest)) {
+                // Not asked: whatever the provider says, it is too early (WithdrawalRule, before any answer).
                 throw refused(("Invoice %s was last sent at %s; the provider may still be working on it until %s")
-                        .formatted(invoice.code(), lastSent, lastSent.plus(properties.withdrawAfter())),
-                        lastSent.plus(properties.withdrawAfter()), null);
+                        .formatted(invoice.code(), lastSent, earliest), earliest, null);
             }
             Result result;
             try {
@@ -429,24 +430,24 @@ public class EInvoiceIssuance {
                 throw new BusinessException(ErrorCode.EINVOICE_PROVIDER_UNAVAILABLE,
                         "The provider did not say whether it holds invoice %s".formatted(invoice.code()));
             }
-            boolean unconfirmed = result.state() == ResultState.UNKNOWN
-                    && provider.resultUnconfirmed(result.errorCode());
-            String state = unconfirmed ? "UNCONFIRMED" : result.state().name();
-            if (result.state() != ResultState.NOT_FOUND && !unconfirmed) {
-                throw refused(("Invoice %s: the provider does not say it has no record of it (%s%s); it is waited for, "
-                        + "or its result recorded from the provider's portal").formatted(invoice.code(),
-                        result.state(), result.errorCode() == null ? "" : ", " + result.errorCode()), null, state);
+            WithdrawalRule.ProviderState asked = stateOf(result, provider);
+            boolean held = calls.providerHeld(id, invoice.transactionId());
+            WithdrawalRule.Decision decision = WithdrawalRule.decide(held, asked, lastSent, now, properties);
+            String state = asked.name();
+            if (!decision.allowed()) {
+                throw switch (decision.blocked()) {
+                    case TOO_RECENT -> refused(("Invoice %s: the provider cannot confirm what became of it; it may be "
+                            + "taken back from %s, on its support's written answer").formatted(invoice.code(),
+                            decision.from()), decision.from(), state);
+                    case PROVIDER_HOLDS -> refused(held
+                            ? "Invoice %s: the provider once said it holds this transaction; it is never taken back"
+                            .formatted(invoice.code())
+                            : notNoRecord(invoice, result), null, state);
+                    default -> refused(notNoRecord(invoice, result), null, state);
+                };
             }
-            if (calls.providerHeld(id, invoice.transactionId())) {
-                throw refused(("Invoice %s: the provider once said it holds this transaction; it is never taken back")
-                        .formatted(invoice.code()), null, state);
-            }
+            boolean unconfirmed = decision.evidenceRequired();
             if (unconfirmed) {
-                Instant from = lastSent == null ? now : lastSent.plus(properties.withdrawUnknownAfter());
-                if (now.isBefore(from)) {
-                    throw refused(("Invoice %s: the provider cannot confirm what became of it; it may be taken back "
-                            + "from %s, on its support's written answer").formatted(invoice.code(), from), from, state);
-                }
                 if (supportReference == null || supportReference.isBlank()) {
                     throw new BusinessException(ErrorCode.EINVOICE_WITHDRAWAL_EVIDENCE_REQUIRED, ("Invoice %s: the "
                             + "provider cannot confirm its result; it is taken back only on the provider's support's "
@@ -466,6 +467,95 @@ public class EInvoiceIssuance {
             release(id, holder);
         }
         return steps.get(id);
+    }
+
+    private static String notNoRecord(EInvoice.Snapshot invoice, Result result) {
+        return ("Invoice %s: the provider does not say it has no record of it (%s%s); it is waited for, or its result "
+                + "recorded from the provider's portal").formatted(invoice.code(), result.state(),
+                result.errorCode() == null ? "" : ", " + result.errorCode());
+    }
+
+    /** The provider's answer, asked now, as the withdrawal rule reads it: "cannot confirm" is its own state. */
+    private static WithdrawalRule.ProviderState stateOf(Result result, EInvoiceProvider provider) {
+        return switch (result.state()) {
+            case NOT_FOUND -> WithdrawalRule.ProviderState.NOT_FOUND;
+            case PENDING -> WithdrawalRule.ProviderState.PENDING;
+            case ISSUED -> WithdrawalRule.ProviderState.ISSUED;
+            case REJECTED -> WithdrawalRule.ProviderState.REJECTED;
+            case UNKNOWN -> provider.resultUnconfirmed(result.errorCode()) ? WithdrawalRule.ProviderState.UNCONFIRMED
+                    : WithdrawalRule.ProviderState.UNKNOWN;
+        };
+    }
+
+    /**
+     * Whether the invoice would be taken back now, by the rule {@link #withdraw} applies ({@link WithdrawalRule}),
+     * judged on the provider's last answer on record instead of a call (audit r2 H-2: the screen showed "Rút" on every
+     * invoice at the provider, and an invoice SePay holds "issued, no number" got a 409 - Q-5 says it is never taken
+     * back, demo HĐ-1 step 2 that the button is not there). The reconciliation asks the provider every half minute, so
+     * the last answer is recent; {@link #withdraw} still asks again and may refuse what changed in between.
+     */
+    @org.springframework.transaction.annotation.Transactional(readOnly = true)
+    public WithdrawalRule.Decision withdrawability(EInvoice.Snapshot invoice) {
+        if (invoice.status() != EInvoiceStatus.SUBMITTING || invoice.provider() == null
+                || invoice.transactionId() == null) {
+            return new WithdrawalRule.Decision(WithdrawalRule.Blocked.NOT_AT_PROVIDER, null, false);
+        }
+        java.util.Optional<EInvoiceProvider> provider = providers.find(invoice.provider());
+        if (provider.isEmpty()) {
+            return new WithdrawalRule.Decision(WithdrawalRule.Blocked.PROVIDER_STATE_UNCLEAR, null, false);
+        }
+        Instant lastSent = steps.lastSent(invoice.id(), invoice.transactionId()).orElse(invoice.submittedAt());
+        WithdrawalRule.ProviderState last = calls.lastQuery(invoice.id(), invoice.transactionId())
+                .map(call -> onRecord(call, provider.get())).orElse(WithdrawalRule.ProviderState.NOT_ASKED);
+        return WithdrawalRule.decide(calls.providerHeld(invoice.id(), invoice.transactionId()), last, lastSent,
+                clock.instant(), properties);
+    }
+
+    /** A look-up as the call log keeps it ({@link #query}): an answer that does not say is logged as its error. */
+    private static WithdrawalRule.ProviderState onRecord(ProviderCallLog.Call call, EInvoiceProvider provider) {
+        return switch (call.outcome()) {
+            case NOT_FOUND -> WithdrawalRule.ProviderState.NOT_FOUND;
+            case PENDING -> WithdrawalRule.ProviderState.PENDING;
+            case ISSUED -> WithdrawalRule.ProviderState.ISSUED;
+            case REJECTED -> WithdrawalRule.ProviderState.REJECTED;
+            case ERROR -> provider.resultUnconfirmed(call.errorCode()) ? WithdrawalRule.ProviderState.UNCONFIRMED
+                    : WithdrawalRule.ProviderState.UNKNOWN;
+            default -> WithdrawalRule.ProviderState.UNKNOWN;
+        };
+    }
+
+    /**
+     * Which reductions made on the provider's portal may be recorded against the invoice now (audit r2 M-10), by the
+     * rule {@code /external-reductions} applies ({@link EInvoicePortalReductions#applicability}).
+     */
+    @org.springframework.transaction.annotation.Transactional(readOnly = true)
+    public ExternalReductionOptions externalReductions(EInvoice.Snapshot invoice) {
+        return portalReductions.applicability(invoice);
+    }
+
+    /**
+     * What a reduction made on the provider's portal may be recorded for against one invoice now (audit r2 M-10).
+     *
+     * @param deliveryFailed whether one of its failed delivery may be (basis DELIVERY_FAILED)
+     * @param returns        the returns whose refunded goods wait on it, each recordable once (basis RETURN with that
+     *                       return's id); empty when none
+     */
+    public record ExternalReductionOptions(boolean deliveryFailed, List<ReturnOption> returns) {
+
+        public static final ExternalReductionOptions NONE = new ExternalReductionOptions(false, List.of());
+
+        public ExternalReductionOptions {
+            returns = List.copyOf(returns);
+        }
+
+        /** Whether anything may be recorded. */
+        public boolean any() {
+            return deliveryFailed || !returns.isEmpty();
+        }
+    }
+
+    /** A return whose refunded goods wait on a replacement, by its id - what {@code returnRequestId} takes - and RMA. */
+    public record ReturnOption(UUID returnRequestId, String rmaNumber) {
     }
 
     /** {@code EINVOICE_WITHDRAWAL_REFUSED} with what the screen shows (BE-59): from when, and what the provider said. */
@@ -528,12 +618,26 @@ public class EInvoiceIssuance {
         }
         PortalInvoiceXml xml = null;
         if (record.outcome() == PortalOutcome.ISSUED) {
-            if (record.invoiceNumber() == null || record.invoiceNumber() < 1 || record.invoiceNumber() > 99_999_999
-                    || blank(record.taxAuthorityCode()) || blank(record.lookupCode()) || empty(record.xml())
-                    || empty(record.pdf())) {
+            // Each missing field named (audit r2 contract M-2): the screen marks the box, not a sentence about five.
+            List<FieldError> missing = new java.util.ArrayList<>();
+            if (record.invoiceNumber() == null || record.invoiceNumber() < 1 || record.invoiceNumber() > 99_999_999) {
+                missing.add(FieldError.of("invoiceNumber", "required, 1 to 99999999"));
+            }
+            if (blank(record.taxAuthorityCode())) {
+                missing.add(FieldError.of("taxAuthorityCode", "required"));
+            }
+            if (blank(record.lookupCode())) {
+                missing.add(FieldError.of("lookupCode", "required"));
+            }
+            if (empty(record.xml())) {
+                missing.add(FieldError.of("xml", "required"));
+            }
+            if (empty(record.pdf())) {
+                missing.add(FieldError.of("pdf", "required"));
+            }
+            if (!missing.isEmpty()) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("An invoice recorded as issued names its "
-                        + "number, the tax authority's code and the look-up code, with its XML and PDF"),
-                        List.of(FieldError.of("invoiceNumber", "required with taxAuthorityCode, lookupCode, xml, pdf")));
+                        + "number, the tax authority's code and the look-up code, with its XML and PDF"), missing);
             }
             xml = PortalInvoiceXml.read(record.xml());
         }

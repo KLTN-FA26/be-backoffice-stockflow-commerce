@@ -147,6 +147,69 @@ class EInvoiceWithdrawalRulesTest {
     }
 
     @Test
+    @DisplayName("audit r2 contract M-2: 'Ghi kết quả từ cổng' as ISSUED names each missing field - number, the tax "
+            + "authority's code, the look-up code, the XML and the PDF are all required - before anything is asked")
+    void aPortalRecordNamesEachMissingField() {
+        EInvoiceIssuance.PortalRecord numberOnly = new EInvoiceIssuance.PortalRecord(
+                EInvoiceIssuance.PortalOutcome.ISSUED, 589, null, " ", null, new byte[0], "issued on the portal");
+
+        BusinessException refused = org.assertj.core.api.Assertions.catchThrowableOfType(BusinessException.class,
+                () -> issuance.recordPortalResult(id, invoice.version(), numberOnly, null));
+
+        assertThat(refused.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(refused.fieldErrors()).extracting(com.stockflow.common.api.FieldError::field)
+                .containsExactly("taxAuthorityCode", "lookupCode", "xml", "pdf");
+        verify(provider, never()).query(any());
+    }
+
+    private void lastAnswered(com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome outcome, String code) {
+        when(calls.lastQuery(id, transaction)).thenReturn(Optional.of(
+                new com.stockflow.invoicing.internal.domain.ProviderCallLog.Call(id, invoice.provider(), transaction,
+                        com.stockflow.invoicing.internal.domain.ProviderCallLog.Operation.QUERY, outcome, null, code,
+                        null, null, SUBMITTED.plus(Duration.ofDays(2)), 5)));
+        when(providers.find(invoice.provider())).thenReturn(Optional.of(provider));
+    }
+
+    @Test
+    @DisplayName("audit r2 H-2 (Q-5, HĐ-1 step 2): the screen's 'withdrawable' is the withdrawal's own rule on the "
+            + "provider's last answer - never for one SePay holds (PENDING) or once held, never too early, never on an "
+            + "answer that says nothing; 'cannot confirm' needs the support's answer")
+    void theWithdrawableFlagFollowsTheWithdrawalsRule() {
+        lastAnswered(com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome.PENDING, null);
+        WithdrawalRule.Decision pending = issuance.withdrawability(invoice);
+        assertThat(pending.allowed()).isFalse();
+        assertThat(pending.blocked()).isEqualTo(WithdrawalRule.Blocked.PROVIDER_HOLDS);
+        assertThat(pending.from()).as("no day it ever could be").isNull();
+
+        lastAnswered(com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome.NOT_FOUND, null);
+        assertThat(issuance.withdrawability(invoice).allowed()).isTrue();
+        when(calls.providerHeld(id, transaction)).thenReturn(true);
+        assertThat(issuance.withdrawability(invoice).blocked()).as("held once, never")
+                .isEqualTo(WithdrawalRule.Blocked.PROVIDER_HOLDS);
+        when(calls.providerHeld(id, transaction)).thenReturn(false);
+
+        when(clock.instant()).thenReturn(SUBMITTED.plus(Duration.ofHours(1)));
+        WithdrawalRule.Decision early = issuance.withdrawability(invoice);
+        assertThat(early.blocked()).isEqualTo(WithdrawalRule.Blocked.TOO_RECENT);
+        assertThat(early.from()).isEqualTo(SUBMITTED.plus(Duration.ofHours(3)));
+        when(clock.instant()).thenReturn(SUBMITTED.plus(Duration.ofDays(3)));
+
+        lastAnswered(com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome.ERROR, "HTTP_403");
+        assertThat(issuance.withdrawability(invoice).blocked())
+                .isEqualTo(WithdrawalRule.Blocked.PROVIDER_STATE_UNCLEAR);
+        lastAnswered(com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome.ERROR, "SEPAY_RESULT_UNCONFIRMED");
+        WithdrawalRule.Decision unconfirmed = issuance.withdrawability(invoice);
+        assertThat(unconfirmed.allowed()).isTrue();
+        assertThat(unconfirmed.evidenceRequired()).isTrue();
+
+        when(calls.lastQuery(id, transaction)).thenReturn(Optional.empty());
+        assertThat(issuance.withdrawability(invoice).blocked()).as("never asked yet")
+                .isEqualTo(WithdrawalRule.Blocked.PROVIDER_STATE_UNCLEAR);
+        assertThat(issuance.withdrawability(EInvoiceFixtures.in(EInvoiceStatus.ISSUED).snapshot()).blocked())
+                .isEqualTo(WithdrawalRule.Blocked.NOT_AT_PROVIDER);
+    }
+
+    @Test
     @DisplayName("BE-07 (V2): a transaction let go is asked about; found issued after all, it is recorded and told "
             + "once; not issued, it is noted as asked; a provider that does not answer is asked next time")
     void letGoTransactionsAreWatched() {

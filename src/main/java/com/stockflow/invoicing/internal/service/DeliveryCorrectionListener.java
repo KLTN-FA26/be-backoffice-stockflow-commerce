@@ -31,8 +31,10 @@ import org.springframework.stereotype.Component;
  *       ({@link EInvoiceNeedsAttention.Cause#DELIVERY_FAILED_AWAITING_PROVIDER}), and the answer is settled here
  *       ({@link DeliveryFailedInvoiceAnswered}): issued, reduced in full as above; refused, voided - never corrected
  *       and sent again for goods nobody received (a refused replacement also has its original reduced). Delivered
- *       after all before the provider answered - the failure corrected back to delivered, or a carrier's retry - the
- *       mark is taken back and the invoice is an ordinary one again.</li>
+ *       after all on the day the invoice stands for, before the provider answered - the failure corrected back to
+ *       delivered, or a carrier's retry that day - the mark is taken back and the invoice is an ordinary one again.
+ *       Delivered on a later day it is a new delivery (audit r2 M-3; decision HĐ-3 step 4): the mark stays, the old
+ *       invoice is settled as a failure, and the new day gets an original of its own.</li>
  *   <li><b>Already being corrected</b> - an adjustment of it exists, issued or not, or a replacement is being drawn up:
  *       a full reduction could take it below nothing or reduce the wrong invoice, so it stays the accountant's to bring
  *       to nothing by hand ({@link EInvoiceNeedsAttention.Cause#DELIVERY_FAILED_AFTER_SUBMISSION}).</li>
@@ -66,7 +68,8 @@ class DeliveryCorrectionListener {
     public void on(ShipmentStatusChanged event) {
         if ("DELIVERY_FAILED".equals(event.previousStatus()) && "DELIVERED".equals(event.status())) {
             // Delivered after all (review finding 5): an invoice marked while at the provider is an ordinary one
-            // again. A shipment that never had a delivery corrected has nothing marked, and nothing happens.
+            // again - on the day it stands for; delivered on another day, a new delivery (audit r2 M-3). A shipment
+            // that never had a delivery corrected has nothing marked, and nothing happens.
             int restored = drafts.restoreDelivered(event.orderId(), event.shipmentId());
             if (restored > 0) {
                 log.info("Shipment {} of order {} was delivered after all: {} e-invoice(s) at the provider are no "

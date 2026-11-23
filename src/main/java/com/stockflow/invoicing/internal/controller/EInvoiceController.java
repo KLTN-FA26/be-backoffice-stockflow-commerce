@@ -22,6 +22,7 @@ import com.stockflow.invoicing.internal.controller.dto.DrawUpEInvoiceRequest;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceErrorNoticeResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceFileLinkResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceListItemResponse;
+import com.stockflow.invoicing.internal.controller.dto.EInvoiceMailResendResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceRegisterEntryResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceSignatureResponse;
@@ -40,6 +41,7 @@ import com.stockflow.invoicing.internal.service.EInvoiceCorrections;
 import com.stockflow.invoicing.internal.service.EInvoiceDrafts;
 import com.stockflow.invoicing.internal.service.EInvoiceErrorNotices;
 import com.stockflow.invoicing.internal.service.EInvoiceIssuance;
+import com.stockflow.invoicing.internal.service.EInvoiceMails;
 import com.stockflow.invoicing.internal.service.EInvoiceQueryService;
 import com.stockflow.invoicing.internal.service.EInvoiceSignatures;
 import io.swagger.v3.oas.annotations.Operation;
@@ -86,6 +88,9 @@ import java.util.UUID;
  * correction up is CREATE, attaching its agreement UPDATE, and issuing it or notifying the tax authority APPROVE: the
  * permission set has no action of its own for corrections.</p>
  *
+ * <p>One handler is not the accountant's: {@code /email} sends an issued invoice to its buyer again, for whoever records
+ * the customer's invoice e-mail ({@code customer-legal-profiles:UPDATE}, Sales included; audit r2 M-1).</p>
+ *
  * <p>Handlers are public so the permission proxy advises them.</p>
  */
 @RestController
@@ -102,12 +107,14 @@ class EInvoiceController {
     private final EInvoiceCorrections corrections;
     private final EInvoiceErrorNotices errorNotices;
     private final EInvoiceSignatures signatures;
+    private final EInvoiceMails mails;
     private final Clock clock;
 
     EInvoiceController(EInvoiceDrafts drafts, EInvoiceIssuance issuance, EInvoiceQueryService queries,
                        EInvoiceCorrections corrections, EInvoiceErrorNotices errorNotices,
-                       EInvoiceSignatures signatures, Clock clock) {
+                       EInvoiceSignatures signatures, EInvoiceMails mails, Clock clock) {
         this.signatures = signatures;
+        this.mails = mails;
         this.corrections = corrections;
         this.errorNotices = errorNotices;
         this.drafts = drafts;
@@ -282,7 +289,8 @@ class EInvoiceController {
             + "missing (a missing invoice e-mail is only the warning BUYER_EMAIL_MISSING); 409 "
             + "EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE for a correction whose original was issued through a provider "
             + "that is not usable any more (it goes only through that provider); 409 EINVOICE_OLDER_DRAFT_PENDING while an invoice of the same series dated before it is at the "
-            + "provider (a draft or a rejected one does not keep it back); 409 EINVOICE_TAX_EXEMPT_NOT_SUPPORTED for a "
+            + "provider (a draft or a rejected one does not keep it back; never under a provider that takes only "
+            + "today's date, SePay); 409 EINVOICE_TAX_EXEMPT_NOT_SUPPORTED for a "
             + "line at 0% (tax class EXEMPT, which cannot be issued yet). Every check of the automatic issuing is made "
             + "again first: 409 EINVOICE_NOT_INVOICEABLE when its shipment is not delivered now; 409 "
             + "EINVOICE_DRAFT_OUT_OF_DATE (details.warnings) when a warning found now, or a buyer the customer's profile "
@@ -401,6 +409,25 @@ class EInvoiceController {
                 note, basis, returnRequestId), user.userId()), clock.instant()));
     }
 
+    @PostMapping("/{id}/email")
+    @Operation(summary = "E-mail an issued e-invoice to its buyer again, with its PDF and XML, to the customer's invoice "
+            + "e-mail as it is now (WF-05 audit r2 M-1; HĐ-8: an invoice issued while the customer had no e-mail, once "
+            + "Sales has recorded one; or after a mail went to an address since corrected). Accepted at once, sent a "
+            + "moment later and retried like the first mail; asked twice within a second, one mail. For whoever records "
+            + "the customer's legal profile (customer-legal-profiles:UPDATE: Sales, Sales Manager, accountant). 409 "
+            + "EINVOICE_NOT_ISSUED before it is issued; 409 EINVOICE_INVALID_TRANSITION (details.reason "
+            + "SIGNATURE_INVALID) for an invoice whose signature does not hold; 409 EINVOICE_BUYER_PROFILE_INCOMPLETE "
+            + "(details.missing [EMAIL]) while the customer has no invoice e-mail")
+    @RequiresPermission(resource = InvoicingResources.LEGAL_PROFILES, action = Action.UPDATE,
+            scope = DataScope.ALL)
+    public ApiResponse<EInvoiceMailResendResponse> resendEmail(@PathVariable UUID id,
+                                                               @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        EInvoiceMails.Resend resend = mails.resend(id, user.userId());
+        return ApiResponse.ok(new EInvoiceMailResendResponse(resend.einvoiceId(), resend.recipient(),
+                resend.requestedAt()));
+    }
+
     @PostMapping("/{id}/delivery-failure-reduction")
     @Operation(summary = "Reduce for the failed delivery (WF-05 BE-11): draw up the reduction of an issued invoice whose "
             + "shipment is not delivered now, as the system does when it hears of the failure - what the invoice and "
@@ -435,7 +462,8 @@ class EInvoiceController {
 
     private EInvoiceResponse response(com.stockflow.invoicing.internal.domain.EInvoice.Snapshot invoice, Instant now,
                                       String earlierPending) {
-        return InvoicingWebMapper.toResponse(invoice, now, earlierPending, queries.errorNoticeSupported(invoice));
+        return InvoicingWebMapper.toResponse(invoice, now, earlierPending, queries.errorNoticeSupported(invoice),
+                issuance.withdrawability(invoice), issuance.externalReductions(invoice));
     }
 
     // ---- corrections of an issued invoice (WF-05 E4; TT 91/2026/TT-BTC Điều 10) -------------------------------------
