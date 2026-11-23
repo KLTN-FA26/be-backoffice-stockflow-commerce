@@ -263,7 +263,8 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
                 e.getReturnDeadline(), e.getSettlementAmount(), e.getRefundedAmount(), e.getOffsetAmount(),
                 e.getCurrency(), e.isVatAdjustmentRequired(), e.getClosedAt(), e.getVersion(), e.getShipmentId(),
                 e.getRefusalReason(), e.getStatus() != null && com.stockflow.order.internal.domain.ReturnRequest
-                        .receiptOpenable(e.getStatus(), e.getReturnRequired(), e.getDecidedAt()));
+                        .receiptOpenable(e.getStatus(), e.getReturnRequired(), e.getDecidedAt()),
+                e.getOpenDraftReceiptId() != null);
     }
 
     private static ReturnStatus statusOrNull(String name) {

@@ -121,7 +121,7 @@ final class ReturnWebMapper {
                 r.version(), decided(r) && r.outcome() != null ? r.outcome().name() : null,
                 decided(r) && r.refusalReason() != null ? r.refusalReason().name() : null,
                 decided(r) && r.refusalReason() != null ? refusalLabel(r.refusalReason()) : null,
-                decided(r) ? r.refusalNote() : null);
+                decided(r) ? r.refusalNote() : null, r.openDraftReceiptId() != null);
     }
 
     /**
@@ -140,14 +140,17 @@ final class ReturnWebMapper {
         return r.status() == ReturnStatus.RESOLVED;
     }
 
-    /** The customer's own list: no amount before it is approved, and no accounting or warehouse flag. */
+    /**
+     * The customer's own list: no amount before it is approved, and no accounting or warehouse flag - except
+     * {@code receiptDraftOpen}, which decides whether the customer may withdraw.
+     */
     static ReturnRequestRowResponse toCustomerRow(ReturnRequestQueries.Item i) {
         boolean decided = i.status() == ReturnStatus.RESOLVED;
         return new ReturnRequestRowResponse(i.id(), i.rmaNumber(), i.orderId(), i.orderNumber(), i.customerId(),
                 i.status().name(), i.reason().name(), i.requestedResolution().name(), i.channel(), i.requestedAt(),
                 i.returnDeadline(), decided ? i.settlementAmount() : null, decided ? i.refundedAmount() : null,
                 decided ? i.offsetAmount() : null, i.currency(), false, i.closedAt(), i.version(), i.shipmentId(),
-                i.outcome() == null ? null : i.outcome().name(), false);
+                i.outcome() == null ? null : i.outcome().name(), false, i.receiptDraftOpen());
     }
 
     static ReturnRequestRowResponse toRow(ReturnRequestQueries.Item i) {
@@ -155,7 +158,7 @@ final class ReturnWebMapper {
                 i.status().name(), i.reason().name(), i.requestedResolution().name(), i.channel(), i.requestedAt(),
                 i.returnDeadline(), i.settlementAmount(), i.refundedAmount(), i.offsetAmount(), i.currency(),
                 i.vatAdjustmentRequired(), i.closedAt(), i.version(), i.shipmentId(),
-                i.outcome() == null ? null : i.outcome().name(), i.receiptOpenable());
+                i.outcome() == null ? null : i.outcome().name(), i.receiptOpenable(), i.receiptDraftOpen());
     }
 
     private static ReturnRequestResponse.Line toLine(ReturnLine l) {

@@ -50,7 +50,7 @@ public class ReturnRequestQueries {
                        BigDecimal refundedAmount, BigDecimal offsetAmount, String currency,
                        boolean vatAdjustmentRequired, Instant closedAt, long version, UUID shipmentId,
                        com.stockflow.order.internal.domain.ReturnRefusalReason refusalReason,
-                       boolean receiptOpenable) {
+                       boolean receiptOpenable, boolean receiptDraftOpen) {
 
         /**
          * How it ended (WF-05 Q-4), as {@link com.stockflow.order.internal.domain.ReturnRequest#outcome} says it: a
@@ -173,7 +173,7 @@ public class ReturnRequestQueries {
                 row.reason(), row.requestedResolution(), row.channel(), row.requestedAt(), row.returnDeadline(),
                 row.settlementAmount(), row.refundedAmount(), row.offsetAmount(), row.currency(),
                 row.vatAdjustmentRequired(), row.closedAt(), row.version(), row.shipmentId(), row.refusalReason(),
-                row.receiptOpenable());
+                row.receiptOpenable(), row.receiptDraftOpen());
     }
 
     private static BusinessException notFound(UUID returnId) {

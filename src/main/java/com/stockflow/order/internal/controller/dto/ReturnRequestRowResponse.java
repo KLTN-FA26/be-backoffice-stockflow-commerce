@@ -24,5 +24,11 @@ public record ReturnRequestRowResponse(UUID id, String rmaNumber, UUID orderId, 
                                        String outcome,
                                        @Schema(description = "Whether a return receipt may be opened for it now "
                                                + "(WF-05 Q-11): approved and its refund not settled")
-                                       boolean receiptOpenable) {
+                                       boolean receiptOpenable,
+                                       @Schema(description = "Whether a parcel of it is being counted on a DRAFT "
+                                               + "return receipt now (WF-05 BE-23): the customer cannot withdraw it, "
+                                               + "and goods-complete, refund proposal and approval answer 409 "
+                                               + "RETURN_RECEIPT_DRAFT_OPEN, until the warehouse confirms or "
+                                               + "cancels that receipt")
+                                       boolean receiptDraftOpen) {
 }

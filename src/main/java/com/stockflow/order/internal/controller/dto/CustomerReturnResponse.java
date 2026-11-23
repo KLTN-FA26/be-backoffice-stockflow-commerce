@@ -51,7 +51,11 @@ public record CustomerReturnResponse(
         @Schema(description = "refusalReason as the customer reads it (Vietnamese)", example = "Hư hỏng do bảo quản/sử dụng")
         String refusalReasonLabel,
         @Schema(description = "The note Sales wrote for the customer beside the reason")
-        String refusalNote) implements ReturnView {
+        String refusalNote,
+        @Schema(description = "Whether the warehouse is counting a parcel of it on a DRAFT return receipt now (WF-05 "
+                + "BE-23): the return cannot be withdrawn meanwhile (409 RETURN_RECEIPT_DRAFT_OPEN), so the portal "
+                + "hides the withdraw button")
+        boolean receiptDraftOpen) implements ReturnView {
 
     public record Line(UUID id, UUID orderLineId, String sku, int requestedQuantity, Integer approvedQuantity,
                        Integer receivedQuantity, int refundQuantity, BigDecimal refundAmount) {

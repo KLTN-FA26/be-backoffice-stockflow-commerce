@@ -78,7 +78,8 @@ class ReturnRefusalResponseTest {
                 r.status(), r.reason(), r.requestedResolution(), r.channel().name(), r.requestedAt(),
                 r.returnDeadline(), r.settlementAmount(), BigDecimal.ZERO, BigDecimal.ZERO, r.currency(),
                 r.vatAdjustmentRequired(), r.closedAt(), r.version(), r.shipmentId(), r.refusalReason(),
-                ReturnRequest.receiptOpenable(r.status(), r.returnRequired(), r.decidedAt()));
+                ReturnRequest.receiptOpenable(r.status(), r.returnRequired(), r.decidedAt()),
+                r.openDraftReceiptId() != null);
     }
 
     @Test
@@ -98,6 +99,36 @@ class ReturnRefusalResponseTest {
         assertThat(staff.refusalNote()).isEqualTo("Thùng bị ướt khi lưu kho");
         assertThat(staff.receiptOpenable()).isTrue();
         assertThat(staff.receiptDraftOpen()).isFalse();
+        assertThat(customer.receiptDraftOpen()).isFalse();
+        assertThat(ReturnWebMapper.toRow(item(request)).receiptDraftOpen()).isFalse();
+        assertThat(ReturnWebMapper.toCustomerRow(item(request)).receiptDraftOpen()).isFalse();
+    }
+
+    @Test
+    @DisplayName("a parcel on a DRAFT receipt: receiptDraftOpen on the customer detail and row and on the staff row, "
+            + "and the withdraw it stands for is refused")
+    void draftReceiptOpen() {
+        Order order = order();
+        ReturnRequest request = ReturnRequest.open("RMA-20261123-0002", UUID.randomUUID(), order, ReturnChannel.PORTAL,
+                ReturnReason.DAMAGED_IN_TRANSIT, null, ReturnResolution.REFUND, List.of(new ReturnRequest.Claim(LINE, 5)),
+                Map.of(), Set.of(), CUSTOMER, NOW, POLICY);
+        request.addEvidence(new ReturnEvidence(UUID.randomUUID(), ReturnEvidence.Stage.CLAIM, "k", "a.jpg", "image/jpeg",
+                10, CUSTOMER, NOW), POLICY);
+        request.approve(SALES, NOW, null, null, null, POLICY);
+        UUID draft = UUID.randomUUID();
+        request.draftReceiptOpened(draft);
+
+        assertThat(ReturnWebMapper.toCustomerResponse(request, List.of()).receiptDraftOpen()).isTrue();
+        assertThat(ReturnWebMapper.toCustomerRow(item(request)).receiptDraftOpen()).isTrue();
+        assertThat(ReturnWebMapper.toRow(item(request)).receiptDraftOpen()).isTrue();
+        assertThat(ReturnWebMapper.toResponse(request, List.of()).receiptDraftOpen()).isTrue();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> request.cancel(CUSTOMER, NOW, "đổi ý", true))
+                .isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class, e -> assertThat(
+                        e.errorCode()).isEqualTo(com.stockflow.common.error.ErrorCode.RETURN_RECEIPT_DRAFT_OPEN));
+
+        request.draftReceiptClosed(draft);
+        assertThat(ReturnWebMapper.toCustomerResponse(request, List.of()).receiptDraftOpen()).isFalse();
+        assertThat(ReturnWebMapper.toCustomerRow(item(request)).receiptDraftOpen()).isFalse();
     }
 
     @Test
