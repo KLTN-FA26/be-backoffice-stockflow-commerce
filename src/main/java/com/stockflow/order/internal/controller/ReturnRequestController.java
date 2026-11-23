@@ -160,6 +160,8 @@ class ReturnRequestController {
                                               @RequestParam int quantity,
                                               @RequestParam(required = false) String note,
                                               @AuthenticatedUser CurrentUser user) throws IOException {
+        // A customer holds sales-rmas:CREATE for their own claims; a custody note is the warehouse's, on any return.
+        ScopeGuards.requireBackOffice(user);
         ReturnEvidence.Custody custody = custody(sku, lpn, quantity, note);
         try (InputStream content = file.getInputStream()) {
             FileUpload upload = new FileUpload(file.getOriginalFilename() == null ? "photo" : file.getOriginalFilename(),
@@ -175,6 +177,7 @@ class ReturnRequestController {
     @RequiresPermission(resource = OrderResources.RMAS, action = Action.CREATE, scope = DataScope.ALL)
     public ResponseEntity<ApiResponse<UploadSlot>> beginCustodyUpload(@PathVariable UUID returnId,
             @Valid @RequestBody UploadSlotRequest request, @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
         return slot(returns.beginEvidenceUpload(returnId, null, ReturnEvidence.Stage.CUSTODY, request,
                 user.userId()));
     }
@@ -185,6 +188,7 @@ class ReturnRequestController {
     @RequiresPermission(resource = OrderResources.RMAS, action = Action.CREATE, scope = DataScope.ALL)
     public ApiResponse<ReturnView> addUploadedCustody(@PathVariable UUID returnId,
             @Valid @RequestBody ReturnRequests.Custody body, @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
         ReturnEvidence.Custody custody = custody(body.sku(), body.lpn(), body.quantity(), body.note());
         return ApiResponse.ok(view(returns.addUploadedEvidence(returnId, null, ReturnEvidence.Stage.CUSTODY, custody,
                 body.uploadId(), user.userId()), true));
