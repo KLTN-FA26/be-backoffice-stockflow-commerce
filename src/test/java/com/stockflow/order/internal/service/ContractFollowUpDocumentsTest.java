@@ -11,6 +11,7 @@ import java.time.LocalDate;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The two papers that follow a signed contract: its appendix (Bộ luật Dân sự 2015 Điều 403) and the record that
@@ -47,6 +48,12 @@ class ContractFollowUpDocumentsTest {
                         new BigDecimal("58320000"), "VND") : null, draft);
     }
 
+    /**
+     * Delivered: 25,000 + 4,000 cups delivered, 1,000 returned and refunded; kept 24,000 x 1,800 + 4,000 x 2,250 =
+     * 52,200,000 before VAT, 56,376,000 with 8%; a plate fee of 1,080,000 with VAT besides; paid 17,496,000 +
+     * 41,904,000 = 59,400,000, paid back 1,944,000: 56,376,000 + 1,080,000 - 59,400,000 + 1,944,000 = 0.
+     * Not delivered: the plate fee was made and is kept; the deposit paid, the rest of it paid back.
+     */
     private static ContractLiquidationDocument.Facts liquidationFacts(boolean delivered) {
         List<ContractLiquidationDocument.GoodsLine> goods = List.of(
                 new ContractLiquidationDocument.GoodsLine("LY12-MLC-01", "Ly giấy 12oz in logo Mộc Lam", "Cái",
@@ -58,12 +65,13 @@ class ContractFollowUpDocumentsTest {
         return new ContractLiquidationDocument.Facts("TL-" + CONTRACT, CONTRACT, LocalDate.of(2026, 11, 9),
                 LocalDate.of(2026, 12, 28), SalesDocumentSamples.SELLER, SalesDocumentSamples.BUYER,
                 delivered ? null : "lô hàng giao không thành công và Bên B không còn nhu cầu nhận hàng", goods,
-                new BigDecimal("58320000"), delivered ? new BigDecimal("58320000") : BigDecimal.ZERO,
-                delivered ? new BigDecimal("1944000") : BigDecimal.ZERO,
+                new BigDecimal("58320000"), delivered ? new BigDecimal("56376000") : BigDecimal.ZERO,
+                new BigDecimal("1080000"),
                 delivered ? List.of(deposit, new ContractLiquidationDocument.Payment(LocalDate.of(2026, 12, 12),
-                        "FT26346000456", new BigDecimal("38000000"))) : List.of(deposit),
-                BigDecimal.ZERO, delivered ? List.of("số 00000042 (12/12/2026)", "số 00000057 (20/12/2026, điều "
-                        + "chỉnh giảm)") : List.of(), delivered ? LocalDate.of(2027, 1, 10) : null);
+                        "FT26346000456", new BigDecimal("41904000"))) : List.of(deposit),
+                delivered ? new BigDecimal("1944000") : new BigDecimal("16416000"),
+                delivered ? List.of("số 00000042 (12/12/2026)", "số 00000057 (20/12/2026, điều chỉnh giảm)")
+                        : List.of());
     }
 
     @Test
@@ -105,14 +113,14 @@ class ContractFollowUpDocumentsTest {
     }
 
     @Test
-    @DisplayName("a liquidation settles the contract in tables: contracted, delivered and returned line by line, then "
-            + "from the contract's value down to the balance it works out itself, in figures and in words")
+    @DisplayName("owner 2026-11-23: a liquidation keeps the contract's value as signed and prints, in order, the value "
+            + "performed, the other charges, what was paid with each payment, what was paid back and what is left - "
+            + "0 - then that the parties owe each other nothing more")
     void liquidationInFull() throws IOException {
         byte[] pdf = DocumentSamples.keep("contract-liquidation-sample", liquidation.render(liquidationFacts(true)));
 
         assertThat(DocumentSamples.within(pdf, 30, 15)).as("inside the margins of Nghị định 30").isTrue();
         String text = DocumentSamples.text(pdf);
-        // 58.320.000 delivered - 1.944.000 returned - 17.496.000 - 38.000.000 paid = 880.000 still owed.
         assertThat(text).containsSubsequence("BIÊN BẢN THANH LÝ HỢP ĐỒNG MUA BÁN HÀNG HÓA", "Số: TL-" + CONTRACT,
                 "Căn cứ Bộ luật Dân sự số 91/2015/QH13", "Căn cứ Luật Thương mại số 36/2005/QH11",
                 "Căn cứ Hợp đồng mua bán hàng hóa số " + CONTRACT + " ký ngày 09/11/2026 giữa hai Bên;",
@@ -120,28 +128,47 @@ class ContractFollowUpDocumentsTest {
                 "ĐIỀU 1. THỎA THUẬN CHẤM DỨT HỢP ĐỒNG", "đã được thực hiện xong",
                 "ĐIỀU 2. NGHĨA VỤ ĐÃ HOÀN THÀNH", "SL theo hợp đồng", "SL thực giao", "SL trả lại", "SL quyết toán",
                 "Ly giấy 12oz in logo Mộc Lam", "25.000", "25.000", "1.000", "24.000", "1.800", "43.200.000",
-                "Giá trị Hợp đồng", "58.320.000", "Giảm trừ do trả lại hàng, điều chỉnh hóa đơn", "-1.944.000",
-                "Bên B đã thanh toán ngày 10/11/2026", "FT26314000123", "-17.496.000",
-                "Bên B còn phải thanh toán", "880.000", "Tám trăm tám mươi nghìn đồng",
+                "Giá trị Hợp đồng", "58.320.000",
+                "Giá trị thực hiện (hàng hóa đã giao thành công)", "56.376.000",
+                "Phí và khoản khác theo Hợp đồng", "1.080.000",
+                "Đã thanh toán", "59.400.000", "Trong đó: Bên B thanh toán ngày 10/11/2026", "FT26314000123",
+                "17.496.000", "Đã hoàn trả", "1.944.000", "Còn lại", "0",
+                "Hai Bên xác nhận đã hoàn thành nghĩa vụ thanh toán theo Hợp đồng và không còn nghĩa vụ nào khác "
+                        + "đối với nhau.",
                 "số 00000042 (12/12/2026)",
-                "ĐIỀU 3. NGHĨA VỤ CÒN LẠI CỦA CÁC BÊN", "880.000 đồng trước ngày 10/01/2027",
+                "ĐIỀU 3. NGHĨA VỤ CÒN LẠI CỦA CÁC BÊN", "Hai Bên không còn khoản phải thanh toán nào theo Hợp đồng.",
                 "ĐIỀU 4. ĐIỀU KHOẢN CHUNG", "Ngoài các nghĩa vụ nêu tại Điều 3",
                 "ĐẠI DIỆN BÊN A", "ĐẠI DIỆN BÊN B");
-        assertThat(text).contains("GIÁM ĐỐC", "TỔNG GIÁM ĐỐC").doesNotContain("?");
+        assertThat(text).contains("GIÁM ĐỐC", "TỔNG GIÁM ĐỐC").doesNotContain("?", "còn phải");
     }
 
     @Test
-    @DisplayName("a contract that ends with nothing delivered is liquidated too (Q-6): the reason, no goods table, "
-            + "and what the seller still pays back")
+    @DisplayName("a contract that ends with nothing delivered is liquidated too (Q-6): the reason, no goods table, a "
+            + "value performed of 0, the plate fee kept, the deposit paid and the rest of it paid back, 0 left")
     void liquidationWithNothingDelivered() throws IOException {
         byte[] pdf = DocumentSamples.keep("contract-liquidation-undelivered",
                 liquidation.render(liquidationFacts(false)));
 
         String text = DocumentSamples.text(pdf);
         assertThat(text).contains("Do lô hàng giao không thành công và Bên B không còn nhu cầu nhận hàng, các Bên",
-                "Bên A chưa giao hàng hóa nào cho Bên B theo Hợp đồng.", "Bên A còn phải hoàn trả", "17.496.000",
-                "Mười bảy triệu bốn trăm chín mươi sáu nghìn đồng",
-                "Bên A hoàn trả cho Bên B số tiền là 17.496.000 đồng trước ngày ....../....../............")
-                .doesNotContain("SL thực giao", "bảo hành");
+                "Bên A chưa giao hàng hóa nào cho Bên B theo Hợp đồng.")
+                .containsSubsequence("Giá trị Hợp đồng", "58.320.000", "Giá trị thực hiện", "0",
+                        "Phí và khoản khác theo Hợp đồng", "1.080.000", "Đã thanh toán", "17.496.000", "Đã hoàn trả",
+                        "16.416.000", "Còn lại", "0", "không còn nghĩa vụ nào khác đối với nhau")
+                .doesNotContain("SL thực giao", "bảo hành", "còn phải");
+    }
+
+    @Test
+    @DisplayName("a liquidation whose rows leave anything to pay or pay back is never drawn: it would put a false "
+            + "\"no other obligations\" up for signature")
+    void anUnsettledLiquidationIsNotDrawn() {
+        ContractLiquidationDocument.Facts settled = liquidationFacts(true);
+        ContractLiquidationDocument.Facts owing = new ContractLiquidationDocument.Facts(settled.number(),
+                settled.contractNumber(), settled.contractDate(), settled.dated(), settled.seller(), settled.buyer(),
+                settled.reason(), settled.goods(), settled.contractValue(), settled.performedValue(),
+                settled.otherCharges(), settled.payments(), BigDecimal.ZERO, settled.invoices());
+        assertThat(owing.remaining()).as("the refund still owed to the buyer").isEqualByComparingTo("-1944000");
+        assertThatThrownBy(() -> liquidation.render(owing)).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not settled");
     }
 }

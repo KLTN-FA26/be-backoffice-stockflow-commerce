@@ -8,6 +8,7 @@ import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.internal.service.DeliveryBatchService;
+import com.stockflow.payment.internal.service.RefundService;
 import com.stockflow.support.ConfirmedOrders;
 import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.IntegrationTest;
@@ -70,6 +71,7 @@ class ContractPapersHttpTest {
     @Autowired EntityManager entityManager;
     @Autowired DeliveryBatchService batches;
     @Autowired OrderService orderService;
+    @Autowired RefundService refunds;
 
     private SecuredMvc http;
     private ConfirmedOrders orders;
@@ -154,9 +156,10 @@ class ContractPapersHttpTest {
 
     @Test
     @DisplayName("a liquidation: refused while the contract is being performed (409); once the paid order is "
-            + "cancelled, Sales' and the customer's PDF says why the contract ends, that nothing was delivered, the "
-            + "payment received and what the seller still has to pay back; another customer 404, a customer on the "
-            + "staff path 403")
+            + "cancelled, still refused while its refund is owed (409, owner 2026-11-23: nothing may be left); once "
+            + "paid back, Sales' and the customer's PDF says why the contract ends, that nothing was delivered, the "
+            + "contract's value as signed, a value performed of 0, the payment, the refund and 0 left; another "
+            + "customer 404, a customer on the staff path 403")
     void liquidation() throws Exception {
         String staffPath = "/api/v1/orders/" + signed.orderId() + "/contract/liquidation";
         String ownPath = "/api/v1/orders/me/" + signed.orderId() + "/contract/liquidation";
@@ -167,6 +170,11 @@ class ContractPapersHttpTest {
         WithCurrentUser.run(orders.sales(), DataScope.ALL, () -> orderService.cancel(signed.orderId(),
                 new CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST, "agreed with the customer", null,
                         orders.sales().userId(), null)));
+        http.asRole(Role.SALES_STAFF, sales, get(staffPath)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("SALES_CONTRACT_STATUS_INVALID"));
+
+        refunds.record(new RefundService.RecordRefundCommand(signed.orderId(), signed.total(), LocalDate.now(),
+                "FT-REFUND-" + signed.orderId().toString().substring(0, 8), null, sales));
         String reference = jdbc.queryForObject("SELECT reference FROM payment.payment_receipt WHERE id = ?",
                 String.class, paid.receiptId());
         String total = String.format("%,d", signed.total().longValueExact()).replace(',', '.');
@@ -176,8 +184,11 @@ class ContractPapersHttpTest {
         assertThat(record).contains("BIÊN BẢN THANH LÝ HỢP ĐỒNG MUA BÁN HÀNG HÓA",
                 "Số: TL-" + signed.contractNumber(), "Công ty Cổ phần Cà phê Mộc Lam",
                 "Do đơn đặt hàng số " + signed.orderNumber() + " theo Hợp đồng đã được hủy",
-                "Bên A chưa giao hàng hóa nào cho Bên B theo Hợp đồng.", "Giá trị Hợp đồng", reference,
-                "Bên A còn phải hoàn trả", "Bên A hoàn trả cho Bên B số tiền là " + total + " đồng");
+                "Bên A chưa giao hàng hóa nào cho Bên B theo Hợp đồng.", reference,
+                "không còn nghĩa vụ nào khác đối với nhau")
+                .containsSubsequence("Giá trị Hợp đồng", total, "Giá trị thực hiện", "0", "Đã thanh toán", total,
+                        "Đã hoàn trả", total, "Còn lại", "0")
+                .doesNotContain("còn phải");
         assertThat(text(http.asCustomer(owner, get(ownPath)))).contains("BIÊN BẢN THANH LÝ HỢP ĐỒNG", reference);
 
         http.asCustomer(stranger, get(ownPath)).andExpect(status().isNotFound());

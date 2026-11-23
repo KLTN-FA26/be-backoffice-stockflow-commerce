@@ -30,9 +30,15 @@ import java.util.ResourceBundle;
  * contract was - Quốc hiệu and Tiêu ngữ, the legal bases, the two parties, four clauses, two signature blocks - and
  * its second clause is a settlement, not a sentence: a contract here is delivered in several batches and paid in
  * several instalments, so the goods are a table of what was contracted, delivered and returned line by line, and the
- * money a table from the contract's value down to what is still owed, each payment with its date and reference. The
- * balance is worked out here from the figures printed above it, so the record cannot state a balance its own rows do
- * not add up to.</p>
+ * money a table the owner fixed (2026-11-23): the contract's value as signed, never amended here; the value performed
+ * - the goods delivered successfully and kept, 0 when nothing was; what was paid; what was paid back; and what is left,
+ * which is 0, followed by the statement that the parties owe each other nothing more. Fees the contract charged besides
+ * the goods (plate fees, the shipping fee kept, a cancellation fee) are a row of their own between the value performed
+ * and the payments, so the rows add up.</p>
+ *
+ * <p><b>Only a settled contract is liquidated here.</b> A record whose rows leave something to pay or to pay back is
+ * a wrong paper to sign - it would say "no other obligations" over a debt - so {@link #render} refuses one whose
+ * rows do not come to 0, and its caller refuses before it asks ({@code ContractPaperService}).</p>
  *
  * <p>A contract that ends with nothing delivered - every delivery failed, or it was called off after signing - is
  * liquidated too (owner decision Q-6: such a contract is "liquidated", not "completed"): the goods table is then a
@@ -45,22 +51,29 @@ class ContractLiquidationDocument {
     /**
      * Everything the record says. Amounts include VAT, as the contract's value does.
      *
-     * @param reason       why the contract ends before it is performed; null for a contract performed in full
-     * @param settledValue the value of what was actually delivered
-     * @param deductions   what returns and invoice adjustments took off that value; zero when none
-     * @param refunded     what the seller has already paid back; zero when none
-     * @param invoices     the invoices issued under the contract, adjustments included, as "number (date)"
-     * @param settleBy     the day the balance, if any, is to be paid by; null to leave the day to be written in
+     * @param reason         why the contract ends before it is performed; null for a contract performed in full
+     * @param contractValue  the contract's value as signed - never the value performed
+     * @param performedValue the goods delivered successfully and kept (delivered less returned), with VAT; zero when
+     *                       nothing was delivered
+     * @param otherCharges   what the contract charged besides those goods and the customer keeps paying for - plate
+     *                       fees, the shipping fee not waived, a cancellation or closing fee; below zero, a reduction
+     *                       the books made that the goods do not show; zero when none
+     * @param refunded       what the seller paid back; zero when none
+     * @param invoices       the invoices issued under the contract, adjustments included, as "number (date)"
      */
     record Facts(String number, String contractNumber, LocalDate contractDate, LocalDate dated,
                  SalesContracts.Party seller, SalesContracts.Party buyer, String reason, List<GoodsLine> goods,
-                 BigDecimal contractValue, BigDecimal settledValue, BigDecimal deductions, List<Payment> payments,
-                 BigDecimal refunded, List<String> invoices, LocalDate settleBy) {
+                 BigDecimal contractValue, BigDecimal performedValue, BigDecimal otherCharges, List<Payment> payments,
+                 BigDecimal refunded, List<String> invoices) {
 
-        /** What the buyer still owes; below zero, what the seller still owes back. */
-        BigDecimal balance() {
-            BigDecimal paid = payments.stream().map(Payment::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
-            return settledValue.subtract(deductions).subtract(paid).add(refunded);
+        /** What the buyer paid, over every payment in force. */
+        BigDecimal paid() {
+            return payments.stream().map(Payment::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
+        }
+
+        /** What the rows leave: owed for the value performed and the charges, less paid, plus paid back. */
+        BigDecimal remaining() {
+            return performedValue.add(otherCharges).subtract(paid()).add(refunded);
         }
     }
 
@@ -85,7 +98,16 @@ class ContractLiquidationDocument {
         this.letterhead = letterhead;
     }
 
+    /**
+     * @throws IllegalArgumentException for facts whose rows leave something to pay or to pay back: a liquidation
+     *         states that nothing is left, and this one would not be true
+     */
     byte[] render(Facts f) {
+        if (f.remaining().signum() != 0) {
+            throw new IllegalArgumentException(("Contract %s is not settled: its rows leave %s; a liquidation is "
+                    + "drawn only for a contract with nothing left to pay or pay back").formatted(f.contractNumber(),
+                    f.remaining().toPlainString()));
+        }
         ResourceBundle t = DocumentParts.bundle();
         Letterhead head = letterhead.get();
         String contractDate = DocumentFormats.date(f.contractDate());
@@ -120,24 +142,15 @@ class ContractLiquidationDocument {
             clauses.point("done.noGoods");
         }
         clauses.point("done.payment");
-        BigDecimal balance = f.balance();
-        blocks.add(settlement(t, f, balance));
-        if (balance.signum() != 0) {
-            DocumentParts.inWords(blocks, t.getString("document.inWords"), balance.abs());
-        }
+        blocks.add(settlement(t, f));
+        blocks.add(DocumentParts.lead(t.getString("liquidation.pdf.settle.noObligation")));
         if (!f.invoices().isEmpty()) {
             clauses.point("done.invoices", String.join("; ", f.invoices()));
         }
 
         clauses.title("remaining");
         int remaining = clauses.number();
-        if (balance.signum() != 0) {
-            clauses.point(balance.signum() > 0 ? "remaining.pay" : "remaining.refund",
-                    DocumentFormats.money(balance.abs()), f.settleBy() == null ? t.getString("document.blankDate")
-                            : DocumentFormats.date(f.settleBy()));
-        } else {
-            clauses.point("remaining.none");
-        }
+        clauses.point("remaining.none");
         if (delivered) {
             clauses.point("remaining.warranty");
         }
@@ -181,23 +194,26 @@ class ContractLiquidationDocument {
                 new Column(t.getString("liquidation.pdf.col.amount"), 70, Align.RIGHT)), rows);
     }
 
-    /** From the contract's value down to the balance: every figure the balance is made of, then the balance. */
-    private static Table settlement(ResourceBundle t, Facts f, BigDecimal balance) {
+    /**
+     * The owner's rows (2026-11-23), every figure positive: the contract's value, the value performed, the other
+     * charges when there are any, what was paid - with each payment under it - what was paid back, and what is left,
+     * which is 0.
+     */
+    private static Table settlement(ResourceBundle t, Facts f) {
         List<List<Cell>> rows = new ArrayList<>();
         rows.add(row(t.getString("liquidation.pdf.settle.contract"), "", f.contractValue(), false));
-        rows.add(row(t.getString("liquidation.pdf.settle.settled"), "", f.settledValue(), false));
-        if (f.deductions().signum() != 0) {
-            rows.add(row(t.getString("liquidation.pdf.settle.deductions"), "", f.deductions().negate(), false));
+        rows.add(row(t.getString("liquidation.pdf.settle.performed"), "", f.performedValue(), false));
+        if (f.otherCharges().signum() != 0) {
+            rows.add(row(t.getString(f.otherCharges().signum() > 0 ? "liquidation.pdf.settle.other"
+                    : "liquidation.pdf.settle.otherReduction"), "", f.otherCharges().abs(), false));
         }
+        rows.add(row(t.getString("liquidation.pdf.settle.paid"), "", f.paid(), false));
         for (Payment payment : f.payments()) {
-            rows.add(row(t.getString("liquidation.pdf.settle.paid").formatted(DocumentFormats.date(payment.date())),
-                    payment.reference(), payment.amount().negate(), false));
+            rows.add(row(t.getString("liquidation.pdf.settle.payment").formatted(DocumentFormats.date(payment.date())),
+                    payment.reference(), payment.amount(), false));
         }
-        if (f.refunded().signum() != 0) {
-            rows.add(row(t.getString("liquidation.pdf.settle.refunded"), "", f.refunded(), false));
-        }
-        rows.add(row(t.getString(balance.signum() > 0 ? "liquidation.pdf.settle.due" : balance.signum() < 0
-                ? "liquidation.pdf.settle.refund" : "liquidation.pdf.settle.none"), "", balance.abs(), true));
+        rows.add(row(t.getString("liquidation.pdf.settle.refunded"), "", f.refunded(), false));
+        rows.add(row(t.getString("liquidation.pdf.settle.remaining"), "", f.remaining(), true));
         return new Table(List.of(new Column(t.getString("liquidation.pdf.col.item"), 250, Align.LEFT),
                 new Column(t.getString("liquidation.pdf.col.reference"), 110, Align.LEFT),
                 new Column(t.getString("liquidation.pdf.col.money"), 106, Align.RIGHT)), rows);

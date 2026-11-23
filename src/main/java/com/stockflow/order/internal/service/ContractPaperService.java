@@ -19,6 +19,7 @@ import com.stockflow.payment.api.ContractLedger;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -42,10 +43,15 @@ import java.util.stream.Collectors;
  * carries the whole difference, and a second window change redraws it rather than adding "appendix 02" on top of a
  * first nobody signed. A contract with no window moved has no appendix (404).</p>
  *
- * <p><b>The liquidation</b> is for a contract that has ended: completed with its order, or signed and its order then
- * cancelled, refunded or closed. One still being performed is refused (409): its figures would be out of date the next
- * day. The goods are the order's lines against what its shipments delivered and its returns took back; the money is
- * the payment module's own ({@link ContractLedger}), so the balance the parties sign is the accountant's.</p>
+ * <p><b>The liquidation</b> is for a contract that has ended: COMPLETED or LIQUIDATED with its order (WF-05 Q-6),
+ * or signed and its order then cancelled, refunded or closed. One still being performed is refused (409): its figures
+ * would be out of date the next day. So is one whose money is not settled (409): the record says the parties owe each
+ * other nothing more, and drawing it over a debt or a refund still owed would put a false statement up for signature
+ * (owner, 2026-11-23: "Còn lại" is 0 at liquidation). The goods are the order's lines against what its shipments
+ * delivered and its returns took back; the value performed is the goods delivered successfully and kept, at the
+ * order's prices with VAT, and 0 when nothing was delivered ({@link Order#deliveredSomething}, the one definition
+ * G1 made); the money is the payment module's own ({@link ContractLedger}), so the figures the parties sign are the
+ * accountant's. The contract's value is printed as signed and never changed.</p>
  *
  * <p>Each reader comes twice: for the back office, under the caller's data scope as the contract itself is read, and
  * for the customer's own order.</p>
@@ -105,7 +111,7 @@ public class ContractPaperService {
      * The record liquidating an order's contract, for the back office.
      *
      * @throws BusinessException {@code NOT_FOUND}, {@code SALES_CONTRACT_NOT_FOUND},
-     *         {@code SALES_CONTRACT_STATUS_INVALID} (not signed, or still being performed)
+     *         {@code SALES_CONTRACT_STATUS_INVALID} (not signed, still being performed, or its money not settled)
      */
     @Transactional(readOnly = true)
     public Pdf liquidation(UUID orderId) {
@@ -154,20 +160,28 @@ public class ContractPaperService {
         requireSigned(contract);
         Order order = orders.findById(new OrderId(contract.orderId()))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + contract.orderId()));
-        boolean completed = SalesContractStatus.COMPLETED.name().equals(contract.status());
-        if (!completed && !ended(order.status())) {
+        boolean ended = SalesContractStatus.COMPLETED.name().equals(contract.status())
+                || SalesContractStatus.LIQUIDATED.name().equals(contract.status());
+        if (!ended && !ended(order.status())) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, ("Contract %s is still being "
                     + "performed (order %s is %s): it is liquidated once the order is completed, cancelled, refunded "
                     + "or closed").formatted(contract.contractNumber(), order.orderNumber().value(), order.status()));
         }
+        ContractLedger.Standing money = ledger.of(contract.orderId());
+        if (money.outstanding().signum() != 0 || money.toRefund().signum() != 0) {
+            throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, ("Contract %s is not settled: "
+                    + "the customer still owes %s and is still owed %s back. A liquidation states that nothing is left; "
+                    + "it is drawn once the money is settled").formatted(contract.contractNumber(),
+                    money.outstanding().toPlainString(), money.toRefund().toPlainString()));
+        }
         ResourceBundle t = DocumentParts.bundle();
+        boolean deliveredSomething = order.deliveredSomething();
         String reason = order.status() == OrderStatus.CANCELLED
-                ? t.getString("contract-papers.liquidation.cancelled").formatted(order.orderNumber().value()) : null;
+                ? t.getString("contract-papers.liquidation.cancelled").formatted(order.orderNumber().value())
+                : deliveredSomething ? null
+                : t.getString("contract-papers.liquidation.undelivered").formatted(order.orderNumber().value());
 
-        Map<UUID, Long> delivered = new HashMap<>();
-        order.shipments().stream().filter(shipment -> shipment.status() == OrderShipmentStatus.DELIVERED)
-                .forEach(shipment -> shipment.quantities()
-                        .forEach((line, units) -> delivered.merge(line, (long) units, Long::sum)));
+        Map<UUID, Long> delivered = delivered(order, deliveredSomething);
         Map<UUID, Long> returned = new HashMap<>();
         for (ReturnRequest request : returns.findByOrder(contract.orderId())) {
             if (request.status() == ReturnStatus.RESOLVED) {
@@ -179,22 +193,47 @@ public class ContractPaperService {
         Map<String, String> names = shared.names(order.lines().stream().map(line -> line.sku().code()).toList());
         String piece = t.getString("document.unit.piece");
         List<ContractLiquidationDocument.GoodsLine> goods = new ArrayList<>();
+        BigDecimal performed = BigDecimal.ZERO;
         for (OrderLine line : order.lines()) {
+            long out = delivered.getOrDefault(line.id(), 0L);
+            long back = returned.getOrDefault(line.id(), 0L);
             goods.add(new ContractLiquidationDocument.GoodsLine(line.sku().code(), names.get(line.sku().code()),
-                    piece, line.quantity(), delivered.getOrDefault(line.id(), 0L),
-                    returned.getOrDefault(line.id(), 0L), line.unitPrice().amount()));
+                    piece, line.quantity(), out, back, line.unitPrice().amount()));
+            int kept = (int) Math.max(0, Math.min(line.quantity(), out - back));
+            performed = performed.add(line.grossOf(kept).amount());
         }
 
-        ContractLedger.Standing money = ledger.of(contract.orderId());
         List<ContractLiquidationDocument.Payment> payments = money.payments().stream()
                 .map(payment -> new ContractLiquidationDocument.Payment(payment.receivedOn(), payment.reference(),
                         payment.amount())).toList();
+        // The books settled, what the customer keeps paying for is what it paid less what came back (owed); the goods
+        // kept are part of it, and the rest is what the contract charged besides them.
+        BigDecimal otherCharges = money.owed().subtract(performed);
         String number = "TL-" + contract.contractNumber();
         byte[] pdf = liquidation.render(new ContractLiquidationDocument.Facts(number, contract.contractNumber(),
                 contract.signedOn(), today(), contract.seller(), contract.buyer(), reason, goods,
-                contract.totals().totalAmount(), money.owed().add(money.returned()), money.returned(), payments,
-                money.refunded(), List.of(), null));
+                contract.totals().totalAmount(), performed, otherCharges, payments, money.refunded(), List.of()));
         return new Pdf(t.getString("document.file.contractLiquidation").formatted(number), pdf);
+    }
+
+    /**
+     * The units of each line delivered successfully: what the order's DELIVERED shipments carried - a shipment the
+     * carrier brought back, lost or still out delivered nothing. An order delivered whole before shipments were
+     * recorded (historical, {@link Order#deliveredSomething}) delivered every unit it did not cancel.
+     */
+    private static Map<UUID, Long> delivered(Order order, boolean deliveredSomething) {
+        Map<UUID, Long> delivered = new HashMap<>();
+        if (!deliveredSomething) {
+            return delivered;
+        }
+        if (order.shipments().isEmpty()) {
+            order.lines().forEach(line -> delivered.put(line.id(), (long) line.quantity() - line.cancelledQuantity()));
+            return delivered;
+        }
+        order.shipments().stream().filter(shipment -> shipment.status() == OrderShipmentStatus.DELIVERED)
+                .forEach(shipment -> shipment.quantities()
+                        .forEach((line, units) -> delivered.merge(line, (long) units, Long::sum)));
+        return delivered;
     }
 
     /** A paper that follows a contract follows one both parties signed. */
