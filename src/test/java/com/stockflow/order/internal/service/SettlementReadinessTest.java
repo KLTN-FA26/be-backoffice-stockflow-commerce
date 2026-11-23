@@ -113,4 +113,91 @@ class SettlementReadinessTest {
         assertThat(view.blockers()).contains(Blocker.REFUND_OUTSTANDING);
         assertThat(view.closesAt()).isEqualTo(NOW.plus(Duration.ofDays(33)));
     }
+
+    /** Cups and lids handed over on two shipments at NOW, both refused, brought back and received on day 3. */
+    private static Order wholeReturn() {
+        Order order = OrderFixtures.released();
+        order.decidePartialShipment(true);
+        order.startPicking(STAFF, NOW);
+        order.markPacked(NOW, STAFF);
+        UUID s1 = UUID.randomUUID();
+        UUID s2 = UUID.randomUUID();
+        order.recordHandover(new com.stockflow.order.api.ShipmentHandover(s1, java.util.List.of(
+                new com.stockflow.order.api.ShipmentHandover.Line(order.lines().get(0).id(), 10)), NOW, STAFF));
+        order.recordHandover(new com.stockflow.order.api.ShipmentHandover(s2, java.util.List.of(
+                new com.stockflow.order.api.ShipmentHandover.Line(order.lines().get(1).id(), 5)), NOW, STAFF));
+        for (UUID shipment : java.util.List.of(s1, s2)) {
+            order.recordShipmentDeliveryFailed(shipment, com.stockflow.order.api.DeliveryFailureReason.REFUSED, null,
+                    NOW.plus(Duration.ofDays(1)), STAFF);
+            order.recordShipmentReturned(shipment, NOW.plus(Duration.ofDays(2)), STAFF);
+            order.closeReturnedShipment(shipment, NOW.plus(Duration.ofDays(3)), NOW.plus(Duration.ofDays(3)), STAFF);
+        }
+        return order;
+    }
+
+    @Test
+    @DisplayName("audit r2 M-1: everything brought back and refunded, the plate fee's rest invoice not issued - the "
+            + "block is shown (REFUND_CLOSE) with SHIPPING_FEE_UNINVOICED, and the facts make the close wait")
+    void nothingDeliveredStillWaitsForTheFeeRestInvoice() {
+        Order order = wholeReturn();
+        order.refunded(false, STAFF, NOW.plus(Duration.ofDays(4)), "DELIVERY_FAILED_SETTLED");
+        UUID id = order.id().value();
+        when(invoices.shippingFeeUnissued(id)).thenReturn(true);
+
+        SettlementReadiness.View view = at(NOW.plus(Duration.ofDays(60))).view(order);
+
+        assertThat(view).as("nothing delivered, but ending").isNotNull();
+        assertThat(view.branch()).isEqualTo(Branch.REFUND_CLOSE);
+        assertThat(view.shippingFeeUninvoiced()).isTrue();
+        assertThat(view.blockers()).containsExactly(Blocker.SHIPPING_FEE_UNINVOICED);
+        assertThat(view.closesAt()).isEqualTo(NOW.plus(Duration.ofDays(34)));
+        assertThat(view.completionHoldable()).as("nothing delivered to dispute").isFalse();
+        assertThat(at(NOW.plus(Duration.ofDays(60))).facts(order).awaitingInvoice()).isTrue();
+    }
+
+    @Test
+    @DisplayName("audit r2 M-6: ended by the carrier with nothing refundable, still RETURNED - REFUND_CLOSE, closing "
+            + "the delay after its deliveries ended")
+    void endedByTheCarrierWithoutARefund() {
+        Order order = wholeReturn();
+
+        SettlementReadiness.View view = at(NOW.plus(Duration.ofDays(5))).view(order);
+
+        assertThat(view.branch()).isEqualTo(Branch.REFUND_CLOSE);
+        assertThat(view.blockers()).isEmpty();
+        assertThat(view.closesAt()).isEqualTo(NOW.plus(Duration.ofDays(33)));
+    }
+
+    @Test
+    @DisplayName("contract M-4 / money L-2: a COMPLETED order lists what keeps it from closing with branch NONE - "
+            + "OWING, OPEN_RETURN, REFUND_OUTSTANDING - and closesAt; the hold is not offered on it")
+    void completedListsItsBlockers() {
+        Order order = OrderFixtures.delivered(NOW);
+        order.complete(NOW.plus(Duration.ofDays(10)), Duration.ofDays(7), false, false, false);
+        UUID id = order.id().value();
+        when(payments.installmentStanding(id)).thenReturn(new InstallmentStanding(id, true, true, BigDecimal.ZERO,
+                BigDecimal.ZERO, new BigDecimal("1000"), new BigDecimal("400"),
+                InstallmentStanding.ContractPaymentStatus.PARTIALLY_PAID));
+        when(payments.refundProgress(id)).thenReturn(new RefundProgress(new BigDecimal("500"), BigDecimal.ZERO));
+        when(candidates.hasOpenReturn(id)).thenReturn(true);
+
+        SettlementReadiness.View view = at(NOW.plus(Duration.ofDays(12))).view(order);
+
+        assertThat(view.branch()).isEqualTo(Branch.NONE);
+        assertThat(view.blockers()).containsExactlyInAnyOrder(Blocker.OWING, Blocker.OPEN_RETURN,
+                Blocker.REFUND_OUTSTANDING);
+        assertThat(view.closesAt()).isEqualTo(NOW.plus(Duration.ofDays(40)));
+        assertThat(view.completionHoldable()).isFalse();
+    }
+
+    @Test
+    @DisplayName("lifecycle M-4: completionHoldable on a DELIVERED order, not while it is held already")
+    void holdableFollowsTheHoldRule() {
+        Order order = OrderFixtures.delivered(NOW);
+        UUID id = order.id().value();
+
+        assertThat(at(NOW.plus(Duration.ofDays(1))).view(order).completionHoldable()).isTrue();
+        when(candidates.completionHeld(id)).thenReturn(true);
+        assertThat(at(NOW.plus(Duration.ofDays(1))).view(order).completionHoldable()).isFalse();
+    }
 }

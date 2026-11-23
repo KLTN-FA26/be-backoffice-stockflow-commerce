@@ -182,7 +182,8 @@ class CustomerOrdersService implements CustomerOrders {
     /**
      * A partly fulfilled order whose deliveries are over (RTM-RETURNED-PARTIAL): a shipment delivered, another brought
      * back by the carrier or closed as lost, none still with the carrier or still to be decided, and nothing left to
-     * ship. It waits for its refund (then PARTIALLY_REFUNDED); nothing of it is being prepared any more. An order still
+     * ship. It waits for its refund (then PARTIALLY_REFUNDED), or - nothing made refundable - for its closing (WF-05
+     * BE-45); nothing of it is being prepared any more. An order still
      * shipping its rest stays "preparing".
      */
     static boolean backFromCarrierInPart(DeliveredAndReturnedUnits.Units units) {

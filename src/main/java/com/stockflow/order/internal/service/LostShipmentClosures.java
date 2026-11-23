@@ -140,7 +140,8 @@ public class LostShipmentClosures {
         OrderSummary summary = orderService.saveClosed(order);
         log.info("Order {}: shipment {} closed as lost by {}; order {}", order.orderNumber(), shipmentId, by,
                 order.status());
-        // Nothing to refund: no refund record will come to move the order on (REFUNDED / PARTIALLY_REFUNDED).
+        // Refunds made already, or nothing made refundable: no refund record will come to move the order on. With
+        // nothing refundable it stays where its shipments put it and closes from there (BE-45, Order.closeWithoutRefund).
         if (deliveryFailures.followRefunds(orderId, by)) {
             return orderService.summaryOf(orderId);
         }

@@ -36,6 +36,26 @@ public interface InstallmentOrders {
     Optional<Instant> deliveredInFullAt(UUID orderId);
 
     /**
+     * WF-05 Q-3, Q-19 (audit r2 money M-1 / lifecycle M-2): when an order that delivered nothing ended - its deliveries
+     * over, every shipment brought back (its receipt confirmed) or lost, its rest closed or never there - at the latest
+     * of those closures; empty otherwise (something was delivered: {@link #deliveredInFullAt}), and while anything is
+     * still to come. The day its installments after delivery count from, which {@link #deliveredInFullAt} cannot give
+     * it: Q-3's "later of the last delivery and the goods back" is the goods back when nothing was delivered. Asked by
+     * every path that may end such an order - the last shipment's closure and a closure of its rest alike - so the
+     * order in which they happen does not decide whether the plate fee Q-19 keeps ever falls due.
+     */
+    Optional<Instant> endedWithNothingDeliveredAt(UUID orderId);
+
+    /**
+     * WF-05 Q-12 (audit r2 contract M-1): those of {@code shipmentIds} Sales closed as lost - the carrier lost the
+     * parcel and confirmed it - rather than brought back to the warehouse. Their settlements are SHIPMENT_RETURNED like
+     * a carrier's return (the same money rule, Q-2), but a paper that says the goods came back to the warehouse would
+     * record a stock-in that never happened (Luật Kế toán Điều 13 khoản 1): the refund confirmation and the debt
+     * reconciliation word them by this. Empty for none.
+     */
+    java.util.Set<UUID> lostShipments(java.util.Collection<UUID> shipmentIds);
+
+    /**
      * 4B-8 (15 §4.1, 17 §4.5 "Đợt thanh toán gắn đợt giao"): the delivery batches of the order delivered in full - every
      * unit of the batch in a delivered shipment - each with the moment its last unit was delivered. An installment paid
      * after delivery that is tied to a batch is due from that moment, not from the whole order's delivery. Empty for an

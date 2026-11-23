@@ -17,14 +17,14 @@ final class OrderWebMapper {
 
     private OrderWebMapper() {}
 
-    /** F-1 as the detail shows it; null when there is nothing to show (nothing delivered yet). */
+    /** F-1 as the detail shows it; null when there is nothing to show (nothing delivered yet, nor ending). */
     static OrderResponse.SettlementReadiness toSettlement(
             com.stockflow.order.internal.service.SettlementReadiness.View view) {
         return view == null ? null : new OrderResponse.SettlementReadiness(view.branch().name(),
                 view.returnWindowDays(), view.returnWindowEndsAt(), view.owing(), view.openReturn(),
                 view.uninvoicedShipmentIds(), view.shippingFeeUninvoiced(), view.refundOutstanding(),
                 view.completionHeld(), view.returnAdjustmentUnissued(), view.completesAt(), view.closesAt(),
-                view.blockers().stream().map(Enum::name).toList());
+                view.blockers().stream().map(Enum::name).toList(), view.completionHoldable());
     }
 
     static OrderResponse toResponse(OrderSummary summary) {

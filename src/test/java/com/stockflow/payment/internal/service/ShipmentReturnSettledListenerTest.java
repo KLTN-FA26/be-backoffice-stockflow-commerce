@@ -65,8 +65,14 @@ class ShipmentReturnSettledListenerTest {
     }
 
     private void orderSays(Map<UUID, Instant> batches, Instant whole) {
+        orderSays(batches, whole, null);
+    }
+
+    /** {@code endedUndelivered}: the order delivered nothing and ended then (Order.endedWithNothingDeliveredAt). */
+    private void orderSays(Map<UUID, Instant> batches, Instant whole, Instant endedUndelivered) {
         when(orders.batchesDeliveredAt(ORDER)).thenReturn(batches);
         when(orders.deliveredInFullAt(ORDER)).thenReturn(Optional.ofNullable(whole));
+        when(orders.endedWithNothingDeliveredAt(ORDER)).thenReturn(Optional.ofNullable(endedUndelivered));
     }
 
     private static ShipmentReturnSettled settled(UUID batch, boolean nothingDelivered, boolean nothingMoreComing) {
@@ -116,13 +122,37 @@ class ShipmentReturnSettledListenerTest {
     void wholeReturn() {
         Installment plateFeeLeft = after(2, null, null, 55_000);
         book(List.of(plateFeeLeft));
-        orderSays(Map.of(), null);
+        orderSays(Map.of(), null, GOODS_BACK);
 
         listener.on(settled(null, true, true));
 
         assertThat(plateFeeLeft.status()).isEqualTo(InstallmentStatus.DUE);
         assertThat(plateFeeLeft.reachedAt()).isEqualTo(GOODS_BACK);
         assertThat(plateFeeLeft.dueDate()).isEqualTo(LocalDate.of(2026, 12, 3));
+    }
+
+    @Test
+    @DisplayName("audit r2 money M-1: batch 1 brought back while batch 2 was still to ship (no day then), the rest "
+            + "closed last - the closure of the rest ends the order with nothing delivered, and the plate fee left on the "
+            + "installment after delivery falls due from that day, as it would had the receipt come last")
+    void restClosedLastEndsAWholeReturn() {
+        Installment plateFeeLeft = after(2, null, null, 2_700_000);
+        book(List.of(plateFeeLeft));
+        orderSays(Map.of(), null, null);
+        listener.on(settled(BATCH_1, true, false));
+        assertThat(plateFeeLeft.status()).as("batch 2 still to come").isEqualTo(InstallmentStatus.NOT_DUE);
+
+        Instant restClosed = Instant.parse("2026-11-04T02:00:00Z");
+        orderSays(Map.of(), null, restClosed);
+        new OrderRemainderClosedListener(installments).on(new com.stockflow.contracts.OrderRemainderClosed(ORDER,
+                "SO-20261101-000001", UUID.randomUUID(), "CUSTOMER_REQUEST", List.of(), BigDecimal.ZERO,
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, "VND", UUID.randomUUID(), restClosed,
+                UUID.randomUUID()));
+
+        assertThat(plateFeeLeft.status()).isEqualTo(InstallmentStatus.DUE);
+        assertThat(plateFeeLeft.reachedAt()).isEqualTo(restClosed);
+        assertThat(plateFeeLeft.dueDate()).isEqualTo(LocalDate.of(2026, 12, 4));
+        assertThat(published).singleElement().isInstanceOf(InstallmentDue.class);
     }
 
     @Test

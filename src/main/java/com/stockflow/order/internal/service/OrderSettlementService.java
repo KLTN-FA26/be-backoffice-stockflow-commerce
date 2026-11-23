@@ -143,9 +143,10 @@ public class OrderSettlementService {
     }
 
     /**
-     * Such an order whose refunds are all made - none included - is REFUNDED or PARTIALLY_REFUNDED: from there
-     * {@link #close} closes it after the closing delay, once it no longer owes. The refund recorded moves it at once
-     * ({@code ReturnedGoodsListener}); this is for the order with nothing to refund, and for an event that was missed.
+     * Such an order whose refunds are all made is REFUNDED or PARTIALLY_REFUNDED: from there {@link #close} closes it
+     * after the closing delay, once it no longer owes. The refund recorded moves it at once ({@code
+     * ReturnedGoodsListener}); this is for an event that was missed, and for an order a completion hold kept back. One
+     * with nothing made refundable does not move (WF-05 BE-45): {@link #close} closes it from where it is.
      *
      * @return whether the order moved
      */
@@ -217,6 +218,12 @@ public class OrderSettlementService {
      * decrease adjustment not issued yet does not keep it open (Q-16): it lowers the tax declared, and is still issued,
      * and reminded of, after the order closed.</p>
      *
+     * <p><b>Without a refund</b> (WF-05 Q-4 / BE-45; audit r2 contract M-6). An order the carrier's returns or losses
+     * ended whose settlements made nothing refundable stays RETURNED / PARTIALLY_FULFILLED - nothing was refunded, so it
+     * is never "Hoàn một phần" - and closes from there ({@code Order.closeWithoutRefund}) on the refund branch's terms:
+     * the closing delay from when its deliveries ended, every delivered shipment invoiced and past its window, the fee
+     * rest invoiced, nothing owed, no hold; its contract COMPLETED or LIQUIDATED likewise.</p>
+     *
      * @return whether the order was closed; never while a return of it is open (SCRUM-243): CLOSED is final (BR-05),
      * and the return would have nowhere to put its outcome; nor while money is owed on it either way - an installment
      * unpaid, or a refund still to make (TT-4, {@code Order.close}); nor while Sales hold its completion (Q-17); nor
@@ -231,16 +238,27 @@ public class OrderSettlementService {
         }
         boolean fromRefund = order.status() == com.stockflow.order.api.OrderStatus.REFUNDED
                 || order.status() == com.stockflow.order.api.OrderStatus.PARTIALLY_REFUNDED;
+        // WF-05 Q-4 / BE-45 (audit r2 contract M-6): an order the carrier's returns or losses ended with nothing made
+        // refundable never entered the refund branch; it closes from RETURNED / PARTIALLY_FULFILLED on the same terms.
+        boolean withoutRefund = !fromRefund && order.endedByCarrier();
         java.util.Optional<com.stockflow.order.internal.domain.SalesContract> contract =
                 contracts.findLiveByOrderId(orderId);
         SettlementReadiness.Facts facts = readiness.facts(order, contract);
-        if (facts.openReturn() || fromRefund && facts.awaitingInvoice()
-                || !order.close(clock.instant(), closeAfter, facts.owing(), facts.refundOwed(), facts.held(),
-                fromRefund ? facts.windowsCloseAt() : null)) {
+        boolean asRefundBranch = fromRefund || withoutRefund;
+        if (facts.openReturn() || asRefundBranch && facts.awaitingInvoice()) {
+            return false;
+        }
+        boolean closed = withoutRefund
+                ? order.closeWithoutRefund(clock.instant(), closeAfter, facts.owing(),
+                        payments.refundProgress(orderId).refundable().signum() > 0, facts.held(),
+                        facts.windowsCloseAt())
+                : order.close(clock.instant(), closeAfter, facts.owing(), facts.refundOwed(), facts.held(),
+                        fromRefund ? facts.windowsCloseAt() : null);
+        if (!closed) {
             return false;
         }
         repository.save(order);
-        if (fromRefund) {
+        if (asRefundBranch) {
             contract.filter(live -> live.status() == com.stockflow.order.internal.domain.SalesContractStatus.SIGNED)
                     .ifPresent(live -> endContract(live, order, order.closedAt()));
         }

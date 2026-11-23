@@ -4226,8 +4226,10 @@ class FtlDispatchIntegrationTest {
         JsonNode closedOrder = data(sales(get(ORDERS + "/" + orderId)).andExpect(status().isOk()));
         assertThat(closedOrder.path("shipments").get(0).path("lostClosable").asBoolean())
                 .as("its units were closed at the receipt").isFalse();
-        assertThat(closedOrder.path("settlementReadiness").isMissingNode())
-                .as("F-1: nothing delivered, nothing to show (nulls are left out)").isTrue();
+        // F-1 (audit r2 lifecycle M-1): nothing delivered, but the order is ending - the block shows what it waits for.
+        assertThat(closedOrder.path("settlementReadiness").path("branch").asText()).isEqualTo("REFUND_CLOSE");
+        assertThat(closedOrder.path("settlementReadiness").path("blockers").toString())
+                .as("its refund still to make").contains("REFUND_OUTSTANDING");
         assertThat(jdbc.queryForObject("SELECT SUM(cancelled_quantity) FROM ordering.order_line WHERE order_id = ?",
                 Integer.class, orderId)).as("the shipment's units closed at its receipt").isEqualTo(4);
         // F7: by hand - 2 cartons x 2 pieces x 6,000,000, no VAT, all paid on signing: everything closed, no fee, all
@@ -4522,8 +4524,8 @@ class FtlDispatchIntegrationTest {
 
     @Test
     @DisplayName("F8, RTM-RETURNED: nothing paid (everything after delivery, on credit) and the shipment comes back - "
-            + "nothing collected, the installment reduced whole and CANCELLED, nothing refundable and no fee; no refund "
-            + "will come, so the receipt (Q-7) moves the order from RETURNED to PARTIALLY_REFUNDED, not REFUNDED")
+            + "nothing collected, the installment reduced whole and CANCELLED, nothing refundable and no fee; nothing "
+            + "was refunded, so the order stays RETURNED (BE-45, audit r2 contract M-6) and closes from there")
     void anUnpaidReturnedShipmentIsSettledWithoutARefund() throws Exception {
         UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
         UUID accountant = staff("ACCOUNTANT");
@@ -4547,11 +4549,13 @@ class FtlDispatchIntegrationTest {
         assertThat(refundRefused(orderId, BigDecimal.ONE)).as("nothing is refundable")
                 .isEqualTo(REFUND_EXCEEDS_REFUNDABLE);
 
-        // No refund will come: the receipt itself moved the order on (DeliveryFailureService.followRefunds).
+        // Nothing was refunded: never "Hoàn một phần" at 0 (Q-4 / BE-45) - it stays RETURNED, and the nightly
+        // settlement closes it from there (Order.closeWithoutRefund) once the closing delay has passed.
         var settlements = context.getBean(com.stockflow.order.internal.service.OrderSettlementService.class);
         assertThat(orders.findById(orderId).orElseThrow().status()).as("nothing paid, so nothing went back")
-                .isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
-        assertThat(settlements.failedDeliveryCandidates(0, 1000)).doesNotContain(orderId);
+                .isEqualTo(OrderStatus.RETURNED);
+        assertThat(settlements.settleFailedDelivery(orderId)).as("the nightly run moves nothing").isFalse();
+        assertThat(settlements.close(orderId)).as("inside the closing delay").isFalse();
     }
 
     @Test

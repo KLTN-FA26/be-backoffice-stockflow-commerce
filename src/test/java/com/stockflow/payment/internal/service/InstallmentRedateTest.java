@@ -123,7 +123,7 @@ class InstallmentRedateTest {
 
         orderSays(Map.of(), null);
         service.delivered(ORDER, LATE, false);
-        service.shipmentReturnSettled(ORDER, null);
+        service.shipmentReturnSettled(ORDER);
 
         assertThat(whole.reachedAt()).isEqualTo(EARLY);
         assertThat(whole.status()).isEqualTo(InstallmentStatus.DUE);

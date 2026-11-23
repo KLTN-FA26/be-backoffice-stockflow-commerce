@@ -1696,23 +1696,47 @@ public final class Order extends AggregateRoot {
             return status == OrderStatus.RETURNED || status == OrderStatus.DELIVERY_FAILED
                     ? Optional.empty() : Optional.ofNullable(deliveredAt);
         }
+        return lastDelivery().isPresent() ? deliveriesEndedAt() : Optional.empty();
+    }
+
+    /**
+     * When an order that delivered nothing ended (WF-05 Q-3, Q-19; audit r2 money M-1 / lifecycle M-2): its deliveries
+     * are over and no shipment of it is DELIVERED - every one came back (its receipt confirmed) or was lost, the rest
+     * closed or never there - at the latest of those closures. Empty otherwise, and while anything is still to come.
+     *
+     * <p>What the installments after delivery of such an order count from: it has no "delivered in full"
+     * ({@link #deliveredInFullAt} needs a delivery), and what they still owe - the plate fee Q-19 keeps - would never
+     * fall due. Q-3's day is "the later of the last delivery and the goods back", and with no delivery that is the goods
+     * back; Q-19 sets no second rule. One rule, read from the order's facts, for every path that ends such an order:
+     * the last shipment's closure ({@code ShipmentReturnSettled}) and a closure of the rest ({@code
+     * OrderRemainderClosed}) alike - before, only the first carried a fallback, on its event, so an order whose rest
+     * was closed last kept its installments NOT_DUE for good.</p>
+     */
+    public Optional<Instant> endedWithNothingDeliveredAt() {
+        return shipments.isEmpty() || deliveredSomething() ? Optional.empty() : deliveriesEndedAt();
+    }
+
+    /**
+     * When the order's deliveries ended: once they are over ({@link #deliveriesOver}), the latest of its last delivery,
+     * the closure of a shipment that came back (its receipt confirmed) or was lost, and the closure of its rest. Empty
+     * while anything is still to come. {@link #deliveredInFullAt} when something was delivered,
+     * {@link #endedWithNothingDeliveredAt} when nothing was, and the day an order that ended with nothing to refund
+     * counts its closing delay from ({@link #closeWithoutRefund}).
+     */
+    public Optional<Instant> deliveriesEndedAt() {
         if (!deliveriesOver()) {
             return Optional.empty();
         }
-        Optional<Instant> lastDelivery = lastDelivery();
-        if (lastDelivery.isEmpty()) {
-            return Optional.empty();
-        }
-        Instant latest = lastDelivery.get();
+        Instant latest = lastDelivery().orElse(null);
         for (OrderShipment shipment : shipments) {
-            if (shipment.unitsClosedAt() != null && shipment.unitsClosedAt().isAfter(latest)) {
+            if (shipment.unitsClosedAt() != null && (latest == null || shipment.unitsClosedAt().isAfter(latest))) {
                 latest = shipment.unitsClosedAt();
             }
         }
-        if (remainderClosedAt != null && remainderClosedAt.isAfter(latest)) {
+        if (remainderClosedAt != null && (latest == null || remainderClosedAt.isAfter(latest))) {
             latest = remainderClosedAt;
         }
-        return Optional.of(latest);
+        return Optional.ofNullable(latest);
     }
 
     /**
@@ -1733,6 +1757,23 @@ public final class Order extends AggregateRoot {
      */
     public boolean deliveredSomething() {
         return lastDelivery().isPresent() || shipments.isEmpty() && deliveredAt != null;
+    }
+
+    /**
+     * Whether Sales may pause the order's completion now (WF-05 GH-2, Q-17 = a): it has a delivery to dispute - a
+     * shipment DELIVERED, or a delivery date for an order delivered whole - and none of the edges the pause keeps it
+     * from is behind it. Those edges are completion, closing (also from the refund branch) and → PARTIALLY_REFUNDED, so
+     * every status before CLOSED counts - DELIVERED, PARTIALLY_FULFILLED, RETURN_REQUESTED, RETURNED, REFUNDED,
+     * PARTIALLY_REFUNDED, and SHIPPED / DELIVERY_FAILED with one shipment arrived - except COMPLETED and CANCELLED, and an
+     * order that completed once (a late claim open on it): its deliveries are no longer corrected, and the claim's end
+     * takes it back to COMPLETED. The one rule {@code OrderCompletionHolds.hold} applies and the order's settlement
+     * block shows ({@code completionHoldable}), so the back office offers the action exactly where it is accepted.
+     */
+    public boolean completionHoldable() {
+        boolean delivered = deliveredAt != null
+                || shipments.stream().anyMatch(s -> s.status() == OrderShipmentStatus.DELIVERED);
+        return delivered && completedAt == null && status != OrderStatus.COMPLETED && status != OrderStatus.CLOSED
+                && status != OrderStatus.CANCELLED;
     }
 
     /** The latest outcome of the shipments delivered; empty when none is. What the return windows count from. */
@@ -2019,14 +2060,22 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * Whether the order still owes a unit of a line {@code shipmentId} carried: in no shipment holding units, and not
-     * closed. A shipment the carrier reported back still holds its units until its receipt closes them (WF-05 Q-7), so
-     * this is false for it; true only for a shipment of an order from before RTM-RETURNED whose units were owed again
-     * when it came back, and Sales were to decide (BE-16). After a closure its goods, received back later, are owed to
-     * nobody (WF-05 review F1).
+     * Whether the order still owes the units {@code shipmentId} carried, for Sales to decide (BE-16): true only for a
+     * shipment of an order from before RTM-RETURNED whose units were owed again when it came back - closed by the
+     * backfill, with no value settled ({@link OrderShipment#closedBeforeSettlement}) - while a line it carried still
+     * has a unit in no shipment and not closed. A shipment the carrier reported back still holds its units until its
+     * receipt closes them (WF-05 Q-7), so this is false for it. After a closure its goods, received back later, are
+     * owed to nobody (WF-05 review F1).
+     *
+     * <p>Not "the line has a unit unshipped" alone (audit r2 lifecycle M-3): a shipment Sales closed as lost (Q-12) and
+     * the carrier later found and brought back holds no units either, and a later batch of the same line still to ship
+     * made it read as owed - its goods opened a decision case nothing ever closed, and the order never settled. Its
+     * closure is final (settled, with its value); only the backfill's rows were never settled.</p>
      */
     public boolean owesUnitsOf(UUID shipmentId) {
-        return requireShipment(shipmentId).quantities().keySet().stream().anyMatch(line -> unshippedUnits(line) > 0);
+        OrderShipment shipment = requireShipment(shipmentId);
+        return shipment.closedBeforeSettlement()
+                && shipment.quantities().keySet().stream().anyMatch(line -> unshippedUnits(line) > 0);
     }
 
     /** Units neither closed nor in a shipment that is still with the carrier or the customer. */
@@ -2158,6 +2207,53 @@ public final class Order extends AggregateRoot {
             case REFUNDED, PARTIALLY_REFUNDED -> refundedAt;
             default -> null;
         };
+        return closeSince(since, now, after, owing, refundOwed, held, windowsCloseAt);
+    }
+
+    /**
+     * Whether the order's deliveries ended with the carrier bringing shipments back or losing them, and are settled
+     * (RTM-RETURNED, WF-05 Q-7, Q-12): the whole order - RETURNED, nothing of it delivered - or part of it -
+     * PARTIALLY_FULFILLED, the other shipments delivered ({@link #partlyReturnedAndDone}). Every shipment that came
+     * back has its receipt confirmed and nothing is left to ship. An order RETURNED by a customer's return has a
+     * shipment DELIVERED and is not one: its claims decide where it goes. What both the refund branch
+     * ({@code DeliveryFailureService.followRefunds}) and {@link #closeWithoutRefund} ask first.
+     */
+    public boolean endedByCarrier() {
+        return switch (status) {
+            case RETURNED -> deliveriesOver() && shipments.stream().anyMatch(OrderShipment::endedUndelivered)
+                    && shipments.stream().noneMatch(s -> s.status() == OrderShipmentStatus.DELIVERED);
+            case PARTIALLY_FULFILLED -> partlyReturnedAndDone();
+            default -> false;
+        };
+    }
+
+    /**
+     * Closes an order the carrier's returns or losses ended ({@link #endedByCarrier}) whose settlements made nothing
+     * refundable (WF-05 Q-4 / BE-45; audit r2 contract M-6): nothing was refunded, so it never enters the refund branch
+     * - "Hoàn một phần" (PARTIALLY_REFUNDED) at 0 đồng told staff and the customer's history something that did not
+     * happen, and "refunded" in full would too. It stays RETURNED or PARTIALLY_FULFILLED, which is what its shipments
+     * say, and closes from there on the same conditions as the refund branch: the closing delay - counted from when its
+     * deliveries ended ({@link #deliveriesEndedAt}), the moment it was settled - nothing owed, no hold, every
+     * delivered shipment's return window ended, nothing still on its way back.
+     *
+     * <p>Stated twice: here and {@code ordering.check_order_closed_without_refund} (V20261223000100), which refuses
+     * RETURNED / PARTIALLY_FULFILLED → CLOSED while a shipment is still to be decided or on its way back, for an order a
+     * customer's return made RETURNED, or once a settlement of it made money refundable.</p>
+     *
+     * @param madeRefundable whether a settlement of the order made money refundable (payment's
+     *                       {@code RefundProgress.refundable} above zero): such an order is the refund branch's
+     * @return whether this changed the order
+     */
+    public boolean closeWithoutRefund(Instant now, java.time.Duration after, boolean owing, boolean madeRefundable,
+                                      boolean held, Instant windowsCloseAt) {
+        if (madeRefundable || !endedByCarrier()) {
+            return false;
+        }
+        return closeSince(deliveriesEndedAt().orElse(null), now, after, owing, false, held, windowsCloseAt);
+    }
+
+    private boolean closeSince(Instant since, Instant now, java.time.Duration after, boolean owing, boolean refundOwed,
+                               boolean held, Instant windowsCloseAt) {
         if (since == null || since.plus(after).isAfter(now) || owing || refundOwed || held
                 || windowsCloseAt != null && windowsCloseAt.isAfter(now) || !deliveriesSettled()) {
             return false;

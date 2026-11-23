@@ -67,6 +67,24 @@ public class OrderHistoryNotes {
                 .executeUpdate();
     }
 
+    /**
+     * Those of {@code shipmentIds} Sales closed as lost (WF-05 Q-12): a row of {@code order_shipment_loss_closure}, kept
+     * for good. Not the shipment's status: a lost shipment the carrier found later may be recorded RETURNED, and a
+     * shipment reported back whose goods never reached the warehouse is closed as lost while RETURNED (L-I6).
+     */
+    @Transactional(readOnly = true)
+    @SuppressWarnings("unchecked")
+    public java.util.Set<UUID> lostShipments(java.util.Collection<UUID> shipmentIds) {
+        if (shipmentIds == null || shipmentIds.isEmpty()) {
+            return java.util.Set.of();
+        }
+        List<UUID> rows = entityManager.createNativeQuery("""
+                        SELECT shipment_id FROM ordering.order_shipment_loss_closure
+                         WHERE shipment_id IN (:shipments)""")
+                .setParameter("shipments", List.copyOf(shipmentIds)).getResultList();
+        return java.util.Set.copyOf(rows);
+    }
+
     /** The order's refund voids that moved no status, oldest first. */
     @Transactional(readOnly = true)
     @SuppressWarnings("unchecked")

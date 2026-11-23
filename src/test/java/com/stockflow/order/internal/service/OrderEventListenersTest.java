@@ -32,7 +32,8 @@ class OrderEventListenersTest {
     class Installments {
 
         private final OrderRepository repository = mock(OrderRepository.class);
-        private final InstallmentOrdersAdapter adapter = new InstallmentOrdersAdapter(repository, mock(DeliveryBatchService.class));
+        private final InstallmentOrdersAdapter adapter = new InstallmentOrdersAdapter(repository,
+                mock(DeliveryBatchService.class), mock(com.stockflow.order.internal.repository.OrderHistoryNotes.class));
 
         @Test
         @DisplayName("a confirmed order reports whose it is, its status, its currency and that it may be held")

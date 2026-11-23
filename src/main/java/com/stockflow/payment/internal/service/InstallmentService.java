@@ -181,7 +181,7 @@ public class InstallmentService {
             reach(orderId, InstallmentMilestone.AFTER_DELIVERY, at);
             return;
         }
-        follow(orderId, null, false);
+        follow(orderId, false);
     }
 
     /**
@@ -196,7 +196,7 @@ public class InstallmentService {
      */
     public void deliveryCorrected(UUID orderId) {
         orders.lockForPayment(orderId);
-        follow(orderId, null, true);
+        follow(orderId, true);
     }
 
     /**
@@ -207,24 +207,28 @@ public class InstallmentService {
      * later of the last delivery and the goods back) - so the installments after delivery are reached or moved from what
      * the order now says.
      *
-     * <p>{@code nothingDeliveredBackAt}: the order delivered nothing and nothing more is coming (a whole carrier return,
-     * or every shipment lost). The order then has no "delivered in full" at all, and what the installments after
-     * delivery still owe - the plate fee Q-19 keeps, a share of the goods the customer had not paid - would never fall
-     * due (audit M-1, scenario C). They count from the goods back instead, plus the contract's days: Q-19 sets no second
-     * rule, and Q-3's day is the goods back. Null otherwise.</p>
+     * <p>An order that delivered nothing and expects nothing more (a whole carrier return, or every shipment lost)
+     * has no "delivered in full" at all, and what the installments after delivery still owe - the plate fee Q-19 keeps,
+     * a share of the goods the customer had not paid - would never fall due (audit M-1, scenario C). They count from the
+     * goods back instead, plus the contract's days: Q-19 sets no second rule, and Q-3's day is the goods back. That day
+     * is the order's fact ({@code InstallmentOrders.endedWithNothingDeliveredAt}), read by {@link #follow} on every path
+     * - this one and a closure of the rest ({@link #delivered}) - not carried by this event alone (audit r2 money M-1).</p>
      *
      * <p>Worked out from the order's facts, never from the event alone: heard twice, or after a later event, it changes
      * nothing more.</p>
      */
-    public void shipmentReturnSettled(UUID orderId, Instant nothingDeliveredBackAt) {
+    public void shipmentReturnSettled(UUID orderId) {
         orders.lockForPayment(orderId);
-        follow(orderId, nothingDeliveredBackAt, false);
+        follow(orderId, false);
     }
 
     /**
      * The one rule every path shares (WF-05 BE-04): each installment paid after delivery is held against the days the
      * order has <b>now</b> - tied to a batch, the moment that batch was delivered in full; tied to none, or its batch not
-     * delivered in full, the moment the whole order was ({@code wholeOrderFallback} when the order has none).
+     * delivered in full, the moment the whole order was - or, for an order that delivered nothing and expects nothing
+     * more, the moment it ended (Q-3 "the goods back", Q-19; {@code InstallmentOrders.endedWithNothingDeliveredAt}).
+     * One rule for every path, so a whole return whose rest was closed last falls due exactly as one whose last
+     * shipment's receipt came last (audit r2 money M-1).
      * <ul>
      *   <li>not reached, and the order has its day: reached, due by that day plus its days;</li>
      *   <li>reached from another day, still owing: moved to the order's day ({@link Installment#redate}) - the customer
@@ -237,9 +241,10 @@ public class InstallmentService {
      * the move shows the old day until the card is next refreshed (a receipt, a void) - a gap in the chat, not in the
      * money: the overdue scan, the credit position and the aged receivables all read the installment itself.
      */
-    private void follow(UUID orderId, Instant wholeOrderFallback, boolean correction) {
+    private void follow(UUID orderId, boolean correction) {
         java.util.Map<UUID, Instant> batches = orders.batchesDeliveredAt(orderId);
-        Instant whole = orders.deliveredInFullAt(orderId).orElse(wholeOrderFallback);
+        Instant whole = orders.deliveredInFullAt(orderId)
+                .or(() -> orders.endedWithNothingDeliveredAt(orderId)).orElse(null);
         if (!correction && batches.isEmpty() && whole == null) {
             return;
         }

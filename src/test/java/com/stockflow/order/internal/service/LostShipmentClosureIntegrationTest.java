@@ -63,7 +63,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @IntegrationTest
 @Import(PostgresContainer.class)
 @TestPropertySource(properties = {"stockflow.upload-inspection.enabled=false",
-        "stockflow.notification.email.customer.enabled=false"})
+        "stockflow.notification.email.customer.enabled=false",
+        // BE-45 (audit r2 contract M-6): no closing delay, so the order ended by the carrier is a closing candidate at
+        // once and the candidate query is run against the real schema.
+        "stockflow.order.close-after-days=0"})
 class LostShipmentClosureIntegrationTest {
 
     @Autowired OrderService orders;
@@ -136,7 +139,8 @@ class LostShipmentClosureIntegrationTest {
     @DisplayName("Q-12 / Q-2 / Q-19: batch 2 lost and closed by Sales - refused on a changed order, a delivered "
             + "shipment, a second time; settled as SHIPMENT_RETURNED with half the shipping fee waived (55,000 of "
             + "110,000); on record with its evidence; the order delivered in full from the closure, its installment after "
-            + "delivery settled, and the order PARTIALLY_REFUNDED; the database keeps the closure as it was")
+            + "delivery settled, and the order left PARTIALLY_FULFILLED (nothing refunded, BE-45); the database keeps the "
+            + "closure as it was")
     void aLostBatchWaivesItsShareOfTheShippingFee() {
         UUID draft = confirmedOrders.draft(customer, List.of(ConfirmedOrders.Line.cartons(sku, 4, 2_000)));
         tx.executeWithoutResult(s -> jdbc.update("""
@@ -199,9 +203,19 @@ class LostShipmentClosureIntegrationTest {
                 "orders/lost/confirmation.pdf", "confirmation.pdf", null))))
                 .as("closed once").isEqualTo(ErrorCode.ORDER_SHIPMENT_NOT_LOST_CLOSABLE);
 
-        // Batch 1 arrived, batch 2 was lost (PARTIALLY_FULFILLED); nothing is refundable, so no refund record will come
-        // to move it on - the closure itself settles it (DeliveryFailureService.followRefunds; F8's rule).
-        assertThat(statusHistory()).endsWith("DELIVERY_FAILED>PARTIALLY_FULFILLED>PARTIALLY_REFUNDED");
+        // Batch 1 arrived, batch 2 was lost (PARTIALLY_FULFILLED); nothing is refundable, so nothing was refunded: it
+        // is not "Hoàn một phần" (WF-05 BE-45, audit r2 contract M-6) - it stays PARTIALLY_FULFILLED and the nightly
+        // settlement closes it from there (Order.closeWithoutRefund).
+        assertThat(statusHistory()).endsWith("DELIVERY_FAILED>PARTIALLY_FULFILLED");
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        OrderSettlementService settlement = context.getBean(OrderSettlementService.class);
+        assertThat(settlement.closingCandidates(0, 1000)).as("a closing candidate from PARTIALLY_FULFILLED")
+                .contains(orderId);
+        SettlementReadiness.View readiness = settlement.readiness(orderId).orElseThrow().view();
+        assertThat(readiness.branch()).isEqualTo(SettlementReadiness.Branch.REFUND_CLOSE);
+        assertThat(readiness.blockers()).as("batch 1's return window is still open")
+                .contains(SettlementReadiness.Blocker.RETURN_WINDOW_OPEN);
+        assertThat(settlement.close(orderId)).isFalse();
         assertThat(jdbc.queryForObject("SELECT closed_goods_value::bigint || '/' || shipping_fee_waived::bigint FROM "
                 + "ordering.order_shipment WHERE id = ?", String.class, second))
                 .as("the goods closed, with VAT, and the waiver payment answered, kept for invoicing")

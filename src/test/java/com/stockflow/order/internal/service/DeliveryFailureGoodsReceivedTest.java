@@ -20,6 +20,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -108,8 +109,8 @@ class DeliveryFailureGoodsReceivedTest {
         verify(orderService).saveClosed(order);
         assertThat(order.lines().get(1).cancelledQuantity()).isEqualTo(5);
         assertThat(order.deliveredInFullAt()).contains(day(4));
-        assertThat(order.status()).as("nothing to refund: moved on at once")
-                .isEqualTo(com.stockflow.order.api.OrderStatus.PARTIALLY_REFUNDED);
+        assertThat(order.status()).as("nothing made refundable: never \"Hoàn một phần\" at 0 (BE-45, audit r2 M-6)")
+                .isEqualTo(com.stockflow.order.api.OrderStatus.PARTIALLY_FULFILLED);
 
         ArgumentCaptor<DeliveryFailureCase> saved = ArgumentCaptor.forClass(DeliveryFailureCase.class);
         verify(cases, org.mockito.Mockito.times(2)).save(saved.capture());
@@ -197,6 +198,66 @@ class DeliveryFailureGoodsReceivedTest {
 
         verify(orderService, never()).settleShipmentClosure(any(), any(), any(), any(), any(), any());
         assertThat(order.lines().get(1).cancelledQuantity()).isEqualTo(5);
+    }
+
+    /** Cups on S1 (6 of 10, batch 1), the rest of the line still to ship; S1 failed as LOST. */
+    private Order firstBatchLost() {
+        Order order = OrderFixtures.released();
+        order.decidePartialShipment(true);
+        order.startPicking(STAFF, NOW);
+        order.recordHandover(new ShipmentHandover(S1, List.of(new ShipmentHandover.Line(order.lines().get(0).id(), 6)),
+                NOW, STAFF));
+        order.recordShipmentDeliveryFailed(S1, DeliveryFailureReason.LOST, null, day(1), STAFF);
+        when(orders.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
+        when(orders.findById(order.id())).thenReturn(Optional.of(order));
+        return order;
+    }
+
+    @Test
+    @DisplayName("audit r2 lifecycle M-3: closed as lost, then found and brought back while 4 cups of the same line are "
+            + "still to ship - not taken for a legacy row: the receipt closes and settles nothing again, its case is "
+            + "a record closed at once, and no OPEN case keeps the order from settling")
+    void aLostShipmentFoundLaterIsARecord() {
+        Order order = firstBatchLost();
+        order.closeLostShipment(S1, "Hãng xác nhận thất lạc", day(2), STAFF);
+        order.recordShipmentReturned(S1, day(9), STAFF);
+        order.pullDomainEvents();
+        assertThat(order.unshippedUnits(order.lines().get(0).id())).as("batch 2 of the same line").isEqualTo(4);
+
+        service.goodsReceived(new ReturnedGoodsReceived(UUID.randomUUID(), "RR-9", UUID.randomUUID(),
+                order.id().value(), order.orderNumber().value(), order.customerId(), S1, null, "Q-01",
+                List.of(new ReturnedGoodsReceived.Carton("LPN-1", "CUP-12OZ", "L1", 6, null)), STAFF, day(10),
+                List.of(), List.of()));
+
+        verify(orderService, never()).settleShipmentClosure(any(), any(), any(), any(), any(), any());
+        ArgumentCaptor<DeliveryFailureCase> saved = ArgumentCaptor.forClass(DeliveryFailureCase.class);
+        verify(cases, org.mockito.Mockito.times(2)).save(saved.capture());
+        assertThat(saved.getAllValues().getLast().status()).as("not an OPEN decision")
+                .isEqualTo(DeliveryFailureCase.Status.CANCELLED);
+    }
+
+    @Test
+    @DisplayName("audit r2 lifecycle M-3, the exit: an OPEN case left by the old check, its shipment owed to nobody - "
+            + "Sales cancelling it close the case alone (not batch 2), and it never keeps the order from settling")
+    void aStrayOpenCaseHasAnExit() {
+        Order order = firstBatchLost();
+        order.closeLostShipment(S1, "Hãng xác nhận thất lạc", day(2), STAFF);
+        order.recordShipmentReturned(S1, day(9), STAFF);
+        DeliveryFailureCase stray = DeliveryFailureCase.open(UUID.randomUUID(), order.id().value(), S1, null,
+                UUID.randomUUID(), "RR-9", UUID.randomUUID(), DeliveryFailureReason.LOST, null, Map.of(
+                        order.lines().get(0).id(), 6), List.of(), day(10));
+        when(cases.find(stray.id())).thenReturn(Optional.of(stray));
+        when(cases.ofOrder(order.id().value())).thenReturn(List.of(stray));
+        int cancelledBefore = order.lines().get(0).cancelledQuantity();
+
+        service.cancelUndelivered(order.id().value(), stray.id(), new DeliveryFailureService.Cancel(
+                "Hàng thất lạc đã được hãng tìm thấy, không còn nợ khách", null), STAFF);
+
+        assertThat(stray.status()).isEqualTo(DeliveryFailureCase.Status.CANCELLED);
+        assertThat(order.lines().get(0).cancelledQuantity()).as("batch 2 is not closed with it")
+                .isEqualTo(cancelledBefore);
+        verify(orderService, never()).closeRemainder(any(), any(), any(), any(), any());
+        verify(orderService, never()).closeUndelivered(any(), any(), any(), any(), any());
     }
 
     private static OrderShipment copy(OrderShipment s) {

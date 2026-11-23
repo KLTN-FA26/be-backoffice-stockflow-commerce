@@ -30,10 +30,13 @@ class InstallmentOrdersAdapter implements InstallmentOrders {
 
     private final OrderRepository orders;
     private final DeliveryBatchService batches;
+    private final com.stockflow.order.internal.repository.OrderHistoryNotes notes;
 
-    InstallmentOrdersAdapter(OrderRepository orders, DeliveryBatchService batches) {
+    InstallmentOrdersAdapter(OrderRepository orders, DeliveryBatchService batches,
+                             com.stockflow.order.internal.repository.OrderHistoryNotes notes) {
         this.orders = orders;
         this.batches = batches;
+        this.notes = notes;
     }
 
     @Override
@@ -65,6 +68,20 @@ class InstallmentOrdersAdapter implements InstallmentOrders {
     @Transactional(readOnly = true)
     public Optional<java.time.Instant> deliveredInFullAt(UUID orderId) {
         return orders.findById(new OrderId(orderId)).flatMap(Order::deliveredInFullAt);
+    }
+
+    /** WF-05 Q-3, Q-19 (audit r2 money M-1): {@code Order.endedWithNothingDeliveredAt}, from the order's facts. */
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<java.time.Instant> endedWithNothingDeliveredAt(UUID orderId) {
+        return orders.findById(new OrderId(orderId)).flatMap(Order::endedWithNothingDeliveredAt);
+    }
+
+    /** WF-05 Q-12 (audit r2 contract M-1): the shipments Sales closed as lost, from their closures on record. */
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Set<UUID> lostShipments(java.util.Collection<UUID> shipmentIds) {
+        return notes.lostShipments(shipmentIds);
     }
 
     /**

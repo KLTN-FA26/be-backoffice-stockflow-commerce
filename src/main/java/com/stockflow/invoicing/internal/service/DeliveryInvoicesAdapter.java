@@ -47,8 +47,14 @@ class DeliveryInvoicesAdapter implements DeliveryInvoices {
      * An invoice of the fee's rest drawn up and not issued, or - WF05-E0 L11 - a rest owed that no invoice carries at
      * all: its draft was refused when the order's rest was closed (the seller not configured, say) and nobody has drawn
      * it up by hand since. The rest is measured exactly as {@link EInvoiceDrafts#drawUpShippingFeeRest} measures it -
-     * the share waived for shipments that came back left out (Q-19, {@link FeeAllocation#shippingFeeOwed}) - so the
-     * order waits for precisely what that method would draw up, never for a waived share nobody invoices.
+     * the share of the shipping fee waived for shipments that came back left out (Q-19,
+     * {@link FeeAllocation#shippingFeeOwed}), and every plate fee no invoice of the order carries (BE-62) - so the order
+     * waits for precisely what that method would draw up, never for a waived share nobody invoices.
+     *
+     * <p><b>The plate fee too</b> (audit r2 lifecycle M-1 / money M-2): an order whose goods all came back keeps its
+     * plate fee, and only the rest invoice ever carries it. Measured once every piece the order still means to deliver
+     * is on an invoice - while a delivery is still to be invoiced, that delivery's invoice carries the plate fee of its
+     * SKU ({@link FeeAllocation#carriesPlateFee}), and its own blocker (the shipment not invoiced) already stands.</p>
      */
     @Override
     @Transactional(readOnly = true)
@@ -56,11 +62,16 @@ class DeliveryInvoicesAdapter implements DeliveryInvoices {
         if (queries.shippingFeeInvoiceUnissued(orderId)) {
             return true;
         }
-        return shipments.shippingFee(orderId, clock.instant())
-                .map(fee -> FeeAllocation.shippingRest(FeeAllocation.shippingFeeOwed(fee.fee().amount(),
-                        fee.shippingFeeWaiver().feeGross(), fee.shippingFeeWaiver().waived()), fee.orderUnits(),
-                        invoices.invoicedOfOrder(orderId)).signum() > 0)
-                .orElse(false);
+        return shipments.orderFees(orderId, clock.instant()).map(fees -> {
+            FeeAllocation.Invoiced invoiced = invoices.invoicedOfOrder(orderId);
+            boolean shippingRest = fees.fee() != null && FeeAllocation.shippingRest(FeeAllocation.shippingFeeOwed(
+                    fees.fee().amount(), fees.shippingFeeWaiver().feeGross(), fees.shippingFeeWaiver().waived()),
+                    fees.orderUnits(), invoiced).signum() > 0;
+            boolean plateUncarried = invoiced.units() >= fees.orderUnits() && fees.plateFees().stream()
+                    .anyMatch(plate -> plate.amount().signum() > 0
+                            && FeeAllocation.carriesPlateFee(plate.sku(), invoiced));
+            return shippingRest || plateUncarried;
+        }).orElse(false);
     }
 
     /**

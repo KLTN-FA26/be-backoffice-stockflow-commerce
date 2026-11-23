@@ -191,16 +191,21 @@ public record OrderResponse(
 
     /**
      * F-1. {@code branch}: COMPLETION (DELIVERED, or a claim open on it), REFUND_CLOSE (REFUNDED / PARTIALLY_REFUNDED,
-     * closing from the refund branch) or NONE. {@code blockers}: NOT_DELIVERED, RETURN_WINDOW_OPEN, OWING, OPEN_RETURN,
-     * SHIPMENT_UNINVOICED, SHIPPING_FEE_UNINVOICED, REFUND_OUTSTANDING, COMPLETION_HELD - parse tolerantly.
-     * {@code returnAdjustmentUnissued} is information only (Q-16): a return's decrease adjustment not issued yet never
-     * keeps the order open.
+     * closing from the refund branch, and - WF-05 BE-45 - RETURNED / PARTIALLY_FULFILLED ended by the carrier, closing
+     * without a refund) or NONE. {@code blockers}: NOT_DELIVERED, RETURN_WINDOW_OPEN, OWING, OPEN_RETURN,
+     * SHIPMENT_UNINVOICED, SHIPPING_FEE_UNINVOICED, REFUND_OUTSTANDING, COMPLETION_HELD - parse tolerantly; a COMPLETED
+     * order lists what keeps it from closing (OWING, OPEN_RETURN, REFUND_OUTSTANDING, COMPLETION_HELD) with branch NONE,
+     * so render them whatever the branch. {@code shippingFeeUninvoiced} / SHIPPING_FEE_UNINVOICED: the rest of the
+     * order's fees - shipping fee and plate fee (BE-62) - is not on an issued invoice. {@code returnAdjustmentUnissued}
+     * is information only (Q-16): a return's decrease adjustment not issued yet never keeps the order open.
+     * {@code completionHoldable}: Sales may pause the completion ("Giữ hoàn tất") now - the rule the hold endpoint
+     * applies, false while a pause is on.
      */
     public record SettlementReadiness(String branch, Integer returnWindowDays, Instant returnWindowEndsAt,
                                       boolean owing, boolean openReturn, List<UUID> uninvoicedShipmentIds,
                                       boolean shippingFeeUninvoiced, boolean refundOutstanding, boolean completionHeld,
                                       boolean returnAdjustmentUnissued, Instant completesAt, Instant closesAt,
-                                      List<String> blockers) {
+                                      List<String> blockers, boolean completionHoldable) {
     }
 
     /** This response with F-1's facts, as the order's detail shows them to staff. */
