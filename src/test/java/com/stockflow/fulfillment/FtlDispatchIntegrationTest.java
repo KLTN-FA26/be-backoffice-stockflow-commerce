@@ -2417,6 +2417,15 @@ class FtlDispatchIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT from_status || '>' || to_status || ':' || reason FROM "
                 + "fulfillment.delivery_outcome_correction WHERE shipment_id = ?", String.class, shipment))
                 .isEqualTo("DELIVERED>DELIVERY_FAILED:the customer says nothing arrived");
+        // Audit r3 EINV-1: the shipment's answer carries the delivery the correction undid - what the screen fills the
+        // time of a correction back to delivered with.
+        java.time.Instant undone = jdbc.queryForObject("SELECT undone_delivered_at FROM "
+                + "fulfillment.delivery_outcome_correction WHERE shipment_id = ?", java.sql.Timestamp.class, shipment)
+                .toInstant();
+        JsonNode corrected = data(as(manager, "WAREHOUSE_MANAGER", get(BASE + "/shipments/" + shipment))
+                .andExpect(status().isOk()));
+        assertThat(corrected.path("undoneDeliveredAt").isTextual()).as("undoneDeliveredAt in the JSON").isTrue();
+        assertThat(java.time.Instant.parse(corrected.path("undoneDeliveredAt").asText())).isEqualTo(undone);
 
         // E17: the carrier reports it again - not applied, the manager looks at it.
         String again = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":\""
@@ -2430,6 +2439,10 @@ class FtlDispatchIntegrationTest {
                 + "\"reason\":\"found at the reception\"}")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.shipment.status").value("DELIVERED"));
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.DELIVERED);
+        JsonNode back = data(as(manager, "WAREHOUSE_MANAGER", get(BASE + "/shipments/" + shipment))
+                .andExpect(status().isOk()));
+        assertThat(back.path("undoneDeliveredAt").isNull() || back.path("undoneDeliveredAt").isMissingNode())
+                .as("delivered again, there is nothing to restore").isTrue();
     }
 
     @Test
