@@ -72,7 +72,7 @@
       CVE-2025-31672 (duplicate zip entries in OOXML), which every earlier 5.x lacks. Its commons-io, commons-compress
       and xmlbeans are the only ones on the classpath (nothing else here brings them at compile scope).
     -->
-    <poi.version>5.4.0</poi.version>
+    <poi.version>6.0.0</poi.version>
 
     <!--
       Recorded in build-info.properties and served at /actuator/info. CI overrides them with
