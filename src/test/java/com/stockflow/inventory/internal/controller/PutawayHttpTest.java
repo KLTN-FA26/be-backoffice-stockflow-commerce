@@ -114,6 +114,7 @@ class PutawayHttpTest {
                 .andExpect(jsonPath("$.data.left").value(20))
                 .andExpect(jsonPath("$.data.status").value("PENDING"))
                 .andExpect(jsonPath("$.data.sourceLocationCode").value(RECEIVING))
+                .andExpect(jsonPath("$.data.warehouseId").value(WAREHOUSE_HCM.toString()))
                 .andExpect(jsonPath("$.data.lpn").isNotEmpty())
                 .andExpect(jsonPath("$.data.suggestions[0].reason").isNotEmpty())
                 .andExpect(jsonPath("$.data.suggestions.length()").value(Matchers.lessThanOrEqualTo(10)));
@@ -125,7 +126,9 @@ class PutawayHttpTest {
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get(TASKS).param("receiptId", receiptId.toString()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(2))
-                .andExpect(jsonPath("$.data.items[0].suggestions.length()").value(0));
+                .andExpect(jsonPath("$.data.items[0].suggestions.length()").value(0))
+                .andExpect(jsonPath("$.data.items[*].warehouseId")
+                        .value(Matchers.everyItem(Matchers.is(WAREHOUSE_HCM.toString()))));
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get(TASKS).param("receiptId", receiptId.toString())
                         .param("status", "DONE"))
                 .andExpect(status().isOk())
@@ -138,7 +141,9 @@ class PutawayHttpTest {
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get(TASKS).param("warehouseId", WAREHOUSE_HCM.toString())
                         .param("size", "200"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[?(@.id == '" + cartonTask + "')]").isNotEmpty());
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + cartonTask + "')]").isNotEmpty())
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + cartonTask + "')].warehouseId")
+                        .value(Matchers.contains(WAREHOUSE_HCM.toString())));
     }
 
     @Test
@@ -203,7 +208,13 @@ class PutawayHttpTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("DONE"))
                 .andExpect(jsonPath("$.data.left").value(0))
-                .andExpect(jsonPath("$.data.targetLocationCode").value(scan[0]));
+                .andExpect(jsonPath("$.data.targetLocationCode").value(scan[0]))
+                .andExpect(jsonPath("$.data.warehouseId").value(WAREHOUSE_HCM.toString()));
+        // A DONE task has nothing to suggest, and still names its warehouse: old links to it are redirected by it.
+        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get(TASKS + "/" + cartonTask).accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("DONE"))
+                .andExpect(jsonPath("$.data.warehouseId").value(WAREHOUSE_HCM.toString()));
     }
 
     @Test
