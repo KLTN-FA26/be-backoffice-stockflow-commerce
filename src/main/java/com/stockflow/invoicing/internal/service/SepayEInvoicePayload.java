@@ -114,6 +114,10 @@ final class SepayEInvoicePayload {
      * midnight. It then names the invoice's own day, which SePay refuses at once ({@code ISSUED_DATE_INVALID}, nothing
      * created), rather than "now", which would number an invoice under a day the system does not record. The refusal
      * is recorded, and the accountant reopens the invoice and issues it again, re-dated to that day.</p>
+     *
+     * <p>The end-of-day branch is therefore not dead code, although the WF-05 decision file (§1.5 step 1) once said to
+     * delete it on that premise. Owner decision 2026-11-24 (audit round 2, e-invoice L-2): keep it. A refused send the
+     * accountant re-issues is the accepted price; an invoice numbered under a date the system does not hold is not.</p>
      */
     static String issuedDate(LocalDate issueDate, Instant now) {
         LocalDateTime at = issueDate.equals(LocalDate.ofInstant(now, ZONE))
