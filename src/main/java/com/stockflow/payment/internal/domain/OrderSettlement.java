@@ -150,7 +150,8 @@ public final class OrderSettlement {
      *
      * @param shipmentId        the shipment a {@link Kind#SHIPMENT_RETURNED} settlement closed; null for every other kind
      *                          ({@code ck_order_settlement_shipment} says it again)
-     * @param shippingFeeWaived the part of {@code closed} that is the order's shipping fee waived with the shipment
+     * @param shippingFeeWaived the part of {@code closed} that is the share of the order's shipping fee waived with the
+     *                          shipment
      *                          (WF-05 Q-19); zero for every other kind
      */
     public OrderSettlement(UUID id, UUID orderId, UUID contractId, UUID customerId, String orderNumber,
@@ -341,9 +342,9 @@ public final class OrderSettlement {
      * latest batch first: a carrier bringing back batch 1 lowered batches 2 and 3 - their installment before delivery,
      * the gate of their handover, included - and left batch 1 owing for goods that came back (audit M-2).
      *
-     * <p>{@code shippingFeeWaived} is the order's shipping fee given up with it (Q-19: the failed trip's shipping is not
-     * charged, the plate fee is kept): it comes off the installments, and is refunded, as the goods do; it is part of
-     * {@link #closed} and stated apart beside it.</p>
+     * <p>{@code shippingFeeWaived} is the share of the order's shipping fee given up with it ({@link #shippingFeeShare};
+     * Q-19: the failed trip's shipping is not charged, the plate fee is kept): it comes off the installments, and is
+     * refunded, as the goods do; it is part of {@link #closed} and stated apart beside it.</p>
      *
      * @param closureId         the closure's id: one settlement per closure ({@code uk_order_settlement})
      * @param shipmentId        the shipment whose units were closed: one settlement per shipment
@@ -371,6 +372,55 @@ public final class OrderSettlement {
         }
         return givenBack(ofOrder, Kind.SHIPMENT_RETURNED, closureId, deliveryBatchId, closed, handedOverBatches,
                 refundableBefore, by, at, day, shipmentId, waived);
+    }
+
+    /**
+     * WF-05 Q-19, as the owner decided on 2026-11-23: the share of the order's shipping fee waived with a shipment the
+     * carrier brought back or lost - the fee in proportion to the goods of the order that never reached the customer
+     * this way. One shipment of three equal ones brought back waives a third of the fee; all three, the whole fee; none,
+     * nothing. A partial return keeps the share of the goods delivered, which the trips that delivered them earned.
+     *
+     * <p><b>Rounding, and where the remainder goes.</b> The fee waived by the order's shipments so far is worked out from
+     * their goods together, rounded to the whole unit half up - the rounding of every other share of money here (the
+     * cancellation fee's share of what was collected, {@code ContractTerms}' installments, {@code FeeAllocation}'s
+     * shipping share on the invoices) - and this shipment waives that less what the earlier ones waived. So the
+     * rounding never accumulates: the shipments' waivers add up to the rounded share of all of them to the dong, and
+     * the shipment that brings the last of the order's goods back waives exactly what is left of the fee. Never below
+     * zero, never above what is left.</p>
+     *
+     * <p>Measured against the order's goods as signed, not as later closures left them: a whole that shrank with every
+     * closure would make the earlier shipments' shares wrong after the fact. Goods closed in other ways (a rest closed
+     * before it left, a customer's return) waive nothing: Q-19 is about the trip that failed.</p>
+     *
+     * @param fee        the order's shipping fee line with its VAT, whole; zero for none
+     * @param orderGoods what the order's goods lines are worth with their VAT, as signed; positive when {@code fee} is
+     * @param ofOrder    the order's settlements so far: its earlier shipments' goods and waivers are read from them
+     * @param goodsValue what this shipment's goods are worth with their VAT
+     * @return the fee waived with this shipment, whole, from zero to what the earlier shipments left of the fee
+     */
+    public static BigDecimal shippingFeeShare(BigDecimal fee, BigDecimal orderGoods, List<OrderSettlement> ofOrder,
+                                              BigDecimal goodsValue) {
+        Objects.requireNonNull(goodsValue, "goodsValue");
+        if (fee == null || fee.signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+        if (orderGoods == null || orderGoods.signum() <= 0) {
+            throw new IllegalArgumentException("A shipping fee is charged for goods worth more than zero");
+        }
+        BigDecimal goodsBefore = BigDecimal.ZERO;
+        BigDecimal waivedBefore = BigDecimal.ZERO;
+        for (OrderSettlement earlier : ofOrder) {
+            if (earlier.kind() == Kind.SHIPMENT_RETURNED) {
+                goodsBefore = goodsBefore.add(earlier.closed().subtract(earlier.shippingFeeWaived()));
+                waivedBefore = waivedBefore.add(earlier.shippingFeeWaived());
+            }
+        }
+        BigDecimal whole = fee.setScale(0, RoundingMode.HALF_UP);
+        BigDecimal through = goodsBefore.add(goodsValue.max(BigDecimal.ZERO));
+        BigDecimal waivedThrough = through.compareTo(orderGoods) >= 0 ? whole
+                : whole.multiply(through).divide(orderGoods, 0, RoundingMode.HALF_UP);
+        BigDecimal left = whole.subtract(waivedBefore).max(BigDecimal.ZERO);
+        return waivedThrough.subtract(waivedBefore).max(BigDecimal.ZERO).min(left);
     }
 
     /** The return's four steps, for a customer's return and a shipment the carrier brought back or lost alike. */
@@ -537,6 +587,6 @@ public final class OrderSettlement {
     public List<Reduction> reductions() { return reductions; }
     /** The shipment a {@link Kind#SHIPMENT_RETURNED} settlement closed; null for the other kinds. */
     public UUID shipmentId() { return shipmentId; }
-    /** The part of {@link #closed} that is the order's shipping fee waived with the shipment (Q-19); mostly zero. */
+    /** The part of {@link #closed} that is the share of the order's shipping fee waived with the shipment (Q-19). */
     public BigDecimal shippingFeeWaived() { return shippingFeeWaived; }
 }

@@ -15,8 +15,12 @@ import java.util.UUID;
  * @param surplus   the money that paid the fee first: all of it collected for a cancellation; for a closure, what was
  *                  paid above the order's new worth
  * @param feeItemId the cancellation fee item; null when nothing is owed
+ * @param shippingFeeWaived {@code SHIPMENT_RETURNED}: the share of the order's shipping fee, with its VAT, waived with
+ *                  the shipment (WF-05 Q-19) - part of what the settlement closed. Payment works it out; the order
+ *                  keeps it from here, so that invoicing, which cannot read payment, invoices the fee less what was
+ *                  waived from the one figure rather than a second copy of the rule. Zero for every other kind
  */
 public record OrderSettlementResult(UUID settlementId, String kind, BigDecimal collected, BigDecimal reduced,
                                     BigDecimal surplus, BigDecimal fee, BigDecimal feeCovered, BigDecimal refundable,
-                                    BigDecimal feeOwed, UUID feeItemId, String currency) {
+                                    BigDecimal feeOwed, UUID feeItemId, String currency, BigDecimal shippingFeeWaived) {
 }

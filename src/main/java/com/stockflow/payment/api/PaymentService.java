@@ -81,10 +81,13 @@ public interface PaymentService {
      * were closed. Settled as a customer's return is: their value comes off the installments of the shipment's own
      * batch first, then the older debt; what was paid above that is to be refunded, up to what was collected; the
      * installments of batches still to come are lowered last. No fee. The plate fee lines are never lowered; the
-     * shipping fee line is, only by what the command waives ({@link SettleShipmentReturnCommand#shippingFeeWaived},
-     * Q-19). Kind {@code SHIPMENT_RETURNED}. In the caller's transaction ({@code Propagation.MANDATORY}), after the
-     * order's lock (orders, then installments); once per {@code sourceId}, and once per shipment - a second closure
-     * of the same shipment settles nothing more and returns the first.
+     * shipping fee is, by this shipment's goods' share of the order's goods (Q-19, owner 2026-11-23: one shipment of
+     * three equal ones brought back waives a third of it, all of them the whole fee), which payment works out from
+     * {@link SettleShipmentReturnCommand#shippingFee} and the order's earlier shipments, and returns as
+     * {@link OrderSettlementResult#shippingFeeWaived} for the order to keep. Kind {@code SHIPMENT_RETURNED}. In the
+     * caller's transaction ({@code Propagation.MANDATORY}), after the order's lock (orders, then installments); once
+     * per {@code sourceId}, and once per shipment - a second closure of the same shipment settles nothing more and
+     * returns the first, its waiver included.
      *
      * <p>The installments paid after delivery are not reached here: that waits for the order's
      * {@code ShipmentReturnSettled}, after commit, which reads when the order counts as delivered.</p>

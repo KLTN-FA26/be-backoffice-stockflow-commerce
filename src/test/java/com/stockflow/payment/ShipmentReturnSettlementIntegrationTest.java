@@ -149,13 +149,25 @@ class ShipmentReturnSettlementIntegrationTest {
         return WithCurrentUser.call(sales, DataScope.ALL, call);
     }
 
-    /** A new order with the 30 / 40 / 30 plan, signed today. */
+    /** A new order with the 30 / 40 / 30 plan, signed today: goods worth 2,200,000 with VAT, no shipping fee. */
     private Signed signed() {
+        return signed(0);
+    }
+
+    /**
+     * The same, with a shipping fee line of {@code shippingFee} before its 10% VAT when it is above zero: the plan's
+     * shares are then of the goods and the fee together.
+     */
+    private Signed signed(long shippingFee) {
         UUID orderId = tx.execute(s -> {
             OrderLine line = Order.line(Identifiers.newId(), new Sku(sku.sku()), 1000, Money.vnd(2_000), null)
                     .withCartons(sku.uomConversionId(), 20, 50).withTax(BigDecimal.TEN);
             Order order = Order.draft(OrderNumber.of(today, ORDER_NUMBERS.incrementAndGet()), customerId,
                     Identifiers.newId(), List.of(line), Instant.now());
+            if (shippingFee > 0) {
+                order.attachFees(List.of(com.stockflow.order.internal.domain.OrderFee.of(Identifiers.newId(),
+                        com.stockflow.order.api.FeeKind.SHIPPING_FEE, null, Money.vnd(shippingFee), BigDecimal.TEN)));
+            }
             return orderRepository.save(order).id().value();
         });
         UUID line = jdbc.queryForObject("SELECT id FROM ordering.order_line WHERE order_id = ?", UUID.class, orderId);
@@ -200,9 +212,15 @@ class ShipmentReturnSettlementIntegrationTest {
     }
 
     private SettleShipmentReturnCommand returned(UUID orderId, UUID shipmentId, UUID closureId, long goods,
-                                                 long shippingWaived, SettleShipmentReturnCommand.Cause cause) {
+                                                 SettleShipmentReturnCommand.Cause cause) {
+        return returned(orderId, shipmentId, closureId, goods, SettleShipmentReturnCommand.ShippingFee.NONE, cause);
+    }
+
+    private SettleShipmentReturnCommand returned(UUID orderId, UUID shipmentId, UUID closureId, long goods,
+                                                 SettleShipmentReturnCommand.ShippingFee fee,
+                                                 SettleShipmentReturnCommand.Cause cause) {
         return new SettleShipmentReturnCommand(orderId, shipmentId, null, closureId, dong(goods), cause,
-                Instant.now(), accountant, Set.of(), dong(shippingWaived));
+                Instant.now(), accountant, Set.of(), fee);
     }
 
     private OrderSettlementResult settle(SettleShipmentReturnCommand command) {
@@ -240,7 +258,7 @@ class ShipmentReturnSettlementIntegrationTest {
         UUID shipment = shipment(signed.orderId(), "RETURNED", "REFUSED");
         UUID closure = Identifiers.newId();
 
-        OrderSettlementResult result = settle(returned(signed.orderId(), shipment, closure, 2_200_000, 0,
+        OrderSettlementResult result = settle(returned(signed.orderId(), shipment, closure, 2_200_000,
                 SettleShipmentReturnCommand.Cause.CARRIER_RETURN));
 
         assertThat(result.kind()).isEqualTo("SHIPMENT_RETURNED");
@@ -257,9 +275,9 @@ class ShipmentReturnSettlementIntegrationTest {
                 .containsEntry("source_id", closure);
 
         // Idempotent on the closure, and once per shipment: a second receipt of the same shipment settles nothing.
-        assertThat(settle(returned(signed.orderId(), shipment, closure, 2_200_000, 0,
+        assertThat(settle(returned(signed.orderId(), shipment, closure, 2_200_000,
                 SettleShipmentReturnCommand.Cause.CARRIER_RETURN)).settlementId()).isEqualTo(result.settlementId());
-        assertThat(settle(returned(signed.orderId(), shipment, Identifiers.newId(), 1_000_000, 0,
+        assertThat(settle(returned(signed.orderId(), shipment, Identifiers.newId(), 1_000_000,
                 SettleShipmentReturnCommand.Cause.CARRIER_RETURN)).settlementId()).isEqualTo(result.settlementId());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE order_id = ?", Long.class,
                 signed.orderId())).isEqualTo(1);
@@ -290,6 +308,8 @@ class ShipmentReturnSettlementIntegrationTest {
 
         // 15 §4.4 step 13: the deposit was counted by the settlement's refund; taking it back would leave the refund
         // wrong.
+        assertThat(receipts.receipt(deposit.id()).voidBlockedBy()).as("the detail says so before the click")
+                .isEqualTo(ErrorCode.PAYMENT_RECEIPT_VOID_NOT_ALLOWED);
         assertThatThrownBy(() -> voidReceipt(deposit)).extracting(ShipmentReturnSettlementIntegrationTest::code)
                 .isEqualTo(ErrorCode.PAYMENT_RECEIPT_VOID_NOT_ALLOWED);
     }
@@ -306,23 +326,80 @@ class ShipmentReturnSettlementIntegrationTest {
         UUID refused = shipment(signed.orderId(), "DELIVERY_FAILED", "REFUSED");
         UUID lost = shipment(signed.orderId(), "DELIVERY_FAILED", "LOST");
 
-        assertThatThrownBy(() -> settle(returned(signed.orderId(), onItsWay, Identifiers.newId(), 1_100_000, 0,
+        assertThatThrownBy(() -> settle(returned(signed.orderId(), onItsWay, Identifiers.newId(), 1_100_000,
                 SettleShipmentReturnCommand.Cause.CARRIER_RETURN))).isInstanceOf(DataAccessException.class);
-        assertThatThrownBy(() -> settle(returned(signed.orderId(), refused, Identifiers.newId(), 1_100_000, 0,
+        assertThatThrownBy(() -> settle(returned(signed.orderId(), refused, Identifiers.newId(), 1_100_000,
                 SettleShipmentReturnCommand.Cause.LOST))).isInstanceOf(DataAccessException.class);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE order_id = ?", Long.class,
                 signed.orderId())).as("a refused settlement leaves nothing").isZero();
         assertThat(status(signed.seq(3))).isEqualTo(InstallmentStatus.NOT_DUE);
 
-        // Lost, nothing delivered: the shipping fee is waived with the goods (Q-19) and stated apart.
-        OrderSettlementResult result = settle(returned(signed.orderId(), lost, Identifiers.newId(), 2_000_000,
-                200_000, SettleShipmentReturnCommand.Cause.LOST));
+        // Lost: settled as brought back. The order has no shipping fee line, so nothing is waived with it (Q-19).
+        OrderSettlementResult result = settle(returned(signed.orderId(), lost, Identifiers.newId(), 2_200_000,
+                SettleShipmentReturnCommand.Cause.LOST));
         assertThat(result.kind()).isEqualTo("SHIPMENT_RETURNED");
         assertThat(result.refundable()).isEqualByComparingTo(dong(660_000));
         assertThat(jdbc.queryForObject("SELECT shipping_fee_waived_amount FROM payment.order_settlement WHERE id = ?",
-                BigDecimal.class, result.settlementId())).isEqualByComparingTo(dong(200_000));
-        assertThat(jdbc.queryForObject("SELECT closed_amount FROM payment.order_settlement WHERE id = ?",
-                BigDecimal.class, result.settlementId())).isEqualByComparingTo(dong(2_200_000));
+                BigDecimal.class, result.settlementId())).isZero();
+    }
+
+    // ---- Q-19: the shipping fee, waived by share -------------------------------------------------------------------
+
+    @Test
+    @DisplayName("Q-19 (owner 2026-11-23): each shipment brought back waives its goods' share of the shipping fee - "
+            + "1 of 3 a third, rounded half up; all 3 the whole fee, to the dong; the database holds the waivers within "
+            + "the fee line")
+    void shippingFeeWaivedByShare() {
+        // Goods 2,200,000 with VAT in three shipments of 733,333 / 733,333 / 733,334; the fee 300,000 + 30,000 VAT.
+        Signed signed = signed(300_000);
+        pay(signed.seq(1), 759_000);
+        awaitConfirmed(signed.orderId());
+        SettleShipmentReturnCommand.ShippingFee fee = new SettleShipmentReturnCommand.ShippingFee(dong(330_000),
+                dong(2_200_000));
+        UUID first = shipment(signed.orderId(), "RETURNED", "REFUSED");
+        UUID second = shipment(signed.orderId(), "RETURNED", "REFUSED");
+        UUID third = shipment(signed.orderId(), "DELIVERY_FAILED", "LOST");
+
+        UUID firstClosure = Identifiers.newId();
+        OrderSettlementResult one = settle(returned(signed.orderId(), first, firstClosure, 733_333, fee,
+                SettleShipmentReturnCommand.Cause.CARRIER_RETURN));
+        assertThat(waived(one)).as("330,000 x 733,333 / 2,200,000 = 109,999.95").isEqualByComparingTo(
+                dong(110_000));
+        assertThat(one.shippingFeeWaived()).as("returned for the order to keep").isEqualByComparingTo(dong(110_000));
+        assertThat(settle(returned(signed.orderId(), first, firstClosure, 733_333, fee,
+                SettleShipmentReturnCommand.Cause.CARRIER_RETURN)).shippingFeeWaived())
+                .as("a replay returns the first waiver, and waives nothing more").isEqualByComparingTo(dong(110_000));
+        assertThat(one.reduced().add(one.surplus())).as("closed: the goods and their share of the fee")
+                .isEqualByComparingTo(dong(843_333));
+
+        // Only that one came back: the fee of the two others stands - and the database will not let more be waived than
+        // the fee line holds, whatever a caller claims the fee is.
+        UUID inflated = shipment(signed.orderId(), "RETURNED", "REFUSED");
+        assertThatThrownBy(() -> settle(returned(signed.orderId(), inflated, Identifiers.newId(), 100_000,
+                new SettleShipmentReturnCommand.ShippingFee(dong(990_000), dong(2_200_000)),
+                SettleShipmentReturnCommand.Cause.CARRIER_RETURN))).as("tg_order_settlement_shipping_waiver")
+                .isInstanceOf(DataAccessException.class);
+
+        OrderSettlementResult two = settle(returned(signed.orderId(), second, Identifiers.newId(), 733_333, fee,
+                SettleShipmentReturnCommand.Cause.CARRIER_RETURN));
+        OrderSettlementResult three = settle(returned(signed.orderId(), third, Identifiers.newId(), 733_334, fee,
+                SettleShipmentReturnCommand.Cause.LOST));
+        assertThat(waived(two)).as("219,999.9 through two, less 110,000").isEqualByComparingTo(dong(110_000));
+        assertThat(waived(three)).as("the last takes what is left").isEqualByComparingTo(dong(110_000));
+        assertThat(three.shippingFeeWaived()).isEqualByComparingTo(dong(110_000));
+        assertThat(jdbc.queryForObject("SELECT sum(shipping_fee_waived_amount) FROM payment.order_settlement "
+                + "WHERE order_id = ?", BigDecimal.class, signed.orderId())).as("all three: the whole fee")
+                .isEqualByComparingTo(dong(330_000));
+        assertThat(refunds.detail(signed.orderId(), null).settlements())
+                .extracting(s -> s.shippingFeeWaived().longValueExact())
+                .containsExactly(110_000L, 110_000L, 110_000L);
+        assertThat(three.refundable()).as("everything collected comes back: nothing was delivered")
+                .isEqualByComparingTo(dong(759_000));
+    }
+
+    private BigDecimal waived(OrderSettlementResult result) {
+        return jdbc.queryForObject("SELECT shipping_fee_waived_amount FROM payment.order_settlement WHERE id = ?",
+                BigDecimal.class, result.settlementId());
     }
 
     // ---- BE-51 ------------------------------------------------------------------------------------------------------
@@ -344,7 +421,7 @@ class ShipmentReturnSettlementIntegrationTest {
         assertThat(closure.feeOwed()).isEqualByComparingTo(dong(800_000));
         // The other half came back with the carrier: the deposit is refundable.
         UUID shipment = shipment(signed.orderId(), "RETURNED", "REFUSED");
-        OrderSettlementResult back = settle(returned(signed.orderId(), shipment, Identifiers.newId(), 1_100_000, 0,
+        OrderSettlementResult back = settle(returned(signed.orderId(), shipment, Identifiers.newId(), 1_100_000,
                 SettleShipmentReturnCommand.Cause.CARRIER_RETURN));
         assertThat(back.refundable()).isEqualByComparingTo(dong(660_000));
 
@@ -372,7 +449,10 @@ class ShipmentReturnSettlementIntegrationTest {
         Signed before = signed();
         PaymentReceipt earlyDeposit = pay(before.seq(1), 660_000);
         awaitConfirmed(before.orderId());
+        assertThat(receipts.receipt(earlyDeposit.id()).voidable()).isTrue();
         voidReceipt(earlyDeposit);
+        assertThat(receipts.receipt(earlyDeposit.id()).voidBlockedBy())
+                .isEqualTo(ErrorCode.PAYMENT_RECEIPT_ALREADY_VOIDED);
         assertThat(status(before.seq(1))).as("nothing handed over yet: voided").isEqualTo(InstallmentStatus.DUE);
 
         Signed after = signed();
@@ -382,6 +462,11 @@ class ShipmentReturnSettlementIntegrationTest {
         PaymentReceipt early = pay(after.seq(3), 100_000);
         shipment(after.orderId(), "HANDED_OVER", null);
 
+        // Q-20: the back office locks the button on the detail's reading - the same rule the void enforces.
+        assertThat(receipts.receipt(deposit.id()).voidBlockedBy())
+                .isEqualTo(ErrorCode.PAYMENT_RECEIPT_VOID_AFTER_HANDOVER);
+        assertThat(receipts.receipt(gate.id()).voidable()).isFalse();
+        assertThat(receipts.receipt(early.id()).voidable()).as("after delivery").isTrue();
         assertThatThrownBy(() -> voidReceipt(deposit)).extracting(ShipmentReturnSettlementIntegrationTest::code)
                 .isEqualTo(ErrorCode.PAYMENT_RECEIPT_VOID_AFTER_HANDOVER);
         assertThatThrownBy(() -> voidReceipt(gate)).extracting(ShipmentReturnSettlementIntegrationTest::code)

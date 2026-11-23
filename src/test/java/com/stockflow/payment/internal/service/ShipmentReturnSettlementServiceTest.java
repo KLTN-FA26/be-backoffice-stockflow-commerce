@@ -21,6 +21,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -44,10 +45,14 @@ class ShipmentReturnSettlementServiceTest {
     private final UUID shipmentId = UUID.randomUUID();
     private final UUID closureId = UUID.randomUUID();
 
-    private SettleShipmentReturnCommand command(UUID closure, long goods, long waived) {
+    private SettleShipmentReturnCommand command(UUID closure, long goods,
+                                                SettleShipmentReturnCommand.ShippingFee fee) {
         return new SettleShipmentReturnCommand(orderId, shipmentId, null, closure, BigDecimal.valueOf(goods),
-                SettleShipmentReturnCommand.Cause.CARRIER_RETURN, AT, UUID.randomUUID(), Set.of(),
-                BigDecimal.valueOf(waived));
+                SettleShipmentReturnCommand.Cause.CARRIER_RETURN, AT, UUID.randomUUID(), Set.of(), fee);
+    }
+
+    private SettleShipmentReturnCommand command(UUID closure, long goods) {
+        return command(closure, goods, SettleShipmentReturnCommand.ShippingFee.NONE);
     }
 
     private List<Installment> paidPlan() {
@@ -67,7 +72,7 @@ class ShipmentReturnSettlementServiceTest {
         when(settlements.findOfShipment(shipmentId)).thenReturn(Optional.empty());
         when(settlements.ofOrder(orderId)).thenReturn(List.of());
 
-        OrderSettlementResult result = service.settleShipmentReturn(command(closureId, 400_000, 0)).orElseThrow();
+        OrderSettlementResult result = service.settleShipmentReturn(command(closureId, 400_000)).orElseThrow();
 
         assertThat(result.kind()).isEqualTo("SHIPMENT_RETURNED");
         assertThat(result.refundable()).isEqualByComparingTo("400000");
@@ -85,7 +90,7 @@ class ShipmentReturnSettlementServiceTest {
                 java.time.LocalDate.of(2026, 11, 20)).settlement();
         when(settlements.find(OrderSettlement.Kind.SHIPMENT_RETURNED, closureId)).thenReturn(Optional.of(made));
 
-        assertThat(service.settleShipmentReturn(command(closureId, 400_000, 0))).get()
+        assertThat(service.settleShipmentReturn(command(closureId, 400_000))).get()
                 .extracting(OrderSettlementResult::settlementId).isEqualTo(made.id());
         verify(settlements, never()).save(any());
         verify(installments, never()).lockOfOrder(any());
@@ -101,7 +106,7 @@ class ShipmentReturnSettlementServiceTest {
         when(settlements.find(OrderSettlement.Kind.SHIPMENT_RETURNED, secondClosure)).thenReturn(Optional.empty());
         when(settlements.findOfShipment(shipmentId)).thenReturn(Optional.of(made));
 
-        assertThat(service.settleShipmentReturn(command(secondClosure, 400_000, 0))).get()
+        assertThat(service.settleShipmentReturn(command(secondClosure, 400_000))).get()
                 .extracting(OrderSettlementResult::settlementId).isEqualTo(made.id());
         verify(settlements, never()).save(any());
     }
@@ -111,11 +116,11 @@ class ShipmentReturnSettlementServiceTest {
     void nothingToSettle() {
         when(settlements.find(any(), any())).thenReturn(Optional.empty());
         when(settlements.findOfShipment(shipmentId)).thenReturn(Optional.empty());
-        assertThat(service.settleShipmentReturn(command(closureId, 0, 0))).isEmpty();
+        assertThat(service.settleShipmentReturn(command(closureId, 0))).isEmpty();
         verify(installments, never()).lockOfOrder(any());
 
         when(installments.lockOfOrder(orderId)).thenReturn(List.of());
-        assertThat(service.settleShipmentReturn(command(closureId, 100, 0))).isEmpty();
+        assertThat(service.settleShipmentReturn(command(closureId, 100))).isEmpty();
         verify(settlements, never()).save(any());
     }
 
@@ -130,10 +135,45 @@ class ShipmentReturnSettlementServiceTest {
     }
 
     @Test
-    @DisplayName("the shared base's shorter command waives no shipping fee")
-    void shorterCommand() {
-        SettleShipmentReturnCommand shorter = new SettleShipmentReturnCommand(orderId, shipmentId, null, closureId,
-                BigDecimal.TEN, SettleShipmentReturnCommand.Cause.LOST, AT, null, null);
-        assertThat(shorter.shippingFeeWaived()).isEqualByComparingTo(BigDecimal.ZERO);
+    @DisplayName("Q-19: the share of the shipping fee is payment's to work out - from the order's earlier shipments, "
+            + "read under the installments' lock - never the caller's")
+    void shippingFeeShare() {
+        SettleShipmentReturnCommand.ShippingFee fee = new SettleShipmentReturnCommand.ShippingFee(
+                BigDecimal.valueOf(100_000), BigDecimal.valueOf(1_200_000));
+        List<Installment> plan = paidPlan();
+        OrderSettlement earlier = OrderSettlement.shipmentReturned(plan, UUID.randomUUID(), UUID.randomUUID(), null,
+                BigDecimal.valueOf(400_000), BigDecimal.valueOf(33_333), Set.of(), BigDecimal.ZERO, null, AT,
+                java.time.LocalDate.of(2026, 11, 20)).settlement();
+        when(installments.lockOfOrder(orderId)).thenReturn(plan);
+        when(settlements.find(any(), any())).thenReturn(Optional.empty());
+        when(settlements.findOfShipment(shipmentId)).thenReturn(Optional.empty());
+        when(settlements.ofOrder(orderId)).thenReturn(List.of(earlier));
+
+        OrderSettlementResult result = service.settleShipmentReturn(command(closureId, 400_000, fee)).orElseThrow();
+
+        ArgumentCaptor<OrderSettlement> saved = ArgumentCaptor.forClass(OrderSettlement.class);
+        verify(settlements).save(saved.capture());
+        assertThat(saved.getValue().shippingFeeWaived()).as("two thirds through both (66,667), less the first's")
+                .isEqualByComparingTo("33334");
+        assertThat(saved.getValue().closed()).isEqualByComparingTo("433334");
+        assertThat(result.shippingFeeWaived()).as("handed back for the order to keep").isEqualByComparingTo("33334");
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(installments, settlements);
+        order.verify(installments).lockOfOrder(orderId);
+        order.verify(settlements).ofOrder(orderId);
+    }
+
+    @Test
+    @DisplayName("the command states the shipping fee - NONE for an order without one; there is no shorter form that "
+            + "would waive nothing for a caller that forgot it")
+    void feeStated() {
+        assertThatThrownBy(() -> new SettleShipmentReturnCommand(orderId, shipmentId, null, closureId, BigDecimal.TEN,
+                SettleShipmentReturnCommand.Cause.LOST, AT, null, null, null))
+                .isInstanceOf(NullPointerException.class);
+        assertThat(java.util.Arrays.stream(SettleShipmentReturnCommand.class.getConstructors())
+                .map(java.lang.reflect.Constructor::getParameterCount)).containsExactly(10);
+        assertThatThrownBy(() -> new SettleShipmentReturnCommand.ShippingFee(BigDecimal.TEN, BigDecimal.ZERO))
+                .as("a fee charged for no goods").isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new SettleShipmentReturnCommand.ShippingFee(new BigDecimal("0.5"), BigDecimal.TEN))
+                .as("whole units").isInstanceOf(IllegalArgumentException.class);
     }
 }

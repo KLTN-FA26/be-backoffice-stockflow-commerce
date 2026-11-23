@@ -87,8 +87,21 @@ public class PaymentReceiptService {
     public record VoidReceiptCommand(UUID receiptId, String reason, boolean holdOrders, UUID voidedBy) {
     }
 
-    /** A receipt with the installments its lines pay, for display. */
-    public record ReceiptDetail(PaymentReceipt receipt, Map<UUID, Installment> installments) {
+    /**
+     * A receipt with the installments its lines pay, for display.
+     *
+     * @param voidBlockedBy why a void of it would be refused now - the code {@link #voidReceipt} would answer with
+     *                      ({@code PAYMENT_RECEIPT_ALREADY_VOIDED}, {@code PAYMENT_RECEIPT_VOID_NOT_ALLOWED},
+     *                      {@code PAYMENT_RECEIPT_VOID_AFTER_HANDOVER}); null when it may be voided. One rule for both
+     *                      ({@link #voidRefusal}): the back office locks its void button on this before the click
+     *                      (WF-05 Q-20), and the void refuses on the same reading under the orders' locks
+     */
+    public record ReceiptDetail(PaymentReceipt receipt, Map<UUID, Installment> installments, ErrorCode voidBlockedBy) {
+
+        /** Whether a void of the receipt would be taken now, as far as the receipt and its orders go. */
+        public boolean voidable() {
+            return voidBlockedBy == null;
+        }
     }
 
     private final InstallmentBook book;
@@ -184,7 +197,7 @@ public class PaymentReceiptService {
                 }).toList(), saved.recordedBy(), saved.recordedAt()));
         log.info("Receipt {} recorded: {} {} over {} installment(s)", saved.reference(), saved.amount(),
                 saved.currency(), saved.lines().size());
-        return new ReceiptDetail(saved, installments);
+        return new ReceiptDetail(saved, installments, blockedBy(saved, installments, payable));
     }
 
     /**
@@ -206,7 +219,6 @@ public class PaymentReceiptService {
                 .ifPresent(order -> payable.put(orderId, order)));
         PaymentReceipt receipt = book.lockReceipt(command.receiptId()).orElseThrow(() -> notFound(command.receiptId()));
         Instant now = clock.instant();
-        receipt.voidReceipt(command.reason(), command.voidedBy(), now);
 
         // Every installment of those orders, locked in id order: whether the orders are still paid on signing reads
         // installments the receipt did not pay too.
@@ -214,44 +226,17 @@ public class PaymentReceiptService {
                 .toList();
         Map<UUID, Installment> installments = book.lock(all).stream()
                 .collect(Collectors.toMap(Installment::id, Function.identity()));
-        // 4B-9 (§4.4 step 13): a cancellation, or a closure that left money to refund, worked the refund out from what
-        // had been paid by then; taking such a payment back would leave that refund wrong. A receipt recorded after the
-        // last such settlement was counted by none. tg_payment_receipt_void says it again.
-        Set<UUID> settledOnPaid = new java.util.HashSet<>();
-        orderIds.forEach(orderId -> settlements.ofOrder(orderId).stream()
-                .filter(s -> s.kind() == OrderSettlement.Kind.ORDER_CANCELLED || s.surplus().signum() > 0)
-                .map(OrderSettlement::settledAt).max(Instant::compareTo)
-                .filter(last -> !receipt.recordedAt().isAfter(last))
-                .ifPresent(last -> settledOnPaid.add(orderId)));
-        // WF-05 Q-20: read under the orders' locks taken above - a handover of one of them waits for this void, or went
-        // first and is seen here.
-        Map<UUID, HandedOverGoods> handedOver = new HashMap<>();
+        // Read under the orders' locks taken above: a cancellation, a closure or a handover of one of them waits for
+        // this void, or went first and is seen here.
+        java.util.Optional<BusinessException> refused = voidRefusal(receipt, installments, payable);
+        if (refused.isPresent()) {
+            throw refused.get();
+        }
+        receipt.voidReceipt(command.reason(), command.voidedBy(), now);
         Map<UUID, Boolean> paidOnSigningBefore = new HashMap<>();
         orderIds.forEach(orderId -> paidOnSigningBefore.put(orderId, paidOnSigning(orderId, installments)));
         for (PaymentReceipt.Line line : receipt.lines()) {
-            Installment installment = installments.get(line.installmentId());
-            InstallmentOrder order = installment == null ? null : payable.get(installment.orderId());
-            if (installment == null || order == null) {
-                throw new IllegalStateException("Receipt %s pays installment %s, which has no order"
-                        .formatted(receipt.reference(), line.installmentId()));
-            }
-            // A fee item's money is the fee's alone - no settlement counted it - so a receipt recorded wrong against it
-            // is voided whatever its order became (4B-9).
-            if (!installment.isFeeItem() && (installment.status() == InstallmentStatus.CANCELLED
-                    || SETTLED.contains(order.status()) || settledOnPaid.contains(installment.orderId()))) {
-                throw new BusinessException(ErrorCode.PAYMENT_RECEIPT_VOID_NOT_ALLOWED, ("Receipt %s paid order %s, "
-                        + "which is %s: its money is settled with the order").formatted(receipt.reference(),
-                        order.orderNumber(), order.status())).localized("refusal.payment.voidSettled",
-                        receipt.reference(), order.orderNumber());
-            }
-            if (letGoodsGo(installment, handedOver.computeIfAbsent(installment.orderId(), orders::handedOverGoods))) {
-                throw new BusinessException(ErrorCode.PAYMENT_RECEIPT_VOID_AFTER_HANDOVER, ("Receipt %s paid installment "
-                        + "%d (%s) of contract %s, and the goods it let go were handed over to a carrier")
-                        .formatted(receipt.reference(), installment.seq(), installment.milestone(),
-                                installment.contractNumber()), List.of(),
-                        Map.of("installmentId", installment.id(), "orderNumber", order.orderNumber()));
-            }
-            installment.unpay(line.amount());
+            installments.get(line.installmentId()).unpay(line.amount());
         }
         List<String> leftShort = new ArrayList<>();
         for (UUID orderId : orderIds) {
@@ -277,7 +262,88 @@ public class PaymentReceiptService {
         log.info("Receipt {} voided by {}{}", saved.reference(), saved.voidedBy(),
                 leftShort.isEmpty() ? "" : "; order(s) " + leftShort + " to be put on hold");
         return new ReceiptDetail(saved, receipt.lines().stream().map(line -> installments.get(line.installmentId()))
-                .collect(Collectors.toMap(Installment::id, Function.identity())));
+                .distinct().collect(Collectors.toMap(Installment::id, Function.identity())),
+                ErrorCode.PAYMENT_RECEIPT_ALREADY_VOIDED);
+    }
+
+    /**
+     * Why a void of {@code receipt} would be refused, the first reason found; empty when it may be voided. The one rule
+     * {@link #voidReceipt} enforces - under the orders' locks - and the receipt's detail shows before anyone clicks
+     * ({@link ReceiptDetail#voidBlockedBy}; WF-05 Q-20: the back office hides or locks the button), so the two cannot
+     * drift apart.
+     *
+     * <ul>
+     *   <li>{@code PAYMENT_RECEIPT_ALREADY_VOIDED}: voided once already (BR-04).</li>
+     *   <li>{@code PAYMENT_RECEIPT_VOID_NOT_ALLOWED} (section 4.4 step 13; 4B-9): it paid an installment cancelled
+     *       since, or of an order that is cancelled, completed, closed, being returned or refunded, or of one a
+     *       cancellation or a closure that left money to refund was worked out on after the receipt was recorded -
+     *       taking that money back would leave the refund wrong. A fee item's money is the fee's alone - no settlement
+     *       counted it - so a receipt recorded wrong against one is voided whatever its order became.</li>
+     *   <li>{@code PAYMENT_RECEIPT_VOID_AFTER_HANDOVER} (Q-20, BE-33): it paid an installment on signing, or before
+     *       delivery, and the goods that money let go were handed over to a carrier ({@link #letGoodsGo}).</li>
+     * </ul>
+     *
+     * <p>Not a refusal: a void that would leave a confirmed order short of its installment on signing
+     * ({@code PAYMENT_RECEIPT_VOID_NEEDS_HOLD}, BR-13) - the accountant takes that one by agreeing to hold the order.
+     * Nor a missing reason, which the void itself asks for.</p>
+     *
+     * @param installments   the installments the receipt's lines pay, at least
+     * @param ofInstallments the orders of those installments
+     */
+    java.util.Optional<BusinessException> voidRefusal(PaymentReceipt receipt, Map<UUID, Installment> installments,
+                                                      Map<UUID, InstallmentOrder> ofInstallments) {
+        if (receipt.status() == PaymentReceiptStatus.VOIDED) {
+            return java.util.Optional.of(new BusinessException(ErrorCode.PAYMENT_RECEIPT_ALREADY_VOIDED,
+                    "Receipt %s was voided on %s".formatted(receipt.reference(), receipt.voidedAt()))
+                    .localized("refusal.payment.alreadyVoided", receipt.reference()));
+        }
+        // 4B-9 (section 4.4 step 13): a cancellation, or a closure that left money to refund, worked the refund out
+        // from what had been paid by then. A receipt recorded after the last such settlement was counted by none.
+        // tg_payment_receipt_void says it again.
+        Set<UUID> settledOnPaid = new java.util.HashSet<>();
+        ofInstallments.keySet().forEach(orderId -> settlements.ofOrder(orderId).stream()
+                .filter(s -> s.kind() == OrderSettlement.Kind.ORDER_CANCELLED || s.surplus().signum() > 0)
+                .map(OrderSettlement::settledAt).max(Instant::compareTo)
+                .filter(last -> !receipt.recordedAt().isAfter(last))
+                .ifPresent(last -> settledOnPaid.add(orderId)));
+        Map<UUID, HandedOverGoods> handedOver = new HashMap<>();
+        for (PaymentReceipt.Line line : receipt.lines()) {
+            Installment installment = installments.get(line.installmentId());
+            InstallmentOrder order = installment == null ? null : ofInstallments.get(installment.orderId());
+            if (installment == null || order == null) {
+                throw new IllegalStateException("Receipt %s pays installment %s, which has no order"
+                        .formatted(receipt.reference(), line.installmentId()));
+            }
+            if (!installment.isFeeItem() && (installment.status() == InstallmentStatus.CANCELLED
+                    || SETTLED.contains(order.status()) || settledOnPaid.contains(installment.orderId()))) {
+                return java.util.Optional.of(new BusinessException(ErrorCode.PAYMENT_RECEIPT_VOID_NOT_ALLOWED,
+                        ("Receipt %s paid order %s, which is %s: its money is settled with the order").formatted(
+                                receipt.reference(), order.orderNumber(), order.status()))
+                        .localized("refusal.payment.voidSettled", receipt.reference(), order.orderNumber()));
+            }
+            if (letGoodsGo(installment, handedOver.computeIfAbsent(installment.orderId(), orders::handedOverGoods))) {
+                return java.util.Optional.of(new BusinessException(ErrorCode.PAYMENT_RECEIPT_VOID_AFTER_HANDOVER,
+                        ("Receipt %s paid installment %d (%s) of contract %s, and the goods it let go were handed over "
+                                + "to a carrier").formatted(receipt.reference(), installment.seq(),
+                                installment.milestone(), installment.contractNumber()), List.of(),
+                        Map.of("installmentId", installment.id(), "orderNumber", order.orderNumber())));
+            }
+        }
+        return java.util.Optional.empty();
+    }
+
+    /**
+     * {@link #voidRefusal} as the code the receipt's detail shows; null when it may be voided. A line whose installment
+     * or order cannot be read makes it not voidable rather than failing the read: the void would stop on it.
+     */
+    private ErrorCode blockedBy(PaymentReceipt receipt, Map<UUID, Installment> installments,
+                                Map<UUID, InstallmentOrder> ofInstallments) {
+        boolean whole = receipt.lines().stream().allMatch(line -> installments.containsKey(line.installmentId())
+                && ofInstallments.containsKey(installments.get(line.installmentId()).orderId()));
+        if (receipt.status() != PaymentReceiptStatus.VOIDED && !whole) {
+            return ErrorCode.PAYMENT_RECEIPT_VOID_NOT_ALLOWED;
+        }
+        return voidRefusal(receipt, installments, ofInstallments).map(BusinessException::errorCode).orElse(null);
     }
 
     /**
@@ -319,13 +385,24 @@ public class PaymentReceiptService {
         return Pages.toResponse(search.receipts(filter, Pages.of(page, size, SORT.parse(sort))));
     }
 
+    /**
+     * The receipt, the installments it pays, and whether it may be voided now ({@link ReceiptDetail#voidBlockedBy}) -
+     * read without the orders' locks: what the back office shows before a click, which the void reads again under
+     * them.
+     */
     @Transactional(readOnly = true)
     public ReceiptDetail receipt(UUID receiptId) {
         PaymentReceipt receipt = book.findReceipt(receiptId).orElseThrow(() -> notFound(receiptId));
         Map<UUID, Installment> installments = new HashMap<>();
         receipt.lines().forEach(line -> book.find(line.installmentId())
                 .ifPresent(installment -> installments.put(installment.id(), installment)));
-        return new ReceiptDetail(receipt, installments);
+        if (receipt.status() == PaymentReceiptStatus.VOIDED) {
+            return new ReceiptDetail(receipt, installments, ErrorCode.PAYMENT_RECEIPT_ALREADY_VOIDED);
+        }
+        Map<UUID, InstallmentOrder> ofInstallments = new HashMap<>();
+        installments.values().stream().map(Installment::orderId).distinct().forEach(orderId ->
+                orders.find(orderId).ifPresent(order -> ofInstallments.put(orderId, order)));
+        return new ReceiptDetail(receipt, installments, blockedBy(receipt, installments, ofInstallments));
     }
 
     private static BusinessException notFound(UUID receiptId) {

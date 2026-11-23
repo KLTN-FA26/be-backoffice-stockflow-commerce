@@ -123,7 +123,8 @@ public class OrderSettlementService {
      * ({@link OrderSettlement#shipmentReturned}). Once per closure and once per shipment: a replay of the closure, or a
      * second closure of a shipment already settled (a second return receipt of the same shipment), returns the first
      * settlement - a shipment's units close once, so its money settles once ({@code uk_order_settlement_shipment}
-     * says it again).
+     * says it again). The share of the shipping fee waived with it is worked out here, from the order's earlier
+     * shipments ({@link OrderSettlement#shippingFeeShare}, Q-19), never taken from the caller.
      */
     public Optional<OrderSettlementResult> settleShipmentReturn(SettleShipmentReturnCommand command) {
         Optional<OrderSettlement> done = settlements.find(OrderSettlement.Kind.SHIPMENT_RETURNED, command.sourceId())
@@ -135,18 +136,24 @@ public class OrderSettlementService {
             }
             return done.map(OrderSettlementService::toResult);
         }
-        if (command.goodsValue().add(command.shippingFeeWaived()).signum() == 0) {
+        // Goods worth nothing waive nothing either: the share follows the goods (Q-19).
+        if (command.goodsValue().signum() == 0) {
             return Optional.empty();
         }
         List<Installment> ofOrder = installments.lockOfOrder(command.orderId());
         if (ofOrder.isEmpty()) {
             return Optional.empty();
         }
+        // Read under the installments' lock, which every settlement of the order takes: the earlier shipments' waivers
+        // the share is worked out against cannot change underneath it.
+        List<OrderSettlement> earlier = settlements.ofOrder(command.orderId());
         // As a return (TT-5): what earlier settlements made refundable is not refundable again (15 BR-14).
-        java.math.BigDecimal refundableBefore = settlements.ofOrder(command.orderId()).stream()
+        java.math.BigDecimal refundableBefore = earlier.stream()
                 .map(OrderSettlement::refundable).reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
+        java.math.BigDecimal waived = OrderSettlement.shippingFeeShare(command.shippingFee().fee(),
+                command.shippingFee().orderGoodsValue(), earlier, command.goodsValue());
         OrderSettlement.Outcome outcome = OrderSettlement.shipmentReturned(ofOrder, command.sourceId(),
-                command.shipmentId(), command.deliveryBatchId(), command.goodsValue(), command.shippingFeeWaived(),
+                command.shipmentId(), command.deliveryBatchId(), command.goodsValue(), waived,
                 command.handedOverBatches(), refundableBefore, command.settledBy(), command.settledAt(),
                 day(command.settledAt()));
         OrderSettlement settlement = save(outcome);
@@ -189,6 +196,6 @@ public class OrderSettlementService {
 
     static OrderSettlementResult toResult(OrderSettlement s) {
         return new OrderSettlementResult(s.id(), s.kind().name(), s.collected(), s.reduced(), s.surplus(), s.fee(),
-                s.feeCovered(), s.refundable(), s.feeOwed(), s.feeItemId(), s.currency());
+                s.feeCovered(), s.refundable(), s.feeOwed(), s.feeItemId(), s.currency(), s.shippingFeeWaived());
     }
 }
