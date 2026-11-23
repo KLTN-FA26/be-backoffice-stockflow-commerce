@@ -1,7 +1,6 @@
 package com.stockflow.notification.internal.service;
 
 import com.stockflow.common.logging.LogSafe;
-import com.stockflow.common.security.Role;
 import com.stockflow.contracts.ReturnAwaitingRefund;
 import com.stockflow.contracts.ReturnReceived;
 import com.stockflow.contracts.ReturnedCartonsInQuarantine;
@@ -49,6 +48,12 @@ class ReturnStaffNotificationListener {
     static final String PROPOSES = "sales-rma-resolutions:UPDATE";
     /** Who records what the carrier did with a shipment (ShipmentController.recordOutcome, APPROVE). */
     static final String CARRIER = "fulfillment-delivery-outcomes:APPROVE";
+    /**
+     * Who decides what becomes of a quarantined carton that stays: its write-off is a stock adjustment only this
+     * permission approves (the warehouse manager's, 20 BR-05). A permission, never a role name (NoRoleNameAccessTest):
+     * the digest follows the role matrix as it is edited.
+     */
+    static final String QUARANTINE_DECIDES = "inventory-stock-adjustments:APPROVE";
 
     private final NotificationSender sender;
     private final StaffDirectory staff;
@@ -83,7 +88,7 @@ class ReturnStaffNotificationListener {
     @ApplicationModuleListener
     public void on(ReturnedCartonsInQuarantine event) {
         if (event.cartons() > 0) {
-            tell(staff.activeStaff(Role.WAREHOUSE_MANAGER, event.warehouseId()), quarantineDigest(event),
+            tell(staff.activeHolders(QUARANTINE_DECIDES, event.warehouseId()), quarantineDigest(event),
                     "staff_quarantine_digest");
         }
     }

@@ -1,6 +1,5 @@
 package com.stockflow.notification.internal.service;
 
-import com.stockflow.common.security.Role;
 import com.stockflow.contracts.ReturnAwaitingRefund;
 import com.stockflow.contracts.ReturnReceived;
 import com.stockflow.contracts.ReturnedCartonsInQuarantine;
@@ -16,7 +15,6 @@ import org.mockito.ArgumentCaptor;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -125,11 +123,12 @@ class ReturnStaffNotificationListenerTest {
     }
 
     @Test
-    @DisplayName("the daily quarantine digest goes to that warehouse's managers, once a day; none when nothing waits")
+    @DisplayName("the daily quarantine digest goes to who approves a write-off in that warehouse (its managers), once "
+            + "a day; none when nothing waits")
     void quarantineDigest() {
         UUID warehouse = UUID.randomUUID();
         UUID manager = UUID.randomUUID();
-        when(identity.notificationRecipients(Set.of(Role.WAREHOUSE_MANAGER.name()), warehouse))
+        when(identity.notificationRecipientsHolding("inventory-stock-adjustments:APPROVE", warehouse))
                 .thenReturn(List.of(new StaffContact(manager, null)));
         when(inbox.post(any(), any())).thenReturn(1);
         LocalDate day = LocalDate.of(2026, 11, 23);
