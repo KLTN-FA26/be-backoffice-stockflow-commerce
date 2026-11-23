@@ -121,6 +121,7 @@ class ContractPapersHttpTest {
         String staffPath = "/api/v1/orders/" + signed.orderId() + "/contract/appendix";
         String ownPath = "/api/v1/orders/me/" + signed.orderId() + "/contract/appendix";
         http.asRole(Role.SALES_STAFF, sales, get(staffPath)).andExpect(status().isNotFound());
+        appendixAvailable(false);
 
         // Batch 2 moves a week later with the customer's consent on record (17 BR-28), written as the service writes
         // it: the move itself is DeliveryBatchReleaseIntegrationTest's to prove.
@@ -145,6 +146,7 @@ class ContractPapersHttpTest {
                 "Từ ngày " + DAY.format(second.windowStart()) + " đến ngày " + DAY.format(second.windowEnd()),
                 "Từ ngày " + DAY.format(start) + " đến ngày " + DAY.format(end), "ĐẠI DIỆN BÊN A", "ĐẠI DIỆN BÊN B");
         assertThat(appendix).as("batch 1 was not moved").doesNotContain("Thời gian giao hàng đợt 1");
+        appendixAvailable(true);
         assertThat(text(http.asCustomer(owner, get(ownPath)))).contains("PHỤ LỤC HỢP ĐỒNG SỐ 01",
                 "Thời gian giao hàng đợt 2");
 
@@ -152,6 +154,28 @@ class ContractPapersHttpTest {
         http.asCustomer(owner, get(staffPath)).andExpect(status().isForbidden());
         http.asRole(Role.WAREHOUSE_STAFF, clerk, get(staffPath)).andExpect(status().isForbidden());
         http.anonymous(get(staffPath)).andExpect(status().isUnauthorized());
+
+        // Moved back to the window signed: nothing differs, so no appendix and no flag.
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO ordering.delivery_batch_window_change (id, delivery_batch_id, order_id, old_window_start,
+                    old_window_end, new_window_start, new_window_end, reason_code, note, evidence_file_key,
+                    evidence_file_name, changed_by, changed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'CUSTOMER_REQUEST', 'back as agreed', 'consent/key2',
+                        'consent2.pdf', ?, NOW() + INTERVAL '1 second')""", Identifiers.newId(), second.batchId(),
+                signed.orderId(), start, end, second.windowStart(), second.windowEnd(), sales));
+        http.asRole(Role.SALES_STAFF, sales, get(staffPath)).andExpect(status().isNotFound());
+        appendixAvailable(false);
+    }
+
+    /**
+     * {@code appendixAvailable} on the contract Sales and the customer read, which decides whether their screens show
+     * the appendix button: it must say exactly what the appendix endpoint answers.
+     */
+    private void appendixAvailable(boolean expected) throws Exception {
+        http.asRole(Role.SALES_STAFF, sales, get("/api/v1/orders/" + signed.orderId() + "/contract"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.appendixAvailable").value(expected));
+        http.asCustomer(owner, get("/api/v1/orders/me/" + signed.orderId() + "/contract"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.appendixAvailable").value(expected));
     }
 
     @Test
