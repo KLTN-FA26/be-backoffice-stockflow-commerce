@@ -334,6 +334,12 @@ public enum ErrorCode {
     PRODUCTION_ORDER_NOTHING_SHORT("The delivery batch lacks nothing to produce", 409),
     /** 4A-2: a line makes no more than its delivery batch lacks. */
     PRODUCTION_ORDER_EXCEEDS_SHORTAGE("A line makes more cartons than the delivery batch lacks", 409),
+    /** SCRUM-839 (17 §4.13, BR-31): a replacement names posted DAMAGED write-offs of the lot of the one it replaces. */
+    PRODUCTION_ORDER_WRITE_OFF_INVALID("Not a posted damaged write-off of a carton of the production order replaced", 409),
+    /** SCRUM-839 (17 BR-31): a write-off is made up by one live replacement production order. */
+    PRODUCTION_ORDER_WRITE_OFF_MADE_UP("The write-off is already made up by another replacement production order", 409),
+    /** SCRUM-839 (17 BR-31): a replacement makes no more cartons of a SKU than were written off. */
+    PRODUCTION_ORDER_EXCEEDS_WRITE_OFFS("A replacement production order makes more cartons than were written off", 409),
     /**
      * 4A-5 (kltn-docs 03 BR-01, BR-15): goods are received against a production order IN_PRODUCTION or
      * PARTIALLY_RECEIVED - or SENT / ACCEPTED when no print sample is to be approved first - and nothing else.
