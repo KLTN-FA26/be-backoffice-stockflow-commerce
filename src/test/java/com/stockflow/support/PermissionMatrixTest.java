@@ -570,6 +570,10 @@ class PermissionMatrixTest {
                 Map.entry("POST /api/v1/designs/{designId}/assets", "{\"uploadId\":\"" + UUID.randomUUID() + "\"}"),
                 Map.entry("POST /api/v1/returns/{returnId}/evidence/uploads", uploadSlot),
                 Map.entry("POST /api/v1/returns/{returnId}/evidence", "{\"uploadId\":\"" + UUID.randomUUID() + "\"}"),
+                // WF-05 Q-11: custody notes are the back office's; a valid body, so the guard - not validation - answers.
+                Map.entry("POST /api/v1/returns/{returnId}/custody/uploads", uploadSlot),
+                Map.entry("POST /api/v1/returns/{returnId}/custody", "{\"uploadId\":\"" + UUID.randomUUID()
+                        + "\",\"sku\":\"SKU-X\",\"quantity\":1}"),
                 // 4A-4: a well-formed reprint request, so only the owner check can refuse another customer's round.
                 Map.entry("POST /api/v1/customer/production-samples/{roundId}/reprint-request",
                         "{\"note\":\"stolen\"}"),

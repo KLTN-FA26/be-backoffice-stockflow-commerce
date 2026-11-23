@@ -252,14 +252,16 @@ class LoadEstimateIntegrationTest {
     }
 
     @Test
-    @DisplayName("only what is still to ship: units shipped (not returned) and closed out are not loaded again")
+    @DisplayName("only what is still to ship: units shipped, units on a shipment the carrier brought back (WF-05 Q-7, "
+            + "RTM-RETURNED: never sent again on this order) and units closed out are not loaded again")
     void remainingUnitsOnly() throws Exception {
         measureTheBareItem();
         UUID partial = tx.execute(s -> order("PARTIALLY_FULFILLED", Map.of(palletSku, 30, tableSku, 3, bareSku, 2)));
         Map<String, UUID> lines = new HashMap<>();
         jdbc.query("SELECT sku, id FROM ordering.order_line WHERE order_id = ?",
                 rs -> { lines.put(rs.getString(1), rs.getObject(2, UUID.class)); }, partial);
-        // PACK-EARLY: 24 pallet units and every measured item went out; one returned shipment does not count.
+        // PACK-EARLY: 24 pallet units and every measured item went out. A shipment the carrier brought back still holds
+        // its table until its return receipt closes it (WF-05 Q-7): it is never loaded again on this order.
         UUID shipped = com.stockflow.support.ShipmentRows.ready(jdbc, tx, partial, Identifiers.newId());
         UUID returned = com.stockflow.support.ShipmentRows.ready(jdbc, tx, partial, Identifiers.newId());
         tx.executeWithoutResult(s -> {
@@ -273,7 +275,7 @@ class LoadEstimateIntegrationTest {
                     shipped, lines.get(palletSku));
             jdbc.update("INSERT INTO ordering.order_shipment_line (shipment_id, order_line_id, quantity) VALUES (?, ?, 2)",
                     shipped, lines.get(bareSku));
-            jdbc.update("INSERT INTO ordering.order_shipment_line (shipment_id, order_line_id, quantity) VALUES (?, ?, 3)",
+            jdbc.update("INSERT INTO ordering.order_shipment_line (shipment_id, order_line_id, quantity) VALUES (?, ?, 1)",
                     returned, lines.get(tableSku));
             // One table closed out of the order (#150).
             jdbc.update("UPDATE ordering.order_line SET cancelled_quantity = 1 WHERE id = ?", lines.get(tableSku));
@@ -288,8 +290,9 @@ class LoadEstimateIntegrationTest {
         assertThat(bySku.get(palletSku).path("quantity").asInt()).isEqualTo(6);
         assertThat(bySku.get(palletSku).path("cartons").asInt()).isEqualTo(1);
         assertThat(bySku.get(palletSku).path("partial").path("units").asInt()).isEqualTo(6);
-        assertThat(bySku.get(tableSku).path("quantity").asInt()).isEqualTo(2);
-        assertThat(estimate.path("vehicles").get(0).path("boxes")).hasSize(1 + 2);
+        assertThat(bySku.get(tableSku).path("quantity").asInt()).as("3 ordered, 1 closed out, 1 brought back")
+                .isEqualTo(1);
+        assertThat(estimate.path("vehicles").get(0).path("boxes")).hasSize(1 + 1);
         assertThat(estimate.path("incomplete").asBoolean()).isFalse();
     }
 
