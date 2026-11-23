@@ -147,8 +147,47 @@ public record OrderResponse(
         @Schema(description = "WF-05 F-1 (BE-34): what the order still waits for before it completes or closes - the "
                 + "conditions the nightly settlement decides by, read from the same source. Set on GET /orders/{orderId} "
                 + "for staff; null before anything of the order was delivered, and elsewhere")
-        SettlementReadiness settlementReadiness
+        SettlementReadiness settlementReadiness,
+
+        @Schema(description = "WF-05 Q-12: the order's optimistic-lock version, which POST "
+                + "/orders/{orderId}/shipments/{shipmentId}/lost-closure takes back as `version` (409 when the order "
+                + "changed meanwhile). Set on the back-office list, the detail and every write's answer; null where "
+                + "it was not read")
+        Long version
 ) {
+
+    /** Without the version: what was answered before WF-05 Q-12. */
+    public OrderResponse(UUID orderId, String orderNumber, UUID customerId, String customerName, String customerCode,
+                         String status, BigDecimal totalAmount, String currency, List<Line> lines, Instant placedAt,
+                         String createdBy, Instant lastModifiedAt, String lastModifiedBy, String contactName,
+                         String contactEmail, String contactPhone, Address shippingAddress, Address billingAddress,
+                         UUID warehouseId, Instant releasedAt, Cancellation cancellation, String holdReason,
+                         String statusBeforeHold, String holdReasonPublic, String holdNote, Instant packedAt,
+                         Instant firstLabeledAt, Instant shippedAt, Instant deliveredAt, String deliveryFailureReason,
+                         Instant completedAt, Instant closedAt, BigDecimal effectiveTotal,
+                         BigDecimal amountDueBeforeHandover, List<Shipment> shipments, Boolean allowPartialShipment,
+                         Boolean printLinesReady, BigDecimal netAmount, BigDecimal taxAmount, List<Fee> fees,
+                         UUID sourceQuoteId, String sourceQuoteNumber, Instant refundedAt,
+                         SettlementReadiness settlementReadiness) {
+        this(orderId, orderNumber, customerId, customerName, customerCode, status, totalAmount, currency, lines,
+                placedAt, createdBy, lastModifiedAt, lastModifiedBy, contactName, contactEmail, contactPhone,
+                shippingAddress, billingAddress, warehouseId, releasedAt, cancellation, holdReason, statusBeforeHold,
+                holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt, deliveryFailureReason,
+                completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments, allowPartialShipment,
+                printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber, refundedAt,
+                settlementReadiness, null);
+    }
+
+    /** This response with the order's version. */
+    public OrderResponse withVersion(Long version) {
+        return new OrderResponse(orderId, orderNumber, customerId, customerName, customerCode, status, totalAmount,
+                currency, lines, placedAt, createdBy, lastModifiedAt, lastModifiedBy, contactName, contactEmail,
+                contactPhone, shippingAddress, billingAddress, warehouseId, releasedAt, cancellation, holdReason,
+                statusBeforeHold, holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt,
+                deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
+                allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
+                refundedAt, settlementReadiness, version);
+    }
 
     /**
      * F-1. {@code branch}: COMPLETION (DELIVERED, or a claim open on it), REFUND_CLOSE (REFUNDED / PARTIALLY_REFUNDED,
@@ -172,7 +211,7 @@ public record OrderResponse(
                 statusBeforeHold, holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt,
                 deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
                 allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
-                refunded, readiness);
+                refunded, readiness, version);
     }
 
     /** With the quote it came from, without F-1's facts. */

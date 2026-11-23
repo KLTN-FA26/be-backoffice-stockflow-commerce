@@ -34,8 +34,24 @@ public record OrderSummary(
         Instant releasedAt,
         Cancellation cancellation,
         Lifecycle lifecycle,
-        Charges charges
+        Charges charges,
+        Long version
 ) {
+
+    /**
+     * Without the version: callers written before it (WF-05 Q-12). {@code version} is the order's optimistic-lock
+     * version, which a write that guards against a concurrent change (the lost-shipment closure) sends back; null
+     * where it was not read.
+     */
+    public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status, Money total,
+                        List<LineSummary> lines, Instant placedAt, String createdBy, Instant lastModifiedAt,
+                        String lastModifiedBy, String contactName, String contactEmail, String contactPhone,
+                        AddressSummary shippingAddress, AddressSummary billingAddress, UUID warehouseId,
+                        Instant releasedAt, Cancellation cancellation, Lifecycle lifecycle, Charges charges) {
+        this(orderId, orderNumber, customerId, status, total, lines, placedAt, createdBy, lastModifiedAt,
+                lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress, warehouseId,
+                releasedAt, cancellation, lifecycle, charges, null);
+    }
 
     /** Without the charges block (4B-3): the total is all there is, with no VAT or fee line. */
     public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status, Money total,
@@ -45,7 +61,7 @@ public record OrderSummary(
                         Instant releasedAt, Cancellation cancellation, Lifecycle lifecycle) {
         this(orderId, orderNumber, customerId, status, total, lines, placedAt, createdBy, lastModifiedAt,
                 lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress, warehouseId,
-                releasedAt, cancellation, lifecycle, null);
+                releasedAt, cancellation, lifecycle, (Charges) null);
     }
 
     /**

@@ -4209,8 +4209,12 @@ class FtlDispatchIntegrationTest {
                 .isEmpty();
         // F-5: reported back, its receipt not confirmed - Sales may close it as lost (goods lost on the way back),
         // with the carrier's confirmation only.
-        assertThat(data(sales(get(ORDERS + "/" + orderId)).andExpect(status().isOk())).path("shipments").get(0)
-                .path("lostClosable").asBoolean()).as("awaiting its receipt").isTrue();
+        JsonNode awaiting = data(sales(get(ORDERS + "/" + orderId)).andExpect(status().isOk()));
+        assertThat(awaiting.path("shipments").get(0).path("lostClosable").asBoolean()).as("awaiting its receipt")
+                .isTrue();
+        assertThat(awaiting.path("version").asLong()).as("Q-12: the version the lost-closure takes back")
+                .isEqualTo(jdbc.queryForObject("SELECT version FROM ordering.customer_order WHERE id = ?", Long.class,
+                        orderId));
         sales(body(post(ORDERS + "/" + orderId + "/shipments/" + first[0] + "/lost-closure"),
                 "{\"note\":\"Hãng báo thất lạc trên đường hoàn\"}"))
                 .andExpect(status().isBadRequest())

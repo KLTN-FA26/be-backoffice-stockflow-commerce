@@ -1345,7 +1345,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 lifecycleOf(order),
                 new OrderSummary.Charges(order.netTotal(), order.taxTotal(), order.fees().stream()
                         .map(fee -> new OrderSummary.FeeSummary(fee.kind(), fee.sku() == null ? null : fee.sku().code(),
-                                fee.amount(), fee.taxRate(), fee.taxAmount())).toList()));
+                                fee.amount(), fee.taxRate(), fee.taxAmount())).toList()),
+                order.version());
     }
 
     /** The hold, the milestones, how much of each line went out and the shipments (G3-2). */

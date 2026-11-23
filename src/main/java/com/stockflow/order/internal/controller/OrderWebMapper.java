@@ -146,7 +146,7 @@ final class OrderWebMapper {
                 summary.charges() == null || summary.charges().fees() == null ? null : summary.charges().fees().stream()
                         .map(fee -> new OrderResponse.Fee(fee.kind().name(), fee.sku(), fee.amount().amount(),
                                 fee.taxRate(), fee.taxAmount().amount())).toList(),
-                extras.sourceQuoteId(), extras.sourceQuoteNumber());
+                extras.sourceQuoteId(), extras.sourceQuoteNumber()).withVersion(internal ? summary.version() : null);
     }
 
     /** An address as the order answers it; null for none. */
