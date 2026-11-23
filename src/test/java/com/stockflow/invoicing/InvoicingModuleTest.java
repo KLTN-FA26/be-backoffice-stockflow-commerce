@@ -47,6 +47,8 @@ class InvoicingModuleTest {
     // order approval) reads the map's room and the cartons standing in each warehouse.
     @MockitoBean com.stockflow.warehouse.api.WarehouseCapacities warehouseCapacitiesMock;
     @MockitoBean com.stockflow.inventory.api.WarehouseOccupancy warehouseOccupancyMock;
+    // order's ProductionOrderService reads the damaged write-offs a replacement production order makes up (SCRUM-839).
+    @MockitoBean com.stockflow.inventory.api.DamagedWriteOffs damagedWriteOffsMock;
     // order's SalesFollowUpService posts inbox notices (WF-02 A10)
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.notification.api.Inbox inboxMock;
