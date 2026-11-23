@@ -257,6 +257,19 @@ public final class OrderShipment {
         return unitsClosedAt == null;
     }
 
+    /**
+     * Its units were closed before closures were settled (WF-05 Q-13, BE-16): the backfill of
+     * {@code V20261217000400} closed every shipment RETURNED at that time as of its outcome, with no value, because
+     * before Q-7 such a shipment's units were owed again on the order until Sales decided. Every closure made since -
+     * a return receipt confirmed, a lost shipment closed (Q-12) - records what it settled ({@link #recordClosedValue},
+     * zero or more, never null). So the value missing is what tells a shipment of an order from before RTM-RETURNED
+     * from one Sales closed as lost and the carrier later brought back (audit r2 lifecycle M-3): the first may still
+     * be owed for a decision, the second is owed to nobody.
+     */
+    public boolean closedBeforeSettlement() {
+        return unitsClosedAt != null && closedGoodsValue == null;
+    }
+
     /** The carrier reported it back and its return receipt is not confirmed yet: its units wait for that (Q-7). */
     public boolean awaitingReturnReceipt() {
         return status == OrderShipmentStatus.RETURNED && unitsClosedAt == null;

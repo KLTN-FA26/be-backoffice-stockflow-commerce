@@ -49,6 +49,9 @@ public class SettlementReadiness {
      * @param windowsCloseAt when the return window of the order's latest delivery ends - every delivered shipment's
      *                       window has ended then (Q-16 = b); null when nothing was delivered
      * @param uninvoiced     the DELIVERED shipments without an issued e-invoice
+     * @param shippingFeeUninvoiced the rest of the order's fees - its shipping fee's rest and any plate fee no invoice
+     *                       carries (WF-05 BE-62, Q-19) - is not on an issued invoice: asked whatever was delivered,
+     *                       since an order that delivered nothing still owes its plate fee, invoiced
      */
     public record Facts(Duration window, Instant windowsCloseAt, boolean openReturn, boolean held, boolean owing,
                         boolean refundOwed, List<UUID> uninvoiced, boolean shippingFeeUninvoiced,
@@ -63,6 +66,12 @@ public class SettlementReadiness {
     /**
      * F-1, as {@code OrderResponse.settlementReadiness} shows it.
      *
+     * @param shippingFeeUninvoiced as {@link Facts#shippingFeeUninvoiced}: the fee rest, the plate fee included
+     *                    (blocker {@code SHIPPING_FEE_UNINVOICED}); the name is kept so the back office reads it as before
+     * @param completionHoldable whether Sales may pause the order's completion now ({@code Order.completionHoldable},
+     *                    the rule {@code OrderCompletionHolds.hold} applies) and it is not paused already - the one
+     *                    flag the back office offers "Giữ hoàn tất" by (audit r2 lifecycle M-4)
+     *
      * @param completesAt when the order completes as far as time goes (COMPLETION): its return window's end
      * @param closesAt    when it closes as far as time goes: the closing delay after its completion or refund, and -
      *                    from the refund branch - not before every delivered shipment's return window ended
@@ -70,7 +79,7 @@ public class SettlementReadiness {
     public record View(Branch branch, Integer returnWindowDays, Instant returnWindowEndsAt, boolean owing,
                        boolean openReturn, List<UUID> uninvoicedShipmentIds, boolean shippingFeeUninvoiced,
                        boolean refundOutstanding, boolean completionHeld, boolean returnAdjustmentUnissued,
-                       Instant completesAt, Instant closesAt, List<Blocker> blockers) {
+                       Instant completesAt, Instant closesAt, List<Blocker> blockers, boolean completionHoldable) {
     }
 
     private final SettlementCandidates candidates;
@@ -114,12 +123,15 @@ public class SettlementReadiness {
                 .filter(shipment -> shipment.status() == OrderShipmentStatus.DELIVERED)
                 .map(shipment -> shipment.id()).toList();
         List<UUID> uninvoiced = new ArrayList<>();
-        boolean feeUninvoiced = false;
         if (!delivered.isEmpty()) {
             Set<UUID> invoiced = invoices.invoiced(delivered);
             delivered.stream().filter(id -> !invoiced.contains(id)).forEach(uninvoiced::add);
-            feeUninvoiced = invoices.shippingFeeUnissued(orderId);
         }
+        // Whatever was delivered (audit r2 lifecycle M-1 / money M-2): an order whose goods all came back or were lost
+        // keeps its plate fee (Q-19), and that fee is invoiced on the rest invoice (BE-62) - before, the question was
+        // asked only when something was delivered, and such an order closed, its contract LIQUIDATED, with the fee
+        // collected and its invoice a draft, refused or never drawn up.
+        boolean feeUninvoiced = invoices.shippingFeeUnissued(orderId);
         var standing = payments.installmentStanding(orderId);
         boolean owing = standing.opened() && standing.paid().compareTo(standing.total()) < 0;
         boolean refundOwed = payments.refundProgress(orderId).outstanding().signum() > 0;
@@ -128,12 +140,18 @@ public class SettlementReadiness {
     }
 
     /**
-     * F-1: null before anything of the order was delivered - there is nothing to complete or close yet. The blockers
-     * are those of the step the order waits for; a COMPLETED order waits for closing only by time, money and holds.
+     * F-1: null while nothing of the order was delivered and it is not ending either - there is nothing to complete or
+     * close yet. An order whose goods all came back or were lost is ending (audit r2 lifecycle M-1): from the refund
+     * branch, or ended by the carrier with nothing made refundable (BE-45), it closes, and the block says what it waits
+     * for - the fee rest's invoice among it. The blockers are those of the step the order waits for; a COMPLETED order
+     * waits for closing only by time, money, an open return and holds, and lists those blockers with branch NONE.
      */
     public View view(Order order) {
         boolean anythingDelivered = order.deliveredAt() != null || order.lastDeliveryAt().isPresent();
-        if (!anythingDelivered) {
+        boolean refundBranch = order.status() == OrderStatus.REFUNDED
+                || order.status() == OrderStatus.PARTIALLY_REFUNDED;
+        boolean endedByCarrier = order.endedByCarrier();
+        if (!anythingDelivered && !refundBranch && !endedByCarrier) {
             return null;
         }
         Optional<SalesContract> contract = contracts.findLiveByOrderId(order.id().value());
@@ -147,6 +165,8 @@ public class SettlementReadiness {
         Branch branch = switch (waitsAs) {
             case DELIVERED, RETURN_REQUESTED -> Branch.COMPLETION;
             case REFUNDED, PARTIALLY_REFUNDED -> Branch.REFUND_CLOSE;
+            // BE-45: ended by the carrier, it closes as the refund branch does once nothing is left to refund.
+            case RETURNED, PARTIALLY_FULFILLED -> endedByCarrier ? Branch.REFUND_CLOSE : Branch.NONE;
             default -> Branch.NONE;
         };
         List<Blocker> blockers = new ArrayList<>();
@@ -161,8 +181,11 @@ public class SettlementReadiness {
                 blockers.add(Blocker.RETURN_WINDOW_OPEN);
             }
         } else if (branch == Branch.REFUND_CLOSE) {
-            closesAt = later(order.refundedAt() == null ? null : order.refundedAt().plus(closeAfter),
-                    facts.windowsCloseAt());
+            // From its refund - also a claim opened from the refund branch (BE-40) - or, ended by the carrier with
+            // nothing refunded (BE-45), from when its deliveries ended.
+            Instant since = waitsAs == OrderStatus.REFUNDED || waitsAs == OrderStatus.PARTIALLY_REFUNDED
+                    ? order.refundedAt() : order.deliveriesEndedAt().orElse(null);
+            closesAt = later(since == null ? null : since.plus(closeAfter), facts.windowsCloseAt());
             if (facts.windowsCloseAt() != null && facts.windowsCloseAt().isAfter(now)) {
                 blockers.add(Blocker.RETURN_WINDOW_OPEN);
             }
@@ -195,7 +218,7 @@ public class SettlementReadiness {
         Integer days = (int) facts.window().toDays();
         return new View(branch, days, facts.windowsCloseAt(), facts.owing(), facts.openReturn(), facts.uninvoiced(),
                 facts.shippingFeeUninvoiced(), facts.refundOwed(), facts.held(), facts.returnAdjustmentUnissued(),
-                completesAt, closesAt, List.copyOf(blockers));
+                completesAt, closesAt, List.copyOf(blockers), !facts.held() && order.completionHoldable());
     }
 
     private static Instant later(Instant a, Instant b) {

@@ -8,6 +8,7 @@ import com.stockflow.customer.api.CustomerLegalProfiles;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.identity.api.IdentityService;
+import com.stockflow.payment.api.InstallmentOrders;
 import com.stockflow.payment.api.InstallmentStanding;
 import com.stockflow.payment.internal.domain.Installment;
 import com.stockflow.payment.internal.domain.InstallmentBook;
@@ -63,13 +64,15 @@ public class PaymentPaperService {
     private final PaymentConfirmationDocument paymentConfirmation;
     private final RefundConfirmationDocument refundConfirmation;
     private final DebtReconciliationDocument debtReconciliation;
+    private final InstallmentOrders orders;
     private final Clock clock;
 
     PaymentPaperService(InstallmentService installments, InstallmentBook book, SettlementBook settlements,
                         CustomerLedgerQuery ledger, CustomerService customers, CustomerLegalProfiles legalProfiles,
                         IdentityService identities, PaymentConfirmationDocument paymentConfirmation,
                         RefundConfirmationDocument refundConfirmation, DebtReconciliationDocument debtReconciliation,
-                        Clock clock) {
+                        InstallmentOrders orders, Clock clock) {
+        this.orders = orders;
         this.installments = installments;
         this.book = book;
         this.settlements = settlements;
@@ -129,8 +132,10 @@ public class PaymentPaperService {
         }
         ResourceBundle t = DocumentParts.bundle();
         List<OrderSettlement> ofOrder = settlements.ofOrder(record.orderId());
+        Set<UUID> lost = lostAmong(ofOrder.stream().map(OrderSettlement::shipmentId).toList());
         String reason = ofOrder.stream().filter(settlement -> settlement.refundable().signum() > 0)
-                .map(settlement -> settlement.kind().name()).distinct()
+                .map(settlement -> lost.contains(settlement.shipmentId()) ? SHIPMENT_LOST
+                        : settlement.kind().name()).distinct()
                 .map(kind -> "payment-papers.refund." + kind)
                 .map(key -> t.getString(t.containsKey(key) ? key : "payment-papers.refund.other"))
                 .collect(Collectors.joining("; "));
@@ -157,12 +162,18 @@ public class PaymentPaperService {
      * The record reconciling a customer's debt over {@code from} to {@code to}, both days included.
      *
      * <p>The ledger is made of what the books hold. An installment adds to the debt the day its milestone is reached,
-     * by what it charges after reductions; a receipt takes its lines off the day the bank statement gives; a refund
-     * adds back what was paid out. A settlement is entered so the three add up: a cancellation writes off the
-     * installments charged so far and charges the fee kept of the money collected; a closure of the rest or a return
-     * takes off what it made refundable, the reductions being in the installments already. The opening balance is all
-     * of that before {@code from}. A reduction is dated with its installment, not with the day it was made - the books
-     * keep the amount, not a history of it.</p>
+     * by its whole amount; each reduction a settlement made of it ({@code payment.installment_reduction}) takes it off
+     * on the settlement's day - or the installment's, when it was reached later - so a period's opening balance is what
+     * the record of the period before closed at, whatever was reduced since (audit r2 money M-3: a reduction dated
+     * with its installment lowered the balance of a period both parties had signed). A receipt takes its lines off the
+     * day the bank statement gives; a refund adds back what was paid out. A settlement is entered so the three add up:
+     * a cancellation writes off what the order's installments still charged and charges the fee kept of the money
+     * collected; a closure of the rest or a return takes off what it made refundable. The opening balance is all of
+     * that before {@code from}.</p>
+     *
+     * <p>A shipment Sales closed as lost (Q-12) is worded as lost, not as goods back at the warehouse
+     * ({@code InstallmentOrders.lostShipments}; audit r2 contract M-1): a paper must say what happened (Luật Kế toán
+     * Điều 13 khoản 1).</p>
      *
      * @throws BusinessException {@code CUSTOMER_NOT_FOUND}; {@code VALIDATION_FAILED} for a period that ends before it
      *         starts or after today
@@ -187,17 +198,31 @@ public class PaymentPaperService {
                     charge.orderNumber());
             all.add(entry(charge.day(), charge.contractNumber(), what, charge.amount(), BigDecimal.ZERO));
         }
+        List<CustomerLedgerQuery.Reduction> reductions = ledger.reductions(customerId);
+        List<CustomerLedgerQuery.Settlement> settled = ledger.settlements(customerId);
+        java.util.List<UUID> shipments = new ArrayList<>();
+        reductions.forEach(reduction -> shipments.add(reduction.shipmentId()));
+        settled.forEach(settlement -> shipments.add(settlement.shipmentId()));
+        Set<UUID> lost = lostAmong(shipments);
+        for (CustomerLedgerQuery.Reduction reduction : reductions) {
+            all.add(entry(reduction.day(), reduction.contractNumber(), t.getString(debtKey(reduction.kind(),
+                    lost.contains(reduction.shipmentId()))).formatted(reduction.orderNumber()), BigDecimal.ZERO,
+                    reduction.amount()));
+        }
         for (CustomerLedgerQuery.Receipt receipt : ledger.receipts(customerId)) {
             String what = receipt.feeItem()
                     ? t.getString("payment-papers.debt.receiptFee").formatted(receipt.contractNumber())
                     : t.getString("payment-papers.debt.receipt").formatted(receipt.seq(), receipt.contractNumber());
             all.add(entry(receipt.day(), receipt.reference(), what, BigDecimal.ZERO, receipt.amount()));
         }
-        for (CustomerLedgerQuery.Settlement settlement : ledger.settlements(customerId)) {
+        for (CustomerLedgerQuery.Settlement settlement : settled) {
             if (OrderSettlement.Kind.ORDER_CANCELLED.name().equals(settlement.kind())) {
+                // What the order's installments still charged: their amounts less what reductions, entered above,
+                // took off them.
                 BigDecimal charged = charges.stream().filter(charge -> !charge.feeItem()
                                 && charge.orderNumber().equals(settlement.orderNumber()))
-                        .map(CustomerLedgerQuery.Charge::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
+                        .map(charge -> charge.amount().subtract(charge.reduced()))
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
                 if (charged.signum() > 0) {
                     all.add(entry(settlement.day(), settlement.contractNumber(), t.getString(
                             "payment-papers.debt.cancelled").formatted(settlement.orderNumber()), BigDecimal.ZERO,
@@ -209,15 +234,9 @@ public class PaymentPaperService {
                             settlement.feeCovered(), BigDecimal.ZERO));
                 }
             } else if (settlement.refundable().signum() > 0) {
-                // A kind this paper has no words for yet reads as the plain reduction it is, not as a 500.
-                String key = switch (settlement.kind()) {
-                    case "GOODS_RETURNED" -> "payment-papers.debt.returned";
-                    case "SHIPMENT_RETURNED" -> "payment-papers.debt.shipmentReturned";
-                    case "REMAINDER_CLOSED" -> "payment-papers.debt.closed";
-                    default -> "payment-papers.debt.reduced";
-                };
-                all.add(entry(settlement.day(), settlement.contractNumber(), t.getString(key)
-                        .formatted(settlement.orderNumber()), BigDecimal.ZERO, settlement.refundable()));
+                all.add(entry(settlement.day(), settlement.contractNumber(), t.getString(debtKey(settlement.kind(),
+                        lost.contains(settlement.shipmentId()))).formatted(settlement.orderNumber()), BigDecimal.ZERO,
+                        settlement.refundable()));
             }
         }
         for (CustomerLedgerQuery.Refund refund : ledger.refunds(customerId)) {
@@ -243,6 +262,30 @@ public class PaymentPaperService {
                 contracts.size() == 1 ? contracts.iterator().next() : null, party(customerId), opening, period,
                 overdue));
         return new Pdf(t.getString("document.file.debtReconciliation").formatted(number), pdf);
+    }
+
+    /** The refund reason of a settlement of a shipment Sales closed as lost (Q-12). */
+    private static final String SHIPMENT_LOST = "SHIPMENT_LOST";
+
+    /** The words of a reduction, or of what a settlement made refundable, by its kind; a lost shipment as lost. */
+    private static String debtKey(String kind, boolean lost) {
+        // A kind this paper has no words for yet reads as the plain reduction it is, not as a 500.
+        return switch (kind) {
+            case "GOODS_RETURNED" -> "payment-papers.debt.returned";
+            case "SHIPMENT_RETURNED" -> lost ? "payment-papers.debt.shipmentLost"
+                    : "payment-papers.debt.shipmentReturned";
+            case "REMAINDER_CLOSED" -> "payment-papers.debt.closed";
+            default -> "payment-papers.debt.reduced";
+        };
+    }
+
+    /**
+     * Those of {@code shipmentIds} (nulls skipped) Sales closed as lost; asked of the order module once. A set that
+     * answers {@code contains(null)} - a settlement of another kind names no shipment - with false.
+     */
+    private Set<UUID> lostAmong(List<UUID> shipmentIds) {
+        List<UUID> named = shipmentIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        return named.isEmpty() ? new java.util.HashSet<>() : new java.util.HashSet<>(orders.lostShipments(named));
     }
 
     private static DebtReconciliationDocument.Entry entry(LocalDate day, String reference, String description,

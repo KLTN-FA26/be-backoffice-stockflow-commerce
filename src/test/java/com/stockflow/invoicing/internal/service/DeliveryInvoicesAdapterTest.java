@@ -25,7 +25,9 @@ import static org.mockito.Mockito.when;
 
 /**
  * WF05-E0 L11: an order does not complete while part of its shipping fee is owed on no invoice at all - the draft of the
- * rest was refused when the order's remainder was closed, so there is no unissued invoice to wait for.
+ * rest was refused when the order's remainder was closed, so there is no unissued invoice to wait for. Audit r2
+ * lifecycle M-1 / money M-2: nor while a plate fee is on no invoice - an order whose goods all came back keeps it (Q-19),
+ * and only the rest invoice carries it (BE-62).
  */
 class DeliveryInvoicesAdapterTest {
 
@@ -41,7 +43,7 @@ class DeliveryInvoicesAdapterTest {
     /** 3,000 pieces delivered and invoiced, carrying {@code shippingInvoiced} of a 100,000 fee. */
     private void anOrderWhoseInvoicesCarry(String shippingInvoiced) {
         when(queries.shippingFeeInvoiceUnissued(ORDER)).thenReturn(false);
-        when(shipments.shippingFee(any(), any())).thenReturn(Optional.of(new OrderShippingFee(ORDER, "SO-1",
+        when(shipments.orderFees(any(), any())).thenReturn(Optional.of(new OrderShippingFee(ORDER, "SO-1",
                 UUID.randomUUID(), "HD-1", "VND", new DeliveredShipment.Fee(FeeKind.SHIPPING_FEE, null,
                 new BigDecimal("100000"), new BigDecimal("10.00"), new BigDecimal("10.00")), 3000, NOW)));
         when(invoices.invoicedOfOrder(ORDER))
@@ -72,7 +74,7 @@ class DeliveryInvoicesAdapterTest {
         // 2,000 of 3,000 pieces delivered and invoiced with 66,667; the third shipment came back: payment waived
         // 36,667 of the 110,000 with VAT, so 100,000 - round(100,000 x 36,667 / 110,000) = 66,666 is owed - which
         // the invoices carry already (a dong of the pieces' rounding over it): no rest is waited for.
-        when(shipments.shippingFee(any(), any())).thenReturn(Optional.of(new OrderShippingFee(ORDER, "SO-1",
+        when(shipments.orderFees(any(), any())).thenReturn(Optional.of(new OrderShippingFee(ORDER, "SO-1",
                 UUID.randomUUID(), "HD-1", "VND", new DeliveredShipment.Fee(FeeKind.SHIPPING_FEE, null,
                 new BigDecimal("100000"), new BigDecimal("10.00"), new BigDecimal("10.00")), 2000, NOW,
                 java.util.List.of(), new com.stockflow.order.api.ShippingFeeWaiver(new BigDecimal("36667"),
@@ -85,5 +87,44 @@ class DeliveryInvoicesAdapterTest {
         when(invoices.returnAdjustmentUnissued(ORDER)).thenReturn(true);
         assertThat(adapter.returnAdjustmentUnissued(ORDER)).isTrue();
         assertThat(adapter.returnAdjustmentUnissued(null)).isFalse();
+    }
+
+    private static DeliveredShipment.Fee plate(String sku) {
+        return new DeliveredShipment.Fee(FeeKind.PLATE_FEE, sku, new BigDecimal("2500000"), new BigDecimal("8.00"),
+                new BigDecimal("8.00"), false);
+    }
+
+    /** An order of 4,000 pieces with a plate fee of SKU-A, no shipping fee line, {@code orderUnits} still meant. */
+    private void anOrderWithAPlateFee(long orderUnits, FeeAllocation.Invoiced invoiced) {
+        when(queries.shippingFeeInvoiceUnissued(ORDER)).thenReturn(false);
+        when(shipments.orderFees(any(), any())).thenReturn(Optional.of(new OrderShippingFee(ORDER, "SO-1",
+                UUID.randomUUID(), "HD-1", "VND", null, orderUnits, null, java.util.List.of(plate("SKU-A")))));
+        when(invoices.invoicedOfOrder(ORDER)).thenReturn(invoiced);
+    }
+
+    @Test
+    @DisplayName("audit r2 M-1: every shipment came back, the rest invoice of the plate fee refused and never drawn up - "
+            + "the order waits for the plate fee's invoice, though nothing was delivered and no invoice is unissued")
+    void aPlateFeeOnNoInvoiceIsUnissuedWhenNothingWasDelivered() {
+        anOrderWithAPlateFee(0, FeeAllocation.Invoiced.NOTHING);
+
+        assertThat(adapter.shippingFeeUnissued(ORDER)).isTrue();
+    }
+
+    @Test
+    @DisplayName("a plate fee on an invoice in force (the rest invoice, or a delivery's): nothing to wait for")
+    void aPlateFeeCarriedIsNotWaitedFor() {
+        anOrderWithAPlateFee(0, new FeeAllocation.Invoiced(0, BigDecimal.ZERO, Set.of("SKU-A")));
+
+        assertThat(adapter.shippingFeeUnissued(ORDER)).isFalse();
+    }
+
+    @Test
+    @DisplayName("a plate fee while a delivery is still to be invoiced: that delivery's invoice carries it - the "
+            + "shipment's own blocker stands, the fee rest does not")
+    void aPlateFeeWaitsForTheDeliveryToCarryIt() {
+        anOrderWithAPlateFee(4000, new FeeAllocation.Invoiced(2000, BigDecimal.ZERO, Set.of()));
+
+        assertThat(adapter.shippingFeeUnissued(ORDER)).isFalse();
     }
 }

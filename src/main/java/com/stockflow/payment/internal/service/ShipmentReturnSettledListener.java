@@ -15,8 +15,10 @@ import org.springframework.stereotype.Component;
  * ({@code PaymentService.settleShipmentReturn}).</p>
  *
  * <p>An order that delivered nothing and expects nothing more has no "delivered in full" to count from: its
- * installments after delivery count from the goods back ({@code goodsBackAt}, Q-3, Q-19). Idempotent on the closure by
- * construction - everything is read again from the order, so hearing the event twice, or late, changes nothing more.
+ * installments after delivery count from the goods back (Q-3, Q-19) - the order's own fact, read as every other path
+ * reads it ({@code InstallmentOrders.endedWithNothingDeliveredAt}), not this event's: a closure of the rest that ends
+ * the order last has no such field (audit r2 money M-1). Idempotent on the closure by construction - everything is
+ * read again from the order, so hearing the event twice, or late, changes nothing more.
  * After commit, in a transaction of its own ({@code @ApplicationModuleListener}); public, or the proxy would not run it.</p>
  */
 @Component("paymentShipmentReturnSettledListener")
@@ -30,7 +32,6 @@ class ShipmentReturnSettledListener {
 
     @ApplicationModuleListener
     public void on(ShipmentReturnSettled event) {
-        installments.shipmentReturnSettled(event.orderId(),
-                event.nothingDelivered() && event.nothingMoreComing() ? event.goodsBackAt() : null);
+        installments.shipmentReturnSettled(event.orderId());
     }
 }

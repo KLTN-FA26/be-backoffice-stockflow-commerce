@@ -71,7 +71,7 @@ class InstallmentLockOrderTest {
     @Test
     @DisplayName("a shipment brought back: the order, its facts under the lock, then the installments")
     void shipmentReturnSettled() {
-        lockedFirst(s -> s.shipmentReturnSettled(ORDER, null), true);
+        lockedFirst(s -> s.shipmentReturnSettled(ORDER), true);
     }
 
     @Test

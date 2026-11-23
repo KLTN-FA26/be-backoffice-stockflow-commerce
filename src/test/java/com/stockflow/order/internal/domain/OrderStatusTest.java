@@ -39,8 +39,9 @@ class OrderStatusTest {
             Map.entry(READY_TO_FULFILL, EnumSet.of(PICKING, PACKED, PARTIALLY_FULFILLED, ON_HOLD, CANCELLED)),
             Map.entry(PICKING, EnumSet.of(PACKED, PARTIALLY_FULFILLED, ON_HOLD, CANCELLED)),
             // PARTIALLY_REFUNDED: a shipment came back while the others arrived, its part refunded (RTM-RETURNED-PARTIAL).
+            // CLOSED: the same with nothing made refundable (WF-05 BE-45, audit r2 contract M-6).
             Map.entry(PARTIALLY_FULFILLED, EnumSet.of(PACKED, SHIPPED, DELIVERY_FAILED, DELIVERED, RETURNED, ON_HOLD,
-                    PARTIALLY_REFUNDED)),
+                    PARTIALLY_REFUNDED, CLOSED)),
             Map.entry(PACKED, EnumSet.of(SHIPPED, PARTIALLY_FULFILLED, ON_HOLD)),
             Map.entry(ON_HOLD, EnumSet.of(CONFIRMED, PENDING_PAYMENT, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
                     PICKING, PARTIALLY_FULFILLED, PACKED, CANCELLED)),
@@ -51,9 +52,10 @@ class OrderStatusTest {
             // WF-05 BE-40: back to the status the claim was opened from; BE-46: where the shipments say.
             Map.entry(RETURN_REQUESTED, EnumSet.of(RETURNED, DELIVERED, COMPLETED, REFUNDED, PARTIALLY_REFUNDED,
                     DELIVERY_FAILED, PARTIALLY_FULFILLED)),
-            // WF-05 X-8 (BE-45): claims ended without a refund - back to the delivery path.
+            // WF-05 X-8 (BE-45): claims ended without a refund - back to the delivery path. CLOSED: the carrier brought
+            // everything back or lost it and nothing was made refundable (audit r2 contract M-6).
             Map.entry(RETURNED, EnumSet.of(REFUNDED, PARTIALLY_REFUNDED, DELIVERED, COMPLETED, DELIVERY_FAILED,
-                    PARTIALLY_FULFILLED)),
+                    PARTIALLY_FULFILLED, CLOSED)),
             // RETURNED (TT-4): a refund record was voided - the order waits for its refund again.
             Map.entry(REFUNDED, EnumSet.of(CLOSED, RETURN_REQUESTED, RETURNED)),
             Map.entry(PARTIALLY_REFUNDED, EnumSet.of(CLOSED, RETURN_REQUESTED, RETURNED, PARTIALLY_FULFILLED)),

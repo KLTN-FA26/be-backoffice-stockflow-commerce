@@ -26,8 +26,11 @@ public interface SettlementCandidates {
 
     /**
      * COMPLETED orders completed, and REFUNDED / PARTIALLY_REFUNDED ones refunded, at or before {@code settledBy}, the
-     * first {@code skip} left out. Held orders (WF-05 Q-17) are left out: closing refuses them. A superset otherwise:
-     * the return windows of the refund branch (Q-16 = b) and the money are the aggregate's to decide.
+     * first {@code skip} left out - and RETURNED / PARTIALLY_FULFILLED ones whose deliveries ended at or before it with
+     * a shipment brought back or lost (WF-05 BE-45, audit r2 contract M-6: nothing made refundable, they close without
+     * entering the refund branch, Order#closeWithoutRefund). Held orders (WF-05 Q-17) are left out: closing refuses
+     * them. A superset otherwise: the return windows of the refund branch (Q-16 = b), whether money was made
+     * refundable, and the rest of the money are the aggregate's and the service's to decide.
      */
     List<UUID> settledBy(Instant settledBy, int skip, int limit);
 

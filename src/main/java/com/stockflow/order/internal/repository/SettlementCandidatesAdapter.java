@@ -61,7 +61,20 @@ class SettlementCandidatesAdapter implements SettlementCandidates {
         return entityManager.createNativeQuery("""
                         SELECT o.id FROM ordering.customer_order o
                          WHERE ((o.status = 'COMPLETED' AND o.completed_at <= :cutoff)
-                            OR (o.status IN ('REFUNDED', 'PARTIALLY_REFUNDED') AND o.refunded_at <= :cutoff))
+                            OR (o.status IN ('REFUNDED', 'PARTIALLY_REFUNDED') AND o.refunded_at <= :cutoff)
+                            -- WF-05 BE-45 (audit r2 contract M-6): ended by the carrier with nothing made refundable -
+                            -- a shipment closed undelivered, none still on its way or to be decided, its deliveries
+                            -- ended (the latest outcome or closure) by the cutoff. Payment's side is the service's.
+                            OR (o.status IN ('RETURNED', 'PARTIALLY_FULFILLED')
+                                AND EXISTS (SELECT 1 FROM ordering.order_shipment s
+                                             WHERE s.order_id = o.id AND s.units_closed_at IS NOT NULL)
+                                AND NOT EXISTS (SELECT 1 FROM ordering.order_shipment s
+                                                 WHERE s.order_id = o.id AND s.status <> 'DELIVERED'
+                                                   AND s.units_closed_at IS NULL)
+                                AND GREATEST(o.remainder_closed_at,
+                                             (SELECT MAX(COALESCE(s.units_closed_at, s.outcome_at))
+                                                FROM ordering.order_shipment s WHERE s.order_id = o.id))
+                                    <= :cutoff))
                            -- A return still open on a settled order (a claim opened before the order completed) keeps
                            -- it from closing for good (BR-05): CLOSED is never changed again.
                            AND NOT EXISTS (SELECT 1 FROM ordering.return_request r WHERE r.order_id = o.id

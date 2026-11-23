@@ -263,9 +263,11 @@ public enum OrderStatus {
             // over. SHIPPED / DELIVERY_FAILED / DELIVERED /
             // RETURNED: the rest closed by staff, the order then shows its shipments.
             // PARTIALLY_REFUNDED: a shipment came back while the others arrived and its part is refunded
-            // (RTM-RETURNED-PARTIAL, owner 19/11; 17 §5.1 edge, docs PR #42).
+            // (RTM-RETURNED-PARTIAL, owner 19/11; 17 §5.1 edge, docs PR #42). CLOSED: the same with nothing made
+            // refundable - nothing was refunded, so not "partly refunded" (WF-05 BE-45, Order.closeWithoutRefund).
             case PARTIALLY_FULFILLED -> target == PACKED || target == SHIPPED || target == DELIVERY_FAILED
-                    || target == DELIVERED || target == RETURNED || target == ON_HOLD || target == PARTIALLY_REFUNDED;
+                    || target == DELIVERED || target == RETURNED || target == ON_HOLD || target == PARTIALLY_REFUNDED
+                    || target == CLOSED;
             // Not CANCELLED: a completed package goes through a return (decision 2026-10-17). PARTIALLY_FULFILLED: only
             // part of it was handed over.
             case PACKED -> target == SHIPPED || target == PARTIALLY_FULFILLED || target == ON_HOLD;
@@ -293,8 +295,11 @@ public enum OrderStatus {
                     || target == PARTIALLY_FULFILLED;
             // X-8 (WF-05 BE-45): its claims ended and none settled anything - back to the delivery path, COMPLETED when
             // it had completed before the claim; DELIVERY_FAILED / PARTIALLY_FULFILLED as above (BE-46).
+            // CLOSED: the carrier brought every shipment back or lost it, and nothing was made refundable (WF-05 BE-45,
+            // Order.closeWithoutRefund) - never an order a customer's return made RETURNED.
             case RETURNED -> target == REFUNDED || target == PARTIALLY_REFUNDED || target == DELIVERED
-                    || target == COMPLETED || target == DELIVERY_FAILED || target == PARTIALLY_FULFILLED;
+                    || target == COMPLETED || target == DELIVERY_FAILED || target == PARTIALLY_FULFILLED
+                    || target == CLOSED;
             // RETURN_REQUESTED: a further claim after a return gave money back (Sales open it, 03 §12), or a late claim
             // Sales accepted after the order completed - until the order closes for good (BR-05), it hears its returns.
             // RETURNED (TT-4): a refund record of a refunded order was voided - it waits for its refund again.

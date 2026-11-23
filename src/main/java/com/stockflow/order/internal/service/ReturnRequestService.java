@@ -753,7 +753,9 @@ public class ReturnRequestService implements ReturnReceiptTracking {
                 // nothing was returned from. Units refunded worth 0 on an order with nothing paid (TH-2) are a return
                 // all the same - the invoice is adjusted for them (BE-44) - and keep the refund path below.
                 moved |= order.returnsEndedWithoutRefund(by, now);
-            } else if (progress.settled()) {
+            } else if (progress.settled() && !deliveryFailures.completionHeld(order.id().value())) {
+                // WF-05 Q-17 (audit r2 lifecycle L-1): not into the refund branch while Sales hold the completion -
+                // as the carrier's path refuses it; releasing the hold follows the order on (OrderCompletionHolds).
                 moved |= order.refunded(returned.compareTo(goodsWorth(order)) >= 0, by, now, "REFUNDED");
             }
         }

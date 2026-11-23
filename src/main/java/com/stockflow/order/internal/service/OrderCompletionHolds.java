@@ -70,11 +70,16 @@ public class OrderCompletionHolds {
 
     private final OrderRepository orders;
     private final OrderCompletionHoldJpaRepository holds;
+    private final DeliveryFailureService deliveryFailures;
+    private final ReturnRequestService returns;
     private final Clock clock;
 
-    OrderCompletionHolds(OrderRepository orders, OrderCompletionHoldJpaRepository holds, Clock clock) {
+    OrderCompletionHolds(OrderRepository orders, OrderCompletionHoldJpaRepository holds,
+                         DeliveryFailureService deliveryFailures, ReturnRequestService returns, Clock clock) {
         this.orders = orders;
         this.holds = holds;
+        this.deliveryFailures = deliveryFailures;
+        this.returns = returns;
         this.clock = clock;
     }
 
@@ -106,21 +111,16 @@ public class OrderCompletionHolds {
                     "note: what the pause is for, at most 1000 characters (required for OTHER)");
         }
         Order order = lock(orderId);
-        if (PAST_COMPLETION.contains(order.status())) {
-            throw new BusinessException(ErrorCode.ORDER_COMPLETION_HOLD_NOT_APPLICABLE,
-                    "Order %s is %s: it will not be completed".formatted(order.orderNumber(), order.status()));
-        }
-        boolean delivered = order.deliveredAt() != null || order.shipments().stream()
-                .anyMatch(s -> s.status() == com.stockflow.order.api.OrderShipmentStatus.DELIVERED);
-        if (!delivered) {
-            throw new BusinessException(ErrorCode.ORDER_COMPLETION_HOLD_NOT_APPLICABLE,
-                    "Order %s has no delivery to verify".formatted(order.orderNumber()));
-        }
-        // Completed once (a late claim on it is open): its deliveries are no longer corrected, and the claim's end
-        // takes it back to COMPLETED (BE-40), which a hold would refuse in the database.
-        if (order.completedAt() != null) {
-            throw new BusinessException(ErrorCode.ORDER_COMPLETION_HOLD_NOT_APPLICABLE,
-                    "Order %s was completed on %s".formatted(order.orderNumber(), order.completedAt()));
+        // One rule (Order.completionHoldable), the one the order's settlement block shows the back office: past
+        // completion, nothing delivered to verify, or completed once (a late claim on it is open - its deliveries are
+        // no longer corrected, and the claim's end takes it back to COMPLETED, BE-40, which a hold would refuse in the
+        // database).
+        if (!order.completionHoldable()) {
+            throw new BusinessException(ErrorCode.ORDER_COMPLETION_HOLD_NOT_APPLICABLE, PAST_COMPLETION.contains(
+                    order.status()) ? "Order %s is %s: it will not be completed".formatted(order.orderNumber(),
+                    order.status()) : order.completedAt() != null ? "Order %s was completed on %s".formatted(
+                    order.orderNumber(), order.completedAt()) : "Order %s has no delivery to verify".formatted(
+                    order.orderNumber()));
         }
         if (holds.findFirstByOrderIdAndReleasedAtIsNull(orderId).isPresent()) {
             throw new BusinessException(ErrorCode.ORDER_COMPLETION_ALREADY_HELD,
@@ -154,6 +154,11 @@ public class OrderCompletionHolds {
         open.release(by, trimmed, now());
         OrderCompletionHoldJpaEntity released = holds.saveAndFlush(open);
         log.info("Order {}: completion pause released", order.orderNumber());
+        // The refund branch passed the order by while it was held (Q-17): what refunds it was waiting for may all be
+        // made, and no refund record will come to move it any more - a customer's return has no nightly run to find it
+        // again (audit r2 lifecycle L-1). Both paths look again now, under this lock; each moves only its own orders.
+        returns.followRefunds(orderId, by);
+        deliveryFailures.followRefunds(orderId, by);
         return toHold(released);
     }
 
