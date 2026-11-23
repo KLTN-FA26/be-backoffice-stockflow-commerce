@@ -42,4 +42,11 @@ public interface InstallmentOrders {
      * order without a delivery schedule, or none delivered yet.
      */
     java.util.Map<UUID, Instant> batchesDeliveredAt(UUID orderId);
+
+    /**
+     * WF-05 decision Q-20 (BE-33): the goods of the order handed over to a carrier, and the delivery batches they
+     * carried - every shipment the order knows of, whatever became of it. {@link HandedOverGoods#NONE} for no such order
+     * or none handed over. Read in the caller's transaction, after {@link #lockForPayment}.
+     */
+    HandedOverGoods handedOverGoods(UUID orderId);
 }

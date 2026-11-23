@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.modulith.events.ApplicationModuleListener;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
@@ -40,6 +41,8 @@ class EInvoiceAttentionNotificationListener {
     static final String CATEGORY = "EINVOICE_ATTENTION";
 
     private static final DateTimeFormatter MOMENT = DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy");
+
+    private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("dd/MM/yyyy");
 
     private final StaffDirectory staff;
     private final Inbox inbox;
@@ -76,16 +79,28 @@ class EInvoiceAttentionNotificationListener {
             case SIGNATURE_INVALID -> "signature-invalid";
             case DELIVERY_FAILED_REVERSAL_DRAWN_UP -> "delivery-reversal";
             case DELIVERY_FAILED_AWAITING_PROVIDER -> "delivery-failed-awaiting";
+            // WF-05 full fix (decisions of 2026-11-23): texts in place; the invoicing module publishes them.
+            case DUPLICATE_RISK -> "duplicate-risk";
+            case PROVIDER_RESULT_OVERDUE -> "provider-result-overdue";
+            case REDUCE_ON_PROVIDER_PORTAL -> "reduce-on-portal";
+            case DELIVERY_FAILED_NOT_REVERSED -> "delivery-failed-not-reversed";
+            case SERIES_MISMATCH -> "series-mismatch";
+            case ISSUED_LATE -> "issued-late";
+            case REPLACEMENT_NOT_REDUCIBLE -> "replacement-not-reducible";
         };
         String key = "inbox.einvoice." + kind;
-        String body = event.cause() == EInvoiceNeedsAttention.Cause.REJECTED
-                ? texts.getString(key + ".body").formatted(event.code(), event.orderNumber(),
-                        event.rejectionCode() == null ? "-" : event.rejectionCode(), due)
-                : texts.getString(key + ".body").formatted(event.code(), event.orderNumber(), sent, due);
-        // Stuck, and a failed delivery's invoice at the provider, still resolve themselves when the provider answers;
-        // refused and unknown do not, whoever waits.
+        String body = switch (event.cause()) {
+            case REJECTED -> texts.getString(key + ".body").formatted(event.code(), event.orderNumber(),
+                    event.rejectionCode() == null ? "-" : event.rejectionCode(), due);
+            case ISSUED_LATE -> texts.getString(key + ".body").formatted(event.code(), event.orderNumber(),
+                    day(event.issueDate()), day(event.deliveredOn()));
+            default -> texts.getString(key + ".body").formatted(event.code(), event.orderNumber(), sent, due);
+        };
+        // Stuck, and a failed delivery's invoice at the provider, still resolve themselves when the provider answers,
+        // and an invoice issued late is told for the record; refused and unknown do not, whoever waits.
         InboxSeverity severity = event.cause() == EInvoiceNeedsAttention.Cause.STUCK_SUBMITTING
                 || event.cause() == EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_AWAITING_PROVIDER
+                || event.cause() == EInvoiceNeedsAttention.Cause.ISSUED_LATE
                 ? InboxSeverity.WARN : InboxSeverity.CRITICAL;
         return new InboxMessage(CATEGORY, severity, texts.getString(key + ".title").formatted(event.code()),
                 body.length() <= InboxMessage.BODY_MAX ? body : body.substring(0, InboxMessage.BODY_MAX),
@@ -93,5 +108,9 @@ class EInvoiceAttentionNotificationListener {
                 event.einvoiceId().toString(),
                 "einvoice-" + kind + ":" + event.einvoiceId() + ":"
                         + (event.submittedAt() == null ? 0 : event.submittedAt().toEpochMilli()));
+    }
+
+    private static String day(LocalDate date) {
+        return date == null ? "-" : DAY.format(date);
     }
 }

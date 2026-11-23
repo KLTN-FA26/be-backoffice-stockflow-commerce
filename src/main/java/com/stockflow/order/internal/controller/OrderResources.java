@@ -152,6 +152,14 @@ public final class OrderResources {
      */
     public static final String WAREHOUSE_CAPACITY = "warehouse-capacity";
 
+    /**
+     * WF-05 decision Q-12 (BE-17): closing the part of an order a shipment the carrier lost was to deliver - its units
+     * closed and their money settled as a carrier's return is (Q-2), on the carrier's written confirmation of the loss.
+     * APPROVE, an approval-level grant of its own (as recording a shipment brought back takes
+     * {@code fulfillment-delivery-outcomes:APPROVE}, Q-7): Sales (V20261216000050).
+     */
+    public static final String LOST_SHIPMENT_CLOSURES = "sales-lost-shipment-closures";
+
     private OrderResources() {
     }
 }

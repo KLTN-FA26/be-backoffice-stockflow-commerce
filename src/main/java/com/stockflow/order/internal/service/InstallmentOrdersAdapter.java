@@ -4,14 +4,18 @@ import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
+import com.stockflow.order.internal.domain.OrderShipment;
+import com.stockflow.payment.api.HandedOverGoods;
 import com.stockflow.payment.api.InstallmentOrder;
 import com.stockflow.payment.api.InstallmentOrders;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * The order module's answer to payment about the order of an installment (4B-10): whose it is, where it stands, when it
@@ -61,6 +65,23 @@ class InstallmentOrdersAdapter implements InstallmentOrders {
         return orders.findById(new OrderId(orderId))
                 .filter(order -> DELIVERED_IN_FULL.contains(order.status()))
                 .map(Order::deliveredAt);
+    }
+
+    /**
+     * Every shipment the order knows of left with a carrier - the order hears of one only at its handover - so all of
+     * them count, delivered, failed, brought back or lost alike: unlike {@link HandedOverBatches}, which leaves out what
+     * a closure may still close, this is what a receipt paid before handover let go (WF-05 Q-20).
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public HandedOverGoods handedOverGoods(UUID orderId) {
+        return orders.findById(new OrderId(orderId))
+                .filter(order -> !order.shipments().isEmpty())
+                .map(order -> new HandedOverGoods(true, order.shipments().stream()
+                        .map(OrderShipment::deliveryBatchId)
+                        .filter(Objects::nonNull)
+                        .collect(Collectors.toUnmodifiableSet())))
+                .orElse(HandedOverGoods.NONE);
     }
 
     private static InstallmentOrder toInstallmentOrder(Order order) {

@@ -8,7 +8,8 @@ import java.util.UUID;
  * the surplus paid the fee first ({@code feeCovered}), the rest of it is to be refunded, and what it did not cover is
  * owed on the cancellation fee item.
  *
- * @param kind      {@code ORDER_CANCELLED} or {@code REMAINDER_CLOSED}
+ * @param kind      {@code ORDER_CANCELLED}, {@code REMAINDER_CLOSED}, {@code GOODS_RETURNED} (a customer's return) or
+ *                  {@code SHIPMENT_RETURNED} (a shipment the carrier brought back or lost, WF-05 Q-2)
  * @param collected what the order's installments had been paid
  * @param reduced   what a closure took off the installments still owing (zero for a cancellation)
  * @param surplus   the money that paid the fee first: all of it collected for a cancellation; for a closure, what was

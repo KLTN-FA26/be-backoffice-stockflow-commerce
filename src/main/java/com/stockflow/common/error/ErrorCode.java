@@ -486,8 +486,11 @@ public enum ErrorCode {
     EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE("The provider that issued the original e-invoice is not usable any more; the correction is not sent to another provider", 409),
     /** WF-05 E4 (TT 91 Điều 10): only an issued invoice still in force is adjusted, replaced or notified as drawn up wrongly. */
     EINVOICE_NOT_IN_FORCE("Only an issued e-invoice that is still in force can be corrected", 409),
-    /** WF-05 E4 (TT 91 Điều 10 khoản 6 điểm a): an invoice already adjusted is adjusted again, one replaced is replaced again. */
-    EINVOICE_CORRECTION_FORM_FIXED("This e-invoice is already being corrected in the other form; the form first used is kept", 409),
+    /**
+     * WF-05 E4 (TT 91 Điều 10 khoản 6 điểm a): an invoice already adjusted is adjusted again, one replaced is replaced
+     * again. Q-9: an error on a replacement is corrected by a new replacement, never an adjustment.
+     */
+    EINVOICE_CORRECTION_FORM_FIXED("This e-invoice is already being corrected in the other form; the form first used is kept - an error on a replacement is corrected by a new replacement", 409),
     /** WF-05 E4: the correction asked for is not one the law gives for this invoice (an adjustment of an adjustment, a return that adds, an agreement where none is asked). */
     EINVOICE_CORRECTION_NOT_APPLICABLE("This correction does not apply to this e-invoice", 409),
     /** WF-05 E4 (TT 91 Điều 10 khoản 1 điểm b): the correction of an error is not sent without the written agreement with the buyer. */
@@ -1154,6 +1157,110 @@ public enum ErrorCode {
      * since a file that silently stops at a limit reads as complete. The client narrows the filter.
      */
     EXPORT_TOO_LARGE("The export has too many rows; narrow the filter", 422),
+
+    // ---- WF-05 full fix (decisions of 2026-11-23): every refusal the six fix groups add, declared once here so no
+    // group edits this file or the message bundles. Each names the defect (BE-nn) and decision (Q-n) it serves.
+
+    /**
+     * BE-17, Q-12: a shipment's lost part is closed only for a DELIVERY_FAILED shipment whose failure reason is LOST
+     * and whose units the order still owes - not delivered, not brought back, not closed already.
+     */
+    ORDER_SHIPMENT_NOT_LOST_CLOSABLE("This shipment cannot be closed as lost: only a failed delivery the carrier "
+            + "reported lost, whose goods are still owed, is closed this way", 409),
+    /** BE-17, Q-12: closing a lost shipment needs the carrier's confirmation of the loss, as a file. */
+    ORDER_SHIPMENT_LOSS_EVIDENCE_REQUIRED("Attach the carrier's confirmation that the parcel is lost", 400),
+    /**
+     * BE-33, Q-20: a receipt paying an installment due on signing or before delivery is not voided once goods it let
+     * leave were handed over to a carrier - it is what let the vehicle go. A wrong receipt is corrected by an
+     * adjusting entry in the accounting software (Luật Kế toán Điều 27).
+     */
+    PAYMENT_RECEIPT_VOID_AFTER_HANDOVER("This receipt paid for goods that were already handed over to the carrier; it "
+            + "can no longer be voided - correct it with an adjusting entry", 409),
+    /**
+     * BE-07, Q-5: an e-invoice whose provider state is UNCONFIRMED is withdrawn only with the provider support's written
+     * answer (its ticket number or text) as evidence.
+     */
+    EINVOICE_WITHDRAWAL_EVIDENCE_REQUIRED("The provider's written answer is needed to withdraw this e-invoice: enter "
+            + "the support ticket number or its reply", 409),
+    /**
+     * BE-08, BE-10, Q-8: what the accountant entered from the provider's portal (number, symbol, date) does not match
+     * what the provider's look-up holds now.
+     */
+    EINVOICE_PORTAL_RECORD_MISMATCH("What was entered from the provider's portal does not match what the provider "
+            + "holds for this invoice", 409),
+    /** BE-08, BE-10, Q-8: an XML or PDF handed in from the provider's portal is not that invoice, or cannot be read. */
+    EINVOICE_PORTAL_FILE_INVALID("The file from the provider's portal is not this invoice's, or cannot be read", 422),
+    /**
+     * BE-10, Q-8: a reduction for a failed delivery is voided as unsendable only when it really cannot be sent - its
+     * provider unusable, unable to correct, or refusing it again and again.
+     */
+    EINVOICE_REVERSAL_STILL_SENDABLE("This reduction can still be issued through its provider; issue it instead of "
+            + "voiding it", 409),
+    /**
+     * BE-10, Q-8, Q-9: a reduction made on the provider's portal is recorded only for an invoice whose reduction cannot
+     * go through the system - its unsendable reduction voided, or a replacement the provider does not adjust.
+     */
+    EINVOICE_EXTERNAL_REDUCTION_NOT_APPLICABLE("A reduction made on the provider's portal is recorded only when the "
+            + "system cannot send it", 409),
+    /**
+     * BE-11: "reduce for the failed delivery" applies only to an issued invoice in force whose delivery is not
+     * delivered now and that is not reduced already.
+     */
+    EINVOICE_REVERSAL_NOT_APPLICABLE("This e-invoice's delivery is not failed, or the invoice is already reduced", 409),
+    /**
+     * BE-25: checked again at manual issue, the draft carries warnings the accountant has not acknowledged;
+     * {@code details.warnings} lists them.
+     */
+    EINVOICE_DRAFT_OUT_OF_DATE("The draft has new warnings since it was drawn up; review and acknowledge them, then "
+            + "issue it", 409),
+    /** Q-10, Q-1: a draft issued by hand after its delivery day is dated today and needs a reason. */
+    EINVOICE_LATE_ISSUE_REASON_REQUIRED("This invoice is issued after its delivery day; give the reason it is late",
+            400),
+    /**
+     * BE-09, Q-9: the provider does not adjust a replacement invoice (SePay: 422), and a return or a failed delivery is
+     * corrected by an adjustment (TT 91/2026 Điều 10 khoản 5 điểm c.1): the accountant does it outside the system and
+     * records it. An error on a replacement is still corrected by another replacement
+     * ({@link #EINVOICE_CORRECTION_FORM_FIXED}).
+     */
+    EINVOICE_REPLACEMENT_NOT_ADJUSTABLE("A replacement invoice cannot be adjusted through its provider; reduce it on "
+            + "the provider's portal and record the result", 409),
+    /**
+     * BE-54, Q-22 (BR-09): the provider's last known quota is zero, so nothing is sent; drafts stay DRAFT and the
+     * automatic issue resumes once invoices are bought.
+     */
+    EINVOICE_QUOTA_EXHAUSTED("The e-invoice plan has no invoices left; buy more on the provider's portal, then issue",
+            409),
+    /**
+     * BE-12, Q-4: a refund proposed at 0 while units are refundable - refused by policy - names its reason from the
+     * fixed list (CUSTOMER_DAMAGE, NOT_DEFECTIVE, OUT_OF_POLICY, OTHER).
+     */
+    RETURN_REFUSAL_REASON_REQUIRED("Give the reason nothing is refunded", 400),
+    /** BE-23, Q-11: goods are marked complete, or a return expires, only when no draft return receipt of it is open. */
+    RETURN_RECEIPT_DRAFT_OPEN("A return receipt of this return is still being counted; confirm or cancel it first", 409),
+    /**
+     * BE-22, Q-11: a return receipt takes only cartons of a SKU the return approved; other goods are kept in custody
+     * on the return request, not received into stock.
+     */
+    RETURN_CARTON_NOT_CLAIMED("This carton holds goods the return did not approve; record them in custody on the "
+            + "return request instead", 409),
+    /** BE-43, Q-18: loose units go no further than what the return approved and has not received yet. */
+    RETURN_LOOSE_EXCEEDS_APPROVED("More loose units than the return approved and has not received yet", 409),
+    /** BE-43, Q-18: loose units are recorded with a photo. */
+    RETURN_LOOSE_PHOTO_REQUIRED("Add a photo of the loose units", 400),
+    /**
+     * Q-18: a return receipt holding an opened carton or loose units is confirmed by a warehouse manager
+     * ({@code procurement-return-receipt-approvals:APPROVE}).
+     */
+    RETURN_RECEIPT_MANAGER_CONFIRMATION_REQUIRED("This receipt holds opened cartons or loose units; a warehouse "
+            + "manager confirms it", 403),
+    /** Q-18: such a receipt is confirmed by someone other than who counted it. */
+    RETURN_RECEIPT_SELF_CONFIRMATION("A return receipt is confirmed by someone other than who counted it", 409),
+    /**
+     * BE-18, Q-15: the portal decides per delivery - this one was already settled by a return; a further claim is
+     * Sales'.
+     */
+    RETURN_SHIPMENT_NOT_RETURNABLE("This delivery was already settled by a return; ask Sales to open a further claim",
+            409),
 
     // ---- 429
     RATE_LIMITED("Too many requests", 429),

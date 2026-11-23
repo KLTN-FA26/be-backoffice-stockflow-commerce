@@ -31,4 +31,17 @@ public interface DeliveryInvoices {
      * caller's transaction.
      */
     boolean shippingFeeUnissued(UUID orderId);
+
+    /**
+     * WF-05 decision Q-16 (BE-34, BE-55): whether a return of the order has a decrease adjustment drawn up and not
+     * issued yet. For information only - shown among the order's settlement conditions ("a return's adjustment is not
+     * issued yet") - never a reason to keep the order from closing: a decrease left unissued overstates output VAT,
+     * it does not understate it, and TT 91/2026 Điều 10 khoản 5 điểm c.1 sets it no deadline. Read in the caller's
+     * transaction.
+     *
+     * <p>Declared by the WF-05 shared base (PR-0) answering false; the invoicing module overrides it.</p>
+     */
+    default boolean returnAdjustmentUnissued(UUID orderId) {
+        return false;
+    }
 }
