@@ -102,6 +102,8 @@ class Wf05ReturnPerDeliveryIntegrationTest {
     private ConfirmedOrders confirmedOrders;
     private UUID customer;
     private UUID staff;
+    /** The warehouse manager who confirms a return receipt holding an opened carton (WF-05 Q-18): not its counter. */
+    private UUID manager;
     private UUID coordinator;
     private UUID accountant;
     private CustomerSkuRows.Issued sku;
@@ -113,6 +115,7 @@ class Wf05ReturnPerDeliveryIntegrationTest {
         confirmedOrders = new ConfirmedOrders(context);
         customer = tx.execute(s -> ReferenceRows.customer(entityManager));
         staff = tx.execute(s -> ReferenceRows.user(entityManager));
+        manager = tx.execute(s -> ReferenceRows.user(entityManager));
         coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
         accountant = tx.execute(s -> ReferenceRows.user(entityManager));
         confirmedOrders.legalProfile(customer);
@@ -258,7 +261,8 @@ class Wf05ReturnPerDeliveryIntegrationTest {
     @Test
     @DisplayName("TH-1/TH-4: batch 1's goods returned while batch 2 is on its way - the order's status untouched, "
             + "shipment 1's cartons only, one counted 40 of 50 refunded for 40, off batch 1's installment and shipment "
-            + "1's invoice; the opened carton is never released; batch 2 still goes out and the order ends DELIVERED")
+            + "1's invoice; the opened carton is confirmed by a manager who counted nothing and stays CONSUMED (no "
+            + "stock from a label, WF-05 Q-18); batch 2 still goes out and the order ends DELIVERED")
     void aReturnOfBatchOneWhileBatchTwoIsPending() {
         UUID first = batchOneDelivered();
         ShippedCartons.Shipped cartons = ShippedCartons.onShipment(jdbc, tx, orderId, lineId, sku.sku(), 2, 50,
@@ -293,7 +297,10 @@ class Wf05ReturnPerDeliveryIntegrationTest {
             assertThat(c.countedQuantity()).isEqualTo(40);
             assertThat(c.opened()).isTrue();
         });
-        asHcmClerk(() -> returnReceipts.confirm(draft.id(), staff));
+        // WF-05 Q-18: a receipt with an opened carton is confirmed only by a warehouse manager who counted nothing on it.
+        assertThat(code(catchThrowable(() -> asHcmClerk(() -> returnReceipts.confirm(draft.id(), staff)))))
+                .isEqualTo(ErrorCode.RETURN_RECEIPT_MANAGER_CONFIRMATION_REQUIRED);
+        asHcmClerk(() -> returnReceipts.confirm(draft.id(), manager, true));
         Await.until("the parcel taken", ASYNC, () -> parcelTaken(draft.id()));
         assertThat(jdbc.queryForObject("SELECT received_quantity FROM ordering.return_request_line WHERE "
                 + "return_request_id = ?", Integer.class, request.id())).as("what was counted, not the label")
@@ -303,8 +310,11 @@ class Wf05ReturnPerDeliveryIntegrationTest {
         returns.markGoodsComplete(request.id(), "the customer keeps the rest", null, confirmedOrders.sales().userId());
         assertThat(returnStatus(request.id())).isEqualTo(ReturnStatus.RECEIVED);
         assertThat(status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        // Opened on its way back, it is no stock: it stays CONSUMED, marked opened, and was never quarantined.
+        assertThat(jdbc.queryForMap("SELECT status, return_opened_at IS NOT NULL AS opened FROM inventory.stock_package "
+                + "WHERE lpn = ?", opened)).containsEntry("status", "CONSUMED").containsEntry("opened", true);
         assertThat(code(catchThrowable(() -> asHcmClerk(() -> quarantine.release(opened, staff)))))
-                .isEqualTo(ErrorCode.RETURN_CARTON_OPENED);
+                .isEqualTo(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION);
 
         // The refund: 40 pieces at 2,000 with 10% VAT, off batch 1's installment - batch 2's is left alone.
         ReturnRequest proposed = returns.proposeRefund(request.id(), new ReturnRequestService.ProposeRefundCommand(
