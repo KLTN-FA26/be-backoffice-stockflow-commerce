@@ -71,7 +71,8 @@ class EInvoiceBuyerIncompleteNotificationListener {
         return new InboxMessage(CATEGORY, InboxSeverity.WARN,
                 texts.getString("inbox.einvoice.buyer-incomplete.title").formatted(event.orderNumber()),
                 body.length() <= InboxMessage.BODY_MAX ? body : body.substring(0, InboxMessage.BODY_MAX),
-                "/customers/" + event.customerId(), SOURCE_TYPE, event.customerId().toString(),
+                // The back office's customer page (audit r3 EINV-6: "/customers/..." led nowhere there).
+                "/admin/customers/" + event.customerId(), SOURCE_TYPE, event.customerId().toString(),
                 "einvoice-buyer-incomplete:" + event.einvoiceId() + ":"
                         + missing.stream().map(Enum::name).collect(Collectors.joining(",")));
     }

@@ -52,10 +52,14 @@ public class SettlementReadiness {
      * @param shippingFeeUninvoiced the rest of the order's fees - its shipping fee's rest and any plate fee no invoice
      *                       carries (WF-05 BE-62, Q-19) - is not on an issued invoice: asked whatever was delivered,
      *                       since an order that delivered nothing still owes its plate fee, invoiced
+     * @param deliveryReductionUnissued a reduction for a delivery that did not happen is drawn up and not issued (audit
+     *                       r3 EINV-7, {@code DeliveryInvoices#deliveryReductionUnissued}): information only, as
+     *                       {@code returnAdjustmentUnissued} (Q-16) - the order may close and its contract be liquidated
+     *                       meanwhile, and the block says what the accountant still has to issue
      */
     public record Facts(Duration window, Instant windowsCloseAt, boolean openReturn, boolean held, boolean owing,
                         boolean refundOwed, List<UUID> uninvoiced, boolean shippingFeeUninvoiced,
-                        boolean returnAdjustmentUnissued) {
+                        boolean returnAdjustmentUnissued, boolean deliveryReductionUnissued) {
 
         /** A delivery of the order, or the rest of its shipping fee, has no issued e-invoice (WF-05 plan §4, cond. 5). */
         public boolean awaitingInvoice() {
@@ -71,6 +75,7 @@ public class SettlementReadiness {
      * @param completionHoldable whether Sales may pause the order's completion now ({@code Order.completionHoldable},
      *                    the rule {@code OrderCompletionHolds.hold} applies) and it is not paused already - the one
      *                    flag the back office offers "Giữ hoàn tất" by (audit r2 lifecycle M-4)
+     * @param deliveryReductionUnissued as {@link Facts#deliveryReductionUnissued}: information only, never a blocker
      *
      * @param completesAt when the order completes as far as time goes (COMPLETION): its return window's end
      * @param closesAt    when it closes as far as time goes: the closing delay after its completion or refund, and -
@@ -79,7 +84,8 @@ public class SettlementReadiness {
     public record View(Branch branch, Integer returnWindowDays, Instant returnWindowEndsAt, boolean owing,
                        boolean openReturn, List<UUID> uninvoicedShipmentIds, boolean shippingFeeUninvoiced,
                        boolean refundOutstanding, boolean completionHeld, boolean returnAdjustmentUnissued,
-                       Instant completesAt, Instant closesAt, List<Blocker> blockers, boolean completionHoldable) {
+                       Instant completesAt, Instant closesAt, List<Blocker> blockers, boolean completionHoldable,
+                       boolean deliveryReductionUnissued) {
     }
 
     private final SettlementCandidates candidates;
@@ -136,7 +142,8 @@ public class SettlementReadiness {
         boolean owing = standing.opened() && standing.paid().compareTo(standing.total()) < 0;
         boolean refundOwed = payments.refundProgress(orderId).outstanding().signum() > 0;
         return new Facts(window, windowsCloseAt, candidates.hasOpenReturn(orderId), candidates.completionHeld(orderId),
-                owing, refundOwed, List.copyOf(uninvoiced), feeUninvoiced, invoices.returnAdjustmentUnissued(orderId));
+                owing, refundOwed, List.copyOf(uninvoiced), feeUninvoiced, invoices.returnAdjustmentUnissued(orderId),
+                invoices.deliveryReductionUnissued(orderId));
     }
 
     /**
@@ -218,7 +225,8 @@ public class SettlementReadiness {
         Integer days = (int) facts.window().toDays();
         return new View(branch, days, facts.windowsCloseAt(), facts.owing(), facts.openReturn(), facts.uninvoiced(),
                 facts.shippingFeeUninvoiced(), facts.refundOwed(), facts.held(), facts.returnAdjustmentUnissued(),
-                completesAt, closesAt, List.copyOf(blockers), !facts.held() && order.completionHoldable());
+                completesAt, closesAt, List.copyOf(blockers), !facts.held() && order.completionHoldable(),
+                facts.deliveryReductionUnissued());
     }
 
     private static Instant later(Instant a, Instant b) {

@@ -75,8 +75,9 @@ class EInvoiceAttentionNotificationListenerTest {
 
         assertThat(sent.severity()).isEqualTo(InboxSeverity.CRITICAL);
         assertThat(sent.title()).isEqualTo("Hoá đơn EINV-20261112-0001 không tự phát hành được");
-        assertThat(sent.body()).contains("EINV-20261112-0001", "SO-20261101-0007", "TAX_CLASS_UNKNOWN",
-                "00:00 14/11/2026", "Lập trễ");
+        assertThat(sent.body()).contains("EINV-20261112-0001", "SO-20261101-0007",
+                "có sản phẩm chưa xác định nhóm thuế", "00:00 14/11/2026", "Lập trễ")
+                .as("audit r3 EINV-6: the reason in words, not its code").doesNotContain("TAX_CLASS_UNKNOWN");
         assertThat(sent.dedupeKey()).isEqualTo("einvoice-auto-issue-held:" + INVOICE + ":TAX_CLASS_UNKNOWN");
 
         String everyWarning = "BUYER_EMAIL_MISSING,TAX_RATE_DIFFERS_FROM_CONTRACT,TAX_RATE_NOT_ON_CONTRACT,"
@@ -85,6 +86,29 @@ class EInvoiceAttentionNotificationListenerTest {
                 event(Cause.AUTO_ISSUE_HELD, everyWarning, null));
         assertThat(long_.dedupeKey()).hasSizeLessThanOrEqualTo(InboxMessage.DEDUPE_KEY_MAX)
                 .doesNotContain(everyWarning);
+    }
+
+    @Test
+    @DisplayName("audit r3 EINV-6: every warning code and a refusal's error code are named in words in the held "
+            + "notice; a code nothing names is shown as it came")
+    void theHeldReasonsAreNamedInWords() {
+        java.util.ResourceBundle vi = java.util.ResourceBundle.getBundle("i18n.messages",
+                java.util.Locale.forLanguageTag("vi"));
+        String body = EInvoiceAttentionNotificationListener.message(event(Cause.AUTO_ISSUE_HELD,
+                "TAX_CLASS_UNKNOWN,TAX_RATE_DIFFERS_FROM_CONTRACT", null)).body();
+        assertThat(body).contains("có sản phẩm chưa xác định nhóm thuế",
+                "thuế suất khác thuế suất đã chốt trên hợp đồng").doesNotContain("TAX_");
+        assertThat(EInvoiceAttentionNotificationListener.message(event(Cause.AUTO_ISSUE_HELD,
+                "EINVOICE_SERIES_NOT_CONFIGURED", null)).body())
+                .contains(vi.getString("error.EINVOICE_SERIES_NOT_CONFIGURED"))
+                .doesNotContain("EINVOICE_SERIES_NOT_CONFIGURED");
+        for (String code : List.of("BUYER_PROFILE_INCOMPLETE", "BUYER_EMAIL_MISSING", "TAX_RATE_DIFFERS_FROM_CONTRACT",
+                "TAX_RATE_NOT_ON_CONTRACT", "TAX_CLASS_UNKNOWN", "TAX_RATE_OUT_OF_DATE", "TAX_EXEMPT_NOT_SUPPORTED",
+                "UNKNOWN_TO_PROVIDER", "SIGNATURE_INVALID", "ISSUED_LATE")) {
+            assertThat(EInvoiceAttentionNotificationListener.reasons(code, vi)).as(code).doesNotContain(code);
+        }
+        assertThat(EInvoiceAttentionNotificationListener.reasons("SOMETHING_NEW", vi)).isEqualTo("SOMETHING_NEW");
+        assertThat(EInvoiceAttentionNotificationListener.reasons(null, vi)).isEqualTo("-");
     }
 
     @Test

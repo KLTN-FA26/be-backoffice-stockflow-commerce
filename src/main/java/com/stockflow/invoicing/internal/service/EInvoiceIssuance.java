@@ -417,7 +417,14 @@ public class EInvoiceIssuance {
             EInvoiceProvider provider = providers.require(invoice.provider());
             Instant lastSent = steps.lastSent(id, invoice.transactionId()).orElse(invoice.submittedAt());
             Instant now = clock.instant();
-            Instant earliest = WithdrawalRule.earliest(lastSent, properties);
+            // Audit r3 EINV-4: an invoice the provider last said it cannot confirm waits the longer wait from the start,
+            // as the screen shows it (withdrawability, the same last answer on record) - not three hours first and then
+            // a day.
+            boolean unconfirmedOnRecord = calls.lastQuery(id, invoice.transactionId())
+                    .map(call -> onRecord(call, provider)).orElse(WithdrawalRule.ProviderState.NOT_ASKED)
+                    == WithdrawalRule.ProviderState.UNCONFIRMED;
+            Instant earliest = unconfirmedOnRecord ? WithdrawalRule.earliestUnconfirmed(lastSent, properties)
+                    : WithdrawalRule.earliest(lastSent, properties);
             if (earliest != null && now.isBefore(earliest)) {
                 // Not asked: whatever the provider says, it is too early (WithdrawalRule, before any answer).
                 throw refused(("Invoice %s was last sent at %s; the provider may still be working on it until %s")

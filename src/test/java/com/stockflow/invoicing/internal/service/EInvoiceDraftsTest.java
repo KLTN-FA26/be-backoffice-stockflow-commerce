@@ -78,6 +78,8 @@ class EInvoiceDraftsTest {
     private EInvoiceDrafts drafts;
     /** The invoices "in the database": what a later draft of the same order sees. */
     private final List<EInvoice> saved = new java.util.ArrayList<>();
+    /** Originals reduced in full for a failed delivery ({@code reversed_at}, written in SQL): out of the order's fees. */
+    private final java.util.Set<UUID> reversed = new java.util.HashSet<>();
 
     @BeforeEach
     void setUp() {
@@ -97,7 +99,8 @@ class EInvoiceDraftsTest {
             BigDecimal shipping = BigDecimal.ZERO;
             java.util.Set<String> plateSkus = new java.util.HashSet<>();
             for (EInvoice invoice : saved) {
-                if (!invoice.orderId().equals(call.getArgument(0)) || invoice.status() == EInvoiceStatus.VOIDED_DRAFT) {
+                if (!invoice.orderId().equals(call.getArgument(0)) || invoice.status() == EInvoiceStatus.VOIDED_DRAFT
+                        || invoice.type() != EInvoiceType.ORIGINAL || reversed.contains(invoice.id())) {
                     continue;
                 }
                 for (EInvoiceLine line : invoice.lines()) {
@@ -116,6 +119,42 @@ class EInvoiceDraftsTest {
         when(legalProfiles.legalProfile(CUSTOMER)).thenReturn(Optional.of(new CustomerLegalProfile(CUSTOMER,
                 "Cong ty Tra Sua", "0398765432", "12 Nguyen Hue, TP HCM", "Tran Van B", "Giam doc",
                 "ke.toan@trasua.example.com", null, 3)));
+        // The order's rest invoices and their reductions, as EInvoiceRepositoryAdapter reads them (audit r3 LM-2).
+        when(invoices.findUnissuedShippingFeeInvoice(any())).thenAnswer(call -> saved.stream()
+                .filter(invoice -> invoice.orderId().equals(call.getArgument(0)) && invoice.shipmentId() == null
+                        && invoice.type() == EInvoiceType.ORIGINAL
+                        && java.util.Set.of(EInvoiceStatus.DRAFT, EInvoiceStatus.REJECTED, EInvoiceStatus.SUBMITTING)
+                        .contains(invoice.status())).findFirst());
+        when(invoices.findIssuedShippingFeeInvoices(any())).thenAnswer(call -> saved.stream()
+                .filter(invoice -> invoice.orderId().equals(call.getArgument(0)) && invoice.shipmentId() == null
+                        && invoice.type() == EInvoiceType.ORIGINAL && invoice.status() == EInvoiceStatus.ISSUED)
+                .toList().reversed());
+        when(invoices.shippingFeeReducedOf(any())).thenAnswer(call -> saved.stream()
+                .filter(invoice -> call.getArgument(0).equals(invoice.originalEInvoiceId())
+                        && invoice.correctionBasis() == CorrectionBasis.DELIVERY_FAILED
+                        && invoice.status() != EInvoiceStatus.VOIDED_DRAFT)
+                .flatMap(invoice -> invoice.lines().stream())
+                .filter(line -> line.feeKind() == EInvoiceLine.FeeKind.SHIPPING_FEE)
+                .map(EInvoiceLine::amount).reduce(BigDecimal.ZERO, BigDecimal::add));
+        when(invoices.findByIdForUpdate(any())).thenAnswer(call -> saved.stream()
+                .filter(invoice -> invoice.id().equals(call.getArgument(0))).findFirst());
+        when(invoices.correctionsOf(any())).thenReturn(EInvoice.Corrections.NONE);
+    }
+
+    /** The saved invoice {@code id} sent and issued under {@code number}. */
+    private void issue(UUID id, int number) {
+        EInvoice invoice = saved.stream().filter(candidate -> candidate.id().equals(id)).findFirst().orElseThrow();
+        invoice.submit(com.stockflow.invoicing.internal.domain.EInvoiceFixtures.SERIES, null, DELIVERED_AT);
+        invoice.issued(number, "SBX" + number, "SBXL" + number, DELIVERED_AT, "einvoices/" + number + ".xml",
+                "einvoices/" + number + ".pdf", DELIVERED_AT);
+    }
+
+    /** The order's fees: the shipping fee of 100,000 (110,000 with VAT), {@code waived} of it, and the cups' plate fee. */
+    private OrderShippingFee feesWaiving(long orderUnits, String waived) {
+        return new OrderShippingFee(ORDER, "SO-20261101-0007", CUSTOMER, "HD-20261101-0007", "VND",
+                new DeliveredShipment.Fee(FeeKind.SHIPPING_FEE, null, new BigDecimal("100000"), TEN, TEN), orderUnits,
+                null, List.of(new DeliveredShipment.Fee(FeeKind.PLATE_FEE, CUP, new BigDecimal("500000"), TEN, TEN)),
+                new com.stockflow.order.api.ShippingFeeWaiver(new BigDecimal(waived), new BigDecimal("110000")));
     }
 
     /**
@@ -1020,6 +1059,97 @@ class EInvoiceDraftsTest {
                 .containsExactly(EInvoiceLine.FeeKind.PLATE_FEE);
         assertThat(FeeAllocation.shippingFeeOwed(new BigDecimal("100000"), new BigDecimal("110000"),
                 new BigDecimal("110000"))).isZero();
+    }
+
+    // ---- audit r3 LM-2: the rest of the fees decided again --------------------------------------------------------
+
+    @Test
+    @DisplayName("audit r3 LM-2 (TT-5, then GH-2 / HĐ-3, then GH-1): batch 1 delivered and invoiced with the plate fee, "
+            + "batch 2 closed and its shipping share on an issued rest invoice; batch 1 then corrected to a failure and "
+            + "brought back - the plate fee goes on a new rest invoice, the shipping fee payment now waives is taken off "
+            + "the issued rest invoice by a reduction, and the order stops waiting; once")
+    void theRestIsDecidedAgainWhenTheDeliveryIsUndone() {
+        // 2,000 pieces; batch 1 (1,000) delivered: the plate fee and 50,000 of the fee on its invoice.
+        EInvoice.Snapshot batchOne = drawUp(shipment(UUID.randomUUID(), 20, 0, 2000, DELIVERED_AT));
+        assertThat(batchOne.lines()).extracting(EInvoiceLine::feeKind).contains(EInvoiceLine.FeeKind.PLATE_FEE);
+        issue(batchOne.id(), 1);
+        // Batch 2 closed before it left, nothing came back: nothing waived, the rest invoice carries the other 50,000.
+        Instant closedAt = DELIVERED_AT.plus(java.time.Duration.ofDays(2));
+        when(shipments.orderFees(ORDER, closedAt)).thenReturn(Optional.of(feesWaiving(1000, "0")));
+        EInvoice.Snapshot rest = drafts.drawUpShippingFeeRest(ORDER, closedAt).orElseThrow().invoice();
+        assertThat(rest.lines()).singleElement().satisfies(line -> {
+            assertThat(line.feeKind()).isEqualTo(EInvoiceLine.FeeKind.SHIPPING_FEE);
+            assertThat(line.amount()).isEqualByComparingTo("50000");
+        });
+        issue(rest.id(), 2);
+        // Batch 1 corrected to a failure (its invoice reduced to nothing, out of the order's fees), then brought back:
+        // nothing delivered, the whole fee waived (Q-19, owner 23/11).
+        reversed.add(batchOne.id());
+        Instant settledAt = closedAt.plus(java.time.Duration.ofDays(3));
+        OrderShippingFee after = feesWaiving(0, "110000");
+        when(shipments.orderFees(ORDER, settledAt)).thenReturn(Optional.of(after));
+        assertThat(EInvoiceDrafts.feeRestOf(invoices, after).outstanding()).as("the order waits on it").isTrue();
+
+        EInvoiceDrafts.DrawnUp again = drafts.drawUpShippingFeeRest(ORDER, settledAt).orElseThrow();
+
+        assertThat(again.created()).isTrue();
+        assertThat(again.invoice().id()).isNotEqualTo(rest.id());
+        assertThat(again.invoice().type()).isEqualTo(EInvoiceType.ORIGINAL);
+        assertThat(again.invoice().shipmentId()).isNull();
+        assertThat(again.invoice().lines()).as("the plate fee, and no shipping fee: it is waived").singleElement()
+                .satisfies(line -> {
+                    assertThat(line.feeKind()).isEqualTo(EInvoiceLine.FeeKind.PLATE_FEE);
+                    assertThat(line.sku()).isEqualTo(CUP);
+                    assertThat(line.amount()).isEqualByComparingTo("500000");
+                });
+        EInvoice reduction = saved.stream().filter(invoice -> rest.id().equals(invoice.originalEInvoiceId()))
+                .collect(java.util.stream.Collectors.collectingAndThen(java.util.stream.Collectors.toList(),
+                        found -> { assertThat(found).hasSize(1); return found.getFirst(); }));
+        assertThat(reduction.type()).isEqualTo(EInvoiceType.ADJUSTMENT);
+        assertThat(reduction.correctionBasis()).isEqualTo(CorrectionBasis.DELIVERY_FAILED);
+        assertThat(reduction.status()).as("the accountant issues it").isEqualTo(EInvoiceStatus.DRAFT);
+        assertThat(reduction.lines()).singleElement().satisfies(line -> {
+            assertThat(line.feeKind()).isEqualTo(EInvoiceLine.FeeKind.SHIPPING_FEE);
+            assertThat(line.amount()).isEqualByComparingTo("-50000");
+        });
+        assertThat(EInvoiceDrafts.feeRestOf(invoices, after).outstanding()).as("nothing left to wait for").isFalse();
+
+        int count = saved.size();
+        EInvoiceDrafts.DrawnUp third = drafts.drawUpShippingFeeRest(ORDER, settledAt).orElseThrow();
+        assertThat(third.created()).as("once").isFalse();
+        assertThat(saved).hasSize(count);
+    }
+
+    @Test
+    @DisplayName("audit r3 LM-2: the rest invoice still a draft when the delivery is undone - voided and drawn up "
+            + "again with the plate fee only; one at the provider is waited for")
+    void aRestDraftIsDrawnUpAgain() {
+        EInvoice.Snapshot batchOne = drawUp(shipment(UUID.randomUUID(), 20, 0, 2000, DELIVERED_AT));
+        issue(batchOne.id(), 1);
+        Instant closedAt = DELIVERED_AT.plus(java.time.Duration.ofDays(2));
+        when(shipments.orderFees(ORDER, closedAt)).thenReturn(Optional.of(feesWaiving(1000, "0")));
+        EInvoice.Snapshot rest = drafts.drawUpShippingFeeRest(ORDER, closedAt).orElseThrow().invoice();
+        reversed.add(batchOne.id());
+        Instant settledAt = closedAt.plus(java.time.Duration.ofDays(3));
+        when(shipments.orderFees(ORDER, settledAt)).thenReturn(Optional.of(feesWaiving(0, "110000")));
+
+        EInvoiceDrafts.DrawnUp again = drafts.drawUpShippingFeeRest(ORDER, settledAt).orElseThrow();
+
+        assertThat(saved.stream().filter(invoice -> invoice.id().equals(rest.id())).findFirst().orElseThrow().status())
+                .isEqualTo(EInvoiceStatus.VOIDED_DRAFT);
+        assertThat(again.created()).isTrue();
+        assertThat(again.invoice().lines()).extracting(EInvoiceLine::feeKind)
+                .containsExactly(EInvoiceLine.FeeKind.PLATE_FEE);
+        assertThat(saved).noneMatch(invoice -> invoice.type() == EInvoiceType.ADJUSTMENT);
+
+        // At the provider, it is not touched: decided again once it is answered.
+        EInvoice redrawn = saved.stream().filter(invoice -> invoice.id().equals(again.invoice().id())).findFirst()
+                .orElseThrow();
+        redrawn.submit(com.stockflow.invoicing.internal.domain.EInvoiceFixtures.SERIES, null, settledAt);
+        when(shipments.orderFees(ORDER, settledAt)).thenReturn(Optional.of(feesWaiving(0, "0")));
+        EInvoiceDrafts.DrawnUp waiting = drafts.drawUpShippingFeeRest(ORDER, settledAt).orElseThrow();
+        assertThat(waiting.created()).isFalse();
+        assertThat(waiting.invoice().id()).isEqualTo(redrawn.id());
     }
 
     // ---- WF-05 BE-25 (V8): the manual issue makes the automatic issue's checks ------------------------------------

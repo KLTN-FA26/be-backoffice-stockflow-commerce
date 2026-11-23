@@ -127,7 +127,7 @@ class EInvoiceIssuedNotificationListenerTest {
         assertThat(sent.severity()).isEqualTo(InboxSeverity.WARN);
         assertThat(sent.title()).contains("SO-20261101-0007");
         assertThat(sent.body()).contains("EINV-20261112-0001", "SO-20261101-0007");
-        assertThat(sent.link()).isEqualTo("/customers/" + customer);
+        assertThat(sent.link()).isEqualTo("/admin/customers/" + customer);
         assertThat(sent.sourceType()).as("audit r2 M-1: Sales send the invoice on from the notice").isEqualTo("EINVOICE");
         assertThat(sent.sourceId()).isEqualTo(event.einvoiceId().toString());
         assertThat(sent.dedupeKey()).isEqualTo("einvoice-buyer-email-missing:" + event.einvoiceId());

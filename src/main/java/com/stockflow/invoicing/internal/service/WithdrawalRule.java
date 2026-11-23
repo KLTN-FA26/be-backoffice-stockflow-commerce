@@ -60,6 +60,22 @@ public final class WithdrawalRule {
     }
 
     /**
+     * When an invoice the provider cannot confirm stops being too recent to take back: the later of the two waits, so
+     * that one day is promised and kept (audit r3 EINV-4). Checked as {@code withdraw-after} first, such an invoice was
+     * shown "possible from" three hours after its last send, and at that hour the answer moved the day to the next
+     * one. The configuration asks {@code withdraw-unknown-after} to be the longer; the larger of the two is taken all
+     * the same, so a configuration that says otherwise cannot bring the day forward. Null when never sent.
+     */
+    static Instant earliestUnconfirmed(Instant lastSent, InvoicingProperties properties) {
+        if (lastSent == null) {
+            return null;
+        }
+        java.time.Duration wait = properties.withdrawUnknownAfter().compareTo(properties.withdrawAfter()) >= 0
+                ? properties.withdrawUnknownAfter() : properties.withdrawAfter();
+        return lastSent.plus(wait);
+    }
+
+    /**
      * @param held     whether the call log shows the provider once held the transaction
      * @param state    what the provider says
      * @param lastSent when the transaction was last sent; null when that is not on record
@@ -69,16 +85,17 @@ public final class WithdrawalRule {
         if (held || state == ProviderState.PENDING || state == ProviderState.ISSUED) {
             return new Decision(Blocked.PROVIDER_HOLDS, null, false);
         }
+        if (state == ProviderState.UNCONFIRMED) {
+            // One "from" for the whole wait (EINV-4), never the shorter wait first and the longer one after it.
+            Instant from = lastSent == null ? now : earliestUnconfirmed(lastSent, properties);
+            return now.isBefore(from) ? new Decision(Blocked.TOO_RECENT, from, true) : new Decision(null, null, true);
+        }
         Instant earliest = earliest(lastSent, properties);
         if (earliest != null && now.isBefore(earliest)) {
-            return new Decision(Blocked.TOO_RECENT, earliest, state == ProviderState.UNCONFIRMED);
+            return new Decision(Blocked.TOO_RECENT, earliest, false);
         }
         if (state == ProviderState.NOT_FOUND) {
             return new Decision(null, null, false);
-        }
-        if (state == ProviderState.UNCONFIRMED) {
-            Instant from = lastSent == null ? now : lastSent.plus(properties.withdrawUnknownAfter());
-            return now.isBefore(from) ? new Decision(Blocked.TOO_RECENT, from, true) : new Decision(null, null, true);
         }
         return new Decision(Blocked.PROVIDER_STATE_UNCLEAR, null, false);
     }

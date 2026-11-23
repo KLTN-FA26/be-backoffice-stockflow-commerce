@@ -14,6 +14,7 @@ import com.stockflow.customer.api.CustomerLegalProfile;
 import com.stockflow.customer.api.CustomerLegalProfiles;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
+import com.stockflow.invoicing.internal.domain.CorrectionBasis;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceLine;
 import com.stockflow.invoicing.internal.domain.EInvoiceProvider;
@@ -32,10 +33,12 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -182,11 +185,129 @@ public class EInvoiceDrafts {
     }
 
     /**
+     * What the rest of an order's fees comes to now, measured by the one rule both the draw-up
+     * ({@link #drawUpShippingFeeRest}) and the order's readiness ({@code DeliveryInvoicesAdapter#shippingFeeUnissued})
+     * apply, so the order never waits for what the draw-up would not draw up (audit r3 LM-2).
+     *
+     * @param shipping    the shipping fee, before tax, the order owes and no invoice carries: an invoice of the rest
+     * @param plates      the plate fees no invoice of the order carries: on the same invoice (BE-62)
+     * @param overCarried the shipping fee, before tax, the order's rest invoices carry beyond what payment now keeps -
+     *                    its share was waived after they were issued (Q-19): a reduction of them
+     */
+    record FeeRest(BigDecimal shipping, List<DeliveredShipment.Fee> plates, BigDecimal overCarried) {
+
+        /** Whether a new rest invoice is drawn up: some shipping fee or a plate fee on no invoice. */
+        boolean toDrawUp() {
+            return shipping.signum() > 0 || !plates.isEmpty();
+        }
+
+        /** Whether anything of the rest is still to invoice or to take off. */
+        boolean outstanding() {
+            return toDrawUp() || overCarried.signum() > 0;
+        }
+    }
+
+    /**
+     * Within this much, before tax, an order's rest invoices and payment's figure are the same fee (audit r3 LM-2): the
+     * deliveries' shares are rounded to the dong one by one and payment rounds its waiver once, so the two may disagree
+     * by a dong without anything having happened. Once a rest invoice was issued, a dong either way is not a reason for
+     * another invoice of a dong; a first rest invoice takes the rest to the dong, as before.
+     */
+    static final BigDecimal REST_ROUNDING = BigDecimal.ONE;
+
+    /**
+     * {@link FeeRest} from the order's fees and what its invoices carry.
+     *
+     * @param invoiced      what the order's originals in force carry ({@code invoicedOfOrder}), the rest invoices too
+     * @param reducedOnRest the shipping fee lines of the live reductions of the order's rest invoices (at or below 0)
+     * @param restShipping  what the order's issued rest invoices still carry of the shipping fee, those reductions taken
+     *                      off: the most a reduction may take, and whether the rest was decided before
+     */
+    static FeeRest feeRest(OrderShippingFee order, FeeAllocation.Invoiced invoiced, BigDecimal reducedOnRest,
+                           BigDecimal restShipping) {
+        // The deliveries are over for the fees when every piece the order still means to deliver is on an invoice:
+        // before, the delivery still to be invoiced carries the plate fee of its SKU and the rest of the shipping fee.
+        boolean deliveriesOver = invoiced.units() >= order.orderUnits();
+        BigDecimal owed = order.fee() == null ? BigDecimal.ZERO
+                : FeeAllocation.shippingFeeOwed(order.fee().amount(), order.shippingFeeWaiver().feeGross(),
+                        order.shippingFeeWaiver().waived());
+        FeeAllocation.Invoiced net = new FeeAllocation.Invoiced(invoiced.units(),
+                invoiced.shippingFee().add(reducedOnRest), invoiced.plateFeeSkus(), invoiced.goodsValue());
+        // The share waived for shipments that came back (Q-19, owner 2026-11-23) is owed by nobody and not invoiced;
+        // nothing delivered, nothing invoiced, no part of it is owed (FeeAllocation.shippingRest answers 0 then).
+        BigDecimal shipping = FeeAllocation.shippingRest(owed, order.orderUnits(), net);
+        // BE-62 (Q-19): a plate fee no invoice of the order carries - its goods never reached the customer, so no
+        // delivery's invoice took it, or the one that did was reduced to nothing (HĐ-3) - is owed all the same.
+        List<DeliveredShipment.Fee> plates = !deliveriesOver ? List.of() : order.plateFees().stream()
+                .filter(fee -> fee.amount().signum() > 0 && FeeAllocation.carriesPlateFee(fee.sku(), invoiced))
+                .toList();
+        BigDecimal overCarried = !deliveriesOver ? BigDecimal.ZERO
+                : net.shippingFee().subtract(owed).min(restShipping.max(BigDecimal.ZERO)).max(BigDecimal.ZERO);
+        if (restShipping.signum() > 0) {
+            shipping = shipping.compareTo(REST_ROUNDING) <= 0 ? BigDecimal.ZERO : shipping;
+            overCarried = overCarried.compareTo(REST_ROUNDING) <= 0 ? BigDecimal.ZERO : overCarried;
+        }
+        return new FeeRest(shipping, plates, overCarried);
+    }
+
+    /**
+     * The order's issued rest invoices, the latest first, with the shipping fee their live reductions take off each
+     * ({@code reducedOf}), those reductions together ({@code reduced}, at or below 0), and what they still carry of the
+     * shipping fee ({@code shipping}).
+     */
+    record RestInvoices(List<EInvoice> issued, Map<UUID, BigDecimal> reducedOf, BigDecimal reduced,
+                        BigDecimal shipping) {
+
+        static RestInvoices of(EInvoiceRepository invoices, UUID orderId) {
+            List<EInvoice> issued = invoices.findIssuedShippingFeeInvoices(orderId);
+            Map<UUID, BigDecimal> reducedOf = new HashMap<>();
+            BigDecimal reduced = BigDecimal.ZERO;
+            BigDecimal shipping = BigDecimal.ZERO;
+            for (EInvoice rest : issued) {
+                BigDecimal off = invoices.shippingFeeReducedOf(rest.id());
+                off = off == null ? BigDecimal.ZERO : off;
+                reducedOf.put(rest.id(), off);
+                reduced = reduced.add(off);
+                shipping = shipping.add(shippingOn(rest)).add(off);
+            }
+            return new RestInvoices(List.copyOf(issued), Map.copyOf(reducedOf), reduced, shipping);
+        }
+    }
+
+    /**
+     * {@link #feeRest} of the order as it stands, every rest invoice counted: what the order's readiness asks
+     * ({@code DeliveryInvoicesAdapter#shippingFeeUnissued}), measured as {@link #drawUpShippingFeeRest} measures it.
+     */
+    static FeeRest feeRestOf(EInvoiceRepository invoices, OrderShippingFee order) {
+        RestInvoices rests = RestInvoices.of(invoices, order.orderId());
+        return feeRest(order, invoices.invoicedOfOrder(order.orderId()), rests.reduced(), rests.shipping());
+    }
+
+    /**
      * The invoice of the rest of an order's fees, once its deliveries are over - its undelivered rest closed, or its
-     * last shipment come back or lost (WF-05 BE-62, {@code ShipmentReturnSettledListener}): the one standing if there is
-     * one, else a new draft when some of the shipping fee is on no invoice and no delivery is left to carry it
-     * ({@link FeeAllocation#shippingRest}), or a plate fee is on none (Q-19: an order whose goods all came back keeps
-     * its plate fee, which only a delivery's invoice ever carried); empty when there is nothing to draw up.
+     * last shipment come back or lost (WF-05 BE-62, {@code ShipmentReturnSettledListener}): a new draft when some of
+     * the shipping fee is on no invoice and no delivery is left to carry it ({@link FeeAllocation#shippingRest}), or a
+     * plate fee is on none (Q-19: an order whose goods all came back keeps its plate fee, which only a delivery's invoice
+     * ever carried); the one standing when it carries what is owed; empty when there is nothing to draw up.
+     *
+     * <h2>Decided again, not once (audit r3 LM-2)</h2>
+     *
+     * <p>The rest was decided once, and the invoice of it returned to every later call. It is not settled once: a
+     * delivery corrected to a failure afterwards takes its invoice - and the plate fee it carried - off the order
+     * (HĐ-3), and a carrier return afterwards waives the shipping fee the rest invoice carries (Q-19: nothing
+     * delivered, the whole fee). The plate fee then stood on no invoice (BE-62 again), the order waited for good on a
+     * rest no call would draw up - its contract never liquidated - and the issued rest invoice billed a fee payment no
+     * longer collected. So every call measures the rest again ({@link #feeRest}):</p>
+     * <ul>
+     *   <li>a rest invoice still a draft (or refused) that no longer carries what is owed is voided and drawn up
+     *       again; one at the provider is waited for;</li>
+     *   <li>a plate fee or shipping fee owed that no invoice carries goes on a new rest invoice - another one beside an
+     *       issued rest invoice ({@code uk_einvoice_shipping_fee_rest} now holds one unissued at a time, and
+     *       {@code tg_einvoice_rest_plate_once} a plate fee on one invoice);</li>
+     *   <li>shipping fee an issued rest invoice carries beyond what payment keeps is taken off it by a reduction
+     *       ({@code DELIVERY_FAILED}: the delivery it was charged for did not happen), drawn up for the accountant to
+     *       issue - an issued invoice is never changed, and only a reduction states the fee is not owed.</li>
+     * </ul>
      *
      * <h2>Why an original of its own, and why dated the day the order's rest was closed</h2>
      *
@@ -214,35 +335,49 @@ public class EInvoiceDrafts {
      *
      * @param closedAt when the order's rest was closed: the invoice's date and the day of its VAT rate; now when the
      *                 accountant draws it up by hand
+     * @return the new rest invoice, else the new reduction of a rest invoice ({@code created} true), else the rest
+     *         invoice standing ({@code created} false); empty when the order has none and nothing is owed
      * @throws BusinessException {@code EINVOICE_NOT_INVOICEABLE} for an order not priced in dong;
      *         {@code SELLER_PROFILE_UNAVAILABLE} while the seller is not configured
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Optional<DrawnUp> drawUpShippingFeeRest(UUID orderId, Instant closedAt) {
         invoices.lockOrder(orderId);
-        Optional<EInvoice> standing = invoices.findLiveShippingFeeInvoice(orderId);
-        if (standing.isPresent()) {
-            return Optional.of(new DrawnUp(standing.get().snapshot(), false));
+        Optional<EInvoice> unissued = invoices.findUnissuedShippingFeeInvoice(orderId);
+        if (unissued.isPresent() && unissued.get().status() == EInvoiceStatus.SUBMITTING) {
+            // At the provider: what it carries is decided again once it is answered, by the next call.
+            return Optional.of(new DrawnUp(unissued.get().snapshot(), false));
         }
         Optional<OrderShippingFee> found = shipments.orderFees(orderId, closedAt);
         if (found.isEmpty()) {
-            return Optional.empty();
+            return unissued.or(() -> invoices.findLiveShippingFeeInvoice(orderId))
+                    .map(standing -> new DrawnUp(standing.snapshot(), false));
         }
         OrderShippingFee order = found.get();
+        RestInvoices rests = RestInvoices.of(invoices, orderId);
+        // A rest invoice not issued yet is decided again: measured without it, kept only if it carries just that.
         FeeAllocation.Invoiced invoiced = invoices.invoicedOfOrder(orderId);
-        // The share waived for shipments that came back (Q-19, owner 2026-11-23) is owed by nobody and not invoiced;
-        // nothing delivered, nothing invoiced, no part of it is owed (FeeAllocation.shippingRest answers 0 then).
-        BigDecimal rest = order.fee() == null ? BigDecimal.ZERO
-                : FeeAllocation.shippingRest(FeeAllocation.shippingFeeOwed(order.fee().amount(),
-                        order.shippingFeeWaiver().feeGross(), order.shippingFeeWaiver().waived()),
-                        order.orderUnits(), invoiced);
-        // BE-62 (Q-19): a plate fee no invoice of the order carries - its goods never reached the customer, so no
-        // delivery's invoice took it - is owed all the same (the plates were made) and goes on this invoice.
-        List<DeliveredShipment.Fee> plates = order.plateFees().stream()
-                .filter(fee -> fee.amount().signum() > 0 && FeeAllocation.carriesPlateFee(fee.sku(), invoiced))
-                .toList();
-        if (rest.signum() <= 0 && plates.isEmpty()) {
-            return Optional.empty();
+        if (unissued.isPresent()) {
+            invoiced = without(invoiced, unissued.get());
+        }
+        FeeRest rest = feeRest(order, invoiced, rests.reduced(), rests.shipping());
+        if (unissued.isPresent()) {
+            EInvoice draft = invoices.findByIdForUpdate(unissued.get().id()).orElseThrow();
+            if ((draft.status() != EInvoiceStatus.DRAFT && draft.status() != EInvoiceStatus.REJECTED)
+                    || carries(draft, rest)) {
+                return Optional.of(new DrawnUp(draft.snapshot(), false));
+            }
+            voidUnissued(draft, "The rest of the order's fees changed since this invoice was drawn up: drawn up again");
+            log.info("E-invoice {} of the rest of the fees of order {} voided: the rest changed since it was drawn up",
+                    LogSafe.text(draft.code()), LogSafe.text(order.orderNumber()));
+        }
+        Optional<EInvoice.Snapshot> reduction = rest.overCarried().signum() > 0
+                ? reduceRest(order, rests, rest.overCarried(), closedAt) : Optional.empty();
+        if (!rest.toDrawUp()) {
+            if (reduction.isPresent()) {
+                return Optional.of(new DrawnUp(reduction.get(), true));
+            }
+            return rests.issued().stream().findFirst().map(standing -> new DrawnUp(standing.snapshot(), false));
         }
         if (!EInvoice.VND.equals(order.currency())) {
             throw new BusinessException(ErrorCode.EINVOICE_NOT_INVOICEABLE,
@@ -258,15 +393,15 @@ public class EInvoiceDrafts {
         boolean differs = false;
         boolean notOnContract = false;
         boolean classUnknown = false;
-        if (rest.signum() > 0) {
+        if (rest.shipping().signum() > 0) {
             DeliveredShipment.Fee fee = order.fee();
             lines.add(EInvoiceLine.fee(Identifiers.newId(), 1, EInvoiceLine.FeeKind.SHIPPING_FEE, null,
-                    t.getString("einvoice.line.shippingFee.rest"), t.getString("einvoice.unit.fee"), rest,
+                    t.getString("einvoice.line.shippingFee.rest"), t.getString("einvoice.unit.fee"), rest.shipping(),
                     fee.taxRate()));
             differs = differs(fee.taxRate(), fee.contractTaxRate());
             notOnContract = fee.contractTaxRate() == null;
         }
-        for (DeliveredShipment.Fee plate : plates) {
+        for (DeliveredShipment.Fee plate : rest.plates()) {
             lines.add(EInvoiceLine.fee(Identifiers.newId(), lines.size() + 1, EInvoiceLine.FeeKind.PLATE_FEE,
                     plate.sku(), t.getString("einvoice.line.plateFee").formatted(plate.sku()),
                     t.getString("einvoice.unit.fee"), plate.amount(), plate.taxRate()));
@@ -284,6 +419,90 @@ public class EInvoiceDrafts {
         EInvoice.Snapshot drawn = invoices.save(invoice).snapshot();
         announceIncompleteBuyer(drawn);
         return Optional.of(new DrawnUp(drawn, true));
+    }
+
+    /** The shipping fee, before tax, on an invoice's own lines. */
+    private static BigDecimal shippingOn(EInvoice invoice) {
+        return invoice.lines().stream().filter(line -> line.feeKind() == EInvoiceLine.FeeKind.SHIPPING_FEE)
+                .map(EInvoiceLine::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /** What the order's invoices carry without {@code rest}, a rest invoice decided again. */
+    private static FeeAllocation.Invoiced without(FeeAllocation.Invoiced invoiced, EInvoice rest) {
+        java.util.Set<String> plates = new java.util.HashSet<>(invoiced.plateFeeSkus());
+        rest.lines().stream().filter(line -> line.feeKind() == EInvoiceLine.FeeKind.PLATE_FEE)
+                .forEach(line -> plates.remove(line.sku()));
+        return new FeeAllocation.Invoiced(invoiced.units(), invoiced.shippingFee().subtract(shippingOn(rest)), plates,
+                invoiced.goodsValue());
+    }
+
+    /** Whether a rest invoice not issued yet carries exactly what {@code rest} draws up, and nothing is over-carried. */
+    private static boolean carries(EInvoice draft, FeeRest rest) {
+        if (rest.overCarried().signum() > 0 || shippingOn(draft).compareTo(rest.shipping()) != 0) {
+            return false;
+        }
+        Map<String, BigDecimal> onDraft = new HashMap<>();
+        draft.lines().stream().filter(line -> line.feeKind() == EInvoiceLine.FeeKind.PLATE_FEE)
+                .forEach(line -> onDraft.merge(line.sku(), line.amount(), BigDecimal::add));
+        Map<String, BigDecimal> owed = new HashMap<>();
+        rest.plates().forEach(plate -> owed.merge(plate.sku(), plate.amount().setScale(0, RoundingMode.HALF_UP),
+                BigDecimal::add));
+        return onDraft.keySet().equals(owed.keySet()) && onDraft.entrySet().stream()
+                .allMatch(entry -> entry.getValue().compareTo(owed.get(entry.getKey())) == 0);
+    }
+
+    /**
+     * Takes {@code over} - shipping fee the order's issued rest invoices carry beyond what payment keeps - off them,
+     * the latest first, each by a draft reduction of its shipping fee line ({@code DELIVERY_FAILED}: what it charged
+     * for was not delivered, Q-19), dated the day it is drawn up and re-dated to the day it is issued (Q-1). A rest
+     * invoice being replaced is not adjusted (Q-9): what is left of {@code over} then is told to the accountants, to
+     * settle on the provider's portal.
+     *
+     * @return the last reduction drawn up; empty when none could be
+     */
+    private Optional<EInvoice.Snapshot> reduceRest(OrderShippingFee order, RestInvoices rests, BigDecimal over,
+                                                   Instant on) {
+        List<EInvoice> issuedRests = rests.issued();
+        ResourceBundle t = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+        LocalDate day = BusinessCalendar.date(on != null ? on : clock.instant());
+        BigDecimal left = over;
+        Optional<EInvoice.Snapshot> last = Optional.empty();
+        for (EInvoice unlocked : issuedRests) {
+            if (left.signum() <= 0) {
+                break;
+            }
+            EInvoice rest = invoices.findByIdForUpdate(unlocked.id()).orElseThrow();
+            Optional<EInvoiceLine> line = rest.lines().stream()
+                    .filter(candidate -> candidate.feeKind() == EInvoiceLine.FeeKind.SHIPPING_FEE).findFirst();
+            BigDecimal carried = shippingOn(rest).add(rests.reducedOf().getOrDefault(rest.id(), BigDecimal.ZERO));
+            EInvoice.Corrections corrections = invoices.correctionsOf(rest.id());
+            if (rest.status() != EInvoiceStatus.ISSUED || line.isEmpty() || carried.signum() <= 0
+                    || corrections.liveReplacement()) {
+                continue;
+            }
+            BigDecimal take = left.min(carried);
+            EInvoiceLine off = line.get().corrected(Identifiers.newId(), 1, -1, null, line.get().unit(), take,
+                    line.get().taxRate(), line.get().itemName());
+            EInvoice adjustment = EInvoice.drawUpAdjustment(Identifiers.newId(), invoices.nextCode(day), rest,
+                    CorrectionBasis.DELIVERY_FAILED,
+                    t.getString("einvoice.correction.shippingFeeWaived").formatted(order.orderNumber()),
+                    rest.buyer(), List.of(off), day, null, List.of(), corrections);
+            last = Optional.of(invoices.save(adjustment).snapshot());
+            left = left.subtract(take);
+            log.info("E-invoice {}: {} of the shipping fee its rest invoice {} carries is taken off - payment waived "
+                    + "it since", LogSafe.text(last.get().code()), take, LogSafe.text(rest.code()));
+        }
+        if (left.signum() > 0) {
+            EInvoice standing = issuedRests.isEmpty() ? null : issuedRests.getFirst();
+            log.warn("Order {}: {} of the shipping fee its rest invoices carry is waived and could not be taken off "
+                    + "here", LogSafe.text(order.orderNumber()), left);
+            if (standing != null) {
+                events.publishEvent(new EInvoiceNeedsAttention(standing.id(), standing.code(), standing.orderId(),
+                        order.orderNumber(), EInvoiceNeedsAttention.Cause.REDUCE_ON_PROVIDER_PORTAL, null,
+                        standing.submittedAt(), standing.issueDueAt()));
+            }
+        }
+        return last;
     }
 
     /**
@@ -417,6 +636,17 @@ public class EInvoiceDrafts {
      * corrections, and not having refused this reduction {@value #REFUSED_FOR_GOOD} times under the same code.
      */
     private boolean sendable(EInvoice.Snapshot reduced, EInvoice.Snapshot reduction) {
+        return correctionSendable(providers, invoices, reduced, reduction);
+    }
+
+    /**
+     * The one rule for whether a correction of {@code reduced} can go through a provider (Q-8, HĐ-5), shared by the void
+     * of a failed delivery's unsendable reduction and the record of a return's reduction made on the portal (audit r3
+     * EINV-2): the provider that issued {@code reduced}, usable here, issuing corrections, adjusting {@code reduced}'s
+     * kind, and not having refused {@code correction} {@value #REFUSED_FOR_GOOD} times under one code.
+     */
+    static boolean correctionSendable(EInvoiceProviders providers, EInvoiceRepository invoices,
+                                      EInvoice.Snapshot reduced, EInvoice.Snapshot reduction) {
         String provider = reduced.provider();
         if (provider == null || !providers.usable(provider)) {
             return false;

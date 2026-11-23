@@ -44,4 +44,17 @@ public interface DeliveryInvoices {
     default boolean returnAdjustmentUnissued(UUID orderId) {
         return false;
     }
+
+    /**
+     * Audit r3 EINV-7 (decision §3 HĐ-3 "Kế toán phát hành"; Q-16): whether a reduction of the order's invoices for a
+     * delivery that did not happen - the full reduction of a shipment's invoice whose delivery was corrected to a
+     * failure, or the reduction of the shipping fee the rest invoice carries once payment waived it - is drawn up and
+     * not issued yet. For information only, as {@link #returnAdjustmentUnissued}: it is a decrease, so leaving it
+     * unissued overstates output VAT rather than understating it, and it can still be issued after the order closes;
+     * but the buyer holds an invoice for goods or a fee it does not owe until it is, and the order's condition block,
+     * which says what is still missing, said nothing of it. Read in the caller's transaction.
+     */
+    default boolean deliveryReductionUnissued(UUID orderId) {
+        return false;
+    }
 }

@@ -102,6 +102,13 @@ public interface EInvoiceRepository {
     /** Whether an adjustment was ever drawn up for a return, voided or not: a return is taken off its invoices once. */
     boolean hasAdjustmentForReturn(UUID returnRequestId);
 
+    /**
+     * Audit r3 EINV-2: the RETURN adjustments of {@code invoiceId} that were voided, latest first per return, of
+     * returns that have no adjustment of it left that was not voided - what the accountant may still record from the
+     * provider's portal when the invoice's provider could not send them (Q-8, HĐ-5).
+     */
+    List<EInvoice> findVoidedReturnAdjustmentsOf(UUID invoiceId);
+
     /** Whether an adjustment for this return, not voided, already names this invoice ({@code uk_einvoice_return_adjustment}). */
     boolean hasLiveReturnAdjustment(UUID returnRequestId, UUID invoiceId);
 
@@ -119,6 +126,21 @@ public interface EInvoiceRepository {
      * voided or replaced, else what replaced it - as {@link #findLiveOriginalOfShipment} answers for a shipment.
      */
     Optional<EInvoice> findLiveShippingFeeInvoice(UUID orderId);
+
+    /**
+     * Audit r3 LM-2: the order's rest invoice not issued yet - a draft, a refused one or one at the provider; at most one
+     * ({@code uk_einvoice_shipping_fee_rest}).
+     */
+    Optional<EInvoice> findUnissuedShippingFeeInvoice(UUID orderId);
+
+    /** Audit r3 LM-2: the order's issued rest invoices (originals naming no shipment), the latest first. */
+    List<EInvoice> findIssuedShippingFeeInvoices(UUID orderId);
+
+    /**
+     * Audit r3 LM-2: the shipping fee, before tax, the live reductions of {@code invoiceId} take off it - its
+     * {@code DELIVERY_FAILED} adjustments that were not voided, drafts too; at or below 0.
+     */
+    java.math.BigDecimal shippingFeeReducedOf(UUID invoiceId);
 
     /**
      * Takes the order's invoicing lock until the transaction ends: drafts of one order are drawn up one after the
@@ -278,6 +300,12 @@ public interface EInvoiceRepository {
     boolean returnAdjustmentUnissued(UUID orderId);
 
     /**
+     * Whether a reduction of the order's invoices for a delivery that did not happen ({@code DELIVERY_FAILED}) is drawn
+     * up and not issued yet (audit r3 EINV-7: information only).
+     */
+    boolean deliveryReductionUnissued(UUID orderId);
+
+    /**
      * Starts watching a transaction let go without the provider's word (BE-07, Q-5): withdrawn, or refused on the
      * provider's processing report alone. Asked about daily until {@code until}. Twice for one transaction is once.
      */
@@ -286,6 +314,17 @@ public interface EInvoiceRepository {
     /** A transaction watched after it was let go. */
     record WatchedTransaction(UUID einvoiceId, String transactionId, String provider, String letGoAs) {
     }
+
+    /**
+     * The watch of the invoice's latest transaction let go (audit r3 EINV-3; decision §4.4 HĐ-1 step 3: "sau khi rút có
+     * dòng 'đang tra lại tới ngày ...'"): until when its old transaction is asked about, and when the provider was
+     * found holding it after all.
+     */
+    record TransactionWatch(String transactionId, String letGoAs, Instant watchUntil, Instant foundAt) {
+    }
+
+    /** {@link TransactionWatch} of the transaction of the invoice let go last; empty when none was. */
+    java.util.Optional<TransactionWatch> latestWatchOf(UUID einvoiceId);
 
     /** Up to {@code limit} watched transactions still to ask about now, not asked since {@code askedBefore}. */
     List<WatchedTransaction> findWatchedToAsk(Instant now, Instant askedBefore, int limit);

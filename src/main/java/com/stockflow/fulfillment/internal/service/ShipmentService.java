@@ -212,8 +212,22 @@ class ShipmentService implements Shipments {
         if (target == ShipmentStatus.DELIVERY_FAILED && correction.deliveredAt() != null) {
             throw deliveryTimeOnlyWithDelivery();
         }
-        // Corrected to a delivery: dated by the time it was delivered; the correction itself is dated now.
-        Instant at = target == ShipmentStatus.DELIVERED && correction.deliveredAt() != null ? correction.deliveredAt() : now;
+        // Corrected to a delivery: dated by the time it was delivered; the correction itself is dated now. With no time
+        // given, a failure that was itself the correction of a delivery is taken back to that delivery (audit r3
+        // EINV-1): the carrier was right after all, and the delivery is the one that happened then. Dated now instead,
+        // a correction made on a later day read as a new delivery on that day - the issued invoice stayed reduced to
+        // nothing and a second original was drawn up dated a day the goods did not change hands (NĐ 254/2026 Điều 9
+        // khoản 1), with the payment and return windows moved to it.
+        Instant at = target == ShipmentStatus.DELIVERED
+                ? correction.deliveredAt() != null ? correction.deliveredAt()
+                        : (before == ShipmentStatus.DELIVERY_FAILED ? undoneDelivery(row.getId()) : null)
+                : null;
+        if (at == null) {
+            at = now;
+        }
+        // A delivery corrected to a failure keeps the time it undid on the correction's row, for the correction back.
+        Instant undone = target == ShipmentStatus.DELIVERY_FAILED && before == ShipmentStatus.DELIVERED
+                ? shipment.snapshot().outcomeAt() : null;
         UUID by = actor.userId();
         if (target == ShipmentStatus.DELIVERY_FAILED && before == ShipmentStatus.DELIVERED && !knownToOrder(row)) {
             // Left as the whole order before shipments were recorded: its delivery is the order's own, not a shipment's.
@@ -229,7 +243,7 @@ class ShipmentService implements Shipments {
                 : tellOrder(row, ShipmentStatus.DELIVERED, null, null, by, at);
         corrections.save(new com.stockflow.fulfillment.internal.entity.DeliveryOutcomeCorrectionJpaEntity(
                 com.stockflow.common.id.Identifiers.newId(), row.getId(), before.name(), target.name(),
-                reason == null ? null : reason.name(), note, why, by, now));
+                reason == null ? null : reason.name(), note, why, by, now, undone));
         row.apply(shipment);
         shipments.saveAndFlush(row);
         String carrierName = row.getCarrierId() == null ? null
@@ -239,6 +253,19 @@ class ShipmentService implements Shipments {
         timeline.record(shipment, before, order, null, carrierName, loadCode);
         log.info("Shipment {}: {} corrected to {} by hand ({})", row.getCode(), before, target, why);
         return detail(row);
+    }
+
+    /**
+     * The delivery a correction back to delivered restores (audit r3 EINV-1): the time the shipment's latest correction
+     * - a delivery corrected to a failure - undid; null when its failure is not such a correction (the carrier's, or
+     * one a person recorded), or the correction is older than the record of it.
+     */
+    private Instant undoneDelivery(UUID shipmentId) {
+        return corrections.findFirstByShipmentIdOrderByCorrectedAtDescIdDesc(shipmentId)
+                .filter(c -> ShipmentStatus.DELIVERED.name().equals(c.getFromStatus())
+                        && ShipmentStatus.DELIVERY_FAILED.name().equals(c.getToStatus()))
+                .map(com.stockflow.fulfillment.internal.entity.DeliveryOutcomeCorrectionJpaEntity::getUndoneDeliveredAt)
+                .orElse(null);
     }
 
     @Override
@@ -422,7 +449,8 @@ class ShipmentService implements Shipments {
                         names.get(e.getRecordedBy()), e.getNote(), e.getSource(), e.getCarrierEvent())).toList(),
                 edits.stream().map(c -> new ReasonCorrection(c.getFromReason(), c.getFromNote(), c.getToReason(),
                         c.getToNote(), c.getReason(), c.getCorrectedBy(), names.get(c.getCorrectedBy()),
-                        c.getCorrectedAt())).toList());
+                        c.getCorrectedAt())).toList(),
+                row.getStatus() == ShipmentStatus.DELIVERY_FAILED ? undoneDelivery(row.getId()) : null);
     }
 
     /** Rows with their order numbers, carriers and loads, read in one query each. */

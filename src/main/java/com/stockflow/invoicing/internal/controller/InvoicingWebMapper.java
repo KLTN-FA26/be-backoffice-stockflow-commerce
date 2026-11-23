@@ -45,7 +45,9 @@ final class InvoicingWebMapper {
                                        boolean errorNoticeSupported,
                                        com.stockflow.invoicing.internal.service.WithdrawalRule.Decision withdrawal,
                                        com.stockflow.invoicing.internal.service.EInvoiceIssuance
-                                               .ExternalReductionOptions external) {
+                                               .ExternalReductionOptions external,
+                                       com.stockflow.invoicing.internal.domain.EInvoiceRepository
+                                               .TransactionWatch watch) {
         List<String> bases = new java.util.ArrayList<>();
         if (external.deliveryFailed()) {
             bases.add("DELIVERY_FAILED");
@@ -82,7 +84,8 @@ final class InvoicingWebMapper {
                 withdrawal.blocked() == null ? null : withdrawal.blocked().name(), withdrawal.from(),
                 withdrawal.evidenceRequired(), external.any(), List.copyOf(bases),
                 external.returns().stream().map(option -> new EInvoiceResponse.ExternalReductionReturn(
-                        option.returnRequestId(), option.rmaNumber())).toList());
+                        option.returnRequestId(), option.rmaNumber())).toList(),
+                watch == null ? null : watch.watchUntil(), watch == null ? null : watch.foundAt());
     }
 
     static EInvoiceListItemResponse toResponse(EInvoiceQueries.Listing row, Instant now) {

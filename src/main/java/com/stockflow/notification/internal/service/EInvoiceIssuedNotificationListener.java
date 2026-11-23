@@ -135,6 +135,12 @@ class EInvoiceIssuedNotificationListener {
      * System text only: the invoice's code and the order's number. It links to the customer's profile, where the
      * e-mail is recorded, and names the invoice as its source (audit r2 M-1): the notice is the one place Sales staff,
      * who hold no e-invoice permission, find the invoice to send on ({@code POST /api/v1/einvoices/{sourceId}/email}).
+     *
+     * <p>Audit r3 EINV-6: the back office's page of a customer is {@code /admin/customers/{id}}, and it follows only a
+     * link under {@code /admin} or one of the sections the API writes relative to it ({@code /invoicing},
+     * {@code /payment}, {@code /production}); {@code /customers/{id}} was refused there and the notice led nowhere.
+     * Without a customer it names the invoice's own page, {@code /invoicing/einvoices/{id}} - {@code /einvoices/{id}}
+     * is the customer portal's.</p>
      */
     static InboxMessage emailMissing(EInvoiceIssued event) {
         ResourceBundle texts = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
@@ -142,7 +148,8 @@ class EInvoiceIssuedNotificationListener {
                 texts.getString("inbox.einvoice.buyer-email-missing.title").formatted(event.orderNumber()),
                 texts.getString("inbox.einvoice.buyer-email-missing.body").formatted(event.code(),
                         event.orderNumber()),
-                event.customerId() == null ? "/einvoices/" + event.einvoiceId() : "/customers/" + event.customerId(),
+                event.customerId() == null ? "/invoicing/einvoices/" + event.einvoiceId()
+                        : "/admin/customers/" + event.customerId(),
                 SOURCE_TYPE, event.einvoiceId().toString(), "einvoice-buyer-email-missing:" + event.einvoiceId());
     }
 

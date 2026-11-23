@@ -47,6 +47,14 @@ import java.util.UUID;
  * <p>And, under {@code basis} RETURN with the return it is for, <b>a return's goods on a replacement</b> (Q-9: a
  * return is adjusted, never replaced, and no provider adjusts a replacement): the refunded pieces kept for it when the
  * refund was approved, taken off its lines.</p>
+ *
+ * <p>Audit r3 EINV-2 (Q-8: "Cùng một lệnh này dùng cho mọi ca SePay không làm được qua API"; HĐ-5): <b>a return's
+ * goods on an original no provider can correct any more</b> - issued through a provider no longer usable here, or one
+ * that issues no corrections, or that refused the adjustment for good. The system drew the return's adjustment up; it
+ * could not be sent ({@code EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE}), so the accountant voided it and made it on the
+ * provider's portal. The record takes off what that voided draft took off, as far as the original still holds it -
+ * before, only a replacement was taken, and the reduction made in law had no record here: the register still declared
+ * the original's full output VAT and the return showed its refund with no adjustment.</p>
  */
 @Component
 class EInvoicePortalReductions {
@@ -54,11 +62,16 @@ class EInvoicePortalReductions {
     private final EInvoiceRepository invoices;
     private final DeliveredShipments shipments;
     private final EInvoiceIssuanceSteps steps;
+    private final EInvoiceProviders providers;
+    private final com.stockflow.order.api.ReturnRequestLookup returns;
 
-    EInvoicePortalReductions(EInvoiceRepository invoices, DeliveredShipments shipments, EInvoiceIssuanceSteps steps) {
+    EInvoicePortalReductions(EInvoiceRepository invoices, DeliveredShipments shipments, EInvoiceIssuanceSteps steps,
+                             EInvoiceProviders providers, com.stockflow.order.api.ReturnRequestLookup returns) {
         this.invoices = invoices;
         this.shipments = shipments;
         this.steps = steps;
+        this.providers = providers;
+        this.returns = returns;
     }
 
     /** What the portal gave the reduction, checked against its XML by the caller. */
@@ -129,8 +142,12 @@ class EInvoicePortalReductions {
         if (portal.returnRequestId() == null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "returnRequestId: required for a return");
         }
-        if (!replacementInForce(standing) || invoices.hasAdjustmentForReturn(portal.returnRequestId())) {
-            throw notApplicable(standing, "only a return's goods on a replacement in force are recorded, once");
+        if (!replacementInForce(standing)) {
+            return recordReturnOnOriginal(original, standing, portal, by);
+        }
+        if (invoices.hasAdjustmentForReturn(portal.returnRequestId())) {
+            throw notApplicable(standing, "only a return's goods on a replacement in force, or a return's adjustment "
+                    + "of an original no provider could send, are recorded, once");
         }
         List<EInvoiceRepository.PendingReturnPieces> kept = invoices.findPendingReturnsOfShipment(standing.shipmentId())
                 .stream().filter(pieces -> pieces.returnRequestId().equals(portal.returnRequestId())).toList();
@@ -172,6 +189,67 @@ class EInvoicePortalReductions {
     }
 
     /**
+     * Audit r3 EINV-2: a return's adjustment of an original that no provider could send, voided by the accountant and
+     * made on the provider's portal (Q-8, HĐ-5), recorded: what the voided draft took off - the refunded pieces of the
+     * return, per order line - as far as the original still holds them, once.
+     */
+    private EInvoice.Snapshot recordReturnOnOriginal(EInvoice original, EInvoice.Snapshot standing,
+                                                     PortalReduction portal, UUID by) {
+        EInvoice voided = returnRecordable(standing).stream()
+                .filter(draft -> portal.returnRequestId().equals(draft.snapshot().returnRequestId())).findFirst()
+                .orElseThrow(() -> notApplicable(standing, "only a return's goods on a replacement in force, or a "
+                        + "return's adjustment of an original no provider could send - voided first - are recorded, "
+                        + "once"));
+        requireSameSeller(standing, portal);
+        ResourceBundle t = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+        Map<UUID, Long> taken = invoices.piecesTakenOff(standing.id());
+        List<EInvoiceLine> lines = new ArrayList<>();
+        for (EInvoiceLine reduced : voided.lines()) {
+            if (reduced.kind() != EInvoiceLine.Kind.GOODS) {
+                continue;
+            }
+            long wanted = -reduced.pieces();
+            for (EInvoiceLine line : original.lines()) {
+                if (wanted <= 0 || line.kind() != EInvoiceLine.Kind.GOODS
+                        || !reduced.orderLineId().equals(line.orderLineId())) {
+                    continue;
+                }
+                long take = Math.min(wanted, line.pieces() - taken.getOrDefault(line.orderLineId(), 0L));
+                EInvoiceLine reduction = take <= 0 ? null
+                        : EInvoiceCorrections.reduction(line, take, lines.size() + 1, t);
+                if (reduction != null) {
+                    lines.add(reduction);
+                    taken.merge(line.orderLineId(), take, Long::sum);
+                    wanted -= take;
+                }
+            }
+        }
+        if (lines.isEmpty()) {
+            throw notApplicable(standing, "it holds none of those goods any more");
+        }
+        EInvoice reduction = EInvoice.recordedReduction(Identifiers.newId(), invoices.nextCode(portal.issueDate()),
+                original, CorrectionBasis.RETURN, portal.note(), lines, portal.issueDate(), portal.returnRequestId(),
+                invoices.correctionsOf(standing.id()));
+        return steps.recordExternalReduction(reduction, series(standing, portal), portal.number(),
+                portal.taxAuthorityCode(), portal.lookupCode(), portal.signedAt(), portal.documents(), by);
+    }
+
+    /**
+     * The voided return adjustments of an original in force whose provider can correct it no more (audit r3 EINV-2), one
+     * per return that has no live adjustment: what may be recorded from the portal against it. Empty for anything else,
+     * and while the provider could still send them - the reduction then goes through it, as the void of a failed
+     * delivery's reduction requires ({@code EInvoiceDrafts#voidUnsendableReversal}): one rule, so the two never drift.
+     */
+    private List<EInvoice> returnRecordable(EInvoice.Snapshot standing) {
+        if (standing.type() != EInvoiceType.ORIGINAL || standing.reversedAt() != null) {
+            return List.of();
+        }
+        return invoices.findVoidedReturnAdjustmentsOf(standing.id()).stream()
+                .filter(voided -> !EInvoiceDrafts.correctionSendable(providers, invoices, standing, voided.snapshot()))
+                .toList();
+    }
+
+    /**
      * What may be recorded against the invoice now (audit r2 M-10: the screen offered "Ghi hoá đơn giảm" on every
      * replacement in force, and anything but a failed delivery or a return waiting on it answered 409), by the same
      * checks {@link #record} makes, read without the order's lock: a failed delivery's reduction while one is recordable
@@ -185,17 +263,24 @@ class EInvoicePortalReductions {
         boolean deliveryFailed = deliveryFailedRecordable(standing) && invoices.findById(standing.id())
                 .map(original -> !EInvoice.whatIsLeft(original, invoices.issuedAdjustmentLinesOf(standing.id()))
                         .isEmpty()).orElse(false);
-        List<EInvoiceIssuance.ReturnOption> returns = new ArrayList<>();
+        List<EInvoiceIssuance.ReturnOption> options = new ArrayList<>();
         if (replacementInForce(standing)) {
             java.util.Set<UUID> seen = new java.util.HashSet<>();
             for (EInvoiceRepository.PendingReturnPieces pieces : invoices.findPendingReturnsOfShipment(
                     standing.shipmentId())) {
                 if (seen.add(pieces.returnRequestId()) && !invoices.hasAdjustmentForReturn(pieces.returnRequestId())) {
-                    returns.add(new EInvoiceIssuance.ReturnOption(pieces.returnRequestId(), pieces.rmaNumber()));
+                    options.add(new EInvoiceIssuance.ReturnOption(pieces.returnRequestId(), pieces.rmaNumber()));
                 }
             }
         }
-        return new EInvoiceIssuance.ExternalReductionOptions(deliveryFailed, returns);
+        // Audit r3 EINV-2: a return's adjustment of an original its provider could not send, voided to be made on the
+        // portal.
+        for (EInvoice voided : returnRecordable(standing)) {
+            UUID returnRequestId = voided.snapshot().returnRequestId();
+            options.add(new EInvoiceIssuance.ReturnOption(returnRequestId, returns.find(returnRequestId)
+                    .map(com.stockflow.order.api.ReturnRequestReference::rmaNumber).orElse(null)));
+        }
+        return new EInvoiceIssuance.ExternalReductionOptions(deliveryFailed, options);
     }
 
     /** An issued invoice of a shipment that is not itself an adjustment: the only kind anything is recorded against. */
