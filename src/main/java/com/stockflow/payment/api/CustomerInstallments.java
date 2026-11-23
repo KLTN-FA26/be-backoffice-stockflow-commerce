@@ -3,6 +3,7 @@ package com.stockflow.payment.api;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -47,4 +48,20 @@ public interface CustomerInstallments {
 
     /** One instalment's transfer details, whatever its status; empty when there is no such instalment. */
     java.util.Optional<Transfer> transfer(UUID installmentId);
+
+    /**
+     * When an instalment of a signed contract's plan falls due and how late it is (R5-12), for the contract's own view.
+     *
+     * @param dueDate     null while its milestone has not been reached
+     * @param daysOverdue days past {@code dueDate} it is still owing, today in the business calendar; 0 when not overdue
+     */
+    record PlanDue(int seq, LocalDate dueDate, int daysOverdue) {
+    }
+
+    /**
+     * {@link PlanDue} of each instalment made from {@code contractId}'s plan, by its {@code seq} - the plan row's; fee
+     * items (a cancellation's, a failed trip's) name no plan row and are absent, as is everything of a contract not
+     * signed. One statement; overdue as {@code payment.installment_is_overdue} reads it.
+     */
+    Map<Integer, PlanDue> planDues(UUID contractId);
 }

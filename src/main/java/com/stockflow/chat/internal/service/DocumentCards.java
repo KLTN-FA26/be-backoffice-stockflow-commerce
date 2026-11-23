@@ -10,7 +10,7 @@ import com.stockflow.chat.internal.domain.ChatMessage;
 import com.stockflow.chat.internal.domain.ChatMessageRepository;
 import com.stockflow.chat.internal.domain.ContextKind;
 import com.stockflow.chat.internal.domain.ContextRef;
-import com.stockflow.chat.internal.domain.VietQr;
+import com.stockflow.payment.api.VietQr;
 import com.stockflow.contracts.DesignQuoteRequestClosed;
 import com.stockflow.contracts.EInvoiceIssued;
 import com.stockflow.contracts.InstallmentDue;
@@ -379,12 +379,10 @@ public class DocumentCards {
             node.put("bankBin", bank.bankBin());
             node.put("accountNumber", bank.accountNumber());
             node.put("accountName", bank.accountName());
-            // Nothing to scan for an installment paid or cancelled: a code left on a cancelled order's card would let
-            // the customer pay an order that no longer exists.
-            boolean payable = transfer.outstanding().signum() > 0 && VND.equals(transfer.currency())
-                    && !"PAID".equals(transfer.status()) && !"CANCELLED".equals(transfer.status());
-            payload.put("vietQr", bank.bankBin() == null || !payable ? null : VietQr.payload(bank.bankBin(),
-                    bank.accountNumber(), transfer.outstanding(), transfer.transferReference()));
+            // The order page's transfer instructions draw the same code (R5-9); nothing to scan for an installment
+            // paid or cancelled.
+            payload.put("vietQr", VietQr.forInstallment(bank, transfer.outstanding(), transfer.currency(),
+                    transfer.status(), transfer.transferReference()));
         } else {
             payload.putNull("bank");
             payload.putNull("vietQr");

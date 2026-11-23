@@ -2,6 +2,7 @@ package com.stockflow.order.internal.controller;
 
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
+import com.stockflow.order.internal.service.OrderSources;
 
 import java.util.List;
 
@@ -42,6 +43,12 @@ final class OrderWebMapper {
 
     static OrderResponse toResponse(OrderSummary summary, boolean internal,
                                     com.stockflow.customer.api.CustomerLabel label) {
+        return toResponse(summary, internal, label, OrderSources.Extras.NONE);
+    }
+
+    /** With where the order came from: its quote and the design of each line's SKU (R5-3, R5-7). */
+    static OrderResponse toResponse(OrderSummary summary, boolean internal,
+                                    com.stockflow.customer.api.CustomerLabel label, OrderSources.Extras extras) {
         OrderSummary.Lifecycle lifecycle = summary.lifecycle();
         java.util.Map<java.util.UUID, OrderSummary.LineProgress> progress = lifecycle == null ? java.util.Map.of()
                 : lifecycle.lines().stream().collect(java.util.stream.Collectors.toMap(OrderSummary.LineProgress::lineId,
@@ -75,7 +82,11 @@ final class OrderWebMapper {
                                                         ? progress.get(line.lineId()).cancelledQuantity() : null,
                                                 line.requestedDeliveryDate(), line.cartons(), line.unitsPerCarton(),
                                                 line.taxRate(),
-                                                line.taxAmount() == null ? null : line.taxAmount().amount()))
+                                                line.taxAmount() == null ? null : line.taxAmount().amount(),
+                                                extras.design(line.sku()) == null ? null
+                                                        : extras.design(line.sku()).name(),
+                                                extras.design(line.sku()) == null ? null
+                                                        : extras.design(line.sku()).previewUrl()))
                         .toList(),
                 summary.placedAt(), summary.createdBy(), summary.lastModifiedAt(), summary.lastModifiedBy(),
                 summary.contactName(), summary.contactEmail(), summary.contactPhone(),
@@ -121,7 +132,8 @@ final class OrderWebMapper {
                 summary.charges() == null ? null : summary.charges().taxTotal().amount(),
                 summary.charges() == null || summary.charges().fees() == null ? null : summary.charges().fees().stream()
                         .map(fee -> new OrderResponse.Fee(fee.kind().name(), fee.sku(), fee.amount().amount(),
-                                fee.taxRate(), fee.taxAmount().amount())).toList());
+                                fee.taxRate(), fee.taxAmount().amount())).toList(),
+                extras.sourceQuoteId(), extras.sourceQuoteNumber());
     }
 
     /** An address as the order answers it; null for none. */

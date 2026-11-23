@@ -63,9 +63,11 @@ class PaymentReceiptController {
     private final PaymentReceiptService receipts;
     private final PaymentReceiptExportService exports;
     private final CustomerService customers;
+    private final com.stockflow.identity.api.IdentityService identities;
 
     PaymentReceiptController(PaymentReceiptService receipts, PaymentReceiptExportService exports,
-                             CustomerService customers) {
+                             CustomerService customers, com.stockflow.identity.api.IdentityService identities) {
+        this.identities = identities;
         this.receipts = receipts;
         this.exports = exports;
         this.customers = customers;
@@ -82,7 +84,7 @@ class PaymentReceiptController {
                 request.reference(), request.receivedOn(), request.note(), request.lines().stream()
                 .map(line -> new PaymentReceipt.Payment(line.installmentId(), line.amount())).toList(),
                 user.userId()));
-        return ApiResponse.ok(PaymentWebMapper.toResponse(detail.receipt(), detail.installments(), labelOf(detail.receipt())));
+        return ApiResponse.ok(toResponse(detail));
     }
 
     @GetMapping
@@ -108,7 +110,8 @@ class PaymentReceiptController {
                 page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort);
         // One query for the names of the whole page - not one per row.
         var labels = customers.labels(found.items().stream().map(r -> r.customerId()).toList());
-        return ApiResponse.ok(found.map(r -> PaymentWebMapper.toResponse(r, null, labels)));
+        var names = namesOf(found.items());
+        return ApiResponse.ok(found.map(r -> PaymentWebMapper.toResponse(r, null, labels, names)));
     }
 
     @GetMapping("/summary")
@@ -162,7 +165,7 @@ class PaymentReceiptController {
     public ApiResponse<PaymentReceiptResponse> one(@PathVariable UUID receiptId, @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         var detail = receipts.receipt(receiptId);
-        return ApiResponse.ok(PaymentWebMapper.toResponse(detail.receipt(), detail.installments(), labelOf(detail.receipt())));
+        return ApiResponse.ok(toResponse(detail));
     }
 
     /**
@@ -178,10 +181,23 @@ class PaymentReceiptController {
         ScopeGuards.requireBackOffice(user);
         var detail = receipts.voidReceipt(new PaymentReceiptService.VoidReceiptCommand(receiptId, request.reason(),
                 request.holdOrders(), user.userId()));
-        return ApiResponse.ok(PaymentWebMapper.toResponse(detail.receipt(), detail.installments(), labelOf(detail.receipt())));
+        return ApiResponse.ok(toResponse(detail));
     }
 
     private java.util.Map<UUID, com.stockflow.customer.api.CustomerLabel> labelOf(PaymentReceipt receipt) {
         return customers.labels(java.util.List.of(receipt.customerId()));
+    }
+
+    /** One receipt with its customer and the names of who recorded and voided it. */
+    private PaymentReceiptResponse toResponse(PaymentReceiptService.ReceiptDetail detail) {
+        return PaymentWebMapper.toResponse(detail.receipt(), detail.installments(), labelOf(detail.receipt()),
+                namesOf(java.util.List.of(detail.receipt())));
+    }
+
+    /** R5-8: who recorded and voided each receipt, by name, in one read for the whole page. */
+    private java.util.Map<UUID, String> namesOf(java.util.List<PaymentReceipt> found) {
+        var ids = found.stream().flatMap(r -> java.util.stream.Stream.of(r.recordedBy(), r.voidedBy()))
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        return ids.isEmpty() ? java.util.Map.of() : identities.displayNames(ids);
     }
 }

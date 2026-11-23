@@ -94,6 +94,8 @@ class SalesContractService implements SalesContracts {
     private final com.stockflow.order.internal.repository.OrderHoldJpaRepository holds;
     /** Its window is the complaint period a new contract states unless Sales agree another (WF-05 TH-1). */
     private final com.stockflow.order.internal.domain.ReturnPolicy returnPolicy;
+    private final com.stockflow.design.api.SkuDesigns skuDesigns;
+    private final com.stockflow.payment.api.CustomerInstallments installments;
 
     SalesContractService(OrderRepository orders, SalesContractRepository contracts, CustomerService customers,
                          CustomerLegalProfiles legalProfiles, CustomerPaymentSchedules paymentSchedules,
@@ -101,8 +103,12 @@ class SalesContractService implements SalesContracts {
                          SalesContractDocument document, SellerProperties seller, ContractProperties defaults,
                          TransactionTemplate tx, Clock clock, OrderEventPublisher events,
                          com.stockflow.order.internal.repository.OrderHoldJpaRepository holds,
-                         com.stockflow.order.internal.domain.ReturnPolicy returnPolicy) {
+                         com.stockflow.order.internal.domain.ReturnPolicy returnPolicy,
+                         com.stockflow.design.api.SkuDesigns skuDesigns,
+                         com.stockflow.payment.api.CustomerInstallments installments) {
         this.returnPolicy = returnPolicy;
+        this.skuDesigns = skuDesigns;
+        this.installments = installments;
         this.events = events;
         this.holds = holds;
         this.orders = orders;
@@ -648,15 +654,26 @@ class SalesContractService implements SalesContracts {
         Map<UUID, OrderLine> lines = new HashMap<>();
         order.lines().forEach(line -> lines.put(line.id(), line));
         Map<Integer, Money> values = ContractTerms.batchValues(order, contract.schedule());
+        // R5-3: the design behind each SKU, for the whole schedule at once.
+        Map<String, com.stockflow.design.api.SkuDesign> designs = skuDesigns.ofSkus(order.lines().stream()
+                .map(line -> line.sku().code()).distinct().toList());
         List<BatchView> schedule = contract.schedule().stream().map(batch -> new BatchView(batch.seq(),
                 batch.windowStart(), batch.windowEnd(), values.get(batch.seq()).amount(), batch.lines().stream()
                 .map(line -> {
                     OrderLine orderLine = lines.get(line.orderLineId());
+                    com.stockflow.design.api.SkuDesign design = orderLine == null ? null
+                            : designs.get(orderLine.sku().code());
                     return new BatchLineView(line.orderLineId(), orderLine == null ? null : orderLine.sku().code(),
                             line.cartons(), orderLine == null || orderLine.unitsPerCarton() == null ? 0
-                            : line.cartons() * orderLine.unitsPerCarton());
+                            : line.cartons() * orderLine.unitsPerCarton(),
+                            orderLine == null ? null : orderLine.unitsPerCarton(),
+                            design == null ? null : design.name(), design == null ? null : design.previewUrl());
                 }).toList())).toList();
-        List<InstallmentView> plan = contract.plan().stream().map(SalesContractService::installmentView).toList();
+        // R5-12: a signed contract's plan made instalments; each row shows when its own falls due and how late it is.
+        Map<Integer, com.stockflow.payment.api.CustomerInstallments.PlanDue> dues = contract.signedAt() == null
+                ? Map.of() : installments.planDues(contract.id());
+        List<InstallmentView> plan = contract.plan().stream()
+                .map(i -> installmentView(i, dues.get(i.seq()))).toList();
         return new ContractView(contract.id(), contract.contractNumber(), contract.orderId(),
                 order.orderNumber().value(), contract.status().name(), party(contract.seller()),
                 party(contract.buyer()), contract.freeSampleRounds(), new Totals(order.netTotal().amount(),
@@ -668,8 +685,14 @@ class SalesContractService implements SalesContracts {
     }
 
     private static InstallmentView installmentView(PlannedInstallment i) {
+        return installmentView(i, null);
+    }
+
+    private static InstallmentView installmentView(PlannedInstallment i,
+                                                   com.stockflow.payment.api.CustomerInstallments.PlanDue due) {
         return new InstallmentView(i.seq(), i.name(), i.milestone().name(), i.percent(), i.amount().amount(),
-                i.dueDays(), i.deliveryBatchSeq());
+                i.dueDays(), i.deliveryBatchSeq(), due == null ? null : due.dueDate(),
+                due == null ? 0 : due.daysOverdue());
     }
 
     private static Party party(ContractParty party) {

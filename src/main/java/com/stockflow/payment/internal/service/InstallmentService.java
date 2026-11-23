@@ -355,6 +355,19 @@ public class InstallmentService {
         return standingOf(orderId, book.ofOrder(orderId));
     }
 
+    /** {@link #standing} of each order, from one read of all their installments; every id asked is a key. */
+    public java.util.Map<UUID, InstallmentStanding> standings(java.util.Collection<UUID> orderIds) {
+        if (orderIds == null || orderIds.isEmpty()) {
+            return java.util.Map.of();
+        }
+        List<UUID> ids = orderIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        java.util.Map<UUID, List<Installment>> byOrder = book.ofOrders(ids).stream()
+                .collect(java.util.stream.Collectors.groupingBy(Installment::orderId));
+        java.util.Map<UUID, InstallmentStanding> standings = new java.util.HashMap<>();
+        ids.forEach(id -> standings.put(id, standingOf(id, byOrder.getOrDefault(id, List.of()))));
+        return standings;
+    }
+
     static InstallmentStanding standingOf(UUID orderId, List<Installment> installments) {
         if (installments.isEmpty()) {
             return InstallmentStanding.none(orderId);

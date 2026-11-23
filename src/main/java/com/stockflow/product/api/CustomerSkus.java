@@ -62,6 +62,12 @@ public interface CustomerSkus {
      */
     Optional<CustomerSku> findByVariant(UUID variantId);
 
+    /**
+     * {@link #find} of each of {@code skus} in one read, by SKU as stored; ordinary and unknown SKUs are absent. What a
+     * page of quote, order or contract lines reads to name each line's design without a read per line.
+     */
+    java.util.Map<String, CustomerSku> findAll(java.util.Collection<String> skus);
+
     /** {@link #ownerOf} of each of {@code skus} in one read, by SKU as stored; ordinary and unknown SKUs are absent. */
     java.util.Map<String, UUID> ownersOf(java.util.Collection<String> skus);
 

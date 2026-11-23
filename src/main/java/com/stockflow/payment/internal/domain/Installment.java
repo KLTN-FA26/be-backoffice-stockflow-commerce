@@ -329,6 +329,11 @@ public final class Installment {
         return dueDate != null && dueDate.isBefore(today) && status.takesMoney();
     }
 
+    /** How many days past its due day it is still owing on {@code today}; 0 when it is not {@link #overdue}. */
+    public int daysOverdue(LocalDate today) {
+        return overdue(today) ? (int) java.time.temporal.ChronoUnit.DAYS.between(dueDate, today) : 0;
+    }
+
     /** What it still owes: its amount less what was paid and taken off; zero once paid or cancelled. */
     public BigDecimal outstanding() {
         return status == InstallmentStatus.CANCELLED ? BigDecimal.ZERO

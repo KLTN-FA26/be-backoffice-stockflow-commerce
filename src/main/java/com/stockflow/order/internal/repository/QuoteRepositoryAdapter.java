@@ -70,6 +70,15 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
     }
 
     @Override
+    public List<Quote> findAllById(java.util.Collection<UUID> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
+        }
+        // The lines are fetched with the quotes; their tiers and the fee lines load in batches (batch_size).
+        return jpa.findAllByIdWithLines(ids).stream().map(QuoteRepositoryAdapter::toDomain).toList();
+    }
+
+    @Override
     public Optional<Quote> findByRequestId(UUID requestId) {
         return jpa.findIdByRequestId(requestId).flatMap(this::findById);
     }
@@ -227,9 +236,31 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
                           FROM ordering.quote_status_history WHERE quote_id = :quote ORDER BY changed_at, id""")
                 .setParameter("quote", quoteId)
                 .getResultList();
-        return rows.stream().map(r -> new Transition(((Number) r[0]).intValue(),
+        return rows.stream().map(QuoteRepositoryAdapter::toTransition).toList();
+    }
+
+    @Override
+    public Map<UUID, List<Transition>> histories(java.util.Collection<UUID> quoteIds) {
+        if (quoteIds == null || quoteIds.isEmpty()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT revision, from_status, to_status, reason, CAST(offer AS text), changed_at, changed_by,
+                               quote_id
+                          FROM ordering.quote_status_history WHERE quote_id IN (:quotes)
+                         ORDER BY quote_id, changed_at, id""")
+                .setParameter("quotes", List.copyOf(quoteIds))
+                .getResultList();
+        Map<UUID, List<Transition>> histories = new java.util.LinkedHashMap<>();
+        rows.forEach(r -> histories.computeIfAbsent((UUID) r[7], id -> new java.util.ArrayList<>()).add(toTransition(r)));
+        return histories;
+    }
+
+    private static Transition toTransition(Object[] r) {
+        return new Transition(((Number) r[0]).intValue(),
                 r[1] == null ? null : QuoteStatus.valueOf((String) r[1]), QuoteStatus.valueOf((String) r[2]),
-                (String) r[3], (String) r[4], toInstant(r[5]), (UUID) r[6])).toList();
+                (String) r[3], (String) r[4], toInstant(r[5]), (UUID) r[6]);
     }
 
     @Override
@@ -264,6 +295,22 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
                 .setParameter("order", orderId)
                 .getResultList();
         return ids.stream().findFirst();
+    }
+
+    @Override
+    public List<ByRequest> byRequestIds(java.util.Collection<UUID> requestIds) {
+        if (requestIds == null || requestIds.isEmpty()) {
+            return List.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT request_id, id, quote_number, sent_at FROM ordering.quote
+                         WHERE request_id IN (:requests)""")
+                .setParameter("requests", List.copyOf(requestIds))
+                .getResultList();
+        // sent_at is cleared by nothing: a quote reopened for a revision keeps it (Quote#revisingSentQuote).
+        return rows.stream().map(r -> new ByRequest((UUID) r[0], (UUID) r[1], (String) r[2],
+                r[3] == null ? null : toInstant(r[3]))).toList();
     }
 
     private static Instant toInstant(Object value) {

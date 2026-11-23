@@ -41,13 +41,15 @@ public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String
      *                         {@code PRODUCT_INACTIVE}, {@code PRODUCT_DISCONTINUED}, {@code PRODUCT_NOT_APPROVED},
      *                         {@code VARIANT_NOT_ACTIVE}): an accepted quote may be cancelled only when a line is not
      *                         {@code PURCHASABLE}; null on a legacy line
+     * @param designName       R5-3: the name of the design the customer's SKU was made to; null when it has none
+     * @param previewUrl       R5-3: a short-lived link showing the design's preview; null when there is none
      */
     public record Line(UUID id, int lineNo, String measure, String sku, Integer cartons, Integer unitsPerCarton,
                        int units, UUID designSnapshotId, String printSpec, boolean priced, Integer moq,
                        List<Tier> tiers, BigDecimal proposedUnitPrice, BigDecimal proposedLineTotal,
                        Integer acceptedCartons, Integer acceptedUnits, BigDecimal acceptedUnitPrice,
                        BigDecimal acceptedLineTotal, String taxClass, BigDecimal taxRate, BigDecimal proposedTax,
-                       BigDecimal acceptedTax, String purchasability) {
+                       BigDecimal acceptedTax, String purchasability, String designName, String previewUrl) {
     }
 
     /** A fee line with its VAT (14 BR-17, BR-20, BR-21); {@code amount} null for a plate fee not priced yet. */
@@ -66,7 +68,8 @@ public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String
     public record Order(UUID orderId, String orderNumber, String status, BigDecimal total) {
     }
 
+    /** @param changedByName R5-8: who made the step, by name; null on the customer's copy, as {@code changedBy} is */
     public record Transition(int revision, String fromStatus, String toStatus, String reason, Instant changedAt,
-                             UUID changedBy) {
+                             UUID changedBy, String changedByName) {
     }
 }

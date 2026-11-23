@@ -16,6 +16,9 @@ interface QuoteJpaRepository extends BaseJpaRepository<QuoteJpaEntity> {
     @Query("select distinct q from QuoteJpaEntity q left join fetch q.lines where q.id = :id")
     Optional<QuoteJpaEntity> findByIdWithLines(@Param("id") UUID id);
 
+    @Query("select distinct q from QuoteJpaEntity q left join fetch q.lines where q.id in :ids")
+    java.util.List<QuoteJpaEntity> findAllByIdWithLines(@Param("ids") java.util.Collection<UUID> ids);
+
     @Query("select q.id from QuoteJpaEntity q where q.requestId = :requestId")
     Optional<UUID> findIdByRequestId(@Param("requestId") UUID requestId);
 

@@ -32,6 +32,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -181,7 +182,62 @@ class QuoteFromRequestIntegrationTest {
                 customer)).isZero();
     }
 
+    @Test
+    @DisplayName("R5-5: a closed request says how it ended - QUOTED with its quote (to the customer once sent), or "
+            + "CLOSED_BY_STAFF; an open one says nothing")
+    void closedOutcome() throws Exception {
+        UUID design = CustomerSkuRows.designOf(jdbc, CustomerSkuRows.issueApproved(jdbc, tx, entityManager, customer,
+                50));
+        UUID quoted = designRequest(design, "OPEN");
+        JsonNode quote = data(draw("design-quote-requests", quoted, Role.SALES_STAFF, sales)
+                .andExpect(status().isCreated()));
+        UUID closedByStaff = designRequest(design, "CLOSED");
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE design.design_quote_request SET closed_by = ? WHERE id = ?",
+                sales, closedByStaff));
+        UUID open = designRequest(CustomerSkuRows.designOf(jdbc, CustomerSkuRows.issueApproved(jdbc, tx,
+                entityManager, customer, 50)), "OPEN");
+
+        JsonNode rows = data(http.asRole(Role.SALES_STAFF, sales, get("/api/v1/design-quote-requests")
+                .param("customerId", customer.toString()).param("size", "50"))
+                .andExpect(status().isOk())).path("items");
+        assertThat(row(rows, quoted).path("closedOutcome").asText()).isEqualTo("QUOTED");
+        assertThat(row(rows, quoted).path("quoteId").asText()).isEqualTo(quote.path("id").asText());
+        assertThat(row(rows, quoted).path("quoteNumber").asText()).isEqualTo(quote.path("quoteNumber").asText());
+        assertThat(row(rows, closedByStaff).path("closedOutcome").asText()).isEqualTo("CLOSED_BY_STAFF");
+        assertThat(row(rows, closedByStaff).has("quoteId")).isFalse();
+        assertThat(row(rows, open).has("closedOutcome")).isFalse();
+
+        // The customer reads the outcome on their design, but not a quote Sales have not sent yet.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE design.design_draft SET owner_user_id = ? WHERE id = ?",
+                account, design));
+        JsonNode mine = data(http.asCustomer(account, get("/api/v1/designs/" + design + "/quote-requests"))
+                .andExpect(status().isOk()));
+        assertThat(row(mine, quoted).path("closedOutcome").asText()).isEqualTo("QUOTED");
+        assertThat(row(mine, quoted).has("quoteId")).as("still Sales' draft").isFalse();
+
+        // A project's request answered by a quote reads the same.
+        UUID project = project();
+        UUID projectRequest = projectRequest(project, Map.of(inProject(CustomerSkuRows.designOf(jdbc,
+                CustomerSkuRows.issueApproved(jdbc, tx, entityManager, customer, 50)), project), 20));
+        JsonNode projectQuote = data(draw("design-project-quote-requests", projectRequest, Role.SALES_STAFF, sales)
+                .andExpect(status().isCreated()));
+        JsonNode projectRows = data(http.asRole(Role.SALES_STAFF, sales, get("/api/v1/design-project-quote-requests")
+                .param("customerId", customer.toString())).andExpect(status().isOk())).path("items");
+        assertThat(row(projectRows, projectRequest).path("closedOutcome").asText()).isEqualTo("QUOTED");
+        assertThat(row(projectRows, projectRequest).path("quoteId").asText())
+                .isEqualTo(projectQuote.path("id").asText());
+    }
+
     // ---- helpers
+
+    private static JsonNode row(JsonNode rows, UUID id) {
+        for (JsonNode row : rows) {
+            if (id.toString().equals(row.path("id").asText())) {
+                return row;
+            }
+        }
+        throw new AssertionError("no row " + id + " in " + rows);
+    }
 
     private UUID designRequest(UUID design, String status) {
         UUID id = Identifiers.newId();

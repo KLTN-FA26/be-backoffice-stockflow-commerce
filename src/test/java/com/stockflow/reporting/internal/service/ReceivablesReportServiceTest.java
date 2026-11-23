@@ -71,7 +71,12 @@ class ReceivablesReportServiceTest {
         };
         CustomerSummaries customers = ids -> pick(summaries, ids);
         CustomerCredits credits = ids -> pick(terms, ids);
-        service = new ReceivablesReportService(receivables, customers, credits, new Messages(source), CLOCK);
+        // As customer's search: name or tax code, case aside (accents are its business, not this test's).
+        com.stockflow.customer.api.CustomerSearch search = (text, limit) -> summaries.values().stream()
+                .filter(c -> c.fullName().toLowerCase(Locale.ROOT).contains(text.toLowerCase(Locale.ROOT))
+                        || c.taxCode() != null && c.taxCode().contains(text))
+                .map(com.stockflow.customer.api.CustomerSummary::customerId).limit(limit).toList();
+        service = new ReceivablesReportService(receivables, customers, credits, search, new Messages(source), CLOCK);
 
         summaries.put(anh, customer(anh, "Công ty Ánh", "0301234567"));
         summaries.put(binh, customer(binh, "Công ty Bình", "0307654321"));
@@ -203,6 +208,18 @@ class ReceivablesReportServiceTest {
     }
 
     @Test
+    @DisplayName("R5-11: search keeps the customers whose name or tax code matches; the totals are the search's")
+    void searchesByNameOrTaxCode() {
+        var byName = service.report(null, false, "bình", 0, 20, null);
+        assertThat(byName.rows().items()).extracting(ReceivableLine::customerId).containsExactly(binh);
+        assertThat(byName.totals()).singleElement().extracting(t -> t.customers()).isEqualTo(1);
+        assertThat(service.report(null, false, "0301234", 0, 20, null).rows().items())
+                .extracting(ReceivableLine::customerId).containsExactly(anh);
+        assertThat(service.report(null, false, "nobody", 0, 20, null).rows().items()).isEmpty();
+        assertThat(service.report(null, false, "  ", 0, 20, null).rows().items()).hasSize(3);
+    }
+
+    @Test
     @DisplayName("a customer who owes nothing is an empty report, not a 404")
     void knownCustomerOwingNothing() {
         UUID dung = UUID.randomUUID();
@@ -240,7 +257,7 @@ class ReceivablesReportServiceTest {
             assertThat(total.customers()).isEqualTo(4);
         });
 
-        var file = service.export(null, false, null);
+        var file = service.export(null, false, null, null);
         try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(file.content()))) {
             XSSFSheet sheet = workbook.getSheetAt(0);
             Row header = sheet.getRow(5);
@@ -295,7 +312,7 @@ class ReceivablesReportServiceTest {
     @Test
     @DisplayName("the export: Vietnamese headings, today in the title, every row and a total row")
     void export() throws IOException {
-        var file = service.export(null, false, null);
+        var file = service.export(null, false, null, null);
 
         assertThat(file.filename()).isEqualTo("receivables-20261115-0000.xlsx");
         try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(file.content()))) {

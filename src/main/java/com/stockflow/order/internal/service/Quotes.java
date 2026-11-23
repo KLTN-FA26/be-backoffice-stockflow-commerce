@@ -134,17 +134,37 @@ public interface Quotes {
      *                          quote is shown: an accepted quote is cancelled only when a line is not
      *                          {@code PURCHASABLE} (decision 2026-10-17); null on a legacy line, and for a SKU the
      *                          product module did not answer for
+     * @param designName        R5-3: the name of the design the customer's SKU was made to; null for a SKU with none
+     * @param previewUrl        R5-3: a short-lived link showing that design's preview; null when there is none
      */
     record LineView(UUID id, int lineNo, String measure, String sku, Integer cartons, Integer unitsPerCarton,
                     int units, UUID designSnapshotId, String printSpec, boolean priced, Integer moq, List<Tier> tiers,
                     BigDecimal proposedUnitPrice, BigDecimal proposedLineTotal, Integer acceptedCartons,
                     Integer acceptedUnits, BigDecimal acceptedUnitPrice, BigDecimal acceptedLineTotal,
                     String taxClass, BigDecimal taxRate, BigDecimal proposedTax, BigDecimal acceptedTax,
-                    com.stockflow.product.api.Purchasability purchasability) {
+                    com.stockflow.product.api.Purchasability purchasability, String designName, String previewUrl) {
+
+        /** Without the design shown beside the SKU. */
+        public LineView(UUID id, int lineNo, String measure, String sku, Integer cartons, Integer unitsPerCarton,
+                        int units, UUID designSnapshotId, String printSpec, boolean priced, Integer moq,
+                        List<Tier> tiers, BigDecimal proposedUnitPrice, BigDecimal proposedLineTotal,
+                        Integer acceptedCartons, Integer acceptedUnits, BigDecimal acceptedUnitPrice,
+                        BigDecimal acceptedLineTotal, String taxClass, BigDecimal taxRate, BigDecimal proposedTax,
+                        BigDecimal acceptedTax, com.stockflow.product.api.Purchasability purchasability) {
+            this(id, lineNo, measure, sku, cartons, unitsPerCarton, units, designSnapshotId, printSpec, priced, moq,
+                    tiers, proposedUnitPrice, proposedLineTotal, acceptedCartons, acceptedUnits, acceptedUnitPrice,
+                    acceptedLineTotal, taxClass, taxRate, proposedTax, acceptedTax, purchasability, null, null);
+        }
     }
 
+    /** @param changedByName R5-8: the display name of {@code changedBy}; null on the customer's copy, as is the id */
     record Transition(int revision, QuoteStatus fromStatus, QuoteStatus toStatus, String reason, Instant changedAt,
-                      UUID changedBy) {
+                      UUID changedBy, String changedByName) {
+
+        public Transition(int revision, QuoteStatus fromStatus, QuoteStatus toStatus, String reason, Instant changedAt,
+                          UUID changedBy) {
+            this(revision, fromStatus, toStatus, reason, changedAt, changedBy, null);
+        }
     }
 
     record ConvertedOrder(UUID orderId, String orderNumber, OrderStatus status, BigDecimal total) {
@@ -169,8 +189,23 @@ public interface Quotes {
                      Instant createdAt, String createdBy, long version) {
     }
 
+    /**
+     * R5-2: a row tells quotes apart without opening each.
+     *
+     * @param total         VND with VAT of the offer the reader is shown, as the quote's own view adds it up: the
+     *                      accepted total once accepted, else the proposed one; null while a part is not priced
+     * @param lineCount     lines on that offer
+     * @param firstItemName the design name of its first line, else that line's SKU; null for an offer with no line
+     */
     record Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
-               Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt, long version) {
+               Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt, long version,
+               BigDecimal total, Integer lineCount, String firstItemName) {
+
+        public Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
+                   Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt, long version) {
+            this(id, quoteNumber, customerId, status, revision, validUntil, sentAt, convertedOrderId, createdAt,
+                    version, null, null, null);
+        }
     }
 
     record Criteria(UUID customerId, List<QuoteStatus> statuses, String search, int page, int size, String sort) {

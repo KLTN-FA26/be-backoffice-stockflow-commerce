@@ -50,7 +50,7 @@ class DesignDecisionNotificationListener {
         String prefix = approved ? "inbox.design.approved." : "inbox.design.returned.";
         return new InboxMessage(CATEGORY, approved ? InboxSeverity.INFO : InboxSeverity.WARN,
                 texts.getString(prefix + "title").formatted(sku), texts.getString(prefix + "body").formatted(sku),
-                "/designs/" + event.designId(), SOURCE_TYPE, event.designId().toString(),
+                "/design/" + event.designId(), SOURCE_TYPE, event.designId().toString(),
                 "design-decision:%s:%d".formatted(event.designId(), event.decidedAt().toEpochMilli()));
     }
 }

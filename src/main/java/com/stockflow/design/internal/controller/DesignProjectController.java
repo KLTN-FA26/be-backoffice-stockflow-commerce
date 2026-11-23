@@ -26,6 +26,7 @@ import com.stockflow.design.internal.service.DesignProjectAssetService;
 import com.stockflow.design.internal.service.DesignProjectQuoteRequestService;
 import com.stockflow.design.internal.service.DesignProjectService;
 import com.stockflow.design.internal.service.DesignProjectTextService;
+import com.stockflow.design.internal.service.RequestOutcomes;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -79,10 +80,13 @@ class DesignProjectController {
     private final DesignProjectQuoteRequestService quotes;
     private final DesignProjectTextService texts;
     private final DesignWorkflowWebMapper drafts;
+    private final RequestOutcomes outcomes;
 
     DesignProjectController(DesignProjectService projects, DesignProjectAssetService library,
                             DesignBatchSubmissionService batches, DesignProjectQuoteRequestService quotes,
-                            DesignProjectTextService texts, DesignWorkflowWebMapper drafts) {
+                            DesignProjectTextService texts, DesignWorkflowWebMapper drafts,
+                            RequestOutcomes outcomes) {
+        this.outcomes = outcomes;
         this.projects = projects;
         this.library = library;
         this.batches = batches;
@@ -361,7 +365,7 @@ class DesignProjectController {
                 .map(l -> new DesignProjectQuoteRequestService.LineInput(l.designId(), l.cartons())).toList(),
                 request.desiredDeliveryDate());
         return ResponseEntity.status(asked.created() ? HttpStatus.CREATED : HttpStatus.OK)
-                .body(ApiResponse.ok(toResponse(asked.request())));
+                .body(ApiResponse.ok(quoteRequestResponses(List.of(asked.request()), user).get(0)));
     }
 
     /** A salesperson closes a project request they have answered; the project asks again, for its next order, anew. */
@@ -370,7 +374,7 @@ class DesignProjectController {
     @RequiresPermission(resource = DesignResources.QUOTE_REQUESTS, action = Action.UPDATE)
     public ApiResponse<DesignProjectQuoteRequestResponse> closeQuoteRequest(@PathVariable UUID requestId,
                                                                             @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(toResponse(quotes.close(requestId, actor(user))));
+        return ApiResponse.ok(quoteRequestResponses(List.of(quotes.close(requestId, actor(user))), user).get(0));
     }
 
     @GetMapping("/design-projects/{id}/quote-requests")
@@ -378,8 +382,7 @@ class DesignProjectController {
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)
     public ApiResponse<List<DesignProjectQuoteRequestResponse>> quoteRequests(@PathVariable UUID id,
                                                                              @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(quotes.ofProject(id, actor(user)).stream().map(DesignProjectController::toResponse)
-                .toList());
+        return ApiResponse.ok(quoteRequestResponses(quotes.ofProject(id, actor(user)), user));
     }
 
     @GetMapping("/design-project-quote-requests")
@@ -387,9 +390,26 @@ class DesignProjectController {
     @RequiresPermission(resource = DesignResources.QUOTE_REQUESTS, action = Action.READ)
     public ApiResponse<PageResponse<DesignProjectQuoteRequestResponse>> salesList(
             @RequestParam(required = false) UUID customerId, @RequestParam(required = false) QuoteRequestStatus status,
-            @RequestParam(defaultValue = "0") int page, @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(Pages.toResponse(quotes.list(customerId, status, pageOf(page, size))
-                .map(DesignProjectController::toResponse)));
+            @RequestParam(defaultValue = "0") int page, @RequestParam(required = false) Integer size,
+            @AuthenticatedUser CurrentUser user) {
+        var found = quotes.list(customerId, status, pageOf(page, size));
+        var answered = requestOutcomes(found.getContent(), user);
+        return ApiResponse.ok(Pages.toResponse(found.map(r -> toResponse(r,
+                answered.getOrDefault(r.id(), RequestOutcomes.Outcome.NONE)))));
+    }
+
+    /** The responses of {@code requests}, their outcomes read for all of them at once (R5-5). */
+    private List<DesignProjectQuoteRequestResponse> quoteRequestResponses(
+            List<DesignProjectQuoteRequestService.ProjectQuoteRequestView> requests, CurrentUser user) {
+        var answered = requestOutcomes(requests, user);
+        return requests.stream().map(r -> toResponse(r, answered.getOrDefault(r.id(), RequestOutcomes.Outcome.NONE)))
+                .toList();
+    }
+
+    private java.util.Map<UUID, RequestOutcomes.Outcome> requestOutcomes(
+            List<DesignProjectQuoteRequestService.ProjectQuoteRequestView> requests, CurrentUser user) {
+        return outcomes.ofProjectRequests(requests.stream().map(r -> new RequestOutcomes.Closed(r.id(), r.status(),
+                r.closedBy())).toList(), !com.stockflow.common.security.ScopeGuards.isBackOffice(user));
     }
 
     private DesignProjectResponse toResponse(DesignProjectService.ProjectView p) {
@@ -411,12 +431,13 @@ class DesignProjectController {
     }
 
     private static DesignProjectQuoteRequestResponse toResponse(
-            DesignProjectQuoteRequestService.ProjectQuoteRequestView r) {
+            DesignProjectQuoteRequestService.ProjectQuoteRequestView r, RequestOutcomes.Outcome outcome) {
         return new DesignProjectQuoteRequestResponse(r.id(), r.projectId(), r.projectName(), r.customerId(),
                 r.customerName(), r.desiredDeliveryDate(), r.requestedBy(), r.requestedAt(), r.status().name(),
                 r.closedAt(), r.closedBy(), r.lines().stream()
                 .map(l -> new DesignProjectQuoteRequestResponse.Line(l.designId(), l.designName(),
-                        l.designStatus().name(), l.customerSku(), l.cartons())).toList());
+                        l.designStatus().name(), l.customerSku(), l.cartons())).toList(), outcome.closedOutcome(),
+                outcome.quoteId(), outcome.quoteNumber());
     }
 
     private static org.springframework.data.domain.Pageable pageOf(int page, Integer size) {

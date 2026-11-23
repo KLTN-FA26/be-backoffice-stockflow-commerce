@@ -58,6 +58,12 @@ class FulfillmentModuleTest {
     @MockitoBean com.stockflow.design.api.DesignService designServiceMock;
     // order draws quotes from design quote requests (FE request, decision 2); design is not booted here.
     @MockitoBean com.stockflow.design.api.QuoteRequests quoteRequestsMock;
+    // R5-3: order names each line's design through design :: api, and reads a contract's installment due days
+    // through payment :: api; neither module is booted here.
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.design.api.SkuDesigns skuDesignsMock;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.payment.api.CustomerInstallments customerInstallmentsMock;
     // R4 (4B-8): order's own port for the customer's chat consent, implemented by chat, which is not booted here.
     @MockitoBean com.stockflow.order.api.ConsentMessages consentMessagesMock;
 

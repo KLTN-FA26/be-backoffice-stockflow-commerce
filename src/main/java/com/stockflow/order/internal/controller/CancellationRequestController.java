@@ -42,9 +42,12 @@ import java.util.UUID;
 class CancellationRequestController {
 
     private final CancellationRequestService requests;
+    private final com.stockflow.order.internal.service.CancellationQueue queue;
 
-    CancellationRequestController(CancellationRequestService requests) {
+    CancellationRequestController(CancellationRequestService requests,
+                                  com.stockflow.order.internal.service.CancellationQueue queue) {
         this.requests = requests;
+        this.queue = queue;
     }
 
     @GetMapping("/cancellation-requests")
@@ -59,8 +62,9 @@ class CancellationRequestController {
             @AuthenticatedUser CurrentUser user) {
         // Every customer's requests: the back office's, whatever a portal account was granted.
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(requests.list(status, orderId, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort)
-                .map(CancellationRequestController::toResponse));
+        var found = requests.list(status, orderId, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort);
+        var facts = queue.of(found.items());
+        return ApiResponse.ok(found.map(r -> toResponse(r, facts.get(r.orderId()))));
     }
 
     @PostMapping("/{orderId}/cancellation-requests/{requestId}/approval")
@@ -85,8 +89,17 @@ class CancellationRequestController {
     }
 
     static CancellationRequestResponse toResponse(CancellationRequest r) {
+        return toResponse(r, null);
+    }
+
+    /** With what Sales decide it on (R5-6); {@code facts} null leaves those fields out. */
+    static CancellationRequestResponse toResponse(CancellationRequest r,
+                                                  com.stockflow.order.internal.service.CancellationQueue.Facts facts) {
         return new CancellationRequestResponse(r.id(), r.orderId(), r.requestedBy(), r.reasonCode().name(), r.note(),
                 r.requestedAt(), r.status().name(), r.decidedBy(), r.decidedAt(), r.decisionNote(),
-                r.retainedPercent(), r.version());
+                r.retainedPercent(), r.version(), facts == null ? null : facts.orderNumber(),
+                facts == null ? null : facts.customerName(), facts == null ? null : facts.orderTotal(),
+                facts == null ? null : facts.paidTotal(), facts == null ? null : facts.orderStatus(),
+                facts == null ? null : facts.printingStarted());
     }
 }

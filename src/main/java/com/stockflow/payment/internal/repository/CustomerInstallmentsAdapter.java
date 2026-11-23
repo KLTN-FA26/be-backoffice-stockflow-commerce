@@ -50,6 +50,28 @@ class CustomerInstallmentsAdapter implements CustomerInstallments {
 
     @Override
     @Transactional(readOnly = true)
+    public Map<Integer, PlanDue> planDues(UUID contractId) {
+        if (contractId == null) {
+            return Map.of();
+        }
+        LocalDate today = BusinessCalendar.date(clock.instant());
+        Map<Integer, PlanDue> dues = new java.util.TreeMap<>();
+        jdbc.query("""
+                SELECT i.seq, i.due_date,
+                       payment.installment_is_overdue(i.due_date, i.status::text, :today) AS overdue
+                  FROM payment.installment i
+                 WHERE i.contract_id = :contract AND i.contract_installment_id IS NOT NULL""",
+                Map.of("contract", contractId, "today", today), rs -> {
+                    LocalDate dueDate = rs.getObject("due_date", LocalDate.class);
+                    int seq = rs.getInt("seq");
+                    dues.put(seq, new PlanDue(seq, dueDate, rs.getBoolean("overdue")
+                            ? (int) java.time.temporal.ChronoUnit.DAYS.between(dueDate, today) : 0));
+                });
+        return dues;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public List<OpenInstallment> openOf(UUID customerId, int limit) {
         if (customerId == null) {
             return List.of();

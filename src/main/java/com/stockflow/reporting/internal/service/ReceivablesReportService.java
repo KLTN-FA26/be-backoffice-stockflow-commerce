@@ -82,14 +82,20 @@ public class ReceivablesReportService {
     public record ReceivablesReport(LocalDate asOf, PageResponse<ReceivableLine> rows, List<ReceivableTotals> totals) {
     }
 
+    /** As the installment list's search (FE BE-16): a search wider than this is refused, not cut short. */
+    static final int SEARCH_MAX_CUSTOMERS = 1_000;
+
     private final Receivables receivables;
     private final CustomerSummaries customers;
     private final CustomerCredits credits;
+    private final com.stockflow.customer.api.CustomerSearch customerSearch;
     private final Messages messages;
     private final Clock clock;
 
     ReceivablesReportService(Receivables receivables, CustomerSummaries customers, CustomerCredits credits,
-                             Messages messages, Clock clock) {
+                             com.stockflow.customer.api.CustomerSearch customerSearch, Messages messages,
+                             Clock clock) {
+        this.customerSearch = customerSearch;
         this.receivables = receivables;
         this.customers = customers;
         this.credits = credits;
@@ -106,9 +112,21 @@ public class ReceivablesReportService {
      *                           sort outside the list
      */
     public ReceivablesReport report(UUID customerId, boolean overdueOnly, int page, int size, String sort) {
+        return report(customerId, overdueOnly, null, page, size, sort);
+    }
+
+    /**
+     * @param search R5-11: keep only the customers whose name or tax code contains it, case and Vietnamese accents
+     *               aside, as the installment list's search reads it ({@code customer :: api} {@code CustomerSearch});
+     *               null or blank for every customer
+     * @throws BusinessException {@code VALIDATION_FAILED} also when {@code search} matches more than
+     *                           {@link #SEARCH_MAX_CUSTOMERS} customers
+     */
+    public ReceivablesReport report(UUID customerId, boolean overdueOnly, String search, int page, int size,
+                                    String sort) {
         Pageable pageable = Pages.of(page, size, SORT.parse(sort));
         LocalDate today = BusinessCalendar.date(clock.instant());
-        List<ReceivableLine> lines = lines(today, customerId, overdueOnly, pageable.getSort());
+        List<ReceivableLine> lines = lines(today, customerId, overdueOnly, search, pageable.getSort());
         int from = (int) Math.min(pageable.getOffset(), lines.size());
         int to = Math.min(from + pageable.getPageSize(), lines.size());
         return new ReceivablesReport(today, PageResponse.of(lines.subList(from, to), page, size, lines.size()),
@@ -120,11 +138,11 @@ public class ReceivablesReportService {
      * EXPORT: it takes every customer's debt out of the building.
      */
     @Auditable(action = AuditAction.EXPORT, resourceType = "receivables-report",
-            details = "{customerId: #customerId, overdueOnly: #overdueOnly, sort: #sort}")
-    public ExportFile export(UUID customerId, boolean overdueOnly, String sort) {
+            details = "{customerId: #customerId, overdueOnly: #overdueOnly, search: #search, sort: #sort}")
+    public ExportFile export(UUID customerId, boolean overdueOnly, String search, String sort) {
         Instant now = clock.instant();
         LocalDate today = BusinessCalendar.date(now);
-        List<ReceivableLine> lines = lines(today, customerId, overdueOnly, SORT.parse(sort));
+        List<ReceivableLine> lines = lines(today, customerId, overdueOnly, search, SORT.parse(sort));
         List<ReceivableLine> rows = new ArrayList<>(lines);
         for (ReceivableTotals total : ReceivableTotals.of(lines)) {
             rows.add(new ReceivableLine(null, null, label("total", "Total"), total.currency(), total.receivable(),
@@ -140,6 +158,9 @@ public class ReceivablesReportService {
         }
         if (overdueOnly) {
             parts.add(label("filter.overdue-only", "customers with something overdue only"));
+        }
+        if (search != null && !search.isBlank()) {
+            parts.add(label("filter.search", "search \"{0}\"", search.strip()));
         }
         List<String> titles = List.of(label("title", "Receivables by customer, aged by due date"),
                 label("as-of", "As of {0}", ExportLabels.day(today)), ExportLabels.filterLine(messages, parts),
@@ -176,8 +197,11 @@ public class ReceivablesReportService {
         return new ExportFile(ExportLabels.filename("receivables", now), file);
     }
 
-    private List<ReceivableLine> lines(LocalDate today, UUID customerId, boolean overdueOnly, Sort sort) {
-        List<CustomerReceivable> owed = receivables.receivables(today, customerId);
+    private List<ReceivableLine> lines(LocalDate today, UUID customerId, boolean overdueOnly, String search,
+                                       Sort sort) {
+        Set<UUID> matching = customersMatching(search);
+        List<CustomerReceivable> owed = receivables.receivables(today, customerId).stream()
+                .filter(row -> matching == null || matching.contains(row.customerId())).toList();
         Set<UUID> ids = owed.stream().map(CustomerReceivable::customerId)
                 .collect(Collectors.toCollection(HashSet::new));
         if (customerId != null) {
@@ -230,6 +254,25 @@ public class ReceivablesReportService {
                                                       boolean descending) {
         Comparator<? super K> direction = descending ? natural.reversed() : natural;
         return Comparator.comparing(key, Comparator.nullsLast(direction));
+    }
+
+    /**
+     * The customers {@code search} means, read through {@code customer :: api} as the installment list reads them (FE
+     * BE-16): the accountant holds no customer permission, and this schema is not JOINed (ADR-0007). Null for no
+     * search; empty when it matched nobody, which then keeps no row.
+     */
+    private Set<UUID> customersMatching(String search) {
+        if (search == null || search.isBlank()) {
+            return null;
+        }
+        List<UUID> matching = customerSearch.idsMatching(search, SEARCH_MAX_CUSTOMERS + 1);
+        if (matching.size() > SEARCH_MAX_CUSTOMERS) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The search matches more than %d customers"
+                    .formatted(SEARCH_MAX_CUSTOMERS), List.of(com.stockflow.common.api.FieldError.localized("search",
+                    "matches too many customers", "TooBroad", "refusal.payment.searchTooBroad",
+                    SEARCH_MAX_CUSTOMERS))).localized("refusal.payment.searchTooBroad", SEARCH_MAX_CUSTOMERS);
+        }
+        return new HashSet<>(matching);
     }
 
     private String label(String key, String fallback, Object... arguments) {

@@ -1,4 +1,4 @@
-package com.stockflow.chat.internal.domain;
+package com.stockflow.payment.api;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -24,8 +24,16 @@ import java.util.Objects;
  * 62 ..  08 ..               the transfer content
  * 63 04 CRC16-CCITT (0xFFFF) over everything before it, "6304" included
  * </pre>
+ *
+ * <p>Here, in the payment module's api, since R5-9: the chat's transfer card (kltn-docs 16 §4.4) and the transfer
+ * instructions of the order page ({@code GET /installments/me/{id}/transfer-instructions}, and the staff's
+ * {@code GET /installments/{id}/transfer-instructions}) draw the same code from {@link #forInstallment}, so the two can
+ * never disagree about what a customer scans. It moved from {@code chat}, which uses it through {@code payment :: api};
+ * the payload it builds did not change.</p>
  */
 public final class VietQr {
+
+    private static final String VND = "VND";
 
     private static final String NAPAS_GUID = "A000000727";
     private static final String TRANSFER_TO_ACCOUNT = "QRIBFTTA";
@@ -70,6 +78,22 @@ public final class VietQr {
         }
         qr.append("6304");
         return qr + crc16(qr.toString());
+    }
+
+    /**
+     * The code for paying what is left of one installment into the company's account, or null when there is nothing to
+     * scan: no BIN configured for the account, nothing left to pay, not VND, or an installment PAID or CANCELLED - a
+     * code left on a cancelled order's card would let the customer pay an order that no longer exists.
+     *
+     * @param status    the installment's status, as the payment module names it
+     * @param reference what the transfer says: the contract's number and the installment's
+     */
+    public static String forInstallment(CompanyBankAccount bank, BigDecimal outstanding, String currency,
+                                        String status, String reference) {
+        boolean payable = outstanding != null && outstanding.signum() > 0 && VND.equals(currency)
+                && !"PAID".equals(status) && !"CANCELLED".equals(status);
+        return bank == null || bank.bankBin() == null || !payable ? null
+                : payload(bank.bankBin(), bank.accountNumber(), outstanding, reference);
     }
 
     /** Plain ASCII letters, digits, spaces and {@code -._/}: what every banking app keeps of a transfer's content. */

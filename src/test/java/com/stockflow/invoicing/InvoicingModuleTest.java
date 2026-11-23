@@ -36,6 +36,12 @@ class InvoicingModuleTest {
     @MockitoBean com.stockflow.design.api.DesignService designServiceMock;
     // order draws quotes from design quote requests (FE request, decision 2); design is not booted here.
     @MockitoBean com.stockflow.design.api.QuoteRequests quoteRequestsMock;
+    // R5-3: order names each line's design through design :: api, and reads a contract's installment due days
+    // through payment :: api; neither module is booted here.
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.design.api.SkuDesigns skuDesignsMock;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.payment.api.CustomerInstallments customerInstallmentsMock;
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
     // order's WarehouseCapacityService (BE1: the capacity board behind the shipping-warehouse options and production
     // order approval) reads the map's room and the cartons standing in each warehouse.

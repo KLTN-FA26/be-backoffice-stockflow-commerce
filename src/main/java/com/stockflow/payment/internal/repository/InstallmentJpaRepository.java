@@ -10,5 +10,7 @@ interface InstallmentJpaRepository extends BaseJpaRepository<InstallmentJpaEntit
 
     List<InstallmentJpaEntity> findByOrderIdOrderBySeqAsc(UUID orderId);
 
+    List<InstallmentJpaEntity> findByOrderIdInOrderByOrderIdAscSeqAsc(java.util.Collection<UUID> orderIds);
+
     boolean existsByContractId(UUID contractId);
 }

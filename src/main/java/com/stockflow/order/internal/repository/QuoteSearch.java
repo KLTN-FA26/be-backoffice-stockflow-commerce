@@ -36,6 +36,9 @@ public interface QuoteSearch {
     /** Oldest first. */
     List<Transition> history(UUID quoteId);
 
+    /** {@link #history} of each of {@code quoteIds} in one statement; a quote with no history is not a key. */
+    java.util.Map<UUID, List<Transition>> histories(java.util.Collection<UUID> quoteIds);
+
     /** Audit fields of one quote, for the detail view. */
     java.util.Optional<Row> findRow(UUID quoteId);
 
@@ -48,4 +51,11 @@ public interface QuoteSearch {
 
     /** The quote an order was converted from; empty for an order no quote became. */
     java.util.Optional<UUID> quoteConvertedInto(UUID orderId);
+
+    /** A quote by the request id it was created under; {@code sentAt} is when it was first sent, null before. */
+    record ByRequest(UUID requestId, UUID quoteId, String quoteNumber, Instant sentAt) {
+    }
+
+    /** The quotes created under any of {@code requestIds}, one statement ({@code uk} on request_id: one each). */
+    List<ByRequest> byRequestIds(java.util.Collection<UUID> requestIds);
 }

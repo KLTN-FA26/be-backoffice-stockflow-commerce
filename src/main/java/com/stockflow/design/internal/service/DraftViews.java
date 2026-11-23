@@ -49,10 +49,12 @@ class DraftViews {
     private final DesignSnapshotJpaRepository snapshots;
     private final CustomerSkus customerSkus;
     private final CustomerService customers;
+    private final com.stockflow.inventory.api.UomConversionService units;
 
     DraftViews(ProductService products, DesignDocumentJpaRepository documents, DesignArtifactJpaRepository artifacts,
                FileTransfers files, DesignSnapshotJpaRepository snapshots, CustomerSkus customerSkus,
-               CustomerService customers) {
+               CustomerService customers, com.stockflow.inventory.api.UomConversionService units) {
+        this.units = units;
         this.products = products;
         this.documents = documents;
         this.artifacts = artifacts;
@@ -85,14 +87,36 @@ class DraftViews {
         Set<UUID> customerIds = drafts.stream().map(DesignDraftJpaEntity::getCustomerId).filter(Objects::nonNull)
                 .collect(Collectors.toSet());
         Map<UUID, String> customerNames = customers.fullNames(customerIds);
+        Map<String, Integer> perCarton = piecesPerCarton(drafts, customerSkuOf);
         return drafts.stream().map(d -> {
             Optional<ProductSummary> product = productsById.get(d.getProductId());
+            String cartonSku = customerSkuOf.getOrDefault(d.getId(), d.getSku());
             return view(d, product.map(ProductSummary::slug).orElse(null),
                     product.map(ProductSummary::name).orElse(null), saved.get(d.getId()),
                     d.getCurrentArtifactId() == null ? null : previews.get(d.getCurrentArtifactId()),
                     variantName(d.getSku(), variantNames), customerSkuOf.get(d.getId()),
-                    d.getCustomerId() == null ? null : customerNames.get(d.getCustomerId()));
+                    d.getCustomerId() == null ? null : customerNames.get(d.getCustomerId()),
+                    cartonSku == null ? null : perCarton.get(cartonSku));
         }).toList();
+    }
+
+    /**
+     * R5-13: the pieces in one carton of each design's SKU - its customer's own once approved, else the variant it is
+     * drawn on, whose carton spec the customer's SKU is issued with - by SKU, in one read for the page. The carton is
+     * the SKU's one carton unit, as a quote line reads it ({@link com.stockflow.inventory.api.UomConversion#cartonOf});
+     * a SKU without one is absent.
+     */
+    private Map<String, Integer> piecesPerCarton(List<DesignDraftJpaEntity> drafts, Map<UUID, String> customerSkuOf) {
+        List<String> skus = drafts.stream().map(d -> customerSkuOf.getOrDefault(d.getId(), d.getSku()))
+                .filter(Objects::nonNull).distinct().toList();
+        if (skus.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Integer> perCarton = new HashMap<>();
+        units.conversionsOf(skus.stream().map(com.stockflow.common.domain.Sku::new).toList())
+                .forEach((sku, declared) -> com.stockflow.inventory.api.UomConversion.cartonOf(declared)
+                        .ifPresent(carton -> perCarton.put(sku, carton.factor())));
+        return perCarton;
     }
 
     /**
@@ -152,7 +176,8 @@ class DraftViews {
      */
     private static DesignWorkflowService.DraftView view(DesignDraftJpaEntity d, String slug, String productName,
                                                         Instant layoutSaved, String previewUrl, String variantName,
-                                                        String customerSku, String customerName) {
+                                                        String customerSku, String customerName,
+                                                        Integer unitsPerCarton) {
         Instant rowChanged = d.getLastModifiedAt() != null ? d.getLastModifiedAt() : d.getCreatedAt();
         Instant updatedAt = layoutSaved != null && (rowChanged == null || layoutSaved.isAfter(rowChanged))
                 ? layoutSaved : rowChanged;
@@ -160,6 +185,6 @@ class DraftViews {
                 d.getName(), d.getSpec(), d.getStatus().name(), d.getCurrentArtifactId(), d.getReviewedBy(),
                 d.getReviewNotes(), d.getVersion(), d.getParentSnapshotId(), slug, d.getSku(), d.getTemplateCode(),
                 d.getReviewRequestedAt(), d.getReviewedAt(), updatedAt, d.getProjectId(), previewUrl, variantName,
-                productName, customerSku, customerName);
+                productName, customerSku, customerName, unitsPerCarton);
     }
 }

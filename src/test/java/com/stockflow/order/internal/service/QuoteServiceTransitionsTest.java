@@ -68,7 +68,8 @@ class QuoteServiceTransitionsTest {
             mock(com.stockflow.inventory.api.UomConversionService.class), mock(QuotedOrders.class),
             mock(OrderService.class), new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC),
             mock(com.stockflow.catalog.api.CatalogService.class), events, products, customerSkus,
-            mock(com.stockflow.order.internal.domain.TaxRates.class), production);
+            mock(com.stockflow.order.internal.domain.TaxRates.class), production,
+            mock(com.stockflow.design.api.SkuDesigns.class), mock(com.stockflow.identity.api.IdentityService.class));
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();
