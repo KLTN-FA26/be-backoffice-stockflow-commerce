@@ -198,6 +198,9 @@ public record OrderResponse(
      * so render them whatever the branch. {@code shippingFeeUninvoiced} / SHIPPING_FEE_UNINVOICED: the rest of the
      * order's fees - shipping fee and plate fee (BE-62) - is not on an issued invoice. {@code returnAdjustmentUnissued}
      * is information only (Q-16): a return's decrease adjustment not issued yet never keeps the order open.
+     * {@code deliveryReductionUnissued} (audit r3 EINV-7) is information only too: a reduction for a delivery that did
+     * not happen - a shipment's invoice reduced to nothing, or the waived shipping fee taken off the rest invoice - is
+     * drawn up and the accountant has not issued it yet.
      * {@code completionHoldable}: Sales may pause the completion ("Giữ hoàn tất") now - the rule the hold endpoint
      * applies, false while a pause is on.
      */
@@ -205,7 +208,8 @@ public record OrderResponse(
                                       boolean owing, boolean openReturn, List<UUID> uninvoicedShipmentIds,
                                       boolean shippingFeeUninvoiced, boolean refundOutstanding, boolean completionHeld,
                                       boolean returnAdjustmentUnissued, Instant completesAt, Instant closesAt,
-                                      List<String> blockers, boolean completionHoldable) {
+                                      List<String> blockers, boolean completionHoldable,
+                                      boolean deliveryReductionUnissued) {
     }
 
     /** This response with F-1's facts, as the order's detail shows them to staff. */

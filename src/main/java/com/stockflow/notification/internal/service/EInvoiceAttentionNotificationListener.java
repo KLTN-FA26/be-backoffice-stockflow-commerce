@@ -97,7 +97,7 @@ class EInvoiceAttentionNotificationListener {
             case ISSUED_LATE -> texts.getString(key + ".body").formatted(event.code(), event.orderNumber(),
                     day(event.issueDate()), day(event.deliveredOn()));
             case AUTO_ISSUE_HELD -> texts.getString(key + ".body").formatted(event.code(), event.orderNumber(),
-                    event.rejectionCode() == null ? "-" : event.rejectionCode(), due);
+                    reasons(event.rejectionCode(), texts), due);
             default -> texts.getString(key + ".body").formatted(event.code(), event.orderNumber(), sent, due);
         };
         // Stuck, and a failed delivery's invoice at the provider, still resolve themselves when the provider answers,
@@ -126,6 +126,24 @@ class EInvoiceAttentionNotificationListener {
             return reason.length() <= 100 ? reason : "h" + Integer.toHexString(reason.hashCode());
         }
         return String.valueOf(event.submittedAt() == null ? 0 : event.submittedAt().toEpochMilli());
+    }
+
+    /**
+     * The reason a draft was held back, in words (audit r3 EINV-6): it comes as the draft's warning codes comma-joined
+     * ({@code TAX_CLASS_UNKNOWN,TAX_RATE_DIFFERS_FROM_CONTRACT}) or the code of the refusal ({@code
+     * EINVOICE_SERIES_NOT_CONFIGURED}), and an accountant reading a Vietnamese inbox was handed the codes. Each is named
+     * by its {@code inbox.einvoice.reason.*} label, a refusal by its error message; a code neither knows is shown as it
+     * came rather than dropped, so a new reason still says something.
+     */
+    static String reasons(String codes, ResourceBundle texts) {
+        if (codes == null || codes.isBlank()) {
+            return "-";
+        }
+        return java.util.Arrays.stream(codes.split(",")).map(String::strip).filter(code -> !code.isEmpty())
+                .map(code -> texts.containsKey("inbox.einvoice.reason." + code)
+                        ? texts.getString("inbox.einvoice.reason." + code)
+                        : texts.containsKey("error." + code) ? texts.getString("error." + code) : code)
+                .collect(java.util.stream.Collectors.joining("; "));
     }
 
     private static String day(LocalDate date) {

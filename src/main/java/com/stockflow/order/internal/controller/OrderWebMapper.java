@@ -24,7 +24,8 @@ final class OrderWebMapper {
                 view.returnWindowDays(), view.returnWindowEndsAt(), view.owing(), view.openReturn(),
                 view.uninvoicedShipmentIds(), view.shippingFeeUninvoiced(), view.refundOutstanding(),
                 view.completionHeld(), view.returnAdjustmentUnissued(), view.completesAt(), view.closesAt(),
-                view.blockers().stream().map(Enum::name).toList(), view.completionHoldable());
+                view.blockers().stream().map(Enum::name).toList(), view.completionHoldable(),
+                view.deliveryReductionUnissued());
     }
 
     static OrderResponse toResponse(OrderSummary summary) {

@@ -58,6 +58,13 @@ import java.util.UUID;
  *       {@code RETURN} when a return's refunded goods wait on this replacement - {@code externalReductionReturns}
  *       names each, with the id {@code returnRequestId} takes.</li>
  * </ul>
+ *
+ * <p>Audit r3 EINV-3 (decision §4.4 HĐ-1 step 3: "sau khi rút có dòng 'đang tra lại tới ngày ...'"): {@code watchUntil}
+ * - until when the invoice's latest transaction let go (withdrawn, or refused on the provider's processing report
+ * alone) is asked about again, daily, in case the provider issued it after all; {@code watchFoundAt} - when it was
+ * found issued after all (the accountants were told, {@code DUPLICATE_RISK}). Both null when no transaction of it was
+ * let go. They stay on the invoice after it is reopened and sent again: the old transaction is watched all the
+ * same.</p>
  */
 public record EInvoiceResponse(UUID id, String code, String type, String status, boolean adjusted, UUID orderId,
                                String orderNumber, String contractNumber, UUID shipmentId, String shipmentCode,
@@ -76,7 +83,8 @@ public record EInvoiceResponse(UUID id, String code, String type, String status,
                                String voidReasonCode, boolean withdrawable, String withdrawalBlockedBy,
                                Instant withdrawableFrom, boolean withdrawalEvidenceRequired,
                                boolean externalReductionAllowed, List<String> externalReductionBases,
-                               List<ExternalReductionReturn> externalReductionReturns) {
+                               List<ExternalReductionReturn> externalReductionReturns, Instant watchUntil,
+                               Instant watchFoundAt) {
 
     /** A return whose refunded goods wait on this replacement: {@code returnRequestId} is what the record takes. */
     public record ExternalReductionReturn(UUID returnRequestId, String rmaNumber) {

@@ -96,6 +96,14 @@ public class EInvoiceQueryService {
         return providers.find(provider).map(EInvoiceProvider::sendsErrorNotices).orElse(false);
     }
 
+    /**
+     * The watch of the invoice's latest transaction let go (audit r3 EINV-3; HĐ-1 step 3), for the screen's line "đang
+     * tra lại giao dịch cũ tới ngày ...": empty when no transaction of it was let go.
+     */
+    public java.util.Optional<EInvoiceRepository.TransactionWatch> watch(EInvoice.Snapshot invoice) {
+        return invoices.latestWatchOf(invoice.id());
+    }
+
     public java.util.Optional<String> earlierPending(EInvoice.Snapshot invoice) {
         if (invoice.status() != com.stockflow.invoicing.internal.domain.EInvoiceStatus.DRAFT) {
             return java.util.Optional.empty();

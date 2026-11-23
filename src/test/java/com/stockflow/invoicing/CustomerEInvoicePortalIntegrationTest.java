@@ -398,6 +398,71 @@ class CustomerEInvoicePortalIntegrationTest {
     }
 
     @Test
+    @DisplayName("audit r3 EINV-5 (decision §3 HĐ-8: không gửi khách hoá đơn lỗi): an issued invoice whose seller's "
+            + "signature does not hold is not on the customer's list, not readable by its id, its files not "
+            + "downloadable - the accountant still reads it, with the warning")
+    void anInvoiceWhoseSignatureFailsIsNotShownToTheCustomer() throws Exception {
+        Portal mine = portalCustomer();
+        EInvoice.Snapshot good = issued(mine, 1);
+        EInvoice.Snapshot faulty = issued(mine, 2);
+        // As EInvoiceIssuanceSteps records it when the issued XML's signature fails: the issued row is guarded, so the
+        // warning is written here past the guard, in one transaction.
+        tx.executeWithoutResult(s -> {
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            jdbc.update("UPDATE invoicing.einvoice SET warnings = 'SIGNATURE_INVALID' WHERE id = ?", faulty.id());
+        });
+
+        JsonNode page = body(http.asCustomer(mine.account(), get(MINE)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.totalElements").value(1)));
+        assertThat(page.at("/data/items/0/id").asText()).isEqualTo(good.id().toString());
+        http.asCustomer(mine.account(), get(MINE).param("orderId", faulty.orderId().toString()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(0));
+        http.asCustomer(mine.account(), get(MINE + "/" + faulty.id())).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("EINVOICE_NOT_FOUND"));
+        for (String kind : List.of("PDF", "XML")) {
+            http.asCustomer(mine.account(), get(MINE + "/" + faulty.id() + "/files/" + kind))
+                    .andExpect(status().isNotFound());
+        }
+        http.asRole(Role.ACCOUNTANT, accountant, get("/api/v1/einvoices/" + faulty.id())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.warnings[0]").value("SIGNATURE_INVALID"));
+    }
+
+    @Test
+    @DisplayName("audit r3 EINV-3 (HĐ-1 step 3: 'đang tra lại tới ngày ...'): the invoice's latest transaction let go "
+            + "is shown with until when it is watched and when it was found issued after all; none, nothing")
+    void theWatchOfALetGoTransactionIsShown() throws Exception {
+        Portal mine = portalCustomer();
+        EInvoice.Snapshot invoice = issued(mine, 1);
+        http.asRole(Role.ACCOUNTANT, accountant, get("/api/v1/einvoices/" + invoice.id())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.watchUntil").doesNotExist())
+                .andExpect(jsonPath("$.data.watchFoundAt").doesNotExist());
+        Instant older = Instant.parse("2026-11-01T03:00:00Z");
+        Instant newer = Instant.parse("2026-12-01T03:00:00Z");
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    INSERT INTO invoicing.einvoice_transaction_watch (einvoice_id, transaction_id, provider, let_go_as,
+                                                                      watch_until, created_at)
+                    VALUES (?, 't-old', 'SANDBOX', 'WITHDRAWN_NO_PROVIDER_RECORD', ?, now() - interval '2 days')""",
+                    invoice.id(), java.sql.Timestamp.from(older));
+            jdbc.update("""
+                    INSERT INTO invoicing.einvoice_transaction_watch (einvoice_id, transaction_id, provider, let_go_as,
+                                                                      watch_until, created_at)
+                    VALUES (?, 't-new', 'SANDBOX', 'WITHDRAWN_RESULT_UNCONFIRMED', ?, now())""",
+                    invoice.id(), java.sql.Timestamp.from(newer));
+        });
+
+        assertThat(queries.watch(invoice)).hasValueSatisfying(watch -> {
+            assertThat(watch.transactionId()).isEqualTo("t-new");
+            assertThat(watch.watchUntil()).isEqualTo(newer);
+            assertThat(watch.foundAt()).isNull();
+        });
+        http.asRole(Role.ACCOUNTANT, accountant, get("/api/v1/einvoices/" + invoice.id())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.watchUntil").value(newer.toString()))
+                .andExpect(jsonPath("$.data.watchFoundAt").doesNotExist());
+    }
+
+    @Test
     @DisplayName("the back office's e-invoice endpoints refuse a portal account, its own invoice included; the portal "
             + "endpoints want a signed-in customer")
     void theBackOfficeIsNotThePortal() throws Exception {

@@ -24,6 +24,21 @@ import java.util.UUID;
 @Repository
 class EInvoiceQueriesAdapter implements EInvoiceQueries {
 
+    /**
+     * What the customer is shown of its invoices (audit r3 EINV-5; decision §3 HĐ-8: "Chữ ký sai thì báo Kế toán ngay,
+     * không gửi khách hoá đơn lỗi"): an issued invoice whose seller's signature does not hold is announced to the
+     * accountants and replaced, and the buyer is never mailed it ({@code EInvoice.Snapshot#sendableToBuyer}). Listed on
+     * the portal and downloadable there, it was sent to the customer all the same, by another road. The one predicate
+     * for every customer-facing read - the list, its count, one invoice, its files, the replacement links and the
+     * chat's invoice card - over the comma-joined {@code warnings} column, matched as a whole code.
+     *
+     * @param alias the table's alias in the statement, or empty for none
+     */
+    static String signatureHolds(String alias) {
+        String column = alias.isEmpty() ? "warnings" : alias + ".warnings";
+        return "(',' || COALESCE(" + column + ", '') || ',') NOT LIKE '%,SIGNATURE_INVALID,%'";
+    }
+
     private static final String LIST_COLUMNS = """
             id, code, type, status, adjusted, order_id, order_number, shipment_id, shipment_code, customer_id,
             buyer_name, buyer_tax_code, issue_date, issue_due_at, template_code, symbol, invoice_number, subtotal,
@@ -129,7 +144,7 @@ class EInvoiceQueriesAdapter implements EInvoiceQueries {
         arguments.add(limit);
         arguments.add(offset);
         return jdbc.query("SELECT " + LIST_COLUMNS + " FROM invoicing.einvoice WHERE customer_id = ?"
-                + " AND status IN ('ISSUED', 'REPLACED')" + byOrder + " " + """
+                + " AND status IN ('ISSUED', 'REPLACED') AND " + signatureHolds("") + byOrder + " " + """
                 ORDER BY issue_date DESC, issued_at DESC, id
                 LIMIT ? OFFSET ?""", LISTING, arguments.toArray());
     }
@@ -151,7 +166,8 @@ class EInvoiceQueriesAdapter implements EInvoiceQueries {
     public long countIssuedTo(UUID customerId, UUID orderId) {
         List<Object> arguments = new ArrayList<>(List.of(customerId));
         Long count = jdbc.queryForObject("SELECT count(*) FROM invoicing.einvoice WHERE customer_id = ?"
-                + " AND status IN ('ISSUED', 'REPLACED')" + byOrder(orderId, arguments), Long.class,
+                + " AND status IN ('ISSUED', 'REPLACED') AND " + signatureHolds("") + byOrder(orderId, arguments),
+                Long.class,
                 arguments.toArray());
         return count == null ? 0 : count;
     }
@@ -173,10 +189,13 @@ class EInvoiceQueriesAdapter implements EInvoiceQueries {
                   FROM invoicing.einvoice i
                   LEFT JOIN invoicing.einvoice o
                          ON i.type = 'REPLACEMENT' AND o.id = i.original_einvoice_id AND o.customer_id = i.customer_id
-                        AND o.status IN ('ISSUED', 'REPLACED')
+                        AND o.status IN ('ISSUED', 'REPLACED') AND """ + signatureHolds("o") + """
+
                   LEFT JOIN LATERAL (SELECT x.id, x.code FROM invoicing.einvoice x
                                       WHERE x.original_einvoice_id = i.id AND x.type = 'REPLACEMENT'
                                         AND x.customer_id = i.customer_id AND x.status IN ('ISSUED', 'REPLACED')
+                                        AND """ + signatureHolds("x") + """
+
                                       ORDER BY x.issued_at, x.id
                                       LIMIT 1) r ON TRUE
                  WHERE i.id = ANY (?) AND i.customer_id = ?
@@ -199,7 +218,8 @@ class EInvoiceQueriesAdapter implements EInvoiceQueries {
     @Override
     public java.util.Optional<Listing> findIssuedTo(UUID customerId, UUID id) {
         return jdbc.query("SELECT " + LIST_COLUMNS + " FROM invoicing.einvoice " + """
-                WHERE id = ? AND customer_id = ? AND status IN ('ISSUED', 'REPLACED')""", LISTING, id,
+                WHERE id = ? AND customer_id = ? AND status IN ('ISSUED', 'REPLACED') AND """ + signatureHolds(""),
+                LISTING, id,
                 customerId).stream().findFirst();
     }
 

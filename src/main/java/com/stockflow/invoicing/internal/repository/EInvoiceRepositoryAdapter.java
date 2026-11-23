@@ -148,8 +148,9 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
 
     @Override
     public Optional<EInvoice> findLiveShippingFeeInvoice(UUID orderId) {
-        // At most one original of the rest that was not voided (uk_einvoice_shipping_fee_rest); what replaced it names
-        // no shipment either. The issued one first, as for a shipment.
+        // An original of the rest that was not voided, or what replaced it (it names no shipment either); the issued
+        // one first, as for a shipment. Since audit r3 LM-2 an order may have several issued ones - the rest decided
+        // again after a delivery was undone - and at most one not issued yet (uk_einvoice_shipping_fee_rest).
         List<UUID> ids = jdbc.queryForList("""
                 SELECT id FROM invoicing.einvoice
                  WHERE order_id = ? AND shipment_id IS NULL AND type IN ('ORIGINAL', 'REPLACEMENT')
@@ -258,6 +259,18 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
         return Boolean.TRUE.equals(jdbc.queryForObject(
                 "SELECT EXISTS (SELECT 1 FROM invoicing.einvoice WHERE return_request_id = ?)", Boolean.class,
                 returnRequestId));
+    }
+
+    @Override
+    public List<EInvoice> findVoidedReturnAdjustmentsOf(UUID invoiceId) {
+        return jdbc.queryForList("""
+                SELECT DISTINCT ON (v.return_request_id) v.id FROM invoicing.einvoice v
+                 WHERE v.original_einvoice_id = ? AND v.type = 'ADJUSTMENT' AND v.correction_basis = 'RETURN'
+                   AND v.status = 'VOIDED_DRAFT'
+                   AND NOT EXISTS (SELECT 1 FROM invoicing.einvoice a
+                                    WHERE a.return_request_id = v.return_request_id AND a.status <> 'VOIDED_DRAFT')
+                 ORDER BY v.return_request_id, v.voided_at DESC NULLS LAST, v.id""", UUID.class, invoiceId).stream()
+                .map(this::findById).flatMap(Optional::stream).toList();
     }
 
     @Override
@@ -467,6 +480,35 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
     }
 
     @Override
+    public Optional<EInvoice> findUnissuedShippingFeeInvoice(UUID orderId) {
+        return jdbc.queryForList("""
+                SELECT id FROM invoicing.einvoice
+                 WHERE order_id = ? AND shipment_id IS NULL AND type = 'ORIGINAL'
+                   AND status IN ('DRAFT', 'SUBMITTING', 'REJECTED')
+                 ORDER BY created_at, id LIMIT 1""", UUID.class, orderId).stream().findFirst()
+                .flatMap(this::findById);
+    }
+
+    @Override
+    public List<EInvoice> findIssuedShippingFeeInvoices(UUID orderId) {
+        return jdbc.queryForList("""
+                SELECT id FROM invoicing.einvoice
+                 WHERE order_id = ? AND shipment_id IS NULL AND type = 'ORIGINAL' AND status = 'ISSUED'
+                 ORDER BY issued_at DESC NULLS LAST, created_at DESC, id""", UUID.class, orderId).stream()
+                .map(this::findById).flatMap(Optional::stream).toList();
+    }
+
+    @Override
+    public java.math.BigDecimal shippingFeeReducedOf(UUID invoiceId) {
+        return jdbc.queryForObject("""
+                SELECT COALESCE(sum(l.amount), 0) FROM invoicing.einvoice a
+                  JOIN invoicing.einvoice_line l ON l.einvoice_id = a.id
+                 WHERE a.original_einvoice_id = ? AND a.type = 'ADJUSTMENT' AND a.correction_basis = 'DELIVERY_FAILED'
+                   AND a.status <> 'VOIDED_DRAFT' AND l.fee_kind = 'SHIPPING_FEE'""", java.math.BigDecimal.class,
+                invoiceId);
+    }
+
+    @Override
     public boolean hasVoidedUnsendableReversal(UUID invoiceId) {
         return Boolean.TRUE.equals(jdbc.queryForObject("""
                 SELECT EXISTS (SELECT 1 FROM invoicing.einvoice
@@ -530,6 +572,14 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
     }
 
     @Override
+    public boolean deliveryReductionUnissued(UUID orderId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM invoicing.einvoice
+                                WHERE order_id = ? AND type = 'ADJUSTMENT' AND correction_basis = 'DELIVERY_FAILED'
+                                  AND status IN ('DRAFT', 'REJECTED', 'SUBMITTING'))""", Boolean.class, orderId));
+    }
+
+    @Override
     public void watchTransaction(UUID einvoiceId, String transactionId, String provider, String letGoAs,
                                  Instant until) {
         jdbc.update("""
@@ -549,6 +599,18 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
                 (row, n) -> new WatchedTransaction(row.getObject("einvoice_id", UUID.class),
                         row.getString("transaction_id"), row.getString("provider"), row.getString("let_go_as")),
                 Timestamp.from(now), Timestamp.from(askedBefore), limit);
+    }
+
+    @Override
+    public Optional<TransactionWatch> latestWatchOf(UUID einvoiceId) {
+        return jdbc.query("""
+                SELECT transaction_id, let_go_as, watch_until, found_at FROM invoicing.einvoice_transaction_watch
+                 WHERE einvoice_id = ?
+                 ORDER BY created_at DESC, watch_until DESC LIMIT 1""",
+                (row, n) -> new TransactionWatch(row.getString("transaction_id"), row.getString("let_go_as"),
+                        row.getTimestamp("watch_until").toInstant(),
+                        row.getTimestamp("found_at") == null ? null : row.getTimestamp("found_at").toInstant()),
+                einvoiceId).stream().findFirst();
     }
 
     @Override

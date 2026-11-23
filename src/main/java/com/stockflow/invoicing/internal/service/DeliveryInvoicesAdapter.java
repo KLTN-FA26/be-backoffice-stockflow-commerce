@@ -2,7 +2,6 @@ package com.stockflow.invoicing.internal.service;
 
 import com.stockflow.invoicing.internal.domain.EInvoiceQueries;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
-import com.stockflow.invoicing.internal.domain.FeeAllocation;
 import com.stockflow.order.api.DeliveredShipments;
 import com.stockflow.order.api.DeliveryInvoices;
 import org.springframework.stereotype.Component;
@@ -48,13 +47,21 @@ class DeliveryInvoicesAdapter implements DeliveryInvoices {
      * all: its draft was refused when the order's rest was closed (the seller not configured, say) and nobody has drawn
      * it up by hand since. The rest is measured exactly as {@link EInvoiceDrafts#drawUpShippingFeeRest} measures it -
      * the share of the shipping fee waived for shipments that came back left out (Q-19,
-     * {@link FeeAllocation#shippingFeeOwed}), and every plate fee no invoice of the order carries (BE-62) - so the order
+     * {@link com.stockflow.invoicing.internal.domain.FeeAllocation#shippingFeeOwed}), and every plate fee no invoice of the order carries (BE-62) - so the order
      * waits for precisely what that method would draw up, never for a waived share nobody invoices.
      *
      * <p><b>The plate fee too</b> (audit r2 lifecycle M-1 / money M-2): an order whose goods all came back keeps its
      * plate fee, and only the rest invoice ever carries it. Measured once every piece the order still means to deliver
      * is on an invoice - while a delivery is still to be invoiced, that delivery's invoice carries the plate fee of its
-     * SKU ({@link FeeAllocation#carriesPlateFee}), and its own blocker (the shipment not invoiced) already stands.</p>
+     * SKU ({@link com.stockflow.invoicing.internal.domain.FeeAllocation#carriesPlateFee}), and its own blocker (the shipment not invoiced) already stands.</p>
+     *
+     * <p><b>Measured again, as the draw-up measures it</b> (audit r3 LM-2): by {@link EInvoiceDrafts#feeRestOf}, the one
+     * rule. A rest invoice issued before a delivery was undone (HĐ-3) or a shipment came back (Q-19) may leave a plate
+     * fee on no invoice, or carry a shipping fee payment waived since; both are outstanding until the draw-up has put
+     * the one on a new rest invoice and taken the other off by a reduction. The reduction drawn up and not issued is
+     * then information only ({@link #deliveryReductionUnissued}): a decrease, as a return's adjustment is (Q-16).
+     * Before, this answered "the plate fee is on no invoice" for good while the draw-up returned the rest invoice
+     * standing - an order waiting for ever, its contract never liquidated.</p>
      */
     @Override
     @Transactional(readOnly = true)
@@ -62,16 +69,8 @@ class DeliveryInvoicesAdapter implements DeliveryInvoices {
         if (queries.shippingFeeInvoiceUnissued(orderId)) {
             return true;
         }
-        return shipments.orderFees(orderId, clock.instant()).map(fees -> {
-            FeeAllocation.Invoiced invoiced = invoices.invoicedOfOrder(orderId);
-            boolean shippingRest = fees.fee() != null && FeeAllocation.shippingRest(FeeAllocation.shippingFeeOwed(
-                    fees.fee().amount(), fees.shippingFeeWaiver().feeGross(), fees.shippingFeeWaiver().waived()),
-                    fees.orderUnits(), invoiced).signum() > 0;
-            boolean plateUncarried = invoiced.units() >= fees.orderUnits() && fees.plateFees().stream()
-                    .anyMatch(plate -> plate.amount().signum() > 0
-                            && FeeAllocation.carriesPlateFee(plate.sku(), invoiced));
-            return shippingRest || plateUncarried;
-        }).orElse(false);
+        return shipments.orderFees(orderId, clock.instant())
+                .map(fees -> EInvoiceDrafts.feeRestOf(invoices, fees).outstanding()).orElse(false);
     }
 
     /**
@@ -85,5 +84,16 @@ class DeliveryInvoicesAdapter implements DeliveryInvoices {
     @Transactional(readOnly = true)
     public boolean returnAdjustmentUnissued(UUID orderId) {
         return orderId != null && invoices.returnAdjustmentUnissued(orderId);
+    }
+
+    /**
+     * Audit r3 EINV-7: a reduction for a delivery that did not happen, drawn up and not issued - information on the
+     * order's settlement readiness, for the reasons {@link #returnAdjustmentUnissued} gives. Its overdue reminders
+     * keep coming until the accountant issues it, after the order closed too.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public boolean deliveryReductionUnissued(UUID orderId) {
+        return orderId != null && invoices.deliveryReductionUnissued(orderId);
     }
 }
