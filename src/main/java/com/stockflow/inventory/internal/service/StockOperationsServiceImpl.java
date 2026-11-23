@@ -1117,10 +1117,31 @@ class StockOperationsServiceImpl implements StockOperations {
             // The holds the write-off gave up, if any: announced after the row is saved.
             events.publishEventsOf(row);
         }
+        announceCartonWrittenOff(adjustment, changes, approverId);
         announceDamagedProductionCarton(adjustment, changes, approverId, now);
         log.info("Posted adjustment {}: {} {} in carton {} at {}", adjustment.number(), adjustment.quantityDelta(),
                 adjustment.sku(), adjustment.stockPackageId().value(), adjustment.location());
         return toSummary(saved);
+    }
+
+    /**
+     * A write-off asked by hand (20 §4.3, §4.8) leaves the warehouse a carton fewer of the SKU: announced, so the order
+     * module recomputes what orders hold of it by SKU there and the part no carton covers is given up (17 §4.13 step 51:
+     * a damaged carton held for an order is let go, and the order is short again). A count's shortage is announced by
+     * the row itself ({@code StockWrittenOffByCount}); a restock announces nothing - it covers more, never less.
+     */
+    private void announceCartonWrittenOff(StockAdjustment adjustment, List<StockPackageContents.RowChange> changes,
+                                          UUID approverId) {
+        if (adjustment.reason() == AdjustmentReason.COUNT_VARIANCE || adjustment.quantityDelta() >= 0) {
+            return;
+        }
+        for (StockPackageContents.RowChange change : changes) {
+            if (change.delta() < 0) {
+                events.publish(new com.stockflow.contracts.StockCartonWrittenOff(change.row().sku().code(),
+                        change.row().location().warehouseCode(), -change.delta(), adjustment.reason().name(),
+                        approverId));
+            }
+        }
     }
 
     /**
