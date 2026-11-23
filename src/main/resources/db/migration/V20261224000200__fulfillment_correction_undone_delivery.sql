@@ -16,7 +16,11 @@
 --      shipment's outcome time before it. Written once (the row is append-only).
 --   2. Rows from before: the shipment's latest DELIVERED step at or before the correction (shipment_event, which every
 --      outcome - recorded, reported or corrected - writes with the delivery's own time). A row whose timeline shows none
---      stays NULL: its correction back is dated now, as before.
+--      stays NULL: its correction back is dated now, as before. The table is append-only
+--      (trg_delivery_outcome_correction_append_only refuses every UPDATE), so the guard stands aside for this one
+--      statement, which only fills the new column, and is back on before anything else runs (confirmation audit CF-1:
+--      without it Flyway stopped on any database already holding such a correction;
+--      CorrectionUndoneDeliveryMigrationUpgradeTest migrates one).
 --   3. ck_delivery_outcome_correction_undone: only a correction of a delivery names one, and never after it was made.
 --      ck_delivery_outcome_correction_undone_kept (NOT VALID: rows from before may lack it): every new correction of a
 --      delivery names it - the aggregate's rule stated again.
@@ -24,11 +28,15 @@
 
 ALTER TABLE fulfillment.delivery_outcome_correction ADD COLUMN undone_delivered_at TIMESTAMPTZ;
 
+ALTER TABLE fulfillment.delivery_outcome_correction DISABLE TRIGGER trg_delivery_outcome_correction_append_only;
+
 UPDATE fulfillment.delivery_outcome_correction c
    SET undone_delivered_at = (SELECT max(e.occurred_at) FROM fulfillment.shipment_event e
                                WHERE e.shipment_id = c.shipment_id AND e.status = 'DELIVERED'
                                  AND e.occurred_at <= c.corrected_at)
  WHERE c.from_status = 'DELIVERED' AND c.to_status = 'DELIVERY_FAILED';
+
+ALTER TABLE fulfillment.delivery_outcome_correction ENABLE TRIGGER trg_delivery_outcome_correction_append_only;
 
 ALTER TABLE fulfillment.delivery_outcome_correction
     ADD CONSTRAINT ck_delivery_outcome_correction_undone CHECK (
