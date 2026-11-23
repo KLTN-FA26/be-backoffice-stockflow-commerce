@@ -198,7 +198,9 @@ class QuoteSecurityIntegrationTest {
                 .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\""
                         + draft.path("quoteNumber").asText() + ".pdf\""))
                 .andReturn().getResponse().getContentAsByteArray();
-        assertThat(pdfText(draftPdf)).contains("BÁO GIÁ", "BẢN NHÁP", draft.path("quoteNumber").asText());
+        assertThat(pdfText(draftPdf)).contains("BÁO GIÁ", draft.path("quoteNumber").asText());
+        // The draft's watermark is turned across the page: its letters come out of the PDF one by one.
+        assertThat(pdfText(draftPdf).replace(" ", "")).contains("BẢNNHÁP");
         send(get(document), a, null).andExpect(status().isNotFound());   // Sales' draft is not shown
 
         send(post(QUOTES + "/" + draft.path("id").asText() + "/sending"), sales,
@@ -206,8 +208,9 @@ class QuoteSecurityIntegrationTest {
         byte[] sentPdf = send(get(document), a, null).andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_PDF))
                 .andReturn().getResponse().getContentAsByteArray();
-        assertThat(pdfText(sentPdf)).contains(draft.path("quoteNumber").asText(), sku, "Portal customer")
-                .doesNotContain("BẢN NHÁP");
+        assertThat(pdfText(sentPdf)).contains(draft.path("quoteNumber").asText(), "Portal customer");
+        // The SKU is wrapped inside its column of the goods table, so it is looked for with the spaces taken out.
+        assertThat(pdfText(sentPdf).replace(" ", "")).contains(sku).doesNotContain("BẢNNHÁP");
         send(get(document), b, null).andExpect(status().isNotFound());
         send(get(QUOTES + "/" + UUID.randomUUID() + "/document"), sales, null).andExpect(status().isNotFound());
     }

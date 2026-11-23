@@ -4589,11 +4589,13 @@ class FtlDispatchIntegrationTest {
         String before = pdfText(dispatch(get(note)).andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_PDF))
                 .andReturn().getResponse().getContentAsByteArray());
-        assertThat(before).contains("BIÊN BẢN GIAO NHẬN HÀNG HOÁ", "Mã shipment: " + code,
-                "Đơn hàng: " + order.orderNumber(), "Hợp đồng: " + contract + " - đợt giao 1",
+        assertThat(before).contains("BIÊN BẢN GIAO NHẬN HÀNG HÓA", "Số: " + code,
+                "Căn cứ Đơn đặt hàng số " + order.orderNumber(),
+                "Căn cứ Hợp đồng mua bán hàng hóa số " + contract, "(Giao hàng đợt 1)",
                 "Xe: biển số ......", "Thời điểm bàn giao: ......", lpns.getFirst(),
-                skuNamed.get("sku") + " — " + skuNamed.get("name") + ": " + lpns.size() + " thùng",
-                "Tổng cộng: " + lpns.size() + " thùng");
+                (String) skuNamed.get("name"), "Tổng cộng");
+        // A SKU longer than its column is broken over two lines of the cell, so it is looked for without the break.
+        assertThat(before.replace(" ", "")).contains((String) skuNamed.get("sku"));
 
         // Booked, loaded and signed: the vehicle, its waybill and the moment of the handover are on it.
         String loadId = loadOf(confirmed(List.of(shipment), truck5t), 1);

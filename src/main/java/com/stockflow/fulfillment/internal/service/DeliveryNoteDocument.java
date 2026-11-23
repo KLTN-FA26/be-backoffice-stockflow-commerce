@@ -1,38 +1,57 @@
 package com.stockflow.fulfillment.internal.service;
 
-import com.stockflow.common.label.LabelFonts;
-import com.stockflow.common.label.PrintedDocument;
-import com.stockflow.common.label.PrintedDocument.Line;
+import com.stockflow.common.document.BusinessDocument;
+import com.stockflow.common.document.BusinessDocument.Align;
+import com.stockflow.common.document.BusinessDocument.Block;
+import com.stockflow.common.document.BusinessDocument.Cell;
+import com.stockflow.common.document.BusinessDocument.Column;
+import com.stockflow.common.document.BusinessDocument.Field;
+import com.stockflow.common.document.BusinessDocument.PageBreak;
+import com.stockflow.common.document.BusinessDocument.Paragraph;
+import com.stockflow.common.document.BusinessDocument.Run;
+import com.stockflow.common.document.BusinessDocument.Signatures;
+import com.stockflow.common.document.BusinessDocument.Signer;
+import com.stockflow.common.document.BusinessDocument.Table;
+import com.stockflow.common.document.BusinessDocument.Title;
+import com.stockflow.common.document.DocumentFonts;
+import com.stockflow.common.document.DocumentFormats;
+import com.stockflow.common.document.DocumentParts;
+import com.stockflow.common.document.Letterhead;
+import com.stockflow.common.document.SellerLetterhead;
 import com.stockflow.fulfillment.api.ShippedCarton;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.ResourceBundle;
 import java.util.TreeMap;
 
 /**
- * Draws the delivery note of a shipment as a PDF (kltn-docs 09 §4.2; glossary "POD"): the paper the warehouse, the
- * driver and the customer sign when the goods change hands. It names the shipment - printed as a barcode and a QR code
- * too, the code a carrier reports its outcome with (open-questions E20) - the order, the contract and delivery batch,
- * the two parties, the vehicle the goods leave on, and the cartons by SKU with their LPNs (08 BR-02: the LPN carton is
- * the shipping carton), then the three signatures and how the signed copy becomes the shipment's proof of delivery (E16:
- * optional, uploaded on the shipment).
+ * Draws the delivery note of a shipment as a PDF (kltn-docs 09 §4.2; glossary "POD"): the record ("biên bản giao nhận
+ * hàng hóa") the company, the driver and the customer sign when the goods change hands. No law fixes its form; it is
+ * the proof of delivery, the moment risk passes, and the day Luật Thương mại 2005 Điều 318 counts the complaint period
+ * from - so it is set as a record two companies sign: our company and the record's number beside Quốc hiệu and Tiêu
+ * ngữ, the contract and order it is made under, the two parties, the goods in a ruled table, and three signature
+ * blocks with room to sign.
  *
- * <p>Printed before the goods leave as well as after: what is not known yet - a vehicle not booked, a driver the carrier
- * has not named, the moment of the handover - is a dotted line to fill in by hand, never left out, so the paper is the
- * same form whenever it is printed. Each SKU is printed as its code - what the carton's label shows - and its variant's
- * name from the catalogue, "SKU — name", so the receiving party can tell the goods apart without a list of codes; a SKU
- * the catalogue does not name prints by its code alone.</p>
+ * <p>It names the shipment - printed as a barcode and a QR code too, the code a carrier reports its outcome with
+ * (open-questions E20) - and the cartons by SKU with their LPNs (08 BR-02: the LPN carton is the shipping carton). No
+ * price: a handover record states what changed hands, and the driver who carries it is not shown what it cost. The
+ * party handing over is the selling company, as the contract names it, with the warehouse the goods leave from as a
+ * line of its block - the customer signs with a company, not with a building.</p>
  *
- * <p>The labels are the Vietnamese bundle's - the parties are Vietnamese - laid out as every document is
- * ({@link PrintedDocument}). What it shows is given; nothing is looked up here.</p>
+ * <p>Printed before the goods leave as well as after: what is not known yet - a vehicle not booked, a driver the
+ * carrier has not named, the day and moment of the handover - is a dotted line to fill in by hand, never left out, so
+ * the paper is the same form whenever it is printed. The state of the goods on receipt is two boxes to tick. Each SKU
+ * is printed as its code - what the carton's label shows - and its variant's name from the catalogue; a SKU the
+ * catalogue does not name prints by its code alone.</p>
+ *
+ * <p>The words are the Vietnamese bundle's, the layout the kit's ({@link BusinessDocument}), the company its letterhead
+ * ({@link SellerLetterhead}) - the same on every paper of the sale. Everything else it shows is given; nothing is
+ * looked up here.</p>
  */
 @Component
 class DeliveryNoteDocument {
@@ -63,14 +82,12 @@ class DeliveryNoteDocument {
     record SkuCartons(String sku, String name, int cartons, int units, List<String> lpns) {
     }
 
-    private static final ZoneId VIETNAM = ZoneId.of("Asia/Ho_Chi_Minh");
-    private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("dd/MM/yyyy");
-    private static final DateTimeFormatter MOMENT = DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy").withZone(VIETNAM);
+    private final DocumentFonts fonts;
+    private final SellerLetterhead letterhead;
 
-    private final LabelFonts fonts;
-
-    DeliveryNoteDocument(LabelFonts fonts) {
+    DeliveryNoteDocument(DocumentFonts fonts, SellerLetterhead letterhead) {
         this.fonts = fonts;
+        this.letterhead = letterhead;
     }
 
     /**
@@ -88,71 +105,116 @@ class DeliveryNoteDocument {
     }
 
     byte[] render(Facts f) {
-        ResourceBundle t = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
-        String blank = t.getString("delivery-note.pdf.blank");
-        List<Line> lines = new ArrayList<>();
-        lines.add(Line.title(t.getString("delivery-note.pdf.title")));
-        lines.add(Line.bold(t.getString("delivery-note.pdf.shipment").formatted(f.shipmentCode(),
-                DAY.format(f.printedOn()))));
-        lines.add(Line.text(t.getString("delivery-note.pdf.order").formatted(f.orderNumber())));
-        if (f.contractNumber() != null && f.batchSeq() != null) {
-            lines.add(Line.text(t.getString("delivery-note.pdf.contractBatch").formatted(f.contractNumber(),
-                    f.batchSeq())));
+        ResourceBundle t = DocumentParts.bundle();
+        Letterhead head = letterhead.get();
+        String blank = t.getString("document.blank");
+        List<Block> blocks = new ArrayList<>();
+        blocks.add(DocumentParts.recordHead(t, head, f.shipmentCode(), f.printedOn()));
+        boolean scheduled = f.contractNumber() != null && f.batchSeq() != null;
+        blocks.add(new Title(t.getString("delivery-note.pdf.title"), null,
+                scheduled ? t.getString("delivery-note.pdf.batch").formatted(f.batchSeq()) : null));
+        blocks.add(BusinessDocument.codes(f.shipmentCode()));
+        if (scheduled) {
+            blocks.add(DocumentParts.basis(t.getString("delivery-note.pdf.basis.contract")
+                    .formatted(f.contractNumber())));
         }
+        blocks.add(DocumentParts.basis(t.getString("delivery-note.pdf.basis.order").formatted(f.orderNumber())));
         if (f.redelivery()) {
-            lines.add(Line.text(t.getString("delivery-note.pdf.redelivery")));
+            blocks.add(DocumentParts.basis(t.getString("delivery-note.pdf.redelivery")));
         }
+        // The record is of the day the goods change hands, which a copy printed for the driver does not know yet.
+        blocks.add(f.handedOverAt() == null
+                ? DocumentParts.lead(t.getString("delivery-note.pdf.todayBlank")).after(6)
+                : DocumentParts.today(t, head, LocalDate.ofInstant(f.handedOverAt(), DocumentFormats.VIETNAM)));
 
-        lines.add(Line.heading(t.getString("delivery-note.pdf.sender")));
-        lines.add(Line.bold(or(f.warehouseName(), blank)));
-        if (f.warehouseAddress() != null && !f.warehouseAddress().isBlank()) {
-            lines.add(Line.text(f.warehouseAddress()));
-        }
-        lines.add(Line.heading(t.getString("delivery-note.pdf.receiver")));
-        lines.add(Line.bold(or(f.customerName(), blank)));
-        lines.add(Line.text(t.getString("delivery-note.pdf.deliveryAddress")
-                .formatted(or(f.deliveryAddress(), blank))));
-        lines.add(Line.text(t.getString("delivery-note.pdf.recipient").formatted(or(f.recipient(), blank))));
+        DocumentParts.party(blocks, t, t.getString("delivery-note.pdf.sender"),
+                new DocumentParts.Party(head.name(), head.taxCode(), head.address(), head.phone(), null, null, null,
+                        null),
+                List.of(Field.of(t.getString("delivery-note.pdf.warehouse"), warehouse(f, blank))));
+        DocumentParts.party(blocks, t, t.getString("delivery-note.pdf.receiver"),
+                new DocumentParts.Party(DocumentParts.orBlank(t, f.customerName()), null, null, null, null),
+                List.of(Field.of(t.getString("delivery-note.pdf.deliveryAddress"),
+                                DocumentParts.orBlank(t, f.deliveryAddress())),
+                        Field.of(t.getString("delivery-note.pdf.recipient"),
+                                DocumentParts.orBlank(t, f.recipient()))));
 
-        lines.add(Line.heading(t.getString("delivery-note.pdf.carriage")));
+        blocks.add(DocumentParts.lead(t.getString("delivery-note.pdf.agreed")));
+        blocks.add(goods(t, f.goods()));
+
+        // The handover - the vehicle, the moment, the state of the goods, the confirmation - on the page that is
+        // signed: the head, the parties and the goods already fill the first.
+        blocks.add(new PageBreak());
+        blocks.add(Paragraph.bold(t.getString("delivery-note.pdf.carriage")).align(Align.LEFT).after(1));
         if (f.vehicles().isEmpty()) {
-            lines.add(Line.text(t.getString("delivery-note.pdf.noVehicle").formatted(blank, blank, blank, blank)));
+            blocks.add(point(t.getString("delivery-note.pdf.noVehicle").formatted(blank, blank, blank, blank)));
         }
         for (Vehicle v : f.vehicles()) {
-            lines.add(Line.text(t.getString("delivery-note.pdf.vehicle").formatted(v.loadCode(),
-                    or(v.carrierName(), blank), or(v.plate(), blank), or(v.driverName(), blank),
-                    or(v.driverPhone(), blank), or(v.waybillNo(), blank))));
+            blocks.add(point(t.getString("delivery-note.pdf.vehicle").formatted(v.loadCode(),
+                    DocumentParts.orBlank(t, v.carrierName()), DocumentParts.orBlank(t, v.plate()),
+                    DocumentParts.orBlank(t, v.driverName()), DocumentParts.orBlank(t, v.driverPhone()),
+                    DocumentParts.orBlank(t, v.waybillNo()))));
         }
-        lines.add(Line.text(t.getString("delivery-note.pdf.handedOverAt").formatted(f.handedOverAt() == null ? blank
-                : MOMENT.format(f.handedOverAt()))));
+        blocks.add(point(t.getString("delivery-note.pdf.handedOverAt").formatted(f.handedOverAt() == null ? blank
+                : DocumentFormats.moment(f.handedOverAt()))));
 
-        lines.add(Line.heading(t.getString("delivery-note.pdf.goods")));
+        blocks.add(Paragraph.bold(t.getString("delivery-note.pdf.condition")).align(Align.LEFT).after(0));
+        blocks.add(DocumentParts.checkbox(t.getString("delivery-note.pdf.condition.good"), 13));
+        blocks.add(DocumentParts.checkbox(t.getString("delivery-note.pdf.condition.differs")
+                .formatted(blank + blank), 13));
+        blocks.add(DocumentParts.lead(t.getString("delivery-note.pdf.confirm")).after(2));
+        blocks.add(DocumentParts.lead(t.getString("delivery-note.pdf.copies")));
+
+        String caption = t.getString("document.sign.named");
+        blocks.add(new Signatures(null, List.of(
+                new Signer(t.getString("delivery-note.pdf.sign.sender"), caption, null),
+                new Signer(t.getString("delivery-note.pdf.sign.driver"), caption, null),
+                new Signer(t.getString("delivery-note.pdf.sign.receiver"), caption, null))));
+        blocks.add(Paragraph.italic(t.getString("delivery-note.pdf.pod")).size(-2.5f));
+        return BusinessDocument.draw(fonts, DocumentParts.official(t, f.shipmentCode(), null),
+                t.getString("delivery-note.pdf.title") + " " + f.shipmentCode(), blocks);
+    }
+
+    /** "Kho Hồ Chí Minh - 12 Đường Số 7, ...", or a line to write the warehouse on. */
+    private static String warehouse(Facts f, String blank) {
+        if (!DocumentParts.filled(f.warehouseName())) {
+            return blank;
+        }
+        return DocumentParts.filled(f.warehouseAddress()) ? f.warehouseName() + " - " + f.warehouseAddress()
+                : f.warehouseName();
+    }
+
+    private static Paragraph point(String text) {
+        return Paragraph.numbered("-", Run.of(text)).indent(14).align(Align.LEFT).after(1);
+    }
+
+    /**
+     * The goods by SKU: cartons and pieces in their own columns, the LPNs under the name, and a blank column for what
+     * the receiver notes against a line. The last row adds the cartons and the pieces up - of one delivery, counted in
+     * one unit, they do add up, and the count of cartons is what the receiver checks first.
+     */
+    private static Table goods(ResourceBundle t, List<SkuCartons> goods) {
+        List<List<Cell>> rows = new ArrayList<>();
+        String piece = t.getString("document.unit.piece");
         int cartons = 0;
         int units = 0;
-        for (SkuCartons sku : f.goods()) {
-            lines.add(Line.bold(sku.name() == null || sku.name().isBlank()
-                    ? t.getString("delivery-note.pdf.sku").formatted(sku.sku(), sku.cartons(), sku.units())
-                    : t.getString("delivery-note.pdf.skuNamed").formatted(sku.sku(), sku.name(), sku.cartons(),
-                            sku.units())));
-            lines.add(Line.text(t.getString("delivery-note.pdf.lpns").formatted(String.join(", ", sku.lpns()))));
+        int no = 0;
+        for (SkuCartons sku : goods) {
+            rows.add(List.of(Cell.of(String.valueOf(++no)), Cell.of(sku.sku()),
+                    Cell.bold(DocumentParts.filled(sku.name()) ? sku.name() : sku.sku()).details(List.of(
+                            t.getString("delivery-note.pdf.lpns").formatted(String.join(", ", sku.lpns())))),
+                    Cell.of(piece), Cell.of(DocumentFormats.number(sku.cartons())),
+                    Cell.of(DocumentFormats.number(sku.units())), Cell.of("")));
             cartons += sku.cartons();
             units += sku.units();
         }
-        lines.add(Line.bold(t.getString("delivery-note.pdf.total").formatted(cartons, units)));
-        lines.add(Line.text(t.getString("delivery-note.pdf.condition").formatted(blank + blank)));
-
-        lines.add(Line.heading(""));
-        lines.add(Line.bold(t.getString("delivery-note.pdf.signatures")));
-        lines.add(Line.text(t.getString("delivery-note.pdf.signHint")));
-        lines.add(Line.heading(""));
-        lines.add(Line.heading(""));
-        lines.add(Line.heading(""));
-        lines.add(Line.text(t.getString("delivery-note.pdf.pod")));
-        return PrintedDocument.draw(fonts, lines, t.getString("delivery-note.pdf.title") + " " + f.shipmentCode(),
-                f.shipmentCode());
-    }
-
-    private static String or(String value, String blank) {
-        return value == null || value.isBlank() ? blank : value;
+        rows.add(List.of(Cell.of(""), Cell.of(""), Cell.bold(t.getString("delivery-note.pdf.total")), Cell.of(""),
+                Cell.bold(DocumentFormats.number(cartons)), Cell.bold(DocumentFormats.number(units)), Cell.of("")));
+        return new Table(List.of(new Column(t.getString("document.goods.no"), 30, Align.CENTRE),
+                new Column(t.getString("document.goods.code"), 96, Align.LEFT),
+                new Column(t.getString("document.goods.name"), 172, Align.LEFT),
+                new Column(t.getString("document.goods.unit"), 36, Align.CENTRE),
+                new Column(t.getString("delivery-note.pdf.col.cartons"), 48, Align.RIGHT),
+                new Column(t.getString("document.goods.quantity"), 56, Align.RIGHT),
+                new Column(t.getString("delivery-note.pdf.col.note"), 62, Align.LEFT)), rows);
     }
 }

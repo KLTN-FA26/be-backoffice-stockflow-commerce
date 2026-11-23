@@ -2,7 +2,8 @@ package com.stockflow.fulfillment.internal.service;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.common.label.LabelFonts;
+import com.stockflow.common.document.DocumentFonts;
+import com.stockflow.common.document.DocumentSamples;
 import com.stockflow.fulfillment.internal.domain.LoadPlanStatus;
 import com.stockflow.fulfillment.internal.domain.loadplanning.Layout;
 import com.stockflow.fulfillment.internal.repository.CarrierJpaRepository;
@@ -37,7 +38,7 @@ class LoadingSheetServiceTest {
     private final LoadPlans plans = mock(LoadPlans.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final LoadingSheetService service = new LoadingSheetService(plans, mock(DispatchLoadJpaRepository.class),
-            mock(CarrierJpaRepository.class), warehouses, new LoadingSheetDocument(new LabelFonts()),
+            mock(CarrierJpaRepository.class), warehouses, new LoadingSheetDocument(new DocumentFonts(), DocumentSamples.seller()),
             Clock.fixed(Instant.parse("2026-11-19T03:00:00Z"), ZoneOffset.UTC));
 
     private void planIn(LoadPlanStatus status) {

@@ -1,29 +1,30 @@
 package com.stockflow.order.internal.service;
 
-import com.stockflow.common.label.FormDocument;
-import com.stockflow.common.label.FormDocument.Block;
-import com.stockflow.common.label.FormDocument.Box;
-import com.stockflow.common.label.FormDocument.Bullets;
-import com.stockflow.common.label.FormDocument.Cell;
-import com.stockflow.common.label.FormDocument.Column;
-import com.stockflow.common.label.FormDocument.Fact;
-import com.stockflow.common.label.FormDocument.KeyFacts;
-import com.stockflow.common.label.FormDocument.Masthead;
-import com.stockflow.common.label.FormDocument.Note;
-import com.stockflow.common.label.FormDocument.Table;
-import com.stockflow.common.label.FormDocument.Title;
-import com.stockflow.common.label.LabelFonts;
+import com.stockflow.common.document.BusinessDocument;
+import com.stockflow.common.document.BusinessDocument.Align;
+import com.stockflow.common.document.BusinessDocument.Block;
+import com.stockflow.common.document.BusinessDocument.BrandHeader;
+import com.stockflow.common.document.BusinessDocument.Cell;
+import com.stockflow.common.document.BusinessDocument.Column;
+import com.stockflow.common.document.BusinessDocument.Field;
+import com.stockflow.common.document.BusinessDocument.Fields;
+import com.stockflow.common.document.BusinessDocument.Heading;
+import com.stockflow.common.document.BusinessDocument.Paragraph;
+import com.stockflow.common.document.BusinessDocument.Run;
+import com.stockflow.common.document.BusinessDocument.Split;
+import com.stockflow.common.document.BusinessDocument.Table;
+import com.stockflow.common.document.BusinessDocument.Title;
+import com.stockflow.common.document.DocumentFonts;
+import com.stockflow.common.document.DocumentFormats;
+import com.stockflow.common.document.DocumentParts;
+import com.stockflow.common.document.Letterhead;
+import com.stockflow.common.document.SellerLetterhead;
 import org.springframework.stereotype.Component;
 
-import java.text.DecimalFormat;
-import java.text.DecimalFormatSymbols;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.ResourceBundle;
 import java.util.UUID;
 
@@ -39,9 +40,13 @@ import java.util.UUID;
  * system, not on paper. No totals row either: units of different products do not add up, and the warehouse counts
  * line by line against the production order (03 §4.1). The coordinator who drew it up is named for questions.</p>
  *
- * <p>The code is printed as a QR and a barcode: it is the lot the goods are received under (03 BR-03), and the receiving
- * scanner reads it from the slip the producer sends back with the goods. Vietnamese labels - the producer is
- * Vietnamese - laid out as a form ({@link FormDocument}). What it shows is given; nothing is looked up here.</p>
+ * <p>The code is printed as a barcode and a QR code: it is the lot the goods are received under (03 BR-03), and the
+ * receiving scanner reads it from the slip the producer sends back with the goods.</p>
+ *
+ * <p>A commercial paper of the company, so it opens with the company's head as a quotation does - a partner's print
+ * shop should see at once whose order it holds - and is laid out by the kit every other paper uses
+ * ({@link BusinessDocument}), in the Vietnamese bundle's words. What it shows is given; beside the letterhead nothing
+ * is looked up here.</p>
  */
 @Component
 class ProductionOrderSlipDocument {
@@ -61,76 +66,93 @@ class ProductionOrderSlipDocument {
                     String packingRequirements, UUID designSnapshotId, String printFileChecksum) {
     }
 
-    private static final ZoneId VIETNAM = ZoneId.of("Asia/Ho_Chi_Minh");
-    private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("dd/MM/yyyy");
-    private static final DateTimeFormatter MOMENT = DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy").withZone(VIETNAM);
+    private final DocumentFonts fonts;
+    private final SellerLetterhead letterhead;
 
-    private final LabelFonts fonts;
-
-    ProductionOrderSlipDocument(LabelFonts fonts) {
+    ProductionOrderSlipDocument(DocumentFonts fonts, SellerLetterhead letterhead) {
         this.fonts = fonts;
+        this.letterhead = letterhead;
     }
 
     byte[] render(Facts f) {
-        ResourceBundle t = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+        ResourceBundle t = DocumentParts.bundle();
+        Letterhead head = letterhead.get();
+        LocalDate sent = LocalDate.ofInstant(f.sentAt(), DocumentFormats.VIETNAM);
         List<Block> blocks = new ArrayList<>();
-        blocks.add(new Masthead(present(f.companyName()) ? f.companyName() : null));
-        blocks.add(new Title(t.getString("production-order.pdf.title"), t.getString("production-order.pdf.number")
-                .formatted(f.code(), DAY.format(f.sentAt().atZone(VIETNAM)))));
-        blocks.add(new KeyFacts(List.of(
-                new Fact(t.getString("production-order.pdf.needBy"), DAY.format(f.needByDate()), null, 0.22f),
-                new Fact(t.getString("production-order.pdf.deliverTo"), f.warehouseName(), f.warehouseAddress(),
-                        0.56f),
-                new Fact(t.getString("production-order.pdf.sample"),
-                        t.getString(f.sampleApprovalRequired() ? "production-order.pdf.yes" : "production-order.pdf.no"),
-                        null, 0.22f))));
-        blocks.add(new Box(t.getString("production-order.pdf.producer"),
-                t.getString("production-order.pdf.producerName").formatted(f.producerName(), f.producerCode()),
-                present(f.producerContact())
-                        ? List.of(t.getString("production-order.pdf.contact").formatted(f.producerContact()))
-                        : List.of()));
+        BrandHeader brand = DocumentParts.brandHeader(t, head);
+        // The company as the order was sent under: the slip is kept as sent, and names who sent it then.
+        blocks.add(present(f.companyName()) ? new BrandHeader(brand.logo(), f.companyName(), brand.lines()) : brand);
+        blocks.add(new Split(List.of(Run.bold(t.getString("document.number") + " " + f.code())),
+                List.of(Run.italic(DocumentParts.placeDate(t, head, sent)))));
+        blocks.add(new Title(t.getString("production-order.pdf.title"), null, null));
+        blocks.add(BusinessDocument.codes(f.code()));
+
+        List<Field> facts = new ArrayList<>();
+        facts.add(field(t, "production-order.pdf.producer",
+                t.getString("production-order.pdf.producerName").formatted(f.producerName(), f.producerCode())));
+        if (present(f.producerContact())) {
+            facts.add(field(t, "production-order.pdf.contact", f.producerContact()));
+        }
+        facts.add(field(t, "production-order.pdf.needBy", DocumentFormats.date(f.needByDate())));
+        facts.add(field(t, "production-order.pdf.deliverTo", present(f.warehouseAddress())
+                ? f.warehouseName() + " - " + f.warehouseAddress() : f.warehouseName()));
+        facts.add(field(t, "production-order.pdf.sample",
+                t.getString(f.sampleApprovalRequired() ? "production-order.pdf.yes" : "production-order.pdf.no")));
+        blocks.add(new Fields(facts, 0));
+
+        blocks.add(new Heading(t.getString("production-order.pdf.lines")));
         blocks.add(goods(t, f.lines()));
-        blocks.add(new Bullets(t.getString("production-order.pdf.requirements"), requirements(t, f)));
+        blocks.add(new Heading(t.getString("production-order.pdf.requirements")));
+        int no = 0;
+        for (String requirement : requirements(t, f)) {
+            blocks.add(Paragraph.numbered(++no + ".", Run.of(requirement)).after(2));
+        }
+
         String coordinator = t.getString("production-order.pdf.drawnUpBy").formatted(f.drawnUpByName())
-                + (present(f.drawnUpByEmail()) ? " · " + f.drawnUpByEmail() : "");
-        blocks.add(new Note(t.getString("production-order.pdf.ask"), coordinator,
-                t.getString("production-order.pdf.system").formatted(MOMENT.format(f.sentAt()))));
-        return FormDocument.draw(fonts, blocks, t.getString("production-order.pdf.title") + " " + f.code(), f.code(),
-                t.getString("production-order.pdf.footer").formatted(f.code()),
-                t.getString("production-order.pdf.page"));
+                + (present(f.drawnUpByEmail()) ? " - " + f.drawnUpByEmail() : "");
+        blocks.add(Paragraph.of(Run.of(t.getString("production-order.pdf.ask") + " "), Run.bold(coordinator))
+                .align(Align.LEFT).after(2));
+        blocks.add(Paragraph.italic(t.getString("production-order.pdf.system")
+                .formatted(DocumentFormats.moment(f.sentAt()))).align(Align.LEFT).size(-1));
+        return BusinessDocument.draw(fonts, DocumentParts.commercial(t, f.code(), head, null),
+                t.getString("production-order.pdf.title") + " " + f.code(), blocks);
+    }
+
+    /** A fact read at a glance: its value in bold beside its label. */
+    private static Field field(ResourceBundle t, String key, String value) {
+        return new Field(t.getString(key), List.of(Run.bold(value)));
     }
 
     private static Table goods(ResourceBundle t, List<SlipLine> lines) {
-        List<Column> columns = List.of(new Column(t.getString("production-order.pdf.column.no"), 26, false),
-                new Column(t.getString("production-order.pdf.column.sku"), 86, false),
-                new Column(t.getString("production-order.pdf.column.name"), 233, false),
-                new Column(t.getString("production-order.pdf.column.cartons"), 54, true),
-                new Column(t.getString("production-order.pdf.column.perCarton"), 56, true),
-                new Column(t.getString("production-order.pdf.column.units"), 60, true));
         List<List<Cell>> rows = new ArrayList<>();
         int number = 0;
         for (SlipLine line : lines) {
             List<String> details = new ArrayList<>();
-            details.add(present(line.cartonSize()) ? t.getString("production-order.pdf.carton").formatted(line.cartonSize())
+            details.add(present(line.cartonSize())
+                    ? t.getString("production-order.pdf.carton").formatted(line.cartonSize())
                     : t.getString("production-order.pdf.carton.unknown"));
             if (present(line.packingRequirements())) {
                 details.add(t.getString("production-order.pdf.packing").formatted(line.packingRequirements()));
             }
             details.add(t.getString("production-order.pdf.printFile").formatted(line.designSnapshotId(),
                     line.printFileChecksum()));
-            rows.add(List.of(new Cell(String.valueOf(++number), false, List.of()),
-                    new Cell(line.sku(), false, List.of()),
-                    new Cell(present(line.name()) ? line.name() : line.sku(), true, details),
-                    new Cell(count(line.cartons()), false, List.of()),
-                    new Cell(count(line.unitsPerCarton()), false, List.of()),
-                    new Cell(count(line.totalUnits()), false, List.of())));
+            rows.add(List.of(Cell.of(String.valueOf(++number)), Cell.of(line.sku()),
+                    Cell.bold(present(line.name()) ? line.name() : line.sku()).details(details),
+                    Cell.of(DocumentFormats.number(line.cartons())),
+                    Cell.of(DocumentFormats.number(line.unitsPerCarton())),
+                    Cell.of(DocumentFormats.number(line.totalUnits()))));
         }
-        return new Table(t.getString("production-order.pdf.lines"), columns, rows);
+        return new Table(List.of(new Column(t.getString("document.goods.no"), 28, Align.CENTRE),
+                new Column(t.getString("document.goods.code"), 88, Align.LEFT),
+                new Column(t.getString("production-order.pdf.column.name"), 224, Align.LEFT),
+                new Column(t.getString("production-order.pdf.column.cartons"), 50, Align.RIGHT),
+                new Column(t.getString("production-order.pdf.column.perCarton"), 56, Align.RIGHT),
+                new Column(t.getString("production-order.pdf.column.units"), 64, Align.RIGHT)), rows);
     }
 
     private static List<String> requirements(ResourceBundle t, Facts f) {
         List<String> items = new ArrayList<>();
-        String needBy = DAY.format(f.needByDate());
+        String needBy = DocumentFormats.date(f.needByDate());
         items.add(present(f.warehouseAddress())
                 ? t.getString("production-order.pdf.deliver").formatted(f.warehouseName(), f.warehouseAddress(), needBy)
                 : t.getString("production-order.pdf.deliver.noAddress").formatted(f.warehouseName(), needBy));
@@ -143,13 +165,6 @@ class ProductionOrderSlipDocument {
         }
         items.add(t.getString("production-order.pdf.lot").formatted(f.code()));
         return items;
-    }
-
-    /** Whole units grouped with dots, as Vietnamese papers write them: 40.000. */
-    private static String count(int value) {
-        DecimalFormatSymbols symbols = new DecimalFormatSymbols(Locale.ROOT);
-        symbols.setGroupingSeparator('.');
-        return new DecimalFormat("#,##0", symbols).format(value);
     }
 
     private static boolean present(String value) {
