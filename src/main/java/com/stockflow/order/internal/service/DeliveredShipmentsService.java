@@ -7,6 +7,7 @@ import com.stockflow.order.api.FeeKind;
 import com.stockflow.order.api.OrderShipmentStatus;
 import com.stockflow.order.api.OrderShippingFee;
 import com.stockflow.order.api.ShippingFeeWaiver;
+import com.stockflow.order.api.ShippingFeeWaivers;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderFee;
 import com.stockflow.order.internal.domain.OrderId;
@@ -55,13 +56,15 @@ class DeliveredShipmentsService implements DeliveredShipments {
     private final SalesContractRepository contracts;
     private final TaxRates taxRates;
     private final ProductService products;
+    private final ShippingFeeWaivers waivers;
 
     DeliveredShipmentsService(OrderRepository orders, SalesContractRepository contracts, TaxRates taxRates,
-                              ProductService products) {
+                              ProductService products, ShippingFeeWaivers waivers) {
         this.orders = orders;
         this.contracts = contracts;
         this.taxRates = taxRates;
         this.products = products;
+        this.waivers = waivers;
     }
 
     @Override
@@ -119,68 +122,27 @@ class DeliveredShipmentsService implements DeliveredShipments {
 
     /**
      * The order's shipping fee waived because shipments of it ended undelivered, with VAT, and the fee line with VAT it
-     * is a share of (WF-05 decision Q-19, owner 2026-11-23: a shipment the carrier brought back waives the fee in
-     * proportion to its goods' share of the order's goods value; a whole return waives all of it). Invoicing invoices
-     * the fee less this share ({@code FeeAllocation.shippingFeeOwed}), so that it invoices what payment collects.
+     * is a share of (WF-05 decision Q-19, owner 2026-11-23: a shipment the carrier brought back, or Sales closed as
+     * lost, waives the fee in proportion to its goods' share of the order's goods value; an order that ends with
+     * nothing delivered waives all of it). Invoicing invoices the fee less this ({@code FeeAllocation.shippingFeeOwed}),
+     * so that it invoices what payment collects.
      *
-     * <p><b>The one place the figure comes from.</b> Payment works the share out as each shipment's money is settled
-     * ({@code OrderSettlement.shippingFeeShare}: the fee with VAT times the goods closed undelivered so far over the
-     * order's goods as signed, half up, cumulative) and hands it back to the order ({@code
-     * OrderSettlementResult.shippingFeeWaived}), which keeps it on the closed shipment. Until the order keeps it, this
-     * works out the same total by the same rule from the order's shipments: the goods of every shipment that ended
-     * undelivered ({@link #endedUndelivered}), each line's units valued with VAT ({@link OrderLine#grossOf}), over the
-     * order's goods as signed. Cumulative half-up shares add up to the share of their total, so the two agree to the
-     * dong while no bound of payment's clips a share. An order that ends with nothing delivered after a carrier return
-     * waives the whole fee (owner, 23/11/2026), its rest closed before shipping or not.</p>
+     * <p><b>Payment's figure, not a second copy of its rule.</b> Payment works each waiver out as it settles a shipment
+     * or a closure of the rest ({@code OrderSettlement.shippingFeeShare}) and the order keeps its answer on the shipment
+     * and on the closure; {@link ShippingFeeWaivers#waivedOf} is their sum. Recomputing it here from the shipments'
+     * statuses missed the closures' waivers (Q-19 edge), a shipment closed as lost, and a RETURNED shipment whose money
+     * waits for its return receipt (Q-7) - and counted a lost-closed shipment as still pending. The sum is bounded by
+     * the fee line, as the database bounds it ({@code V20261216000300}); the bound here only keeps a fee line edited
+     * after the fact from producing a negative fee owed.</p>
      */
-    static ShippingFeeWaiver shippingFeeWaiver(Order order) {
+    ShippingFeeWaiver shippingFeeWaiver(Order order) {
         BigDecimal fee = order.fees().stream().filter(f -> f.kind() == FeeKind.SHIPPING_FEE)
                 .map(f -> f.gross().amount()).reduce(BigDecimal.ZERO, BigDecimal::add)
                 .setScale(0, RoundingMode.HALF_UP);
         if (fee.signum() <= 0) {
             return ShippingFeeWaiver.NONE;
         }
-        BigDecimal goods = order.lines().stream().map(line -> line.grossTotal().amount())
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal undelivered = BigDecimal.ZERO;
-        for (OrderShipment shipment : order.shipments()) {
-            if (!endedUndelivered(shipment)) {
-                continue;
-            }
-            for (OrderLine line : order.lines()) {
-                int units = Math.min(line.quantity(), shipment.quantities().getOrDefault(line.id(), 0));
-                if (units > 0) {
-                    undelivered = undelivered.add(line.grossOf(units).amount());
-                }
-            }
-        }
-        if (undelivered.signum() <= 0 || goods.signum() <= 0) {
-            return new ShippingFeeWaiver(BigDecimal.ZERO, fee);
-        }
-        // Owner, 23/11/2026: an order that ends with nothing delivered after a carrier return waives the whole fee -
-        // even when its rest was closed before it shipped, which the share alone would leave owing.
-        boolean nothingDelivered = order.shipments().stream()
-                .noneMatch(shipment -> shipment.status() == OrderShipmentStatus.DELIVERED);
-        boolean nothingPending = order.shipments().stream().noneMatch(shipment ->
-                shipment.status() == OrderShipmentStatus.HANDED_OVER
-                        || shipment.status() == OrderShipmentStatus.DELIVERY_FAILED);
-        boolean nothingToShip = order.lines().stream().allMatch(line -> order.unshippedUnits(line.id()) <= 0);
-        if (nothingDelivered && nothingPending && nothingToShip) {
-            return new ShippingFeeWaiver(fee, fee);
-        }
-        BigDecimal waived = undelivered.compareTo(goods) >= 0 ? fee
-                : fee.multiply(undelivered).divide(goods, 0, RoundingMode.HALF_UP).min(fee);
-        return new ShippingFeeWaiver(waived, fee);
-    }
-
-    /**
-     * Whether a shipment's goods ended undelivered on this order, so that its share of the shipping fee is waived
-     * (Q-19): it came back from the carrier (RETURNED - its units are closed as it is recorded). The one place that
-     * says so: a shipment closed as lost (Q-12) and a RETURNED one still waiting for its return receipt (Q-7) are told
-     * apart here once the order records when a shipment's units were closed.
-     */
-    private static boolean endedUndelivered(OrderShipment shipment) {
-        return shipment.status() == OrderShipmentStatus.RETURNED;
+        return new ShippingFeeWaiver(waivers.waivedOf(order.id().value()).min(fee), fee);
     }
 
     /**

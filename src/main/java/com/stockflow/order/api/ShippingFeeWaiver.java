@@ -11,6 +11,7 @@ import java.math.BigDecimal;
  * rather than a second copy of payment's rule ({@code FeeAllocation.shippingFeeOwed}).
  *
  * @param waived   the order's total waived so far, with VAT, whole dong: the sum over its shipments closed undelivered
+ *                 and its closures of the rest ({@link ShippingFeeWaivers#waivedOf})
  * @param feeGross the order's shipping fee line with its VAT, as the order fixed it - what {@code waived} is a share of
  */
 public record ShippingFeeWaiver(BigDecimal waived, BigDecimal feeGross) {

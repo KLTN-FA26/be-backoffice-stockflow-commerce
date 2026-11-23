@@ -8,6 +8,7 @@ import com.stockflow.order.api.DeliveryFailureReason;
 import com.stockflow.order.api.FeeKind;
 import com.stockflow.order.api.ShipmentHandover;
 import com.stockflow.order.api.ShippingFeeWaiver;
+import com.stockflow.order.api.ShippingFeeWaivers;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderFee;
 import com.stockflow.order.internal.domain.OrderId;
@@ -56,8 +57,10 @@ class DeliveredShipmentsServiceTest {
     private final SalesContractRepository contracts = mock(SalesContractRepository.class);
     private final TaxRates taxRates = mock(TaxRates.class);
     private final ProductService products = mock(ProductService.class);
+    /** What payment waived and the order kept (Q-19): the one source of the waiver, stubbed per test. */
+    private final ShippingFeeWaivers waivers = mock(ShippingFeeWaivers.class);
     private final DeliveredShipmentsService service = new DeliveredShipmentsService(orders, contracts, taxRates,
-            products);
+            products, waivers);
     private Order order;
 
     /**
@@ -73,6 +76,7 @@ class DeliveredShipmentsServiceTest {
                 OrderFee.of(Identifiers.newId(), FeeKind.PLATE_FEE, new Sku("CUP-12OZ"), Money.vnd(500_000), TEN),
                 OrderFee.of(Identifiers.newId(), FeeKind.SHIPPING_FEE, null, Money.vnd(150_000), TEN)));
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        when(waivers.waivedOf(any())).thenReturn(BigDecimal.ZERO);
         order.decidePartialShipment(true);
         order.sendContract(STAFF, PLACED);
         order.contractSigned(false, false, STAFF, PLACED);
@@ -311,21 +315,22 @@ class DeliveredShipmentsServiceTest {
     }
 
     @Test
-    @DisplayName("Q-19 (owner 2026-11-23): a shipment the carrier brought back waives the shipping fee, with VAT, in "
-            + "proportion to its goods' value among the order's, as payment waives it; the order's goods value now "
-            + "goes with every delivery")
-    void aReturnedShipmentWaivesItsShareOfTheShippingFee() {
-        assertThat(DeliveredShipmentsService.shippingFeeWaiver(order).waived()).as("nothing came back").isZero();
+    @DisplayName("Q-19 (owner 2026-11-23): the waiver every invoice of the order is told is payment's, as the order "
+            + "kept it - not a share recomputed from the shipments; the order's goods value goes with every delivery")
+    void theWaiverIsPaymentsStoredFigure() {
+        assertThat(service.shippingFeeWaiver(order).waived()).as("nothing came back").isZero();
 
         order.recordShipmentDelivered(S1, FIRST_DELIVERY, STAFF);
         order.recordShipmentDeliveryFailed(S2, DeliveryFailureReason.CUSTOMER_ABSENT, null, SECOND_DELIVERY, STAFF);
         order.recordShipmentReturned(S2, SECOND_DELIVERY, STAFF);
+        // Its return receipt confirmed (Q-7): S2's units close now, and payment settles them in the same transaction,
+        // waiving S2's share: 165,000 x 550,000 / 1,210,000 = 75,000, which the order keeps.
+        order.closeReturnedShipment(S2, SECOND_DELIVERY, SECOND_DELIVERY, STAFF);
+        when(waivers.waivedOf(order.id().value())).thenReturn(new BigDecimal("75000"));
 
-        // The fee with VAT: 165,000. The order's goods with VAT: 10 cups 1,100,000 + 5 lids 110,000 = 1,210,000; S2
-        // carried 4 cups (440,000) and the lids (110,000): 165,000 x 550,000 / 1,210,000 = 75,000 waived.
-        ShippingFeeWaiver waiver = DeliveredShipmentsService.shippingFeeWaiver(order);
+        ShippingFeeWaiver waiver = service.shippingFeeWaiver(order);
         assertThat(waiver.waived()).isEqualByComparingTo("75000");
-        assertThat(waiver.feeGross()).isEqualByComparingTo("165000");
+        assertThat(waiver.feeGross()).as("the fee line with VAT").isEqualByComparingTo("165000");
         DeliveredShipment delivered = find(S1);
         assertThat(delivered.shippingFeeWaiver()).as("the delivered shipment's invoice is told").isEqualTo(waiver);
         assertThat(delivered.orderGoodsValue()).as("what is left to deliver: the 6 cups of S1, 600,000 before tax")
@@ -338,12 +343,26 @@ class DeliveredShipmentsServiceTest {
     }
 
     @Test
-    @DisplayName("Q-19: every shipment brought back waives the whole shipping fee, to the dong; the plate fee is kept")
+    @DisplayName("Q-19: a waiver the shipments' statuses cannot show - a shipment closed as lost, a closure of the "
+            + "rest (Q-19 edge) - still reaches the invoice, because it is read from what payment answered")
+    void aWaiverNoShipmentStatusShowsStillCounts() {
+        order.recordShipmentDelivered(S1, FIRST_DELIVERY, STAFF);
+        // S2 is still DELIVERY_FAILED - closed as lost, not RETURNED - and payment waived its share all the same.
+        order.recordShipmentDeliveryFailed(S2, DeliveryFailureReason.CUSTOMER_ABSENT, null, SECOND_DELIVERY, STAFF);
+        when(waivers.waivedOf(order.id().value())).thenReturn(new BigDecimal("75000"));
+
+        assertThat(service.shippingFeeWaiver(order).waived()).isEqualByComparingTo("75000");
+    }
+
+    @Test
+    @DisplayName("Q-19: every shipment brought back waives the whole shipping fee, to the dong; the plate fee is kept; "
+            + "a waiver is never more than the fee line")
     void everyShipmentBackWaivesTheWholeFee() {
         order.recordShipmentDeliveryFailed(S1, DeliveryFailureReason.CUSTOMER_ABSENT, null, FIRST_DELIVERY, STAFF);
         order.recordShipmentReturned(S1, FIRST_DELIVERY, STAFF);
         order.recordShipmentDeliveryFailed(S2, DeliveryFailureReason.CUSTOMER_ABSENT, null, SECOND_DELIVERY, STAFF);
         order.recordShipmentReturned(S2, SECOND_DELIVERY, STAFF);
+        when(waivers.waivedOf(order.id().value())).thenReturn(new BigDecimal("165000"));
 
         assertThat(service.orderFees(order.id().value(), SECOND_DELIVERY).orElseThrow())
                 .satisfies(fees -> {
@@ -352,5 +371,9 @@ class DeliveredShipmentsServiceTest {
                     assertThat(fees.plateFees()).as("the plate fee is kept (BE-62)").extracting(
                             DeliveredShipment.Fee::sku).containsExactly("CUP-12OZ");
                 });
+
+        // A fee line lowered after payment waived the old one: the invoice is told the fee, never a negative rest.
+        when(waivers.waivedOf(order.id().value())).thenReturn(new BigDecimal("200000"));
+        assertThat(service.shippingFeeWaiver(order).waived()).isEqualByComparingTo("165000");
     }
 }
