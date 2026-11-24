@@ -7,7 +7,9 @@ import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.inventory.internal.domain.StockStatus;
+import com.stockflow.inventory.api.CartonSpec;
 import com.stockflow.inventory.internal.domain.WarehouseDirectory;
+import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.repository.SlotsUnderCount;
 import com.stockflow.inventory.internal.repository.StockBrowseSearch;
 import org.springframework.data.domain.Sort;
@@ -17,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Clock;
 import java.util.Collection;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -31,13 +34,15 @@ class StockBrowsingImpl implements StockBrowsing {
     private final StockBrowseSearch search;
     private final SlotsUnderCount underCount;
     private final WarehouseDirectory warehouses;
+    private final InventoryPolicyRepository policies;
     private final Clock clock;
 
     StockBrowsingImpl(StockBrowseSearch search, SlotsUnderCount underCount, WarehouseDirectory warehouses,
-                      Clock clock) {
+                      InventoryPolicyRepository policies, Clock clock) {
         this.search = search;
         this.underCount = underCount;
         this.warehouses = warehouses;
+        this.policies = policies;
         this.clock = clock;
     }
 
@@ -87,10 +92,14 @@ class StockBrowsingImpl implements StockBrowsing {
                 ? underCount.stockItemsUnderCount(page.getContent().stream().map(StockBrowseSearch.StockRow::stockItemId)
                         .toList())
                 : Set.of();
+        // One read for the page's SKUs: the carton each SKU is counted in (kltn-docs 01 BR-09).
+        Map<String, CartonSpec> cartons = policies.findCartonSpecs(page.getContent().stream()
+                .map(StockBrowseSearch.StockRow::sku).distinct().toList());
         return Pages.toResponse(page.map(row -> {
+            CartonSpec carton = cartons.get(row.sku());
             var view = new StockRow(row.stockItemId(), row.sku(), row.locationCode(), row.lotNumber(),
-                    row.onHand(), row.reserved(), available(row), row.status(),
-                    row.receivedAt(), false);
+                    carton == null ? null : carton.unitsPerCarton(), row.onHand(), row.reserved(), available(row),
+                    row.status(), row.receivedAt(), false);
             return held.contains(row.stockItemId()) ? view.hidden() : view;
         }));
     }
