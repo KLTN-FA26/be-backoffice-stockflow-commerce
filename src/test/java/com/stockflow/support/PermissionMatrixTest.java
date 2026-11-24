@@ -1185,9 +1185,12 @@ class PermissionMatrixTest {
         SecuredMvc http = new SecuredMvc(mvc, decoder);
         UUID manager = tx.execute(s -> ReferenceRows.user(entityManager));
         UUID accountant = tx.execute(s -> ReferenceRows.user(entityManager));
-        assertThat(http.asRole(Role.SALES_MANAGER, manager, MockMvcRequestBuilders.get("/api/v1/quotes"))
+        // A customer of its own: the lists are read for the guard, not for the seed's quotes (the WF-05 seed has
+        // quotes below their first price break, which the staff list answers 409 for).
+        String ofOne = "?customerId=" + tx.execute(s -> ReferenceRows.customer(entityManager));
+        assertThat(http.asRole(Role.SALES_MANAGER, manager, MockMvcRequestBuilders.get("/api/v1/quotes" + ofOne))
                 .andReturn().getResponse().getStatus()).as("quotes as SALES_MANAGER").isEqualTo(200);
-        assertThat(http.asRole(Role.SALES_MANAGER, manager, MockMvcRequestBuilders.get("/api/v1/orders"))
+        assertThat(http.asRole(Role.SALES_MANAGER, manager, MockMvcRequestBuilders.get("/api/v1/orders" + ofOne))
                 .andReturn().getResponse().getStatus()).as("orders as SALES_MANAGER").isEqualTo(200);
         assertThat(http.asRole(Role.ACCOUNTANT, accountant, MockMvcRequestBuilders.get("/api/v1/customers/"
                 + victimCustomer)).andReturn().getResponse().getStatus()).as("a customer as ACCOUNTANT").isEqualTo(200);
