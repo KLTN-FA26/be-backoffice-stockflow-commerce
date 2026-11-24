@@ -34,8 +34,24 @@ public record OrderSummary(
         Instant releasedAt,
         Cancellation cancellation,
         Lifecycle lifecycle,
-        Charges charges
+        Charges charges,
+        Long version
 ) {
+
+    /**
+     * Without the version: callers written before it (WF-05 Q-12). {@code version} is the order's optimistic-lock
+     * version, which a write that guards against a concurrent change (the lost-shipment closure) sends back; null
+     * where it was not read.
+     */
+    public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status, Money total,
+                        List<LineSummary> lines, Instant placedAt, String createdBy, Instant lastModifiedAt,
+                        String lastModifiedBy, String contactName, String contactEmail, String contactPhone,
+                        AddressSummary shippingAddress, AddressSummary billingAddress, UUID warehouseId,
+                        Instant releasedAt, Cancellation cancellation, Lifecycle lifecycle, Charges charges) {
+        this(orderId, orderNumber, customerId, status, total, lines, placedAt, createdBy, lastModifiedAt,
+                lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress, warehouseId,
+                releasedAt, cancellation, lifecycle, charges, null);
+    }
 
     /** Without the charges block (4B-3): the total is all there is, with no VAT or fee line. */
     public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status, Money total,
@@ -45,7 +61,7 @@ public record OrderSummary(
                         Instant releasedAt, Cancellation cancellation, Lifecycle lifecycle) {
         this(orderId, orderNumber, customerId, status, total, lines, placedAt, createdBy, lastModifiedAt,
                 lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress, warehouseId,
-                releasedAt, cancellation, lifecycle, null);
+                releasedAt, cancellation, lifecycle, (Charges) null);
     }
 
     /**
@@ -165,14 +181,32 @@ public record OrderSummary(
      * One shipment of the order, as the order knows it (from its handover). Nothing is collected on delivery
      * (kltn-docs 09 BR-08).
      *
-     * @param carriage number, parcels and carrier as fulfillment handed it over (G4-2a); null before that
+     * @param carriage      number, parcels and carrier as fulfillment handed it over (G4-2a); null before that
+     * @param unitsClosedAt WF-05 Q-7 / Q-12: when its units were closed without being delivered - its return receipt
+     *                      confirmed, or closed as lost; null while they are still the shipment's
      */
     public record Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, Instant handedOverAt,
                            Instant outcomeAt, DeliveryFailureReason failureReason, List<ShipmentLine> lines,
-                           ShipmentHandover.Carriage carriage) {
+                           ShipmentHandover.Carriage carriage, Instant unitsClosedAt) {
 
         public Shipment {
             lines = lines == null ? List.of() : List.copyOf(lines);
+        }
+
+        /** Without when its units were closed (WF-05): callers written before it. */
+        public Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, Instant handedOverAt,
+                        Instant outcomeAt, DeliveryFailureReason failureReason, List<ShipmentLine> lines,
+                        ShipmentHandover.Carriage carriage) {
+            this(shipmentId, status, amount, handedOverAt, outcomeAt, failureReason, lines, carriage, null);
+        }
+
+        /**
+         * WF-05 F-5 (Q-12): Sales may close it as lost - it failed as LOST, or came back from the carrier with no
+         * return receipt yet - and its units are still on it. The same rule {@code Order.closeLostShipment} applies.
+         */
+        public boolean lostClosable() {
+            return unitsClosedAt == null && (status == OrderShipmentStatus.RETURNED
+                    || status == OrderShipmentStatus.DELIVERY_FAILED && failureReason == DeliveryFailureReason.LOST);
         }
 
         /** Without the carriage (G4-2a): callers written before it. */

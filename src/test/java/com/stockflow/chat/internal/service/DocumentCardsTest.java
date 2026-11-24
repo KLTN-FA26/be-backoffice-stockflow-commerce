@@ -267,6 +267,31 @@ class DocumentCardsTest {
     }
 
     @Test
+    @DisplayName("WF-05 BE-04: an installment falling due again with a moved date posts no second card; the one posted "
+            + "shows the new date")
+    void dueAgainRedrawsTheCard() {
+        UUID installment = UUID.randomUUID();
+        ChatMessage open = cardIn(CardState.OPEN, installment);
+        CustomerInstallments.Transfer due = transfer(installment, "DUE", "22680000");
+        CustomerInstallments.Transfer moved = new CustomerInstallments.Transfer(due.installmentId(), due.customerId(),
+                due.contractId(), due.contractNumber(), due.orderId(), due.orderNumber(), due.seq(), due.name(),
+                due.amount(), due.outstanding(), due.currency(), LocalDate.of(2026, 12, 3), due.status(), false,
+                due.transferReference());
+        when(installments.transfer(installment)).thenReturn(Optional.of(moved));
+        when(messages.cardsAbout(new ContextRef(ContextKind.CONTRACT, moved.contractId()), CardKind.PAYMENT_INFO))
+                .thenReturn(List.of(open));
+        when(messages.cardsOf(eq(customer), any(), any())).thenReturn(List.of(open));
+
+        documents.installmentDue(new com.stockflow.contracts.InstallmentDue(installment, moved.contractId(), "HD-1",
+                order, customer, 1, LocalDate.of(2026, 12, 3), Instant.now()));
+
+        verify(cards, never()).post(any());
+        ArgumentCaptor<JsonNode> payload = ArgumentCaptor.forClass(JsonNode.class);
+        verify(cards).update(eq(open.id()), eq(CardState.OPEN), payload.capture(), any(), isNull(), isNull());
+        assertThat(payload.getValue().path("dueDate").asText()).isEqualTo("2026-12-03");
+    }
+
+    @Test
     @DisplayName("B13: an installment turned overdue - its card says so, still payable with its code")
     void overdueCard() {
         UUID installment = UUID.randomUUID();

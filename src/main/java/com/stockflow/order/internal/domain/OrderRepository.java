@@ -37,6 +37,10 @@ public interface OrderRepository {
      * OrderJpaRepository}'s own javadoc), because most of its callers already hold a trusted id
      * from outside a request (background listeners). Use this one from any endpoint whose
      * {@code @RequiresPermission} declares a scope narrower than {@code ALL}.</p>
+     *
+     * <p>It locks the row, so it is for a change only: Postgres refuses {@code SELECT ... FOR UPDATE} in a read-only
+     * transaction, and a read takes {@link #findByIdInScopeForReading} (an upload slot answering 500 on every call
+     * was this mistake, demo run 24/11 D-1).</p>
      */
     Optional<Order> findByIdInScope(OrderId id);
 

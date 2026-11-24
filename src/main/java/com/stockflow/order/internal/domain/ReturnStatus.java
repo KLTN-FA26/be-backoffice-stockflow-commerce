@@ -75,7 +75,9 @@ public enum ReturnStatus {
 
     /**
      * The transition table, as one exhaustive switch: adding a status forces every branch to be revisited. The
-     * aggregate's methods are the only callers; each also checks what the step needs.
+     * aggregate's methods are the only callers; each also checks what the step needs. The database holds the same
+     * edges ({@code ordering.return_request_status_transition}, {@code tg_return_request_status_transition}; WF-05
+     * BE-47): a change here is a migration there, and {@code ReturnStatusTransitionMirrorTest} fails until both agree.
      */
     public boolean canTransitionTo(ReturnStatus target) {
         return switch (this) {
@@ -89,5 +91,18 @@ public enum ReturnStatus {
             case SETTLEMENT_PENDING -> target == RESOLVED || target == RECEIVED;
             case INSPECTED, RESOLVED, REJECTED -> false;
         };
+    }
+
+    /** Every edge of {@link #canTransitionTo} as {@code FROM>TO}: what the database's transition table must hold. */
+    public static java.util.Set<String> edges() {
+        java.util.Set<String> edges = new java.util.TreeSet<>();
+        for (ReturnStatus from : values()) {
+            for (ReturnStatus to : values()) {
+                if (from != to && from.canTransitionTo(to)) {
+                    edges.add(from.name() + ">" + to.name());
+                }
+            }
+        }
+        return edges;
     }
 }

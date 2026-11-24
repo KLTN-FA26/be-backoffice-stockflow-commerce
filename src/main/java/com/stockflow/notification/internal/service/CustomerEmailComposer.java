@@ -368,6 +368,13 @@ class CustomerEmailComposer {
                     if (event.vatAdjustmentRequired()) {
                         outro.add(m.getString("email.return.resolved.vat-adjustment"));
                     }
+                    if (event.refusalReasonCode() != null) {
+                        // WF-05 Q-4: the answer to the complaint says why goods that came back were not refunded - the
+                        // reason's label; Sales' public note beside it is on the portal, not in the event.
+                        String key = "label.ReturnRefusalReason." + event.refusalReasonCode();
+                        facts.add(new Fact(m.getString("email.customer.fact.reason"), m.containsKey(key)
+                                ? m.getString(key) : text(event.refusalReasonCode())));
+                    }
                     Table lines = table(m, event.lines(),
                             List.of("email.customer.table.sku", "email.customer.table.received-quantity",
                                     "email.customer.table.refund-quantity"),

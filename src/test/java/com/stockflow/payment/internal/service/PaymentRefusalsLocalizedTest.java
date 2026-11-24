@@ -150,8 +150,9 @@ class PaymentRefusalsLocalizedTest {
     @Test
     @DisplayName("every key this change added reads in both languages, so none falls back to its English log text")
     void keysResolve() {
+        // refusal.payment.failedTripFee is no longer read: WF-05 Q-19 removed the failed-trip fee (BE-53).
         for (String key : List.of("refusal.payment.orderNoInstallments", "refusal.payment.overdueIsAFlag",
-                "refusal.payment.failedTripFee", "refusal.payment.orderNotFound", "refusal.payment.exportTooLarge",
+                "refusal.payment.orderNotFound", "refusal.payment.exportTooLarge",
                 "refusal.payment.receivedRange", "refusal.payment.searchTooBroad", "refusal.refund.notFound",
                 "refusal.refund.exceedsRefundable", "refusal.refund.referenceInUse",
                 "refusal.settlement.feeAmount", "refusal.settlement.feeReasonWithoutAmount",

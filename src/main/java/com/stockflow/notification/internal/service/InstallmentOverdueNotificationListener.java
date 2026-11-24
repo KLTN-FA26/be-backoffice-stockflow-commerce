@@ -27,9 +27,11 @@ import java.util.ResourceBundle;
  * holders of {@value #AUDIENCE} - the permission to put an order on hold by hand, the very decision the message asks of
  * them - whose scope is the whole business. It follows the role matrix as it is edited.
  *
- * <p>One message per person per installment ({@code installment-overdue:<installment id>}): the daily scan reads back a
- * few days and may publish the same installment again, a restart replays events, and neither tells anybody twice. System
- * text only - numbers, dates and the amount. Titles and bodies are never logged.</p>
+ * <p>One message per person per installment and due date ({@code installment-overdue:<installment id>:<due date>},
+ * WF-05 BE-49): a restart replays events, and the scan may publish an installment again, without anybody told twice;
+ * but an installment given a new due date - its delivery corrected, its milestone moved - and overdue again on it is
+ * told again, which a key of the installment alone never did. System text only - numbers, dates and the amount. Titles
+ * and bodies are never logged.</p>
  */
 @Component
 class InstallmentOverdueNotificationListener {
@@ -73,7 +75,13 @@ class InstallmentOverdueNotificationListener {
         String body = texts.getString("inbox.installment.overdue.body").formatted(event.seq(),
                 event.contractNumber(), event.orderNumber(), day(event.dueDate()), amount(event));
         return new InboxMessage(CATEGORY, InboxSeverity.WARN, title, body, "/admin/orders/" + event.orderId(),
-                SOURCE_TYPE, event.installmentId().toString(), "installment-overdue:" + event.installmentId());
+                SOURCE_TYPE, event.installmentId().toString(), dedupeKey(event));
+    }
+
+    /** Once per installment and due date; an event without a due date (none is published) keys on the installment. */
+    static String dedupeKey(InstallmentOverdue event) {
+        return "installment-overdue:" + event.installmentId()
+                + (event.dueDate() == null ? "" : ":" + event.dueDate());
     }
 
     private static String day(LocalDate day) {

@@ -665,4 +665,50 @@ class ProductTest {
             assertRefused(() -> product.requireVersion(8L), ErrorCode.OPTIMISTIC_LOCK);
         }
     }
+
+    @Nested
+    @DisplayName("WF-05 D-8: the tax class, on its own")
+    class TaxClassChange {
+
+        /** A row as the demo seeds LY-TRE-DEMO: published, no class ever set. */
+        private Product publishedWithoutClass() {
+            return new Product(ProductId.newId(), "LY-TRE-DEMO", "Ly tre", null, BRAND, CATEGORY, null, null, null,
+                    null, ProductKind.CUSTOMIZABLE, ProductStatus.PUBLISHED, 3L, SUBMITTER, NOW, APPROVER, NOW, false,
+                    null, null, null, null, null);
+        }
+
+        @ParameterizedTest
+        @EnumSource(ProductStatus.class)
+        @DisplayName("set in any status - the draft-only edit refuses a published product, this does not")
+        void anyStatus(ProductStatus status) {
+            Product product = storedAs(status);
+
+            assertThat(product.changeTaxClass(TaxClass.REDUCED)).isTrue();
+
+            assertThat(product.taxClass()).isEqualTo(TaxClass.REDUCED);
+            assertThat(product.status()).as("no workflow move").isEqualTo(status);
+        }
+
+        @Test
+        @DisplayName("HĐ-7: a published product with no class gets STANDARD; the draft edit would have refused it")
+        void publishedWithoutAClass() {
+            Product product = publishedWithoutClass();
+            assertRefused(() -> product.updateDetails("Ly tre", "Bamboo cup", BRAND, CATEGORY, null, null, null,
+                    TaxClass.STANDARD), ErrorCode.INVALID_PRODUCT_STATUS_TRANSITION);
+
+            assertThat(product.changeTaxClass(TaxClass.STANDARD)).isTrue();
+
+            assertThat(product.taxClass()).isEqualTo(TaxClass.STANDARD);
+        }
+
+        @Test
+        @DisplayName("the same class again changes nothing; no class at all is refused (never cleared)")
+        void sameOrNone() {
+            Product product = storedAs(ProductStatus.PUBLISHED);
+
+            assertThat(product.changeTaxClass(TaxClass.STANDARD)).isFalse();
+            assertRefused(() -> product.changeTaxClass(null), ErrorCode.VALIDATION_FAILED);
+            assertThat(product.taxClass()).isEqualTo(TaxClass.STANDARD);
+        }
+    }
 }

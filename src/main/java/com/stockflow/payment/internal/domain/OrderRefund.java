@@ -10,7 +10,20 @@ import java.util.UUID;
  *
  * @param remaining refundable less refunded, never below zero: what the seller still owes the customer (TT-4 - the
  *                  order is not closed while it is above zero, and one closed before a void shows its debt only here)
+ * @param feeOwed   what the order's fee items still owe (WF-05 BE-51; docs 17 §4.10 "tiền hoàn trừ vào phần khách còn
+ *                  nợ trước"): shown beside {@code remaining}, so the accountant sees the customer owes a fee on the
+ *                  same order before paying the refund out. Zero for none; never set off here
  */
 public record OrderRefund(UUID orderId, String orderNumber, UUID customerId, String currency, BigDecimal refundable,
-                          BigDecimal refunded, BigDecimal remaining) {
+                          BigDecimal refunded, BigDecimal remaining, BigDecimal feeOwed) {
+
+    public OrderRefund {
+        feeOwed = feeOwed == null ? BigDecimal.ZERO : feeOwed;
+    }
+
+    /** Without the fee owed: zero. */
+    public OrderRefund(UUID orderId, String orderNumber, UUID customerId, String currency, BigDecimal refundable,
+                       BigDecimal refunded, BigDecimal remaining) {
+        this(orderId, orderNumber, customerId, currency, refundable, refunded, remaining, BigDecimal.ZERO);
+    }
 }

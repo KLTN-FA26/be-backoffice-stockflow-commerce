@@ -99,4 +99,21 @@ public sealed interface OrderEvent extends DomainEvent {
             return payload.orderId().toString();
         }
     }
+
+    /**
+     * The units of a shipment that will not be delivered were closed and payment settled them (WF-05 X-1): a carrier's
+     * return at its receipt (Q-7), or a lost shipment Sales closed (Q-12). Payment and invoicing follow after commit.
+     */
+    record ShipmentSettled(UUID eventId, Instant occurredAt, com.stockflow.contracts.ShipmentReturnSettled payload)
+            implements OrderEvent {
+
+        public ShipmentSettled(com.stockflow.contracts.ShipmentReturnSettled payload) {
+            this(UUID.randomUUID(), Instant.now(), payload);
+        }
+
+        @Override
+        public String aggregateId() {
+            return payload.orderId().toString();
+        }
+    }
 }

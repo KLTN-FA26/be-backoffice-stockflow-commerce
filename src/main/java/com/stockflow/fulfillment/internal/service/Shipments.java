@@ -45,8 +45,16 @@ public interface Shipments {
     record ReasonCorrection(String fromReason, String fromNote, String toReason, String toNote, String reason,
                             UUID correctedBy, String correctedByName, Instant correctedAt) { }
 
+    /**
+     * @param undoneDeliveredAt audit r3 EINV-1: on a shipment whose failure is the warehouse manager's correction of a
+     *                          delivery, the time of the delivery that correction undid - what a correction back to
+     *                          delivered is dated by when it gives no {@code deliveredAt}, and what the screen fills
+     *                          the field with. Another day than that one makes it a new delivery: its issued invoice
+     *                          stays reduced to nothing and a new original is drawn up for the new day. Null otherwise.
+     */
     record ShipmentDetail(ShipmentRow shipment, String partialNote, String failureNote, Instant cancelledAt,
-                          List<Parcel> packages, List<Step> timeline, List<ReasonCorrection> reasonCorrections) { }
+                          List<Parcel> packages, List<Step> timeline, List<ReasonCorrection> reasonCorrections,
+                          Instant undoneDeliveredAt) { }
 
     /**
      * @param outcome       DELIVERED, DELIVERY_FAILED or RETURNED
@@ -88,6 +96,11 @@ public interface Shipments {
      * @param note          required with OTHER
      * @param reason        why the carrier's report was wrong; required
      * @param deliveredAt   only when correcting to DELIVERED: when it was delivered; null = now
+     */
+    /**
+     * @param deliveredAt only with DELIVERED: when it was delivered. Null = the delivery the failure being corrected
+     *                    undid, when that failure was itself a correction of a delivery (audit r3 EINV-1: the same
+     *                    delivery, so its invoice stands for it again); otherwise now
      */
     record Correction(String outcome, String failureReason, String note, String reason, Instant deliveredAt) {
 

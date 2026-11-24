@@ -41,13 +41,20 @@ import java.util.UUID;
  * <ul>
  *   <li>ON_SIGNING: due from the signature, by the day signed plus its days.</li>
  *   <li>BEFORE_DELIVERY: due when the order is released to be shipped ({@code OrderReleased}); no due day - it blocks
- *       the handover until paid (BR-08), which the order module reads through {@link InstallmentStanding}.</li>
+ *       the handover until paid (BR-08), which the order module reads through {@link InstallmentStanding}. One tied to
+ *       a batch a closure of the rest closed whole is never released: what it still owes is carried onto the closure's
+ *       fee item, due from the closure's day (audit r3 LM-3, {@code OrderSettlement.closeRemainder}).</li>
  *   <li>AFTER_DELIVERY: due when the order is delivered in full - the last delivery, or the rest closed after it (15
  *       D23) - by that day plus its days (BR-09): the customer's receivable.</li>
  * </ul>
  *
  * <p>An installment tied to a delivery batch follows that batch (4B-8, 17 §4.5): one before delivery falls due when the
  * batch is released, one after delivery when the batch is delivered in full.</p>
+ *
+ * <p><b>Locks: the order's row, then the installments in id order</b> ({@link InstallmentOrders#lockForPayment}, then
+ * {@link InstallmentBook#lockOfOrder}) in every listener-driven change here (WF-05 BE-41) - the order every money
+ * movement takes. Reading the order's facts without its lock let a correction commit between the read and the
+ * installments' lock, and the milestone was reached from a delivery that no longer existed.</p>
  */
 @Service
 @Transactional
@@ -134,6 +141,7 @@ public class InstallmentService {
      * those tied to no batch (due with the first release); null: the order released whole, every one of them.
      */
     public void released(UUID orderId, Instant at, UUID deliveryBatchId) {
+        orders.lockForPayment(orderId);
         LocalDate day = LocalDate.ofInstant(at, BUSINESS_ZONE);
         for (Installment installment : book.lockOfOrder(orderId)) {
             if (installment.milestone() == InstallmentMilestone.BEFORE_DELIVERY
@@ -163,20 +171,83 @@ public class InstallmentService {
      * Goods of the order were delivered, or the rest of it closed (15 §4.1 step 2, D23): what it pays after delivery is
      * due from the day its goods were delivered. An installment tied to a delivery batch counts from the day that batch
      * was delivered in full (4B-8, 17 §4.5); one tied to no batch, from the day the whole order was. A delivery of part
-     * of a batch, or of a split order, waits for the last one.
+     * of a batch, or of a split order, waits for the last one. One already due from another day than the order now has
+     * is moved to it ({@link #follow}, WF-05 BE-04): the order's "delivered in full" is the latest of its deliveries and
+     * closures, which a delivery recorded late, or a return closed after the last delivery, moves.
      *
      * @param wholeOrder the event delivered the whole order at once (no shipment of its own)
      */
     public void delivered(UUID orderId, Instant at, boolean wholeOrder) {
+        orders.lockForPayment(orderId);
         if (wholeOrder) {
             reach(orderId, InstallmentMilestone.AFTER_DELIVERY, at);
             return;
         }
-        // The days as the order has them, read before the installments are locked (orders before installments): a
-        // shipment's event handled late - after a later delivery - must not date the receivable from an earlier one.
+        follow(orderId, false);
+    }
+
+    /**
+     * A delivery of the order was corrected to a failure (kltn-docs 09 §4.3 step 5, 15 §4.1; E17: the milestone of an
+     * installment paid after delivery is worked out again from the corrected outcome; WF-05 GH-3). {@link #delivered}
+     * reached a milestone once, so without this the installment of a delivery that never happened stayed due from the
+     * wrong day: overdue thirty days later, the customer refused new releases and new contracts held for credit.
+     *
+     * <p>The one path that takes a milestone back ({@link Installment#withdrawMilestone}): the order no longer has the
+     * delivery it counted from - due again only when the goods are delivered again. A milestone the order has from
+     * another moment is moved to it, as on every other path ({@link #follow}).</p>
+     */
+    public void deliveryCorrected(UUID orderId) {
+        orders.lockForPayment(orderId);
+        follow(orderId, true);
+    }
+
+    /**
+     * WF-05 decisions Q-2, Q-3, Q-19 (BE-02): the units of a shipment the carrier brought back, or lost, were closed and
+     * settled ({@code ShipmentReturnSettled}). Their money was settled in the closing transaction
+     * ({@link OrderSettlementService#settleShipmentReturn}); what is left here is when the rest falls due. The order may
+     * now count as delivered in full - nothing outstanding, the closure's day part of its "delivered in full" (Q-3: the
+     * later of the last delivery and the goods back) - so the installments after delivery are reached or moved from what
+     * the order now says.
+     *
+     * <p>An order that delivered nothing and expects nothing more (a whole carrier return, or every shipment lost)
+     * has no "delivered in full" at all, and what the installments after delivery still owe - the plate fee Q-19 keeps,
+     * a share of the goods the customer had not paid - would never fall due (audit M-1, scenario C). They count from the
+     * goods back instead, plus the contract's days: Q-19 sets no second rule, and Q-3's day is the goods back. That day
+     * is the order's fact ({@code InstallmentOrders.endedWithNothingDeliveredAt}), read by {@link #follow} on every path
+     * - this one and a closure of the rest ({@link #delivered}) - not carried by this event alone (audit r2 money M-1).</p>
+     *
+     * <p>Worked out from the order's facts, never from the event alone: heard twice, or after a later event, it changes
+     * nothing more.</p>
+     */
+    public void shipmentReturnSettled(UUID orderId) {
+        orders.lockForPayment(orderId);
+        follow(orderId, false);
+    }
+
+    /**
+     * The one rule every path shares (WF-05 BE-04): each installment paid after delivery is held against the days the
+     * order has <b>now</b> - tied to a batch, the moment that batch was delivered in full; tied to none, or its batch not
+     * delivered in full, the moment the whole order was - or, for an order that delivered nothing and expects nothing
+     * more, the moment it ended (Q-3 "the goods back", Q-19; {@code InstallmentOrders.endedWithNothingDeliveredAt}).
+     * One rule for every path, so a whole return whose rest was closed last falls due exactly as one whose last
+     * shipment's receipt came last (audit r2 money M-1).
+     * <ul>
+     *   <li>not reached, and the order has its day: reached, due by that day plus its days;</li>
+     *   <li>reached from another day, still owing: moved to the order's day ({@link Installment#redate}) - the customer
+     *       is never overdue from a delivery recorded early, nor left owing from a stale day;</li>
+     *   <li>reached, and the order no longer has a day: taken back on a correction only ({@code correction}); on any
+     *       other path the order not knowing its day is no news that the delivery did not happen.</li>
+     * </ul>
+     * Every installment reached or moved is announced ({@code InstallmentDue}) with the due day it has now. The chat
+     * draws one transfer card per installment and does not redraw it on a second announcement, so a card posted before
+     * the move shows the old day until the card is next refreshed (a receipt, a void) - a gap in the chat, not in the
+     * money: the overdue scan, the credit position and the aged receivables all read the installment itself.
+     */
+    private void follow(UUID orderId, boolean correction) {
         java.util.Map<UUID, Instant> batches = orders.batchesDeliveredAt(orderId);
-        Instant whole = orders.deliveredInFullAt(orderId).orElse(null);
-        if (batches.isEmpty() && whole == null) {
+        Instant whole = orders.deliveredInFullAt(orderId)
+                .or(() -> orders.endedWithNothingDeliveredAt(orderId)).orElse(null);
+        if (!correction && batches.isEmpty() && whole == null) {
             return;
         }
         for (Installment installment : book.lockOfOrder(orderId)) {
@@ -185,55 +256,31 @@ public class InstallmentService {
             }
             Instant from = installment.deliveryBatchId() == null ? whole
                     : batches.getOrDefault(installment.deliveryBatchId(), whole);
-            if (from != null && installment.reach(from, LocalDate.ofInstant(from, BUSINESS_ZONE))) {
+            if (!installment.reached()) {
+                if (from != null && installment.reach(from, LocalDate.ofInstant(from, BUSINESS_ZONE))) {
+                    book.save(installment);
+                    fellDue(installment);
+                    log.info("Installment {} of contract {} is due (AFTER_DELIVERY) by {}", installment.seq(),
+                            installment.contractNumber(), installment.dueDate());
+                }
+                continue;
+            }
+            if (from == null) {
+                if (correction && installment.withdrawMilestone()) {
+                    book.save(installment);
+                    log.info("Installment {} of contract {}: a delivery was corrected to a failure, not due until the "
+                            + "goods are delivered again", installment.seq(), installment.contractNumber());
+                }
+                continue;
+            }
+            LocalDate before = installment.dueDate();
+            if (installment.redate(from, LocalDate.ofInstant(from, BUSINESS_ZONE))) {
                 book.save(installment);
                 fellDue(installment);
-                log.info("Installment {} of contract {} is due (AFTER_DELIVERY) by {}", installment.seq(),
-                        installment.contractNumber(), installment.dueDate());
+                log.info("Installment {} of contract {}: due by {} instead of {} - the order counts as delivered in "
+                        + "full from another day", installment.seq(), installment.contractNumber(),
+                        installment.dueDate(), before);
             }
-        }
-    }
-
-    /**
-     * A delivery of the order was corrected to a failure (kltn-docs 09 §4.3 step 5, 15 §4.1; E17: the milestone of an
-     * installment paid after delivery is worked out again from the corrected outcome; WF-05 GH-3). {@link #delivered}
-     * reaches a milestone once, so without this the installment of a delivery that never happened stayed due from the
-     * wrong day: overdue thirty days later, the customer refused new releases and new contracts held for credit.
-     *
-     * <p>Each installment paid after delivery is held against the days the order has <b>now</b> - the same facts
-     * {@link #delivered} reads, so the two never disagree: tied to a batch, the moment that batch was delivered in full;
-     * tied to none, the moment the whole order was. A milestone the order no longer has is taken back
-     * ({@link Installment#withdrawMilestone}: due again only when the goods are delivered again, from that delivery's
-     * day, which {@link #delivered} then sets). A milestone the order has from another moment - the goods were already
-     * delivered again when this was heard - is moved to that moment. One the order still has as it was, or one paid in
-     * full, is left alone.</p>
-     *
-     * <p>Worked out from what the order says, never from the event: hearing it twice, or after the redelivery's own
-     * event, changes nothing more.</p>
-     */
-    public void deliveryCorrected(UUID orderId) {
-        // Read before the installments are locked, as delivered() reads them: orders before installments.
-        java.util.Map<UUID, Instant> batches = orders.batchesDeliveredAt(orderId);
-        Instant whole = orders.deliveredInFullAt(orderId).orElse(null);
-        for (Installment installment : book.lockOfOrder(orderId)) {
-            if (installment.milestone() != InstallmentMilestone.AFTER_DELIVERY || !installment.reached()) {
-                continue;
-            }
-            Instant from = installment.deliveryBatchId() == null ? whole
-                    : batches.getOrDefault(installment.deliveryBatchId(), whole);
-            if (from != null && from.equals(installment.reachedAt())) {
-                continue;
-            }
-            if (!installment.withdrawMilestone()) {
-                continue;
-            }
-            if (from != null) {
-                installment.reach(from, LocalDate.ofInstant(from, BUSINESS_ZONE));
-            }
-            book.save(installment);
-            log.info("Installment {} of contract {}: a delivery was corrected to a failure, {}", installment.seq(),
-                    installment.contractNumber(), from == null ? "not due until the goods are delivered again"
-                            : "due again by " + installment.dueDate());
         }
     }
 
@@ -251,46 +298,6 @@ public class InstallmentService {
     }
 
     /**
-     * {@link com.stockflow.payment.api.PaymentService#chargeFailedDelivery}: the fee item of a failed trip, numbered
-     * after the contract's plan and its other fee items, due from today. The order's installments are locked first, in
-     * id order, as every money movement of the order locks them - so two fee items never take the same number.
-     *
-     * <p><b>Due today, deliberately</b> (open question for the owner, WF-05 review F10). The fee is owed for a trip
-     * that already happened, as the cancellation fee item is (15 §5.1 "đến hạn ngay"); no payment term was agreed for
-     * it, so none is invented here. The consequence is meant: from the next business day it is unpaid it is overdue
-     * ({@link Installment#overdue}), and the customer's credit position then shows it overdue - which warns whoever
-     * releases their orders ({@code OrderReleases.releaseWarnings}) and tells Sales ({@link #announceNewlyOverdue}); no
-     * release is refused for it any more (WF4-OVERDUE-WARN). Giving the fee a term (a {@code due_days}, or the contract's terms) would be
-     * a one-line change in {@link Installment#openDeliveryFailureFee}.</p>
-     */
-    public Optional<UUID> chargeFailedDelivery(com.stockflow.payment.api.ChargeFailedDeliveryCommand command) {
-        List<Installment> ofOrder = book.lockOfOrder(command.orderId());
-        if (ofOrder.isEmpty()) {
-            return Optional.empty();
-        }
-        BigDecimal amount = command.amount();
-        if (amount.signum() <= 0 || amount.stripTrailingZeros().scale() > 0) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "The fee of a failed trip is more than zero, in whole units of the currency")
-                    .localized("refusal.payment.failedTripFee");
-        }
-        Installment first = ofOrder.stream().filter(i -> !i.isFeeItem()).findFirst().orElse(ofOrder.getFirst());
-        int seq = ofOrder.stream().filter(Installment::isFeeItem).mapToInt(Installment::seq).max()
-                .orElse(Installment.FIRST_FEE_SEQ - 1) + 1;
-        if (seq > Installment.LAST_FEE_SEQ) {
-            throw new IllegalStateException("Contract %s has no room for another fee item"
-                    .formatted(first.contractNumber()));
-        }
-        Installment fee = Installment.openDeliveryFailureFee(first, seq, command.label(), amount,
-                command.chargedAt(), LocalDate.ofInstant(command.chargedAt(), BUSINESS_ZONE));
-        book.save(fee);
-        fellDue(fee);
-        log.info("Contract {}: failed trip charged {} {} on fee item {} ({})", first.contractNumber(),
-                amount.toPlainString(), first.currency(), seq, command.label());
-        return Optional.of(fee.id());
-    }
-
-    /**
      * Tells the modules that follow installments - the chat's transfer card (kltn-docs 16 §4.4 step 9, BR-06) - that
      * one fell due. Published in the transaction that reached its milestone, delivered after commit; the amount it still
      * owes is read when the card is drawn.
@@ -303,41 +310,50 @@ public class InstallmentService {
 
     /**
      * The daily overdue scan (kltn-docs 15 §4.3 step 11, WF4-OVERDUE-TRIGGER): publishes {@link InstallmentOverdue} for
-     * every installment that turned overdue lately - past its due day, still owing, due on or after
-     * {@code lookbackDays} days before today - so Sales hear of it and may hold the customer's orders by hand.
+     * every installment overdue today - past its due day, still owing - that was not announced for its current due date,
+     * and writes that date down ({@link InstallmentBook#markOverdueAnnounced}), so Sales hear of it once per due date and
+     * may hold the customer's orders by hand.
      *
-     * <p>Overdue is the one definition the application repeats ({@link Installment#overdue},
-     * {@code payment.installment_is_overdue}); the scan asks the installment search for it and adds only a lower bound on
-     * the due day, so the whole history is not announced at the first run. Nothing records what was announced - the
-     * listener posts under a key of the installment, so a run again (or a restart) tells nobody twice. The look-back
-     * lets a night the job missed be caught the next; the same installment may therefore be published on up to
-     * {@code lookbackDays} runs, each time harmlessly.</p>
+     * <p>WF-05 BE-49: the scan used to read back three days of due dates and keep no record. An installment reached with
+     * a due date already further back - a delivery recorded late, a milestone moved - was overdue at once and never
+     * announced; one announced and then given a new due date was never announced again. Overdue is still the one
+     * definition the application repeats ({@link Installment#overdue}, {@code payment.installment_is_overdue}); the
+     * record is only what was told. The mark and the event commit together, and the listener's key names the due date
+     * too ({@code installment-overdue:<id>:<due date>}), so a replay tells nobody twice.</p>
+     *
+     * <p>Each round reads the first page of what is still to announce - what this run marked has left it - until a page
+     * brings nothing new. One a receipt holds right now is skipped, not waited for, and comes again the next night.</p>
      *
      * @return how many installments were announced
      */
-    public int announceNewlyOverdue(int lookbackDays) {
-        if (lookbackDays < 1) {
-            throw new IllegalArgumentException("lookbackDays must be at least 1");
-        }
+    public int announceNewlyOverdue() {
         LocalDate today = today();
         InstallmentSearch.InstallmentFilter filter = new InstallmentSearch.InstallmentFilter(null, null, null, null,
-                null, null, true, today, today.minusDays(lookbackDays));
+                null, null, true, today, null, null, null, true);
+        java.util.Set<UUID> seen = new java.util.HashSet<>();
         int announced = 0;
-        for (int page = 0; page < SCAN_MAX_PAGES; page++) {
-            var found = search.installments(filter, Pages.of(page, Pages.MAX_PAGE_SIZE,
-                    Sort.by("dueDate", "id")));
+        for (int round = 0; round < SCAN_MAX_PAGES; round++) {
+            var found = search.installments(filter, Pages.of(0, Pages.MAX_PAGE_SIZE, Sort.by("dueDate", "id")));
+            boolean anyNew = false;
             for (Installment installment : found.getContent()) {
+                if (!seen.add(installment.id())) {
+                    continue;
+                }
+                anyNew = true;
+                if (!book.markOverdueAnnounced(installment.id(), installment.dueDate())) {
+                    continue;
+                }
                 events.publishEvent(new InstallmentOverdue(installment.id(), installment.contractId(),
                         installment.contractNumber(), installment.orderId(), installment.orderNumber(),
                         installment.customerId(), installment.seq(), installment.dueDate(),
                         installment.outstanding(), installment.currency()));
                 announced++;
             }
-            if (!found.hasNext()) {
+            if (!anyNew || !found.hasNext()) {
                 break;
             }
         }
-        log.info("Overdue scan: {} installment(s) overdue since the last {} day(s)", announced, lookbackDays);
+        log.info("Overdue scan: {} installment(s) announced overdue", announced);
         return announced;
     }
 

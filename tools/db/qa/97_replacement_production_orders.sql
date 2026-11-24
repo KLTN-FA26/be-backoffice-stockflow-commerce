@@ -1,5 +1,5 @@
 -- =============================================================================
--- Adversarial checks + happy paths: replacement production orders (V20261216000100, SCRUM-839; kltn-docs 17 §4.13,
+-- Adversarial checks + happy paths: replacement production orders (V20261225000100, SCRUM-839; kltn-docs 17 §4.13,
 -- BR-31). Needs the demo seed: a demo production order of a signed, shipping order is the one replaced. Its lot, a
 -- carton of it and the write-offs are fixtures written with the triggers off (the inventory rules are other scripts').
 -- Rolled back at the end.

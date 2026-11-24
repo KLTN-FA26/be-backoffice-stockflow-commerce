@@ -23,6 +23,9 @@ public class OrderRemainderClosureJpaEntity extends BaseEntity {
     @Column(name = "note", updatable = false, length = 1000) private String note;
     @Column(name = "closed_by", updatable = false) private UUID closedBy;
     @Column(name = "closed_at", nullable = false, updatable = false) private Instant closedAt;
+    /** WF-05 Q-19 edge: the shipping fee payment waived with this closure; 0 when none (V20261217000400). */
+    @Column(name = "shipping_fee_waived", nullable = false, updatable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal shippingFeeWaived = java.math.BigDecimal.ZERO;
 
     protected OrderRemainderClosureJpaEntity() {
     }
@@ -38,10 +41,18 @@ public class OrderRemainderClosureJpaEntity extends BaseEntity {
         this.closedAt = closedAt;
     }
 
+    /** As above, with the shipping fee payment waived with the closure (WF-05 Q-19 edge). */
+    public OrderRemainderClosureJpaEntity(UUID id, UUID orderId, UUID closureId, String reasonCode, String note,
+                                          UUID closedBy, Instant closedAt, java.math.BigDecimal shippingFeeWaived) {
+        this(id, orderId, closureId, reasonCode, note, closedBy, closedAt);
+        this.shippingFeeWaived = shippingFeeWaived == null ? java.math.BigDecimal.ZERO : shippingFeeWaived;
+    }
+
     public UUID getOrderId() { return orderId; }
     public UUID getClosureId() { return closureId; }
     public String getReasonCode() { return reasonCode; }
     public String getNote() { return note; }
     public UUID getClosedBy() { return closedBy; }
     public Instant getClosedAt() { return closedAt; }
+    public java.math.BigDecimal getShippingFeeWaived() { return shippingFeeWaived; }
 }

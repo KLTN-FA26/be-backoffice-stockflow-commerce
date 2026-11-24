@@ -88,6 +88,10 @@ public class SalesContractJpaEntity extends BaseEntity {
     @Column(name = "completed_at")
     private Instant completedAt;
 
+    /** WF-05 Q-6 (V20261217000100): when the contract was liquidated. */
+    @Column(name = "liquidated_at")
+    private Instant liquidatedAt;
+
     protected SalesContractJpaEntity() {
     }
 
@@ -130,6 +134,11 @@ public class SalesContractJpaEntity extends BaseEntity {
         this.completedAt = completedAt;
     }
 
+    public void applyLiquidated(Instant at) {
+        this.liquidatedAt = at;
+    }
+
+    public Instant getLiquidatedAt() { return liquidatedAt; }
     public String getContractNumber() { return contractNumber; }
     public UUID getOrderId() { return orderId; }
     public SalesContractStatus getStatus() { return status; }

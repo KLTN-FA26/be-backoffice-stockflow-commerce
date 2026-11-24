@@ -66,8 +66,12 @@ class EInvoiceProviderAccountNotificationListener {
                 ? texts.getString(key + ".body").formatted(event.provider(), event.quotaRemaining(),
                 event.quotaThreshold())
                 : texts.getString(key + ".body").formatted(event.provider(), event.rejectionCode());
-        String link = event.problem() == EInvoiceProviderAccountAlert.Problem.QUOTA_LOW ? "/invoicing/einvoices"
-                : "/invoicing/einvoices?status=REJECTED";
+        // A used-up plan holds the drafts back before they are sent (WF-05 BE-54, Q-22 BR-09): they wait as drafts.
+        String link = switch (event.problem()) {
+            case QUOTA_LOW -> "/invoicing/einvoices";
+            case QUOTA_EXHAUSTED -> "/invoicing/einvoices?status=DRAFT";
+            default -> "/invoicing/einvoices?status=REJECTED";
+        };
         // Running low leaves time; the others stop every invoice now.
         InboxSeverity severity = event.problem() == EInvoiceProviderAccountAlert.Problem.QUOTA_LOW
                 ? InboxSeverity.WARN : InboxSeverity.CRITICAL;

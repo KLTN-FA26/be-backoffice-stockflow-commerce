@@ -127,9 +127,10 @@ SELECT pg_temp.expect_ok('DF13 the cartons of the case', $q$
     VALUES (md5('qa90:c1')::uuid, 'QA90-LPN-1', 'LY-GIAY-DEMO-12OZ-XANH', 'LOT-1', 2, 'dented') $q$);
 SELECT pg_temp.expect_fail('DF14 a carton''s condition rewritten', $q$
     UPDATE ordering.delivery_failure_case_carton SET condition = NULL WHERE case_id = md5('qa90:c1')::uuid $q$);
-SELECT pg_temp.expect_fail('DF15 a carton of nothing', $q$
+-- WF-05 Q-18 (V20261217000400): a carton keeps the units counted inside it; one that came back empty counts 0.
+SELECT pg_temp.expect_fail('DF15 a carton of fewer than nothing', $q$
     INSERT INTO ordering.delivery_failure_case_carton (case_id, lpn, sku, quantity)
-    VALUES (md5('qa90:c1')::uuid, 'QA90-LPN-2', 'LY-GIAY-DEMO-12OZ-XANH', 0) $q$);
+    VALUES (md5('qa90:c1')::uuid, 'QA90-LPN-2', 'LY-GIAY-DEMO-12OZ-XANH', -1) $q$);
 
 \echo '--- deliver again: the customer pays the trip they made fail, and only that trip'
 SELECT pg_temp.expect_fail('DF16 OPEN straight to REDELIVERED', $q$

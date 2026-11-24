@@ -54,12 +54,17 @@ final class PaymentWebMapper {
                         i.status().name(), t.reference()));
     }
 
-    /** @param names R5-8: display names of the staff who recorded and voided receipts, by user id */
+    /**
+     * @param names         R5-8: display names of the staff who recorded and voided receipts, by user id
+     * @param voidable      whether the receipt may be voided now; null where it was not worked out (the list)
+     * @param voidBlockedBy why not; null when voidable or not worked out
+     */
     static com.stockflow.payment.internal.controller.dto.PaymentReceiptResponse toResponse(
             com.stockflow.payment.internal.domain.PaymentReceipt r,
             java.util.Map<java.util.UUID, com.stockflow.payment.internal.domain.Installment> installments,
             java.util.Map<java.util.UUID, com.stockflow.customer.api.CustomerLabel> labels,
-            java.util.Map<java.util.UUID, String> names) {
+            java.util.Map<java.util.UUID, String> names, Boolean voidable,
+            com.stockflow.common.error.ErrorCode voidBlockedBy) {
         var label = labelOf(labels, r.customerId());
         return new com.stockflow.payment.internal.controller.dto.PaymentReceiptResponse(r.id(), r.customerId(),
                 label == null ? null : label.name(), label == null ? null : label.code(),
@@ -72,7 +77,8 @@ final class PaymentWebMapper {
                             i == null ? null : i.seq(), i == null ? null : i.name(),
                             i == null ? null : i.milestone().name());
                 }).toList(), r.recordedBy() == null ? null : names.get(r.recordedBy()),
-                r.voidedBy() == null ? null : names.get(r.voidedBy()));
+                r.voidedBy() == null ? null : names.get(r.voidedBy()), voidable,
+                voidBlockedBy == null ? null : voidBlockedBy.name());
     }
 
     /** The label of a customer from a batch read; null when there is no batch (a customer's own view) or no such customer. */
@@ -97,11 +103,12 @@ final class PaymentWebMapper {
                     return new com.stockflow.payment.internal.controller.dto.OrderRefundResponse.Settlement(s.id(),
                             s.kind().name(), s.collected(), s.closed(), s.reduced(), s.surplus(), s.fee(),
                             terms.percent(), forCustomer ? null : terms.reason(), forCustomer ? null : terms.detail(),
-                            s.feeCovered(), s.refundable(), s.feeOwed(), s.feeItemId(), s.settledAt());
+                            s.feeCovered(), s.refundable(), s.feeOwed(), s.feeItemId(), s.settledAt(), s.shipmentId(),
+                            s.shippingFeeWaived(), s.carriedToFee());
                 }).toList(), d.records().stream()
                 .filter(r -> !forCustomer
                         || r.status() == com.stockflow.payment.internal.domain.RefundRecord.Status.RECORDED)
-                .map(r -> forCustomer ? forCustomer(r) : toResponse(r)).toList());
+                .map(r -> forCustomer ? forCustomer(r) : toResponse(r)).toList(), d.feeOwed());
     }
 
     /** What the customer sees of a refund made: the money and the statement line, not the accountant's note or name. */
@@ -118,7 +125,8 @@ final class PaymentWebMapper {
         var standing = com.stockflow.payment.internal.domain.RefundStanding.of(o.orderId(), o.refundable(),
                 o.refunded());
         return new com.stockflow.payment.internal.controller.dto.OrderRefundResponse(o.orderId(), o.orderNumber(),
-                o.currency(), standing.status().name(), o.refundable(), o.refunded(), o.remaining(), null, null);
+                o.currency(), standing.status().name(), o.refundable(), o.refunded(), o.remaining(), null, null,
+                o.feeOwed());
     }
 
     static com.stockflow.payment.internal.controller.dto.RefundRecordResponse toResponse(

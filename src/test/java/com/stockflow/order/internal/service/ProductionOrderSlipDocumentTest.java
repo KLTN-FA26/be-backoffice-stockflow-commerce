@@ -4,7 +4,8 @@ import com.google.zxing.BinaryBitmap;
 import com.google.zxing.MultiFormatReader;
 import com.google.zxing.RGBLuminanceSource;
 import com.google.zxing.common.HybridBinarizer;
-import com.stockflow.common.label.LabelFonts;
+import com.stockflow.common.document.DocumentFonts;
+import com.stockflow.common.document.DocumentSamples;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.rendering.PDFRenderer;
@@ -31,11 +32,12 @@ class ProductionOrderSlipDocumentTest {
     private static final UUID DESIGN = UUID.fromString("0192f000-0000-7000-8000-000000000001");
     private static final String CHECKSUM = "ab".repeat(32);
 
-    private final ProductionOrderSlipDocument document = new ProductionOrderSlipDocument(new LabelFonts());
+    private final ProductionOrderSlipDocument document = new ProductionOrderSlipDocument(new DocumentFonts(),
+            DocumentSamples.seller());
 
     private static ProductionOrderSlipDocument.Facts facts(List<ProductionOrderSlipDocument.SlipLine> lines) {
         return new ProductionOrderSlipDocument.Facts("PRD-20261110-0007", Instant.parse("2026-11-10T03:15:00Z"),
-                "CÔNG TY TNHH STOCKFLOW", "XUONG-IN", "Xưởng in Bình Dương", "Chị Lan - 0909123456 - don@xuong.vn",
+                "CÔNG TY TNHH SẢN XUẤT BAO BÌ AN PHÁT", "XUONG-IN", "Xưởng in Bình Dương", "Chị Lan - 0909123456 - don@xuong.vn",
                 "Kho Hồ Chí Minh", "12 Nguyễn Huệ, TP HCM", LocalDate.of(2026, 11, 30), true, "Giao trước 10 giờ",
                 "Nguyễn Văn Điều Phối", "dieuphoi@stockflow.vn", lines);
     }
@@ -54,19 +56,21 @@ class ProductionOrderSlipDocumentTest {
     @Test
     @DisplayName("everything a print shop needs to make and deliver the goods is on the slip")
     void everyField() throws Exception {
-        byte[] pdf = document.render(facts(List.of(line("CUP-CAFE-001", "600 x 400 x 350 mm", "Dán nhãn mã đơn"),
-                line("CUP-CAFE-002", null, null))));
+        byte[] pdf = DocumentSamples.keep("production-order-slip-sample", document.render(facts(List.of(
+                line("CUP-CAFE-001", "600 x 400 x 350 mm", "Dán nhãn mã đơn"), line("CUP-CAFE-002", null, null)))));
+        assertThat(DocumentSamples.within(pdf, 20, 15)).as("inside the margins").isTrue();
 
         assertThat(new String(pdf, 0, 5, java.nio.charset.StandardCharsets.US_ASCII)).isEqualTo("%PDF-");
-        String text = text(pdf);
+        String text = text(pdf).replaceAll("\\s+", " ");
         assertThat(text)
-                .contains("CÔNG TY TNHH STOCKFLOW", "PHIẾU ĐẶT HÀNG SẢN XUẤT", "PRD-20261110-0007")
-                .as("the date of the approval, in Vietnam's time").contains("Ngày: 10/11/2026")
-                .contains("CẦN HÀNG TRƯỚC NGÀY", "30/11/2026")
-                .contains("GIAO VỀ", "Kho Hồ Chí Minh", "12 Nguyễn Huệ, TP HCM")
-                .contains("DUYỆT MẪU IN TRƯỚC", "CÓ")
-                .contains("ĐƠN VỊ SẢN XUẤT", "Xưởng in Bình Dương — mã XUONG-IN",
-                        "Liên hệ: Chị Lan - 0909123456 - don@xuong.vn")
+                .as("the company's head: the name the order was sent under, then the letterhead's lines")
+                .contains("CÔNG TY TNHH SẢN XUẤT BAO BÌ AN PHÁT", "MST: 0312345678", "PHIẾU ĐẶT HÀNG SẢN XUẤT",
+                        "Số: PRD-20261110-0007")
+                .as("the date of the approval, in Vietnam's time")
+                .contains("Thành phố Hồ Chí Minh, ngày 10 tháng 11 năm 2026")
+                .containsSubsequence("Đơn vị sản xuất", "Xưởng in Bình Dương — mã XUONG-IN", "Liên hệ",
+                        "Chị Lan - 0909123456 - don@xuong.vn", "Cần hàng trước ngày", "30/11/2026", "Giao về",
+                        "Kho Hồ Chí Minh - 12 Nguyễn Huệ, TP HCM", "Duyệt mẫu in trước", "CÓ")
                 .contains("CUP-CAFE-001", "CUP-CAFE-002", "Ly giấy in logo", "12", "50", "600")
                 .contains("Thùng 600 x 400 x 350 mm")
                 .as("a SKU with no carton size recorded").contains("Kích thước thùng: chưa khai báo")
@@ -75,8 +79,8 @@ class ProductionOrderSlipDocumentTest {
                 .contains("Ghi chú: Giao trước 10 giờ")
                 .contains("Ghi số phiếu PRD-20261110-0007 trên phiếu giao hàng")
                 .contains("Nguyễn Văn Điều Phối (Điều phối sản xuất)", "dieuphoi@stockflow.vn")
-                .as("approved at, in Vietnam's time").contains("10:15 10/11/2026")
-                .contains("không cần chữ ký", "Trang 1 / 1");
+                .as("approved at, in Vietnam's time").contains("10:15 ngày 10/11/2026")
+                .contains("không cần chữ ký", "Trang 1/1");
         String flat = text.replaceAll("\\s+", "");
         assertThat(flat).as("the whole checksum, never shortened").contains(CHECKSUM).contains(DESIGN.toString());
     }
@@ -96,13 +100,14 @@ class ProductionOrderSlipDocumentTest {
         var plain = new ProductionOrderSlipDocument.Facts("PRD-20261110-0008", Instant.parse("2026-11-10T03:15:00Z"),
                 " ", "XUONG-IN", "Xưởng in", null, "Kho HCM", null, LocalDate.of(2026, 12, 1), false, null, "A", null,
                 List.of(line("CUP-1", null, null)));
-        String text = text(document.render(plain));
+        String text = text(document.render(plain)).replaceAll("\\s+", " ");
         assertThat(text)
+                .as("no company named on the order: the letterhead's").contains("CÔNG TY TNHH SẢN XUẤT BAO BÌ AN PHÁT")
                 .contains("KHÔNG")
                 .contains("Giao hàng tại: Kho HCM, trước ngày 01/12/2026.")
                 .contains("Kích thước thùng: chưa khai báo")
                 .contains("A (Điều phối sản xuất)")
-                .doesNotContain("null", "Liên hệ: ", "Ghi chú", "Đóng gói", "(Điều phối sản xuất) ·");
+                .doesNotContain("null", "Liên hệ :", "Liên hệ:", "Ghi chú", "Đóng gói", "(Điều phối sản xuất) -");
     }
 
     @Test
@@ -129,8 +134,8 @@ class ProductionOrderSlipDocumentTest {
             int pages = doc.getNumberOfPages();
             assertThat(pages).isGreaterThan(1);
             String text = new PDFTextStripper().getText(doc);
-            assertThat(text).contains("CUP-CAFE-039", "Trang " + pages + " / " + pages);
-            assertThat(text.split("Tên hàng / quy cách", -1).length - 1).as("the header on each page the table spans")
+            assertThat(text).contains("CUP-CAFE-039", "Trang " + pages + "/" + pages);
+            assertThat(text.split("Tên hàng, quy cách", -1).length - 1).as("the header on each page the table spans")
                     .isGreaterThanOrEqualTo(pages - 1);
         }
     }

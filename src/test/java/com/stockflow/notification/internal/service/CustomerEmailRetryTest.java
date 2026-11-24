@@ -97,6 +97,27 @@ class CustomerEmailRetryTest {
     }
 
     @Test
+    @DisplayName("audit r2 M-1: an invoice mail sent again at staff's request is retried like the first, under its "
+            + "own reference, reading no invoice to ask which message it is")
+    void einvoiceMailSentAgainIsRetriedToo() {
+        var again = new com.stockflow.contracts.EInvoiceMailRequested(UUID.randomUUID(), "EINV-20261112-0001",
+                UUID.randomUUID(), "SO-20261101-0007", UUID.randomUUID(), NOW, UUID.randomUUID());
+        String type = com.stockflow.contracts.EInvoiceMailRequested.class.getName();
+        when(reader.page(anyString(), anyString(), any(), nullable(UUID.class), eq(CustomerEmailRetry.PAGE)))
+                .thenReturn(List.of());
+        when(reader.page(eq(type), anyString(), any(), nullable(UUID.class), eq(CustomerEmailRetry.PAGE)))
+                .thenReturn(List.of(new PendingPublication(new UUID(0, 7), "again")));
+        when(serializer.deserialize("again", com.stockflow.contracts.EInvoiceMailRequested.class)).thenReturn(again);
+
+        retry().retry();
+
+        verify(einvoices).on(again);
+        verify(log).lease("customer-mail:einvoice.resent:" + again.einvoiceId() + ":" + NOW.getEpochSecond(),
+                NOW.plus(CustomerEmailRetry.LEASE));
+        org.mockito.Mockito.verifyNoInteractions(einvoiceDirectory);
+    }
+
+    @Test
     @DisplayName("WF-05 item b: a failed error-notice mail is retried through its own listener, keyed by the notice")
     void errorNoticeMailIsRetriedToo() {
         var due = new com.stockflow.contracts.EInvoiceErrorNoticeRecorded(UUID.randomUUID(), UUID.randomUUID(),

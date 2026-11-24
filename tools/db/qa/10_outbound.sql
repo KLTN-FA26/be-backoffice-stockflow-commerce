@@ -547,9 +547,22 @@ SELECT pg_temp.expect_fail('F102 the same milestone twice for one load', $q$
 -- 3-6: a delivery corrected by hand, a proof of delivery (V20261108001800).
 SELECT pg_temp.expect_ok('F103 a delivery corrected to a failure, with its reason and why', $q$
     INSERT INTO fulfillment.delivery_outcome_correction (id, shipment_id, from_status, to_status, failure_reason,
-                                                         reason, corrected_by, corrected_at)
+                                                         reason, corrected_by, corrected_at, undone_delivered_at)
     SELECT md5('qa:doc:f103')::uuid, id, 'DELIVERED', 'DELIVERY_FAILED', 'CUSTOMER_ABSENT',
-           'the customer says nothing arrived', md5('demo:user:approver')::uuid, NOW()
+           'the customer says nothing arrived', md5('demo:user:approver')::uuid, NOW(), NOW() - INTERVAL '1 day'
+      FROM fulfillment.shipment LIMIT 1 $q$);
+-- Audit r3 EINV-1 (V20261224000200): a correction of a delivery keeps the delivery it undid, never a later one.
+SELECT pg_temp.expect_fail('F103a a delivery corrected to a failure without the delivery it undid', $q$
+    INSERT INTO fulfillment.delivery_outcome_correction (id, shipment_id, from_status, to_status, failure_reason,
+                                                         reason, corrected_by, corrected_at)
+    SELECT gen_random_uuid(), id, 'DELIVERED', 'DELIVERY_FAILED', 'CUSTOMER_ABSENT', 'x',
+           md5('demo:user:approver')::uuid, NOW()
+      FROM fulfillment.shipment LIMIT 1 $q$);
+SELECT pg_temp.expect_fail('F103b a correction back to delivered naming an undone delivery', $q$
+    INSERT INTO fulfillment.delivery_outcome_correction (id, shipment_id, from_status, to_status, reason,
+                                                         corrected_by, corrected_at, undone_delivered_at)
+    SELECT gen_random_uuid(), id, 'DELIVERY_FAILED', 'DELIVERED', 'x', md5('demo:user:approver')::uuid, NOW(),
+           NOW() - INTERVAL '1 day'
       FROM fulfillment.shipment LIMIT 1 $q$);
 SELECT pg_temp.expect_fail('F104 a correction to a failure without its reason', $q$
     INSERT INTO fulfillment.delivery_outcome_correction (id, shipment_id, from_status, to_status, reason, corrected_by,

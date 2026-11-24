@@ -552,7 +552,8 @@ class UserAndRoleManagementIntegrationTest {
             refused(ErrorCode.LAST_SYSTEM_ADMIN, () -> identity.changeUserStatus(admin.userId(), UserStatusChange.LOCK, REASON));
             refused(ErrorCode.LAST_SYSTEM_ADMIN, () -> identity.changeUserStatus(admin.userId(), UserStatusChange.DISABLE, REASON));
         } finally {
-            parked.forEach(id -> jdbc.update("UPDATE identity.app_user SET status = 'ACTIVE' WHERE id = ?", id));
+            tx.executeWithoutResult(t -> parked.forEach(id -> jdbc.update(
+                    "UPDATE identity.app_user SET status = 'ACTIVE' WHERE id = ?", id)));
         }
     }
 
@@ -713,6 +714,10 @@ class UserAndRoleManagementIntegrationTest {
     }
 
     /** Disables every other active System Admin for the test; returns them so they can be restored. */
+    /**
+     * Disables every other active System Admin - the demo seed's demo.admin among them - in a transaction of its own:
+     * the pool does not auto-commit, so an update outside one is rolled back when its connection goes back.
+     */
     private List<UUID> parkOtherActiveAdmins(UUID... keep) {
         List<UUID> others = jdbc.queryForList("""
                 SELECT u.id FROM identity.app_user u
@@ -720,7 +725,8 @@ class UserAndRoleManagementIntegrationTest {
                 JOIN identity.app_role r ON r.id = ur.role_id
                 WHERE r.code = 'SYSTEM_ADMIN' AND u.status = 'ACTIVE'""", UUID.class);
         others.removeAll(List.of(keep));
-        others.forEach(id -> jdbc.update("UPDATE identity.app_user SET status = 'DISABLED' WHERE id = ?", id));
+        tx.executeWithoutResult(t -> others.forEach(id -> jdbc.update(
+                "UPDATE identity.app_user SET status = 'DISABLED' WHERE id = ?", id)));
         return others;
     }
 

@@ -8,6 +8,7 @@ import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.internal.domain.Product;
 import com.stockflow.product.internal.domain.ProductId;
 import com.stockflow.product.internal.domain.ProductRepository;
+import com.stockflow.product.internal.domain.ProductTaxClass;
 import com.stockflow.product.internal.domain.ReferenceStatus;
 import com.stockflow.product.internal.entity.ProductJpaEntity;
 import jakarta.persistence.EntityManager;
@@ -79,6 +80,23 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
             classes.put((String) row[0], (com.stockflow.product.api.TaxClass) row[1]);
         }
         return classes;
+    }
+
+    @Override
+    public List<ProductTaxClass> taxClassesBySku(java.util.Collection<String> skus) {
+        if (skus == null || skus.isEmpty()) {
+            return List.of();
+        }
+        return jpa.taxClassesBySku(skus).stream().map(row -> new ProductTaxClass((String) row[0], (UUID) row[1],
+                (String) row[2], (String) row[3], (ProductStatus) row[4],
+                (com.stockflow.product.api.TaxClass) row[5], ((Number) row[6]).longValue())).toList();
+    }
+
+    @Override
+    public Optional<ProductTaxClass> taxClassOf(ProductId id) {
+        return jpa.taxClassOf(id.value()).stream().findFirst().map(row -> new ProductTaxClass(null, (UUID) row[0],
+                (String) row[1], (String) row[2], (ProductStatus) row[3],
+                (com.stockflow.product.api.TaxClass) row[4], ((Number) row[5]).longValue()));
     }
 
     @Override

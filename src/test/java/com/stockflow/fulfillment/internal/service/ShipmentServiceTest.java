@@ -64,13 +64,22 @@ class ShipmentServiceTest {
     private final ShipmentContext context = mock(ShipmentContext.class);
     private final OrderService orders = mock(OrderService.class);
     private final IdentityService identities = mock(IdentityService.class);
+    private final com.stockflow.fulfillment.internal.repository.DeliveryOutcomeCorrectionJpaRepository corrections =
+            mock(com.stockflow.fulfillment.internal.repository.DeliveryOutcomeCorrectionJpaRepository.class);
     private final ShipmentService service = new ShipmentService(shipments, locks, events, packages, picks, carriers,
-            loads, members, timeline, context, orders, identities,
-            mock(com.stockflow.fulfillment.internal.repository.DeliveryOutcomeCorrectionJpaRepository.class),
+            loads, members, timeline, context, orders, identities, corrections,
             mock(com.stockflow.fulfillment.internal.repository.FailureReasonCorrectionJpaRepository.class),
             Clock.fixed(NOW, ZoneOffset.UTC));
 
-    private final com.stockflow.common.security.CurrentUser actor = FulfillmentFixtures.user();
+    /**
+     * The warehouse manager: every outcome recorded by hand takes {@code fulfillment-delivery-outcomes:APPROVE} (09
+     * BR-02; WF-05 Q-7 - RETURNED too).
+     */
+    private final com.stockflow.common.security.CurrentUser actor = new com.stockflow.common.security.CurrentUser(
+            UUID.randomUUID(), "manager", Set.of(com.stockflow.common.security.Role.WAREHOUSE_MANAGER),
+            Set.of(com.stockflow.common.security.PermissionCode.of(FulfillmentPermissions.DELIVERY_OUTCOMES,
+                    com.stockflow.common.security.Action.APPROVE)),
+            DataScope.ALL, Set.of(), Set.of());
 
     @BeforeEach
     void rowsEchoWhatTheyAreSaved() {
@@ -586,6 +595,64 @@ class ShipmentServiceTest {
                     new Shipments.Correction("DELIVERED", null, null, "found", handedOverAt.minusSeconds(60)), actor))
                     .errorCode()).isEqualTo(ErrorCode.SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER);
             verifyNoInteractions(orders, timeline);
+        }
+
+        /** The correction row saved, as the repository was handed it. */
+        private com.stockflow.fulfillment.internal.entity.DeliveryOutcomeCorrectionJpaEntity savedCorrection() {
+            var captor = org.mockito.ArgumentCaptor.forClass(
+                    com.stockflow.fulfillment.internal.entity.DeliveryOutcomeCorrectionJpaEntity.class);
+            verify(corrections).save(captor.capture());
+            return captor.getValue();
+        }
+
+        @Test
+        @DisplayName("audit r3 EINV-1: GH-2 then the mistake found the next day - the delivery corrected to a failure "
+                + "keeps the time it undid, and the correction back with no time is dated by that delivery, not by "
+                + "the day of the correction; the order hears the same time, and the screen is handed it to fill in")
+        void aCorrectionBackRestoresTheUndoneDelivery() {
+            ShipmentJpaEntity row = handedOver(ShipmentStatus.HANDED_OVER);
+            OrderSummary order = orderKnowing(row);
+            java.time.Instant deliveredOnD1 = NOW.minus(java.time.Duration.ofHours(2));
+            when(orders.recordShipmentDelivered(any(), any(), any(java.time.Instant.class), any())).thenReturn(order);
+            service.recordOutcome(row.getId(), new Shipments.Outcome("DELIVERED", null, null, deliveredOnD1), actor);
+            when(orders.correctShipmentToFailed(any(), any(), any(), any(), any(), any())).thenReturn(order);
+
+            service.correctOutcome(row.getId(), new Shipments.Correction("DELIVERY_FAILED", "CUSTOMER_ABSENT", null,
+                    "the customer says it never came"), actor);
+
+            var toFailed = savedCorrection();
+            assertThat(toFailed.getUndoneDeliveredAt()).as("the delivery the correction undid").isEqualTo(deliveredOnD1);
+            assertThat(row.getOutcomeAt()).as("the failure is dated now").isEqualTo(NOW);
+            when(corrections.findFirstByShipmentIdOrderByCorrectedAtDescIdDesc(row.getId()))
+                    .thenReturn(Optional.of(toFailed));
+            when(shipments.findById(row.getId())).thenReturn(Optional.of(row));
+            assertThat(service.get(row.getId()).undoneDeliveredAt()).as("what the screen fills the field with")
+                    .isEqualTo(deliveredOnD1);
+
+            service.correctOutcome(row.getId(), new Shipments.Correction("DELIVERED", null, null,
+                    "the customer found it after all"), actor);
+
+            assertThat(row.getStatus()).isEqualTo(ShipmentStatus.DELIVERED);
+            assertThat(row.getOutcomeAt()).as("the same delivery, not one on the day of the correction")
+                    .isEqualTo(deliveredOnD1);
+            verify(orders, org.mockito.Mockito.times(2)).recordShipmentDelivered(row.getOrderId(), row.getId(),
+                    deliveredOnD1, actor.userId());
+            assertThat(service.get(row.getId()).undoneDeliveredAt()).as("delivered: nothing to restore").isNull();
+        }
+
+        @Test
+        @DisplayName("audit r3 EINV-1: a failure the carrier reported (not a correction of a delivery), corrected to "
+                + "delivered with no time, is dated now as before; a time given always wins")
+        void aCorrectionOfTheCarriersFailureIsDatedNow() {
+            ShipmentJpaEntity row = handedOver(ShipmentStatus.DELIVERY_FAILED);
+            OrderSummary order = orderKnowing(row);
+            when(orders.recordShipmentDelivered(any(), any(), any(java.time.Instant.class), any())).thenReturn(order);
+            when(corrections.findFirstByShipmentIdOrderByCorrectedAtDescIdDesc(row.getId())).thenReturn(Optional.empty());
+
+            service.correctOutcome(row.getId(), new Shipments.Correction("DELIVERED", null, null, "found"), actor);
+
+            assertThat(row.getOutcomeAt()).isEqualTo(NOW);
+            assertThat(savedCorrection().getUndoneDeliveredAt()).as("a correction back names none").isNull();
         }
 
         @Test

@@ -227,9 +227,26 @@ public final class Shipment {
     /**
      * The carrier's webhook reported it delivered (09 §4.5 step 7): nobody recorded it, and {@code at} is the time the
      * carrier gives - the delivery's own time (E25).
+     *
+     * <p>WF-05 BE-38: held to the rules a person's time is ({@link #requireDeliveryTime}) - not after {@code now}, not
+     * before the handover, a delivery after a failure not before that failure. The carrier's time becomes the
+     * shipment's outcome, the order's delivery day, the invoice's date and the installments' due day; taken as it came,
+     * a skewed or mis-zoned clock set all of them. A carrier's clock a few minutes ahead of ours
+     * ({@link DeliveryOutcomeCheck#CLOCK_SKEW}, as an imported file allows) is a clock, not a report from the future:
+     * the delivery is dated now. Refused, the report goes to the error list (NEEDS_REVIEW) for the warehouse manager to
+     * record by hand.</p>
+     *
+     * @throws BusinessException {@code SHIPMENT_DELIVERY_TIME_IN_FUTURE}, {@code SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER},
+     *         {@code SHIPMENT_DELIVERY_TIME_BEFORE_FAILURE}
      */
-    public boolean carrierDelivered(Instant at) {
-        return delivered(null, at);
+    public boolean carrierDelivered(Instant at, Instant now) {
+        Objects.requireNonNull(at, "at");
+        Objects.requireNonNull(now, "now");
+        Instant when = at.isAfter(now) && !at.isAfter(now.plus(DeliveryOutcomeCheck.CLOCK_SKEW)) ? now : at;
+        if (status != ShipmentStatus.DELIVERED && status.canTransitionTo(ShipmentStatus.DELIVERED)) {
+            requireDeliveryTime(when, now, status == ShipmentStatus.DELIVERY_FAILED);
+        }
+        return delivered(null, when);
     }
 
     /** The carrier's webhook reported it not delivered, its reason mapped (E22): recorded by nobody. */

@@ -61,10 +61,14 @@ class OrderSettlementServiceTest {
                 : Set.copyOf(call.<java.util.Collection<UUID>>getArgument(0)));
     }
 
+    private final com.stockflow.order.internal.repository.OrderHistoryNotes notes =
+            mock(com.stockflow.order.internal.repository.OrderHistoryNotes.class);
+
     private OrderSettlementService at(Instant now) {
+        Clock clock = Clock.fixed(now, ZoneOffset.UTC);
         return new OrderSettlementService(repository, candidates, events, payments, contracts,
-                org.mockito.Mockito.mock(DeliveryFailureService.class), invoices,
-                Clock.fixed(now, ZoneOffset.UTC), 7, 30);
+                org.mockito.Mockito.mock(DeliveryFailureService.class),
+                new SettlementReadiness(candidates, payments, contracts, invoices, clock, 7, 30), notes, clock, 7, 30);
     }
 
     @Test

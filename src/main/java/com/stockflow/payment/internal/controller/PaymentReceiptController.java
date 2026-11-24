@@ -111,7 +111,7 @@ class PaymentReceiptController {
         // One query for the names of the whole page - not one per row.
         var labels = customers.labels(found.items().stream().map(r -> r.customerId()).toList());
         var names = namesOf(found.items());
-        return ApiResponse.ok(found.map(r -> PaymentWebMapper.toResponse(r, null, labels, names)));
+        return ApiResponse.ok(found.map(r -> PaymentWebMapper.toResponse(r, null, labels, names, null, null)));
     }
 
     @GetMapping("/summary")
@@ -191,7 +191,7 @@ class PaymentReceiptController {
     /** One receipt with its customer and the names of who recorded and voided it. */
     private PaymentReceiptResponse toResponse(PaymentReceiptService.ReceiptDetail detail) {
         return PaymentWebMapper.toResponse(detail.receipt(), detail.installments(), labelOf(detail.receipt()),
-                namesOf(java.util.List.of(detail.receipt())));
+                namesOf(java.util.List.of(detail.receipt())), detail.voidable(), detail.voidBlockedBy());
     }
 
     /** R5-8: who recorded and voided each receipt, by name, in one read for the whole page. */

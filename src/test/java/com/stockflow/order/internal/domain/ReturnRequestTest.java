@@ -471,10 +471,12 @@ class ReturnRequestTest {
                 assertThat(t.to()).isEqualTo(ReturnStatus.RECEIVED);
                 assertThat(t.reason()).isEqualTo("RECEIVED GR-RET-1");
             });
-            assertThat(request.pullDomainEvents()).singleElement().satisfies(event -> {
-                ReturnReceived received = (ReturnReceived) ((OrderEvent.ReturnChanged) event).payload();
-                assertThat(received.discrepancy()).isFalse();
-            });
+            // The parcel, and (WF-05 BE-24) that the return now waits for Sales to propose its refund.
+            assertThat(request.pullDomainEvents()).extracting(event -> ((OrderEvent.ReturnChanged) event).payload())
+                    .satisfiesExactly(
+                            parcel -> assertThat(((ReturnReceived) parcel).discrepancy()).isFalse(),
+                            waiting -> assertThat(((com.stockflow.contracts.ReturnAwaitingRefund) waiting).cause())
+                                    .isEqualTo("GOODS_BACK"));
         }
 
         @Test
@@ -596,7 +598,8 @@ class ReturnRequestTest {
         }
 
         @Test
-        @DisplayName("part of what came back: at most the units approved and back; at least one unit; a line left out gets none")
+        @DisplayName("part of what came back: at most the units approved and back; none of them only with a refusal "
+                + "reason (WF-05 Q-4); a line left out gets none")
         void partly() {
             ReturnRequest request = open(ReturnReason.PRINT_DEFECT, ReturnResolution.REFUND,
                     new ReturnRequest.Claim(PRINTED_LINE, 10), new ReturnRequest.Claim(STOCK_LINE, 5));
@@ -612,7 +615,7 @@ class ReturnRequestTest {
             assertThat(code(catchThrowable(() -> request.proposeRefund(SALES, NOW, Map.of(printed, 7), order, null))))
                     .as("8 approved but only 6 back").isEqualTo(ErrorCode.RETURN_QUANTITIES_INVALID);
             assertThat(code(catchThrowable(() -> request.proposeRefund(SALES, NOW, Map.of(printed, 0, stock, 0), order,
-                    null)))).isEqualTo(ErrorCode.RETURN_QUANTITIES_INVALID);
+                    null)))).isEqualTo(ErrorCode.RETURN_REFUSAL_REASON_REQUIRED);
             request.proposeRefund(SALES, NOW, Map.of(printed, 6), order, null);
             assertThat(line(request, PRINTED_LINE).refundQuantity()).isEqualTo(6);
             assertThat(line(request, STOCK_LINE).refundQuantity()).isZero();
@@ -1115,9 +1118,10 @@ class ReturnRequestTest {
             assertThat(request.pullNewParcels()).isEmpty();
             assertThat(request.pullTransitions()).singleElement()
                     .satisfies(t -> assertThat(t.reason()).isEqualTo("RECEIVED GR-RET-2"));
-            assertThat(request.pullDomainEvents()).singleElement().satisfies(event ->
-                    assertThat(((ReturnReceived) ((OrderEvent.ReturnChanged) event).payload()).parcelNumber())
-                            .isEqualTo(2));
+            assertThat(request.pullDomainEvents()).extracting(event -> ((OrderEvent.ReturnChanged) event).payload())
+                    .satisfiesExactly(
+                            parcel -> assertThat(((ReturnReceived) parcel).parcelNumber()).isEqualTo(2),
+                            waiting -> assertThat(waiting).isInstanceOf(com.stockflow.contracts.ReturnAwaitingRefund.class));
             assertThat(request.goodsReceived(SECOND, "GR-RET-2", "HCM-QUA02",
                     List.of(new ReturnRequest.ReturnedCarton("CUP-12OZ", 2)), OTHER_SALES, LATER))
                     .as("the second receipt delivered again").isFalse();
@@ -1222,7 +1226,7 @@ class ReturnRequestTest {
 
         @Test
         @DisplayName("the units are refunded worth 0, no money mode; still approved by someone else, then RESOLVED with "
-                + "no money and no adjustment invoice")
+                + "no money, and the invoice adjusted for the units (WF-05 BE-44)")
         void settledAtZero() {
             ReturnRequest request = received(5, 5);
             request.proposeRefund(SALES, NOW, null, order(OrderStatus.RETURNED), "sample order", true);
@@ -1235,7 +1239,8 @@ class ReturnRequestTest {
                     .as("four eyes").isEqualTo(ErrorCode.RETURN_SELF_APPROVAL);
             request.resolve(ACCOUNTANT, NOW, ReturnRequest.MoneyOutcome.NONE);
             assertThat(request.status()).isEqualTo(ReturnStatus.RESOLVED);
-            assertThat(request.vatAdjustmentRequired()).isFalse();
+            // WF-05 BE-44: units were refunded, worth nothing - the invoice that carried them is adjusted all the same.
+            assertThat(request.vatAdjustmentRequired()).isTrue();
             assertThat(request.money()).isEqualTo(ReturnRequest.MoneyOutcome.NONE);
         }
     }
