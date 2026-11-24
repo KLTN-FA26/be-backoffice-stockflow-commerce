@@ -244,16 +244,24 @@ class InventoryItemMasterDataIntegrationTest {
     // ---- sales units -----------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("a variant sells in its base unit by default; other units come from its own item, with no price")
+    @DisplayName("01 BR-11: a variant is sold by its carton by default, never in its base unit; units come from its "
+            + "own item, with no price")
     void salesUnits() {
-        var implicit = units.salesUnits(productId, variantId, 0, 20);
-        assertThat(implicit.items()).singleElement().satisfies(u -> {
+        // No carton yet: nothing to sell in.
+        assertThat(units.salesUnits(productId, variantId, 0, 20).items()).isEmpty();
+        UUID baseId = units.conversions(productId, variantId, 0, 20).items().stream()
+                .filter(UomConversion::base).findFirst().orElseThrow().id();
+
+        UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, true));
+        assertThat(units.salesUnits(productId, variantId, 0, 20).items()).singleElement().satisfies(u -> {
             assertThat(u.implicitDefault()).isTrue();
             assertThat(u.id()).isNull();
-            assertThat(u.base()).isTrue();
+            assertThat(u.base()).isFalse();
+            assertThat(u.uomConversionId()).isEqualTo(carton.id());
+            assertThat(u.factor()).isEqualTo(1000);
         });
-        UUID baseId = implicit.items().getFirst().uomConversionId();
-        UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, true));
+        // The base unit counts the stock (01 BR-09); it is never a unit the SKU is sold in.
+        assertField(() -> units.addSalesUnit(productId, variantId, baseId), "uomConversionId");
 
         // 5-3 (kltn-docs 13 BR-04, 01 BR-11): a unit names how the variant is sold, never a price.
         assertThat(jdbc.queryForObject("""
@@ -281,15 +289,14 @@ class InventoryItemMasterDataIntegrationTest {
         assertCode(() -> units.removeConversion(productId, variantId, carton.id(), carton.version()),
                 ErrorCode.UOM_CONVERSION_IN_USE);
 
-        var each = units.addSalesUnit(productId, variantId, baseId);
-        assertThat(units.salesUnits(productId, variantId, 0, 20).totalElements()).isEqualTo(2);
         assertCode(() -> units.removeSalesUnit(productId, variantId, cartonUnit.id(), cartonUnit.version() + 1),
                 ErrorCode.OPTIMISTIC_LOCK);
         units.removeSalesUnit(productId, variantId, cartonUnit.id(), cartonUnit.version());
-        units.removeSalesUnit(productId, variantId, each.id(), each.version());
-        assertThat(units.salesUnits(productId, variantId, 0, 20).items())
-                .singleElement().satisfies(u -> assertThat(u.implicitDefault()).isTrue());
-        assertCode(() -> units.removeSalesUnit(productId, variantId, each.id(), each.version()),
+        assertThat(units.salesUnits(productId, variantId, 0, 20).items()).singleElement().satisfies(u -> {
+            assertThat(u.implicitDefault()).as("the carton default comes back").isTrue();
+            assertThat(u.uomConversionId()).isEqualTo(carton.id());
+        });
+        assertCode(() -> units.removeSalesUnit(productId, variantId, cartonUnit.id(), cartonUnit.version()),
                 ErrorCode.SALES_UNIT_NOT_FOUND);
 
         // A retired unit is not offered for sale.

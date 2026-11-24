@@ -44,7 +44,7 @@ class SalesUnitController {
     }
 
     @GetMapping
-    @Operation(summary = "The variant's sales units; with none listed, one implicit entry for the base unit")
+    @Operation(summary = "The variant's sales units; with none listed, one implicit entry for its carton")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.READ)
     public ApiResponse<PageResponse<SalesUnitResponse>> list(@PathVariable UUID productId,
                                                              @PathVariable UUID variantId,
@@ -64,8 +64,9 @@ class SalesUnitController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "Sell the variant in one of its item's units",
-            description = "A unit of another SKU: 404 UOM_CONVERSION_NOT_FOUND; a retired unit: 400 "
-                    + "VALIDATION_FAILED; already listed: 409 SALES_UNIT_DUPLICATE.")
+            description = "A unit of another SKU: 404 UOM_CONVERSION_NOT_FOUND; a retired unit or the base unit "
+                    + "(a SKU is sold by the carton, kltn-docs 01 BR-11): 400 VALIDATION_FAILED; already listed: 409 "
+                    + "SALES_UNIT_DUPLICATE.")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.UPDATE)
     public ApiResponse<SalesUnitResponse> add(@PathVariable UUID productId, @PathVariable UUID variantId,
                                               @Valid @RequestBody CreateSalesUnitRequest request) {
@@ -74,7 +75,7 @@ class SalesUnitController {
     }
 
     @DeleteMapping("/{salesUnitId}")
-    @Operation(summary = "Stop selling in a unit; removing the last one brings back the base-unit default")
+    @Operation(summary = "Stop selling in a unit; removing the last one brings back the carton default")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.UPDATE)
     public ApiResponse<Void> delete(@PathVariable UUID productId, @PathVariable UUID variantId,
                                     @PathVariable UUID salesUnitId,

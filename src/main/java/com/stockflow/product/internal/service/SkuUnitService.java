@@ -34,10 +34,11 @@ import java.util.UUID;
  * <p>The product module owns the sales units, so it is the one that refuses to delete or retire a unit
  * the variant still sells in ({@code UOM_CONVERSION_IN_USE}) before asking inventory to.</p>
  *
- * <p>Sales units: a variant with none sells in its base unit only (docs: "mặc định: đơn vị cơ sở"); the list then
- * shows that default as one entry with no id. Listing a unit replaces the default, so a variant can be sold by the
- * carton only. A unit carries no price since 5-3: there is no base price (kltn-docs 13 BR-04), and a customer's SKU is
- * sold by the carton at a price per piece agreed on the quote (01 BR-11).</p>
+ * <p>Sales units: a SKU is sold by the carton of its carton specification, which the system assigns (kltn-docs 01
+ * §3 "Đơn vị bán", BR-11): quotes, orders and contracts count cartons, priced per piece. A variant with no unit listed
+ * shows that carton as one entry with no id, and none while it has no carton yet. The base unit ({@code EACH}) is
+ * what stock is recorded in (01 BR-09), never a unit a SKU is sold in: listing it is refused. A unit carries no price
+ * since 5-3: there is no base price (kltn-docs 13 BR-04); the price per piece is agreed on the quote.</p>
  */
 @Service
 @Transactional
@@ -61,7 +62,7 @@ public class SkuUnitService {
         this.users = users;
     }
 
-    /** One sales unit as shown: {@code id} and {@code version} are null for the default (nothing listed). */
+    /** One sales unit as shown: {@code id} and {@code version} are null for the default, the SKU's carton. */
     public record SalesUnitView(UUID id, UUID variantId, UUID uomConversionId, String unitOfMeasure, int factor,
                                 boolean base, boolean active, boolean implicitDefault, Long version) {
     }
@@ -121,9 +122,16 @@ public class SkuUnitService {
         var pageable = Pages.of(page, size);
         long total = salesUnits.count(variantId);
         if (total == 0) {
-            UomConversion base = units.baseUnit(sku);
-            var implicit = new SalesUnitView(null, variantId, base.id(), base.unitOfMeasure(), 1, true, true,
-                    true, null);
+            // 01 BR-11: the system assigns the carton of the SKU's carton specification - its one active packing unit
+            // (01 BR-03, uk_uom_conversions_one_carton). None yet: nothing to sell in.
+            var carton = units.conversionsOf(List.of(sku)).getOrDefault(sku.code(), List.of()).stream()
+                    .filter(unit -> !unit.base() && unit.active())
+                    .findFirst();
+            if (carton.isEmpty()) {
+                return PageResponse.of(List.of(), page, size, 0);
+            }
+            var implicit = new SalesUnitView(null, variantId, carton.get().id(), carton.get().unitOfMeasure(),
+                    carton.get().factor(), false, true, true, null);
             return PageResponse.of(page == 0 ? List.of(implicit) : List.of(), page, size, 1);
         }
         var rows = salesUnits.page(variantId, pageable.getPageSize(), pageable.getOffset());
@@ -140,13 +148,20 @@ public class SkuUnitService {
         return view(row, units.conversion(sku, row.uomConversionId()));
     }
 
-    /** BR-11: only a unit of the variant's own inventory item, and only one that is not retired. */
+    /**
+     * BR-11: only a unit of the variant's own inventory item, one that is not retired, and never the base unit - a SKU
+     * is sold by the carton, the base unit only counts its stock (01 BR-09).
+     */
     @Auditable(action = AuditAction.CREATE, resourceType = "sales-unit", resourceId = "#result?.id()")
     public SalesUnitView addSalesUnit(UUID productId, UUID variantId, UUID uomConversionId) {
         Sku sku = editableSku(productId, variantId);
         var unit = units.conversion(sku, uomConversionId);
         if (!unit.active()) {
             throw invalid("uomConversionId", "Unit %s is retired and cannot be sold in".formatted(unit.unitOfMeasure()));
+        }
+        if (unit.base()) {
+            throw invalid("uomConversionId", ("%s is the base unit stock is counted in; a SKU is sold by the carton "
+                    + "(01 BR-11)").formatted(unit.unitOfMeasure()));
         }
         if (salesUnits.sells(variantId, uomConversionId)) throw duplicate(unit);
         UUID id = Identifiers.newId();
@@ -160,7 +175,7 @@ public class SkuUnitService {
         return salesUnit(productId, variantId, id);
     }
 
-    /** Removing the last one brings back the default: the base unit. */
+    /** Removing the last one brings back the default: the SKU's carton. */
     @Auditable(action = AuditAction.DELETE, resourceType = "sales-unit", resourceId = "#salesUnitId")
     public void removeSalesUnit(UUID productId, UUID variantId, UUID salesUnitId, long version) {
         Sku sku = editableSku(productId, variantId);
