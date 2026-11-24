@@ -4,6 +4,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.DataScope;
+import com.stockflow.common.storage.UploadSlotRequest;
 import com.stockflow.order.api.DeliveryFailureReason;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
@@ -20,6 +21,7 @@ import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.RedisContainer;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.ShipmentRows;
 import com.stockflow.support.TestUsers;
@@ -61,7 +63,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code LostShipmentClosures.close} hands it on once the upload is kept.</p>
  */
 @IntegrationTest
-@Import(PostgresContainer.class)
+// Redis too: the evidence upload slot counts uploads per user in Redis before it asks the storage (D-1).
+@Import({PostgresContainer.class, RedisContainer.class})
 @TestPropertySource(properties = {"stockflow.upload-inspection.enabled=false",
         "stockflow.notification.email.customer.enabled=false",
         // BE-45 (audit r2 contract M-6): no closing delay, so the order ended by the carrier is a closing candidate at
@@ -182,6 +185,16 @@ class LostShipmentClosureIntegrationTest {
                 orderId)).isZero();
 
         LostShipmentClosures closures = context.getBean(LostShipmentClosures.class);
+        // D-1 (demo run 24/11): the slot for the carrier's confirmation is a read-only transaction that read the order
+        // through the locking lookup - Postgres refused the FOR UPDATE and every call answered 500. Now it reads the
+        // order and the shipment and gets as far as the storage, which signs no browser upload in tests.
+        UploadSlotRequest confirmation = new UploadSlotRequest("loss.pdf", "application/pdf", 1024, "a".repeat(64));
+        assertThat(code(() -> WithCurrentUser.call(confirmedOrders.sales(), DataScope.ALL, () ->
+                closures.beginEvidenceUpload(confirmedOrders.sales(), orderId, second, confirmation))))
+                .as("the slot for the lost shipment, as far as the storage").isEqualTo(ErrorCode.STORAGE_ERROR);
+        assertThat(code(() -> WithCurrentUser.call(confirmedOrders.sales(), DataScope.ALL, () ->
+                closures.beginEvidenceUpload(confirmedOrders.sales(), orderId, UUID.randomUUID(), confirmation))))
+                .as("no slot for a shipment the order does not have").isEqualTo(ErrorCode.NOT_FOUND);
         long version = tx.execute(s -> orderRepository.findById(new OrderId(orderId)).orElseThrow().version());
         assertThat(code(() -> tx.execute(s -> closures.closeLocked(staff, orderId, second, "Carrier confirmed the loss",
                 "orders/lost/confirmation.pdf", "confirmation.pdf", version - 1))))

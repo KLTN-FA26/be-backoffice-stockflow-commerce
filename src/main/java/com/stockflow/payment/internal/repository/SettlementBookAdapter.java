@@ -242,8 +242,10 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
 
     @Override
     public Page<RefundRecord> records(UUID customerId, UUID orderId, RefundRecord.Status status, Pageable pageable) {
-        String where = """
-                 WHERE (CAST(:customer AS UUID) IS NULL OR customer_id = :customer)
+        // The leading space is written out: a text block strips the indentation its lines share, and with " WHERE" the
+        // least indented line, that space went too - "payment.refund_recordWHERE", a 500 on every call (demo run 24/11).
+        String where = " " + """
+                WHERE (CAST(:customer AS UUID) IS NULL OR customer_id = :customer)
                    AND (CAST(:order AS UUID) IS NULL OR order_id = :order)
                    AND (CAST(:status AS VARCHAR) IS NULL OR status = :status)""";
         MapSqlParameterSource params = new MapSqlParameterSource("customer", customerId).addValue("order", orderId)

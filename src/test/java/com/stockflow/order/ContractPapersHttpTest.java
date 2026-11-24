@@ -205,8 +205,6 @@ class ContractPapersHttpTest {
 
         refunds.record(new RefundService.RecordRefundCommand(signed.orderId(), signed.total(), LocalDate.now(),
                 "FT-REFUND-" + signed.orderId().toString().substring(0, 8), null, sales));
-        String reference = jdbc.queryForObject("SELECT reference FROM payment.payment_receipt WHERE id = ?",
-                String.class, paid.receiptId());
         String total = String.format("%,d", signed.total().longValueExact()).replace(',', '.');
 
         String record = DocumentSamples.downloaded(http.asRole(Role.SALES_STAFF, sales, get(staffPath)),
@@ -214,12 +212,14 @@ class ContractPapersHttpTest {
         assertThat(record).contains("BIÊN BẢN THANH LÝ HỢP ĐỒNG MUA BÁN HÀNG HÓA",
                 "Số: TL-" + signed.contractNumber(), "Công ty Cổ phần Cà phê Mộc Lam",
                 "Do đơn đặt hàng số " + signed.orderNumber() + " theo Hợp đồng đã được hủy",
-                "Bên A chưa giao hàng hóa nào cho Bên B theo Hợp đồng.", reference,
+                "Bên A chưa giao hàng hóa nào cho Bên B theo Hợp đồng.",
                 "không còn nghĩa vụ nào khác đối với nhau")
                 .containsSubsequence("Giá trị Hợp đồng", total, "Giá trị thực hiện", "0", "Đã thanh toán", total,
                         "Đã hoàn trả", total, "Còn lại", "0")
-                .doesNotContain("còn phải");
-        assertThat(text(http.asCustomer(owner, get(ownPath)))).contains("BIÊN BẢN THANH LÝ HỢP ĐỒNG", reference);
+                .as("the owner's five rows: the payments are one sum, no row per transfer")
+                .doesNotContain("còn phải", "Trong đó");
+        assertThat(text(http.asCustomer(owner, get(ownPath)))).contains("BIÊN BẢN THANH LÝ HỢP ĐỒNG",
+                "Số: TL-" + signed.contractNumber());
 
         http.asCustomer(stranger, get(ownPath)).andExpect(status().isNotFound());
         http.asCustomer(owner, get(staffPath)).andExpect(status().isForbidden());

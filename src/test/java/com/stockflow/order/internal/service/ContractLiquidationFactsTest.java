@@ -142,6 +142,9 @@ class ContractLiquidationFactsTest {
         assertThat(facts.contractValue()).isEqualByComparingTo(CONTRACT_VALUE);
         assertThat(facts.performedValue()).as("10 cups and 5 lids with VAT").isEqualByComparingTo("1210000");
         assertThat(facts.otherCharges()).as("plate fee 550,000 + shipping fee 165,000").isEqualByComparingTo("715000");
+        assertThat(facts.performedInAll()).as("the row \"Giá trị thực hiện\"").isEqualByComparingTo("1925000");
+        assertThat(facts.charges()).as("the note names the two fees").containsExactly("Phí khuôn, bản in",
+                "Phí vận chuyển");
         assertThat(facts.paid()).isEqualByComparingTo("1925000");
         assertThat(facts.refunded()).isZero();
         assertThat(facts.remaining()).isZero();
@@ -163,6 +166,7 @@ class ContractLiquidationFactsTest {
         assertThat(facts.performedValue()).as("6 cups with VAT").isEqualByComparingTo("660000");
         assertThat(facts.otherCharges()).as("plate fee 550,000 + shipping fee kept 90,000")
                 .isEqualByComparingTo("640000");
+        assertThat(facts.charges()).containsExactly("Phí khuôn, bản in", "Phí vận chuyển");
         assertThat(facts.refunded()).isEqualByComparingTo("625000");
         assertThat(facts.remaining()).isZero();
         assertThat(facts.goods()).extracting(ContractLiquidationDocument.GoodsLine::delivered)
@@ -182,6 +186,8 @@ class ContractLiquidationFactsTest {
         ContractLiquidationDocument.Facts facts = drawn();
         assertThat(facts.performedValue()).isZero();
         assertThat(facts.otherCharges()).as("the plate fee").isEqualByComparingTo("550000");
+        assertThat(facts.charges()).as("the shipping fee is waived whole when nothing was delivered (Q-19)")
+                .containsExactly("Phí khuôn, bản in");
         assertThat(facts.remaining()).isZero();
         assertThat(facts.reason()).contains(order.orderNumber().value()).contains("giao không thành công");
         assertThat(facts.goods()).allSatisfy(line -> assertThat(line.delivered()).isZero());

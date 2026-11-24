@@ -414,6 +414,9 @@ stockflow:
   storage:
     provider: s3
     bucket: stockflow
+    # Made at startup when missing (StorageBucketInitializer): a fresh MinIO has no bucket, and the first stored file
+    # (an issued e-invoice's XML) would fail on it. Off where the bucket is infrastructure's (dev and prod: AWS).
+    create-missing-bucket: true
     endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
     region: ap-southeast-1
     # MinIO needs path-style addressing; real S3 uses virtual-host style. Wrong value produces a

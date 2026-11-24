@@ -170,6 +170,19 @@ class PaymentPapersHttpTest {
         UUID record = jdbc.queryForObject("SELECT id FROM payment.refund_record WHERE order_id = ?", UUID.class,
                 signed.orderId());
         String staffPath = "/api/v1/refunds/records/" + record + "/confirmation";
+
+        // D-2 (demo run 24/11): the list of refund records answered 500 on every call, its SQL glued together as
+        // "payment.refund_recordWHERE". Unfiltered, and by order, customer and status.
+        http.asRole(Role.ACCOUNTANT, accountant, get("/api/v1/refunds/records")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.refundRecordId == '" + record + "')].reference").value(reference));
+        http.asRole(Role.ACCOUNTANT, accountant, get("/api/v1/refunds/records?orderId=" + signed.orderId()
+                        + "&customerId=" + customer + "&status=RECORDED")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].refundRecordId").value(record.toString()))
+                .andExpect(jsonPath("$.data.items[0].reference").value(reference));
+        http.asRole(Role.ACCOUNTANT, accountant, get("/api/v1/refunds/records?orderId=" + signed.orderId()
+                + "&status=VOIDED")).andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(0));
+        http.asCustomer(owner, get("/api/v1/refunds/records")).andExpect(status().isForbidden());
         String ownPath = "/api/v1/refunds/me/records/" + record + "/confirmation";
 
         assertThat(DocumentSamples.downloaded(http.asRole(Role.ACCOUNTANT, accountant, get(staffPath)),

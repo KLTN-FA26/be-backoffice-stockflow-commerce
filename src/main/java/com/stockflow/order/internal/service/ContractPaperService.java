@@ -4,12 +4,14 @@ import com.stockflow.common.document.DocumentFormats;
 import com.stockflow.common.document.DocumentParts;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.order.api.FeeKind;
 import com.stockflow.order.api.OrderShipmentStatus;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderLine;
 import com.stockflow.order.internal.domain.OrderRepository;
+import com.stockflow.order.internal.domain.OrderShipment;
 import com.stockflow.order.internal.domain.ReturnLine;
 import com.stockflow.order.internal.domain.ReturnRequest;
 import com.stockflow.order.internal.domain.ReturnRequestRepository;
@@ -50,7 +52,8 @@ import java.util.stream.Collectors;
  * (owner, 2026-11-23: "Còn lại" is 0 at liquidation). The goods are the order's lines against what its shipments
  * delivered and its returns took back; the value performed is the goods delivered successfully and kept, at the
  * order's prices with VAT, and 0 when nothing was delivered ({@link Order#deliveredSomething}, the one definition
- * G1 made); the money is the payment module's own ({@link ContractLedger}), so the figures the parties sign are the
+ * G1 made) - printed with the fees the customer keeps paying inside the same row and named in a note under it (the
+ * owner's five rows, demo run 24/11 D-6); the money is the payment module's own ({@link ContractLedger}), so the figures the parties sign are the
  * accountant's. The contract's value is printed as signed and never changed.</p>
  *
  * <p>Each reader comes twice: for the back office, under the caller's data scope as the contract itself is read, and
@@ -221,8 +224,44 @@ public class ContractPaperService {
         String number = "TL-" + contract.contractNumber();
         byte[] pdf = liquidation.render(new ContractLiquidationDocument.Facts(number, contract.contractNumber(),
                 contract.signedOn(), today(), contract.seller(), contract.buyer(), reason, goods,
-                contract.totals().totalAmount(), performed, otherCharges, payments, money.refunded(), List.of()));
+                contract.totals().totalAmount(), performed, otherCharges,
+                charges(t, order, otherCharges, deliveredSomething), payments, money.refunded(), List.of()));
         return new Pdf(t.getString("document.file.contractLiquidation").formatted(number), pdf);
+    }
+
+    /**
+     * The names of the fees inside {@code otherCharges}, for the note under "Giá trị thực hiện": the plate fees, which
+     * are kept once the plate is made; the shipping fee while some of it is kept - a delivery that came back or was
+     * lost waived its share (Q-19), and an order that delivered nothing waived all of it; and "other fees" for what is
+     * left beyond those two, a cancellation or failed-trip fee payment charged. The amount is the books' and is printed
+     * whole; this only says what it is made of.
+     */
+    private static List<String> charges(ResourceBundle t, Order order, BigDecimal otherCharges,
+                                        boolean deliveredSomething) {
+        if (otherCharges.signum() <= 0) {
+            return List.of();
+        }
+        List<String> names = new ArrayList<>();
+        BigDecimal named = BigDecimal.ZERO;
+        BigDecimal plates = order.fees().stream().filter(fee -> fee.kind() == FeeKind.PLATE_FEE)
+                .map(fee -> fee.gross().amount()).reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (plates.signum() > 0) {
+            names.add(t.getString("contract.pdf.fee." + FeeKind.PLATE_FEE.name()));
+            named = named.add(plates);
+        }
+        BigDecimal shipping = order.fees().stream().filter(fee -> fee.kind() == FeeKind.SHIPPING_FEE)
+                .map(fee -> fee.gross().amount()).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal waived = order.shipments().stream().map(OrderShipment::shippingFeeWaived)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal shippingKept = deliveredSomething ? shipping.subtract(waived).max(BigDecimal.ZERO) : BigDecimal.ZERO;
+        if (shippingKept.signum() > 0) {
+            names.add(t.getString("contract.pdf.fee." + FeeKind.SHIPPING_FEE.name()));
+            named = named.add(shippingKept);
+        }
+        if (otherCharges.compareTo(named) > 0) {
+            names.add(t.getString("liquidation.pdf.settle.otherFees"));
+        }
+        return names;
     }
 
     /**

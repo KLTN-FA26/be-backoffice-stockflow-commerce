@@ -199,6 +199,47 @@ class BusinessDocumentTest {
     }
 
     @Test
+    @DisplayName("demo run 24/11, D-7: a table header never stays alone at the foot of a page - a first row that "
+            + "moves to the next page whole takes the header, the sentence introducing the table and the heading over "
+            + "it along; a tall row (40 LPNs) starts under its header and runs on, never leaving a page half empty")
+    void aTableHeaderKeepsItsFirstRow() throws IOException {
+        List<Column> columns = List.of(new Column("STT", 30, Align.CENTRE),
+                new Column("Tên hàng, mã thùng", 300, Align.LEFT), new Column("Số thùng", 70, Align.RIGHT));
+        float usable = PDRectangle.A4.getHeight() - 2 * BusinessDocument.mm(20);
+        // A goods line of a few lines: the header and the start of a row still fit at the foot, the row does not.
+        List<Cell> goods = List.of(Cell.of("1"), Cell.bold("Ly giấy 12oz in logo Mộc Lam").details(List.of(
+                "LY12-MOC-01", "Lô LOT-1", "Đóng gói 1.000 cái/thùng", "Giao đợt 1 và đợt 2")), Cell.of("80"));
+        Extent moved = extent(BusinessDocument.draw(FONTS, official(null), "t", List.of(
+                Paragraph.of("Điều khoản đầu tiên."), new Spacer(usable - 125),
+                new Heading("ĐIỀU 2. NGHĨA VỤ ĐÃ HOÀN THÀNH"),
+                Paragraph.of("Bên A đã giao hàng cho Bên B, cụ thể như sau:"), new Table(columns, List.of(goods)))));
+
+        assertThat(moved.pages()).hasSize(2);
+        assertThat(moved.pages().get(0)).as("no header, no lead-in, no heading left behind")
+                .contains("Điều khoản đầu tiên").doesNotContain("Tên hàng, mã thùng", "cụ thể như sau", "ĐIỀU 2");
+        assertThat(moved.pages().get(1)).containsSubsequence("ĐIỀU 2. NGHĨA VỤ ĐÃ HOÀN THÀNH", "cụ thể như sau",
+                "Tên hàng, mã thùng", "Ly giấy 12oz in logo Mộc Lam", "Giao đợt 1 và đợt 2");
+
+        // A delivery note's line: one SKU, its forty LPNs listed under it - taller than a third of a page.
+        List<String> lpns = new ArrayList<>();
+        for (int i = 1; i <= 40; i++) {
+            lpns.add("Mã thùng (LPN): LPN-20261124-" + String.format("%06d", i));
+        }
+        Extent cut = extent(BusinessDocument.draw(FONTS, official(null), "t", List.of(
+                Paragraph.of("Điều khoản đầu tiên."), new Spacer(usable - 250),
+                Paragraph.of("Hai Bên giao nhận hàng hóa như sau:"),
+                new Table(columns, List.of(List.of(Cell.of("1"), Cell.bold("Ly giấy 16oz").details(lpns),
+                        Cell.of("40")))))));
+        assertThat(cut.pages()).hasSize(2);
+        assertThat(cut.pages().get(0)).as("the header with the start of its row, the rest of the page used")
+                .containsSubsequence("Hai Bên giao nhận", "Tên hàng, mã thùng", "Ly giấy 16oz", "LPN-20261124-000001",
+                        "LPN-20261124-000005");
+        assertThat(cut.pages().get(1)).as("the row runs on under its header repeated, more than one line of it")
+                .containsSubsequence("Tên hàng, mã thùng", "LPN-20261124-000039", "LPN-20261124-000040");
+        assertThat(String.join(" ", cut.pages()).split("LPN-20261124-000020", -1)).as("every LPN once").hasSize(2);
+    }
+
+    @Test
     @DisplayName("a heading is never left at the foot of a page, and signature blocks move to the next page whole")
     void headingsAndSignaturesAreNotOrphaned() throws IOException {
         // Fills a page to within two lines of its foot: a heading or a signature block no longer fits whole.

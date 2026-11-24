@@ -93,6 +93,40 @@ class DeliveryNoteDocumentTest {
     }
 
     @Test
+    @DisplayName("demo run 24/11, D-7: forty cartons of one SKU - one tall row of LPNs - and the goods table's header "
+            + "stays on the page its first row is on, never alone at the foot of the page before")
+    void theHeaderStaysWithItsCartons() throws IOException {
+        List<ShippedCarton> cartons = new java.util.ArrayList<>();
+        for (int i = 1; i <= 40; i++) {
+            cartons.add(new ShippedCarton("LPN-20261124-%06d".formatted(i), "LY12-MOC-01", "LOT-1", 1_000));
+        }
+        DeliveryNoteDocument.Facts facts = new DeliveryNoteDocument.Facts("SO-20261109-950001-S1",
+                "SO-20261109-950001", "HD-20261109-950001-1", 1, false, "Kho Hồ Chí Minh",
+                "Lô C12, Đường số 3, Phường Tân Tạo, Thành phố Hồ Chí Minh", DocumentSamples.LONG_NAME,
+                "Số 12 đường Nguyễn Huệ, phường Bến Nghé, quận 1, thành phố Hồ Chí Minh",
+                "Trần Văn Bình - 0901234567", List.of(new DeliveryNoteDocument.Vehicle("LD-20261123-9501",
+                        "Xe tải Nhanh", "51C-123.45", "Nguyễn Văn Tài", "0912345678", "VD-WF5A-1")),
+                Instant.parse("2026-11-24T02:05:00Z"), DeliveryNoteDocument.bySku(cartons,
+                        Map.of("LY12-MOC-01", "Ly giấy 2 lớp in logo Mộc - 12 oz")), LocalDate.of(2026, 11, 24));
+        byte[] pdf = DocumentSamples.keep("delivery-note-40-cartons", document.render(facts));
+
+        int header = -1;
+        int firstRow = -1;
+        for (int page = 1; page <= DocumentSamples.pages(pdf); page++) {
+            String text = DocumentSamples.text(pdf, page);
+            if (header < 0 && text.contains("Số thùng")) {
+                header = page;
+            }
+            if (firstRow < 0 && text.contains("LPN-20261124-000001")) {
+                firstRow = page;
+            }
+        }
+        assertThat(header).as("the header is printed").isPositive();
+        assertThat(firstRow).as("on the page of the header, not the one after").isEqualTo(header);
+        assertThat(DocumentSamples.text(pdf)).contains("LPN-20261124-000040");
+    }
+
+    @Test
     @DisplayName("printed before the vehicle is booked: the day, the vehicle, the driver, the waybill and the moment "
             + "of the handover are lines to fill in; a redelivery says so")
     void beforeTheVehicle() throws IOException {

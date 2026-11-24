@@ -30,11 +30,13 @@ import java.util.ResourceBundle;
  * contract was - Quốc hiệu and Tiêu ngữ, the legal bases, the two parties, four clauses, two signature blocks - and
  * its second clause is a settlement, not a sentence: a contract here is delivered in several batches and paid in
  * several instalments, so the goods are a table of what was contracted, delivered and returned line by line, and the
- * money a table the owner fixed (2026-11-23): the contract's value as signed, never amended here; the value performed
- * - the goods delivered successfully and kept, 0 when nothing was; what was paid; what was paid back; and what is left,
- * which is 0, followed by the statement that the parties owe each other nothing more. Fees the contract charged besides
- * the goods (plate fees, the shipping fee kept, a cancellation fee) are a row of their own between the value performed
- * and the payments, so the rows add up.</p>
+ * money a table of exactly the five rows the owner fixed (2026-11-23, confirmed after the demo run of 24/11): the
+ * contract's value as signed, never amended here; the value performed; what was paid; what was paid back; and what is
+ * left, which is 0, followed by the statement that the parties owe each other nothing more. The value performed is the
+ * goods delivered successfully and kept, 0 when nothing was, plus the fees the contract charged besides them that the
+ * customer keeps paying - plate fees, the shipping fee not waived, a cancellation fee - with a note line under it
+ * naming those fees, so the five rows add up without a row of their own for the fees. Payments are one sum: a row per
+ * bank transfer made the table longer than the owner's and was dropped with that row.</p>
  *
  * <p><b>Only a settled contract is liquidated here.</b> A record whose rows leave something to pay or to pay back is
  * a wrong paper to sign - it would say "no other obligations" over a debt - so {@link #render} refuses one whose
@@ -57,14 +59,26 @@ class ContractLiquidationDocument {
      *                       nothing was delivered
      * @param otherCharges   what the contract charged besides those goods and the customer keeps paying for - plate
      *                       fees, the shipping fee not waived, a cancellation or closing fee; below zero, a reduction
-     *                       the books made that the goods do not show; zero when none
+     *                       the books made that the goods do not show; zero when none. Printed inside the value
+     *                       performed, named by {@code charges}
+     * @param charges        the names of those fees as the note line prints them ("Phí khuôn, bản in"), in order;
+     *                       empty when there are none
      * @param refunded       what the seller paid back; zero when none
      * @param invoices       the invoices issued under the contract, adjustments included, as "number (date)"
      */
     record Facts(String number, String contractNumber, LocalDate contractDate, LocalDate dated,
                  SalesContracts.Party seller, SalesContracts.Party buyer, String reason, List<GoodsLine> goods,
-                 BigDecimal contractValue, BigDecimal performedValue, BigDecimal otherCharges, List<Payment> payments,
-                 BigDecimal refunded, List<String> invoices) {
+                 BigDecimal contractValue, BigDecimal performedValue, BigDecimal otherCharges, List<String> charges,
+                 List<Payment> payments, BigDecimal refunded, List<String> invoices) {
+
+        Facts {
+            charges = List.copyOf(charges);
+        }
+
+        /** The row "Giá trị thực hiện": the goods kept and the fees the customer keeps paying. */
+        BigDecimal performedInAll() {
+            return performedValue.add(otherCharges);
+        }
 
         /** What the buyer paid, over every payment in force. */
         BigDecimal paid() {
@@ -195,33 +209,54 @@ class ContractLiquidationDocument {
     }
 
     /**
-     * The owner's rows (2026-11-23), every figure positive: the contract's value, the value performed, the other
-     * charges when there are any, what was paid - with each payment under it - what was paid back, and what is left,
-     * which is 0.
+     * The owner's five rows (2026-11-23), and only those: the contract's value, the value performed - with the note
+     * naming the fees in it when it has any - what was paid, what was paid back, and what is left, which is 0.
      */
     private static Table settlement(ResourceBundle t, Facts f) {
         List<List<Cell>> rows = new ArrayList<>();
-        rows.add(row(t.getString("liquidation.pdf.settle.contract"), "", f.contractValue(), false));
-        rows.add(row(t.getString("liquidation.pdf.settle.performed"), "", f.performedValue(), false));
-        if (f.otherCharges().signum() != 0) {
-            rows.add(row(t.getString(f.otherCharges().signum() > 0 ? "liquidation.pdf.settle.other"
-                    : "liquidation.pdf.settle.otherReduction"), "", f.otherCharges().abs(), false));
-        }
-        rows.add(row(t.getString("liquidation.pdf.settle.paid"), "", f.paid(), false));
-        for (Payment payment : f.payments()) {
-            rows.add(row(t.getString("liquidation.pdf.settle.payment").formatted(DocumentFormats.date(payment.date())),
-                    payment.reference(), payment.amount(), false));
-        }
-        rows.add(row(t.getString("liquidation.pdf.settle.refunded"), "", f.refunded(), false));
-        rows.add(row(t.getString("liquidation.pdf.settle.remaining"), "", f.remaining(), true));
-        return new Table(List.of(new Column(t.getString("liquidation.pdf.col.item"), 250, Align.LEFT),
-                new Column(t.getString("liquidation.pdf.col.reference"), 110, Align.LEFT),
-                new Column(t.getString("liquidation.pdf.col.money"), 106, Align.RIGHT)), rows);
+        rows.add(row(t.getString("liquidation.pdf.settle.contract"), f.contractValue(), false, List.of()));
+        rows.add(row(t.getString("liquidation.pdf.settle.performed"), f.performedInAll(), false, performedNote(t, f)));
+        rows.add(row(t.getString("liquidation.pdf.settle.paid"), f.paid(), false, List.of()));
+        rows.add(row(t.getString("liquidation.pdf.settle.refunded"), f.refunded(), false, List.of()));
+        rows.add(row(t.getString("liquidation.pdf.settle.remaining"), f.remaining(), true, List.of()));
+        return new Table(List.of(new Column(t.getString("liquidation.pdf.col.item"), 340, Align.LEFT),
+                new Column(t.getString("liquidation.pdf.col.money"), 126, Align.RIGHT)), rows);
     }
 
-    private static List<Cell> row(String item, String reference, BigDecimal amount, boolean bold) {
+    /**
+     * The line under "Giá trị thực hiện" when it holds more than the goods: the goods' part and the fees', the fees
+     * named ("Gồm: hàng hóa đã giao thành công 101.088.000; phí khuôn, bản in và phí vận chuyển 4.320.000"); a
+     * reduction the goods do not show is said as one. None when the row is the goods alone.
+     */
+    private static List<String> performedNote(ResourceBundle t, Facts f) {
+        if (f.otherCharges().signum() == 0) {
+            return List.of();
+        }
+        String goods = DocumentFormats.money(f.performedValue());
+        if (f.otherCharges().signum() < 0) {
+            return List.of(t.getString("liquidation.pdf.settle.performedReduction").formatted(goods,
+                    DocumentFormats.money(f.otherCharges().negate())));
+        }
+        List<String> names = f.charges().isEmpty() ? List.of(t.getString("liquidation.pdf.settle.otherFees"))
+                : f.charges();
+        return List.of(t.getString("liquidation.pdf.settle.performedNote").formatted(goods, listed(t, names),
+                DocumentFormats.money(f.otherCharges())));
+    }
+
+    /** "a", "a và b", "a, b và c" - each name from lower case, as it runs on inside the sentence. */
+    private static String listed(ResourceBundle t, List<String> names) {
+        List<String> lower = names.stream().map(name -> name.isEmpty() ? name
+                : Character.toLowerCase(name.charAt(0)) + name.substring(1)).toList();
+        if (lower.size() == 1) {
+            return lower.getFirst();
+        }
+        return String.join(", ", lower.subList(0, lower.size() - 1)) + " " + t.getString("liquidation.pdf.settle.and")
+                + " " + lower.getLast();
+    }
+
+    private static List<Cell> row(String item, BigDecimal amount, boolean bold, List<String> note) {
         String money = DocumentFormats.money(amount);
-        return List.of(bold ? Cell.bold(item) : Cell.of(item), Cell.of(reference == null ? "" : reference),
+        return List.of((bold ? Cell.bold(item) : Cell.of(item)).details(note),
                 bold ? Cell.bold(money) : Cell.of(money));
     }
 }

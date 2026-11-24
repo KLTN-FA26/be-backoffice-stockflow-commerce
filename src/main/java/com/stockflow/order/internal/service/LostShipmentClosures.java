@@ -71,10 +71,15 @@ public class LostShipmentClosures {
         this.clock = clock;
     }
 
-    /** Where the browser uploads the carrier's confirmation of the loss before the closure is recorded. */
+    /**
+     * Where the browser uploads the carrier's confirmation of the loss before the closure is recorded. A read: it only
+     * answers whether the caller may see the order and the order has the shipment, so it reads without the row lock -
+     * {@code findByIdInScope} locks, and Postgres refuses {@code SELECT ... FOR UPDATE} in a read-only transaction (the
+     * 500 of the 24/11 demo run, D-1). The closure itself takes the lock and checks again.
+     */
     @Transactional(readOnly = true)
     public UploadSlot beginEvidenceUpload(CurrentUser user, UUID orderId, UUID shipmentId, UploadSlotRequest request) {
-        Order order = orders.findByIdInScope(new OrderId(orderId))
+        Order order = orders.findByIdInScopeForReading(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
         if (order.shipments().stream().noneMatch(s -> s.id().equals(shipmentId))) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "Order %s has no shipment %s".formatted(

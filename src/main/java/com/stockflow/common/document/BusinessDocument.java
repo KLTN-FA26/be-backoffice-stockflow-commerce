@@ -42,7 +42,9 @@ import java.util.Map;
  *
  * <p>Nothing here knows a language or a company: every word is given by the caller, who takes it from the Vietnamese
  * bundle. Text is measured, never counted; a paragraph, a table and a field list carry on over pages, a table repeats
- * its header, and a heading or a signature block never stays alone at the foot of a page.</p>
+ * its header, and a heading, a signature block or a table's header never stays alone at the foot of a page - a table
+ * starts with its first row, or the first lines of a tall one, under its header, the sentence introducing it and the
+ * heading over them.</p>
  */
 public final class BusinessDocument {
 
@@ -373,6 +375,10 @@ public final class BusinessDocument {
     private static final float PAGE_HEIGHT = PDRectangle.A4.getHeight();
     private static final float BORDER = 0.5f;
     private static final float CELL_PAD = 3.5f;
+    /** A tall table row cut over pages keeps at least this many lines on the page it starts on... */
+    private static final int TALL_ROW_HERE = 4;
+    /** ...and at least this many on the next. */
+    private static final int TALL_ROW_NEXT = 2;
     /** Room to sign and to seal: 25 to 30 mm between the caption and the name. */
     private static final float SIGNING_ROOM = mm(27);
     private static final Color GREY_SHADE = new Color(0xEC, 0xEC, 0xEC);
@@ -400,6 +406,19 @@ public final class BusinessDocument {
                     if (block instanceof Paragraph last && i + 1 < blocks.size()
                             && blocks.get(i + 1) instanceof Signatures after) {
                         pen.keepTogether(last, after);
+                    }
+                    // Nor does a table open a page without the sentence that introduces it (demo run 24/11, D-7).
+                    if (block instanceof Paragraph lead && i + 1 < blocks.size()
+                            && blocks.get(i + 1) instanceof Table after) {
+                        pen.keepTogether(lead, after);
+                    }
+                    if (block instanceof Heading heading && i + 1 < blocks.size()) {
+                        if (blocks.get(i + 1) instanceof Table after) {
+                            pen.keepTogether(heading, null, after);
+                        } else if (i + 2 < blocks.size() && blocks.get(i + 1) instanceof Paragraph lead
+                                && blocks.get(i + 2) instanceof Table after) {
+                            pen.keepTogether(heading, lead, after);
+                        }
                     }
                     switch (block) {
                         case NationalHeader h -> pen.nationalHeader(h);
@@ -759,14 +778,17 @@ public final class BusinessDocument {
 
         // ---- table -------------------------------------------------------------------------------------------------
 
-        void table(Table t) throws IOException {
-            float tableSize = layout.tableSize();
-            float lineHeight = leading(tableSize) - 1;
+        /** The table's column widths, its weights shared out over the text width. */
+        private float[] widths(Table t) {
             float total = (float) t.columns().stream().mapToDouble(Column::weight).sum();
             float[] widths = new float[t.columns().size()];
             for (int i = 0; i < widths.length; i++) {
                 widths[i] = t.columns().get(i).weight() * width / total;
             }
+            return widths;
+        }
+
+        private List<HeaderCell> header(Table t, float[] widths, float tableSize) throws IOException {
             List<HeaderCell> header = new ArrayList<>();
             for (int i = 0; i < widths.length; i++) {
                 String heading = t.columns().get(i).heading();
@@ -780,11 +802,88 @@ public final class BusinessDocument {
                 float headingSize = widest <= room ? tableSize : Math.max(6, tableSize * room / widest - 0.05f);
                 header.add(new HeaderCell(wrapPlain(Style.BOLD, headingSize, heading, room), headingSize));
             }
-            float headerHeight = header.stream().mapToInt(cell -> cell.lines().size()).max().orElse(1) * lineHeight
-                    + 2 * CELL_PAD;
+            return header;
+        }
+
+        private static float headerHeight(List<HeaderCell> header, float lineHeight) {
+            return header.stream().mapToInt(cell -> cell.lines().size()).max().orElse(1) * lineHeight + 2 * CELL_PAD;
+        }
+
+        /**
+         * Whether a row of {@code lines} is tall: more than a third of a fresh page (a delivery note's SKU with its 40
+         * LPNs). A tall row is cut over pages rather than moved whole, at least {@code TALL_ROW_HERE} lines on the
+         * page it starts and {@code TALL_ROW_NEXT} on the next: moved whole, it left most of a page empty behind it.
+         */
+        private static boolean tall(int lines, float lineHeight, float fresh) {
+            return lines * lineHeight + 2 * CELL_PAD > fresh / 3;
+        }
+
+        /**
+         * The room a table needs where it starts: the gap above it, its header and its first row. The header goes with
+         * that row. Reserving one line was not that: a first row that fits a fresh page but not what is left of this
+         * one moves there whole ({@link #table}), and the header stayed behind alone at the foot of the page (demo run
+         * 24/11, D-7: a delivery note's 40 LPNs, a liquidation's goods). So it is that whole row - or, for a tall row,
+         * which is cut over pages, the lines of it that open the table.
+         */
+        private float start(Table t) throws IOException {
+            float tableSize = layout.tableSize();
+            float lineHeight = leading(tableSize) - 1;
+            float[] widths = widths(t);
+            float headerHeight = headerHeight(header(t, widths, tableSize), lineHeight);
             float fresh = top - bottom - headerHeight;
+            int lines = t.rows().isEmpty() ? 1 : rowLines(t.rows().getFirst(), widths, tableSize);
+            int kept = tall(lines, lineHeight, fresh) ? Math.min(lines, TALL_ROW_HERE) : lines;
+            return 3 + headerHeight + kept * lineHeight + 2 * CELL_PAD;
+        }
+
+        /** The lines {@code p} takes, at its size and within its indents. */
+        private int lines(Paragraph p) throws IOException {
+            float textSize = size + p.sizeDelta();
+            float hang = p.marker() == null ? 0
+                    : Math.max(textWidth(Style.REGULAR, textSize, p.marker()) + 5, textSize * 1.6f);
+            float room = width - p.indent() - hang;
+            return wrap(p.runs(), textSize, room - p.firstIndent(), room).size();
+        }
+
+        /**
+         * Starts a new page now unless {@code p} and the start of the table after it both fit on this one: the
+         * sentence that introduces a table ("... cụ thể như sau:") is not left at the foot of a page with its table on
+         * the next. Only a paragraph of at most three lines is held to it; a longer one is text of its own and is
+         * left where it falls.
+         */
+        void keepTogether(Paragraph p, Table t) throws IOException {
+            int lines = lines(p);
+            if (lines <= 3) {
+                ensure(lines * leading(size + p.sizeDelta()) + p.after() + start(t));
+            }
+        }
+
+        /**
+         * A heading over a table, or over the sentence that introduces one ({@code lead}, null when there is none):
+         * they go over together, or the heading would stay behind alone once {@link #keepTogether(Paragraph, Table)}
+         * moved the rest.
+         */
+        void keepTogether(Heading h, Paragraph lead, Table t) throws IOException {
+            float heading = 6 + wrap(List.of(Run.bold(h.text())), size, width, width).size() * leading + 3;
+            if (lead == null) {
+                ensure(heading + start(t));
+                return;
+            }
+            int lines = lines(lead);
+            if (lines <= 3) {
+                ensure(heading + lines * leading(size + lead.sizeDelta()) + lead.after() + start(t));
+            }
+        }
+
+        void table(Table t) throws IOException {
+            float tableSize = layout.tableSize();
+            float lineHeight = leading(tableSize) - 1;
+            float[] widths = widths(t);
+            List<HeaderCell> header = header(t, widths, tableSize);
+            float headerHeight = headerHeight(header, lineHeight);
+            float fresh = top - bottom - headerHeight;
+            ensure(start(t));
             y -= 3;
-            ensure(headerHeight + lineHeight + 2 * CELL_PAD);
             headerRow(widths, header, headerHeight, tableSize, lineHeight);
             for (List<Cell> row : t.rows()) {
                 List<List<CellLine>> cells = new ArrayList<>();
@@ -793,17 +892,26 @@ public final class BusinessDocument {
                 }
                 int count = Math.max(1, cells.stream().mapToInt(List::size).max().orElse(1));
                 int from = 0;
+                boolean tall = tall(count, lineHeight, fresh);
                 while (from < count) {
                     int room = (int) Math.floor((y - bottom - 2 * CELL_PAD) / lineHeight);
                     int remaining = count - from;
-                    // A row that fits on a fresh page moves there whole; only a row taller than a page is cut.
+                    // A row that fits on a fresh page moves there whole; a tall one is cut, but only where at least
+                    // TALL_ROW_HERE of its lines fit (see tall).
                     boolean wholeOnFreshPage = remaining * lineHeight + 2 * CELL_PAD <= fresh;
-                    if (room < 1 || (room < remaining && from == 0 && wholeOnFreshPage)) {
+                    boolean move = room < remaining && (tall ? room < Math.min(remaining, TALL_ROW_HERE)
+                            : from == 0 && wholeOnFreshPage);
+                    if (room < 1 || move) {
                         newPage();
                         headerRow(widths, header, headerHeight, tableSize, lineHeight);
                         continue;
                     }
-                    int to = from + Math.min(room, remaining);
+                    int take = Math.min(room, remaining);
+                    if (tall && take < remaining && remaining - take < TALL_ROW_NEXT) {
+                        // Not one line of it alone at the top of the next page.
+                        take = remaining - TALL_ROW_NEXT;
+                    }
+                    int to = from + take;
                     rowSlice(t, row, widths, cells, from, to, tableSize, lineHeight);
                     from = to;
                 }
@@ -812,6 +920,15 @@ public final class BusinessDocument {
                 summaries(t, widths, header, headerHeight, tableSize, lineHeight);
             }
             y -= 8;
+        }
+
+        /** How many lines {@code row} takes: its tallest cell's, as {@link #table} sets it. */
+        private int rowLines(List<Cell> row, float[] widths, float tableSize) throws IOException {
+            int lines = 1;
+            for (int i = 0; i < widths.length; i++) {
+                lines = Math.max(lines, cellLines(row.get(i), tableSize, widths[i] - 2 * CELL_PAD).size());
+            }
+            return lines;
         }
 
         private List<CellLine> cellLines(Cell cell, float tableSize, float room) throws IOException {

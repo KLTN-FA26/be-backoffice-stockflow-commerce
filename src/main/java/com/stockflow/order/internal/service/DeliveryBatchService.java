@@ -337,13 +337,14 @@ public class DeliveryBatchService {
     // ---- moving a window (BR-28) ----------------------------------------------------------------------------------
 
     /**
-     * Where the browser uploads the customer's consent (an e-mail, a signed note) before the window is moved. Not
-     * read-only: the order is read as the caller's data scope sees it, which locks its row ({@code findByIdInScope}),
-     * and Postgres refuses {@code SELECT ... FOR UPDATE} in a read-only transaction.
+     * Where the browser uploads the customer's consent (an e-mail, a signed note) before the window is moved. A read:
+     * the order as the caller's data scope sees it, without the row lock ({@code findByIdInScopeForReading}) - a slot
+     * changes nothing, so it neither needs the lock nor should queue behind a change holding it, and Postgres refuses
+     * {@code SELECT ... FOR UPDATE} in a read-only transaction. Moving the window takes the lock and checks again.
      */
-    @Transactional
+    @Transactional(readOnly = true)
     public UploadSlot beginEvidenceUpload(CurrentUser user, UUID orderId, UUID batchId, UploadSlotRequest request) {
-        Order order = orders.findByIdInScope(new OrderId(orderId))
+        Order order = orders.findByIdInScopeForReading(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
         batchOf(order, batchId);
         return staged.begin(FileCategory.DOCUMENT, user.userId(), request);
