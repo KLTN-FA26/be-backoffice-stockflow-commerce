@@ -503,9 +503,10 @@ class PermissionMatrixTest {
             Map.entry("chat-supervision:UPDATE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("chat-canned-responses:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             // The warehouse manager reads the orders of their warehouses only (V20261115000200, 5-7 review M1).
-            Map.entry("sales-orders:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ACCOUNTANT,
+            // The Sales Manager reads orders and quotes, never writes them (V20261227000100, WF-02 QĐ14).
+            Map.entry("sales-orders:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.SALES_MANAGER, Role.ACCOUNTANT,
                     Role.PRODUCTION_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
-            Map.entry("sales-orders:VIEW_PAGE", Set.of(Role.CUSTOMER, Role.SALES_STAFF,
+            Map.entry("sales-orders:VIEW_PAGE", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.SALES_MANAGER,
                     Role.ACCOUNTANT, Role.PRODUCTION_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // WH-READ-COORD (V20261023000500): the release dialog needs a warehouse to pick.
             // SCRUM-474 5b (V20261029004000): the user-management screen picks warehouses too.
@@ -1172,6 +1173,32 @@ class PermissionMatrixTest {
                 .doesNotContain(PermissionCode.parse("warehouse-warehouses:VIEW_PAGE"),
                         PermissionCode.parse("warehouse-warehouses:CREATE"),
                         PermissionCode.parse("warehouse-warehouses:UPDATE"));
+    }
+
+    /**
+     * WF-02 QĐ14, QĐ15 (V20261227000100): the Sales Manager opens the quotes and orders a chat card links to, and the
+     * Accountant the customer whose credit limit they set - READ only, so drawing up a quote, changing an order and
+     * changing a customer stay refused.
+     */
+    @Test
+    void salesManagerReadsQuotesAndOrdersAndTheAccountantReadsCustomers() throws Exception {
+        SecuredMvc http = new SecuredMvc(mvc, decoder);
+        UUID manager = tx.execute(s -> ReferenceRows.user(entityManager));
+        UUID accountant = tx.execute(s -> ReferenceRows.user(entityManager));
+        assertThat(http.asRole(Role.SALES_MANAGER, manager, MockMvcRequestBuilders.get("/api/v1/quotes"))
+                .andReturn().getResponse().getStatus()).as("quotes as SALES_MANAGER").isEqualTo(200);
+        assertThat(http.asRole(Role.SALES_MANAGER, manager, MockMvcRequestBuilders.get("/api/v1/orders"))
+                .andReturn().getResponse().getStatus()).as("orders as SALES_MANAGER").isEqualTo(200);
+        assertThat(http.asRole(Role.ACCOUNTANT, accountant, MockMvcRequestBuilders.get("/api/v1/customers/"
+                + victimCustomer)).andReturn().getResponse().getStatus()).as("a customer as ACCOUNTANT").isEqualTo(200);
+        assertThat(roles.resolve(List.of(Role.SALES_MANAGER.authority())).permissions())
+                .contains(PermissionCode.parse("sales-quotes:VIEW_PAGE"), PermissionCode.parse("sales-orders:VIEW_PAGE"))
+                .doesNotContain(PermissionCode.parse("sales-quotes:CREATE"), PermissionCode.parse("sales-quotes:UPDATE"),
+                        PermissionCode.parse("sales-orders:CREATE"), PermissionCode.parse("sales-orders:UPDATE"));
+        assertThat(roles.resolve(List.of(Role.ACCOUNTANT.authority())).permissions())
+                .contains(PermissionCode.parse("customer-customers:VIEW_PAGE"))
+                .doesNotContain(PermissionCode.parse("customer-customers:UPDATE"),
+                        PermissionCode.parse("customer-customers:CREATE"));
     }
 
     /**
