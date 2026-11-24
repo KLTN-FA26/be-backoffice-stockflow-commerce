@@ -118,6 +118,109 @@ class SeedTestDataLoadTest {
         }
     }
 
+    /**
+     * The WF-05 demo's own locations - {@code db/demo-sepay} and {@code db/demo-wf05}, which the integration tests never
+     * load (their jobs would find what these leave waiting) - load on top of {@code db/migration} and {@code db/demo}
+     * with every trigger on, leave nothing pointing at nothing, and leave each scene in the state the runbook opens it
+     * in (WF-05 demo-run 24/11/2026: the blocked steps).
+     */
+    @Test
+    @DisplayName("the WF-05 demo locations load and leave every seeded scene in its state")
+    void wf05DemoScenes() throws Exception {
+        try (var pg = new PostgreSQLContainer<>("postgres:16-alpine")) {
+            pg.start();
+            pg.copyFileToContainer(MountableFile.forHostPath(ORPHANS), "/tmp/orphans.sql");
+            String database = pg.getDatabaseName();
+            migrate(pg, database, "classpath:db/migration", "classpath:db/demo", "classpath:db/demo-sepay",
+                    "classpath:db/demo-wf05");
+            try (Connection db = connect(pg, database)) {
+                wf05Scenes(db);
+            }
+            noOrphans(pg, database);
+        }
+    }
+
+    private static UUID wf05(String key) {
+        return DemoData.demoId("demo:wf05:" + key);
+    }
+
+    private static String orderStatus(Connection db, String key) throws Exception {
+        return RawSql.text(db, "SELECT status FROM ordering.customer_order WHERE id = ?", wf05("order:" + key));
+    }
+
+    private static String invoice(Connection db, String key) throws Exception {
+        return RawSql.text(db, "SELECT type || '|' || status || '|' || coalesce(provider, '-') || '|' || attempt || '|' "
+                + "|| coalesce(warnings, '-') FROM invoicing.einvoice WHERE id = ?", wf05("einvoice:" + key));
+    }
+
+    private static void wf05Scenes(Connection db) throws Exception {
+        // D-5 / TH-5: a second member of Sales, same role.
+        assertThat(RawSql.texts(db, "SELECT r.code FROM identity.user_role ur JOIN identity.app_role r ON r.id = "
+                + "ur.role_id JOIN identity.app_user u ON u.id = ur.user_id WHERE u.username = 'demo.sales2'"))
+                .containsExactly("SALES_STAFF");
+        // Steps 8, 9, HĐ-2, HĐ-7: drafts the automatic issuing does not take.
+        assertThat(invoice(db, "WF5-C:1")).isEqualTo("ORIGINAL|DRAFT|-|0|TAX_RATE_DIFFERS_FROM_CONTRACT");
+        assertThat(invoice(db, "WF5-D:1")).isEqualTo("ORIGINAL|DRAFT|SANDBOX|1|-");
+        assertThat(invoice(db, "WF5-HD7:1"))
+                .isEqualTo("ORIGINAL|DRAFT|-|0|TAX_RATE_DIFFERS_FROM_CONTRACT,TAX_CLASS_UNKNOWN");
+        assertThat(RawSql.number(db, "SELECT count(*) FROM invoicing.einvoice_line WHERE einvoice_id = ? AND tax_rate = 10",
+                wf05("einvoice:WF5-HD7:1"))).as("the cup without a class at the highest rate").isOne();
+        // HĐ-1: one the sandbox keeps "processing", one it never received.
+        assertThat(invoice(db, "WF5-HD1B:1")).isEqualTo("ORIGINAL|SUBMITTING|SANDBOX|1|-");
+        assertThat(RawSql.text(db, "SELECT (s.ready_at > now() + INTERVAL '1 year')::text FROM invoicing.sandbox_issuance s "
+                + "JOIN invoicing.einvoice e ON e.transaction_id = s.transaction_id WHERE e.id = ?",
+                wf05("einvoice:WF5-HD1B:1"))).isEqualTo("true");
+        assertThat(invoice(db, "WF5-HD1C:1")).isEqualTo("ORIGINAL|SUBMITTING|SANDBOX|1|-");
+        assertThat(RawSql.number(db, "SELECT count(*) FROM invoicing.sandbox_issuance s JOIN invoicing.einvoice e ON "
+                + "e.transaction_id = s.transaction_id WHERE e.id = ?", wf05("einvoice:WF5-HD1C:1"))).isZero();
+        // HĐ-3 step 5, HĐ-5.
+        assertThat(invoice(db, "WF5-HD3R:1")).isEqualTo("ORIGINAL|REPLACED|SANDBOX|1|-");
+        assertThat(invoice(db, "WF5-HD3R:replacement")).isEqualTo("REPLACEMENT|ISSUED|SANDBOX|1|-");
+        assertThat(invoice(db, "WF5-HD5:1")).isEqualTo("ORIGINAL|ISSUED|VIETTEL_SINVOICE|1|-");
+        // The provider's and the codes' sequences continue after what was seeded.
+        assertThat(RawSql.number(db, "SELECT count(*) FROM invoicing.einvoice e WHERE e.provider = 'SANDBOX' AND "
+                + "e.invoice_number > (SELECT last_number FROM invoicing.sandbox_number WHERE symbol = 'C26TSB')")).isZero();
+        assertThat(RawSql.number(db, "SELECT count(*) FROM invoicing.einvoice e WHERE split_part(e.code, '-', 3)::int > "
+                + "(SELECT d.last_value FROM platform.document_sequence d WHERE d.document_type = 'EINV' AND "
+                + "to_char(d.sequence_date, 'YYYYMMDD') = split_part(e.code, '-', 2))")).isZero();
+        // Step 11: WF5-E completes on the next run, WF5-E2 closes, WF5-F's contract is liquidated.
+        assertThat(orderStatus(db, "WF5-E")).isEqualTo("DELIVERED");
+        assertThat(RawSql.number(db, "SELECT count(*) FROM payment.installment WHERE order_id = ? AND status <> 'PAID'",
+                wf05("order:WF5-E"))).isZero();
+        assertThat(orderStatus(db, "WF5-E2")).isEqualTo("COMPLETED");
+        assertThat(RawSql.text(db, "SELECT (completed_at < now() - INTERVAL '30 days')::text FROM ordering.customer_order "
+                + "WHERE id = ?", wf05("order:WF5-E2"))).isEqualTo("true");
+        assertThat(orderStatus(db, "WF5-F")).isEqualTo("CANCELLED");
+        assertThat(RawSql.text(db, "SELECT status FROM ordering.sales_contract WHERE order_id = ?", wf05("order:WF5-F")))
+                .isEqualTo("SIGNED");
+        assertThat(RawSql.number(db, "SELECT (SELECT sum(refundable_amount) FROM payment.order_settlement WHERE order_id"
+                + " = ?) - (SELECT sum(amount) FROM payment.refund_record WHERE order_id = ? AND status = 'RECORDED')",
+                wf05("order:WF5-F"), wf05("order:WF5-F"))).as("nothing left to refund").isZero();
+        // TT-1: held for credit; TT-2: due yesterday, not announced; TT-5 and TH-1: a batch never released.
+        for (String key : List.of("WF5-TT1A", "WF5-TT1B")) {
+            assertThat(RawSql.text(db, "SELECT o.status || '|' || o.hold_reason || '|' || c.outcome FROM "
+                    + "ordering.customer_order o JOIN ordering.order_credit_check c ON c.order_id = o.id JOIN "
+                    + "ordering.order_hold h ON h.order_id = o.id AND h.resolved_at IS NULL WHERE o.id = ?",
+                    wf05("order:" + key))).isEqualTo("ON_HOLD|CREDIT|OVERDUE");
+        }
+        assertThat(RawSql.text(db, "SELECT status || '|' || (due_date = (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date - 1)"
+                + " || '|' || (overdue_announced_for IS NULL) FROM payment.installment WHERE id = ?",
+                wf05("installment:WF5-TT2:2"))).isEqualTo("DUE|true|true");
+        assertThat(orderStatus(db, "WF5-TT5")).isEqualTo("PARTIALLY_FULFILLED");
+        assertThat(orderStatus(db, "WF5-TH1")).isEqualTo("PARTIALLY_FULFILLED");
+        // DĐ-1: refunded more than 30 days ago; A has a delivery not invoiced, B only its return's adjustment.
+        for (String key : List.of("WF5-DD1A", "WF5-DD1B")) {
+            assertThat(RawSql.text(db, "SELECT status || '|' || (refunded_at < now() - INTERVAL '30 days') FROM "
+                    + "ordering.customer_order WHERE id = ?", wf05("order:" + key))).isEqualTo("PARTIALLY_REFUNDED|true");
+            assertThat(RawSql.text(db, "SELECT status FROM invoicing.einvoice WHERE id = ?", wf05("einvoice:" + key
+                    + ":return"))).isEqualTo("DRAFT");
+        }
+        assertThat(invoice(db, "WF5-DD1A:2")).isEqualTo("ORIGINAL|DRAFT|SANDBOX|1|-");
+        assertThat(invoice(db, "WF5-DD1B:2")).isEqualTo("ORIGINAL|ISSUED|SANDBOX|1|-");
+        assertThat(RawSql.text(db, "SELECT status || '|' || return_ownership FROM inventory.stock_package WHERE id = ?",
+                wf05("lpn:WF5-DD1A-1:1"))).isEqualTo("IN_STOCK|COMPANY");
+    }
+
     /** Staff of every role but the system administrator, customers' accounts, and the areas each warehouse works in. */
     private static void staffAndPlaces(Connection db) throws Exception {
         assertThat(RawSql.texts(db, "SELECT DISTINCT r.code FROM identity.user_role ur JOIN identity.app_role r ON r.id = "
