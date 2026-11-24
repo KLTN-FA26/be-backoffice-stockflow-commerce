@@ -102,6 +102,7 @@ class ProductionSampleIntegrationTest {
     private static Warehouse a;
 
     @Autowired ProductionOrderService productionOrders;
+    @Autowired com.stockflow.order.internal.domain.SkuProductionHistory productionHistory;
     @Autowired ProductionSampleService samples;
     @Autowired ProducerService producers;
     @Autowired SalesContracts contracts;
@@ -346,6 +347,40 @@ class ProductionSampleIntegrationTest {
         assertThat(started.productionStartedAt()).isNotNull();
         assertThat(started.expectedCompletionDate()).isEqualTo(today.plusDays(12));
         assertThat(printingStartedAt(otherOrder)).as("BR-11: the sales order records printing started").isNotNull();
+    }
+
+    @Test
+    @DisplayName("QD4: the plate exists once a production order reached In Production, even after its order ended")
+    void plateMadeOnceProductionStarted() {
+        UUID orderId = confirmedOrder(null);
+        ProductionOrder draft = productionOrders.drawUp(orderId, 1, producer.id(), coordinator);
+        ProductionOrder waived = productionOrders.edit(draft.id(), draft.version(), new ProductionOrder.Draft(
+                draft.producerId(), draft.needByDate(), null, false, "A re-run of a tested design", null));
+        ProductionOrder sentWaived = productionOrders.send(waived.id(), waived.version(), coordinator);
+        ProductionOrder acceptedWaived = productionOrders.accept(sentWaived.id(), sentWaived.version(),
+                today.plusDays(10), null, coordinator);
+
+        // The sales order no longer counts (as if cancelled) - only the production order says the plate was made.
+        Boolean beforeStart = tx.execute(s -> {
+            s.setRollbackOnly();
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            jdbc.update("UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason_code = 'OTHER', "
+                    + "cancellation_reason = 'test' WHERE id = ?", orderId);
+            return productionHistory.producedBefore(List.of(sku.sku())).contains(sku.sku());
+        });
+        assertThat(beforeStart).as("accepted by the producer is not printed yet").isFalse();
+
+        productionOrders.startProduction(acceptedWaived.id(), acceptedWaived.version(), today.plusDays(12),
+                coordinator);
+        Boolean afterStart = tx.execute(s -> {
+            s.setRollbackOnly();
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            jdbc.update("UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason_code = 'OTHER', "
+                    + "cancellation_reason = 'test' WHERE id = ?", orderId);
+            return productionHistory.producedBefore(List.of(sku.sku())).contains(sku.sku());
+        });
+        assertThat(afterStart).as("In Production made the plate").isTrue();
+        assertThat(productionHistory.producedBefore(List.of("NO-SUCH-SKU"))).isEmpty();
     }
 
     @Test

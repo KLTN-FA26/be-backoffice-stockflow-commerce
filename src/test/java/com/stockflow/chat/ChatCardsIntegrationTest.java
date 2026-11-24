@@ -159,6 +159,27 @@ class ChatCardsIntegrationTest {
     }
 
     @Test
+    @DisplayName("AUTH-2: a supervisor in charge of the conversation but without sales-quotes:CREATE draws up nothing "
+            + "from the card -> 403; the request stays open")
+    void quoteRequestCardNeedsQuoteCreate() throws Exception {
+        UUID design = design(alice);
+        UUID requestId = Identifiers.newId();
+        when(quoteRequests.designRequest(requestId)).thenReturn(Optional.of(request(requestId, design, alice,
+                "APPROVED", "ACME-CUP-01")));
+        documentCards.designQuoteRequested(requestId);
+        Map<String, Object> posted = jdbc.queryForMap("SELECT id, conversation_id FROM chat.message WHERE"
+                + " card_kind = 'QUOTE_REQUEST' AND card_payload ->> 'requestId' = ?", requestId.toString());
+        UUID conversation = (UUID) posted.get("conversation_id");
+        claim(sales, conversation);
+        UUID manager = new StaffFixtures(jdbc, tx, entityManager).staff("SALES_MANAGER");
+
+        cardAction(Role.SALES_MANAGER, manager, conversation, (UUID) posted.get("id"), "{\"action\":\"CREATE_QUOTE\"}")
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+        verify(quotes, never()).draft(any(), any());
+        verify(quoteRequests, never()).close(any(), any());
+    }
+
+    @Test
     @DisplayName("TC-F13-02 (14 BR-22): a project's quote request card becomes one quote of every design, and the request "
             + "closes; a closed request is not quoted")
     void projectQuoteRequestCard() throws Exception {

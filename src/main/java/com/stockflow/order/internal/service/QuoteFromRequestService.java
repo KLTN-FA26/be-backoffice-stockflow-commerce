@@ -68,10 +68,19 @@ public class QuoteFromRequestService implements QuotesFromRequests {
 
     @Override
     public Drawn draw(CurrentUser staff, Scope scope, UUID requestId) {
+        // AUTH-2: the chat card calls this too, behind the chat's own permission; drawing up a quote is creating one.
+        staff.require(OrderPermissions.QUOTES, com.stockflow.common.security.Action.CREATE);
         UUID quoteRequestId = quoteRequestId(scope, requestId);
         repository.lockRequest(quoteRequestId);
         Optional<Quote> earlier = repository.findByRequestId(quoteRequestId);
         if (earlier.isPresent()) {
+            Quote drawn = earlier.get();
+            if (drawn.status() == com.stockflow.order.internal.domain.QuoteStatus.CANCELLED && drawn.sentAt() == null) {
+                // LC-3: the request closed when its draft was drawn; cancelling the draft is Sales closing it.
+                throw new BusinessException(ErrorCode.DESIGN_QUOTE_REQUEST_CLOSED,
+                        "The quote drawn from this request was cancelled before it was sent")
+                        .localized("refusal.quote.requestWithdrawn", drawn.quoteNumber());
+            }
             return new Drawn(earlier.get().id(), earlier.get().quoteNumber(), earlier.get().customerId(), false);
         }
         Asked asked = scope == Scope.PROJECT ? project(requestId) : design(requestId);

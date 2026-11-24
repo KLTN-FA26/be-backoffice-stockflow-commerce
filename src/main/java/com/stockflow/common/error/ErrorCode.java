@@ -302,6 +302,8 @@ public enum ErrorCode {
     /** 4B-3 (kltn-docs 14 BR-17): a SKU produced for the first time is sent with its plate fee. */
     QUOTE_PLATE_FEE_MISSING("A SKU on this quote is produced for the first time and has no plate fee; edit the quote",
             409),
+    /** QD4 (kltn-docs 14 BR-17): the plate is charged once; a SKU produced since the draft was edited has none. */
+    QUOTE_PLATE_FEE_REORDER("A SKU on this quote was produced before and still has a plate fee; edit the quote", 409),
     /** 4B-4 (kltn-docs 14 §4.3): the order has no live sales contract, or no contract by that id. */
     SALES_CONTRACT_NOT_FOUND("No sales contract for this order", 404),
     /** 4B-4 (14 BR-12): one live contract per order. */

@@ -106,6 +106,8 @@ class QuoteDocumentTest {
                 "Trần Quốc An",
                 "Trang 1/")
                 .doesNotContain("chưa xác định", "VND");
+        assertThat(text.replaceAll("\\s+", "")).as("QD10: an offer, not the contract")
+                .contains("Báogiákhôngphảihợpđồng;hợpđồngchỉgiaokếtkhihaiBênkýHợpđồngmuabán.");
         assertThat(SalesDocumentSamples.watermarkedPages(pdf)).as("a quote that stands has no watermark").isZero();
         // One goods row: quantity, unit price, amount and rate side by side, in that order.
         assertThat(text).containsSubsequence("Cái", "1.000", "2.000", "2.000.000", "10%");

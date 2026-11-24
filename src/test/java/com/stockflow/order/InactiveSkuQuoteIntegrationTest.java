@@ -199,8 +199,10 @@ class InactiveSkuQuoteIntegrationTest {
         Quotes.QuoteView sent = sent();
         products.discontinue(productId, "End of line", productVersion());
 
-        assertRefusedFor(catchThrowable(() -> quotes.accept(portal, sent.id(), acceptance(sent))),
-                "PRODUCT_DISCONTINUED");
+        Throwable accept = catchThrowable(() -> quotes.accept(portal, sent.id(), acceptance(sent)));
+        assertRefusedFor(accept, "PRODUCT_DISCONTINUED");
+        assertThat(((BusinessException) accept).messageKey()).as("NEW-FE-2: worded for the customer")
+                .isEqualTo("refusal.quote.skuInactive.accept");
         assertThat(status(sent.id())).isEqualTo(QuoteStatus.SENT);
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM ordering.quote_status_history WHERE quote_id = ? AND to_status = 'ACCEPTED'""",
@@ -263,6 +265,24 @@ class InactiveSkuQuoteIntegrationTest {
                 .extracting(Quotes.Row::id).contains(accepted.id());
         assertThat(code(catchThrowable(() -> quotes.convert(sales, accepted.id(),
                 new Quotes.Conversion(cancelled.version(), null, null))))).isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
+    }
+
+    @Test
+    @DisplayName("LC-2: an accepted quote of a customer no longer active is cancelled with a reason, every SKU active")
+    void anAcceptedQuoteOfABlockedCustomerIsCancelled() {
+        Quotes.QuoteView accepted = accepted();
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE customer.customer SET status = 'BLOCKED' WHERE id = ?",
+                customerId));
+
+        assertThat(code(catchThrowable(() -> quotes.cancel(sales, accepted.id(), accepted.version(), " "))))
+                .as("a reason is still required").isEqualTo(ErrorCode.VALIDATION_FAILED);
+        Quotes.QuoteView cancelled = quotes.cancel(sales, accepted.id(), accepted.version(),
+                "Customer blocked by accounting; the quote cannot become an order");
+        assertThat(cancelled.status()).isEqualTo(QuoteStatus.CANCELLED);
+        assertThat(cancelled.history()).last().satisfies(t -> {
+            assertThat(t.fromStatus()).isEqualTo(QuoteStatus.ACCEPTED);
+            assertThat(t.reason()).startsWith("Customer blocked");
+        });
     }
 
     private static ErrorCode code(Throwable thrown) {
