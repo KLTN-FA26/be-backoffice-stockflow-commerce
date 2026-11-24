@@ -102,6 +102,11 @@ class SalesRollupIntegrationTest {
         cup = CustomerSkuRows.issue(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, 50).sku();
     }
 
+    /**
+     * Cancels what the test left placed, then waits for the rollups to take those cancellations in: they arrive after
+     * commit, asynchronously, and a next test reading its baseline before they land would count an order that is about
+     * to leave the day (replayedEventsAreIgnored saw before + 1 - 1).
+     */
     @AfterEach
     void putTheStockBack() {
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> placed.forEach(id -> {
@@ -110,6 +115,7 @@ class SalesRollupIntegrationTest {
             }
         }));
         placed.clear();
+        awaitRollupsIdle();
     }
 
     // ---- helpers -----------------------------------------------------------------------------------------------
