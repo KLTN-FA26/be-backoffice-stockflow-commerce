@@ -37,3 +37,8 @@ target/spring-modulith-docs/
 # Python bytecode (tools/)
 __pycache__/
 *.pyc
+
+# graphify's knowledge graph: built per machine (`graphify update .`, or the SessionStart hook in a cloud
+# session). Not committed: the full graph.json is about 100 MB and is rewritten on every build.
+graphify-out/
+.claude/settings.json.graphify-bak
