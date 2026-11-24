@@ -26,7 +26,6 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.util.Locale;
 import java.util.UUID;
 
 import static org.hamcrest.Matchers.everyItem;
@@ -73,7 +72,7 @@ class OrderWarehouseScopeHttpIntegrationTest {
                 INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height,
                                                  version, created_at)
                 VALUES (?, 'Elsewhere', 'ACTIVE', ?, 'Somewhere', 'M', 50, 50, 0, NOW())""", other,
-                "E" + UUID.randomUUID().toString().substring(0, 5).toUpperCase(Locale.ROOT)));
+                ReferenceRows.warehousePrefix("E")));
         hcmManager = staff.staff("WAREHOUSE_MANAGER", DemoData.WAREHOUSE_HCM);
         otherManager = staff.staff("WAREHOUSE_MANAGER", other);
         sales = staff.staff("SALES_STAFF");
