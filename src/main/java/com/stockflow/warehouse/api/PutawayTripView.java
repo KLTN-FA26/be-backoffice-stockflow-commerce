@@ -12,14 +12,18 @@ import java.util.UUID;
  *                        module's own enum stays internal
  * @param startLocationId the source area the route starts from; null until the trip set off
  * @param startX          where the route starts on the map; null when the trip has not set off or the map cannot say
+ * @param originLocationId where the stops still to visit were ordered from: the place of the last carton put away,
+ *                         else the start area (issue #410). Null unless the trip is on its way and the map can place it
+ * @param originX          that origin's point on the map: the first point of the first stop's {@code path}
  * @param closedBy        who closed it with cartons still on the cart; null for a trip that completed
  * @param cartons         every carton that is or was on the cart, in the order they came onto it
  * @param stops           the places still to visit, in visiting order; empty unless the trip is on its way. Worked
  *                        out from the map when the snapshot is taken, never stored (06 §4.4 step 6)
  */
 public record PutawayTripView(UUID id, UUID warehouseId, UUID operatorId, String status, UUID startLocationId,
-                              BigDecimal startX, BigDecimal startY, Instant startedAt, Instant lastActivityAt,
-                              Instant closedAt, UUID closedBy, List<Carton> cartons, List<Stop> stops) {
+                              BigDecimal startX, BigDecimal startY, UUID originLocationId, BigDecimal originX,
+                              BigDecimal originY, Instant startedAt, Instant lastActivityAt, Instant closedAt,
+                              UUID closedBy, List<Carton> cartons, List<Stop> stops) {
 
     public PutawayTripView {
         cartons = List.copyOf(cartons);
@@ -47,7 +51,22 @@ public record PutawayTripView(UUID id, UUID warehouseId, UUID operatorId, String
                          boolean holding, Instant loadedAt, Instant placedAt) {
     }
 
-    /** A place the trip still stops at; {@code x}/{@code y} where the clerk stands, null when the map cannot say. */
-    public record Stop(int sequence, UUID locationId, String locationCode, BigDecimal x, BigDecimal y) {
+    /**
+     * A place the trip still stops at.
+     *
+     * @param x    where the clerk stands ({@code y} too); null when the map cannot say
+     * @param path the line to walk to it, round shelves, walls and closed doors: from the origin for the first stop,
+     *             else from the last stop before it that has a point, both ends included. Null when either end has no
+     *             point or no way leads there - a client then draws the straight segment (issue #410)
+     */
+    public record Stop(int sequence, UUID locationId, String locationCode, BigDecimal x, BigDecimal y,
+                       List<MapPoint> path) {
+        public Stop {
+            path = path == null ? null : List.copyOf(path);
+        }
+    }
+
+    /** A point of the warehouse map, in its unit (metres). */
+    public record MapPoint(BigDecimal x, BigDecimal y) {
     }
 }

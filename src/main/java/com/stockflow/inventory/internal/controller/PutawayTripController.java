@@ -146,12 +146,14 @@ class PutawayTripController {
 
     private static PutawayTripResponse toResponse(TripView trip) {
         return new PutawayTripResponse(trip.id(), trip.warehouseId(), trip.operatorId(), trip.status(),
-                trip.startLocationCode(), trip.startX(), trip.startY(), trip.startedAt(), trip.lastActivityAt(),
+                trip.startLocationCode(), trip.startX(), trip.startY(), trip.originLocationCode(), trip.originX(),
+                trip.originY(), trip.startedAt(), trip.lastActivityAt(),
                 trip.closedAt(), trip.closedBy(),
                 trip.cartons().stream().map(c -> new PutawayTripResponse.Carton(c.putawayTaskId(), c.lpn(), c.sku(),
                         c.lotNumber(), c.status(), c.assignedLocationCode(), c.stopSequence(), c.holding(),
                         c.loadedAt(), c.placedAt())).toList(),
                 trip.stops().stream().map(s -> new PutawayTripResponse.Stop(s.sequence(), s.locationCode(), s.x(),
-                        s.y(), s.lpns())).toList());
+                        s.y(), s.lpns(), s.path() == null ? null : s.path().stream()
+                        .map(p -> new PutawayTripResponse.Point(p.x(), p.y())).toList())).toList());
     }
 }
