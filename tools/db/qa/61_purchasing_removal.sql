@@ -268,7 +268,7 @@ SELECT pg_temp.expect_fail_like('L8 a line in a unit of another item', 'cartons 
                                                  received_qty, lot_number, uom_conversion_id)
     SELECT gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
            md5('demo:loc:HCM-RCV01')::uuid, 10, 'PRD-20261109-6101', u.id
-      FROM inventory.uom_conversions u WHERE u.inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-DO') AND u.is_base $q$);
+      FROM inventory.uom_conversions u WHERE u.inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-DO') AND u.active $q$);
 SELECT pg_temp.expect_ok('L9 a whole carton of the production order line, in its lot', $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id,
                                                  received_qty, lot_number, uom_conversion_id)

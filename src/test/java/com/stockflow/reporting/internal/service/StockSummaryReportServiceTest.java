@@ -78,9 +78,8 @@ class StockSummaryReportServiceTest {
         };
         UomConversionService units = mock(UomConversionService.class);
         when(units.conversionsOf(anyCollection())).thenReturn(Map.of(
-                "CUP-A", List.of(unit("CUP-A", 1, true), unit("CUP-A", 50, false)),
-                "CUP-C", List.of(unit("CUP-C", 1, true), unit("CUP-C", 30, false)),
-                "CUP-B", List.of(unit("CUP-B", 1, true))));
+                "CUP-A", List.of(unit("CUP-A", 50)),
+                "CUP-C", List.of(unit("CUP-C", 30))));
         customerSkus = mock(CustomerSkus.class);
         when(customerSkus.ownersOf(anyCollection())).thenReturn(Map.of("CUP-A", OWNER, "CUP-C", OWNER));
         when(customerSkus.ownedBy(OWNER, null)).thenReturn(List.of(
@@ -108,8 +107,8 @@ class StockSummaryReportServiceTest {
         LocaleContextHolder.resetLocaleContext();
     }
 
-    private static UomConversion unit(String sku, int factor, boolean base) {
-        return new UomConversion(UUID.randomUUID(), sku, base ? "PCS" : "CARTON", factor, base, null, null, null, null, true, 0);
+    private static UomConversion unit(String sku, int factor) {
+        return new UomConversion(UUID.randomUUID(), sku, "CARTON", factor, null, null, null, null, true, 0);
     }
 
     private static <T> Map<UUID, T> pick(Map<UUID, T> all, Collection<UUID> ids) {

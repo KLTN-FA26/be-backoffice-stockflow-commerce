@@ -105,21 +105,16 @@ class InventoryItemMasterDataIntegrationTest {
     // ---- units of measure ------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("an item starts with its base unit only; packing units have a factor")
+    @DisplayName("an item starts with no packing unit - its own unit (EACH) names its pieces and has no row; a packing "
+            + "unit has a factor")
     void unitsOfMeasure() {
-        var start = units.conversions(productId, variantId, 0, 20);
-        assertThat(start.items()).singleElement().satisfies(base -> {
-            assertThat(base.base()).isTrue();
-            assertThat(base.unitOfMeasure()).isEqualTo("EACH");
-            assertThat(base.factor()).isEqualTo(1);
-        });
-        UomConversion base = start.items().getFirst();
+        assertThat(units.conversions(productId, variantId, 0, 20).items()).isEmpty();
+        assertThat(items.get(itemId()).logistics().unitOfMeasure()).isEqualTo("EACH");
 
         UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, true));
         assertThat(units.conversions(productId, variantId, 0, 20).items())
-                .extracting(UomConversion::unitOfMeasure).containsExactly("EACH", "CARTON");
-        assertThat(units.conversions(productId, variantId, 1, 1).items())
                 .extracting(UomConversion::unitOfMeasure).containsExactly("CARTON");
+        assertThat(units.conversions(productId, variantId, 1, 1).items()).isEmpty();
 
         assertCode(() -> units.addConversion(productId, variantId, packing("CARTON", 500, true)),
                 ErrorCode.UOM_CONVERSION_DUPLICATE);
@@ -130,19 +125,27 @@ class InventoryItemMasterDataIntegrationTest {
                 "unitOfMeasure");
         assertCode(() -> units.changeConversion(productId, variantId, carton.id(), carton.version() + 5,
                 packing("CARTON", 1000, true)), ErrorCode.OPTIMISTIC_LOCK);
-        assertCode(() -> units.removeConversion(productId, variantId, base.id(), 0), ErrorCode.UOM_CONVERSION_IN_USE);
 
         // Retiring a unit is BR-10's way out.
         UomConversion retired = units.changeConversion(productId, variantId, carton.id(), carton.version(),
                 packing("CARTON", 1000, false));
         assertThat(retired.active()).isFalse();
 
-        // The base unit follows the item's unit code; a packing unit's code cannot be taken by it.
+        // The item's unit names its pieces: a packing unit never has its code, whichever of the two is written
+        // (the EACH refused above; tg_uom_conversions_unit_code and tg_inventory_items_unit_code say it again).
         var logistics = items.get(itemId());
         assertCode(() -> items.describe(itemId(), logistics.version(), withUnit(logistics.logistics(),
                 "CARTON")), ErrorCode.UOM_CONVERSION_DUPLICATE);
+        assertThatThrownBy(() -> tx.executeWithoutResult(t -> jdbc.update(
+                "UPDATE inventory.inventory_items SET unit_of_measure = 'CARTON' WHERE id = ?", itemId())))
+                .hasMessageContaining("a packing unit of it is already called CARTON");
+        assertThatThrownBy(() -> tx.executeWithoutResult(t -> jdbc.update(
+                "UPDATE inventory.uom_conversions SET unit_of_measure = 'EACH' WHERE id = ?", carton.id())))
+                .hasMessageContaining("the unit the pieces of its item are counted in");
         items.describe(itemId(), logistics.version(), withUnit(logistics.logistics(), "PCS"));
-        assertThat(units.conversion(productId, variantId, base.id()).unitOfMeasure()).isEqualTo("PCS");
+        assertThat(items.get(itemId()).logistics().unitOfMeasure()).isEqualTo("PCS");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.uom_conversions WHERE inventory_item_id = ? "
+                + "AND unit_of_measure IN ('EACH', 'PCS')", Long.class, itemId())).as("and still no row").isZero();
 
         UomConversion reread = units.conversion(productId, variantId, carton.id());
         units.removeConversion(productId, variantId, carton.id(), reread.version());

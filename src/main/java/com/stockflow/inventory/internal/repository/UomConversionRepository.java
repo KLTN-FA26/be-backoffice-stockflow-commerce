@@ -23,14 +23,14 @@ import java.util.UUID;
 public class UomConversionRepository {
 
     private static final String SELECT = """
-            select c.id, i.sku, c.unit_of_measure, c.factor, c.is_base, c.active, c.version,
+            select c.id, i.sku, c.unit_of_measure, c.factor, c.active, c.version,
                    c.default_shipping, c.weight_kg, c.length_cm, c.width_cm, c.height_cm
             from inventory.uom_conversions c join inventory.inventory_items i on i.id = c.inventory_item_id
             """;
 
     private static final RowMapper<UomConversion> ROW = (rs, n) -> new UomConversion(
             rs.getObject("id", UUID.class), rs.getString("sku"), rs.getString("unit_of_measure"), rs.getInt("factor"),
-            rs.getBoolean("is_base"), rs.getBigDecimal("weight_kg"), rs.getBigDecimal("length_cm"),
+            rs.getBigDecimal("weight_kg"), rs.getBigDecimal("length_cm"),
             rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm"),
             rs.getBoolean("active"), rs.getLong("version"), rs.getBoolean("default_shipping"));
 
@@ -52,9 +52,9 @@ public class UomConversionRepository {
         return count == null ? 0 : count;
     }
 
-    /** The base unit first, then by code. */
+    /** By code. */
     public List<UomConversion> page(String sku, int limit, long offset) {
-        return jdbc.query(SELECT + " where i.sku = ? order by c.is_base desc, c.unit_of_measure limit ? offset ?",
+        return jdbc.query(SELECT + " where i.sku = ? order by c.unit_of_measure limit ? offset ?",
                 ROW, sku, limit, offset);
     }
 
@@ -77,35 +77,37 @@ public class UomConversionRepository {
         }, ROW);
     }
 
-    /** The units of each of these SKUs, the base unit first, then by code; a SKU without units is absent. */
+    /** The units of each of these SKUs by code; a SKU without units is absent. */
     public Map<String, List<UomConversion>> bySkus(Collection<String> skus) {
         if (skus.isEmpty()) {
             return Map.of();
         }
         List<UomConversion> rows = jdbc.query(
-                SELECT + " where i.sku = any (?) order by i.sku, c.is_base desc, c.unit_of_measure", ps ->
+                SELECT + " where i.sku = any (?) order by i.sku, c.unit_of_measure", ps ->
                         ps.setArray(1, ps.getConnection().createArrayOf("text", skus.toArray())), ROW);
         Map<String, List<UomConversion>> out = new HashMap<>();
         rows.forEach(u -> out.computeIfAbsent(u.sku(), k -> new ArrayList<>()).add(u));
         return out;
     }
 
-    public Optional<UomConversion> base(String sku) {
-        return jdbc.query(SELECT + " where i.sku = ? and c.is_base", ROW, sku).stream().findFirst();
-    }
-
+    /**
+     * Whether the code is taken on the item: by another of its packing units, or by the item's own unit - the one its
+     * pieces are counted in ({@code inventory_items.unit_of_measure}), which a carton must not be mistaken for
+     * ({@code tg_uom_conversions_unit_code}).
+     */
     public boolean unitTaken(UUID itemId, String unitOfMeasure, UUID except) {
         return Boolean.TRUE.equals(jdbc.queryForObject("""
                 select exists(select 1 from inventory.uom_conversions
-                    where inventory_item_id = ? and unit_of_measure = ? and id is distinct from ?)""",
-                Boolean.class, itemId, unitOfMeasure, except));
+                    where inventory_item_id = ? and unit_of_measure = ? and id is distinct from ?)
+                    or exists(select 1 from inventory.inventory_items where id = ? and unit_of_measure = ?)""",
+                Boolean.class, itemId, unitOfMeasure, except, itemId, unitOfMeasure));
     }
 
     /** The code of the item's active packing unit other than {@code except}, if any (01 BR-03: there is at most one). */
     public Optional<String> activeCartonOf(UUID itemId, UUID except) {
         return jdbc.query("""
                 select unit_of_measure from inventory.uom_conversions
-                where inventory_item_id = ? and not is_base and active and id is distinct from ?""",
+                where inventory_item_id = ? and active and id is distinct from ?""",
                 (rs, n) -> rs.getString("unit_of_measure"), itemId, except).stream().findFirst();
     }
 
@@ -139,22 +141,15 @@ public class UomConversionRepository {
 
     public void insert(UUID id, UUID itemId, UomConversionDraft d, String actor) {
         jdbc.update("""
-                insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
+                insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
                     weight_kg, length_cm, width_cm, height_cm, active, default_shipping, created_by)
-                values (?, ?, ?, ?, false, ?, ?, ?, ?, ?, ?, ?)""", id, itemId, d.unitOfMeasure(), d.factor(),
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", id, itemId, d.unitOfMeasure(), d.factor(),
                 d.weightKg(), d.lengthCm(), d.widthCm(), d.heightCm(), d.active(),
                 d.defaultShipping(), actor);
     }
 
     /** False when the version moved on. */
-    public boolean update(UUID id, long version, UomConversionDraft d, boolean base, String actor) {
-        if (base) {
-            return jdbc.update("""
-                    update inventory.uom_conversions set default_shipping = ?,
-                        version = version + 1, last_modified_at = now(), last_modified_by = ?
-                    where id = ? and version = ?""", d.defaultShipping(), actor, id,
-                    version) == 1;
-        }
+    public boolean update(UUID id, long version, UomConversionDraft d, String actor) {
         return jdbc.update("""
                 update inventory.uom_conversions set unit_of_measure = ?, factor = ?, weight_kg = ?, length_cm = ?,
                     width_cm = ?, height_cm = ?, active = ?, default_shipping = ?,
@@ -165,7 +160,6 @@ public class UomConversionRepository {
     }
 
     public boolean delete(UUID id, long version) {
-        return jdbc.update("delete from inventory.uom_conversions where id = ? and version = ? and not is_base",
-                id, version) == 1;
+        return jdbc.update("delete from inventory.uom_conversions where id = ? and version = ?", id, version) == 1;
     }
 }

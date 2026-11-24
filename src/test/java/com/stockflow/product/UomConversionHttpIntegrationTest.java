@@ -92,7 +92,9 @@ class UomConversionHttpIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[?(@.unitOfMeasure=='BOX')].defaultShipping").value(false))
                 .andExpect(jsonPath("$.data.items[?(@.unitOfMeasure=='CARTON')]").isEmpty())
-                .andExpect(jsonPath("$.data.items[?(@.base==true)].defaultShipping").value(false));
+                // The item's own unit (EACH) has no row and is not listed (V20261226000200).
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[?(@.base==true)]").isEmpty());
     }
 
     @Test

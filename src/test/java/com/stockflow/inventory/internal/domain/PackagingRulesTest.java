@@ -28,19 +28,9 @@ class PackagingRulesTest {
         return v == null ? null : new BigDecimal(v);
     }
 
-    private static UomConversion base() {
-        return new UomConversion(UUID.randomUUID(), "SKU", "EACH", 1, true, null, null, null, null, true, 0,
-                false);
-    }
-
-    private static UomConversion baseShipping() {
-        return new UomConversion(UUID.randomUUID(), "SKU", "EACH", 1, true, null, null, null, null, true, 0,
-                true);
-    }
-
     private static UomConversion pack(String code, int factor, String weight, String l, String w, String h,
                                       boolean active, boolean shipping) {
-        return new UomConversion(UUID.nameUUIDFromBytes(code.getBytes()), "SKU", code, factor, false, d(weight), d(l),
+        return new UomConversion(UUID.nameUUIDFromBytes(code.getBytes()), "SKU", code, factor, d(weight), d(l),
                 d(w), d(h), active, 0, shipping);
     }
 
@@ -49,10 +39,7 @@ class PackagingRulesTest {
     }
 
     private static PackagingSpec resolve(int qty, UomConversion... units) {
-        List<UomConversion> all = new java.util.ArrayList<>();
-        all.add(base());
-        all.addAll(List.of(units));
-        return PackagingRules.resolve(ITEM, "SKU", all, true, qty);
+        return PackagingRules.resolve(ITEM, "SKU", List.of(units), true, qty);
     }
 
     // ---- level 1: the default shipping unit ----------------------------------------------------------------------
@@ -96,19 +83,6 @@ class PackagingRulesTest {
         assertThat(spec.warnings()).isEmpty();
     }
 
-    @Test
-    @DisplayName("level 1 on the base unit: nothing ships loose any more, so the carton is used, with a warning")
-    void baseUnitAsDefaultShipping() {
-        List<UomConversion> units = List.of(baseShipping(), carton("CTN", 10));
-        PackagingSpec spec = PackagingRules.resolve(ITEM, "SKU", units, true, 25);
-        assertThat(spec.level()).isEqualTo(RuleLevel.LARGEST_PACKING_UNIT);
-        assertThat(spec.unitOfMeasure()).isEqualTo("CTN");
-        assertThat(spec.warnings()).singleElement().satisfies(w -> {
-            assertThat(w.code()).isEqualTo(WarningCode.SHIPPING_UNIT_INCOMPLETE);
-            assertThat(w.unitOfMeasure()).isEqualTo("EACH");
-        });
-    }
-
     // ---- level 2: the largest packing unit with a full size ------------------------------------------------------
 
     @Test
@@ -147,7 +121,7 @@ class PackagingRulesTest {
     @Test
     @DisplayName("the carton in millimetres rounded up, three-decimal weight, the item's rotatable flag")
     void cartonMeasures() {
-        List<UomConversion> units = List.of(base(), pack("CTN", 10, "6.25", "12.34", "9", "7", true, true));
+        List<UomConversion> units = List.of(pack("CTN", 10, "6.25", "12.34", "9", "7", true, true));
         PackagingSpec spec = PackagingRules.resolve(ITEM, "SKU", units, false, 10);
         assertThat(spec.carton().lengthMm()).isEqualTo(124);    // 123.4 up
         assertThat(spec.carton().widthMm()).isEqualTo(90);

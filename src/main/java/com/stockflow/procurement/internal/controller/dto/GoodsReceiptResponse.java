@@ -52,18 +52,25 @@ public record GoodsReceiptResponse(UUID id, String number, UUID warehouseId, Str
     }
 
     /**
-     * A unit the line's item can be counted in, the base unit first, then by code. Cartons take an {@code active}
-     * unit that is not {@code base}; {@code factor} is what one carton of it holds.
+     * A packing unit of the line's item, by code: cartons are counted in the {@code active} one; {@code factor} is the
+     * pieces one carton of it holds.
      */
-    public record Unit(String unitOfMeasure, int factor, boolean base, boolean active) {
+    public record Unit(String unitOfMeasure, int factor, boolean active) {
+        /** Constant false, kept for the FE: the base unit has no row and is no longer listed (V20261226000200). */
+        @Deprecated
+        @JsonProperty("base")
+        public boolean base() {
+            return false;
+        }
+
         /**
-         * Constant, kept for the FE until FE issue 220; removed with the gated Task 6. The default purchase unit is gone:
-         * this is {@code true} for the base unit and {@code false} otherwise, worked out here from {@code base}, never stored.
+         * Constant false, kept for the FE until FE issue 220; removed with the gated Task 6. The default purchase unit
+         * is gone; it was {@code true} for the base unit only.
          */
         @Deprecated
         @JsonProperty("defaultPurchase")
         public boolean defaultPurchase() {
-            return base;
+            return false;
         }
     }
 

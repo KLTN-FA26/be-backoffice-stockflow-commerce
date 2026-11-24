@@ -46,12 +46,8 @@ class PackagingSpecResolverImplTest {
         return new ItemRow(ITEM, SKU.code(), 1, logistics(rotatable));
     }
 
-    private static UomConversion base() {
-        return new UomConversion(UUID.randomUUID(), SKU.code(), "PCS", 1, true, null, null, null, null, true, 0);
-    }
-
     private static UomConversion carton(boolean shipping, BigDecimal length) {
-        return new UomConversion(CARTON, SKU.code(), "CARTON", 24, false, new BigDecimal("0.300"), length,
+        return new UomConversion(CARTON, SKU.code(), "CARTON", 24, new BigDecimal("0.300"), length,
                 new BigDecimal("20.5"), new BigDecimal("30"), true, 0, shipping);
     }
 
@@ -82,7 +78,7 @@ class PackagingSpecResolverImplTest {
     @DisplayName("48 units with a 24-per-carton default shipping unit pack into 2 whole cartons, no partial one")
     void resolvesWholeCartons() {
         when(items.findBySkus(any())).thenReturn(List.of(row(true)));
-        when(conversions.bySkus(any())).thenReturn(Map.of(SKU.code(), List.of(base(), carton(true, new BigDecimal("40")))));
+        when(conversions.bySkus(any())).thenReturn(Map.of(SKU.code(), List.of(carton(true, new BigDecimal("40")))));
 
         PackagingSpec spec = resolver.resolve(SKU, 48);
 
@@ -98,7 +94,7 @@ class PackagingSpecResolverImplTest {
     @DisplayName("50 units leave a partial carton of the 2 loose units")
     void resolvesPartialCarton() {
         when(items.findBySkus(any())).thenReturn(List.of(row(true)));
-        when(conversions.bySkus(any())).thenReturn(Map.of(SKU.code(), List.of(base(), carton(true, new BigDecimal("40")))));
+        when(conversions.bySkus(any())).thenReturn(Map.of(SKU.code(), List.of(carton(true, new BigDecimal("40")))));
 
         PackagingSpec spec = resolver.resolve(SKU, 50);
 
@@ -110,7 +106,7 @@ class PackagingSpecResolverImplTest {
     @DisplayName("resolveAll answers in the order asked, one spec per line, reading each SKU once")
     void resolveAllKeepsOrder() {
         when(items.findBySkus(any())).thenReturn(List.of(row(true)));
-        when(conversions.bySkus(any())).thenReturn(Map.of(SKU.code(), List.of(base(), carton(true, new BigDecimal("40")))));
+        when(conversions.bySkus(any())).thenReturn(Map.of(SKU.code(), List.of(carton(true, new BigDecimal("40")))));
 
         List<PackagingSpec> specs = resolver.resolveAll(List.of(new PackagingRequest(SKU, 24),
                 new PackagingRequest(SKU, 48)));

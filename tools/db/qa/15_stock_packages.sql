@@ -121,10 +121,10 @@ SELECT pg_temp.expect_ok('K18 not found by a count (LOST, emptied), then found a
 SELECT pg_temp.expect_fail('K19 created already CONSUMED (skipping the lifecycle)', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status, closed_at)
     VALUES (gen_random_uuid(), 'QA-LPN-19', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, 10, 'HCM-A01-1-A', 'CONSUMED', NOW()) $q$);
-SELECT pg_temp.expect_fail('K20 made in the base unit', $q$
-    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
-    SELECT gen_random_uuid(), 'QA-LPN-20', inventory_item_id, id, 1, 'HCM-A01-1-A' FROM inventory.uom_conversions
-     WHERE inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') AND is_base $q$);
+SELECT pg_temp.expect_fail('K20 a base unit row to make a carton in: there is none any more (ck_uom_conversions_no_base, QA 45)', $q$
+    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base)
+    SELECT gen_random_uuid(), id, 'QA15BASE', 1, TRUE
+      FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH' $q$);
 SELECT pg_temp.expect_fail('K21 nominal_qty other than the unit''s factor', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
     VALUES (gen_random_uuid(), 'QA-LPN-21', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 12, 'HCM-A01-1-A') $q$);

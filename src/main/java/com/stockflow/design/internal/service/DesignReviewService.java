@@ -257,7 +257,7 @@ public class DesignReviewService {
         }
         String productName = products.findById(draft.getProductId()).map(ProductSummary::name).orElse(null);
         UomConversion carton = units.conversionsOf(List.of(new Sku(draft.getSku()))).getOrDefault(draft.getSku(),
-                List.of()).stream().filter(unit -> unit.active() && !unit.base() && unit.factor() > 1)
+                List.of()).stream().filter(unit -> unit.active() && unit.factor() > 1)
                 .max(Comparator.comparingInt(UomConversion::factor)).orElse(null);
         return new Approval(draft.getVersion(), layout.getChecksum(), submitted, print.storedFile(),
                 print.getChecksum(), template, productName, carton);

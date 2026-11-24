@@ -67,7 +67,7 @@ class StockPackageLabelsTest {
 
     private void unitOfCartons() {
         when(units.findAll(anyCollection())).thenReturn(List.of(new UomConversion(CARTON_UNIT, "CUP-12OZ", "CARTON", 24,
-                false, null, null, null, null, true, 0)));
+                null, null, null, null, true, 0)));
     }
 
     private static CurrentUser clerkOf(String prefix) {

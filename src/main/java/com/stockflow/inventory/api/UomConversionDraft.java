@@ -3,9 +3,7 @@ package com.stockflow.inventory.api;
 import java.math.BigDecimal;
 
 /**
- * What a packing unit is declared or replaced with. On the base unit only {@code defaultShipping} (and
- * {@code active}, which must stay true) count: its code, factor, size and weight are the item's
- * logistics and are ignored here.
+ * What a packing unit is declared or replaced with.
  *
  * <p>{@code defaultShipping}: marking a unit takes the mark from the item's previous default shipping unit
  * in the same transaction (the 409-free choice); a retired unit cannot

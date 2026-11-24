@@ -41,7 +41,7 @@ public final class PackagingRules {
     }
 
     /**
-     * @param units    its units of measure, base unit included (the base unit is never measured, so it never packs)
+     * @param units    its packing units, active and retired
      * @param quantity in base units, at least 1
      * @param rotatable the item's flag, carried onto the carton
      */
@@ -51,15 +51,7 @@ public final class PackagingRules {
         UomConversion shipping = units.stream().filter(u -> u.defaultShipping() && u.active()).findFirst()
                 .orElse(null);
 
-        if (shipping != null && shipping.base()) {
-            // "Ship loose" was the item's own box or unit, both gone with its measures (V20261215000100); and nothing
-            // ships loose any more, every order leaves in whole cartons (07 BR-03). The mark is old data: say so, and
-            // pack in the carton.
-            warnings.add(new SpecWarning(WarningCode.SHIPPING_UNIT_INCOMPLETE, shipping.unitOfMeasure(),
-                    List.of("lengthCm", "widthCm", "heightCm", "weightKg"), "The default shipping unit "
-                    + shipping.unitOfMeasure() + " is the base unit, which has no size or weight; the carton was "
-                    + "used"));
-        } else if (shipping != null) {
+        if (shipping != null) {
             PackagingSpec spec = packingUnit(itemId, sku, shipping, rotatable, quantity,
                     RuleLevel.DEFAULT_SHIPPING_UNIT, WarningCode.SHIPPING_UNIT_INCOMPLETE, warnings);
             if (spec != null) {
@@ -68,7 +60,7 @@ public final class PackagingRules {
         }
 
         List<UomConversion> packing = units.stream()
-                .filter(u -> !u.base() && u.active() && (shipping == null || !u.id().equals(shipping.id())))
+                .filter(u -> u.active() && (shipping == null || !u.id().equals(shipping.id())))
                 .sorted(Comparator.comparingInt(UomConversion::factor).reversed()
                         .thenComparing(UomConversion::unitOfMeasure))
                 .toList();
@@ -79,8 +71,7 @@ public final class PackagingRules {
                 return spec;
             }
         }
-        UomConversion carton = shipping != null && !shipping.base() ? shipping
-                : packing.isEmpty() ? null : packing.getFirst();
+        UomConversion carton = shipping != null ? shipping : packing.isEmpty() ? null : packing.getFirst();
         return missingSpec(itemId, sku, quantity, carton, warnings);
     }
 

@@ -115,16 +115,15 @@ class QuoteServiceTest {
             Map<String, List<UomConversion>> declared = new java.util.HashMap<>();
             for (Object sku : (java.util.Collection<?>) call.getArgument(0)) {
                 String code = ((Sku) sku).code();
-                declared.put(code, List.of(unit(code, UUID.randomUUID(), "EACH", 1, true),
-                        unit(code, code.equals(SKU) ? CARTON : UUID.nameUUIDFromBytes(code.getBytes()), "CARTON", 50,
-                                false)));
+                declared.put(code, List.of(
+                        unit(code, code.equals(SKU) ? CARTON : UUID.nameUUIDFromBytes(code.getBytes()), "CARTON", 50)));
             }
             return declared;
         });
     }
 
-    private static UomConversion unit(String sku, UUID id, String code, int factor, boolean base) {
-        return new UomConversion(id, sku, code, factor, base, null, null, null, null, true, 0, !base);
+    private static UomConversion unit(String sku, UUID id, String code, int factor) {
+        return new UomConversion(id, sku, code, factor, null, null, null, null, true, 0, true);
     }
 
     /** The customer's own SKUs, as {@code CustomerSkus.ownersOf} answers them. */
@@ -208,8 +207,7 @@ class QuoteServiceTest {
         assertThatThrownBy(() -> service.create(sales, create("CUP-PP-500", 20, tiers)))
                 .extracting(QuoteServiceTest::code).isEqualTo(ErrorCode.CUSTOMER_SKU_REQUIRED);
         ownedByTheCustomer("LY16-ACME-01");
-        when(units.conversionsOf(anyCollection())).thenReturn(Map.of("LY16-ACME-01",
-                List.of(unit("LY16-ACME-01", UUID.randomUUID(), "EACH", 1, true))));
+        when(units.conversionsOf(anyCollection())).thenReturn(Map.of());
         assertThatThrownBy(() -> service.create(sales, create("LY16-ACME-01", 20, tiers)))
                 .extracting(QuoteServiceTest::code).isEqualTo(ErrorCode.CARTON_SPEC_MISSING);
         verify(quotes, never()).save(any());

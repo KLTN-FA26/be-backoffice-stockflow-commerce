@@ -71,9 +71,7 @@ SELECT pg_temp.expect_fail('IM7 a carton of no weight (ck_uom_conversions_weight
     UPDATE inventory.uom_conversions SET weight_kg = 0
      WHERE NOT is_base AND active
        AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);
-SELECT pg_temp.expect_fail('IM8 a base unit given a weight: the base unit never had a measure (ck_uom_conversions_base)', $q$
-    UPDATE inventory.uom_conversions SET weight_kg = 0.02
-     WHERE is_base
-       AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);
+SELECT pg_temp.expect_true('IM8 no base unit row is left to give a weight to: the base unit is the item''s own (V20261226000200)',
+    NOT EXISTS (SELECT 1 FROM inventory.uom_conversions WHERE is_base));
 ROLLBACK;
 \echo 'PASS 43_item_unit_measures_removed'

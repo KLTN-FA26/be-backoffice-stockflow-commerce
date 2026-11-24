@@ -71,11 +71,11 @@ class StorefrontAvailabilityServiceTest {
             return asked.stream().filter(Set.of(CUP.code(), BAG.code(), LID.code())::contains)
                     .collect(java.util.stream.Collectors.toSet());
         });
-        declared.put(CUP.code(), List.of(unit(CUP, "PCS", 1, true, true, false), unit(CUP, "CARTON", 10, false, true, false)));
-        declared.put(BAG.code(), List.of(unit(BAG, "PCS", 1, true, true, false), unit(BAG, "CARTON", 24, false, true, false)));
+        declared.put(CUP.code(), List.of(unit(CUP, "CARTON", 10, true, false)));
+        declared.put(BAG.code(), List.of(unit(BAG, "CARTON", 24, true, false)));
         // Two cartons: the default shipping one is the SKU's carton; a retired one is never it.
-        declared.put(LID.code(), List.of(unit(LID, "PCS", 1, true, true, false), unit(LID, "BOX", 20, false, true, false),
-                unit(LID, "CARTON", 50, false, true, true), unit(LID, "OLD", 100, false, false, false)));
+        declared.put(LID.code(), List.of(unit(LID, "BOX", 20, true, false),
+                unit(LID, "CARTON", 50, true, true), unit(LID, "OLD", 100, false, false)));
         when(units.conversionsOf(any())).thenAnswer(call -> {
             Collection<Sku> skus = call.getArgument(0);
             Map<String, List<UomConversion>> found = new HashMap<>();
@@ -138,9 +138,9 @@ class StorefrontAvailabilityServiceTest {
     @Test
     void aSkuWithoutASingleCartonGetsNoIndicatorRatherThanAGuess() {
         // No carton at all, and two cartons none of which is the default shipping one.
-        declared.put(CUP.code(), List.of(unit(CUP, "PCS", 1, true, true, false)));
-        declared.put(BAG.code(), List.of(unit(BAG, "PCS", 1, true, true, false), unit(BAG, "BOX", 12, false, true, false),
-                unit(BAG, "CARTON", 24, false, true, false)));
+        declared.put(CUP.code(), List.<UomConversion>of());
+        declared.put(BAG.code(), List.of(unit(BAG, "BOX", 12, true, false),
+                unit(BAG, "CARTON", 24, true, false)));
         when(inventory.availableToPromise(any(Collection.class))).thenReturn(Map.of(LID, 500));
 
         assertThat(service.availabilityOf(userId, List.of(CUP.code(), BAG.code(), LID.code())))
@@ -187,9 +187,9 @@ class StorefrontAvailabilityServiceTest {
         verifyNoInteractions(inventory);
     }
 
-    private static UomConversion unit(Sku sku, String code, int factor, boolean base, boolean active,
+    private static UomConversion unit(Sku sku, String code, int factor, boolean active,
                                       boolean defaultShipping) {
-        return new UomConversion(UUID.randomUUID(), sku.code(), code, factor, base, BigDecimal.ONE, null, null, null,
+        return new UomConversion(UUID.randomUUID(), sku.code(), code, factor, BigDecimal.ONE, null, null, null,
                 active, 0, defaultShipping);
     }
 }

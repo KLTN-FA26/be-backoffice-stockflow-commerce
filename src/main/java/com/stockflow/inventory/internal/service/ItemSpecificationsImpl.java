@@ -42,20 +42,13 @@ class ItemSpecificationsImpl implements ItemSpecifications {
         items.describe(targetId, items.get(targetId).version(), withoutBarcode);
         List<UomConversion> packing = units.conversionsOf(List.of(source)).getOrDefault(source.code(), List.of());
         for (UomConversion unit : packing) {
-            if (unit.base() || !unit.active()) {
+            if (!unit.active()) {
                 continue;
             }
             units.add(target, new UomConversionDraft(unit.unitOfMeasure(), unit.factor(), unit.weightKg(),
                     unit.lengthCm(), unit.widthCm(), unit.heightCm(), true,
                     unit.defaultShipping()));
         }
-        // A SKU shipped in its base unit carries the shipping mark there; only the marks change on a base unit.
-        packing.stream().filter(u -> u.base() && u.defaultShipping()).findFirst().ifPresent(base -> {
-            UomConversion targetBase = units.baseUnit(target);
-            units.change(target, targetBase.id(), targetBase.version(), new UomConversionDraft(
-                    targetBase.unitOfMeasure(), 1, targetBase.weightKg(), targetBase.lengthCm(), targetBase.widthCm(),
-                    targetBase.heightCm(), true, true));
-        });
     }
 
     private InventoryItems.Summary summaryOf(Sku sku) {

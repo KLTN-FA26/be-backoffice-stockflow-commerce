@@ -73,36 +73,22 @@ class PackagingSpecResolverIntegrationTest {
                 + " where inventory_item_id = ? and default_shipping order by unit_of_measure", String.class, itemId);
     }
 
-    private UomConversion base() {
-        return units.baseUnit(sku);
-    }
-
     // ---- the flag ----------------------------------------------------------------------------------------------
 
     @Test
-    void newItemsHaveNoDefaultShippingUnit() {
+    void newItemsHaveNoUnitAndSoNoDefaultShippingUnit() {
         assertThat(flagged()).isEmpty();
-        assertThat(units.conversions(sku, 0, 20).items()).extracting(UomConversion::defaultShipping)
-                .containsOnly(false);
+        assertThat(units.conversions(sku, 0, 20).items()).as("no packing unit until a carton is declared").isEmpty();
     }
 
     @Test
-    void markingAUnitUnmarksThePreviousOneInTheSameCall() {
-        // 01 BR-03: one active carton, so the mark moves between it and the base unit.
+    void theOneCartonCarriesTheMarkOrNoUnitDoes() {
+        // 01 BR-03: one active carton, and no base unit row to move the mark to (V20261226000200).
         UomConversion box = units.add(sku, pack("BOX", 10, "5", true));
         assertThat(box.defaultShipping()).isTrue();
         assertThat(flagged()).containsExactly("BOX");
-        UomConversion base = base();
-        units.change(sku, base.id(), base.version(),
-                new UomConversionDraft("IGNORED", 1, null, null, null, null, true, true));
-        assertThat(flagged()).containsExactly("EACH");
-        assertThat(units.conversion(sku, box.id()).defaultShipping()).isFalse();
-        assertThat(units.conversion(sku, box.id()).version()).isGreaterThan(box.version());
-
-        UomConversion boxAgain = units.conversion(sku, box.id());
-        UomConversion moved = units.change(sku, box.id(), boxAgain.version(), pack("BOX", 10, "5", true));
-        assertThat(moved.defaultShipping()).isTrue();
-        assertThat(flagged()).containsExactly("BOX");
+        assertThat(units.conversions(sku, 0, 20).items()).extracting(UomConversion::unitOfMeasure)
+                .as("the item's own unit is not listed").containsExactly("BOX");
     }
 
     @Test
@@ -110,17 +96,6 @@ class PackagingSpecResolverIntegrationTest {
         UomConversion box = units.add(sku, pack("BOX", 10, "5", true));
         units.change(sku, box.id(), box.version(), pack("BOX", 10, "5", false));
         assertThat(flagged()).isEmpty();
-    }
-
-    @Test
-    void theBaseUnitCanBeTheDefaultShippingUnit() {
-        UomConversion box = units.add(sku, pack("BOX", 10, "5", true));
-        UomConversion base = base();
-        UomConversion marked = units.change(sku, base.id(), base.version(),
-                new UomConversionDraft("IGNORED", 1, null, null, null, null, true, true));
-        assertThat(marked.defaultShipping()).isTrue();
-        assertThat(flagged()).containsExactly("EACH");
-        assertThat(units.conversion(sku, box.id()).defaultShipping()).isFalse();
     }
 
     @Test
@@ -137,13 +112,8 @@ class PackagingSpecResolverIntegrationTest {
     }
 
     @Test
-    void theDatabaseRefusesASecondMarkAndAMarkedRetiredUnit() {
+    void theDatabaseRefusesAMarkedRetiredUnit() {
         UomConversion box = units.add(sku, pack("BOX", 10, "5", true));
-        UomConversion base = base();
-        assertThatThrownBy(() -> jdbc.update(
-                "update inventory.uom_conversions set default_shipping = true where id = ?", base.id()))
-                .isInstanceOf(DataIntegrityViolationException.class)
-                .hasMessageContaining("uk_uom_conversions_default_shipping");
         assertThatThrownBy(() -> jdbc.update(
                 "update inventory.uom_conversions set active = false where id = ?", box.id()))
                 .isInstanceOf(DataIntegrityViolationException.class)

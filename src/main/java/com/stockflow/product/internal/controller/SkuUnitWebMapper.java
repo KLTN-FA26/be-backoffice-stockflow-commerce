@@ -15,7 +15,7 @@ import org.springframework.stereotype.Component;
 class SkuUnitWebMapper {
 
     UomConversionResponse toResponse(UomConversion c) {
-        return new UomConversionResponse(c.id(), c.sku(), c.unitOfMeasure(), c.factor(), c.base(), c.weightKg(),
+        return new UomConversionResponse(c.id(), c.sku(), c.unitOfMeasure(), c.factor(), c.weightKg(),
                 c.lengthCm(), c.widthCm(), c.heightCm(), c.active(), c.version(), c.defaultShipping());
     }
 

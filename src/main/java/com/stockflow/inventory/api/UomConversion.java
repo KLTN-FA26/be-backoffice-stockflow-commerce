@@ -4,14 +4,15 @@ import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
- * One unit of measure of a SKU's inventory item (docs 01 §3 "Đơn vị quy đổi"): the base unit, or a
- * packing unit with how many base units it holds ({@code factor}, BR-09) and its own size and weight.
- * For the base unit, factor is 1 and the size and weight are the item's logistics.
+ * One packing unit of a SKU's inventory item (docs 01 §3 "Đơn vị quy đổi"): a carton specification - how many pieces
+ * it holds ({@code factor}, BR-09) and its own size and weight. The pieces are counted in the item's own unit
+ * ({@code inventory_items.unit_of_measure}, "cái"); that unit has no row of its own since V20261226000200: a row saying
+ * "one piece is one piece" was only ever skipped or refused.
  *
  * <p>{@code active} false: retired (BR-10), kept for the documents that used it, never offered for new ones.</p>
  *
- * <p>{@code defaultShipping}: the unit load planning estimates this SKU's cartons in (one per item, also
- * possible on the base unit); {@link PackagingSpecResolver} falls back to the largest packing unit with a
+ * <p>{@code defaultShipping}: the unit load planning estimates this SKU's cartons in (one per item);
+ * {@link PackagingSpecResolver} falls back to the largest packing unit with a
  * full size when no unit carries it. Never set on a retired unit.</p>
  */
 public record UomConversion(
@@ -19,7 +20,6 @@ public record UomConversion(
         String sku,
         String unitOfMeasure,
         int factor,
-        boolean base,
         BigDecimal weightKg,
         BigDecimal lengthCm,
         BigDecimal widthCm,
@@ -48,13 +48,13 @@ public record UomConversion(
      * {@code hasCartonSpec} ask exactly that.
      */
     public boolean cartonCandidate() {
-        return active && !base && factor > 1;
+        return active && factor > 1;
     }
 
     /** A unit that is not the default shipping unit. */
-    public UomConversion(UUID id, String sku, String unitOfMeasure, int factor, boolean base, BigDecimal weightKg,
+    public UomConversion(UUID id, String sku, String unitOfMeasure, int factor, BigDecimal weightKg,
                          BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
                          boolean active, long version) {
-        this(id, sku, unitOfMeasure, factor, base, weightKg, lengthCm, widthCm, heightCm, active, version, false);
+        this(id, sku, unitOfMeasure, factor, weightKg, lengthCm, widthCm, heightCm, active, version, false);
     }
 }

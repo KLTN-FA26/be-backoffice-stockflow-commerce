@@ -170,7 +170,7 @@ SELECT pg_temp.expect_true('A3.6 the columns, the index and the CHECKs of the re
     AND (SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'ck_stock_lot_origin') NOT LIKE '%GOODS_RECEIPT%' $c$);
 
 -- ============================================================================= A4
-\echo '--- A4 the default purchase unit is gone, the base unit is still created'
+\echo '--- A4 the default purchase unit is gone; the base unit is the item''s own unit'
 SELECT pg_temp.expect_fail_like('A4.1 default_purchase is no longer a column', 'default_purchase', $q$
     SELECT default_purchase FROM inventory.uom_conversions $q$);
 SELECT pg_temp.expect_true('A4.2 the column, its index and its CHECK are gone', $c$
@@ -181,16 +181,16 @@ SELECT pg_temp.expect_true('A4.2 the column, its index and its CHECK are gone', 
     AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_uom_conversions_default_purchase') $c$);
 INSERT INTO product.products (id, code, name, slug, status, kind, tax_class, version, created_at)
 VALUES (md5('qa96:a4:product')::uuid, 'QA96A4', 'QA a4', 'qa96-a4', 'DRAFT', 'CUSTOMIZABLE', 'STANDARD', 0, NOW());
--- An item is born with its variant (tg_variant_inventory_item); its base unit is born with the item.
+-- An item is born with its variant (tg_variant_inventory_item), counted in EACH; it has no unit row until a carton is declared.
 SELECT pg_temp.expect_ok('A4.3 a variant, and with it an inventory item, is inserted', $q$
     INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
                                   created_at)
     VALUES (md5('qa96:a4:variant')::uuid, md5('qa96:a4:product')::uuid, 'QA96-A4-ITEM', 'QA a4', 'ACTIVE', TRUE,
             'DEFAULT', 0, 0, NOW()) $q$);
-SELECT pg_temp.expect_true('A4.4 its base unit was created by create_base_uom', $c$
-    (SELECT count(*) FROM inventory.uom_conversions
-      WHERE inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'QA96-A4-ITEM')
-        AND is_base AND factor = 1 AND active) = 1 $c$);
+SELECT pg_temp.expect_true('A4.4 its base unit is its own unit_of_measure, with no unit row (V20261226000200)', $c$
+    (SELECT i.unit_of_measure = 'EACH'
+            AND NOT EXISTS (SELECT 1 FROM inventory.uom_conversions u WHERE u.inventory_item_id = i.id)
+       FROM inventory.inventory_items i WHERE i.sku = 'QA96-A4-ITEM') $c$);
 SELECT pg_temp.expect_true('A4.5 no function body names default_purchase any more', $c$
     NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
                  WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND p.prosrc LIKE '%default_purchase%') $c$);
@@ -212,8 +212,8 @@ SELECT pg_temp.expect_fail_like('B.4 re-activating the retired one beside the ac
 SELECT pg_temp.expect_ok('B.5 retiring the active one, then re-activating the other', $q$
     UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE WHERE id = md5('qa96:b:c1')::uuid;
     UPDATE inventory.uom_conversions SET active = TRUE WHERE id = md5('qa96:b:c3')::uuid $q$);
-SELECT pg_temp.expect_true('B.6 the base unit is not a carton: it is active beside the carton', $c$
+SELECT pg_temp.expect_true('B.6 the one active unit is the carton: the item''s own unit has no row (V20261226000200)', $c$
     (SELECT count(*) FROM inventory.uom_conversions
-      WHERE inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'QA96-A4-ITEM') AND active) = 2 $c$);
+      WHERE inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'QA96-A4-ITEM') AND active) = 1 $c$);
 
 ROLLBACK;

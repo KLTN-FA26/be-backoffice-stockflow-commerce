@@ -106,7 +106,7 @@ public class SkuUnitService {
         Sku sku = readSku(productId, variantId);
         Pages.of(page, size);   // the same bounds as every list
         var carton = units.conversionsOf(List.of(sku)).getOrDefault(sku.code(), List.of()).stream()
-                .filter(unit -> !unit.base() && unit.active())
+                .filter(UomConversion::active)
                 .findFirst();
         if (carton.isEmpty()) {
             return PageResponse.of(List.of(), page, size, 0);
@@ -135,7 +135,7 @@ public class SkuUnitService {
     }
 
     private static UomConversion withoutVersion(UomConversion c) {
-        return new UomConversion(c.id(), c.sku(), c.unitOfMeasure(), c.factor(), c.base(), c.weightKg(), c.lengthCm(),
+        return new UomConversion(c.id(), c.sku(), c.unitOfMeasure(), c.factor(), c.weightKg(), c.lengthCm(),
                 c.widthCm(), c.heightCm(), c.active(), 0, c.defaultShipping());
     }
 }

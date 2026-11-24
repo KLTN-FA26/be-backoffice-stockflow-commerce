@@ -217,7 +217,7 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
         List<Object[]> units = entityManager.createNativeQuery("""
                         select u.factor, u.default_shipping from inventory.uom_conversions u
                           join inventory.inventory_items i on i.id = u.inventory_item_id
-                         where i.sku = :sku and u.active and not u.is_base""")
+                         where i.sku = :sku and u.active""")
                 .setParameter("sku", sku).getResultList();
         List<Object[]> chosen = units.size() == 1 ? units
                 : units.stream().filter(unit -> Boolean.TRUE.equals(unit[1])).toList();

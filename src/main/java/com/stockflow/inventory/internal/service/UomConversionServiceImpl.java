@@ -89,13 +89,6 @@ class UomConversionServiceImpl implements UomConversionService {
     }
 
     @Override
-    @Transactional(readOnly = true)
-    public UomConversion baseUnit(Sku sku) {
-        itemId(sku);
-        return conversions.base(sku.code()).orElseThrow(() -> new IllegalStateException(sku + " has no base unit"));
-    }
-
-    @Override
     public UomConversion add(Sku sku, UomConversionDraft draft) {
         UomConversionRules.validatePacking(draft);
         items.lock(sku.code());
@@ -114,25 +107,20 @@ class UomConversionServiceImpl implements UomConversionService {
         items.lock(sku.code());
         UUID itemId = itemId(sku);
         UomConversion current = conversions.find(sku.code(), id).orElseThrow(() -> notFound(sku, id));
-        if (current.base()) {
-            UomConversionRules.validateBase(current, draft);
-        } else {
-            UomConversionRules.validatePacking(draft);
-            if (conversions.unitTaken(itemId, draft.unitOfMeasure(), id)) throw duplicate(sku, draft);
-            if (draft.active()) requireNoOtherActiveCarton(sku, itemId, id);
-        }
+        UomConversionRules.validatePacking(draft);
+        if (conversions.unitTaken(itemId, draft.unitOfMeasure(), id)) throw duplicate(sku, draft);
+        if (draft.active()) requireNoOtherActiveCarton(sku, itemId, id);
         if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
-        // The base unit's code follows the item's and its factor is 1 (V20261019000300): nothing to lock here.
         boolean converts = current.factor() != draft.factor() || !current.unitOfMeasure().equals(draft.unitOfMeasure());
-        if (!current.base() && converts && conversions.inUse(id)) throw inUse(sku, current);
+        if (converts && conversions.inUse(id)) throw inUse(sku, current);
         // 06 BR-23: new measures must not leave a carton of this unit standing in a bin it no longer fits. Under the
         // SKU lock, which every carton move of the SKU takes too.
-        if (!current.base() && resized(current, draft)) {
+        if (resized(current, draft)) {
             stranding.requireUnitResizable(id, draft.lengthCm(), draft.widthCm(), draft.heightCm());
         }
         String actor = actor();
         if (draft.defaultShipping() && !current.defaultShipping()) conversions.clearDefaultShipping(itemId, id, actor);
-        if (!conversions.update(id, expectedVersion, draft, current.base(), actor)) {
+        if (!conversions.update(id, expectedVersion, draft, actor)) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         }
         return conversion(sku, id);
@@ -143,9 +131,6 @@ class UomConversionServiceImpl implements UomConversionService {
         items.lock(sku.code());
         UUID itemId = itemId(sku);
         UomConversion current = conversions.find(sku.code(), id).orElseThrow(() -> notFound(sku, id));
-        if (current.base()) {
-            throw new BusinessException(ErrorCode.UOM_CONVERSION_IN_USE, "The base unit of " + sku + " cannot be deleted");
-        }
         if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         if (conversions.inUse(id)) throw inUse(sku, current);
         if (!conversions.delete(id, expectedVersion)) {

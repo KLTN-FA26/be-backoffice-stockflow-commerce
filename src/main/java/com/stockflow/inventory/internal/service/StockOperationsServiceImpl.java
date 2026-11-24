@@ -800,7 +800,7 @@ class StockOperationsServiceImpl implements StockOperations {
                         Collectors.toList())));
     }
 
-    /** The command's unit: required once there is a carton, a unit of the SKU's item, and not the base unit. */
+    /** The command's unit: required once there is a carton, and a packing unit of the SKU's item. */
     private UomConversion packingUnit(CountReceivingPackagesCommand command) {
         if (command.uomConversionId() == null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Cartons need the packing unit they are in");
@@ -808,10 +808,6 @@ class StockOperationsServiceImpl implements StockOperations {
         UomConversion unit = units.find(command.sku().code(), command.uomConversionId()).orElseThrow(() ->
                 new BusinessException(ErrorCode.UOM_CONVERSION_NOT_FOUND,
                         "No unit %s on %s".formatted(command.uomConversionId(), command.sku())));
-        if (unit.base()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "Cartons are labelled in a packing unit, not in the base unit " + unit.unitOfMeasure());
-        }
         return unit;
     }
 
