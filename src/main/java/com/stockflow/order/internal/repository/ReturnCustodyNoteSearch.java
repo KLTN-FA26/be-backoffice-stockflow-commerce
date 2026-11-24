@@ -22,13 +22,41 @@ import java.util.UUID;
 @Repository
 public class ReturnCustodyNoteSearch {
 
+    /**
+     * One constant statement for every filter combination, each filter switched by a parameter, so nothing but bound
+     * values ever reaches the SQL text. {@code :scoped} false lists every warehouse; true lists only
+     * {@code :warehouses}, which is never empty - a caller limited to warehouses and assigned none gets {@link #NONE},
+     * a UUID no row carries, so it sees nothing rather than everything.
+     */
     private static final String FROM = """
               FROM ordering.return_request_evidence e
               JOIN ordering.return_request r ON r.id = e.return_request_id
               JOIN ordering.customer_order o ON o.id = r.order_id
               LEFT JOIN ordering.return_custody_outcome c ON c.evidence_id = e.id
               LEFT JOIN ordering.return_request t ON t.id = c.taken_by_return_id
-             WHERE e.stage = 'CUSTODY'""";
+             WHERE e.stage = 'CUSTODY'
+               AND (c.ended_at IS NOT NULL) = :ended
+               AND (NOT :byRequest OR r.id = :request)
+               AND (NOT :scoped OR o.warehouse_id IN (:warehouses))
+            """;
+
+    private static final String PAGE = """
+            SELECT e.id AS evidence_id, r.id AS return_request_id, r.rma_number, r.order_id, r.order_number,
+                   r.customer_id, o.warehouse_id, e.custody_sku, e.custody_lpn, e.custody_quantity,
+                   e.custody_note, e.uploaded_by, e.uploaded_at, c.choice, c.choice_note, c.taken_by_return_id,
+                   t.rma_number AS taken_by_rma_number, c.chosen_by, c.chosen_at, c.ended_at, c.ended_by,
+                   c.ended_note
+            """ + FROM + """
+             ORDER BY CASE WHEN :ended THEN c.ended_at END DESC,
+                      CASE WHEN :ended THEN NULL ELSE e.uploaded_at END,
+                      e.id
+            OFFSET :offset LIMIT :limit
+            """;
+
+    private static final String COUNT = "SELECT count(*) " + FROM;
+
+    /** Stands in for an absent filter value; no return or order carries it. */
+    private static final UUID NONE = new UUID(0L, 0L);
 
     private final NamedParameterJdbcTemplate jdbc;
 
@@ -42,43 +70,25 @@ public class ReturnCustodyNoteSearch {
      * {@code returnRequestId} is named; of the orders of {@code warehouses} only, when it is not null.
      */
     public List<CustodyNoteRow> page(boolean ended, UUID returnRequestId, Collection<UUID> warehouses, int offset, int limit) {
-        MapSqlParameterSource params = new MapSqlParameterSource().addValue("offset", offset).addValue("limit", limit);
-        return jdbc.query("""
-                SELECT e.id AS evidence_id, r.id AS return_request_id, r.rma_number, r.order_id, r.order_number,
-                       r.customer_id, o.warehouse_id, e.custody_sku, e.custody_lpn, e.custody_quantity,
-                       e.custody_note, e.uploaded_by, e.uploaded_at, c.choice, c.choice_note, c.taken_by_return_id,
-                       t.rma_number AS taken_by_rma_number, c.chosen_by, c.chosen_at, c.ended_at, c.ended_by,
-                       c.ended_note
-                """ + FROM + where(ended, returnRequestId, warehouses, params)
-                + (ended ? " ORDER BY c.ended_at DESC, e.id" : " ORDER BY e.uploaded_at, e.id")
-                + " OFFSET :offset LIMIT :limit", params, ReturnCustodyNoteSearch::row);
+        MapSqlParameterSource params = filters(ended, returnRequestId, warehouses)
+                .addValue("offset", offset).addValue("limit", limit);
+        return jdbc.query(PAGE, params, ReturnCustodyNoteSearch::row);
     }
 
     /** How many {@link #page} lists in all. */
     public long count(boolean ended, UUID returnRequestId, Collection<UUID> warehouses) {
-        MapSqlParameterSource params = new MapSqlParameterSource();
-        Long total = jdbc.queryForObject("SELECT count(*) " + FROM + where(ended, returnRequestId, warehouses, params),
-                params, Long.class);
+        Long total = jdbc.queryForObject(COUNT, filters(ended, returnRequestId, warehouses), Long.class);
         return total == null ? 0 : total;
     }
 
-    private static String where(boolean ended, UUID returnRequestId, Collection<UUID> warehouses,
-                                MapSqlParameterSource params) {
-        StringBuilder where = new StringBuilder(ended ? " AND c.ended_at IS NOT NULL" : " AND c.ended_at IS NULL");
-        if (returnRequestId != null) {
-            where.append(" AND r.id = :request");
-            params.addValue("request", returnRequestId);
-        }
-        if (warehouses != null) {
-            if (warehouses.isEmpty()) {
-                // A caller limited to warehouses and assigned none sees nothing - never everything.
-                where.append(" AND FALSE");
-            } else {
-                where.append(" AND o.warehouse_id IN (:warehouses)");
-                params.addValue("warehouses", List.copyOf(warehouses));
-            }
-        }
-        return where.toString();
+    private static MapSqlParameterSource filters(boolean ended, UUID returnRequestId, Collection<UUID> warehouses) {
+        return new MapSqlParameterSource()
+                .addValue("ended", ended)
+                .addValue("byRequest", returnRequestId != null)
+                .addValue("request", returnRequestId != null ? returnRequestId : NONE)
+                .addValue("scoped", warehouses != null)
+                .addValue("warehouses", warehouses == null || warehouses.isEmpty() ? List.of(NONE)
+                        : List.copyOf(warehouses));
     }
 
     private static CustodyNoteRow row(ResultSet rs, int n) throws SQLException {

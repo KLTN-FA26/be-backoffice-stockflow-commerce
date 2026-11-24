@@ -1202,8 +1202,8 @@ public final class ReturnRequest extends AggregateRoot {
                         order.orderNumber())));
         int from = refundedBefore == null ? 0 : refundedBefore.getOrDefault(line.orderLineId(), 0);
         if (from < 0 || from + count > sold.quantity()) {
-            throw new IllegalStateException("Return %s refunds %d unit(s) of %s after %d refunded already: more than "
-                    + "its %d".formatted(rmaNumber, count, line.sku(), from, sold.quantity()));
+            throw new IllegalStateException(("Return %s refunds %d unit(s) of %s after %d refunded already: more than "
+                    + "its %d").formatted(rmaNumber, count, line.sku(), from, sold.quantity()));
         }
         return sold.grossAt(from, count, invoicedRates == null ? null : invoicedRates.get(line.orderLineId()))
                 .amount();
