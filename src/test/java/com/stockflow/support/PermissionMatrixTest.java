@@ -486,6 +486,9 @@ class PermissionMatrixTest {
             Map.entry("sales-rma-custody:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
                     Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("sales-rma-custody:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // WF-05 demo D-8 (V20261224000350; Q-21, HĐ-7): a product's VAT group, in any status - the accountant, who
+            // meets a product without one on an invoice draft, and the Sales Manager, who owns the catalogue.
+            Map.entry("product-tax-class:UPDATE", Set.of(Role.ACCOUNTANT, Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             // V20261209000300 (permission review 2026-11-20, A2; kltn-docs 20 §3): the lot trace report is the
             // warehouse's, Sales' (customer care) and the coordinator's; the ledger itself stays the warehouse's.
             Map.entry("inventory-lot-traces:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,

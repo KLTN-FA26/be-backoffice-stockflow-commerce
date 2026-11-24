@@ -18,6 +18,11 @@ public final class ProductResources {
      * what lets an approver approve their own submission (BR-PRD-003, checked in the service).
      */
     public static final String LIFECYCLE = ProductPermissions.LIFECYCLE;
+    /**
+     * WF-05 D-8: a product's VAT group, set or changed in any status - the accountant's and the Sales Manager's
+     * (V20261224000350), apart from editing a draft ({@link #PRODUCTS}).
+     */
+    public static final String TAX_CLASS = "product-tax-class";
 
     private ProductResources() {
     }
