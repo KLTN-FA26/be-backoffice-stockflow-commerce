@@ -240,6 +240,7 @@ class SalesContractService implements SalesContracts {
             SalesContract contract = live(order, version);
             Instant now = clock.instant();
             contract.requireSendable(order, now);
+            requireActiveCustomer(order);
             requireCreditFor(order, contract);
             return facts(contract, order, LocalDate.ofInstant(now, VIETNAM), true);
         });
@@ -251,6 +252,7 @@ class SalesContractService implements SalesContracts {
             return tx.execute(status -> {
                 Order order = lockInScope(orderId);
                 SalesContract contract = live(order, version);
+                requireActiveCustomer(order);
                 requireCreditFor(order, contract);
                 Instant now = clock.instant();
                 contract.send(order, now, user.userId(), stored.key());
@@ -264,6 +266,21 @@ class SalesContractService implements SalesContracts {
                 log.info("Sales contract {} of order {} sent", saved.contractNumber(), order.orderNumber());
                 return view(saved, order, creditWarning(order, saved));
             });
+        }
+    }
+
+    /**
+     * Q-9 (WF-02 decision 12, kltn-docs 14 BR-01): only an active customer is sent a new contract. One sent before the
+     * customer was blocked is still signed and paid, and one signed is carried out - neither passes through here.
+     */
+    private void requireActiveCustomer(Order order) {
+        String status = customers.findById(order.customerId())
+                .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND)).status();
+        if (!"ACTIVE".equals(status)) {
+            throw new BusinessException(ErrorCode.CUSTOMER_NOT_ACTIVE, "Customer " + order.customerId() + " is "
+                    + status + "; a new contract is sent to an ACTIVE customer only")
+                    .localized("refusal.contract.customerNotActive",
+                            new com.stockflow.common.i18n.Label("CustomerStatus", status));
         }
     }
 
