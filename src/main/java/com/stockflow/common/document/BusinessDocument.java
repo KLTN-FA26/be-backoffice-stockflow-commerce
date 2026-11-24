@@ -104,7 +104,7 @@ public final class BusinessDocument {
     }
 
     public sealed interface Block permits NationalHeader, BrandHeader, VoucherHeader, Title, Paragraph, Split, Fields,
-            Heading, Table, Signatures, Spacer, Figure, PageBreak {
+            Heading, Table, Signatures, Spacer, Figure, PageBreak, Together {
     }
 
     /**
@@ -293,8 +293,15 @@ public final class BusinessDocument {
      * Signature blocks side by side, drawn whole on one page with room to sign and seal.
      *
      * @param dateLine italic over the last block ("..., ngày ... tháng ... năm ..."); may be null
+     * @param room     the height left to sign in, in points; less than a seal's for blocks signed by hand on a
+     *                 paper that has to stay on one page
      */
-    public record Signatures(String dateLine, List<Signer> signers) implements Block {
+    public record Signatures(String dateLine, List<Signer> signers, float room) implements Block {
+
+        /** With room for a signature and a company's seal over it, as a paper two companies sign needs. */
+        public Signatures(String dateLine, List<Signer> signers) {
+            this(dateLine, signers, SIGNING_ROOM);
+        }
     }
 
     public record Spacer(float height) implements Block {
@@ -306,6 +313,15 @@ public final class BusinessDocument {
      * page they sign, not half of it on the page before.
      */
     public record PageBreak() implements Block {
+    }
+
+    /**
+     * What follows, for {@code height} points, starts a new page unless that much still fits on this one. It takes no
+     * room itself. For a part of a paper that is read and signed as one - a handover's vehicle, state of the goods,
+     * confirmation and signatures - and that the rules between two blocks (a paragraph and the signatures after it)
+     * would otherwise cut wherever the page ends.
+     */
+    public record Together(float height) implements Block {
     }
 
     /**
@@ -366,6 +382,31 @@ public final class BusinessDocument {
             double leftMm = LabelDrawing.millimetres(canvas.left());
             canvas.stream().setNonStrokingColor(Color.BLACK);
             LabelDrawing.barcode(canvas.stream(), page, code, leftMm, topMm + 4, 90, 12);
+            LabelDrawing.qr(canvas.stream(), page, code,
+                    leftMm + LabelDrawing.millimetres(canvas.width()) - 20, topMm, 20);
+        });
+    }
+
+    /**
+     * The two codes of {@link #codes} set into a record's head instead of a row of their own: the barcode under the
+     * paper's number at the left, the QR code under the place and date at the right, beside the title that follows.
+     * For a paper that has to fit one page - a delivery note signed at a tailgate - where a row of 20 mm for the codes
+     * alone is what pushes the signatures onto a second one. To go straight after {@link NationalHeader} and before
+     * {@link Title}: it takes the height of the barcode only, and the QR code hangs down beside the title, which is
+     * centred and leaves the margin's side of its lines free.
+     */
+    public static Figure headCodes(String code) {
+        float bar = mm(8);
+        return new Figure(bar - 2, canvas -> {
+            double pageMm = LabelDrawing.millimetres(PAGE_HEIGHT);
+            var page = new LabelDrawing.Cell(0, 0, LabelDrawing.millimetres(PAGE_WIDTH), pageMm, pageMm);
+            // The head leaves 12 pt under its last line; the codes start inside that gap, not after it.
+            double topMm = pageMm - LabelDrawing.millimetres(canvas.top() + 5);
+            double leftMm = LabelDrawing.millimetres(canvas.left());
+            canvas.stream().setNonStrokingColor(Color.BLACK);
+            // As wide as the row of its own gave it up to the QR code: under 0.25 mm a module a worn scanner at a
+            // dock starts to miss.
+            LabelDrawing.barcode(canvas.stream(), page, code, leftMm, topMm, 90, LabelDrawing.millimetres(bar));
             LabelDrawing.qr(canvas.stream(), page, code,
                     leftMm + LabelDrawing.millimetres(canvas.width()) - 20, topMm, 20);
         });
@@ -435,6 +476,7 @@ public final class BusinessDocument {
                         case Signatures s -> pen.signatures(s);
                         case Spacer s -> pen.spacer(s);
                         case PageBreak b -> pen.pageBreak();
+                        case Together t -> pen.ensure(t.height());
                         case Figure f -> pen.figure(f);
                     }
                 }
@@ -1089,7 +1131,7 @@ public final class BusinessDocument {
                 }
             }
             return (blank(s.dateLine()) ? 0 : leading + 2) + titleLines * leading(titleSize)
-                    + captionLines * leading(titleSize - 1) + SIGNING_ROOM + leading;
+                    + captionLines * leading(titleSize - 1) + s.room() + leading;
         }
 
         /** A signer's title, then their position under it, each wrapped in the block's width. */
@@ -1146,7 +1188,7 @@ public final class BusinessDocument {
                 }
                 if (!blank(s.signers().get(i).name())) {
                     float name = start - titleLines * titleLeading - captionLines * leading(titleSize - 1)
-                            - SIGNING_ROOM - leading;
+                            - s.room() - leading;
                     String fitted = s.signers().get(i).name();
                     centred(Style.BOLD, fitting(Style.BOLD, titleSize, fitted, column - 8), centre, name + 3, fitted);
                 }

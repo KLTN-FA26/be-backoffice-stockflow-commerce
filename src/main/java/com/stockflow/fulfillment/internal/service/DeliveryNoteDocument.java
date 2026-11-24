@@ -6,20 +6,25 @@ import com.stockflow.common.document.BusinessDocument.Block;
 import com.stockflow.common.document.BusinessDocument.Cell;
 import com.stockflow.common.document.BusinessDocument.Column;
 import com.stockflow.common.document.BusinessDocument.Field;
+import com.stockflow.common.document.BusinessDocument.Figure;
+import com.stockflow.common.document.BusinessDocument.Layout;
 import com.stockflow.common.document.BusinessDocument.Paragraph;
 import com.stockflow.common.document.BusinessDocument.Run;
 import com.stockflow.common.document.BusinessDocument.Signatures;
 import com.stockflow.common.document.BusinessDocument.Signer;
 import com.stockflow.common.document.BusinessDocument.Table;
 import com.stockflow.common.document.BusinessDocument.Title;
+import com.stockflow.common.document.BusinessDocument.Together;
 import com.stockflow.common.document.DocumentFonts;
 import com.stockflow.common.document.DocumentFormats;
 import com.stockflow.common.document.DocumentParts;
 import com.stockflow.common.document.Letterhead;
 import com.stockflow.common.document.SellerLetterhead;
+import com.stockflow.common.document.Style;
 import com.stockflow.fulfillment.api.ShippedCarton;
 import org.springframework.stereotype.Component;
 
+import java.awt.Color;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -47,6 +52,11 @@ import java.util.TreeMap;
  * the paper is the same form whenever it is printed. The state of the goods on receipt is two boxes to tick. Each SKU
  * is printed as its code - what the carton's label shows - and its variant's name from the catalogue; a SKU the
  * catalogue does not name prints by its code alone.</p>
+ *
+ * <p>It is set to fit one page: a note of a handful of lines that runs onto a second page gets signed on a page that
+ * shows none of the goods, and half of it is left on the dashboard. So the codes sit in the head, not in a row of
+ * their own; the text is a point smaller than a contract's - the margins of Nghị định 30 stay; and the handover is two
+ * short blocks, not a list. A long list of cartons still runs over, the signatures under its total.</p>
  *
  * <p>The words are the Vietnamese bundle's, the layout the kit's ({@link BusinessDocument}), the company its letterhead
  * ({@link SellerLetterhead}) - the same on every paper of the sale. Everything else it shows is given; nothing is
@@ -81,6 +91,15 @@ class DeliveryNoteDocument {
     record SkuCartons(String sku, String name, int cartons, int units, List<String> lpns) {
     }
 
+    /** A point under an official paper's 13 pt and its tables' 11 pt: what lets eight lines of goods share a page. */
+    private static final float BODY = 11;
+    private static final float TABLE = 10;
+    /**
+     * The room to sign in, with the line the kit leaves under it for a name: three people sign by hand and write their
+     * names, nobody sets a seal - a contract's 27 mm is a seal's.
+     */
+    private static final double SIGNING_MM = 14;
+
     private final DocumentFonts fonts;
     private final SellerLetterhead letterhead;
 
@@ -110,9 +129,9 @@ class DeliveryNoteDocument {
         List<Block> blocks = new ArrayList<>();
         blocks.add(DocumentParts.recordHead(t, head, f.shipmentCode(), f.printedOn()));
         boolean scheduled = f.contractNumber() != null && f.batchSeq() != null;
+        blocks.add(BusinessDocument.headCodes(f.shipmentCode()));
         blocks.add(new Title(t.getString("delivery-note.pdf.title"), null,
                 scheduled ? t.getString("delivery-note.pdf.batch").formatted(f.batchSeq()) : null));
-        blocks.add(BusinessDocument.codes(f.shipmentCode()));
         if (scheduled) {
             blocks.add(DocumentParts.basis(t.getString("delivery-note.pdf.basis.contract")
                     .formatted(f.contractNumber())));
@@ -123,13 +142,22 @@ class DeliveryNoteDocument {
         }
         // The record is of the day the goods change hands, which a copy printed for the driver does not know yet.
         blocks.add(f.handedOverAt() == null
-                ? DocumentParts.lead(t.getString("delivery-note.pdf.todayBlank")).after(6)
-                : DocumentParts.today(t, head, LocalDate.ofInstant(f.handedOverAt(), DocumentFormats.VIETNAM)));
+                ? DocumentParts.lead(t.getString("delivery-note.pdf.todayBlank")).after(3)
+                : DocumentParts.today(t, head, LocalDate.ofInstant(f.handedOverAt(), DocumentFormats.VIETNAM))
+                        .after(3));
 
+        // Our tax code and phone share a line: two short values, and a line each is a line the goods do not get.
+        List<Field> ours = new ArrayList<>();
+        if (DocumentParts.filled(head.taxCode()) || DocumentParts.filled(head.phone())) {
+            boolean both = DocumentParts.filled(head.taxCode()) && DocumentParts.filled(head.phone());
+            ours.add(Field.of(t.getString(DocumentParts.filled(head.taxCode()) ? "document.party.taxCode"
+                            : "document.party.phone"),
+                    both ? head.taxCode() + " - " + t.getString("document.party.phone") + ": " + head.phone()
+                            : DocumentParts.filled(head.taxCode()) ? head.taxCode() : head.phone()));
+        }
+        ours.add(Field.of(t.getString("delivery-note.pdf.warehouse"), warehouse(f, blank)));
         DocumentParts.party(blocks, t, t.getString("delivery-note.pdf.sender"),
-                new DocumentParts.Party(head.name(), head.taxCode(), head.address(), head.phone(), null, null, null,
-                        null),
-                List.of(Field.of(t.getString("delivery-note.pdf.warehouse"), warehouse(f, blank))));
+                new DocumentParts.Party(head.name(), null, head.address(), null, null), ours);
         DocumentParts.party(blocks, t, t.getString("delivery-note.pdf.receiver"),
                 new DocumentParts.Party(DocumentParts.orBlank(t, f.customerName()), null, null, null, null),
                 List.of(Field.of(t.getString("delivery-note.pdf.deliveryAddress"),
@@ -137,14 +165,19 @@ class DeliveryNoteDocument {
                         Field.of(t.getString("delivery-note.pdf.recipient"),
                                 DocumentParts.orBlank(t, f.recipient()))));
 
-        blocks.add(DocumentParts.lead(t.getString("delivery-note.pdf.agreed")));
+        blocks.add(DocumentParts.lead(t.getString("delivery-note.pdf.agreed")).after(1));
         blocks.add(goods(t, f.goods()));
 
-        // The handover - the vehicle, the moment, the state of the goods, the confirmation - follows the goods where
-        // they end. It used to open a page of its own, which left most of a page empty under a short goods table and
-        // put the signatures on a third page after a long one (demo run 24/11). The kit keeps the signatures with the
-        // paragraph before them, so they never open a page alone.
-        blocks.add(Paragraph.bold(t.getString("delivery-note.pdf.carriage")).align(Align.LEFT).after(1));
+        // The handover - the vehicle, the moment, the state of the goods, the confirmation, the signatures - follows
+        // the goods where they end, and stays whole: whoever signs has the vehicle and the boxes they ticked on the
+        // page they sign. It used to open a page of its own always, which left most of a page empty under a short
+        // goods table and put the signatures on a third page after a long one (demo run 24/11); now it moves on only
+        // when it does not fit under the goods. The moment shares the heading's line - one fact, one line saved - and
+        // each vehicle is a point under it.
+        blocks.add(new Together(handoverHeight(f.vehicles().size())));
+        blocks.add(Paragraph.of(Run.bold(t.getString("delivery-note.pdf.carriage") + " "),
+                Run.of(t.getString("delivery-note.pdf.handedOverAt").formatted(f.handedOverAt() == null ? blank
+                        : DocumentFormats.moment(f.handedOverAt())))).align(Align.LEFT).after(0));
         if (f.vehicles().isEmpty()) {
             blocks.add(point(t.getString("delivery-note.pdf.noVehicle").formatted(blank, blank, blank, blank)));
         }
@@ -154,24 +187,63 @@ class DeliveryNoteDocument {
                     DocumentParts.orBlank(t, v.driverName()), DocumentParts.orBlank(t, v.driverPhone()),
                     DocumentParts.orBlank(t, v.waybillNo()))));
         }
-        blocks.add(point(t.getString("delivery-note.pdf.handedOverAt").formatted(f.handedOverAt() == null ? blank
-                : DocumentFormats.moment(f.handedOverAt()))));
-
-        blocks.add(Paragraph.bold(t.getString("delivery-note.pdf.condition")).align(Align.LEFT).after(0));
-        blocks.add(DocumentParts.checkbox(t.getString("delivery-note.pdf.condition.good"), 13));
-        blocks.add(DocumentParts.checkbox(t.getString("delivery-note.pdf.condition.differs")
-                .formatted(blank + blank), 13));
-        blocks.add(DocumentParts.lead(t.getString("delivery-note.pdf.confirm")).after(2));
-        blocks.add(DocumentParts.lead(t.getString("delivery-note.pdf.copies")));
+        blocks.add(condition(t.getString("delivery-note.pdf.condition"),
+                t.getString("delivery-note.pdf.condition.good"),
+                t.getString("delivery-note.pdf.condition.differs").formatted("").strip()));
+        // One paragraph: what Bên B confirms and how many copies were made are the record's closing words together.
+        blocks.add(DocumentParts.lead(t.getString("delivery-note.pdf.confirm") + " "
+                + t.getString("delivery-note.pdf.copies")).after(0));
 
         String caption = t.getString("document.sign.named");
         blocks.add(new Signatures(null, List.of(
                 new Signer(t.getString("delivery-note.pdf.sign.sender"), caption, null),
                 new Signer(t.getString("delivery-note.pdf.sign.driver"), caption, null),
-                new Signer(t.getString("delivery-note.pdf.sign.receiver"), caption, null))));
+                new Signer(t.getString("delivery-note.pdf.sign.receiver"), caption, null)),
+                BusinessDocument.mm(SIGNING_MM)));
         blocks.add(Paragraph.italic(t.getString("delivery-note.pdf.pod")).size(-2.5f));
-        return BusinessDocument.draw(fonts, DocumentParts.official(t, f.shipmentCode(), null),
+        Layout official = DocumentParts.official(t, f.shipmentCode(), null);
+        return BusinessDocument.draw(fonts, new Layout(official.margins(), BODY, TABLE, official.accent(),
+                        official.footerLeft(), official.footerCentre(), official.pageLabel(), official.watermark()),
                 t.getString("delivery-note.pdf.title") + " " + f.shipmentCode(), blocks);
+    }
+
+    /**
+     * The room the handover takes, heading to the note under the signatures, in points: its lines at the body's
+     * leading - a vehicle's point runs to two - and the room to sign. Counted, not measured, and a few points short
+     * rather than over: over, a note that fits one page would be sent to a second.
+     */
+    private static float handoverHeight(int vehicles) {
+        float line = BODY * 1.25f;
+        int lines = 1 + 2 * Math.max(1, vehicles) + 2 + 3 + 2 + 1 + 1;
+        return lines * line + BusinessDocument.mm(SIGNING_MM) + 10;
+    }
+
+    /**
+     * The state of the goods on receipt as a form reads: the question at the left, its two answers as boxes to tick
+     * under one another beside it, and the line to write a difference on running to the margin - the longer it is, the
+     * more of what is wrong gets written down. Drawn, not typed: the fonts have no ballot box.
+     */
+    private static Figure condition(String question, String good, String differs) {
+        float lineHeight = BODY * 1.25f;
+        float box = BODY * 0.78f;
+        return new Figure(2 * lineHeight + 4, canvas -> {
+            float baseline = canvas.top() - lineHeight;
+            canvas.text(Style.BOLD, BODY, canvas.left(), baseline, question, Color.BLACK);
+            float x = canvas.left() + canvas.textWidth(Style.BOLD, BODY, question) + 10;
+            float room = canvas.left() + canvas.width() - x - box - 5;
+            StringBuilder written = new StringBuilder(differs).append(' ');
+            while (canvas.textWidth(Style.REGULAR, BODY, written + ".") <= room) {
+                written.append('.');
+            }
+            canvas.stream().setLineWidth(0.7f);
+            for (String answer : List.of(good, written.toString())) {
+                canvas.stream().addRect(x, baseline - 1, box, box);
+                canvas.stream().stroke();
+                canvas.text(Style.REGULAR, BODY, x + box + 5, baseline, canvas.cut(Style.REGULAR, BODY, answer, room),
+                        Color.BLACK);
+                baseline -= lineHeight;
+            }
+        });
     }
 
     /** "Kho Hồ Chí Minh - 12 Đường Số 7, ...", or a line to write the warehouse on. */
@@ -184,7 +256,7 @@ class DeliveryNoteDocument {
     }
 
     private static Paragraph point(String text) {
-        return Paragraph.numbered("-", Run.of(text)).indent(14).align(Align.LEFT).after(1);
+        return Paragraph.numbered("-", Run.of(text)).indent(14).align(Align.LEFT).after(0);
     }
 
     /**
@@ -209,12 +281,13 @@ class DeliveryNoteDocument {
         }
         rows.add(List.of(Cell.of(""), Cell.of(""), Cell.bold(t.getString("delivery-note.pdf.total")), Cell.of(""),
                 Cell.bold(DocumentFormats.number(cartons)), Cell.bold(DocumentFormats.number(units)), Cell.of("")));
-        return new Table(List.of(new Column(t.getString("document.goods.no"), 30, Align.CENTRE),
-                new Column(t.getString("document.goods.code"), 96, Align.LEFT),
-                new Column(t.getString("document.goods.name"), 172, Align.LEFT),
-                new Column(t.getString("document.goods.unit"), 36, Align.CENTRE),
-                new Column(t.getString("delivery-note.pdf.col.cartons"), 48, Align.RIGHT),
+        // The name gets what the other columns can spare: a name on one line keeps a row at two (name, LPNs).
+        return new Table(List.of(new Column(t.getString("document.goods.no"), 26, Align.CENTRE),
+                new Column(t.getString("document.goods.code"), 88, Align.LEFT),
+                new Column(t.getString("document.goods.name"), 186, Align.LEFT),
+                new Column(t.getString("document.goods.unit"), 34, Align.CENTRE),
+                new Column(t.getString("delivery-note.pdf.col.cartons"), 56, Align.RIGHT),
                 new Column(t.getString("document.goods.quantity"), 56, Align.RIGHT),
-                new Column(t.getString("delivery-note.pdf.col.note"), 62, Align.LEFT)), rows);
+                new Column(t.getString("delivery-note.pdf.col.note"), 52, Align.LEFT)), rows);
     }
 }

@@ -157,7 +157,7 @@ class SandboxDocumentsTest {
     void pdfAbbreviatesOnlyWhatDoesNotFit() throws Exception {
         String name = "Công ty Trách nhiệm hữu hạn Sản xuất Thương mại Dịch vụ Bao bì Giấy và Ly Nhựa Cao Cấp Xuất Khẩu "
                 + "Việt Nam - Chi nhánh Thành phố Hồ Chí Minh";
-        String address = "Lô B12 đường số 7, Khu công nghiệp Tân Bình mở rộng, Phường Tây Thạnh, Quận Tân Phú, Thành phố "
+        String address = "Lô B12 đường số 7, Khu công nghiệp Tân Bình mở rộng, Phường Tây Thạnh, Thành phố "
                 + "Hồ Chí Minh, Việt Nam, toà nhà xưởng số 3, tầng 2, khu văn phòng điều hành phía Đông, cổng số 4 đường "
                 + "nội bộ D2, đối diện bãi xe container";
         assertThat(name.length()).isGreaterThan(SandboxInvoicePdf.NAME_ROOM);

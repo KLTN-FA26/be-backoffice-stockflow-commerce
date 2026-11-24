@@ -127,7 +127,7 @@ class BusinessDocumentTest {
                         null),
                 new Title("HỢP ĐỒNG MUA BÁN HÀNG HÓA", "Số: 045/2026/HĐMB", null),
                 Paragraph.of(Run.bold("BÊN MUA (BÊN B): "), Run.bold(LONG_NAME)).align(Align.LEFT),
-                new Fields(List.of(Field.of("Địa chỉ", "Số 12 đường Nguyễn Huệ, phường Bến Nghé, thành phố Hồ Chí "
+                new Fields(List.of(Field.of("Địa chỉ", "Số 12 Đường Nguyễn Huệ, Phường Sài Gòn, Thành phố Hồ Chí "
                                 + "Minh, Việt Nam - tầng 15, toà nhà Bitexco Financial Tower"),
                         Field.of("Mã số thuế", "0398765432"), Field.of("Mã hàng", code)), 0),
                 Paragraph.of("Hàng hóa được sản xuất theo thiết kế do Bên B cung cấp và theo mẫu in đã được Bên B "

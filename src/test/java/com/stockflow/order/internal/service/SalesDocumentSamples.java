@@ -33,8 +33,8 @@ final class SalesDocumentSamples {
 
     /** A real legal name: long, in capitals, Vietnamese - far wider than its letters suggest. */
     static final SalesContracts.Party LONG_BUYER = new SalesContracts.Party("CÔNG TY TRÁCH NHIỆM HỮU HẠN THƯƠNG MẠI "
-            + "DỊCH VỤ SẢN XUẤT BAO BÌ GIẤY VÀ NHỰA MIỀN NAM VIỆT NAM", "0312345678", "Số 12 đường Nguyễn Huệ, phường "
-            + "Bến Nghé, quận 1, thành phố Hồ Chí Minh, Việt Nam - tầng 15, toà nhà Bitexco Financial Tower",
+            + "DỊCH VỤ SẢN XUẤT BAO BÌ GIẤY VÀ NHỰA MIỀN NAM VIỆT NAM", "0312345678", "Số 12 Đường Nguyễn Huệ, Phường "
+            + "Sài Gòn, Thành phố Hồ Chí Minh, Việt Nam - tầng 15, toà nhà Bitexco Financial Tower",
             "Trần Văn Bình", "Tổng giám đốc");
 
     static final Map<String, String> NAMES = Map.of(

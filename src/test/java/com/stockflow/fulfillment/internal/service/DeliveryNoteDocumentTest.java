@@ -47,7 +47,7 @@ class DeliveryNoteDocumentTest {
         return new DeliveryNoteDocument.Facts("SO-20261109-000001-S1", "SO-20261109-000001",
                 "HD-20261109-000001-1", 2, redelivery, "Kho Hồ Chí Minh",
                 "Lô C12, Đường số 3, Phường Tân Tạo, Thành phố Hồ Chí Minh", DocumentSamples.LONG_NAME,
-                "Số 12 đường Nguyễn Huệ, phường Bến Nghé, quận 1, thành phố Hồ Chí Minh",
+                "Số 12 Đường Nguyễn Huệ, Phường Sài Gòn, Thành phố Hồ Chí Minh",
                 "Trần Văn Bình - 0901234567", vehicles, handedOver, goods(), LocalDate.of(2026, 11, 15));
     }
 
@@ -81,8 +81,9 @@ class DeliveryNoteDocumentTest {
                 "BÊN NHẬN (BÊN B):", "MIỀN NAM VIỆT NAM", "Người nhận hàng", "Trần Văn Bình - 0901234567",
                 "Ly giấy 2 lớp in logo ACME - 12 oz", "Mã thùng (LPN): LPN-000001, LPN-000002", "LY16-ACME-02",
                 "Tổng cộng", "3", "140",
+                "Thông tin vận chuyển:", "Thời điểm bàn giao: 09:05 ngày 15/11/2026",
                 "Chuyến LD-20261115-0003 - Xe tải Nhanh: biển số 51C-123.45; tài xế Nguyễn Văn Tài;",
-                "mã vận đơn WB-778899", "Thời điểm bàn giao: 09:05 ngày 15/11/2026",
+                "mã vận đơn WB-778899",
                 "Tình trạng hàng hóa khi nhận:", "Đủ số lượng, đúng quy cách, bao bì nguyên vẹn.", "Có sai khác:",
                 "Biên bản được lập thành 02 bản", "ĐẠI DIỆN BÊN GIAO", "NGƯỜI VẬN CHUYỂN", "ĐẠI DIỆN BÊN NHẬN",
                 "(Ký, ghi rõ họ tên)", "(POD)");
@@ -103,7 +104,7 @@ class DeliveryNoteDocumentTest {
         DeliveryNoteDocument.Facts facts = new DeliveryNoteDocument.Facts("SO-20261109-950001-S1",
                 "SO-20261109-950001", "HD-20261109-950001-1", 1, false, "Kho Hồ Chí Minh",
                 "Lô C12, Đường số 3, Phường Tân Tạo, Thành phố Hồ Chí Minh", DocumentSamples.LONG_NAME,
-                "Số 12 đường Nguyễn Huệ, phường Bến Nghé, quận 1, thành phố Hồ Chí Minh",
+                "Số 12 Đường Nguyễn Huệ, Phường Sài Gòn, Thành phố Hồ Chí Minh",
                 "Trần Văn Bình - 0901234567", List.of(new DeliveryNoteDocument.Vehicle("LD-20261123-9501",
                         "Xe tải Nhanh", "51C-123.45", "Nguyễn Văn Tài", "0912345678", "VD-WF5A-1")),
                 Instant.parse("2026-11-24T02:05:00Z"), DeliveryNoteDocument.bySku(cartons,
@@ -140,12 +141,63 @@ class DeliveryNoteDocumentTest {
                 new DeliveryNoteDocument.Vehicle("LD-20261115-0003", "Xe tải Nhanh", "51C-123.45", "Nguyễn Văn Tài",
                         "0912345678", "WB-778899")), Instant.parse("2026-11-15T02:05:00Z"), false)));
 
-        assertThat(DocumentSamples.text(pdf, 1)).as("the handover right under the goods")
-                .containsSubsequence("Tổng cộng", "Thông tin vận chuyển", "Thời điểm bàn giao");
-        int signed = DocumentSamples.pages(pdf);
-        assertThat(signed).isLessThanOrEqualTo(2);
-        assertThat(DocumentSamples.text(pdf, signed)).as("never the signatures alone on their page")
-                .containsSubsequence("Hai bên đồng ý", "ĐẠI DIỆN BÊN GIAO", "NGƯỜI VẬN CHUYỂN", "ĐẠI DIỆN BÊN NHẬN");
+        assertThat(DocumentSamples.pages(pdf)).as("a short note is one page, signed under its goods").isEqualTo(1);
+        assertThat(DocumentSamples.text(pdf)).containsSubsequence("Tổng cộng", "Thông tin vận chuyển",
+                "Thời điểm bàn giao", "ĐẠI DIỆN BÊN GIAO", "NGƯỜI VẬN CHUYỂN", "ĐẠI DIỆN BÊN NHẬN", "(POD)");
+    }
+
+    /** A note of {@code lines} SKUs of a customer with a long name; with {@code pairs}, every other SKU in two cartons. */
+    private static DeliveryNoteDocument.Facts linesOfGoods(int lines, boolean pairs, String shipmentCode) {
+        String[] kinds = {"Ly giấy 2 lớp in logo Mộc - 8 oz", "Ly giấy 2 lớp in logo Mộc - 12 oz",
+                "Ly giấy 2 lớp in logo Mộc - 16 oz", "Ly nhựa PET in logo Mộc - 500 ml",
+                "Nắp ly giấy đen - 80 mm", "Nắp ly giấy đen - 90 mm", "Túi giấy kraft 2 ly in logo Mộc",
+                "Ống hút giấy bọc màng - 8 mm"};
+        List<ShippedCarton> cartons = new java.util.ArrayList<>();
+        Map<String, String> names = new java.util.HashMap<>();
+        int lpn = 0;
+        for (int i = 0; i < lines; i++) {
+            String sku = "MOC-%02d-%s".formatted(i + 1, i < 4 ? "LY" : "PK");
+            names.put(sku, kinds[i]);
+            for (int c = 0; c < (pairs ? 1 + i % 2 : 1); c++) {
+                cartons.add(new ShippedCarton("LPN-20261124-%06d".formatted(++lpn), sku, "LOT-1", 500));
+            }
+        }
+        return new DeliveryNoteDocument.Facts(shipmentCode, "SO-20261109-950002", "HD-20261109-950002-1", 1, false,
+                "Kho Hồ Chí Minh", "Lô C12, Đường số 3, Phường Tân Tạo, Thành phố Hồ Chí Minh",
+                DocumentSamples.LONG_NAME, "Số 12 Đường Nguyễn Huệ, Phường Sài Gòn, Thành phố Hồ Chí Minh",
+                "Trần Văn Bình - 0901234567", List.of(new DeliveryNoteDocument.Vehicle("LD-20261123-9502",
+                        "Xe tải Nhanh", "51C-123.45", "Nguyễn Văn Tài", "0912345678", "VD-WF5A-2")),
+                Instant.parse("2026-11-24T02:05:00Z"), DeliveryNoteDocument.bySku(cartons, names),
+                LocalDate.of(2026, 11, 24));
+    }
+
+    @Test
+    @DisplayName("a handful of lines - five SKUs of a carton each, a customer with a long name - is one page: the "
+            + "codes are in the head, and whoever signs has every line they sign for above their signature")
+    void aHandfulOfLinesIsOnePage() throws IOException {
+        byte[] pdf = DocumentSamples.keep("delivery-note-5-lines",
+                document.render(linesOfGoods(5, false, "SO-20261109-950002-S1")));
+
+        assertThat(DocumentSamples.within(pdf, 30, 15)).as("inside the margins").isTrue();
+        assertThat(DocumentSamples.pages(pdf)).isEqualTo(1);
+        assertThat(DocumentSamples.text(pdf)).containsSubsequence("MOC-01-LY", "MOC-05-PK", "Tổng cộng", "5",
+                "2.500", "Tình trạng hàng hóa khi nhận:", "ĐẠI DIỆN BÊN NHẬN");
+    }
+
+    @Test
+    @DisplayName("eight lines do not leave room for the handover under them, and it goes to the second page whole - "
+            + "the vehicle, the boxes to tick, the confirmation and the signatures together, never cut where the "
+            + "page ends")
+    void theHandoverMovesOnWhole() throws IOException {
+        byte[] pdf = DocumentSamples.keep("delivery-note-8-lines",
+                document.render(linesOfGoods(8, true, "SO-20261109-950003-S1")));
+
+        assertThat(DocumentSamples.within(pdf, 30, 15)).as("inside the margins").isTrue();
+        assertThat(DocumentSamples.pages(pdf)).isEqualTo(2);
+        assertThat(DocumentSamples.text(pdf, 1)).containsSubsequence("MOC-01-LY", "MOC-08-PK", "Tổng cộng", "12",
+                "6.000").doesNotContain("Thông tin vận chuyển");
+        assertThat(DocumentSamples.text(pdf, 2)).containsSubsequence("Thông tin vận chuyển:",
+                "Tình trạng hàng hóa khi nhận:", "Hai bên đồng ý", "ĐẠI DIỆN BÊN GIAO", "ĐẠI DIỆN BÊN NHẬN");
     }
 
     @Test
