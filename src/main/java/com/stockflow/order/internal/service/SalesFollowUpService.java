@@ -37,7 +37,8 @@ import java.util.UUID;
  *   <li>FLOW-1a: an order held for credit, to whoever may decide it ({@value #DECIDES_CREDIT});</li>
  *   <li>FLOW-2: an order confirmed with no shipping warehouse chosen, to its salesperson;</li>
  *   <li>FLOW-3: an order held because a voided receipt left its installment on signing short, to its salesperson - and
- *       again once that installment is paid again: Sales lifts the hold, nothing here does (docs 15).</li>
+ *       again once that installment is paid again: Sales lifts the hold, nothing here does (docs 15). A PAYMENT hold
+ *       a coordinator raised by hand is theirs to lift, and is not reported.</li>
  * </ul>
  * FLOW-1b, accounting's credit decision, is told as it is made ({@link #creditDecided}). Nothing is cancelled, expired
  * or moved here: whether to chase the customer or cancel stays Sales' call.
@@ -90,7 +91,7 @@ public class SalesFollowUpService {
     /**
      * What one run found waiting, and how many recipients were told for the first time.
      *
-     * @param paymentHolds orders held for payment, of which {@code paidAgain} have their installment on signing paid
+     * @param paymentHolds orders held for payment by a voided receipt, of which {@code paidAgain} have their installment on signing paid
      */
     public record Reminded(int unsignedContracts, int unpaidOrders, int creditHolds, int confirmedUnplaced,
                            int paymentHolds, int paidAgain, int newlyTold) {
@@ -105,8 +106,7 @@ public class SalesFollowUpService {
         List<SalesFollowUps.UnpaidOrder> unpaid = followUps.unpaidSince(now.minus(unpaidAfter), BATCH_SIZE);
         List<SalesFollowUps.WaitingOrder> creditHeld = followUps.heldFor(OrderServiceImpl.CREDIT_HOLD, BATCH_SIZE);
         List<SalesFollowUps.WaitingOrder> unplaced = followUps.confirmedWithoutWarehouse(BATCH_SIZE);
-        List<SalesFollowUps.WaitingOrder> paymentHeld = followUps.heldFor(
-                com.stockflow.order.api.HoldReason.PAYMENT.name(), BATCH_SIZE);
+        List<SalesFollowUps.WaitingOrder> paymentHeld = followUps.heldAfterVoidedReceipt(BATCH_SIZE);
         int told = 0;
         for (SalesFollowUps.UnsignedContract contract : unsigned) {
             told += post(sales.of(contract.salesUserId()), texts, InboxSeverity.WARN,

@@ -21,6 +21,7 @@ import com.stockflow.order.internal.domain.OrderAddressSnapshot;
 import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.CancellationRequest;
 import com.stockflow.order.internal.domain.CancellationRequestRepository;
+import com.stockflow.order.internal.domain.SalesFollowUps;
 import java.math.BigDecimal;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
 import com.stockflow.common.api.PageResponse;
@@ -563,7 +564,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             return;
         }
         java.time.Instant when = at == null ? clock.instant() : at;
-        String note = "Payment receipt %s voided: the installment on signing is short".formatted(reference);
+        String note = SalesFollowUps.VOIDED_RECEIPT_HOLD_NOTE.formatted(reference);
         order.putOnHold(com.stockflow.order.api.HoldReason.PAYMENT, note, by, when);
         holds.save(new OrderHoldJpaEntity(Identifiers.newId(), orderId,
                 com.stockflow.order.api.HoldReason.PAYMENT.name(), when, note, by));

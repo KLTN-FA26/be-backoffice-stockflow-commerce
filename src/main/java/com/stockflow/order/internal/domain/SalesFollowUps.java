@@ -13,6 +13,14 @@ import java.util.UUID;
 public interface SalesFollowUps {
 
     /**
+     * The note a voided receipt puts its PAYMENT hold on with ({@code %s} is the receipt's reference). A coordinator may
+     * put an order on PAYMENT hold by hand too, for reasons of their own; the follow-up tells the two apart by this note,
+     * so that Sales are never told a receipt was voided when none was, nor invited to lift a hold someone raised on
+     * purpose.
+     */
+    String VOIDED_RECEIPT_HOLD_NOTE = "Payment receipt %s voided: the installment on signing is short";
+
+    /**
      * A contract the customer has not signed since {@code sentAt}.
      *
      * @param salesUserId who sent it: the salesperson handling it
@@ -44,6 +52,12 @@ public interface SalesFollowUps {
 
     /** ON_HOLD orders held for {@code reason} ({@code CREDIT}, {@code PAYMENT}), the newest hold first. */
     List<WaitingOrder> heldFor(String reason, int limit);
+
+    /**
+     * ON_HOLD orders whose open PAYMENT hold a voided receipt raised ({@link #VOIDED_RECEIPT_HOLD_NOTE}), the newest
+     * hold first; PAYMENT holds raised by hand are left out.
+     */
+    List<WaitingOrder> heldAfterVoidedReceipt(int limit);
 
     /** CONFIRMED orders of a signed contract with no shipping warehouse chosen yet, the newest first. */
     List<WaitingOrder> confirmedWithoutWarehouse(int limit);

@@ -149,7 +149,7 @@ class SalesFollowUpServiceTest {
                 new SalesFollowUps.WaitingOrder(credit, "SO-C", sales, heldAt)));
         when(followUps.confirmedWithoutWarehouse(anyInt())).thenReturn(List.of(
                 new SalesFollowUps.WaitingOrder(unplaced, "SO-W", sales, heldAt)));
-        when(followUps.heldFor(eq("PAYMENT"), anyInt())).thenReturn(List.of(
+        when(followUps.heldAfterVoidedReceipt(anyInt())).thenReturn(List.of(
                 new SalesFollowUps.WaitingOrder(shortOrder, "SO-P", sales, heldAt),
                 new SalesFollowUps.WaitingOrder(paidAgain, "SO-R", sales, heldAt)));
         when(payments.installmentStandings(List.of(shortOrder, paidAgain))).thenReturn(Map.of(

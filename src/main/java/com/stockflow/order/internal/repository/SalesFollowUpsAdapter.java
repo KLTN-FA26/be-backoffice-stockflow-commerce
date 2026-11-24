@@ -68,25 +68,39 @@ class SalesFollowUpsAdapter implements SalesFollowUps {
                                 LIMIT 1) s ON TRUE""";
 
     @Override
-    @SuppressWarnings("unchecked")
     public List<WaitingOrder> heldFor(String reason, int limit) {
-        List<Object[]> rows = entityManager.createNativeQuery("""
+        return held(reason, "", null, limit);
+    }
+
+    @Override
+    public List<WaitingOrder> heldAfterVoidedReceipt(int limit) {
+        // The note is written by OrderServiceImpl.installmentsShort with the receipt's reference in place of %s.
+        return held("PAYMENT", " AND h.note LIKE :note", VOIDED_RECEIPT_HOLD_NOTE.replace("%s", "%"), limit);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<WaitingOrder> held(String reason, String holdFilter, String note, int limit) {
+        var query = entityManager.createNativeQuery("""
                         SELECT o.id, o.order_number, s.sales_user_id,
                                COALESCE(h.raised_at, o.contract_signed_at, o.placed_at) AS since
                           FROM ordering.customer_order o
-                          LEFT JOIN LATERAL (SELECT h.raised_at FROM ordering.order_hold h
+                          LEFT JOIN LATERAL (SELECT h.raised_at, h.note FROM ordering.order_hold h
                                               WHERE h.order_id = o.id AND h.reason = o.hold_reason
                                                 AND h.resolved_at IS NULL
                                               ORDER BY h.raised_at DESC
                                               LIMIT 1) h ON TRUE
                         """ + SALES_OF_ORDER + """
 
-                         WHERE o.status = 'ON_HOLD' AND o.hold_reason = :reason
+                         WHERE o.status = 'ON_HOLD' AND o.hold_reason = :reason""" + holdFilter + """
+
                          ORDER BY since DESC, o.id
                          LIMIT :limit""")
                 .setParameter("reason", reason)
-                .setParameter("limit", limit)
-                .getResultList();
+                .setParameter("limit", limit);
+        if (note != null) {
+            query.setParameter("note", note);
+        }
+        List<Object[]> rows = query.getResultList();
         return rows.stream().map(SalesFollowUpsAdapter::waiting).toList();
     }
 

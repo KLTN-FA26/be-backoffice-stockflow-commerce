@@ -2,6 +2,8 @@ package com.stockflow.order;
 
 import com.stockflow.customer.api.SaveCreditTermsCommand;
 import com.stockflow.customer.api.CustomerService;
+import com.stockflow.order.api.HoldReason;
+import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.SalesFollowUps;
 import com.stockflow.order.internal.service.CreditHoldService;
@@ -33,8 +35,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * WF-02 FLOW-1..3, CONC-2 against a real database: the scans the hourly follow-up reads find an order held for credit
  * (since its hold was raised, with the salesperson who sent its contract), an order confirmed with no shipping
- * warehouse, and an order of a signed contract still waiting for its installment on signing; and accounting's credit
- * decision reaches that salesperson's inbox once.
+ * warehouse, an order of a signed contract still waiting for its installment on signing, and an order a voided
+ * receipt put on PAYMENT hold (not one put on it by hand); and accounting's credit decision reaches that salesperson's
+ * inbox once.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -47,6 +50,7 @@ class SalesFollowUpIntegrationTest {
     @Autowired SalesFollowUps followUps;
     @Autowired CustomerService customers;
     @Autowired CreditHoldService credit;
+    @Autowired OrderService orders;
     @Autowired ApplicationContext context;
     @Autowired TransactionTemplate tx;
     @Autowired JdbcTemplate jdbc;
@@ -138,5 +142,26 @@ class SalesFollowUpIntegrationTest {
         SalesFollowUps.WaitingOrder unplaced = find(followUps.confirmedWithoutWarehouse(200), confirmed.orderId());
         assertThat(unplaced).isNotNull();
         assertThat(unplaced.salesUserId()).isEqualTo(confirmedOrders.sales().userId());
+    }
+
+    @Test
+    @DisplayName("FLOW-3: a PAYMENT hold raised by hand is not a voided receipt's; one raised by a void is reported")
+    void paymentHoldByHandIsNotReported() {
+        ConfirmedOrders.Confirmed confirmed = confirmedOrders.pay(
+                confirmedOrders.signed(customer, ConfirmedOrders.Line.cartons(sku, 10, PRICE)));
+        UUID order = confirmed.orderId();
+
+        orders.putOnHold(order, HoldReason.PAYMENT, "customer asked to wait for its own bank", accountant);
+
+        assertThat(find(followUps.heldFor("PAYMENT", 200), order)).isNotNull();
+        assertThat(find(followUps.heldAfterVoidedReceipt(200), order)).as("raised by hand").isNull();
+
+        // The note OrderServiceImpl.installmentsShort raises its hold with.
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.order_hold SET note = ? WHERE order_id = ? AND resolved_at IS NULL",
+                SalesFollowUps.VOIDED_RECEIPT_HOLD_NOTE.formatted("PT-0001"), order));
+        SalesFollowUps.WaitingOrder voided = find(followUps.heldAfterVoidedReceipt(200), order);
+        assertThat(voided).isNotNull();
+        assertThat(voided.salesUserId()).isEqualTo(confirmedOrders.sales().userId());
     }
 }
