@@ -56,7 +56,7 @@ class WarehouseMapScopeHttpIntegrationTest {
         mvc = new SecuredMvc(mockMvc, decoder);
         manager = tx.execute(s -> ReferenceRows.user(entityManager));
         other = Identifiers.newId();
-        otherPrefix = "E" + UUID.randomUUID().toString().substring(0, 5).toUpperCase(Locale.ROOT);
+        otherPrefix = ReferenceRows.warehousePrefix("E");
         otherZone = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             jdbc.update("""

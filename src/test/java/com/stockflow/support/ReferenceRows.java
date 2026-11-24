@@ -3,6 +3,7 @@ package com.stockflow.support;
 import com.stockflow.common.id.Identifiers;
 import jakarta.persistence.EntityManager;
 
+import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -17,6 +18,17 @@ import java.util.UUID;
 public final class ReferenceRows {
 
     private ReferenceRows() {
+    }
+
+    /**
+     * A warehouse prefix no other test's warehouse has: {@code lead}, then random hex up to the ten characters
+     * {@code ck_warehouse_prefix} allows (nine digits after "E", about 7e10 values). Every test shares one database,
+     * and the "elsewhere" warehouses used to be "E" and five hex digits - a million values for every warehouse those
+     * tests made, which met now and then on {@code uk_warehouse_prefix} (FtlDispatchIntegrationTest, CI 2026-11-24).
+     */
+    public static String warehousePrefix(String lead) {
+        String hex = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+        return lead + hex.substring(0, 10 - lead.length());
     }
 
     /** An {@code identity.app_user} row; returns its id. */

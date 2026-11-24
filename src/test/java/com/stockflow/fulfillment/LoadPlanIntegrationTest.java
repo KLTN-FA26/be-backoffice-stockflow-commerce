@@ -132,7 +132,7 @@ class LoadPlanIntegrationTest {
                 INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height,
                                                  version, created_at)
                 VALUES (?, 'Elsewhere', 'ACTIVE', ?, 'Somewhere', 'M', 50, 50, 0, NOW())""", id,
-                "E" + UUID.randomUUID().toString().substring(0, 5).toUpperCase(java.util.Locale.ROOT));
+                ReferenceRows.warehousePrefix("E"));
         return id;
     }
 
