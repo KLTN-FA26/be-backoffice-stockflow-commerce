@@ -5,9 +5,10 @@
 --
 -- What it holds (days are "days before the day it is loaded"):
 --   * the team's staff accounts (admin, sales1, ketoan, dieuphoi, quanly.bd, kho.hn1, ...) and two warehouses:
---     BDG "Kho Bình Dương" (24 shelves, 288 bins) and HNI "Kho Hà Nội" (16 shelves, 192 bins), each walled, with
---     dock doors, an emergency exit, a walled quarantine room, an office, and receiving, quarantine, dispatch,
---     staging and overflow areas;
+--     BDG "Kho Bình Dương" (94 x 52 m, 88 shelves, 1,408 bins) and HNI "Kho Hà Nội" (73.6 x 40 m, 42 shelves, 672
+--     bins): 4-level racking in an east-west block (zones A and B) and a north-south block by the docks (zone C),
+--     single against the edges and back to back between, each faced by a forklift aisle; walled, with six dock doors, two emergency exits, a walled quarantine room, an office, a forklift
+--     charging bay, and receiving, quarantine, overflow, staging and dispatch areas;
 --   * five printable products (paper cup, PET cup, kraft bowl, cake box, paper bag) with their print templates;
 --   * 40 B2B customers - portal account, legal profile, addresses, most with credit - and, on each customer's approved
 --     designs, 2 or 3 SKUs of its own (about 100), each with its carton spec and the customer's price tiers;
@@ -128,22 +129,38 @@ $$ SELECT id FROM identity.app_user WHERE username = $1 $$;
 -- ---------------------------------------------------------------------------------------------
 -- 2. Warehouses BDG and HNI: shelves of bins, and the five kinds of area (06 §4.1)
 -- ---------------------------------------------------------------------------------------------
--- The map: shelf pairs standing back to back, 10 m long and one 1.2 m pallet deep, the top one of a pair picked from
--- the north and the bottom one from the south, with a 3.6 m aisle between pairs and 3 m cross aisles between columns.
--- BDG has three columns, HNI two; eight rows each, zone A the top four, zone B the bottom four. The service areas
--- stand east of the shelves, by the dock doors in the east wall: receiving at the top, dispatch at the bottom.
-CREATE TEMP TABLE s_wh (prefix TEXT PRIMARY KEY, name TEXT, address TEXT, cols INTEGER, shelves INTEGER,
-                        area_x NUMERIC, map_w NUMERIC, manager TEXT, staff1 TEXT, staff2 TEXT) ON COMMIT DROP;
+-- The map, as a pallet warehouse is laid out (06 §4.1), in two blocks of racking 1.2 m deep split by a 4 m cross aisle,
+-- a 3 m walkway along the west wall:
+--   * the west block runs east-west (rotation 0): a single row against the north wall and one against the south wall,
+--     and between them rows standing back to back in pairs, every row faced by a 3.6 m forklift aisle - row, aisle,
+--     pair, aisle, ..., aisle, row - each row a run of 10 m shelves 0.2 m apart (the upright frames). Zone A is the
+--     north row and the pairs of the north half, zone B the rest: the zones part along an aisle, never across a pair;
+--   * the east block, by the docks, runs north-south (rotation 90, a quarter turn clockwise, so a shelf's own north
+--     face looks east on the map): a single column, back-to-back pairs, a single column, again each faced by a 3.6 m
+--     aisle, and each column cut by a 4 m cross aisle. Zone C, the fast movers.
+-- East of the racking a 6 m main aisle, then the service column by the dock doors in the east wall: receiving at the
+-- top, the quarantine room and the overflow area, staging, dispatch at the bottom, the forklift charging bay and the
+-- office in the south-east corner. Every shelf has four levels of four 2.4 x 1.2 m pallet bins. BDG: 16 rows of 3 and
+-- 10 columns of 4 (88 shelves); HNI: 12 rows of 2 and 6 columns of 3 (42).
+CREATE TEMP TABLE s_wh (prefix TEXT PRIMARY KEY, name TEXT, address TEXT, blocks INTEGER, per_block INTEGER,
+                        pairs INTEGER, col_pairs INTEGER, per_col INTEGER, col_y NUMERIC, rows INTEGER, shelves INTEGER, rack_end NUMERIC, area_x NUMERIC, map_w NUMERIC,
+                        map_h NUMERIC, manager TEXT, staff1 TEXT, staff2 TEXT) ON COMMIT DROP;
 INSERT INTO s_wh
-SELECT prefix, name, address, cols, cols * 8, cols * 13 + 7, cols * 13 + 25, manager, staff1, staff2
-  FROM (VALUES ('BDG', 'Kho Bình Dương', 'Số 8 Đường số 6, KCN Sóng Thần 1, Phường Dĩ An, TP. Hồ Chí Minh', 3,
-                'quanly.bd', 'kho.bd1', 'kho.bd2'),
-               ('HNI', 'Kho Hà Nội', 'Lô CN3, KCN Quang Minh, Xã Quang Minh, TP. Hà Nội', 2, 'quanly.hn', 'kho.hn1',
-                'kho.hn2')) AS w (prefix, name, address, cols, manager, staff1, staff2);
+SELECT prefix, name, address, blocks, per_block, pairs, col_pairs, per_col, col_y, pairs * 2 + 2,
+       (pairs * 2 + 2) * per_block + (col_pairs * 2 + 2) * per_col,
+       3 + blocks * per_block * 10.2 + (blocks - 1) * 4 - 0.2,
+       3 + blocks * per_block * 10.2 + (blocks - 1) * 4 - 0.2 + 6,
+       3 + blocks * per_block * 10.2 + (blocks - 1) * 4 - 0.2 + 6 + 20,
+       10 + pairs * 6, manager, staff1, staff2
+  FROM (VALUES ('BDG', 'Kho Bình Dương', 'Số 8 Đường số 6, KCN Sóng Thần 1, Phường Dĩ An, TP. Hồ Chí Minh', 2, 3, 7, 4,
+                4, 4, 'quanly.bd', 'kho.bd1', 'kho.bd2'),
+               ('HNI', 'Kho Hà Nội', 'Lô CN3, KCN Quang Minh, Xã Quang Minh, TP. Hà Nội', 2, 2, 5, 2, 3, 3, 'quanly.hn',
+                'kho.hn1', 'kho.hn2'))
+       AS w (prefix, name, address, blocks, per_block, pairs, col_pairs, per_col, col_y, manager, staff1, staff2);
 
 INSERT INTO warehouse.warehouse (id, name, status, prefix, address, return_address, map_unit, map_width, map_height,
                                  version, created_at, created_by)
-SELECT pg_temp.sid('wh:' || prefix), name, 'ACTIVE', prefix, address, address, 'M', map_w, 40, 0,
+SELECT pg_temp.sid('wh:' || prefix), name, 'ACTIVE', prefix, address, address, 'M', map_w, map_h, 0,
        pg_temp.at(230, '08:00'), 'seed'
   FROM s_wh;
 
@@ -155,35 +172,88 @@ SELECT pg_temp.sid('user-warehouse:' || username), pg_temp.sid('user:' || userna
 INSERT INTO warehouse.zone (id, warehouse_id, name, color, version, created_at, created_by)
 SELECT pg_temp.sid('zone:' || w.prefix || ':' || z.code), pg_temp.sid('wh:' || w.prefix), z.name, z.color, 0,
        pg_temp.at(230, '08:10'), 'seed'
-  FROM s_wh w CROSS JOIN (VALUES ('A', 'Khu A - Ly và tô', '#4F81BD'), ('B', 'Khu B - Hộp và túi', '#9BBB59')) AS z (code, name, color);
+  FROM s_wh w CROSS JOIN (VALUES ('A', 'Khu A - Ly và tô', '#4F81BD'), ('B', 'Khu B - Hộp và túi', '#9BBB59'),
+                                 ('C', 'Khu C - Hàng xuất nhanh', '#F79646')) AS z (code, name, color);
 
--- Shelves A01, A02, ... in zone A, then B01, ... in zone B; each three levels of four 2.4 x 1.2 m bins.
+-- West block. Row r (0 = against the north wall) at y: the first row at 2 m, then each pair 6 m on (3.6 m aisle and two
+-- 1.2 m rows); the last row against the south wall. A single row is picked from its aisle, a pair outward from both
+-- sides. Shelves are numbered row by row, west to east, from 01 in each zone: A01, A02, ... then B01, B02, ...
+-- East block, from the cross aisle at xb: column c (0 = the west single) at x - the single, then each pair 6 m on, the
+-- east single 3.6 m past the last pair; each column a run of 10 m shelves from col_y down, a 4 m cross aisle after
+-- every second one. The singles are picked from both sides, a pair outward; on the map east is the shelf's own north.
+-- Numbered column by column, north to south: C01, C02, ...
 CREATE TEMP TABLE s_shelf ON COMMIT DROP AS
-SELECT w.prefix, k, CASE WHEN k <= w.shelves / 2 THEN 'A' ELSE 'B' END AS zone,
-       CASE WHEN k <= w.shelves / 2 THEN 'A' || lpad(k::text, 2, '0')
-            ELSE 'B' || lpad((k - w.shelves / 2)::text, 2, '0') END AS code,
-       4 + ((k - 1) % w.cols) * 13 AS x,
-       4 + ((k - 1) / w.cols / 2) * 6 + ((k - 1) / w.cols % 2) * 1.2 AS y,
-       (k - 1) / w.cols % 2 = 0 AS north
-  FROM s_wh w CROSS JOIN LATERAL generate_series(1, w.shelves) k;
+SELECT w.prefix, 0 AS block, r, j,
+       CASE WHEN r <= w.pairs / 2 * 2 THEN 'A' ELSE 'B' END AS zone,
+       CASE WHEN r <= w.pairs / 2 * 2 THEN 'A' || lpad((r * w.per_block + j + 1)::text, 2, '0')
+            ELSE 'B' || lpad(((r - w.pairs / 2 * 2 - 1) * w.per_block + j + 1)::text, 2, '0') END AS code,
+       3 + j * 10.2 AS x,
+       CASE WHEN r = 0 THEN 2
+            WHEN r = w.rows - 1 THEN 6.8 + w.pairs * 6
+            ELSE 6.8 + ((r - 1) / 2) * 6 + ((r - 1) % 2) * 1.2 END AS y,
+       0 AS rotation,
+       r <> 0 AND (r = w.rows - 1 OR (r - 1) % 2 = 0) AS pick_north, FALSE AS pick_east,
+       r = 0 OR (r <> w.rows - 1 AND (r - 1) % 2 = 1) AS pick_south, FALSE AS pick_west
+  FROM s_wh w
+ CROSS JOIN LATERAL generate_series(0, w.rows - 1) r
+ CROSS JOIN LATERAL generate_series(0, w.per_block - 1) j
+UNION ALL
+SELECT w.prefix, 1, c, j, 'C',
+       'C' || lpad((c * w.per_col + j + 1)::text, 2, '0'),
+       3 + w.per_block * 10.2 - 0.2 + 4
+         + CASE WHEN c = 0 THEN 0
+                WHEN c = w.col_pairs * 2 + 1 THEN w.col_pairs * 6 + 4.8
+                ELSE 4.8 + ((c - 1) / 2) * 6 + ((c - 1) % 2) * 1.2 END,
+       w.col_y + j * 10.2 + (j / 2) * 3.8,
+       90,
+       -- own north = map east, own south = map west
+       c = 0 OR c = w.col_pairs * 2 + 1 OR (c - 1) % 2 = 1, FALSE,
+       c = 0 OR c = w.col_pairs * 2 + 1 OR (c - 1) % 2 = 0, FALSE
+  FROM s_wh w
+ CROSS JOIN LATERAL generate_series(0, w.col_pairs * 2 + 1) c
+ CROSS JOIN LATERAL generate_series(0, w.per_col - 1) j;
+
+ALTER TABLE s_shelf ADD COLUMN k BIGINT;
+UPDATE s_shelf s SET k = o.k
+  FROM (SELECT prefix, code, row_number() OVER (PARTITION BY prefix ORDER BY block, r, j) AS k FROM s_shelf) o
+ WHERE o.prefix = s.prefix AND o.code = s.code;
 
 INSERT INTO warehouse.shelf (id, warehouse_id, zone_id, code, name, x, y, width, length, rotation, is_obstacle,
                              pick_north, pick_east, pick_south, pick_west, status, version, created_at, created_by)
 SELECT pg_temp.sid('shelf:' || prefix || '-' || code), pg_temp.sid('wh:' || prefix),
-       pg_temp.sid('zone:' || prefix || ':' || zone), code, 'Kệ ' || code, x, y, 10, 1.2, 0, TRUE, north, FALSE,
-       NOT north, FALSE, 'ACTIVE', 0, pg_temp.at(230, '08:10'), 'seed'
+       pg_temp.sid('zone:' || prefix || ':' || zone), code, 'Kệ ' || code, x, y, 10, 1.2, rotation, TRUE, pick_north,
+       pick_east, pick_south, pick_west, 'ACTIVE', 0, pg_temp.at(230, '08:10'), 'seed'
   FROM s_shelf;
 
 INSERT INTO warehouse.shelf_level (id, shelf_id, level_index, elevation, usable_height, max_weight, version, created_at,
                                    created_by)
 SELECT pg_temp.sid('level:' || s.prefix || '-' || s.code || '-' || n), pg_temp.sid('shelf:' || s.prefix || '-' || s.code),
        n, (n - 1) * 1.7, 1.5, 2000, 0, pg_temp.at(230, '08:10'), 'seed'
-  FROM s_shelf s CROSS JOIN generate_series(1, 3) n;
+  FROM s_shelf s CROSS JOIN generate_series(1, 4) n;
 
 CREATE TEMP TABLE s_bin ON COMMIT DROP AS
 SELECT s.prefix, s.code AS shelf, n AS lvl, b, s.prefix || '-' || s.code || '-' || n || '-' || b AS code,
        row_number() OVER (PARTITION BY s.prefix ORDER BY s.k, n, b) AS idx
-  FROM s_shelf s CROSS JOIN generate_series(1, 3) n CROSS JOIN unnest(ARRAY['A', 'B', 'C', 'D']) b;
+  FROM s_shelf s CROSS JOIN generate_series(1, 4) n CROSS JOIN unnest(ARRAY['A', 'B', 'C', 'D']) b;
+
+-- The service column, x from the column's west edge (area_x) and y from the north wall; the charging bay holds no
+-- stock (NON_STORAGE, no location).
+CREATE TEMP TABLE s_area ON COMMIT DROP AS
+SELECT w.prefix, a.code, a.type, a.name, w.area_x + a.dx AS x, a.y, a.w, a.l
+  FROM s_wh w
+  JOIN (VALUES ('BDG', 'RCV01', 'RECEIVING', 'Khu nhận hàng', 1, 2, 16, 12),
+               ('BDG', 'QC01', 'QUARANTINE', 'Khu cách ly', 1, 16, 8, 7),
+               ('BDG', 'OVF01', 'OVERFLOW', 'Khu tràn', 10, 16, 7, 7),
+               ('BDG', 'STG01', 'STAGING', 'Khu tập kết', 1, 25, 16, 8),
+               ('BDG', 'DSP01', 'DISPATCH', 'Khu chờ giao', 1, 35, 16, 10),
+               ('BDG', 'CHG01', 'NON_STORAGE', 'Trạm sạc xe nâng', 1, 47.5, 6, 3),
+               ('HNI', 'RCV01', 'RECEIVING', 'Khu nhận hàng', 1, 2, 16, 10),
+               ('HNI', 'QC01', 'QUARANTINE', 'Khu cách ly', 1, 14, 8, 6),
+               ('HNI', 'OVF01', 'OVERFLOW', 'Khu tràn', 10, 14, 7, 6),
+               ('HNI', 'STG01', 'STAGING', 'Khu tập kết', 1, 22, 16, 6),
+               ('HNI', 'DSP01', 'DISPATCH', 'Khu chờ giao', 1, 29, 16, 5),
+               ('HNI', 'CHG01', 'NON_STORAGE', 'Trạm sạc xe nâng', 1, 36, 6, 3))
+       AS a (prefix, code, type, name, dx, y, w, l) ON a.prefix = w.prefix;
 
 -- A location and the bin or area that owns it go in together: tg_storage_location_owned checks it at commit.
 INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, max_weight, is_pickable,
@@ -192,9 +262,9 @@ SELECT pg_temp.sid('location:' || code), pg_temp.sid('wh:' || prefix), 'BIN', co
        pg_temp.at(230, '08:10'), 'seed'
   FROM s_bin
 UNION ALL
-SELECT pg_temp.sid('location:' || w.prefix || '-' || a.code), pg_temp.sid('wh:' || w.prefix), 'AREA',
-       w.prefix || '-' || a.code, NULL, FALSE, FALSE, 'ACTIVE', 0, pg_temp.at(230, '08:10'), 'seed'
-  FROM s_wh w CROSS JOIN (VALUES ('RCV01'), ('QC01'), ('DSP01'), ('STG01'), ('OVF01')) AS a (code);
+SELECT pg_temp.sid('location:' || prefix || '-' || code), pg_temp.sid('wh:' || prefix), 'AREA',
+       prefix || '-' || code, NULL, FALSE, FALSE, 'ACTIVE', 0, pg_temp.at(230, '08:10'), 'seed'
+  FROM s_area WHERE type <> 'NON_STORAGE';
 
 INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type, version, created_at,
                            created_by)
@@ -205,51 +275,76 @@ SELECT pg_temp.sid('bin:' || code), pg_temp.sid('level:' || prefix || '-' || she
 
 INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length, rotation, is_obstacle,
                             status, version, created_at, created_by)
-SELECT pg_temp.sid('area:' || w.prefix || '-' || a.code), pg_temp.sid('wh:' || w.prefix),
-       pg_temp.sid('location:' || w.prefix || '-' || a.code), a.code, a.type, a.name,
-       CASE WHEN a.by_dock THEN w.area_x ELSE 4 END, a.y, a.w, a.l, 0, FALSE, 'ACTIVE', 0,
-       pg_temp.at(230, '08:10'), 'seed'
-  FROM s_wh w
- CROSS JOIN (VALUES ('RCV01', 'RECEIVING', 'Khu nhận hàng', TRUE, 2, 14, 7),
-                    ('QC01', 'QUARANTINE', 'Khu cách ly', TRUE, 12, 8, 6),
-                    ('STG01', 'STAGING', 'Khu tập kết', TRUE, 20, 10, 5),
-                    ('DSP01', 'DISPATCH', 'Khu chờ giao', TRUE, 26, 14, 7),
-                    ('OVF01', 'OVERFLOW', 'Khu tràn', FALSE, 30, 12, 6)) AS a (code, type, name, by_dock, y, w, l);
+SELECT pg_temp.sid('area:' || prefix || '-' || code), pg_temp.sid('wh:' || prefix),
+       CASE WHEN type <> 'NON_STORAGE' THEN pg_temp.sid('location:' || prefix || '-' || code) END, code, type, name,
+       x, y, w, l, 0, type = 'NON_STORAGE', 'ACTIVE', 0, pg_temp.at(230, '08:10'), 'seed'
+  FROM s_area;
 
--- Walls and doors (06 §4.1): the outer walls, with two receiving and two dispatch dock doors in the east wall (the
--- second dispatch dock shut) and an emergency exit in the west wall; the quarantine area walled in as a room with a
--- shut door; the warehouse office in the south-east corner. W is the map's width, Q the quarantine room's west edge.
-INSERT INTO warehouse.boundary (id, warehouse_id, type, start_x, start_y, end_x, end_y, is_passable, operational_status,
-                                version, created_at, created_by)
-SELECT pg_temp.sid('boundary:' || w.prefix || ':' || b.key), pg_temp.sid('wh:' || w.prefix), b.type,
-       b.sx, b.sy, b.ex, b.ey, b.passable, b.status, 0, pg_temp.at(230, '08:10'), 'seed'
+-- Walls and doors (06 §4.1). Each outer wall is drawn around its doors: three receiving dock doors by the receiving
+-- area and three dispatch dock doors by the dispatch area in the east wall (the third dispatch dock shut), an
+-- emergency exit in the west wall and one in the north wall. The quarantine area is walled in as a room with a shut
+-- door onto the main aisle; the office in the south-east corner has an open door.
+CREATE TEMP TABLE s_door ON COMMIT DROP AS
+SELECT w.prefix, d.key, d.side, d.a, d.b, d.passable, d.status
   FROM s_wh w
  CROSS JOIN LATERAL (VALUES
-        ('wall-north',       'WALL', 0, 0, w.map_w, 0, FALSE, NULL),
-        ('wall-south',       'WALL', 0, 40, w.map_w, 40, FALSE, NULL),
-        ('wall-west-1',      'WALL', 0, 0, 0, 18, FALSE, NULL),
-        ('door-exit',        'DOOR', 0, 18, 0, 19.5, FALSE, 'CLOSED'),
-        ('wall-west-2',      'WALL', 0, 19.5, 0, 40, FALSE, NULL),
-        ('wall-east-1',      'WALL', w.map_w, 0, w.map_w, 3, FALSE, NULL),
-        ('door-receiving-1', 'DOOR', w.map_w, 3, w.map_w, 6, TRUE, 'OPEN'),
-        ('wall-east-2',      'WALL', w.map_w, 6, w.map_w, 7, FALSE, NULL),
-        ('door-receiving-2', 'DOOR', w.map_w, 7, w.map_w, 10, TRUE, 'OPEN'),
-        ('wall-east-3',      'WALL', w.map_w, 10, w.map_w, 27, FALSE, NULL),
-        ('door-dispatch-1',  'DOOR', w.map_w, 27, w.map_w, 30, TRUE, 'OPEN'),
-        ('wall-east-4',      'WALL', w.map_w, 30, w.map_w, 31, FALSE, NULL),
-        ('door-dispatch-2',  'DOOR', w.map_w, 31, w.map_w, 34, TRUE, 'CLOSED'),
-        ('wall-east-5',      'WALL', w.map_w, 34, w.map_w, 40, FALSE, NULL),
-        ('wall-qc-north',    'WALL', w.area_x, 12, w.area_x + 8, 12, FALSE, NULL),
-        ('wall-qc-east',     'WALL', w.area_x + 8, 12, w.area_x + 8, 18, FALSE, NULL),
-        ('wall-qc-south',    'WALL', w.area_x, 18, w.area_x + 8, 18, FALSE, NULL),
-        ('wall-qc-west-1',   'WALL', w.area_x, 12, w.area_x, 14, FALSE, NULL),
-        ('door-qc',          'DOOR', w.area_x, 14, w.area_x, 16, TRUE, 'CLOSED'),
-        ('wall-qc-west-2',   'WALL', w.area_x, 16, w.area_x, 18, FALSE, NULL),
-        ('wall-office-north','WALL', w.map_w - 12, 35, w.map_w, 35, FALSE, NULL),
-        ('wall-office-west-1','WALL', w.map_w - 12, 35, w.map_w - 12, 36.5, FALSE, NULL),
-        ('door-office',      'DOOR', w.map_w - 12, 36.5, w.map_w - 12, 38, TRUE, 'OPEN'),
-        ('wall-office-west-2','WALL', w.map_w - 12, 38, w.map_w - 12, 40, FALSE, NULL)
-     ) AS b (key, type, sx, sy, ex, ey, passable, status);
+        ('door-receiving-1', 'E', 3,                5.5,              TRUE,  'OPEN'),
+        ('door-receiving-2', 'E', 6.5,              9,                TRUE,  'OPEN'),
+        ('door-receiving-3', 'E', 10,               12.5,             TRUE,  'OPEN'),
+        ('door-dispatch-1',  'E', w.map_h - 16.5,   w.map_h - 14,     TRUE,  'OPEN'),
+        ('door-dispatch-2',  'E', w.map_h - 13,     w.map_h - 10.5,   TRUE,  'OPEN'),
+        ('door-dispatch-3',  'E', w.map_h - 9.5,    w.map_h - 7,      TRUE,  'CLOSED'),
+        ('door-exit-west',   'W', w.map_h / 2 - 0.75, w.map_h / 2 + 0.75, FALSE, 'CLOSED'),
+        ('door-exit-north',  'N', 20,               21.5,             FALSE, 'CLOSED')
+     ) AS d (key, side, a, b, passable, status);
+
+INSERT INTO warehouse.boundary (id, warehouse_id, type, start_x, start_y, end_x, end_y, is_passable, operational_status,
+                                version, created_at, created_by)
+-- the outer walls, each side cut at its doors
+SELECT pg_temp.sid('boundary:' || g.prefix || ':wall-' || g.side || '-' || g.n), pg_temp.sid('wh:' || g.prefix), 'WALL',
+       CASE g.side WHEN 'N' THEN g.a WHEN 'S' THEN g.a WHEN 'W' THEN 0 ELSE w.map_w END,
+       CASE g.side WHEN 'N' THEN 0 WHEN 'S' THEN w.map_h ELSE g.a END,
+       CASE g.side WHEN 'N' THEN g.b WHEN 'S' THEN g.b WHEN 'W' THEN 0 ELSE w.map_w END,
+       CASE g.side WHEN 'N' THEN 0 WHEN 'S' THEN w.map_h ELSE g.b END,
+       FALSE, NULL, 0, pg_temp.at(230, '08:10'), 'seed'
+  FROM (SELECT x.prefix, x.side, x.n, x.a, x.b
+          FROM (SELECT c.prefix, c.side, row_number() OVER (PARTITION BY c.prefix, c.side ORDER BY c.a) AS n,
+                       c.a, lead(c.d, 1, c.len) OVER (PARTITION BY c.prefix, c.side ORDER BY c.a) AS b
+                  FROM (SELECT w.prefix, s.side, CASE WHEN s.side IN ('N', 'S') THEN w.map_w ELSE w.map_h END AS len,
+                               0::numeric AS a, NULL::numeric AS d
+                          FROM s_wh w CROSS JOIN (VALUES ('N'), ('S'), ('E'), ('W')) AS s (side)
+                        UNION ALL
+                        SELECT d.prefix, d.side, NULL, d.b, d.a FROM s_door d) c) x
+         WHERE x.b > x.a) g
+  JOIN s_wh w ON w.prefix = g.prefix
+UNION ALL
+-- the doors in them
+SELECT pg_temp.sid('boundary:' || d.prefix || ':' || d.key), pg_temp.sid('wh:' || d.prefix), 'DOOR',
+       CASE d.side WHEN 'N' THEN d.a WHEN 'S' THEN d.a WHEN 'W' THEN 0 ELSE w.map_w END,
+       CASE d.side WHEN 'N' THEN 0 WHEN 'S' THEN w.map_h ELSE d.a END,
+       CASE d.side WHEN 'N' THEN d.b WHEN 'S' THEN d.b WHEN 'W' THEN 0 ELSE w.map_w END,
+       CASE d.side WHEN 'N' THEN 0 WHEN 'S' THEN w.map_h ELSE d.b END,
+       d.passable, d.status, 0, pg_temp.at(230, '08:10'), 'seed'
+  FROM s_door d JOIN s_wh w ON w.prefix = d.prefix
+UNION ALL
+-- the quarantine room around QC01 (door in its west wall) and the office (north and west walls, door in the west one)
+SELECT pg_temp.sid('boundary:' || q.prefix || ':' || b.key), pg_temp.sid('wh:' || q.prefix), b.type,
+       b.sx, b.sy, b.ex, b.ey, b.passable, b.status, 0, pg_temp.at(230, '08:10'), 'seed'
+  FROM s_area q
+  JOIN s_wh w ON w.prefix = q.prefix
+ CROSS JOIN LATERAL (VALUES
+        ('wall-qc-north',     'WALL', q.x, q.y, q.x + q.w, q.y, FALSE, NULL),
+        ('wall-qc-east',      'WALL', q.x + q.w, q.y, q.x + q.w, q.y + q.l, FALSE, NULL),
+        ('wall-qc-south',     'WALL', q.x, q.y + q.l, q.x + q.w, q.y + q.l, FALSE, NULL),
+        ('wall-qc-west-1',    'WALL', q.x, q.y, q.x, q.y + q.l / 2 - 1, FALSE, NULL),
+        ('door-qc',           'DOOR', q.x, q.y + q.l / 2 - 1, q.x, q.y + q.l / 2 + 1, TRUE, 'CLOSED'),
+        ('wall-qc-west-2',    'WALL', q.x, q.y + q.l / 2 + 1, q.x, q.y + q.l, FALSE, NULL),
+        ('wall-office-north', 'WALL', w.map_w - 12, w.map_h - 5, w.map_w, w.map_h - 5, FALSE, NULL),
+        ('wall-office-west-1','WALL', w.map_w - 12, w.map_h - 5, w.map_w - 12, w.map_h - 3.5, FALSE, NULL),
+        ('door-office',       'DOOR', w.map_w - 12, w.map_h - 3.5, w.map_w - 12, w.map_h - 2, TRUE, 'OPEN'),
+        ('wall-office-west-2','WALL', w.map_w - 12, w.map_h - 2, w.map_w - 12, w.map_h, FALSE, NULL)
+     ) AS b (key, type, sx, sy, ex, ey, passable, status)
+ WHERE q.code = 'QC01';
 
 -- ---------------------------------------------------------------------------------------------
 -- 3. The five printable products: category, blank variant, approved image, print template (01 §4, 12 §4)

@@ -6,8 +6,9 @@ frontend team and the supervisor see every screen with real-looking figures. It 
 holds users, warehouses or customers.
 
 What it holds and what it leaves out is in the file's header. In short: the team's staff accounts, warehouses BDG and
-HNI drawn on the map (walls, dock doors, a walled quarantine room, an office, 24 and 16 shelves of bins in back-to-back
-pairs), 5 printable products, 40 customers with about 100 SKUs of their own, 6 producers, 3 truck carriers, and 300
+HNI drawn on the map as pallet warehouses (88 and 42 four-level shelves: an east-west block and a north-south block by
+the docks, single against the edges and back to back between, each faced by a forklift aisle; walls, six dock doors, a walled quarantine room, an office, a charging
+bay), 5 printable products, 40 customers with about 100 SKUs of their own, 6 producers, 3 truck carriers, and 300
 quotes. 271 of those became orders, spread over every stage from draft to delivered (186 delivered). Since
 2026-11-24 it also fills every other table a screen reads: e-invoices, returns, delivery outcomes, cycle counts and
 adjustments, carrier bookings, design studio, product attributes, chat, notifications and the audit log (193 of 208
