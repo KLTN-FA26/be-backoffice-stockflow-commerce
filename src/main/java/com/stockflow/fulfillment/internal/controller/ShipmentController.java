@@ -106,21 +106,21 @@ class ShipmentController {
 
     @PostMapping("/{shipmentId}/delivery-outcome")
     @Operation(summary = "Record what the carrier reported: DELIVERED, DELIVERY_FAILED (with failureReason; OTHER needs "
-            + "a note) or RETURNED; the order follows: a delivery makes the batch's installments after delivery due, "
-            + "a RETURNED shipment puts the order ON_HOLD (DELIVERY_FAILED) until Sales decide to deliver again or "
-            + "cancel what was not delivered. Nothing is billed here. fulfillment-delivery-outcomes:UPDATE; "
-            + "DELIVERED / DELIVERY_FAILED also :APPROVE. DELIVERED takes an optional deliveredAt (ISO-8601, the time "
-            + "the carrier delivered; default now): it is the order's delivery time and dates the draft invoice; "
-            + "422 SHIPMENT_DELIVERY_TIME_IN_FUTURE / SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER, 400 VALIDATION_FAILED "
-            + "with another outcome. 409 SHIPMENT_STATE_CONFLICT")
+            + "a note) or RETURNED; the order follows. A delivery makes the batch's installments after delivery due. "
+            + "RETURNED (the goods are back at the warehouse) is final for the shipment: its return receipt is opened, "
+            + "and the shipment's money - its own batch's installments first, the surplus to refund - is settled when "
+            + "the warehouse confirms that receipt (WF-05 Q-2, Q-7), not here. Nothing is billed here. "
+            + "fulfillment-delivery-outcomes:UPDATE and :APPROVE for every outcome, RETURNED included (403 FORBIDDEN "
+            + "without APPROVE). DELIVERED takes an optional deliveredAt (ISO-8601, the time the carrier delivered; "
+            + "default now): it is the order's delivery time and dates the draft invoice; 422 "
+            + "SHIPMENT_DELIVERY_TIME_IN_FUTURE / SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER / "
+            + "SHIPMENT_DELIVERY_TIME_BEFORE_FAILURE, 400 VALIDATION_FAILED with another outcome. 409 "
+            + "SHIPMENT_STATE_CONFLICT")
     @RequiresPermission(resource = FulfillmentResources.DELIVERY_OUTCOMES, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "shipment", resourceId = "#shipmentId")
     public ApiResponse<ShipmentResponse> recordOutcome(@PathVariable UUID shipmentId,
             @Valid @RequestBody DeliveryOutcomeRequest request, @AuthenticatedUser CurrentUser actor) {
-        // 09 BR-02: delivered / not delivered take APPROVE (the warehouse manager's, 17 BR-27); the grant says who.
-        if (!"RETURNED".equals(request.outcome())) {
-            actor.require(FulfillmentResources.DELIVERY_OUTCOMES, Action.APPROVE);
-        }
+        // 09 BR-02, WF-05 Q-7: every outcome takes APPROVE as well - required by the service, for every caller.
         return ApiResponse.ok(mapper.toResponse(shipments.recordOutcome(shipmentId, new Shipments.Outcome(
                 request.outcome(), request.failureReason(), request.note(), request.deliveredAt()), actor)));
     }

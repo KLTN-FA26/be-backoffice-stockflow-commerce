@@ -138,6 +138,13 @@ public final class OrderResources {
     public static final String RMAS = "sales-rmas";
 
     /**
+     * WF-05 Q-11 (audit round 2, M4): recording goods kept in custody for the customer on a return - the one write the
+     * warehouse makes on a return request ("kho ghi biên nhận giữ hộ trên yêu cầu trả", docs 03 §4.2 step 10). CREATE
+     * only; WAREHOUSE_STAFF, WAREHOUSE_MANAGER and SALES_STAFF (V20261223000330).
+     */
+    public static final String RMA_CUSTODY = "sales-rma-custody";
+
+    /**
      * The refund of goods that came back: UPDATE proposes (Sales), APPROVE approves it - four eyes, the
      * Accountant (V20261101020000). Counting a returned parcel in ({@code sales-rma-receipts}) and QC's verdict
      * ({@code sales-rma-inspections}) went with team plan 4D-3: goods come back on a return receipt
@@ -151,6 +158,14 @@ public final class OrderResources {
      * named for what it shows.
      */
     public static final String WAREHOUSE_CAPACITY = "warehouse-capacity";
+
+    /**
+     * WF-05 decision Q-12 (BE-17): closing the part of an order a shipment the carrier lost was to deliver - its units
+     * closed and their money settled as a carrier's return is (Q-2), on the carrier's written confirmation of the loss.
+     * APPROVE, an approval-level grant of its own (as recording a shipment brought back takes
+     * {@code fulfillment-delivery-outcomes:APPROVE}, Q-7): Sales (V20261216000050).
+     */
+    public static final String LOST_SHIPMENT_CLOSURES = "sales-lost-shipment-closures";
 
     private OrderResources() {
     }

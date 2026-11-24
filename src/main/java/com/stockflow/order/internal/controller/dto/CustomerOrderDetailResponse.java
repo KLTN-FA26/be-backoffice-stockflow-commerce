@@ -27,8 +27,10 @@ public record CustomerOrderDetailResponse(
 
         @Schema(example = "UNDER_REVIEW", description = "What the customer reads: AWAITING_CONTRACT, AWAITING_PAYMENT, "
                 + "UNDER_REVIEW, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION (legacy), PREPARING, SHIPPING, DELIVERED, "
-                + "RETURN_REQUESTED (a return is being decided; the goods are still the customer's), CANCELLED or "
-                + "RETURNED (goods came back, or the order was settled by a return). Parse tolerantly: more may come")
+                + "RETURN_REQUESTED (a return is being decided; the goods are still the customer's), CANCELLED, "
+                + "RETURNED (the order ended in a return and nothing of it stayed with the customer) or "
+                + "PARTIALLY_RETURNED (it ended in a return but the customer kept delivered goods). Parse tolerantly: "
+                + "more may come")
         String statusGroup,
 
         @Schema(example = "AWAITING_CREDIT_APPROVAL", description = "Set only while the order is ON_HOLD: "
@@ -50,8 +52,9 @@ public record CustomerOrderDetailResponse(
         List<TimelineEntry> timeline,
 
         @Schema(example = "NOT_SHIPPED", description = "NOT_SHIPPED, IN_TRANSIT, PARTIALLY_DELIVERED, DELIVERY_FAILED, "
-                + "DELIVERED or RETURNED - only what staff have recorded; nothing is tracked after handover to the "
-                + "carrier. Parse tolerantly: more may come")
+                + "DELIVERED, RETURNED or PARTIALLY_RETURNED (ended in a return, the customer kept delivered goods) - only "
+                + "what staff have recorded; nothing is tracked after handover to the carrier. Parse tolerantly: more may "
+                + "come")
         String deliveryState,
 
         @Schema(description = "What the customer may do now (G3-2): the portal shows these buttons instead of keeping "

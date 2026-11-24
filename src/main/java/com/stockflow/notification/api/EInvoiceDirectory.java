@@ -17,10 +17,19 @@ import java.util.UUID;
 public interface EInvoiceDirectory {
 
     /**
-     * The invoice as the message to its buyer words it; empty when there is no such invoice or it was never issued.
-     * One read of the invoice, no file.
+     * The invoice as the message to its buyer words it, addressed to the invoice e-mail the invoice names - or, issued
+     * without one, to the customer's invoice e-mail as it is now (audit r2 M-1: one recorded since is used); empty when
+     * there is no such invoice, it was never issued, or it is not sent to the buyer (its signature does not hold). One
+     * read of the invoice, no file.
      */
     Optional<EInvoiceMail> mail(UUID einvoiceId);
+
+    /**
+     * As {@link #mail}, for the invoice sent again at staff's request ({@code EInvoiceMailRequested}): addressed to the
+     * customer's invoice e-mail as it is now - the one Sales just recorded or corrected - and only if it has none, to
+     * the one the invoice names.
+     */
+    Optional<EInvoiceMail> mailAgain(UUID einvoiceId);
 
     /**
      * The invoice's PDF and XML as stored when it was issued, in that order - the same bytes on every call, which a

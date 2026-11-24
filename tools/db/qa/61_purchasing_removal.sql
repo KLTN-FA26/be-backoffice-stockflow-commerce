@@ -118,9 +118,11 @@ SELECT pg_temp.expect_true('T10 no foreign key points at a dropped table, and th
           AND column_name IN ('purchase_order_id', 'purchase_order_number', 'supplier_id', 'supplier_name')) = 0 $c$);
 
 \echo '--- permissions'
-SELECT pg_temp.expect_true('P1 only the four goods-receipt permissions are left under procurement-', $c$
+-- WF-05 Q-18 (V20261216000050) added procurement-return-receipt-approvals:APPROVE: a return receipt's, not purchasing's.
+-- The list stays exact, so any purchasing permission coming back still fails here.
+SELECT pg_temp.expect_true('P1 only the four goods-receipt permissions and the return-receipt approval are left under procurement-', $c$
     (SELECT string_agg(code, ',' ORDER BY code) FROM identity.permission WHERE code LIKE 'procurement-%')
-    = 'procurement-goods-receipts:CREATE,procurement-goods-receipts:READ,procurement-goods-receipts:UPDATE,procurement-goods-receipts:VIEW_PAGE' $c$);
+    = 'procurement-goods-receipts:CREATE,procurement-goods-receipts:READ,procurement-goods-receipts:UPDATE,procurement-goods-receipts:VIEW_PAGE,procurement-return-receipt-approvals:APPROVE' $c$);
 SELECT pg_temp.expect_true('P2 no role holds a grant of a permission that is gone', $c$
     NOT EXISTS (SELECT 1 FROM identity.role_permission rp
                  WHERE NOT EXISTS (SELECT 1 FROM identity.permission p WHERE p.id = rp.permission_id)) $c$);

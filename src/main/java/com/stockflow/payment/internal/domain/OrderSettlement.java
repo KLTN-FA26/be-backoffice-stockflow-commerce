@@ -24,9 +24,13 @@ import java.util.UUID;
  * installments still owe - those tied to the delivery batches the closure closed first, then the latest, after delivery
  * before before delivery before on signing (§4.6 step 19) - and what cannot come off, because it was paid already, is
  * surplus. Either way the surplus pays the fee first (BR-15); the rest is refundable; what it did not cover is owed on a
- * cancellation fee item, due from that day. <b>Return</b> ({@link #returned}, team plan 4D-3): what the goods refunded
- * were worth comes off what the customer still owes for goods they have - not what a batch still to come owes for its
- * own - and the rest is refundable, with no fee.</p>
+ * cancellation fee item, due from that day. A closure also carries onto that fee item what the installments before
+ * delivery of the batches it closed whole still owe - their share of the fee lines - since their milestone, the batch's
+ * release, never comes (audit r3 LM-3, {@link #carriedToFee}). <b>Return</b> ({@link #returned}, team plan 4D-3): what
+ * the goods refunded were worth comes off what the customer still owes for goods they have - not what a batch still to
+ * come owes for its own - and the rest is refundable, with no fee. <b>Shipment returned</b> ({@link #shipmentReturned}, WF-05 Q-2): the
+ * units of a shipment the carrier brought back, or lost, settled by the return's rule - the shipment's own batch pays
+ * first, then the older debt, then the refund, the batches still to come last - with no fee.</p>
  *
  * <p>The arithmetic is stated a second time in {@code ck_order_settlement_*}: a settlement row that does not add up
  * cannot be written.</p>
@@ -37,9 +41,11 @@ public final class OrderSettlement {
 
     /**
      * 17 §4.8: the two ways money is settled before an order ends; and, after it was delivered, goods that came back on
-     * a return its Sales and a second person decided to refund (17 §4.10 step 40, 15 §4.5 step 15 - team plan 4D-3).
+     * a return its Sales and a second person decided to refund (17 §4.10 step 40, 15 §4.5 step 15 - team plan 4D-3);
+     * and the units of a shipment the carrier brought back or lost, settled once the warehouse confirmed the goods back
+     * or Sales closed the lost parcel (WF-05 Q-2, Q-7, Q-12).
      */
-    public enum Kind { ORDER_CANCELLED, REMAINDER_CLOSED, GOODS_RETURNED }
+    public enum Kind { ORDER_CANCELLED, REMAINDER_CLOSED, GOODS_RETURNED, SHIPMENT_RETURNED }
 
     /**
      * The fee kept (17 §4.8 step 30): a share of the money collected, or an amount agreed with the customer with its
@@ -127,13 +133,55 @@ public final class OrderSettlement {
     private final UUID settledBy;
     private final Instant settledAt;
     private final List<Reduction> reductions;
+    private final UUID shipmentId;
+    private final BigDecimal shippingFeeWaived;
+    private final BigDecimal carriedToFee;
 
-    /** Restores one as stored (and is how the factories below make one). */
+    /** Restores one that is not a shipment's: no shipment named, no shipping fee waived. */
     public OrderSettlement(UUID id, UUID orderId, UUID contractId, UUID customerId, String orderNumber,
                            String contractNumber, Kind kind, UUID sourceId, String currency, BigDecimal collected,
                            BigDecimal closed, BigDecimal reduced, BigDecimal surplus, BigDecimal fee, Fee feeTerms,
                            BigDecimal feeCovered, BigDecimal refundable, BigDecimal feeOwed, UUID feeItemId,
                            UUID settledBy, Instant settledAt, List<Reduction> reductions) {
+        this(id, orderId, contractId, customerId, orderNumber, contractNumber, kind, sourceId, currency, collected,
+                closed, reduced, surplus, fee, feeTerms, feeCovered, refundable, feeOwed, feeItemId, settledBy,
+                settledAt, reductions, null, BigDecimal.ZERO);
+    }
+
+    /**
+     * Restores one as stored (and is how the factories below make one).
+     *
+     * @param shipmentId        the shipment a {@link Kind#SHIPMENT_RETURNED} settlement closed; null for every other kind
+     *                          ({@code ck_order_settlement_shipment} says it again)
+     * @param shippingFeeWaived the part of {@code closed} that is the order's shipping fee waived (WF-05 Q-19): a
+     *                          {@link Kind#SHIPMENT_RETURNED} settlement's share, or what a {@link Kind#REMAINDER_CLOSED}
+     *                          one waived when it left the order with nothing delivered; zero for the other kinds
+     */
+    public OrderSettlement(UUID id, UUID orderId, UUID contractId, UUID customerId, String orderNumber,
+                           String contractNumber, Kind kind, UUID sourceId, String currency, BigDecimal collected,
+                           BigDecimal closed, BigDecimal reduced, BigDecimal surplus, BigDecimal fee, Fee feeTerms,
+                           BigDecimal feeCovered, BigDecimal refundable, BigDecimal feeOwed, UUID feeItemId,
+                           UUID settledBy, Instant settledAt, List<Reduction> reductions, UUID shipmentId,
+                           BigDecimal shippingFeeWaived) {
+        this(id, orderId, contractId, customerId, orderNumber, contractNumber, kind, sourceId, currency, collected,
+                closed, reduced, surplus, fee, feeTerms, feeCovered, refundable, feeOwed, feeItemId, settledBy,
+                settledAt, reductions, shipmentId, shippingFeeWaived, BigDecimal.ZERO);
+    }
+
+    /**
+     * Restores one as stored, with what a closure of the rest carried onto its fee item.
+     *
+     * @param carriedToFee what a {@link Kind#REMAINDER_CLOSED} settlement moved off the installments before delivery of
+     *                     the batches it closed - what they still owed above the goods closed, their share of the fee
+     *                     lines (audit r3 LM-3) - onto its fee item; part of {@link #reduced}, never of what the goods
+     *                     closed took off. Zero for every other kind ({@code ck_order_settlement_carried})
+     */
+    public OrderSettlement(UUID id, UUID orderId, UUID contractId, UUID customerId, String orderNumber,
+                           String contractNumber, Kind kind, UUID sourceId, String currency, BigDecimal collected,
+                           BigDecimal closed, BigDecimal reduced, BigDecimal surplus, BigDecimal fee, Fee feeTerms,
+                           BigDecimal feeCovered, BigDecimal refundable, BigDecimal feeOwed, UUID feeItemId,
+                           UUID settledBy, Instant settledAt, List<Reduction> reductions, UUID shipmentId,
+                           BigDecimal shippingFeeWaived, BigDecimal carriedToFee) {
         this.id = Objects.requireNonNull(id, "id");
         this.orderId = Objects.requireNonNull(orderId, "orderId");
         this.contractId = Objects.requireNonNull(contractId, "contractId");
@@ -156,6 +204,28 @@ public final class OrderSettlement {
         this.settledBy = settledBy;
         this.settledAt = Objects.requireNonNull(settledAt, "settledAt");
         this.reductions = List.copyOf(reductions);
+        this.shipmentId = shipmentId;
+        this.shippingFeeWaived = shippingFeeWaived == null ? BigDecimal.ZERO : shippingFeeWaived;
+        this.carriedToFee = carriedToFee == null ? BigDecimal.ZERO : carriedToFee;
+        // ck_order_settlement_shipment: a shipment's settlement names its shipment, no other kind does; only it, and a
+        // closure of the rest that left the order with nothing delivered (Q-19 edge), waive a shipping fee, never more
+        // than they closed.
+        if ((kind == Kind.SHIPMENT_RETURNED) != (shipmentId != null)) {
+            throw new IllegalArgumentException("Only a shipment's settlement names a shipment");
+        }
+        if (this.shippingFeeWaived.signum() < 0 || this.shippingFeeWaived.compareTo(closed) > 0
+                || kind != Kind.SHIPMENT_RETURNED && kind != Kind.REMAINDER_CLOSED
+                && this.shippingFeeWaived.signum() != 0) {
+            throw new IllegalArgumentException("Only a shipment's settlement, or a closure of the rest, waives a "
+                    + "shipping fee, within what it closed");
+        }
+        // ck_order_settlement_carried: only a closure of the rest carries, a whole amount, within what it took off.
+        if (this.carriedToFee.signum() < 0 || this.carriedToFee.stripTrailingZeros().scale() > 0
+                || this.carriedToFee.compareTo(reduced) > 0
+                || kind != Kind.REMAINDER_CLOSED && this.carriedToFee.signum() != 0) {
+            throw new IllegalArgumentException("Only a closure of the rest carries what installments owed onto its fee "
+                    + "item, a whole amount within what it took off them");
+        }
     }
 
     /**
@@ -204,11 +274,62 @@ public final class OrderSettlement {
      */
     public static Outcome closeRemainder(List<Installment> ofOrder, UUID closureId, BigDecimal closed, Fee fee, UUID by,
                                          Instant at, LocalDate day, java.util.Set<UUID> handedOverBatches) {
+        return closeRemainder(ofOrder, closureId, closed, fee, by, at, day, handedOverBatches, BigDecimal.ZERO);
+    }
+
+    /**
+     * As {@link #closeRemainder(List, UUID, BigDecimal, Fee, UUID, Instant, LocalDate, java.util.Set)}, waiving
+     * {@code shippingFeeWaived} of the order's shipping fee with the goods ({@link #shippingFeeShare}): WF-05 Q-19 edge,
+     * as the owner decided on 2026-11-23 - the closure that leaves an order whose shipments came back with nothing
+     * delivered waives what they left of the fee, the order being a whole return. It comes off the installments, and is
+     * refunded, as the goods closed do; it is part of {@link #closed} and stated apart beside it. The agreed fee is still
+     * bounded by the goods closed alone: the shipping fee waived is no goods made to the customer's design.
+     *
+     * @param closed            what the goods closed were worth with their VAT; a positive whole amount
+     * @param shippingFeeWaived zero or more, whole
+     */
+    public static Outcome closeRemainder(List<Installment> ofOrder, UUID closureId, BigDecimal closed, Fee fee, UUID by,
+                                         Instant at, LocalDate day, java.util.Set<UUID> handedOverBatches,
+                                         BigDecimal shippingFeeWaived) {
+        return closeRemainder(ofOrder, closureId, closed, fee, by, at, day, handedOverBatches, shippingFeeWaived, null);
+    }
+
+    /**
+     * As {@link #closeRemainder(List, UUID, BigDecimal, Fee, UUID, Instant, LocalDate, java.util.Set, BigDecimal)},
+     * knowing which of the batches with nothing handed over still have goods to hand over after the closure
+     * ({@code deliveringBatches}: labelled cartons the closure keeps, WF4-CLOSE-REST) - so the others are closed whole.
+     *
+     * <p><b>What an installment before delivery of a batch closed whole still owes is carried onto the fee item</b>
+     * (audit r3 LM-3; 15 §4.6 steps 18-19, §5.1). Tied installments share the whole total by batch value, the plate and
+     * shipping fee lines included ({@code ContractTerms.suggestTied}), so a batch's installment before delivery is above
+     * its goods. Closing that batch takes the goods off it (step 19) and leaves its share of the fee lines, which stay
+     * owed (D30, D32) - on an installment whose milestone is the batch's release and whose purpose is to gate its
+     * handover: neither ever comes. It stayed NOT_DUE for good, with no due day ({@code ck_installment_due_date}), never
+     * overdue, outside the exposure and the aged receivables (BR-10 counts after delivery and fee items), and the order,
+     * owing, never completed. It is taken off that installment whole (PAID if it was paid something, else CANCELLED) and
+     * owed on the closure's fee item instead - due from the closure's day, as 15 §5.1 gives every fee item a closure
+     * leaves, and counted where fee items are: the credit check, the receivables, the overdue scan. The customer owes not
+     * a dong more or less; only where and from when it is owed changes.</p>
+     *
+     * <p>Not carried: a batch still delivering (its installment still gates the labelled cartons' handover, BR-08); an
+     * installment tied to no batch, or to a batch that left (it was due before its handover); one after delivery (its
+     * batch closed, it falls due with the whole order, {@code InstallmentService.follow}). Null {@code deliveringBatches}
+     * or {@code handedOverBatches}: not known, nothing is carried, as before.</p>
+     *
+     * @param deliveringBatches the batches with goods still to hand over after this closure; empty for none
+     */
+    public static Outcome closeRemainder(List<Installment> ofOrder, UUID closureId, BigDecimal closed, Fee fee, UUID by,
+                                         Instant at, LocalDate day, java.util.Set<UUID> handedOverBatches,
+                                         BigDecimal shippingFeeWaived, java.util.Set<UUID> deliveringBatches) {
         Installment first = contractRow(ofOrder);
         Objects.requireNonNull(closureId, "closureId");
         Objects.requireNonNull(closed, "closed");
         if (closed.signum() <= 0 || closed.stripTrailingZeros().scale() > 0) {
             throw new IllegalArgumentException("A closure closes goods worth a positive whole amount, not " + closed);
+        }
+        BigDecimal waived = shippingFeeWaived == null ? BigDecimal.ZERO : shippingFeeWaived;
+        if (waived.signum() < 0 || waived.stripTrailingZeros().scale() > 0) {
+            throw new IllegalArgumentException("A shipping fee waived is zero or more, whole, not " + waived);
         }
         Fee terms = fee == null ? Fee.none() : fee;
         if (terms.percent() != null) {
@@ -221,11 +342,42 @@ public final class OrderSettlement {
         BigDecimal collected = collected(ofOrder);
         List<Reduction> reductions = new ArrayList<>();
         List<Installment> changed = new ArrayList<>();
-        BigDecimal left = takeOff(ofOrder.stream().filter(i -> stillToCome(i, handedOverBatches)).toList(), closed, at,
+        BigDecimal value = closed.add(waived);
+        BigDecimal left = takeOff(ofOrder.stream().filter(i -> stillToCome(i, handedOverBatches)).toList(), value, at,
                 reductions, changed);
         left = takeOff(ofOrder, left, at, reductions, changed);
-        return settle(first, ofOrder, Kind.REMAINDER_CLOSED, closureId, collected, closed, reductions, left,
-                terms.on(collected), terms, by, at, day, "Fee for the rest closed", distinct(changed));
+        BigDecimal carried = BigDecimal.ZERO;
+        if (handedOverBatches != null && deliveringBatches != null) {
+            List<Installment> stranded = ofOrder.stream()
+                    .filter(i -> i.milestone() == InstallmentMilestone.BEFORE_DELIVERY
+                            && stillToCome(i, handedOverBatches) && !deliveringBatches.contains(i.deliveryBatchId())
+                            && i.status().takesMoney() && i.outstanding().signum() > 0)
+                    .sorted(Comparator.comparing(Installment::seq)).toList();
+            for (Installment installment : stranded) {
+                BigDecimal owes = installment.outstanding();
+                installment.reduce(owes, at);
+                reductions.add(new Reduction(installment.id(), owes));
+                changed.add(installment);
+                carried = carried.add(owes);
+            }
+        }
+        BigDecimal agreed = terms.on(collected);
+        // What the fee item is for, as the installment lists show it beside its milestone.
+        String name = carried.signum() == 0 ? "Fee for the rest closed"
+                : agreed.signum() == 0 ? "Fee lines of the batches closed"
+                : "Fee for the rest closed, with the fee lines of the batches closed";
+        return settle(first, ofOrder, Kind.REMAINDER_CLOSED, closureId, collected, value, merged(reductions), left,
+                agreed, terms, by, at, day, name, distinct(changed), null, waived, carried);
+    }
+
+    /**
+     * One reduction per installment ({@code uk_installment_reduction}): an installment a closure lowered for the goods
+     * closed and then carried onto its fee item is taken off once, by the sum, in the order first met.
+     */
+    private static List<Reduction> merged(List<Reduction> reductions) {
+        java.util.Map<UUID, BigDecimal> byInstallment = new java.util.LinkedHashMap<>();
+        reductions.forEach(r -> byInstallment.merge(r.installmentId(), r.amount(), BigDecimal::add));
+        return byInstallment.entrySet().stream().map(e -> new Reduction(e.getKey(), e.getValue())).toList();
     }
 
     /**
@@ -287,16 +439,141 @@ public final class OrderSettlement {
     public static Outcome returned(List<Installment> ofOrder, UUID returnRequestId, UUID deliveryBatchId,
                                    BigDecimal returned, java.util.Set<UUID> handedOverBatches,
                                    BigDecimal refundableBefore, UUID by, Instant at, LocalDate day) {
-        Installment first = contractRow(ofOrder);
         Objects.requireNonNull(returnRequestId, "returnRequestId");
         Objects.requireNonNull(returned, "returned");
         if (returned.signum() <= 0 || returned.stripTrailingZeros().scale() > 0) {
             throw new IllegalArgumentException("A return refunds goods worth a positive whole amount, not " + returned);
         }
+        return givenBack(ofOrder, Kind.GOODS_RETURNED, returnRequestId, deliveryBatchId, returned, handedOverBatches,
+                refundableBefore, by, at, day, null, BigDecimal.ZERO);
+    }
+
+    /**
+     * The units of a shipment the carrier brought back - settled when the warehouse confirmed their return receipt
+     * (WF-05 Q-7) - or lost - settled when Sales closed the lost parcel (Q-12) - were closed: settled by the return's
+     * rule (Q-2; {@link #returned(List, UUID, UUID, BigDecimal, java.util.Set, BigDecimal, UUID, Instant, LocalDate)}
+     * steps 1-4) with no fee. Settled as a closure of the rest before ({@link #closeRemainder}), the value came off the
+     * latest batch first: a carrier bringing back batch 1 lowered batches 2 and 3 - their installment before delivery,
+     * the gate of their handover, included - and left batch 1 owing for goods that came back (audit M-2).
+     *
+     * <p>{@code shippingFeeWaived} is the part of the order's shipping fee given up with it ({@link #shippingFeeShare};
+     * Q-19: the failed trip's shipping is not charged, the plate fee is kept): it comes off the installments, and is
+     * refunded, as the goods do; it is part of {@link #closed} and stated apart beside it.</p>
+     *
+     * @param closureId         the closure's id: one settlement per closure ({@code uk_order_settlement})
+     * @param shipmentId        the shipment whose units were closed: one settlement per shipment
+     *                          ({@code uk_order_settlement_shipment})
+     * @param deliveryBatchId   the batch the shipment carried: its installments take the value first; null without a
+     *                          schedule
+     * @param goodsValue        what the closed units were worth with their VAT; zero or more
+     * @param shippingFeeWaived zero or more; with the goods, a positive whole amount
+     */
+    public static Outcome shipmentReturned(List<Installment> ofOrder, UUID closureId, UUID shipmentId,
+                                           UUID deliveryBatchId, BigDecimal goodsValue, BigDecimal shippingFeeWaived,
+                                           java.util.Set<UUID> handedOverBatches, BigDecimal refundableBefore, UUID by,
+                                           Instant at, LocalDate day) {
+        Objects.requireNonNull(closureId, "closureId");
+        Objects.requireNonNull(shipmentId, "shipmentId");
+        Objects.requireNonNull(goodsValue, "goodsValue");
+        BigDecimal waived = shippingFeeWaived == null ? BigDecimal.ZERO : shippingFeeWaived;
+        if (goodsValue.signum() < 0 || waived.signum() < 0 || waived.stripTrailingZeros().scale() > 0) {
+            throw new IllegalArgumentException("A shipment's goods, and the fee waived with them in whole units, are "
+                    + "worth zero or more");
+        }
+        BigDecimal closed = goodsValue.add(waived);
+        if (closed.signum() <= 0 || closed.stripTrailingZeros().scale() > 0) {
+            throw new IllegalArgumentException("A shipment's settlement closes a positive whole amount, not " + closed);
+        }
+        return givenBack(ofOrder, Kind.SHIPMENT_RETURNED, closureId, deliveryBatchId, closed, handedOverBatches,
+                refundableBefore, by, at, day, shipmentId, waived);
+    }
+
+    /**
+     * WF-05 Q-19, as the owner decided on 2026-11-23: the part of the order's shipping fee waived by one settlement - a
+     * shipment the carrier brought back or lost ({@code returnedGoods} its goods), or a closure of the rest
+     * ({@code returnedGoods} null).
+     *
+     * <p><b>Something was delivered, or still may be: the share.</b> A shipment brought back waives the fee in
+     * proportion to the goods of the order that never reached the customer this way. One shipment of three equal ones
+     * brought back waives a third of the fee; all three, the whole fee; none, nothing. The share of the goods delivered
+     * is kept, which the trips that delivered them earned; a closure of the rest waives nothing - the closed part
+     * follows the closing rule and the fee lines stay owed (D30, D32).</p>
+     *
+     * <p><b>Nothing delivered: the whole fee</b> (the Q-19 edge, decided by the owner on 2026-11-23). When the
+     * settlement leaves an order with nothing delivered and nothing more to deliver ({@code endsWithNothingDelivered})
+     * after a carrier return - this one, or an earlier one of the order - it waives all that is left of the fee, even
+     * when part of the order was closed before it shipped and so was never "brought back". The order is a whole return,
+     * as Q-6 liquidates its contract. Whichever comes last, the last shipment back or the closure of the rest, takes
+     * what the earlier shipments left: a first shipment brought back while the rest was still to ship waived its share,
+     * the closure that then ends the order waives the remainder, and the waivers add up to the fee, exactly, once.
+     * Without a carrier return (shipments cancelled before they left, say) a closure still waives nothing: no trip
+     * failed. Why the order says whether it ends with nothing delivered rather than payment reading it:
+     * {@link com.stockflow.payment.api.SettleShipmentReturnCommand.ShippingFee}.</p>
+     *
+     * <p><b>Rounding, and where the remainder goes.</b> The fee waived by the order's shipments so far is worked out from
+     * their goods together, rounded to the whole unit half up - the rounding of every other share of money here (the
+     * cancellation fee's share of what was collected, {@code ContractTerms}' installments, {@code FeeAllocation}'s
+     * shipping share on the invoices) - and this shipment waives that less what the earlier settlements waived. So the
+     * rounding never accumulates: the shipments' waivers add up to the rounded share of all of them to the dong, and
+     * the shipment that brings the last of the order's goods back waives exactly what is left of the fee. Never below
+     * zero, never above what is left, so a settlement made after the whole fee was waived waives nothing.</p>
+     *
+     * <p>Measured against the order's goods as signed, not as later closures left them: a whole that shrank with every
+     * closure would make the earlier shipments' shares wrong after the fact. Goods closed in other ways (a rest closed
+     * before it left, a customer's return) count for no share: Q-19 is about the trip that failed.</p>
+     *
+     * @param fee                      the order's shipping fee line with its VAT, whole; zero for none
+     * @param orderGoods               what the order's goods lines are worth with their VAT, as signed; positive when
+     *                                 {@code fee} is and a share is to be worked out
+     * @param endsWithNothingDelivered once this settlement is made, no shipment of the order is delivered and none will be
+     * @param ofOrder                  the order's settlements so far: its earlier shipments' goods and every earlier
+     *                                 waiver are read from them
+     * @param returnedGoods            what this shipment's goods are worth with their VAT; null for a closure of the
+     *                                 rest
+     * @return the fee waived with this settlement, whole, from zero to what the earlier settlements left of the fee
+     */
+    public static BigDecimal shippingFeeShare(BigDecimal fee, BigDecimal orderGoods, boolean endsWithNothingDelivered,
+                                              List<OrderSettlement> ofOrder, BigDecimal returnedGoods) {
+        if (fee == null || fee.signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal goodsBefore = BigDecimal.ZERO;
+        BigDecimal waivedBefore = BigDecimal.ZERO;
+        boolean broughtBackBefore = false;
+        for (OrderSettlement earlier : ofOrder) {
+            waivedBefore = waivedBefore.add(earlier.shippingFeeWaived());
+            if (earlier.kind() == Kind.SHIPMENT_RETURNED) {
+                broughtBackBefore = true;
+                goodsBefore = goodsBefore.add(earlier.closed().subtract(earlier.shippingFeeWaived()));
+            }
+        }
+        BigDecimal whole = fee.setScale(0, RoundingMode.HALF_UP);
+        BigDecimal left = whole.subtract(waivedBefore).max(BigDecimal.ZERO);
+        if (endsWithNothingDelivered && (returnedGoods != null || broughtBackBefore)) {
+            return left;
+        }
+        if (returnedGoods == null) {
+            return BigDecimal.ZERO;
+        }
+        if (orderGoods == null || orderGoods.signum() <= 0) {
+            throw new IllegalArgumentException("A shipping fee is charged for goods worth more than zero");
+        }
+        BigDecimal through = goodsBefore.add(returnedGoods.max(BigDecimal.ZERO));
+        BigDecimal waivedThrough = through.compareTo(orderGoods) >= 0 ? whole
+                : whole.multiply(through).divide(orderGoods, 0, RoundingMode.HALF_UP);
+        return waivedThrough.subtract(waivedBefore).max(BigDecimal.ZERO).min(left);
+    }
+
+    /** The return's four steps, for a customer's return and a shipment the carrier brought back or lost alike. */
+    private static Outcome givenBack(List<Installment> ofOrder, Kind kind, UUID sourceId, UUID deliveryBatchId,
+                                     BigDecimal value, java.util.Set<UUID> handedOverBatches,
+                                     BigDecimal refundableBefore, UUID by, Instant at, LocalDate day, UUID shipmentId,
+                                     BigDecimal shippingFeeWaived) {
+        Installment first = contractRow(ofOrder);
         BigDecimal collected = collected(ofOrder);
         List<Reduction> reductions = new ArrayList<>();
         List<Installment> changed = new ArrayList<>();
-        BigDecimal left = returned;
+        BigDecimal left = value;
         if (deliveryBatchId != null) {
             left = takeOff(ofOrder.stream().filter(i -> deliveryBatchId.equals(i.deliveryBatchId())).toList(), left, at,
                     reductions, changed);
@@ -307,8 +584,8 @@ public final class OrderSettlement {
         BigDecimal refund = handedOverBatches == null ? BigDecimal.ZERO
                 : left.min(collected.subtract(before).max(BigDecimal.ZERO));
         left = takeOff(ofOrder, left.subtract(refund), at, reductions, changed);
-        return settle(first, ofOrder, Kind.GOODS_RETURNED, returnRequestId, collected, returned, reductions,
-                refund.add(left), BigDecimal.ZERO, Fee.none(), by, at, day, "Fee", distinct(changed));
+        return settle(first, ofOrder, kind, sourceId, collected, value, reductions, refund.add(left), BigDecimal.ZERO,
+                Fee.none(), by, at, day, "Fee", distinct(changed), shipmentId, shippingFeeWaived);
     }
 
     /**
@@ -379,24 +656,48 @@ public final class OrderSettlement {
                                   BigDecimal collected, BigDecimal closed, List<Reduction> reductions,
                                   BigDecimal surplus, BigDecimal fee, Fee terms, UUID by, Instant at, LocalDate day,
                                   String feeItemName, List<Installment> changed) {
+        return settle(first, ofOrder, kind, sourceId, collected, closed, reductions, surplus, fee, terms, by, at, day,
+                feeItemName, changed, null, BigDecimal.ZERO);
+    }
+
+    private static Outcome settle(Installment first, List<Installment> ofOrder, Kind kind, UUID sourceId,
+                                  BigDecimal collected, BigDecimal closed, List<Reduction> reductions,
+                                  BigDecimal surplus, BigDecimal fee, Fee terms, UUID by, Instant at, LocalDate day,
+                                  String feeItemName, List<Installment> changed, UUID shipmentId,
+                                  BigDecimal shippingFeeWaived) {
+        return settle(first, ofOrder, kind, sourceId, collected, closed, reductions, surplus, fee, terms, by, at, day,
+                feeItemName, changed, shipmentId, shippingFeeWaived, BigDecimal.ZERO);
+    }
+
+    /**
+     * The surplus pays the fee first, the rest is refundable, and the fee item owes what it did not cover plus
+     * {@code carried} - what a closure moved onto it from installments that can no longer fall due
+     * ({@link #closeRemainder(List, UUID, BigDecimal, Fee, UUID, Instant, LocalDate, java.util.Set, BigDecimal,
+     * java.util.Set)}).
+     */
+    private static Outcome settle(Installment first, List<Installment> ofOrder, Kind kind, UUID sourceId,
+                                  BigDecimal collected, BigDecimal closed, List<Reduction> reductions,
+                                  BigDecimal surplus, BigDecimal fee, Fee terms, UUID by, Instant at, LocalDate day,
+                                  String feeItemName, List<Installment> changed, UUID shipmentId,
+                                  BigDecimal shippingFeeWaived, BigDecimal carried) {
         BigDecimal covered = fee.min(surplus);
         BigDecimal refundable = surplus.subtract(covered);
         BigDecimal owed = fee.subtract(covered);
         Installment feeItem = null;
-        if (owed.signum() > 0) {
+        if (owed.add(carried).signum() > 0) {
             int seq = ofOrder.stream().filter(Installment::isFeeItem).mapToInt(Installment::seq)
                     .max().orElse(Installment.FIRST_FEE_SEQ - 1) + 1;
             if (seq > Installment.LAST_FEE_SEQ) {
                 throw new IllegalStateException("Contract %s has no room for another fee item"
                         .formatted(first.contractNumber()));
             }
-            feeItem = Installment.openFee(first, seq, feeItemName, owed, at, day);
+            feeItem = Installment.openFee(first, seq, feeItemName, owed.add(carried), at, day);
         }
         BigDecimal reduced = reductions.stream().map(Reduction::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
         OrderSettlement settlement = new OrderSettlement(Identifiers.newId(), first.orderId(), first.contractId(),
                 first.customerId(), first.orderNumber(), first.contractNumber(), kind, sourceId, first.currency(),
                 collected, closed, reduced, surplus, fee, terms.any() ? terms : Fee.none(), covered, refundable, owed,
-                feeItem == null ? null : feeItem.id(), by, at, reductions);
+                feeItem == null ? null : feeItem.id(), by, at, reductions, shipmentId, shippingFeeWaived, carried);
         return new Outcome(settlement, changed, feeItem);
     }
 
@@ -440,4 +741,17 @@ public final class OrderSettlement {
     public UUID settledBy() { return settledBy; }
     public Instant settledAt() { return settledAt; }
     public List<Reduction> reductions() { return reductions; }
+    /** The shipment a {@link Kind#SHIPMENT_RETURNED} settlement closed; null for the other kinds. */
+    public UUID shipmentId() { return shipmentId; }
+    /**
+     * The part of {@link #closed} that is the order's shipping fee waived (Q-19): a shipment's share, or what a closure
+     * of the rest waived when it left the order with nothing delivered; zero for the other kinds.
+     */
+    public BigDecimal shippingFeeWaived() { return shippingFeeWaived; }
+    /**
+     * What a {@link Kind#REMAINDER_CLOSED} settlement carried onto its fee item from the installments before delivery
+     * of the batches it closed (audit r3 LM-3): part of {@link #reduced}, owed on the fee item beside
+     * {@link #feeOwed}; zero for the other kinds.
+     */
+    public BigDecimal carriedToFee() { return carriedToFee; }
 }

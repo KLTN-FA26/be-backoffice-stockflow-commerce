@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Boots <b>only</b> the procurement module and the modules it declares in {@code package-info.java} (product, inventory, warehouse, notification, identity; order for receiving against production orders, 4A-5; fulfillment and order for return receipts, 4D-2).
+ * Boots <b>only</b> the procurement module and the modules it declares in {@code package-info.java} (product, inventory, warehouse, notification, identity; order for receiving against production orders, 4A-5; fulfillment and order for return receipts, 4D-2; customer for the return voucher's customer name).
  *
  * <p>The point is the boundary: if procurement gains a dependency its {@code package-info.java} does not declare, this
  * context cannot start and the build says so, instead of an import nobody noticed in review. Fix the declaration
@@ -55,12 +55,7 @@ class ProcurementModuleTest {
     com.stockflow.notification.api.CustomerDirectory customerDirectory;
     // Order is booted for its production orders (4A-5); what order itself depends on is not: explicit ports only, the
     // slice must not boot more.
-    @org.springframework.test.context.bean.override.mockito.MockitoBean
-    com.stockflow.customer.api.CustomerService customerServiceMock;
-    @org.springframework.test.context.bean.override.mockito.MockitoBean
-    com.stockflow.customer.api.CustomerLegalProfiles customerLegalProfilesMock;
-    @org.springframework.test.context.bean.override.mockito.MockitoBean
-    com.stockflow.customer.api.CustomerPaymentSchedules customerPaymentSchedulesMock;
+    // customer is booted (the return voucher names the customer, business documents): its api is the real one.
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.catalog.api.CatalogService catalogServiceMock;
     @org.springframework.test.context.bean.override.mockito.MockitoBean
@@ -75,6 +70,9 @@ class ProcurementModuleTest {
     com.stockflow.payment.api.CustomerInstallments customerInstallmentsMock;
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.payment.api.PaymentService paymentServiceMock;
+    /** The contract liquidation reads payment's books for the order's papers (business documents). */
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.payment.api.ContractLedger contractLedgerMock;
     /** Order's port for the customer's word in their conversation (a delivery window moved on it), chat's to answer. */
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.order.api.ConsentMessages consentMessagesMock;

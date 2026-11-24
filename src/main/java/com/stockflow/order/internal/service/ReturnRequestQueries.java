@@ -5,11 +5,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
-import com.stockflow.common.security.DataScopeContext;
 import com.stockflow.common.storage.FileTransfers;
-import com.stockflow.order.internal.domain.Order;
-import com.stockflow.order.internal.domain.OrderId;
-import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.ReturnEvidence;
 import com.stockflow.order.internal.domain.ReturnReason;
 import com.stockflow.order.internal.domain.ReturnRequest;
@@ -26,7 +22,6 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -48,24 +43,41 @@ public class ReturnRequestQueries {
                        ReturnStatus status, ReturnReason reason, ReturnResolution requestedResolution, String channel,
                        Instant requestedAt, Instant returnDeadline, BigDecimal settlementAmount,
                        BigDecimal refundedAmount, BigDecimal offsetAmount, String currency,
-                       boolean vatAdjustmentRequired, Instant closedAt, long version, UUID shipmentId) {
+                       boolean vatAdjustmentRequired, Instant closedAt, long version, UUID shipmentId,
+                       com.stockflow.order.internal.domain.ReturnRefusalReason refusalReason,
+                       boolean receiptOpenable, boolean receiptDraftOpen) {
+
+        /**
+         * How it ended (WF-05 Q-4), as {@link com.stockflow.order.internal.domain.ReturnRequest#outcome} says it: a
+         * list does not read the lines, and {@code vatAdjustmentRequired} is exactly "units were refunded" (BE-44).
+         */
+        public com.stockflow.order.internal.domain.ReturnRequest.Outcome outcome() {
+            return com.stockflow.order.internal.domain.ReturnRequest.outcomeOf(status, vatAdjustmentRequired,
+                    refusalReason);
+        }
     }
 
-    /** One return with its status history, oldest first. */
-    public record Detail(ReturnRequest request, List<ReturnTransition> history) {
+    /**
+     * One return with its status history, oldest first, and - for the back office - its cartons held for the customer
+     * (WF-05 Q-4), which a custody choice is about; empty for the customer's own view.
+     */
+    public record Detail(ReturnRequest request, List<ReturnTransition> history,
+                         List<com.stockflow.inventory.api.HeldCarton> custodyCartons) {
     }
 
     private final ReturnRequestRepository returns;
     private final ReturnRequestSearch search;
     private final FileTransfers files;
-    private final OrderRepository orders;
+    private final ReturnWarehouseScope warehouseScope;
+    private final com.stockflow.inventory.api.CartonReturns cartonReturns;
 
     ReturnRequestQueries(ReturnRequestRepository returns, ReturnRequestSearch search, FileTransfers files,
-                         OrderRepository orders) {
+                         ReturnWarehouseScope warehouseScope, com.stockflow.inventory.api.CartonReturns cartonReturns) {
+        this.cartonReturns = cartonReturns;
         this.returns = returns;
         this.search = search;
         this.files = files;
-        this.orders = orders;
+        this.warehouseScope = warehouseScope;
     }
 
     /** Every customer's returns, for the back office; every filter null means any. */
@@ -91,7 +103,13 @@ public class ReturnRequestQueries {
                 .filter(found -> ownCustomerId == null || found.belongsTo(ownCustomerId))
                 .orElseThrow(() -> notFound(returnId));
         requireStaffWarehouse(request, ownCustomerId);
-        return new Detail(request, returns.history(returnId));
+        return new Detail(request, returns.history(returnId),
+                ownCustomerId == null ? cartonReturns.heldFor(returnId) : List.of());
+    }
+
+    /** The cartons of the return held for the customer or whose custody ended (WF-05 Q-4), by LPN. */
+    public List<com.stockflow.inventory.api.HeldCarton> custodyCartons(UUID returnId) {
+        return cartonReturns.heldFor(returnId);
     }
 
     /**
@@ -133,35 +151,17 @@ public class ReturnRequestQueries {
         return photo;
     }
 
-    /**
-     * BR-SEC-002 (review of #195, N10): staff limited to warehouses read the returns of orders their warehouses ship;
-     * the list filters the same way. A customer reads their own, which the filter above already settled.
-     *
-     * <p>The limit is the caller's own scope ({@link OrderWarehouseVisibility#limitOf}), not
-     * {@code WarehouseScope.restriction()}: the photo link is declared scope OWN for the customer, and under OWN
-     * {@code restriction()} is empty, which let any warehouse's staff fetch any return's photos.</p>
-     */
+    /** BR-SEC-002: the one guard every staff path to a return asks ({@link ReturnWarehouseScope}, audit r3 RAD-2). */
     private void requireStaffWarehouse(ReturnRequest request, UUID ownCustomerId) {
-        if (ownCustomerId != null) {
-            return;
-        }
-        Set<UUID> limit = DataScopeContext.current().map(DataScopeContext.Scope::user)
-                .map(OrderWarehouseVisibility::limitOf).orElse(null);
-        if (limit == null) {
-            return;
-        }
-        UUID warehouse = orders.findById(new OrderId(request.orderId())).map(Order::warehouseId).orElse(null);
-        if (warehouse == null || !limit.contains(warehouse)) {
-            throw new BusinessException(ErrorCode.OUT_OF_DATA_SCOPE,
-                    "Warehouse " + warehouse + " is not one the caller is assigned to");
-        }
+        warehouseScope.require(request.orderId(), ownCustomerId);
     }
 
     private static Item toItem(ReturnRequestSearch.ReturnRequestRow row) {
         return new Item(row.id(), row.rmaNumber(), row.orderId(), row.orderNumber(), row.customerId(), row.status(),
                 row.reason(), row.requestedResolution(), row.channel(), row.requestedAt(), row.returnDeadline(),
                 row.settlementAmount(), row.refundedAmount(), row.offsetAmount(), row.currency(),
-                row.vatAdjustmentRequired(), row.closedAt(), row.version(), row.shipmentId());
+                row.vatAdjustmentRequired(), row.closedAt(), row.version(), row.shipmentId(), row.refusalReason(),
+                row.receiptOpenable(), row.receiptDraftOpen());
     }
 
     private static BusinessException notFound(UUID returnId) {

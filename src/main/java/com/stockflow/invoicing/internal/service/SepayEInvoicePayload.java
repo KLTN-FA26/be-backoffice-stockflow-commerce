@@ -104,7 +104,21 @@ final class SepayEInvoicePayload {
         return adds && takes ? "combined" : adds ? "increase" : "decrease";
     }
 
-    /** {@code issued_date}: now when the invoice is dated today, the end of its day otherwise - never in the future. */
+    /**
+     * {@code issued_date}: now when the invoice is dated today, the end of its own day otherwise - never in the future,
+     * and never another day than the one the system records.
+     *
+     * <p>An invoice is dated the day it is submitted (WF-05 Q-1: {@code EInvoice} is re-dated at submit, since SePay
+     * takes only today's date - sandbox runs T-1, T-6), so this normally sends now. A send can still cross midnight
+     * after the invoice was dated: the first send of an invoice submitted at 23:59, or an automatic resend after
+     * midnight. It then names the invoice's own day, which SePay refuses at once ({@code ISSUED_DATE_INVALID}, nothing
+     * created), rather than "now", which would number an invoice under a day the system does not record. The refusal
+     * is recorded, and the accountant reopens the invoice and issues it again, re-dated to that day.</p>
+     *
+     * <p>The end-of-day branch is therefore not dead code, although the WF-05 decision file (§1.5 step 1) once said to
+     * delete it on that premise. Owner decision 2026-11-24 (audit round 2, e-invoice L-2): keep it. A refused send the
+     * accountant re-issues is the accepted price; an invoice numbered under a date the system does not hold is not.</p>
+     */
     static String issuedDate(LocalDate issueDate, Instant now) {
         LocalDateTime at = issueDate.equals(LocalDate.ofInstant(now, ZONE))
                 ? LocalDateTime.ofInstant(now, ZONE).withNano(0)
@@ -137,6 +151,14 @@ final class SepayEInvoicePayload {
         return root;
     }
 
+    /**
+     * The buyer, without its e-mail (WF-05 Q-14, BE-27). With {@code buyer.email} SePay mails the buyer itself, for an
+     * original, an adjustment and a replacement alike, and offers no switch to stop it (sandbox run T-3: one
+     * {@code sent} e-mail log per invoice; an invoice sent without it has none). The system mails the invoice itself
+     * ({@code EInvoiceIssuedNotificationListener}), after checking the seller's signature and with retries; both mailing
+     * would send the buyer two, and SePay's would go even when the signature check withholds the system's. The e-mail is
+     * not invoice content in law (NĐ 254/2026/NĐ-CP Điều 10 khoản 1), so the invoice is the same without it.
+     */
     private static void buyer(ObjectNode buyer, InvoiceParty party) {
         // A business buyer (the seller sells B2B only): the company is the legal name. "name" is the person buying,
         // which the system does not record - sending the company there too printed it twice.
@@ -144,7 +166,6 @@ final class SepayEInvoicePayload {
         buyer.put("legal_name", party.name());
         putIfPresent(buyer, "tax_code", party.taxCode());
         putIfPresent(buyer, "address", party.address());
-        putIfPresent(buyer, "email", party.email());
     }
 
     private static void item(ObjectNode item, EInvoiceLine line) {

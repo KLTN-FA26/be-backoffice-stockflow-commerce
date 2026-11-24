@@ -27,6 +27,11 @@ import java.util.UUID;
  * when it was drawn up, the number and codes the provider gave, and the files stored - and locked - when it was
  * issued. So every attempt at one message reads the same thing, which the mail provider's idempotency key needs.</p>
  *
+ * <p>Except the address where the invoice names none (audit r2 M-1; HĐ-8): an invoice is issued without the buyer's
+ * e-mail (Q-22 BR-06) and keeps none for good, so its mail goes to the customer's invoice e-mail as it is now - the one
+ * Sales recorded after being told - or is skipped while there still is none. A mail sent again at staff's request
+ * ({@link #mailAgain}) goes to the customer's invoice e-mail as it is now first: that is what the request is for.</p>
+ *
  * <p>An invoice that was never issued answers nothing: a draft is not sent to anybody. One since replaced still
  * answers - the message about it may be late, and the buyer was issued that invoice.</p>
  *
@@ -39,24 +44,43 @@ class EInvoiceDirectoryAdapter implements EInvoiceDirectory {
     private final EInvoiceRepository invoices;
     private final ErrorNoticeRepository notices;
     private final FileStorage storage;
+    private final EInvoiceDrafts drafts;
 
-    EInvoiceDirectoryAdapter(EInvoiceRepository invoices, ErrorNoticeRepository notices, FileStorage storage) {
+    EInvoiceDirectoryAdapter(EInvoiceRepository invoices, ErrorNoticeRepository notices, FileStorage storage,
+                             EInvoiceDrafts drafts) {
         this.invoices = invoices;
         this.notices = notices;
         this.storage = storage;
+        this.drafts = drafts;
     }
 
     @Override
     public Optional<EInvoiceMail> mail(UUID einvoiceId) {
-        return issued(einvoiceId).map(invoice -> new EInvoiceMail(invoice.id(), invoice.customerId(),
-                invoice.buyer().name(), invoice.buyer().email(), reference(invoice), invoice.orderNumber(),
-                invoice.issueDate(), invoice.grandTotal(), invoice.currency(), invoice.taxAuthorityCode(),
-                invoice.lookupCode()));
+        return sendable(einvoiceId).map(invoice -> mail(invoice, present(invoice.buyer().email())
+                ? invoice.buyer().email() : drafts.currentInvoiceEmail(invoice.customerId())));
+    }
+
+    @Override
+    public Optional<EInvoiceMail> mailAgain(UUID einvoiceId) {
+        return sendable(einvoiceId).map(invoice -> {
+            String current = drafts.currentInvoiceEmail(invoice.customerId());
+            return mail(invoice, present(current) ? current : invoice.buyer().email());
+        });
+    }
+
+    private static EInvoiceMail mail(EInvoice.Snapshot invoice, String recipient) {
+        return new EInvoiceMail(invoice.id(), invoice.customerId(), invoice.buyer().name(), recipient,
+                reference(invoice), invoice.orderNumber(), invoice.issueDate(), invoice.grandTotal(),
+                invoice.currency(), invoice.taxAuthorityCode(), invoice.lookupCode());
+    }
+
+    private static boolean present(String email) {
+        return email != null && !email.isBlank();
     }
 
     @Override
     public List<EInvoiceMail.File> files(UUID einvoiceId) {
-        Optional<EInvoice.Snapshot> found = issued(einvoiceId);
+        Optional<EInvoice.Snapshot> found = sendable(einvoiceId);
         if (found.isEmpty()) {
             return List.of();
         }
@@ -87,6 +111,11 @@ class EInvoiceDirectoryAdapter implements EInvoiceDirectory {
     private Optional<EInvoice.Snapshot> issued(UUID einvoiceId) {
         return einvoiceId == null ? Optional.empty() : invoices.findById(einvoiceId).map(EInvoice::snapshot)
                 .filter(invoice -> invoice.status().wasIssued());
+    }
+
+    /** An invoice its buyer is sent ({@link EInvoice.Snapshot#sendableToBuyer}): never one whose signature fails. */
+    private Optional<EInvoice.Snapshot> sendable(UUID einvoiceId) {
+        return issued(einvoiceId).filter(EInvoice.Snapshot::sendableToBuyer);
     }
 
     /** The invoice as people quote it and as its files are named: template code, symbol and the 8-digit number. */

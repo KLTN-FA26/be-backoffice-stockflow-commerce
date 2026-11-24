@@ -190,11 +190,21 @@ services:
       # fallback is spelled out here because a blank passed through would override the profile's own default). The name
       # has no "demo" wording: it is printed on the production order slip a capstone shows (owner, 2026-11-19).
       # A deployment in the prod profile sets all five: there the application refuses to start without them.
-      SELLER_NAME: ${SELLER_NAME:-CÔNG TY TNHH STOCKFLOW}
-      SELLER_TAX_CODE: ${SELLER_TAX_CODE:-0000000000}
-      SELLER_ADDRESS: ${SELLER_ADDRESS:-Số 1 Đường Demo, Phường Bến Nghé, TP. Hồ Chí Minh}
-      SELLER_REPRESENTATIVE: ${SELLER_REPRESENTATIVE:-Nguyễn Văn Demo}
+      SELLER_NAME: ${SELLER_NAME:-CÔNG TY TNHH SẢN XUẤT BAO BÌ AN PHÁT}
+      SELLER_TAX_CODE: ${SELLER_TAX_CODE:-0312345678}
+      SELLER_ADDRESS: ${SELLER_ADDRESS:-Số 268 Đường số 7, Phường Tân Tạo, Thành phố Hồ Chí Minh}
+      SELLER_REPRESENTATIVE: ${SELLER_REPRESENTATIVE:-Trần Quốc An}
       SELLER_REPRESENTATIVE_TITLE: ${SELLER_REPRESENTATIVE_TITLE:-Giám đốc}
+      # The seller's letterhead on quotations and contracts: the same fictional company. The account follows
+      # COMPANY_BANK_* when those are set, so a contract and the transfer instructions name one account.
+      SELLER_PHONE: ${SELLER_PHONE:-(028) 3765 0000}
+      SELLER_EMAIL: ${SELLER_EMAIL:-kinhdoanh@baobianphat.example}
+      SELLER_WEBSITE: ${SELLER_WEBSITE:-www.baobianphat.example}
+      SELLER_BANK_ACCOUNT_NUMBER: ${SELLER_BANK_ACCOUNT_NUMBER:-${COMPANY_BANK_ACCOUNT_NUMBER:-0071001234567}}
+      SELLER_BANK_NAME: ${SELLER_BANK_NAME:-${COMPANY_BANK_NAME:-Ngân hàng TMCP Ngoại thương Việt Nam (Vietcombank)}}
+      SELLER_BANK_BRANCH: ${SELLER_BANK_BRANCH:-Chi nhánh Bình Tây}
+      SELLER_CITY: ${SELLER_CITY:-Thành phố Hồ Chí Minh}
+      SELLER_LOGO: ${SELLER_LOGO:-classpath:branding/seller-logo.png}
       CACHE_VERSION: ${CACHE_VERSION:-v1}
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
       AUDIT_ROUTINE_RETENTION: ${AUDIT_ROUTINE_RETENTION:-P180D}

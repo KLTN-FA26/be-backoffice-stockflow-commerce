@@ -7,6 +7,8 @@ import com.stockflow.order.api.DeliveredShipment;
 import com.stockflow.order.api.DeliveryFailureReason;
 import com.stockflow.order.api.FeeKind;
 import com.stockflow.order.api.ShipmentHandover;
+import com.stockflow.order.api.ShippingFeeWaiver;
+import com.stockflow.order.api.ShippingFeeWaivers;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderFee;
 import com.stockflow.order.internal.domain.OrderId;
@@ -55,8 +57,10 @@ class DeliveredShipmentsServiceTest {
     private final SalesContractRepository contracts = mock(SalesContractRepository.class);
     private final TaxRates taxRates = mock(TaxRates.class);
     private final ProductService products = mock(ProductService.class);
+    /** What payment waived and the order kept (Q-19): the one source of the waiver, stubbed per test. */
+    private final ShippingFeeWaivers waivers = mock(ShippingFeeWaivers.class);
     private final DeliveredShipmentsService service = new DeliveredShipmentsService(orders, contracts, taxRates,
-            products);
+            products, waivers);
     private Order order;
 
     /**
@@ -72,6 +76,7 @@ class DeliveredShipmentsServiceTest {
                 OrderFee.of(Identifiers.newId(), FeeKind.PLATE_FEE, new Sku("CUP-12OZ"), Money.vnd(500_000), TEN),
                 OrderFee.of(Identifiers.newId(), FeeKind.SHIPPING_FEE, null, Money.vnd(150_000), TEN)));
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        when(waivers.waivedOf(any())).thenReturn(BigDecimal.ZERO);
         order.decidePartialShipment(true);
         order.sendContract(STAFF, PLACED);
         order.contractSigned(false, false, STAFF, PLACED);
@@ -225,8 +230,9 @@ class DeliveredShipmentsServiceTest {
     }
 
     @Test
-    @DisplayName("a SKU whose product has no tax class keeps the rate the order fixed")
-    void noTaxClassKeepsTheOrdersRate() {
+    @DisplayName("BE-31 (Q-21): a SKU whose product has no tax class is taxed at the highest rate, 10%, and says its "
+            + "class is unknown - the plate fee of such a SKU too; the shipping fee is STANDARD and known")
+    void noTaxClassIsTheHighestRateFlagged() {
         order.recordShipmentDelivered(S1, FIRST_DELIVERY, STAFF);
         when(products.taxClassesOf(any())).thenReturn(Map.of());
         when(taxRates.onDay(any())).thenReturn(Map.of("STANDARD", new BigDecimal("8")));
@@ -234,14 +240,50 @@ class DeliveredShipmentsServiceTest {
         DeliveredShipment delivered = find(S1);
 
         assertThat(delivered.lines().getFirst().taxRate()).isEqualByComparingTo("10");
+        assertThat(delivered.lines().getFirst().taxClassUnknown()).isTrue();
         assertThat(delivered.fees().get(0).taxRate()).as("the plate fee's SKU has no class either")
                 .isEqualByComparingTo("10");
+        assertThat(delivered.fees().get(0).taxClassUnknown()).isTrue();
         assertThat(delivered.fees().get(1).taxRate()).as("the shipping fee is STANDARD").isEqualByComparingTo("8");
+        assertThat(delivered.fees().get(1).taxClassUnknown()).isFalse();
     }
 
     @Test
-    @DisplayName("review finding 4: no rate on the order and no tax class - the day's STANDARD rate, never 0%, and the "
-            + "order's rate handed over as missing")
+    @DisplayName("BE-31 (Q-21): no tax class never takes the order's rate - an order quoted at NĐ 174's 8% is invoiced "
+            + "at 10% for an unclassed product, flagged, the 8% handed over beside it")
+    void noTaxClassNeverTakesTheOrdersRate() {
+        BigDecimal eight = new BigDecimal("8");
+        Order quoted = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 2), 12), UUID.randomUUID(), UUID.randomUUID(),
+                List.of(Order.line(new Sku("CUP-12OZ"), 10, Money.vnd(100_000), null).withTax(eight)), PLACED);
+        quoted.lines().forEach(line -> quoted.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        quoted.sendContract(STAFF, PLACED);
+        quoted.contractSigned(false, false, STAFF, PLACED);
+        quoted.chooseShippingWarehouse(HCM, true, STAFF, PLACED);
+        quoted.release(HCM, "HCM", STAFF, PLACED);
+        quoted.startPicking(STAFF, PLACED);
+        quoted.markPacked(PLACED, STAFF);
+        UUID shipment = UUID.randomUUID();
+        quoted.recordHandover(new ShipmentHandover(shipment,
+                List.of(new ShipmentHandover.Line(quoted.lines().getFirst().id(), 10)), PLACED, STAFF), BigDecimal.ZERO);
+        quoted.recordShipmentDelivered(shipment, FIRST_DELIVERY, STAFF);
+        when(orders.findById(new OrderId(quoted.id().value()))).thenReturn(Optional.of(quoted));
+        when(taxRates.onDay(any())).thenReturn(Map.of("STANDARD", eight));
+
+        DeliveredShipment.Line classed = service.find(quoted.id().value(), shipment).orElseThrow().lines().getFirst();
+        assertThat(classed.taxRate()).as("a known class: the day's rate").isEqualByComparingTo("8");
+        assertThat(classed.taxClassUnknown()).isFalse();
+
+        when(products.taxClassesOf(any())).thenReturn(Map.of());
+        DeliveredShipment.Line unclassed = service.find(quoted.id().value(), shipment).orElseThrow().lines()
+                .getFirst();
+        assertThat(unclassed.taxRate()).isEqualByComparingTo("10");
+        assertThat(unclassed.contractTaxRate()).isEqualByComparingTo("8");
+        assertThat(unclassed.taxClassUnknown()).isTrue();
+    }
+
+    @Test
+    @DisplayName("review finding 4: no rate on the order - the class's rate of the day, and with no class the highest "
+            + "rate, never 0%; the order's rate handed over as missing")
     void noRateAnywhereIsNotZeroPercent() {
         Order plain = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 2), 10), UUID.randomUUID(), UUID.randomUUID(),
                 List.of(Order.line(new Sku("CUP-12OZ"), 10, Money.vnd(100_000), null)), PLACED);
@@ -264,10 +306,74 @@ class DeliveredShipmentsServiceTest {
         assertThat(classed.taxRate()).isEqualByComparingTo("8");
         assertThat(classed.contractTaxRate()).as("the order fixed none: the invoice flags it").isNull();
 
-        // No class either: STANDARD stands in. 0% would be a rate of its own, not "no VAT".
+        // No class either: the highest rate (Q-21), flagged. 0% would be a rate of its own, not "no VAT".
         when(products.taxClassesOf(any())).thenReturn(Map.of());
         DeliveredShipment.Line unclassed = service.find(plain.id().value(), shipment).orElseThrow().lines().getFirst();
-        assertThat(unclassed.taxRate()).isEqualByComparingTo("8");
+        assertThat(unclassed.taxRate()).isEqualByComparingTo("10");
+        assertThat(unclassed.taxClassUnknown()).isTrue();
         assertThat(unclassed.contractTaxRate()).isNull();
+    }
+
+    @Test
+    @DisplayName("Q-19 (owner 2026-11-23): the waiver every invoice of the order is told is payment's, as the order "
+            + "kept it - not a share recomputed from the shipments; the order's goods value goes with every delivery")
+    void theWaiverIsPaymentsStoredFigure() {
+        assertThat(service.shippingFeeWaiver(order).waived()).as("nothing came back").isZero();
+
+        order.recordShipmentDelivered(S1, FIRST_DELIVERY, STAFF);
+        order.recordShipmentDeliveryFailed(S2, DeliveryFailureReason.CUSTOMER_ABSENT, null, SECOND_DELIVERY, STAFF);
+        order.recordShipmentReturned(S2, SECOND_DELIVERY, STAFF);
+        // Its return receipt confirmed (Q-7): S2's units close now, and payment settles them in the same transaction,
+        // waiving S2's share: 165,000 x 550,000 / 1,210,000 = 75,000, which the order keeps.
+        order.closeReturnedShipment(S2, SECOND_DELIVERY, SECOND_DELIVERY, STAFF);
+        when(waivers.waivedOf(order.id().value())).thenReturn(new BigDecimal("75000"));
+
+        ShippingFeeWaiver waiver = service.shippingFeeWaiver(order);
+        assertThat(waiver.waived()).isEqualByComparingTo("75000");
+        assertThat(waiver.feeGross()).as("the fee line with VAT").isEqualByComparingTo("165000");
+        DeliveredShipment delivered = find(S1);
+        assertThat(delivered.shippingFeeWaiver()).as("the delivered shipment's invoice is told").isEqualTo(waiver);
+        assertThat(delivered.orderGoodsValue()).as("what is left to deliver: the 6 cups of S1, 600,000 before tax")
+                .isEqualByComparingTo("600000");
+        assertThat(delivered.goodsValue()).isEqualByComparingTo("600000");
+        assertThat(service.shippingFee(order.id().value(), SECOND_DELIVERY).orElseThrow().shippingFeeWaiver())
+                .as("so is the invoice of the order's rest").isEqualTo(waiver);
+        assertThat(service.orderFees(order.id().value(), SECOND_DELIVERY).orElseThrow().shippingFeeWaiver())
+                .isEqualTo(waiver);
+    }
+
+    @Test
+    @DisplayName("Q-19: a waiver the shipments' statuses cannot show - a shipment closed as lost, a closure of the "
+            + "rest (Q-19 edge) - still reaches the invoice, because it is read from what payment answered")
+    void aWaiverNoShipmentStatusShowsStillCounts() {
+        order.recordShipmentDelivered(S1, FIRST_DELIVERY, STAFF);
+        // S2 is still DELIVERY_FAILED - closed as lost, not RETURNED - and payment waived its share all the same.
+        order.recordShipmentDeliveryFailed(S2, DeliveryFailureReason.CUSTOMER_ABSENT, null, SECOND_DELIVERY, STAFF);
+        when(waivers.waivedOf(order.id().value())).thenReturn(new BigDecimal("75000"));
+
+        assertThat(service.shippingFeeWaiver(order).waived()).isEqualByComparingTo("75000");
+    }
+
+    @Test
+    @DisplayName("Q-19: every shipment brought back waives the whole shipping fee, to the dong; the plate fee is kept; "
+            + "a waiver is never more than the fee line")
+    void everyShipmentBackWaivesTheWholeFee() {
+        order.recordShipmentDeliveryFailed(S1, DeliveryFailureReason.CUSTOMER_ABSENT, null, FIRST_DELIVERY, STAFF);
+        order.recordShipmentReturned(S1, FIRST_DELIVERY, STAFF);
+        order.recordShipmentDeliveryFailed(S2, DeliveryFailureReason.CUSTOMER_ABSENT, null, SECOND_DELIVERY, STAFF);
+        order.recordShipmentReturned(S2, SECOND_DELIVERY, STAFF);
+        when(waivers.waivedOf(order.id().value())).thenReturn(new BigDecimal("165000"));
+
+        assertThat(service.orderFees(order.id().value(), SECOND_DELIVERY).orElseThrow())
+                .satisfies(fees -> {
+                    assertThat(fees.shippingFeeWaiver().waived()).isEqualByComparingTo("165000");
+                    assertThat(fees.shippingFeeWaiver().feeGross()).isEqualByComparingTo("165000");
+                    assertThat(fees.plateFees()).as("the plate fee is kept (BE-62)").extracting(
+                            DeliveredShipment.Fee::sku).containsExactly("CUP-12OZ");
+                });
+
+        // A fee line lowered after payment waived the old one: the invoice is told the fee, never a negative rest.
+        when(waivers.waivedOf(order.id().value())).thenReturn(new BigDecimal("200000"));
+        assertThat(service.shippingFeeWaiver(order).waived()).isEqualByComparingTo("165000");
     }
 }

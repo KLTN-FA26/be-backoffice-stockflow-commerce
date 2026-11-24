@@ -119,6 +119,12 @@ class ViettelSInvoiceProvider implements EInvoiceProvider {
     }
 
     @Override
+    public boolean pendingMayBeRefusedByTaxAuthority() {
+        // ASSUMPTION 3 of ViettelSInvoiceAnswers: an entry the tax authority refused stays numbered without a code.
+        return true;
+    }
+
+    @Override
     public Result query(String transactionId) {
         ViettelSInvoiceClient.Answer answer = client.searchByTransactionUuid(account(), supplierTaxCode(),
                 transactionUuid(transactionId));

@@ -58,6 +58,22 @@ public class OrderShipmentJpaEntity extends BaseEntity {
     @Column(name = "outcome_by")
     private UUID outcomeBy;
 
+    /**
+     * WF-05 Q-7 / Q-12: when the shipment's units stopped travelling with it - closed on their lines when the return
+     * receipt of a shipment the carrier brought back was confirmed, or when Sales closed a lost shipment. Null while
+     * the units are still the shipment's. Set once ({@code tg_order_shipment_units_closed}).
+     */
+    @Column(name = "units_closed_at")
+    private Instant unitsClosedAt;
+
+    /** WF-05 Q-2: what the closed units were worth with VAT; null while open (or closed before WF-05). */
+    @Column(name = "closed_goods_value", precision = 19, scale = 4)
+    private BigDecimal closedGoodsValue;
+
+    /** WF-05 Q-19: the part of the order's shipping fee payment waived when the units were closed; 0 otherwise. */
+    @Column(name = "shipping_fee_waived", nullable = false, precision = 19, scale = 4)
+    private BigDecimal shippingFeeWaived = BigDecimal.ZERO;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "failure_reason", length = 24)
     private DeliveryFailureReason failureReason;
@@ -123,6 +139,16 @@ public class OrderShipmentJpaEntity extends BaseEntity {
         this.failureReason = failureReason;
         this.failureNote = failureNote;
     }
+
+    public void applyUnitsClosed(Instant at, BigDecimal goodsValue, BigDecimal feeWaived) {
+        this.unitsClosedAt = at;
+        this.closedGoodsValue = goodsValue;
+        this.shippingFeeWaived = feeWaived == null ? BigDecimal.ZERO : feeWaived;
+    }
+
+    public Instant getUnitsClosedAt() { return unitsClosedAt; }
+    public BigDecimal getClosedGoodsValue() { return closedGoodsValue; }
+    public BigDecimal getShippingFeeWaived() { return shippingFeeWaived; }
 
     public UUID getOrderId() { return orderId; }
     public Map<UUID, Integer> getQuantities() { return quantities; }

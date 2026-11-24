@@ -86,6 +86,14 @@ public class InstallmentJpaEntity extends BaseEntity {
     @Column(name = "cancelled_at")
     private Instant cancelledAt;
 
+    /**
+     * WF-05 BE-49: the due date Sales were last told it was overdue for. Read here for the overdue scan's filter only;
+     * written by the scan's own statement ({@code InstallmentBook.markOverdueAnnounced}), never by a save - a receipt
+     * saved from a copy read before the scan must not put an older value back.
+     */
+    @Column(name = "overdue_announced_for", insertable = false, updatable = false)
+    private LocalDate overdueAnnouncedFor;
+
     protected InstallmentJpaEntity() {
     }
 
@@ -146,4 +154,5 @@ public class InstallmentJpaEntity extends BaseEntity {
     public InstallmentStatus getStatus() { return status; }
     public Instant getPaidAt() { return paidAt; }
     public Instant getCancelledAt() { return cancelledAt; }
+    public LocalDate getOverdueAnnouncedFor() { return overdueAnnouncedFor; }
 }

@@ -397,6 +397,48 @@ class SepayEInvoiceContractTest {
     }
 
     @Test
+    void Q14_theBuyersEmailIsNeverSentSoSepayMailsNobody() throws Exception {
+        signsIn();
+        listsTheAccount();
+        sepay.stubFor(post(urlEqualTo("/v1/invoices/create")).willReturn(okJson(taken("create"))));
+        sepay.stubFor(post(urlEqualTo("/v1/invoices/adjust")).willReturn(okJson(taken("adjust"))));
+        sepay.stubFor(post(urlEqualTo("/v1/invoices/replace")).willReturn(okJson(taken("replace"))));
+        assertThat(EInvoiceFixtures.BUYER.email()).as("a buyer that has an e-mail").isNotBlank();
+        String original = "0193a5b0-0000-7000-8000-000000000001-1";
+        List<EInvoiceLine> fewer = List.of(EInvoiceLine.goods(UUID.randomUUID(), 1, UUID.randomUUID(),
+                "CUP12-0398765432-01", "Ly giay 12oz", "Thung", -5, 50, new BigDecimal("100000"),
+                new BigDecimal("10")));
+
+        provider().submit(invoice(TRANSACTION));
+        provider().submit(invoice(TRANSACTION, fewer, new Correction(EInvoiceType.ADJUSTMENT, "1", "C26TSE", 589,
+                EInvoiceFixtures.DELIVERED_ON, "Tra lai", original)));
+        provider().submit(invoice(TRANSACTION, EInvoiceFixtures.lines(), new Correction(EInvoiceType.REPLACEMENT, "1",
+                "C26TSE", 589, EInvoiceFixtures.DELIVERED_ON, "Sai don gia", original)));
+
+        for (String path : List.of("/v1/invoices/create", "/v1/invoices/adjust", "/v1/invoices/replace")) {
+            JsonNode buyer = json.readTree(only(path).getBodyAsString()).get("buyer");
+            assertThat(buyer.has("email")).as(path + ": with it SePay mails the buyer itself (T-3)").isFalse();
+            assertThat(buyer.get("tax_code").asText()).isEqualTo("0398765432");
+        }
+    }
+
+    @Test
+    void Q1_sepayTakesOnlyTodaysDate() {
+        assertThat(provider().datesOnlyToday()).isTrue();
+    }
+
+    @Test
+    void Q1_anInvoiceDatedTodayIsSentNowAndAnotherDayIsNeverTurnedIntoToday() {
+        Instant now = Instant.parse("2026-11-23T16:59:30Z");
+        assertThat(SepayEInvoicePayload.issuedDate(java.time.LocalDate.of(2026, 11, 23), now))
+                .as("23:59:30 in Viet Nam: the invoice's own day, now").isEqualTo("2026-11-23 23:59:30");
+        Instant afterMidnight = Instant.parse("2026-11-23T17:00:05Z");
+        assertThat(SepayEInvoicePayload.issuedDate(java.time.LocalDate.of(2026, 11, 23), afterMidnight))
+                .as("a send crossing midnight names the recorded day, which SePay refuses, never the next one")
+                .isEqualTo("2026-11-23 23:59:59");
+    }
+
+    @Test
     void anAdjustmentsTypeFollowsWhatItsLinesDoToTheMoney() {
         EInvoiceLine more = EInvoiceLine.goods(UUID.randomUUID(), 1, UUID.randomUUID(), "SKU-1", "Ly", "Thung", 2,
                 null, new BigDecimal("1000"), new BigDecimal("10"));
@@ -500,7 +542,40 @@ class SepayEInvoiceContractTest {
 
         assertThat(result.state()).as("BR-05: never NOT_FOUND, which would be sent again").isEqualTo(ResultState.UNKNOWN);
         assertThat(result.errorCode()).isEqualTo(SepayEInvoiceAnswers.RESULT_UNCONFIRMED);
-        sepay.verify(1, getRequestedFor(urlEqualTo("/v1/invoices/adjust/check/" + TRACKING)));
+        sepay.verify(1, getRequestedFor(urlEqualTo("/v1/invoices/create/check/" + TRACKING)));
+        sepay.verify(0, getRequestedFor(urlEqualTo("/v1/invoices/adjust/check/" + TRACKING)));
+    }
+
+    @Test
+    void BE61_anAdjustmentsAndAReplacementsTrackingIsAskedAtTheSharedCreatePath() {
+        signsIn();
+        notRecorded();
+        // What the sandbox does (run X-4): the kind's own path is always an empty 404.
+        sepay.stubFor(get(urlPathEqualTo("/v1/invoices/adjust/check/" + TRACKING)).willReturn(aResponse()
+                .withStatus(404)));
+        sepay.stubFor(get(urlPathEqualTo("/v1/invoices/replace/check/" + TRACKING)).willReturn(aResponse()
+                .withStatus(404)));
+        for (String kind : List.of("adjust", "replace")) {
+            tracked(kind, "Failed", "Thông tin người mua không hợp lệ: mã số thuế sai");
+
+            Result result = provider().query(TRANSACTION);
+
+            assertThat(result.state()).as(kind + ": SePay's Failed is seen, never taken for 'not there'")
+                    .isEqualTo(ResultState.REJECTED);
+            assertThat(result.errorCode()).isEqualTo(SepayEInvoiceAnswers.ISSUANCE_FAILED);
+        }
+        sepay.verify(2, getRequestedFor(urlEqualTo("/v1/invoices/create/check/" + TRACKING)));
+        sepay.verify(0, getRequestedFor(urlEqualTo("/v1/invoices/adjust/check/" + TRACKING)));
+        sepay.verify(0, getRequestedFor(urlEqualTo("/v1/invoices/replace/check/" + TRACKING)));
+    }
+
+    @Test
+    void BE61_aCorrectionSepayIsStillProcessingIsPendingNeverSentAgain() {
+        signsIn();
+        notRecorded();
+        tracked("replace", "Pending", "Đang xử lý");
+
+        assertThat(provider().query(TRANSACTION).state()).isEqualTo(ResultState.PENDING);
     }
 
     @Test
@@ -541,6 +616,29 @@ class SepayEInvoiceContractTest {
     }
 
     @Test
+    void BE07_aSuccessWithALookUpThatSaysNothingReadableIsPendingNeverUnknown() {
+        signsIn();
+        sepay.stubFor(get(urlEqualTo("/v1/invoices/" + REFERENCE)).willReturn(aResponse().withStatus(403)
+                .withBody("<html>Forbidden</html>")));
+        tracked("create", "Success", "Xuất hóa đơn thành công");
+
+        Result result = provider().query(TRANSACTION);
+
+        assertThat(result.state()).as("Q-5: SePay holds it; UNKNOWN could be withdrawn and issued twice")
+                .isEqualTo(ResultState.PENDING);
+    }
+
+    @Test
+    void BE07_anInvoiceIssuedWithoutItsNumberYetIsPendingWhateverTheTrackingSays() {
+        signsIn();
+        sepay.stubFor(get(urlEqualTo("/v1/invoices/" + REFERENCE)).willReturn(okJson(found("issued", "0"))));
+        tracked("create", "Failed", "Thông tin người mua không hợp lệ: mã số thuế sai");
+
+        assertThat(provider().query(TRANSACTION).state()).isEqualTo(ResultState.PENDING);
+        sepay.verify(0, getRequestedFor(urlPathEqualTo("/v1/invoices/create/check/" + TRACKING)));
+    }
+
+    @Test
     void HD1_aSuccessTheLookUpDoesNotShowYetIsPending() {
         signsIn();
         notRecorded();
@@ -561,6 +659,73 @@ class SepayEInvoiceContractTest {
             assertThat(result.errorCode()).isEqualTo("SEPAY_INVOICE_" + status.toUpperCase(java.util.Locale.ROOT));
         }
         sepay.verify(0, getRequestedFor(urlPathEqualTo("/v1/invoices/create/check/" + TRACKING)));
+    }
+
+    /**
+     * Sandbox run T-8 (24/11/2026, debate/sandbox/p8.out): the invoice SePay shows as the look-up and the tracking both
+     * carried it, the reference put in place of the sandbox's own. Its issue failed - "Ngày lập (23/11/2026) phải lớn hơn
+     * hoặc bằng ngày lập của hóa đơn số 358927 (24/11/2026) liền kề trước cùng ký hiệu C26TSE" - number "0".
+     */
+    private static String t8Invoice() {
+        return """
+                {"reference_code": "%s", "invoice_number": "0", "invoice_series": "C26TSE", "document_type": 1,
+                 "issued_date": "2026-11-23", "xml_url": null, "status": "failed", "tax_authority_code": null,
+                 "provider_status": null, "payment_method": "CK", "total_before_tax": 100000, "tax_amount": 8000,
+                 "total_amount": 108000, "source": "api"}""".formatted(REFERENCE);
+    }
+
+    /** T-8's /create/check answer: the request's own status Success, its invoice failed. */
+    private void t8CreateCheck() {
+        when(calls.lastProviderReference(SepayEInvoiceProvider.CODE, TRANSACTION))
+                .thenReturn(Optional.of("create/" + TRACKING));
+        sepay.stubFor(get(urlEqualTo("/v1/invoices/create/check/" + TRACKING)).willReturn(okJson("""
+                {"success": true, "data": {"reference_code": "%s", "status": "Success",
+                 "message": "Xuất hóa đơn điện tử thành công", "invoice": %s}}""".formatted(REFERENCE, t8Invoice()))));
+    }
+
+    @Test
+    void T8_aFailedIssueIsRejectedFromTheLookUp_neverTakenFromCreateCheckSuccess() {
+        signsIn();
+        sepay.stubFor(get(urlEqualTo("/v1/invoices/" + REFERENCE)).willReturn(okJson(
+                "{\"success\": true, \"data\": " + t8Invoice() + "}")));
+        t8CreateCheck();
+
+        Result result = provider().query(TRANSACTION);
+
+        assertThat(result.state()).as("the invoice failed: no invoice in force, never ISSUED").isEqualTo(
+                ResultState.REJECTED);
+        assertThat(result.errorCode()).isEqualTo("SEPAY_INVOICE_FAILED");
+        assertThat(result.invoiceNumber()).isNull();
+        sepay.verify(0, getRequestedFor(urlPathEqualTo("/v1/invoices/create/check/" + TRACKING)));
+    }
+
+    @Test
+    void T8_createCheckSuccessWithItsInvoiceFailed_isAFailureNotAWait() {
+        signsIn();
+        notRecorded();
+        t8CreateCheck();
+
+        Result result = provider().query(TRANSACTION);
+
+        assertThat(result.state()).as("the top level reports the create step only (T-8)")
+                .isEqualTo(ResultState.REJECTED);
+        assertThat(result.errorCode()).isEqualTo(SepayEInvoiceAnswers.ISSUANCE_FAILED);
+        assertThat(result.invoiceNumber()).isNull();
+    }
+
+    @Test
+    void T8_aTrackingWhoseInvoiceIsIssuedIsNeverARefusal_andNeverIssuedByItself() {
+        signsIn();
+        notRecorded();
+        when(calls.lastProviderReference(SepayEInvoiceProvider.CODE, TRANSACTION))
+                .thenReturn(Optional.of("create/" + TRACKING));
+        sepay.stubFor(get(urlEqualTo("/v1/invoices/create/check/" + TRACKING)).willReturn(okJson("""
+                {"success": true, "data": {"reference_code": "%s", "status": "Failed", "message": "x",
+                 "invoice": {"reference_code": "%s", "invoice_number": "358930", "status": "issued"}}}"""
+                .formatted(REFERENCE, REFERENCE))));
+
+        assertThat(provider().query(TRANSACTION).state()).as("held at SePay: waited for until the look-up shows it")
+                .isEqualTo(ResultState.PENDING);
     }
 
     @Test
@@ -769,11 +934,15 @@ class SepayEInvoiceContractTest {
                 .withBody(error("NOT_FOUND", "Không tìm thấy hóa đơn"))));
     }
 
-    /** The transaction's last submission was taken in under {@link #TRACKING}, and its tracking says {@code status}. */
+    /**
+     * The transaction's last submission was taken in by the {@code kind} call under {@link #TRACKING}, and its tracking
+     * says {@code status}.
+     */
     private void tracked(String kind, String status, String message) {
         when(calls.lastProviderReference(SepayEInvoiceProvider.CODE, TRANSACTION))
                 .thenReturn(Optional.of(kind + "/" + TRACKING));
-        sepay.stubFor(get(urlEqualTo("/v1/invoices/" + kind + "/check/" + TRACKING)).willReturn(okJson("""
+        // Asked at /create/check/ whatever the kind (BE-61).
+        sepay.stubFor(get(urlEqualTo("/v1/invoices/create/check/" + TRACKING)).willReturn(okJson("""
                 {"success": true, "data": {"reference_code": "%s", "status": "%s", "message": %s}}""".formatted(
                 REFERENCE, status, message == null ? "null" : "\"" + message + "\""))));
     }

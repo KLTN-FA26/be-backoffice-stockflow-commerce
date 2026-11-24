@@ -117,6 +117,10 @@ stockflow:
   storage:
     provider: s3
     bucket: ${S3_BUCKET}
+    # The AWS bucket comes from infra/aws with its policy, CORS and Object Lock; one the application made would have
+    # none of them. A missing bucket is reported at startup (StorageBucketInitializer), not made. An S3-compatible
+    # store of the deployment's own (S3_ENDPOINT) may set S3_CREATE_MISSING_BUCKET=true.
+    create-missing-bucket: ${S3_CREATE_MISSING_BUCKET:false}
     # Blank against real S3 so the SDK's default credentials chain picks up the instance role.
     # Long-lived access keys in configuration are how cloud credentials leak.
     endpoint: ${S3_ENDPOINT:}

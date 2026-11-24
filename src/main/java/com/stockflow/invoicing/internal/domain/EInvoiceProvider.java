@@ -51,6 +51,18 @@ public interface EInvoiceProvider {
     }
 
     /**
+     * Whether an UNKNOWN answer carrying {@code errorCode} is the provider saying, in so many words, that it cannot
+     * confirm what became of the transaction (SePay's tracking {@code Failed} "chưa xác nhận được kết quả phát hành").
+     * Only such an invoice may ever be taken back without the provider's "no record" (WF-05 BE-07, decision Q-5), and
+     * only on the written word of the provider's support. Every other UNKNOWN - an answer not read, a 4xx, an error
+     * code with no entry - says nothing about the invoice and is never a reason to let its transaction go: it is
+     * asked again, and an answer that never comes is the accountant's to settle on the provider's portal (BE-08).
+     */
+    default boolean resultUnconfirmed(String errorCode) {
+        return false;
+    }
+
+    /**
      * Hands an invoice over under its transaction id.
      *
      * @throws ProviderUnavailableException when the provider did not answer - it may or may not have the invoice;
@@ -87,6 +99,51 @@ public interface EInvoiceProvider {
      * are refused before they are sent to such a provider ({@code EINVOICE_PROVIDER_CANNOT_CORRECT}).
      */
     default boolean issuesCorrections() {
+        return false;
+    }
+
+    /**
+     * Whether this provider takes an invoice dated only on the day it is sent (WF-05 Q-1). SePay does, for every kind
+     * of invoice: an original, an adjustment or a replacement dated another day is refused at once with
+     * {@code ISSUED_DATE_INVALID} (sandbox runs T-1 and T-6, 23/11/2026). Under such a provider an original issued
+     * after its delivery day carries the day it is issued and is flagged {@code ISSUED_LATE}. Whatever the provider,
+     * an invoice is due by the end of its date ({@link IssueDeadline}). A correction carries the day it is issued
+     * under every provider - its date is the day it is signed, never the delivery's.
+     */
+    default boolean datesOnlyToday() {
+        return false;
+    }
+
+    /**
+     * Whether a PENDING look-up may be an invoice the tax authority refused (WF-05 BE-08, Q-8): Viettel SInvoice keeps a
+     * refused entry under its number without a code, so only its portal shows the refusal, and the accountant's record
+     * of it is the way out. Elsewhere PENDING is the provider holding the transaction - SePay's "issued, no number yet"
+     * or its processing still running - and such an invoice is never recorded refused on anyone's word (Q-5): the
+     * provider reports a real refusal itself.
+     */
+    default boolean pendingMayBeRefusedByTaxAuthority() {
+        return false;
+    }
+
+    /**
+     * Whether this provider numbers an adjustment or a replacement under a series it chooses itself (WF-05 BE-30).
+     * SePay does: its adjust and replace calls take no series at all (sandbox T-4: the adjustment came back numbered
+     * under {@code C26TSE}, the series of its original, and which series a correction of a previous year's invoice
+     * takes is not known). The series such a correction was sent under is only the one in use here that day, so the
+     * one the provider names is recorded instead ({@code EInvoice.numberedUnder}) - the recorded series is always the
+     * provider's. An original is sent under its series and is never recorded under another.
+     */
+    default boolean picksCorrectionSeries() {
+        return false;
+    }
+
+    /**
+     * Whether this provider adjusts a replacement invoice. None here does: TT 91/2026/TT-BTC Điều 10 khoản 6 điểm a keeps
+     * the form first chosen - a replacement is put right by another replacement - and SePay refuses an adjustment of a
+     * replacement with 422 {@code INVALID_ORIGIN_INVOICE} (sandbox run T-5). The aggregate refuses it whatever the
+     * provider ({@code EInvoice.drawUpAdjustment}); the flag is what the back office reads to hide the action (F-11).
+     */
+    default boolean adjustsReplacements() {
         return false;
     }
 
@@ -300,12 +357,29 @@ public interface EInvoiceProvider {
      * @param signedAt         when the seller's signature was put on it; null unless ISSUED
      * @param errorCode        and {@code message}: why it was refused, or what the unclear answer said; null unless
      *                         REJECTED or UNKNOWN
+     * @param templateCode     and {@code symbol}: the series the provider says it numbered the invoice under (WF-05
+     *                         BE-30) - SePay's look-up names it ({@code invoice_series}; its template code is SePay's
+     *                         own, not the tax authority's form number, so only the symbol is compared); null where the
+     *                         provider does not say. An invoice is recorded ISSUED under the series it was sent under,
+     *                         and never when the provider names another ({@code EInvoiceIssuanceSteps.issued})
      */
     record Result(ResultState state, Integer invoiceNumber, String taxAuthorityCode, String lookupCode,
-                  Instant signedAt, String errorCode, String message) {
+                  Instant signedAt, String errorCode, String message, String templateCode, String symbol) {
+
+        /** A result that says nothing of the series it was numbered under. */
+        public Result(ResultState state, Integer invoiceNumber, String taxAuthorityCode, String lookupCode,
+                      Instant signedAt, String errorCode, String message) {
+            this(state, invoiceNumber, taxAuthorityCode, lookupCode, signedAt, errorCode, message, null, null);
+        }
 
         public static Result of(ResultState state) {
             return new Result(state, null, null, null, null, null, null);
+        }
+
+        /** The same result, with the series the provider says it numbered the invoice under. */
+        public Result numberedUnder(String providerTemplateCode, String providerSymbol) {
+            return new Result(state, invoiceNumber, taxAuthorityCode, lookupCode, signedAt, errorCode, message,
+                    providerTemplateCode, providerSymbol);
         }
     }
 

@@ -366,34 +366,52 @@ propose a refund per line, a second person approves, and `PaymentService.settleR
 transaction as an `order_settlement` of kind `GOODS_RETURNED`; the accountant records refunds (4B-9), and each record
 publishes `OrderRefundRecorded`.
 
-### A shipment that comes back - delivery failure cases (WF-05 fix plan, sections 2-3)
+### A shipment that comes back (RTM-RETURNED; WF-05 decisions Q-2, Q-3, Q-7, Q-12)
 
-A shipment the carrier brings back no longer moves its order to RETURNED / PARTIALLY_FULFILLED by itself:
-`Order.recordShipmentReturned` puts the order `ON_HOLD` for `HoldReason.DELIVERY_FAILED`, held from
-PARTIALLY_FULFILLED (edges `SHIPPED>ON_HOLD`, `DELIVERY_FAILED>ON_HOLD`). `resolveHold` refuses that hold
-(`ORDER_DELIVERY_FAILURE_USE_DECISION`): only Sales' decision on the case lifts it.
+There is no "deliver again" on the order any more: goods the customer still wants go on a new order. A shipment the
+carrier brings back moves the order's status at once, but **its units and its money move only when the warehouse
+confirms the return receipt** - the carrier's report is a word, the receipt is the goods seen (L-I8).
 
 ```
-carrier reports it back → shipment RETURNED → order ON_HOLD (DELIVERY_FAILED)
+carrier reports it back (needs fulfillment-delivery-outcomes:APPROVE) → shipment RETURNED; order RETURNED (nothing
+    delivered) or PARTIALLY_FULFILLED (others delivered). Nothing closed, nothing settled.
 return receipt confirmed → ReturnedGoodsReceived → ReturnRequestService.goodsReceived (no return request named)
-                         → DeliveryFailureService.goodsReceived: case OPEN (ordering.delivery_failure_case)
-Sales: POST /orders/{id}/delivery-failures/{caseId}/redelivery    (sales-order-holds:UPDATE)
-       POST /orders/{id}/delivery-failures/{caseId}/cancellation  (sales-order-cancellations:UPDATE)
+    → DeliveryFailureService.goodsReceived: Order.closeReturnedShipment closes the shipment's units
+      (order_shipment.units_closed_at), PaymentService.settleShipmentReturn settles them in the same transaction
+      (own batch first, then older debt, the rest refundable; kind SHIPMENT_RETURNED), ShipmentReturnSettled after
+      commit; a delivery_failure_case records the cartons (units counted, not labels) and is CANCELLED at once
+      (closure RECORDED_ON_RETURN). Once per shipment: a later receipt of it adds cartons, closes nothing.
+lost parcel (DELIVERY_FAILED, reason LOST) → Sales: POST /orders/{id}/shipments/{shipmentId}/lost-closure with the
+    carrier's confirmation (sales-lost-shipment-closures:APPROVE) → closed and settled the same way, at that moment.
+refunds recorded → REFUNDED / PARTIALLY_REFUNDED (DeliveryFailureService.followRefunds; nightly too) → CLOSED.
 ```
 
-- **Redelivery.** REFUSED / WRONG_ADDRESS must charge the failed trip: `PaymentService.chargeFailedDelivery` opens a
-  fee item (`InstallmentMilestone.FAILED_TRIP_FEE`: an installment with no plan row, like `CANCELLATION_FEE`); any
-  other reason charges nothing (`carrier_claim`). The order goes back to PARTIALLY_FULFILLED. The goods are held for
-  the order again as they leave quarantine (`QuarantineStockReleased` → `ShippingWarehouseService.holdReturnedGoods`,
-  before any other order is topped up, decided or not). The holds are SKU reservations recorded in
-  `delivery_failure_case_hold`, so "the very cartons" holds only while no other carton of that SKU is free.
-  `OrderReleaseService.release` releases a waiting redelivery before any batch; `createTask` opens a second pick
-  (`fulfillment.pick.redelivery_case_id`); the handover (`ShipmentHandover.redeliveryCaseId`) closes the case, and the
-  new shipment carries the batch again.
-- **Cancellation.** `OrderServiceImpl.closeUndelivered`: the hold lifted and the rest closed through the closure of
-  the rest (4B-9) with the agreed fee - allowed once goods of the order came back, not only once printing started.
-  Nothing delivered → RETURNED, then REFUNDED / PARTIALLY_REFUNDED once the refunds are made
-  (`DeliveryFailureService.followRefunds`: on `OrderRefundRecorded`, and nightly in `OrderSettlementJob`).
+- Shipping fee (Q-19, owner 23/11): each closure waives the share of the order's shipping fee (with VAT) that the
+  shipment's goods are of the order's goods as signed - every shipment brought back waives the whole fee; the plate
+  fee is never waived. Payment works the share out (`OrderSettlement.shippingFeeShare`, a running total checked by
+  `tg_order_settlement_shipping_waiver`) from the fee and goods the order hands it
+  (`SettleShipmentReturnCommand.ShippingFee`, `OrderServiceImpl.shippingFeeOf`), takes it off the installments and
+  refunds it with the goods. Q-19 edge (owner 23/11): an order that ends a carrier return with nothing delivered is a
+  whole return and waives the whole fee, whichever came last - the return, or the rest closed before it shipped
+  (`ShippingFee.endsWithNothingDelivered` = `!Order.deliveredSomething() && Order.deliveriesOver()`, read after the
+  closure, on both `settleShipmentReturn` and `settleRemainderClosure`; the order is written before payment is asked,
+  whose trigger reads the shipments). `Order.deliveredSomething` is the one "nothing delivered": Q-6 liquidation,
+  PARTIALLY_RETURNED and Q-19 read it. The order keeps payment's answers (`order_shipment.shipping_fee_waived`,
+  `order_remainder_closure.shipping_fee_waived`); invoicing reads the total through `ShippingFeeWaivers.waivedOf`.
+- After delivery money: an order counts as delivered in full from its facts (`Order.deliveredInFullAt`, X-3): nothing
+  still coming and something delivered; the date is the latest of the last delivery and the closures (Q-3). Never
+  the date of whichever delivery happened to be recorded last (BE-04).
+- The contract ends COMPLETED only if a shipment was DELIVERED, else LIQUIDATED (Q-6); an order cancelled after
+  signing liquidates its contract once its money is settled (nightly step LIQUIDATE_CANCELLED). The database checks it
+  (`check_sales_contract_transition`).
+- A completion hold keeps the order from COMPLETED, CLOSED and PARTIALLY_FULFILLED → PARTIALLY_REFUNDED (Q-17,
+  `tg_order_completion_hold_respected`). From the refund branch an order closes only once every delivered shipment's
+  return window ended (Q-16 = b). `GET /orders/{id}` shows all of it (`settlementReadiness`, from
+  `SettlementReadiness`, the source the nightly run decides by).
+- Orders held for `DELIVERY_FAILED` before RTM-RETURNED keep their old exits: a receipt of a shipment whose units
+  they still owe opens an OPEN case (BE-16), and Sales cancel what was not delivered
+  (`POST /orders/{id}/delivery-failures/{caseId}/cancellation`). The redelivery endpoint is gone; the
+  failed-trip fee is not charged (Q-19).
 
 Lock order: order row → (installments) → SKU advisory locks. A case is written only under its order's lock.
 

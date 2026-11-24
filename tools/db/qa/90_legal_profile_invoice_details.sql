@@ -98,8 +98,16 @@ SELECT pg_temp.expect_true('nobody else holds a legal-profile permission - a por
        JOIN identity.permission p ON p.id = rp.permission_id
       WHERE p.resource = 'customer-legal-profiles'
         AND r.code NOT IN ('SALES_STAFF', 'SALES_MANAGER', 'ACCOUNTANT', 'SYSTEM_ADMIN')));
+-- The WF-05 demo's two customers (V20261222000200) are the exception on purpose: Mộc has an invoice e-mail of its own
+-- (Q-14) and Lá none at all (HĐ-8), which is what their demo cases show.
 SELECT pg_temp.expect_true('every profile of the demo seed took its contact e-mail as invoice e-mail',
     (SELECT count(*) = 0 FROM customer.customer_legal_profile p JOIN customer.customer c ON c.id = p.customer_id
-      WHERE p.id <> md5('qa90:profile')::uuid AND p.invoice_email IS DISTINCT FROM lower(btrim(c.email))));
+      WHERE p.id <> md5('qa90:profile')::uuid AND p.invoice_email IS DISTINCT FROM lower(btrim(c.email))
+        AND p.customer_id NOT IN (md5('demo:wf05:customer:MOC')::uuid, md5('demo:wf05:customer:LA')::uuid)));
+SELECT pg_temp.expect_true('the WF-05 demo: Mộc invoiced at its own invoice e-mail, Lá with none',
+    (SELECT count(*) = 0 FROM customer.customer_legal_profile p
+      WHERE (p.customer_id = md5('demo:wf05:customer:MOC')::uuid
+             AND p.invoice_email IS DISTINCT FROM 'hoadon.moc@stockflow.local')
+         OR (p.customer_id = md5('demo:wf05:customer:LA')::uuid AND p.invoice_email IS NOT NULL)));
 
 ROLLBACK;

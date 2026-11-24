@@ -223,7 +223,11 @@ class FormDocumentTest {
                 new Cell("Ly", true, List.of()), new Cell("1", false, List.of()), new Cell("1", false, List.of()),
                 new Cell("1", false, List.of()));
         try (PDDocument doc = Loader.loadPDF(draw(List.of(new Table("BẢNG", COLUMNS, List.of(row))), null))) {
-            assertThat(new PDFTextStripper().getText(doc)).contains("T8719C3EAC18D-\n").contains("D944D");
+            // The stripper ends a line with the platform's separator ("\r\n" on Windows): pinned, so the cut is checked
+            // the same on every machine.
+            PDFTextStripper stripper = new PDFTextStripper();
+            stripper.setLineSeparator("\n");
+            assertThat(stripper.getText(doc)).contains("T8719C3EAC18D-\n").contains("D944D");
         }
     }
 

@@ -109,6 +109,15 @@ class ChatCardListener {
     }
 
     /**
+     * WF-05 Q-2 / Q-19: a shipment the carrier brought back, or lost, was settled - its value and its share of the
+     * shipping fee came off the order's installments - so its transfer cards show what is left, as for a closed rest.
+     */
+    @ApplicationModuleListener
+    public void on(com.stockflow.contracts.ShipmentReturnSettled event) {
+        cards.paymentsChanged(event.customerId());
+    }
+
+    /**
      * An installment turned overdue (the nightly scan): its transfer cards say so, as the order page does - the card
      * was written when it was posted or last paid, and kept saying "not overdue" (15 §4.3 step 11).
      */

@@ -77,7 +77,7 @@ class EInvoiceSettingsController {
     @RequiresPermission(resource = InvoicingResources.SETTINGS, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<List<EInvoiceProviderResponse>> providers(@AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(providers.providers().stream().map(InvoicingWebMapper::toResponse).toList());
+        return ApiResponse.ok(providers.providers().stream().map(this::response).toList());
     }
 
     @PutMapping("/providers/{provider}/account")
@@ -88,7 +88,7 @@ class EInvoiceSettingsController {
                                                               StoreEInvoiceProviderAccountRequest request,
                                                               @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(InvoicingWebMapper.toResponse(providers.storeAccount(provider, request.environment(),
+        return ApiResponse.ok(response(providers.storeAccount(provider, request.environment(),
                 request.username(), request.secret(), request.version())));
     }
 
@@ -111,6 +111,11 @@ class EInvoiceSettingsController {
                                                           @Valid @RequestBody EInvoiceVersionRequest request,
                                                           @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(InvoicingWebMapper.toResponse(providers.activate(provider, request.version())));
+        return ApiResponse.ok(response(providers.activate(provider, request.version())));
+    }
+
+    /** The provider as configured, with what its adapter can do (WF-05 F-11). */
+    private EInvoiceProviderResponse response(com.stockflow.invoicing.internal.domain.ProviderAccounts.Account account) {
+        return InvoicingWebMapper.toResponse(account, providers.adapter(account.provider()));
     }
 }

@@ -56,7 +56,7 @@ class EInvoiceBuyerIncompleteNotificationListenerTest {
         assertThat(sent.severity()).isEqualTo(InboxSeverity.WARN);
         assertThat(sent.title()).contains("SO-20261101-0007");
         assertThat(sent.body()).contains("EINV-20261112-0001", "email nhận hoá đơn");
-        assertThat(sent.link()).isEqualTo("/customers/" + CUSTOMER);
+        assertThat(sent.link()).isEqualTo("/admin/customers/" + CUSTOMER);
         assertThat(sent.dedupeKey()).isEqualTo("einvoice-buyer-incomplete:" + INVOICE + ":EMAIL");
     }
 

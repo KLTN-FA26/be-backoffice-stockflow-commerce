@@ -1,6 +1,7 @@
 package com.stockflow.order.internal.service;
 
 import com.stockflow.common.config.SellerProperties;
+import com.stockflow.common.document.DocumentFormats;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUser;
@@ -12,7 +13,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.LocalDate;
-import java.time.ZoneId;
 import java.util.UUID;
 
 /**
@@ -25,7 +25,8 @@ import java.util.UUID;
  * <p>The seller is the company of {@code stockflow.seller.*}, as on the contract; a deployment without it refuses
  * (503 {@code SELLER_PROFILE_UNAVAILABLE}) rather than print an offer from nobody. The buyer is the customer's legal
  * profile when recorded (the contract will name it so), else its name and tax code: a quote comes before the contract,
- * and its customer may not have the profile yet.</p>
+ * and its customer may not have the profile yet. The letterhead and the products' names are read with the contract's
+ * ({@link SalesDocumentFacts}).</p>
  */
 @Service
 @Transactional(readOnly = true)
@@ -35,22 +36,23 @@ public class QuoteDocumentService {
     public record Pdf(String fileName, byte[] content) {
     }
 
-    private static final ZoneId VIETNAM = ZoneId.of("Asia/Ho_Chi_Minh");
-
     private final Quotes quotes;
     private final QuoteDocument document;
     private final SellerProperties seller;
     private final CustomerLegalProfiles legalProfiles;
     private final CustomerService customers;
+    private final SalesDocumentFacts shared;
     private final Clock clock;
 
     QuoteDocumentService(Quotes quotes, QuoteDocument document, SellerProperties seller,
-                         CustomerLegalProfiles legalProfiles, CustomerService customers, Clock clock) {
+                         CustomerLegalProfiles legalProfiles, CustomerService customers, SalesDocumentFacts shared,
+                         Clock clock) {
         this.quotes = quotes;
         this.document = document;
         this.seller = seller;
         this.legalProfiles = legalProfiles;
         this.customers = customers;
+        this.shared = shared;
         this.clock = clock;
     }
 
@@ -68,9 +70,10 @@ public class QuoteDocumentService {
                 seller.representative(), seller.representativeTitle());
         // Dated the day it was sent; a draft (a first one, or a revision reopened) is dated the day it is printed.
         LocalDate dated = LocalDate.ofInstant(quote.status() == QuoteStatus.DRAFT || quote.sentAt() == null
-                ? clock.instant() : quote.sentAt(), VIETNAM);
+                ? clock.instant() : quote.sentAt(), DocumentFormats.VIETNAM);
         return new Pdf(quote.quoteNumber() + ".pdf",
-                document.render(new QuoteDocument.Facts(quote, sellerParty, buyer(quote.customerId()), dated)));
+                document.render(new QuoteDocument.Facts(quote, sellerParty, buyer(quote.customerId()), dated,
+                        shared.head(), shared.names(quote.lines().stream().map(Quotes.LineView::sku).toList()))));
     }
 
     private SalesContracts.Party buyer(UUID customerId) {

@@ -24,7 +24,7 @@ public interface ContractCards {
     }
 
     /**
-     * @param status DRAFT, SENT, SIGNED, CANCELLED or COMPLETED, the order module's names
+     * @param status DRAFT, SENT, SIGNED, CANCELLED, COMPLETED or LIQUIDATED (WF-05 Q-6), the order module's names
      */
     record Card(UUID id, String number, UUID orderId, String orderNumber, String status,
                 BigDecimal totalAmount, String currency, int freeSampleRounds, List<Installment> paymentPlan,

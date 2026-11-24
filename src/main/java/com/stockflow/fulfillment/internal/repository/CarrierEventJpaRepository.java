@@ -20,6 +20,22 @@ public interface CarrierEventJpaRepository extends BaseJpaRepository<CarrierEven
             + "and e.shipmentId is null and e.result = com.stockflow.fulfillment.internal.domain.CarrierEventResult.APPLIED")
     Instant lastAppliedToLoad(@Param("loadId") UUID loadId);
 
+    /**
+     * The latest carrier time among the <b>outcomes</b> - delivered, not delivered, back at the warehouse, and an API
+     * carrier's order completed with its drop-offs' outcomes - applied to the load as a whole; null when none was
+     * (WF-05 BE-15). What an outcome about one shipment is held against at load level: a milestone of the vehicle
+     * (picked up, on its way, returning) says nothing about whether one drop-off was delivered before it, so a late
+     * report of a delivery made before the vehicle turned back is not outdated by it. A completed order does: it carried
+     * that drop-off's outcome, and an older report must not undo it.
+     */
+    @Query("select max(e.carrierReportedAt) from CarrierEventJpaEntity e where e.loadId = :loadId "
+            + "and e.shipmentId is null and e.result = com.stockflow.fulfillment.internal.domain.CarrierEventResult.APPLIED "
+            + "and e.eventKind in (com.stockflow.fulfillment.internal.domain.CarrierEventKind.DELIVERED, "
+            + "com.stockflow.fulfillment.internal.domain.CarrierEventKind.DELIVERY_FAILED, "
+            + "com.stockflow.fulfillment.internal.domain.CarrierEventKind.RETURNED, "
+            + "com.stockflow.fulfillment.internal.domain.CarrierEventKind.ORDER_COMPLETED)")
+    Instant lastOutcomeAppliedToLoad(@Param("loadId") UUID loadId);
+
     /** The latest carrier time among the reports applied to the shipment; null when none was. */
     @Query("select max(e.carrierReportedAt) from CarrierEventJpaEntity e where e.shipmentId = :shipmentId "
             + "and e.result = com.stockflow.fulfillment.internal.domain.CarrierEventResult.APPLIED")

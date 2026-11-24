@@ -13,7 +13,8 @@
  *
  * <p>{@code notification :: api}, only to answer its question about an issued invoice ({@code EInvoiceDirectory}:
  * what the mail to the buyer says and its two files, WF-05 E5). Notification hears of an issued, a refused and a stuck
- * invoice through {@code EInvoiceIssued} and {@code EInvoiceNeedsAttention} from {@code contracts}, of the provider's
+ * invoice through {@code EInvoiceIssued} and {@code EInvoiceNeedsAttention} from {@code contracts} - and of one to be
+ * e-mailed to its buyer again through {@code EInvoiceMailRequested} (audit r2 M-1) - of the provider's
  * account needing somebody on its portal through {@code EInvoiceProviderAccountAlert} (HĐ-1), and of a buyer whose
  * profile lacks what an invoice needs through {@code EInvoiceBuyerIncomplete} (HĐ-8); this module sends nothing
  * itself.</p>

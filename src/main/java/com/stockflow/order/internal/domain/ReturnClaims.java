@@ -29,16 +29,32 @@ public final class ReturnClaims {
      *                    cancelled or expired
      * @param open        whether the return is still open ({@link ReturnStatus#isOpen}): one open return per order line
      *                    and delivery
+     * @param refunded    whether units of the line were refunded on that delivery: a RESOLVED return refunded some
+     *                    (WF-05 Q-15 - such a delivery takes a further claim through Sales only)
      */
-    public record Claim(UUID shipmentId, UUID orderLineId, int units, boolean open) {
+    public record Claim(UUID shipmentId, UUID orderLineId, int units, boolean open, boolean refunded) {
 
         public Claim {
             Objects.requireNonNull(orderLineId, "orderLineId");
         }
 
-        /** The claim a line of a return in {@code status} makes. */
+        /** A claim of a line nothing of which was refunded. */
+        public Claim(UUID shipmentId, UUID orderLineId, int units, boolean open) {
+            this(shipmentId, orderLineId, units, open, false);
+        }
+
+        /** The claim a line of a return in {@code status} makes, with no parcel of it on a draft receipt. */
         public static Claim of(UUID shipmentId, ReturnStatus status, ReturnLine line) {
-            return new Claim(shipmentId, line.orderLineId(), line.claimedUnits(status), status.isOpen());
+            return of(shipmentId, status, line, false);
+        }
+
+        /**
+         * The claim a line of a return in {@code status} makes; {@code draftOpen}: a parcel of it is counted on a draft
+         * receipt now ({@link ReturnLine#claimedUnits(ReturnStatus, boolean)}).
+         */
+        public static Claim of(UUID shipmentId, ReturnStatus status, ReturnLine line, boolean draftOpen) {
+            return new Claim(shipmentId, line.orderLineId(), line.claimedUnits(status, draftOpen), status.isOpen(),
+                    status == ReturnStatus.RESOLVED && line.refundQuantity() > 0);
         }
     }
 
@@ -50,6 +66,17 @@ public final class ReturnClaims {
 
     public static ReturnClaims of(Collection<Claim> claims) {
         return claims == null || claims.isEmpty() ? NONE : new ReturnClaims(List.copyOf(claims));
+    }
+
+    /**
+     * What {@code returns} claim, leaving out return {@code except}: the bound a closed return's parcel is checked
+     * against before it takes back what it approved (WF-05 Q-11, audit round 2 M2).
+     */
+    public static ReturnClaims ofOthers(Collection<ReturnRequest> returns, UUID except) {
+        return of(returns.stream().filter(other -> !other.id().equals(except))
+                .flatMap(other -> other.lines().stream().map(line -> Claim.of(other.shipmentId(), other.status(),
+                        line, other.openDraftReceiptId() != null)))
+                .toList());
     }
 
     /** Per order line, the units every return claims, whatever delivery it is against. */
@@ -68,6 +95,19 @@ public final class ReturnClaims {
         claims.stream().filter(claim -> Objects.equals(claim.shipmentId(), shipmentId))
                 .forEach(claim -> units.merge(claim.orderLineId(), claim.units(), Integer::sum));
         return units;
+    }
+
+    /**
+     * The deliveries a return already refunded units of (WF-05 Q-15): a portal claim is decided per delivery, so a
+     * delivery nothing of which was refunded stays claimable on the portal whatever the order's status says - and one
+     * that was refunded takes a further claim through Sales only. The order as a whole (null) is never in it: an order
+     * delivered without shipments keeps the order-level rule.
+     */
+    public Set<UUID> refundedShipments() {
+        Set<UUID> refunded = new HashSet<>();
+        claims.stream().filter(claim -> claim.refunded() && claim.shipmentId() != null)
+                .forEach(claim -> refunded.add(claim.shipmentId()));
+        return refunded;
     }
 
     /** The order lines with a return still open against delivery {@code shipmentId} (null: the order as a whole). */

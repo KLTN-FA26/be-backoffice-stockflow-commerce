@@ -81,6 +81,7 @@ final class OrderPersistenceMapper {
         order.restoreLifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                 entity.getShippedAt(), entity.getDeliveredAt(), entity.getDeliveryFailureReason(),
                 entity.getCompletedAt(), entity.getRefundedAt(), entity.getClosedAt());
+        order.restoreReturnPath(entity.getStatusBeforeReturn(), entity.getRemainderClosedAt());
         order.attachFees(entity.getFees().stream()
                 .map(fee -> new com.stockflow.order.internal.domain.OrderFee(fee.getId(), fee.getKind(),
                         fee.getSku() == null ? null : new Sku(fee.getSku()),
@@ -91,7 +92,9 @@ final class OrderPersistenceMapper {
                 .map(row -> new OrderShipment(row.getId(), row.getQuantities(), row.getAmount(), row.getHandedOverAt(),
                         row.getHandedOverBy(), row.getStatus(), row.getOutcomeAt(), row.getOutcomeBy(),
                         row.getFailureReason(), row.getFailureNote(), row.getCarriage())
-                        .restoreDeliveryBatch(row.getDeliveryBatchId()))
+                        .restoreDeliveryBatch(row.getDeliveryBatchId())
+                        .restoreUnitsClosed(row.getUnitsClosedAt())
+                        .restoreClosedMoney(row.getClosedGoodsValue(), row.getShippingFeeWaived()))
                 .toList());
         return order;
     }
@@ -140,6 +143,7 @@ final class OrderPersistenceMapper {
         entity.applyLifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(), order.shippedAt(),
                 order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(), order.refundedAt(),
                 order.closedAt());
+        entity.applyReturnPath(order.statusBeforeReturn(), order.remainderClosedAt());
     }
 
     /** For the paginated order-history query only. Deliberately never touches {@code
@@ -186,7 +190,7 @@ final class OrderPersistenceMapper {
                         entity.getPackedAt(), entity.getShippedAt(), entity.getDeliveredAt(),
                         entity.getDeliveryFailureReason(), entity.getCompletedAt(), entity.getClosedAt(), null, null,
                         List.of(), List.of(), entity.isAllowPartialShipment(), null, entity.getFirstLabeledAt()),
-                rowCharges(entity));
+                rowCharges(entity), entity.getVersion());
     }
 
     /**

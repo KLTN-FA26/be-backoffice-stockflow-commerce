@@ -15,7 +15,8 @@ import java.util.UUID;
  * the plan row says - amount, milestone, days to pay, the delivery batch it is tied to - and never changed after. Its
  * milestone comes once ({@link #reach}) - unless it is paid after delivery and the delivery it counted from is
  * corrected to a failure, which takes the milestone back ({@link #withdrawMilestone}) until the goods are delivered
- * again; receipts pay it ({@link #pay}), a voided receipt takes that back
+ * again, or the order comes to count as delivered in full from another day, which moves it ({@link #redate}); receipts
+ * pay it ({@link #pay}), a voided receipt takes that back
  * ({@link #unpay}); the unpaid installments of a cancelled order are {@link #cancel cancelled}, and a closure of the
  * rest of the order takes off what the goods closed were worth ({@link #reduce}, 4B-9).
  *
@@ -141,17 +142,6 @@ public final class Installment {
         return openFee(InstallmentMilestone.CANCELLATION_FEE, ofContract, seq, name, owed, at, day);
     }
 
-    /**
-     * The fee item of a failed trip (WF-05 fix plan, section 2): what the customer pays for a delivery they refused or
-     * misaddressed, once Sales decide to deliver again. As the cancellation fee item: due at once, numbered after the
-     * plan, never lowered by a closure and never cancelled - the trip failed whatever becomes of the order. Due at once
-     * is deliberate and an open question for the owner (see {@code InstallmentService.chargeFailedDelivery}).
-     */
-    public static Installment openDeliveryFailureFee(Installment ofContract, int seq, String name, BigDecimal owed,
-                                                     Instant at, LocalDate day) {
-        return openFee(InstallmentMilestone.FAILED_TRIP_FEE, ofContract, seq, name, owed, at, day);
-    }
-
     private static Installment openFee(InstallmentMilestone kind, Installment ofContract, int seq, String name,
                                        BigDecimal owed, Instant at, LocalDate day) {
         Objects.requireNonNull(ofContract, "ofContract");
@@ -187,6 +177,33 @@ public final class Installment {
         if (status == InstallmentStatus.NOT_DUE) {
             this.status = InstallmentStatus.DUE;
         }
+        return true;
+    }
+
+    /**
+     * WF-05 BE-04 (decision Q-3): the order counts as delivered in full from another moment than the one it was reached
+     * from - a delivery recorded after a later one, a return or a loss closed after the last delivery (the later of the
+     * two is the day, Q-3), a delivery corrected and made again. Reached once and never moved, the customer was due -
+     * and overdue - from a stale day: up to fifteen days early, the credit hold and the return window following it
+     * (audit M-3). Only after delivery, reached and still owing, as {@link #withdrawMilestone}; status unchanged - DUE
+     * stays DUE, PARTIALLY_PAID keeps what was paid. {@code ck_installment_status_facts} and
+     * {@code check_installment_transition} allow exactly this move.
+     *
+     * @return whether anything changed (false: not such an installment, or already from {@code at})
+     */
+    public boolean redate(Instant at, LocalDate day) {
+        Objects.requireNonNull(at, "at");
+        Objects.requireNonNull(day, "day");
+        if (milestone != InstallmentMilestone.AFTER_DELIVERY || reachedAt == null
+                || status == InstallmentStatus.PAID || status == InstallmentStatus.CANCELLED) {
+            return false;
+        }
+        LocalDate due = day.plusDays(dueDays);
+        if (at.equals(reachedAt) && due.equals(dueDate)) {
+            return false;
+        }
+        this.reachedAt = at;
+        this.dueDate = due;
         return true;
     }
 
@@ -346,8 +363,9 @@ public final class Installment {
     }
 
     /**
-     * A fee item rather than a row of the contract's plan: a cancellation fee (15 §4.6 step 18) or the fee of a failed
-     * trip. Its money is the fee's alone - no settlement counts it as collected for goods, and it is never refunded.
+     * A fee item rather than a row of the contract's plan: a cancellation fee (15 §4.6 step 18), or - on rows written
+     * before WF-05 decision Q-19 removed it - the fee of a failed trip. Its money is the fee's alone - no settlement
+     * counts it as collected for goods, and it is never refunded.
      */
     public boolean isFeeItem() {
         return milestone.feeItem();

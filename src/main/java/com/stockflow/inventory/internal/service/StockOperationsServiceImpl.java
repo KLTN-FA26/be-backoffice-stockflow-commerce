@@ -1043,6 +1043,8 @@ class StockOperationsServiceImpl implements StockOperations {
                 }
             }
         }
+        // WF-05 Q-4 (H1): not while the carton's return has not made it the company's.
+        cartons.requireCompanys(carton);
         Instant now = clock.instant();
         StockAdjustment adjustment = StockAdjustment.requestCarton(
                 adjustments.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), carton.id(), carton.location(),

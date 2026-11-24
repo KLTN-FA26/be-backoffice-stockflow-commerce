@@ -2,6 +2,7 @@ package com.stockflow.notification.internal.service;
 
 import com.stockflow.contracts.EInvoiceErrorNoticeRecorded;
 import com.stockflow.contracts.EInvoiceIssued;
+import com.stockflow.contracts.EInvoiceMailRequested;
 import com.stockflow.notification.api.CustomerContact;
 import com.stockflow.notification.api.EInvoiceDirectory;
 import com.stockflow.notification.api.EInvoiceErrorNoticeMail;
@@ -28,7 +29,9 @@ import java.util.ResourceBundle;
  *
  * <p>It goes to the address <b>the invoice names</b> - the buyer's invoice e-mail, copied from the customer's legal
  * profile when the invoice was drawn up and what the accountant checked before issuing - not to the customer's contact
- * address, where order mail goes: the person who books invoices is rarely the one who places orders.</p>
+ * address, where order mail goes: the person who books invoices is rarely the one who places orders. An invoice issued
+ * without one goes to the customer's invoice e-mail as it is now, and an invoice sent again at staff's request
+ * ({@link #resent}) to that one first (audit r2 M-1): invoicing decides, {@link EInvoiceDirectory} says.</p>
  *
  * <p>It also words the notice that an issued invoice names its buyer wrongly (04/SS-HĐĐT): the same address, since it
  * is about that invoice, and no file - the invoice is not issued again, the buyer keeps the one it has.</p>
@@ -37,6 +40,11 @@ import java.util.ResourceBundle;
 class EInvoiceEmailComposer {
 
     static final String EINVOICE_ISSUED = "einvoice.issued";
+    /**
+     * The same message sent again at staff's request (audit r2 M-1): its own template code, so the log tells it from
+     * the first, and under the e-invoice mail switch as the first is ({@code einvoice.} prefix); worded as the first.
+     */
+    static final String EINVOICE_RESENT = "einvoice.resent";
     static final String EINVOICE_ERROR_NOTICE = "einvoice.error-notice";
 
     private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("dd/MM/yyyy");
@@ -55,6 +63,24 @@ class EInvoiceEmailComposer {
                 null,
                 addressee -> content(einvoices.mail(event.einvoiceId()).orElseThrow(), addressee),
                 () -> einvoices.mail(event.einvoiceId()).map(mail ->
+                        new CustomerContact(mail.customerId(), mail.buyerName(), mail.recipientEmail())),
+                () -> einvoices.files(event.einvoiceId()).stream()
+                        .map(file -> new Email.Attachment(file.name(), file.contentType(), file.content()))
+                        .toList()));
+    }
+
+    /**
+     * The invoice sent again at staff's request (audit r2 M-1; HĐ-8 "bổ sung e-mail → gửi lại"): a message of its own
+     * per request ({@code customer-mail:einvoice.resent:<invoice id>:<requested at, epoch second>}) - the first one, a
+     * mail settled as skipped for want of an address or sent to a wrong one, is never reopened, and a provider that keeps
+     * idempotency keys would answer the first's key with the first's message. Addressed to the customer's invoice e-mail
+     * as it is now ({@link EInvoiceDirectory#mailAgain}), with the same words and files as the first.
+     */
+    Optional<CustomerMessage> resent(EInvoiceMailRequested event) {
+        return Optional.of(new CustomerMessage(EINVOICE_RESENT,
+                event.einvoiceId() + ":" + event.requestedAt().getEpochSecond(), event.customerId(), null,
+                addressee -> content(einvoices.mailAgain(event.einvoiceId()).orElseThrow(), addressee),
+                () -> einvoices.mailAgain(event.einvoiceId()).map(mail ->
                         new CustomerContact(mail.customerId(), mail.buyerName(), mail.recipientEmail())),
                 () -> einvoices.files(event.einvoiceId()).stream()
                         .map(file -> new Email.Attachment(file.name(), file.contentType(), file.content()))

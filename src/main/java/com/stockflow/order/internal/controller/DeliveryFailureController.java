@@ -30,8 +30,9 @@ import java.util.UUID;
 
 /**
  * Delivery failure cases for Sales (WF-05 fix plan, sections 2-3; kltn-docs 09 §4.3, 17 §4.8): the shipments the
- * carrier brought back, once their goods are received, and the decision on each - deliver again, or cancel what was
- * not delivered.
+ * carrier brought back, once their goods are received. Since RTM-RETURNED and WF-05 Q-7 a case is a record of what came
+ * back, closed by the system when the receipt settled the shipment ({@code closure} RECORDED_ON_RETURN); only an order
+ * from before RTM-RETURNED still owing the shipment's units waits for Sales to cancel what was not delivered.
  *
  * <p>No resource of its own. Reading is reading orders ({@code sales-orders:READ}, back office only - the portal
  * customer holds it for their own orders), limited for a warehouse manager as the order endpoints are
@@ -58,8 +59,9 @@ class DeliveryFailureController {
     }
 
     @GetMapping("/delivery-failures")
-    @Operation(summary = "Delivery failure cases, oldest first: shipments the carrier brought back whose goods were "
-            + "received. status=OPEN is what waits for Sales to deliver again or cancel what was not delivered")
+    @Operation(summary = "Delivery failure cases, newest first (at most 200): shipments the carrier brought back "
+            + "whose goods were received. status=OPEN is what waits for Sales to cancel what was not delivered (orders from before "
+            + "RTM-RETURNED only)")
     @RequiresPermission(resource = OrderResources.ORDERS, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<List<DeliveryFailureCaseResponse>> list(
             @RequestParam(required = false) DeliveryFailureCase.Status status,
@@ -122,10 +124,15 @@ class DeliveryFailureController {
 
     private static DeliveryFailureCaseResponse toResponse(DeliveryFailureService.CaseView view) {
         DeliveryFailureCase c = view.failure();
+        // WF-05 F-4 (BE-42): a case the system closed carries its English note, which the back office showed as it is;
+        // the machine-readable closure says it, and the note is not passed on.
+        String closure = DeliveryFailureCaseResponse.closureOf(c.status().name(), c.decisionNote(),
+                DeliveryFailureService.systemClosureNote());
+        String decisionNote = "RECORDED_ON_RETURN".equals(closure) ? null : c.decisionNote();
         return new DeliveryFailureCaseResponse(c.id(), c.orderId(), view.orderNumber(), view.customerId(),
                 view.orderStatus().name(), c.shipmentId(), c.deliveryBatchId(), c.receiptId(), c.receiptNumber(),
                 c.warehouseId(), c.failureReason().name(), c.failureNote(), c.customerPaysFailedTrip(),
-                c.status().name(), c.openedAt(), c.decidedBy(), c.decidedAt(), c.decisionNote(), c.failedTripFee(),
+                c.status().name(), closure, c.openedAt(), c.decidedBy(), c.decidedAt(), decisionNote, c.failedTripFee(),
                 c.feeInstallmentId(), c.carrierClaim(), view.readyForRelease(), c.releasedAt(), c.releasedBy(),
                 c.redeliveryShipmentId(), c.redeliveredAt(), c.closedAt(),
                 c.units().entrySet().stream().map(line -> new DeliveryFailureCaseResponse.Line(line.getKey(),

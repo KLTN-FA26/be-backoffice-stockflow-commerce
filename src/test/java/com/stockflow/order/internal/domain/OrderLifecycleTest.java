@@ -708,7 +708,11 @@ class OrderLifecycleTest {
             assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
             assertThat(order.holdReason()).isNull();
             assertThat(order.outstandingUnits()).as("the units that came back are not owed any more").isZero();
-            assertThat(order.closedByReturn()).isEqualByComparingTo("100000");
+            // WF-05 Q-7: the carrier's report closes nothing; the confirmed return receipt does.
+            assertThat(order.closedAmount()).isZero();
+            assertThat(order.partlyReturnedAndDone()).as("its receipt is still to come").isFalse();
+            assertThat(order.closeReturnedShipment(S2, NOW, NOW, STAFF).orElseThrow().goodsValue())
+                    .isEqualByComparingTo("100000");
             assertThat(order.closedAmount()).isEqualByComparingTo("100000");
             assertThat(order.billable()).as("only the delivered cups are what it is worth now")
                     .isEqualByComparingTo("1000000");

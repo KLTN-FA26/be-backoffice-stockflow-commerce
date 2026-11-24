@@ -158,17 +158,18 @@ $$;
 -- The head of an adjustment or replacement of invoice `of`, for `cartons` cartons (below zero reduces; 0: no money).
 -- Its shipment, order and buyer are those of the invoice it corrects.
 CREATE FUNCTION pg_temp.correction(tag TEXT, kind TEXT, basis TEXT, of TEXT, cartons INT, return_tag TEXT DEFAULT NULL,
-                                   reason TEXT DEFAULT 'sai so luong', shipment TEXT DEFAULT NULL) RETURNS void LANGUAGE sql AS $$
+                                   reason TEXT DEFAULT 'sai so luong', shipment TEXT DEFAULT NULL,
+                                   via TEXT DEFAULT NULL) RETURNS void LANGUAGE sql AS $$
     INSERT INTO invoicing.einvoice (id, code, type, status, order_id, order_number, shipment_id, customer_id,
                                     original_einvoice_id, correction_basis, return_request_id, issue_date, issue_due_at,
                                     seller_name, seller_tax_code, seller_address, buyer_name, buyer_tax_code,
                                     buyer_address, buyer_email, currency, payment_method, subtotal, tax_total,
-                                    grand_total, amount_in_words, adjustment_reason)
+                                    grand_total, amount_in_words, adjustment_reason, issued_via)
     SELECT md5('qa93:' || tag)::uuid, 'EINV-QA93-' || tag, kind, 'DRAFT', o.order_id, o.order_number,
            COALESCE(md5('qa93:' || shipment)::uuid, o.shipment_id), o.customer_id, o.id, basis, md5('qa93:' || return_tag)::uuid, DATE '2026-11-12',
            TIMESTAMPTZ '2026-11-13 17:00:00+00', o.seller_name, o.seller_tax_code, o.seller_address, o.buyer_name,
            o.buyer_tax_code, o.buyer_address, o.buyer_email, 'VND', 'BANK_TRANSFER', cartons * 100000, cartons * 10000,
-           cartons * 110000, 'so tien bang chu', reason
+           cartons * 110000, 'so tien bang chu', reason, via
       FROM invoicing.einvoice o WHERE o.id = md5('qa93:' || of)::uuid;
 $$;
 -- The written agreement of both parties (TT 91 Điều 10 khoản 1 điểm b): its file, number and date.
@@ -262,8 +263,13 @@ SELECT pg_temp.expect_refused('R2 a second original of the shipment while the re
     'tg_einvoice_original_per_shipment', $q$ SELECT pg_temp.original('cnew0', 1, 's3', 10) $q$);
 SELECT pg_temp.expect_refused('R3 the replacement reversed with no reduction of it', 'tg_einvoice_reversed_by', $q$
     UPDATE invoicing.einvoice SET reversed_at = NOW() WHERE id = md5('qa93:crep')::uuid $q$);
-SELECT pg_temp.expect_ok('R4 the full reduction of the replacement drawn up, and the replacement reversed', $q$
-    SELECT pg_temp.correction('crev', 'ADJUSTMENT', 'DELIVERY_FAILED', 'crep', -10, NULL, 'giao that bai');
+-- WF-05 Q-9: no provider adjusts a replacement (SePay 422, sandbox T-5), so the system never draws up its reduction;
+-- the accountant makes it on the provider's portal and records it (issued_via PORTAL_RECORD, Q-8).
+SELECT pg_temp.expect_refused('R4 the system drafts a reduction of the replacement', 'tg_einvoice_correction_form', $q$
+    SELECT pg_temp.correction('crev0', 'ADJUSTMENT', 'DELIVERY_FAILED', 'crep', -10, NULL, 'giao that bai') $q$);
+SELECT pg_temp.expect_ok('R4b the reduction made on the portal recorded, and the replacement reversed', $q$
+    SELECT pg_temp.correction('crev', 'ADJUSTMENT', 'DELIVERY_FAILED', 'crep', -10, NULL, 'giao that bai', NULL,
+                              'PORTAL_RECORD');
     SELECT pg_temp.goods('crev', 1, -10);
     UPDATE invoicing.einvoice SET reversed_at = NOW() WHERE id = md5('qa93:crep')::uuid $q$);
 SELECT pg_temp.expect_refused('R5 the replaced original is still final: not reversed itself', 'tg_einvoice_final', $q$

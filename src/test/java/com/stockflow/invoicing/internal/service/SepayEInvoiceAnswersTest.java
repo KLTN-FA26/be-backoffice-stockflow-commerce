@@ -3,8 +3,12 @@ package com.stockflow.invoicing.internal.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.stockflow.invoicing.internal.domain.EInvoiceProvider.Result;
+import com.stockflow.invoicing.internal.domain.EInvoiceProvider.ResultState;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -82,5 +86,48 @@ class SepayEInvoiceAnswersTest {
                 .isEqualTo(SepayEInvoiceAnswers.Tracking.FAILED);
         assertThat(SepayEInvoiceAnswers.tracking(200, failed("chua xac nhan duoc ket qua")))
                 .isEqualTo(SepayEInvoiceAnswers.Tracking.UNCONFIRMED);
+    }
+    private static JsonNode lookedUp(String status, String number) {
+        ObjectNode data = JSON.createObjectNode().put("status", status).put("reference_code", "REF")
+                .put("invoice_series", "C26TSE").put("template_code", "1");
+        if (number != null) {
+            data.put("invoice_number", number);
+        }
+        ObjectNode body = JSON.createObjectNode().put("success", true);
+        body.set("data", data);
+        return body;
+    }
+
+    @Test
+    @DisplayName("BE-07 (Q-5): issued at SePay without a number yet is waited for, never 'cannot say'")
+    void issuedWithoutANumberIsPending() {
+        for (String status : java.util.List.of("issued", "replaced", "adjusted")) {
+            assertThat(SepayEInvoiceAnswers.state(200, lookedUp(status, null))).as(status)
+                    .isEqualTo(ResultState.PENDING);
+            assertThat(SepayEInvoiceAnswers.state(200, lookedUp(status, "0"))).as(status + " numbered 0")
+                    .isEqualTo(ResultState.PENDING);
+            assertThat(SepayEInvoiceAnswers.saysIssued(lookedUp(status, null).get("data"))).isTrue();
+        }
+        assertThat(SepayEInvoiceAnswers.state(200, lookedUp("issued", "358904"))).isEqualTo(ResultState.ISSUED);
+        assertThat(SepayEInvoiceAnswers.saysIssued(lookedUp("draft", null).get("data"))).isFalse();
+    }
+
+    @Test
+    @DisplayName("BE-30: an issued invoice carries the series SePay says it numbered it under (sandbox T-4: C26TSE)")
+    void anIssuedInvoiceCarriesSepaysSeries() {
+        Instant now = Instant.parse("2026-11-23T06:00:00Z");
+        Result issued = SepayEInvoiceAnswers.issued(lookedUp("issued", "358904").get("data"), null, "REF", true, now);
+
+        assertThat(issued.state()).isEqualTo(ResultState.ISSUED);
+        assertThat(issued.invoiceNumber()).isEqualTo(358904);
+        assertThat(issued.symbol()).isEqualTo("C26TSE");
+        assertThat(issued.templateCode()).isEqualTo("1");
+
+        ObjectNode silent = (ObjectNode) lookedUp("issued", "358904").get("data");
+        silent.remove("invoice_series");
+        silent.remove("template_code");
+        Result unsaid = SepayEInvoiceAnswers.issued(silent, null, "REF", true, now);
+        assertThat(unsaid.symbol()).as("not said: nothing to compare, nothing invented").isNull();
+        assertThat(unsaid.templateCode()).isNull();
     }
 }

@@ -24,6 +24,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -90,6 +91,7 @@ class EInvoiceCorrectionsReturnTest {
         EInvoice first = issued(line, 1);
         EInvoice second = issued(line, 2);
         when(invoices.findInForceOfOrder(order)).thenReturn(List.of(first.id(), second.id()));
+        when(invoices.findLiveOriginalOfShipment(second.shipmentId())).thenReturn(Optional.of(second));
         ReturnResolved plain = returned(order, List.of(refunded(line, 30)));
         ReturnResolved ofSecond = new ReturnResolved(plain.returnRequestId(), plain.rmaNumber(), order,
                 plain.orderNumber(), plain.customerId(), null, null, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
@@ -99,6 +101,146 @@ class EInvoiceCorrectionsReturnTest {
                 .satisfies(draft -> assertThat(draft.originalEInvoiceId()).isEqualTo(second.id()));
         assertThat(corrections.drawUpForReturn(returned(order, List.of(refunded(line, 30)))).drafts()).singleElement()
                 .satisfies(draft -> assertThat(draft.originalEInvoiceId()).isEqualTo(first.id()));
+    }
+
+    /** The return of {@code lines} against {@code shipmentId}. */
+    private static ReturnResolved returnedFrom(UUID orderId, UUID shipmentId, List<ReturnResolved.Line> lines) {
+        ReturnResolved plain = returned(orderId, lines);
+        return new ReturnResolved(plain.returnRequestId(), plain.rmaNumber(), orderId, plain.orderNumber(),
+                plain.customerId(), null, null, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, "VND", true, lines,
+                plain.resolvedBy(), RESOLVED_AT, null, shipmentId);
+    }
+
+    @Test
+    @DisplayName("WF-05 BE-44 (G4): units refunded worth no money - an order with nothing paid (TH-2), the flag set "
+            + "by units - are still taken off the invoice at its own price: the invoice said they were sold")
+    void unitsRefundedWorthNoMoneyStillAdjustTheInvoice() {
+        UUID order = UUID.randomUUID();
+        UUID line = UUID.randomUUID();
+        EInvoice own = issued(line, 1);
+        when(invoices.findLiveOriginalOfShipment(own.shipmentId())).thenReturn(Optional.of(own));
+        ReturnResolved nothingPaid = returnedFrom(order, own.shipmentId(), List.of(refunded(line, 20)));
+        assertThat(nothingPaid.offsetAmount().add(nothingPaid.refundedAmount())).as("no money moved").isZero();
+        assertThat(nothingPaid.lines().getFirst().creditAmount()).isZero();
+
+        EInvoiceCorrections.ReturnAdjustments drawn = corrections.drawUpForReturn(nothingPaid);
+
+        assertThat(drawn.drafts()).singleElement().satisfies(draft -> {
+            assertThat(draft.lines()).extracting(EInvoiceLine::quantity).containsExactly(-2);
+            // 2 cartons at 20,000 with 10% VAT, whatever the return was settled for in money.
+            assertThat(draft.grandTotal()).isEqualByComparingTo("-44000");
+        });
+        assertThat(drawn.pending()).isEmpty();
+        assertThat(drawn.unplaced()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("WF-05 BE-28 (HĐ-4): more returned than the shipment's own invoice holds - the rest is the "
+            + "accountant's, never taken off another shipment's invoice")
+    void aReturnNeverSpillsOntoAnotherShipment() {
+        UUID order = UUID.randomUUID();
+        UUID line = UUID.randomUUID();
+        EInvoice other = issued(line, 1);
+        EInvoice own = issued(line, 2);
+        when(invoices.findInForceOfOrder(order)).thenReturn(List.of(other.id(), own.id()));
+        when(invoices.findLiveOriginalOfShipment(own.shipmentId())).thenReturn(Optional.of(own));
+
+        EInvoiceCorrections.ReturnAdjustments drawn = corrections.drawUpForReturn(returnedFrom(order,
+                own.shipmentId(), List.of(refunded(line, 130))));
+
+        assertThat(drawn.drafts()).singleElement().satisfies(draft -> {
+            assertThat(draft.originalEInvoiceId()).isEqualTo(own.id());
+            assertThat(draft.lines()).extracting(EInvoiceLine::pieces).containsExactly(-100L);
+        });
+        assertThat(drawn.unplaced()).isEqualTo(Map.of(line, 30L));
+        verify(invoices, never()).findByIdForUpdate(other.id());
+    }
+
+    @Test
+    @DisplayName("WF-05 BE-28: the shipment's own invoice not issued yet - the pieces are kept and nothing is taken "
+            + "off another; once it is issued they are taken off it, once")
+    void aReturnWaitsForItsOwnInvoice() {
+        UUID order = UUID.randomUUID();
+        UUID line = UUID.randomUUID();
+        EInvoice other = issued(line, 1);
+        EInvoice own = EInvoice.drawUpOriginal(UUID.randomUUID(), "EINV-20261112-0009", EInvoiceFixtures.delivery(),
+                EInvoiceFixtures.SELLER, EInvoiceFixtures.BUYER, List.of(EInvoiceLine.goods(UUID.randomUUID(), 1, line,
+                        SKU, "Ly giay 12oz", "Thung", 10, 10, CARTON_PRICE, TEN)), false, false);
+        when(invoices.findInForceOfOrder(order)).thenReturn(List.of(other.id()));
+        when(invoices.findLiveOriginalOfShipment(own.shipmentId())).thenReturn(Optional.of(own));
+        ReturnResolved resolved = returnedFrom(order, own.shipmentId(), List.of(refunded(line, 30)));
+
+        EInvoiceCorrections.ReturnAdjustments kept = corrections.drawUpForReturn(resolved);
+
+        assertThat(kept.drafts()).isEmpty();
+        assertThat(kept.pending()).isEqualTo(Map.of(line, 30L));
+        org.mockito.ArgumentCaptor<EInvoiceRepository.PendingReturnPieces> pieces =
+                org.mockito.ArgumentCaptor.forClass(EInvoiceRepository.PendingReturnPieces.class);
+        verify(invoices).keepPendingReturn(pieces.capture(), eq(RESOLVED_AT));
+        assertThat(pieces.getValue().shipmentId()).isEqualTo(own.shipmentId());
+        assertThat(pieces.getValue().pieces()).isEqualTo(30L);
+        verify(invoices, never()).findByIdForUpdate(other.id());
+
+        // Issued now: the kept pieces come off it.
+        EInvoiceFixtures.issued(own, 9);
+        when(invoices.findByIdForUpdate(own.id())).thenReturn(Optional.of(own));
+        when(invoices.findPendingReturnsOfShipment(own.shipmentId())).thenReturn(List.of(pieces.getValue()));
+        var placed = corrections.drawUpPendingReturns(own.shipmentId());
+        assertThat(placed).hasSize(1);
+        assertThat(placed.values().iterator().next().drafts()).singleElement().satisfies(draft -> {
+            assertThat(draft.originalEInvoiceId()).isEqualTo(own.id());
+            assertThat(draft.returnRequestId()).isEqualTo(resolved.returnRequestId());
+            assertThat(draft.lines()).extracting(EInvoiceLine::pieces).containsExactly(-30L);
+        });
+        verify(invoices).settlePendingReturn(resolved.returnRequestId(), own.shipmentId(), RESOLVED_AT);
+
+        // Adjusted meanwhile (by hand, or a second delivery of the event): nothing drawn twice.
+        when(invoices.hasAdjustmentForReturn(resolved.returnRequestId())).thenReturn(true);
+        assertThat(corrections.drawUpPendingReturns(own.shipmentId())).isEmpty();
+    }
+
+    @Test
+    @DisplayName("audit r2 L-1: the shipment's invoice read at the provider, but issued by the time its lock is held - "
+            + "decided on the locked row: taken off it now, never kept for an EInvoiceIssued already published")
+    void aReturnIsDecidedOnTheLockedInvoice() {
+        UUID order = UUID.randomUUID();
+        UUID line = UUID.randomUUID();
+        EInvoice issuedNow = issued(line, 3);
+        EInvoice readEarlier = EInvoice.drawUpOriginal(issuedNow.id(), issuedNow.code(), EInvoiceFixtures.delivery(),
+                EInvoiceFixtures.SELLER, EInvoiceFixtures.BUYER, issuedNow.lines(), false, false);
+        readEarlier.submit(EInvoiceFixtures.SERIES, null, RESOLVED_AT);
+        when(invoices.findLiveOriginalOfShipment(issuedNow.shipmentId())).thenReturn(Optional.of(readEarlier));
+        ReturnResolved resolved = returnedFrom(order, issuedNow.shipmentId(), List.of(refunded(line, 30)));
+
+        EInvoiceCorrections.ReturnAdjustments placed = corrections.drawUpForReturn(resolved);
+
+        assertThat(placed.drafts()).singleElement()
+                .satisfies(draft -> assertThat(draft.originalEInvoiceId()).isEqualTo(issuedNow.id()));
+        verify(invoices, never()).keepPendingReturn(any(), any());
+        verify(invoices).findByIdForUpdate(issuedNow.id());
+    }
+
+    @Test
+    @DisplayName("WF-05 Q-9: the goods are on a replacement, which no provider adjusts - reported for the portal, "
+            + "nothing drawn up, the pieces kept for the record of the reduction made on the portal")
+    void aReturnOnAReplacementIsReported() {
+        UUID order = UUID.randomUUID();
+        UUID line = UUID.randomUUID();
+        EInvoice original = issued(line, 1);
+        EInvoice replacement = EInvoice.drawUpReplacement(UUID.randomUUID(), "EINV-20261113-0002", original, "sai",
+                original.buyer(), original.lines(), EInvoiceFixtures.CORRECTED_ON, EInvoice.Corrections.NONE);
+        EInvoiceFixtures.issued(EInvoiceFixtures.agreed(replacement), 2);
+        when(invoices.findByIdForUpdate(replacement.id())).thenReturn(Optional.of(replacement));
+        when(invoices.findLiveOriginalOfShipment(original.shipmentId())).thenReturn(Optional.of(replacement));
+
+        ReturnResolved drawnFor = returnedFrom(order, original.shipmentId(), List.of(refunded(line, 20)));
+        EInvoiceCorrections.ReturnAdjustments drawn = corrections.drawUpForReturn(drawnFor);
+
+        assertThat(drawn.drafts()).isEmpty();
+        assertThat(drawn.onReplacement()).isEqualTo(Map.of(line, 20L));
+        verify(invoices).keepPendingReturn(eq(new EInvoiceRepository.PendingReturnPieces(
+                drawnFor.returnRequestId(), drawnFor.rmaNumber(), order, drawnFor.orderNumber(), original.shipmentId(),
+                line, 20)), any());
     }
 
     @Test

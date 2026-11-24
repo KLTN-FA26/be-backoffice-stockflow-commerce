@@ -48,8 +48,11 @@ class ReturnResolutionController {
 
     @PostMapping("/{returnId}/resolution")
     @Operation(summary = "Propose the refund of a RECEIVED return: units per line, at most those approved and back "
-            + "(none listed: every one of them), worth what the order line charged with its VAT. Waits for another "
-            + "person's approval")
+            + "(none listed: every one of them), worth what the order line charged with its VAT. Every line at 0 while "
+            + "units came back usable refuses the refund (WF-05 Q-4): refusalReason required (400 "
+            + "RETURN_REFUSAL_REASON_REQUIRED), refusalNote shown to the customer (required for OTHER). Waits for "
+            + "another person's approval (sales-rma-resolutions:APPROVE). 409 RETURN_RECEIPT_DRAFT_OPEN while a parcel "
+            + "of it is being counted")
     @RequiresPermission(resource = OrderResources.RMA_RESOLUTIONS, action = Action.UPDATE, scope = DataScope.ALL)
     public ApiResponse<ReturnRequestResponse> propose(@PathVariable UUID returnId,
                                                       @Valid @RequestBody(required = false) ReturnRequests.Refund request,

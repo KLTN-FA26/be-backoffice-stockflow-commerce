@@ -58,6 +58,49 @@ class EInvoiceWorkQueues {
         return settings.active().autoIssue() ? invoices.findAutoIssuable(limit) : List.of();
     }
 
+    /**
+     * Drafts the automatic issuing holds back for a warning, whose accountants were not told of it (audit r2 M-2); none
+     * while the automatic issuing is off - every draft waits for the accountant then, and the deadline warning tells.
+     */
+    @Transactional(readOnly = true)
+    public List<UUID> heldUnannounced(int limit) {
+        return settings.active().autoIssue() ? invoices.findHeldUnannounced(limit) : List.of();
+    }
+
+    /**
+     * Tells the accountants at once that the automatic issuing holds a draft back (audit r2 M-2; kltn-docs 21 §4.2
+     * step 3 "báo Kế toán ngay"; decision §1.5 step 5: the word must reach them the same day, or the warning itself
+     * makes the invoice late). Before, the first word was the deadline warning at 20:00. {@code refusal} null: held for
+     * the warnings it carries now ({@code TAX_CLASS_UNKNOWN} ...); otherwise the error code the automatic issuing was
+     * refused for. The note and the event are written in one transaction, once per draft and reason
+     * ({@link EInvoiceRepository#markHeldForWarnings}, {@link EInvoiceRepository#markHeldAnnounced}), so the
+     * 30-second job tells nobody twice; the deadline warning and the overdue reminders still follow.
+     *
+     * @return the announcement, or empty when it is no longer a draft the automatic issuing takes, or was told already
+     */
+    @Transactional
+    public Optional<EInvoiceNeedsAttention> announceHeld(UUID id, String refusal) {
+        Optional<EInvoice> found = invoices.findById(id);
+        if (found.isEmpty()) {
+            return Optional.empty();
+        }
+        EInvoice.Snapshot draft = found.get().snapshot();
+        if (draft.status() != EInvoiceStatus.DRAFT) {
+            return Optional.empty();
+        }
+        Instant now = clock.instant();
+        Optional<String> reason = refusal == null ? invoices.markHeldForWarnings(id, now)
+                : invoices.markHeldAnnounced(id, refusal, now) ? Optional.of(refusal) : Optional.empty();
+        if (reason.isEmpty()) {
+            return Optional.empty();
+        }
+        EInvoiceNeedsAttention held = new EInvoiceNeedsAttention(draft.id(), draft.code(), draft.orderId(),
+                draft.orderNumber(), EInvoiceNeedsAttention.Cause.AUTO_ISSUE_HELD, reason.get(), null,
+                draft.issueDueAt());
+        events.publishEvent(held);
+        return Optional.of(held);
+    }
+
     /** Invoices still to issue whose deadline comes within the warning lead, and whose accountant was not told. */
     @Transactional(readOnly = true)
     public List<UUID> dueUnwarned(int limit) {
@@ -68,24 +111,25 @@ class EInvoiceWorkQueues {
      * Tells the accountants once that an invoice's deadline is near: the invoice is marked and the event published in
      * one transaction, so the mark and the message go together or not at all.
      *
+     * <p>The mark is written beside the invoice's version, not through it (WF-05 BE-57): it says nothing new about the
+     * invoice, and an accountant who had the invoice open - to withdraw it, issue it, send it again - was refused with
+     * {@code OPTIMISTIC_LOCK} because a warning came in between. Only a draft, a refused invoice or one at the provider
+     * is marked ({@link EInvoiceRepository#markDueWarned}).</p>
+     *
      * @return the announcement, or empty when the invoice was issued, voided or told about meanwhile
      */
     @Transactional
     public Optional<EInvoiceIssueDue> warnOfDeadline(UUID id) {
-        Optional<EInvoice> found = invoices.findByIdForUpdate(id);
+        Optional<EInvoice> found = invoices.findById(id);
         if (found.isEmpty()) {
             return Optional.empty();
         }
-        EInvoice invoice = found.get();
-        EInvoice.Snapshot before = invoice.snapshot();
+        EInvoice.Snapshot before = found.get().snapshot();
         // Still to be issued: a draft, a rejected one, or one the provider has not answered for.
         if (before.status().wasIssued() || before.status() == EInvoiceStatus.VOIDED_DRAFT
-                || before.dueWarnedAt() != null) {
+                || before.dueWarnedAt() != null || !invoices.markDueWarned(id, clock.instant())) {
             return Optional.empty();
         }
-        Instant now = clock.instant();
-        invoice.warnedOfDeadline(now);
-        invoices.save(invoice);
         EInvoiceIssueDue due = new EInvoiceIssueDue(before.id(), before.code(), before.orderId(), before.orderNumber(),
                 before.issueDate(), before.issueDueAt());
         events.publishEvent(due);
@@ -118,6 +162,50 @@ class EInvoiceWorkQueues {
                 invoice.orderNumber(), invoice.issueDate(), invoice.issueDueAt(), BusinessCalendar.date(now));
         events.publishEvent(reminder);
         return Optional.of(reminder);
+    }
+
+    /**
+     * Invoices at the provider for longer than {@code result-overdue-after} (four hours: past every retry SePay
+     * documents and the withdrawal's own wait), whose accountants were not told yet (WF-05 BE-08).
+     */
+    @Transactional(readOnly = true)
+    public List<UUID> resultOverdueUnannounced(int limit) {
+        return invoices.findResultOverdueUnannounced(clock.instant().minus(properties.resultOverdueAfter()), limit);
+    }
+
+    /**
+     * Tells the accountants once per submission that the provider's result is overdue (WF-05 BE-08, decision Q-8;
+     * {@link EInvoiceNeedsAttention.Cause#PROVIDER_RESULT_OVERDUE}): from here the invoice may be recorded from what the
+     * provider's portal shows ({@code EInvoiceIssuance.recordPortalResult}), which is the way out of every waiting
+     * state that never settles by itself - "issued" without the tax authority's code, an answer that says nothing, a
+     * provider that can no longer be called. The note and the event are written together.
+     *
+     * @return the announcement, or empty when it moved on or was announced meanwhile
+     */
+    @Transactional
+    public Optional<EInvoiceNeedsAttention> announceResultOverdue(UUID id) {
+        Optional<EInvoice> found = invoices.findById(id);
+        if (found.isEmpty()) {
+            return Optional.empty();
+        }
+        EInvoice.Snapshot invoice = found.get().snapshot();
+        Instant now = clock.instant();
+        if (invoice.status() != EInvoiceStatus.SUBMITTING
+                || !invoice.submittedAt().isBefore(now.minus(properties.resultOverdueAfter()))
+                || !invoices.markResultOverdueAnnounced(id, invoice.transactionId(), now)) {
+            return Optional.empty();
+        }
+        EInvoiceNeedsAttention overdue = new EInvoiceNeedsAttention(invoice.id(), invoice.code(), invoice.orderId(),
+                invoice.orderNumber(), EInvoiceNeedsAttention.Cause.PROVIDER_RESULT_OVERDUE, null,
+                invoice.submittedAt(), invoice.issueDueAt());
+        events.publishEvent(overdue);
+        return Optional.of(overdue);
+    }
+
+    /** The provider drafts are issued through now: the one the automatic issuing would send them to. */
+    @Transactional(readOnly = true)
+    public String activeProvider() {
+        return settings.active().provider();
     }
 
     /** Invoices that have waited for the provider's answer for longer than the configured time, not yet announced. */

@@ -111,6 +111,23 @@ class DeliveryFailureCasesAdapter implements DeliveryFailureCases {
     }
 
     @Override
+    public int appendCartons(UUID caseId, List<DeliveryFailureCase.Carton> cartons) {
+        int added = 0;
+        for (DeliveryFailureCase.Carton carton : cartons) {
+            added += entityManager.createNativeQuery("""
+                            INSERT INTO ordering.delivery_failure_case_carton (case_id, lpn, sku, lot_number, quantity,
+                                                                               condition)
+                            VALUES (:id, :lpn, :sku, CAST(:lot AS VARCHAR), :quantity, CAST(:condition AS VARCHAR))
+                            ON CONFLICT (case_id, lpn) DO NOTHING""")
+                    .setParameter("id", caseId).setParameter("lpn", carton.lpn()).setParameter("sku", carton.sku())
+                    .setParameter("lot", carton.lotNumber()).setParameter("quantity", carton.quantity())
+                    .setParameter("condition", carton.condition())
+                    .executeUpdate();
+        }
+        return added;
+    }
+
+    @Override
     public Optional<DeliveryFailureCase> find(UUID id) {
         return queryBy("WHERE c.id = :value ORDER BY c.opened_at, c.id", id, 0).stream().findFirst();
     }
@@ -140,7 +157,7 @@ class DeliveryFailureCasesAdapter implements DeliveryFailureCases {
             where.append(" AND c.warehouse_id IN (:warehouses)");
             parameters.put("warehouses", List.copyOf(warehouses));
         }
-        return query(where.append(" ORDER BY c.opened_at, c.id").toString(), parameters, limit);
+        return query(where.append(" ORDER BY c.opened_at DESC, c.id DESC").toString(), parameters, limit);
     }
 
     @Override
@@ -174,13 +191,16 @@ class DeliveryFailureCasesAdapter implements DeliveryFailureCases {
         List<Object[]> rows = entityManager.createNativeQuery("""
                         SELECT o.id, MIN(r.outcome_at) AS first_returned
                           FROM ordering.customer_order o
-                          JOIN ordering.order_shipment r ON r.order_id = o.id AND r.status = 'RETURNED'
+                          -- WF-05 Q-12: a shipment closed as lost ended undelivered too (units_closed_at).
+                          JOIN ordering.order_shipment r ON r.order_id = o.id
+                                                        AND (r.status = 'RETURNED' OR r.units_closed_at IS NOT NULL)
                          WHERE (o.status = 'RETURNED'
                                 AND NOT EXISTS (SELECT 1 FROM ordering.order_shipment s
                                                  WHERE s.order_id = o.id AND s.status = 'DELIVERED'))
                             OR (o.status = 'PARTIALLY_FULFILLED'
                                 AND NOT EXISTS (SELECT 1 FROM ordering.order_shipment s WHERE s.order_id = o.id
-                                                   AND s.status NOT IN ('DELIVERED', 'RETURNED')))
+                                                   AND s.status NOT IN ('DELIVERED', 'RETURNED')
+                                                   AND s.units_closed_at IS NULL))
                          GROUP BY o.id ORDER BY first_returned, o.id""")
                 .setFirstResult(skip).setMaxResults(limit).getResultList();
         return rows.stream().map(r -> (UUID) r[0]).toList();

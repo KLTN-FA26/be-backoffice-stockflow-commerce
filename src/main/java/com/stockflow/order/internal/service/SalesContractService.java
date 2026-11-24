@@ -56,6 +56,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.ResourceBundle;
 import java.util.UUID;
@@ -96,6 +97,10 @@ class SalesContractService implements SalesContracts {
     private final com.stockflow.order.internal.domain.ReturnPolicy returnPolicy;
     private final com.stockflow.design.api.SkuDesigns skuDesigns;
     private final com.stockflow.payment.api.CustomerInstallments installments;
+    /** The letterhead and the products' names a contract's paper prints, as the quotation's does. */
+    private final SalesDocumentFacts shared;
+    /** The windows moved since signing, which decide whether the contract has an appendix. */
+    private final com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords;
 
     SalesContractService(OrderRepository orders, SalesContractRepository contracts, CustomerService customers,
                          CustomerLegalProfiles legalProfiles, CustomerPaymentSchedules paymentSchedules,
@@ -105,7 +110,11 @@ class SalesContractService implements SalesContracts {
                          com.stockflow.order.internal.repository.OrderHoldJpaRepository holds,
                          com.stockflow.order.internal.domain.ReturnPolicy returnPolicy,
                          com.stockflow.design.api.SkuDesigns skuDesigns,
-                         com.stockflow.payment.api.CustomerInstallments installments) {
+                         com.stockflow.payment.api.CustomerInstallments installments,
+                         SalesDocumentFacts shared,
+                         com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords) {
+        this.shared = shared;
+        this.batchRecords = batchRecords;
         this.returnPolicy = returnPolicy;
         this.skuDesigns = skuDesigns;
         this.installments = installments;
@@ -232,8 +241,7 @@ class SalesContractService implements SalesContracts {
             Instant now = clock.instant();
             contract.requireSendable(order, now);
             requireCreditFor(order, contract);
-            return new SalesContractDocument.Facts(view(contract, order, null), order, LocalDate.ofInstant(now,
-                    VIETNAM));
+            return facts(contract, order, LocalDate.ofInstant(now, VIETNAM), true);
         });
         byte[] pdf = document.render(facts);
         try (PreparedFiles prepared = IncomingFiles.sent(List.of(new FileUpload(facts.contract().contractNumber()
@@ -389,7 +397,8 @@ class SalesContractService implements SalesContracts {
         return new ContractView(full.id(), full.contractNumber(), full.orderId(), full.orderNumber(), full.status(),
                 full.seller(), full.buyer(), full.freeSampleRounds(), full.totals(), full.deliverySchedule(),
                 full.paymentPlan(), full.sentAt(), null, full.signedOn(), full.signedFileName(), full.signedAt(), null,
-                null, null, null, full.completedAt(), full.version(), null, full.returnWindowDays());
+                null, null, null, full.completedAt(), full.version(), null, full.returnWindowDays(),
+                full.appendixAvailable());
     }
 
     @Override
@@ -681,7 +690,30 @@ class SalesContractService implements SalesContracts {
                 schedule, plan, contract.sentAt(), contract.sentBy(), contract.signedOn(), contract.signedFileName(),
                 contract.signedAt(), contract.signedBy(), contract.cancelledAt(), contract.cancelledBy(),
                 contract.cancellationReason(), contract.completedAt(), contract.version(), warning,
-                contract.returnWindowDays());
+                contract.returnWindowDays(), appendixAvailable(contract));
+    }
+
+    /**
+     * Whether {@code ContractPaperService.appendix} has something to draw for this contract: it is signed, and the
+     * window in force of one of its batches - the latest move, else the one signed - differs from the window it was
+     * signed with. A window moved and moved back has no appendix, as the paper has none. One read of the order's moves,
+     * and only for a signed contract, so a contract's history costs at most one.
+     */
+    private boolean appendixAvailable(SalesContract contract) {
+        if (contract.signedOn() == null || contract.signedAt() == null
+                || contract.status() == SalesContractStatus.CANCELLED) {
+            return false;
+        }
+        Map<UUID, com.stockflow.order.internal.domain.DeliveryBatchRecords.WindowChange> latest = new HashMap<>();
+        batchRecords.windowChangesOf(contract.orderId()).forEach(change -> latest.put(change.batchId(), change));
+        for (DeliveryBatch batch : contract.schedule()) {
+            var moved = latest.get(batch.id());
+            if (moved != null && batch.windowStart() != null && (!batch.windowStart().equals(moved.newStart())
+                    || !Objects.equals(batch.windowEnd(), moved.newEnd()))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static InstallmentView installmentView(PlannedInstallment i) {
@@ -702,7 +734,13 @@ class SalesContractService implements SalesContracts {
 
     /** What the PDF shows; dated the day it was sent, or today for a draft's preview. */
     private SalesContractDocument.Facts facts(SalesContract contract, Order order) {
-        return new SalesContractDocument.Facts(view(contract, order, null), order, LocalDate.ofInstant(
-                contract.sentAt() == null ? clock.instant() : contract.sentAt(), VIETNAM));
+        return facts(contract, order, LocalDate.ofInstant(
+                contract.sentAt() == null ? clock.instant() : contract.sentAt(), VIETNAM), false);
+    }
+
+    /** @param issued the copy that goes to the customer, which a draft's watermark must not cross */
+    private SalesContractDocument.Facts facts(SalesContract contract, Order order, LocalDate dated, boolean issued) {
+        return new SalesContractDocument.Facts(view(contract, order, null), order, dated, shared.head(),
+                shared.names(order.lines().stream().map(line -> line.sku().code()).toList()), issued);
     }
 }

@@ -71,6 +71,7 @@ class EInvoiceAccountantNoticesIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
+    @Autowired com.stockflow.invoicing.internal.domain.EInvoiceRepository repository;
 
     private ConfirmedOrders confirmedOrders;
     private UUID customer;
@@ -187,6 +188,40 @@ class EInvoiceAccountantNoticesIntegrationTest {
         assertThat(notices(accountant, draft.id(), "EINVOICE_ATTENTION")).hasSize(2);
 
         assertThat(noticesOfAnyKind(salesStaff, draft.id())).as("Sales staff do not issue invoices").isZero();
+    }
+
+    @Test
+    @DisplayName("audit r2 M-2: a draft held back for a tax warning is found by the sweep, noted once with its "
+            + "warnings as the reason, then no longer found; a new warning makes it new; a missing e-mail alone is not "
+            + "held, and an issued invoice never")
+    void aHeldDraftIsFoundAndNotedOnce() {
+        EInvoice.Snapshot draft = draft();
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE invoicing.einvoice SET warnings = 'TAX_CLASS_UNKNOWN' "
+                + "WHERE id = ?", draft.id()));
+
+        assertThat(repository.findHeldUnannounced(1000)).contains(draft.id());
+        java.util.Optional<String> first = tx.execute(s -> repository.markHeldForWarnings(draft.id(), Instant.now()));
+        java.util.Optional<String> again = tx.execute(s -> repository.markHeldForWarnings(draft.id(), Instant.now()));
+        assertThat(first).contains("TAX_CLASS_UNKNOWN");
+        assertThat(again).as("once").isEmpty();
+        assertThat(repository.findHeldUnannounced(1000)).doesNotContain(draft.id());
+
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE invoicing.einvoice SET warnings = "
+                + "'TAX_RATE_DIFFERS_FROM_CONTRACT,TAX_CLASS_UNKNOWN' WHERE id = ?", draft.id()));
+        assertThat(repository.findHeldUnannounced(1000)).as("a new reason").contains(draft.id());
+        Boolean refusal = tx.execute(s -> repository.markHeldAnnounced(draft.id(), "EINVOICE_SERIES_NOT_CONFIGURED",
+                Instant.now()));
+        Boolean refusalAgain = tx.execute(s -> repository.markHeldAnnounced(draft.id(),
+                "EINVOICE_SERIES_NOT_CONFIGURED", Instant.now()));
+        assertThat(refusal).isTrue();
+        assertThat(refusalAgain).isFalse();
+
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE invoicing.einvoice SET warnings = 'BUYER_EMAIL_MISSING' "
+                + "WHERE id = ?", draft.id()));
+        assertThat(repository.findHeldUnannounced(1000)).as("issued anyway (Q-22)").doesNotContain(draft.id());
+        java.util.Optional<String> emailOnly = tx.execute(s -> repository.markHeldForWarnings(draft.id(),
+                Instant.now()));
+        assertThat(emailOnly).isEmpty();
     }
 
     @Test

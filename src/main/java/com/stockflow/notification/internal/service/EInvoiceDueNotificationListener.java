@@ -20,8 +20,9 @@ import java.util.ResourceBundle;
 
 /**
  * Tells the people who issue e-invoices that one is close to its deadline (WF-05 E2): an invoice is signed and sent for
- * the tax authority's code no later than the working day after its date (NĐ 254/2026/NĐ-CP Phụ lục điểm 7), and a draft
- * nobody opened is running out of that time. An in-app message, nothing by e-mail.
+ * the tax authority's code by the end of its date (NĐ 254/2026/NĐ-CP Điều 9 khoản 1; WF-05 Q-1 - the next working day
+ * of Phụ lục điểm 7 is for night sales without automatic issuing), and a draft nobody opened is running out of that
+ * time. An in-app message, nothing by e-mail.
  *
  * <p>Who is told is decided by permission, not by role name: the holders of {@value #AUDIENCE} - whoever may issue.
  * One message per person per invoice ahead of its deadline ({@code einvoice-due:<id>}), and once its deadline has
