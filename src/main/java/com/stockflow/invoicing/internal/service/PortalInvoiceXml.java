@@ -29,10 +29,12 @@ record PortalInvoiceXml(String templateCode, String symbol, Integer number, Loca
     private static final ZoneId ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
     /*
      * Every pattern here runs over a file someone uploaded, so none may backtrack: no lazy "anything" running to a
-     * closing tag, and no two neighbouring quantifiers that can take the same character. The seller block is found as
-     * its opening tag, then its closing tag after it, rather than by one pattern spanning both.
+     * closing tag, and no two neighbouring quantifiers that can take the same character. No scan may run past the next
+     * '<' either: a tag's attributes are [^<>]*, not [^>]*, or a file of many unclosed "<NBan" would be scanned to its
+     * end once per tag. The seller block is found as its opening tag, then its closing tag after it, rather than by one
+     * pattern spanning both.
      */
-    private static final Pattern SELLER_OPEN = Pattern.compile("<(?:\\w+:)?NBan\\b[^>]*>");
+    private static final Pattern SELLER_OPEN = Pattern.compile("<(?:\\w+:)?NBan\\b[^<>]*>");
     private static final Pattern SELLER_CLOSE = Pattern.compile("</(?:\\w+:)?NBan>");
 
     /**
@@ -68,7 +70,7 @@ record PortalInvoiceXml(String templateCode, String symbol, Integer number, Loca
             return null;
         }
         // Trimmed below rather than by the pattern: "\s*([^<]*?)\s*" lets each space go to either side.
-        Matcher matcher = Pattern.compile("<(?:\\w+:)?" + name + "\\b[^>]*>([^<]*)</").matcher(text);
+        Matcher matcher = Pattern.compile("<(?:\\w+:)?" + name + "\\b[^<>]*>([^<]*)</").matcher(text);
         if (!matcher.find()) {
             return null;
         }
