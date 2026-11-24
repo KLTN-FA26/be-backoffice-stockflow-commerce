@@ -126,11 +126,12 @@ class FulfillmentServiceImpl implements FulfillmentService {
                 : orders.batchToPick(orderId, pickedBatches);
         if (redelivery.isEmpty() && batch.isEmpty() && !existing.isEmpty()) {
             PickJpaEntity latest = existing.getLast();
-            requireWarehouseAssignee(assignedUserId, latest.getWarehouseId());
             TaskAccess.requireVisible(latest, actor);
+            requireWarehouseAssignee(assignedUserId, latest.getWarehouseId());
             return toTask(latest);
         }
         OrderSummary order = requireOrder(orderId);
+        requireOrderInScope(order);
         if (order.status() == OrderStatus.AWAITING_STOCK && redelivery.isEmpty() && batch.isEmpty()) {
             return prePickTask(order, assignedUserId, destination, stagingLocationCode, actor);
         }
@@ -525,6 +526,21 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     private OrderSummary requireOrder(UUID orderId) {
         return orders.findById(orderId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+    }
+
+    /**
+     * BR-SEC-002, before anything is said of the order or done for it: a caller limited to warehouses opens a task only
+     * for an order released to one of theirs, or - not released yet, AWAITING_STOCK - shipping from one. Asked again
+     * where the task's warehouse is settled; asked here too because what comes between would otherwise answer first:
+     * a refusal naming the order's status, or a pre-pick allocating the order's stock (rolled back, but taken).
+     */
+    private void requireOrderInScope(OrderSummary order) {
+        if (WarehouseScope.restriction().isEmpty()) {
+            return;
+        }
+        UUID where = order.warehouseId() != null ? order.warehouseId()
+                : orders.shippingWarehouseId(order.orderId()).orElse(null);
+        WarehouseScope.requireWarehouse(where);
     }
 
     private static void require(CurrentUser actor, String resource, Action action) {

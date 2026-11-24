@@ -130,7 +130,8 @@ class OrderReleaseController {
     @PostMapping("/{orderId}/release")
     @Operation(summary = "Release an order - its next delivery batch, for an order with a delivery schedule - from its "
             + "shipping warehouse: the batch's holds are allocated on bins there. 409 DELIVERY_BATCH_NOT_NEXT, "
-            + "409 DELIVERY_BATCH_ALL_RELEASED (every batch is released already), 409 ORDER_STOCK_NOT_HELD. 403 for a warehouse the caller is not assigned to")
+            + "409 DELIVERY_BATCH_ALL_RELEASED (every batch is released already), 409 ORDER_STOCK_NOT_HELD. 403 for a warehouse the caller is not assigned to; 404 NOT_FOUND for an order "
+            + "neither shipping from nor returned to one of the caller's warehouses")
     @RequiresPermission(resource = OrderResources.RELEASES, action = Action.UPDATE, scope = DataScope.ALL)
     public ApiResponse<OrderResponse> release(@PathVariable UUID orderId,
                                               @Valid @RequestBody ReleaseOrderRequest request,
@@ -138,6 +139,8 @@ class OrderReleaseController {
         ScopeGuards.requireBackOffice(user);
         // Scope first: whether another warehouse exists is not an out-of-scope caller's to learn.
         WarehouseScope.requireWarehouse(request.warehouseId());
+        // BR-SEC-002: nor is an order of another warehouse - the release's refusals name it, its batches and its SKUs.
+        visibility.requireReleasable(orderId, user);
         return ApiResponse.ok(OrderWebMapper.toResponse(releases.release(orderId, request.warehouseId(),
                 request.deliveryBatchId(), user.userId())));
     }

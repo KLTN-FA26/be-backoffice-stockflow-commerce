@@ -311,9 +311,17 @@ public class PutawayTripService {
         return trip;
     }
 
+    /**
+     * The scanned carton. One standing in a warehouse the caller is not assigned to is answered as not found (BR-SEC-002,
+     * as {@code CycleCountCountingService.addLine} does): what comes next - whether it waits for putaway, whether it is
+     * on a cart - is not the caller's to learn of another warehouse's carton.
+     */
     private StockPackage carton(String lpn) {
         String normal = StockPackageView.normalLpn(lpn);
         return (normal == null ? Optional.<StockPackage>empty() : stockPackages.findByLpn(normal))
+                .filter(found -> WarehouseScope.restriction()
+                        .map(allowed -> allowed.prefixes().contains(WarehouseScope.prefixOf(found.location().code())))
+                        .orElse(true))
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No carton " + lpn));
     }
 
