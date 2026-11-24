@@ -80,6 +80,13 @@ class QuoteDiscountAlerts {
             return;
         }
         Quote quote = found.get();
+        if (quote.revision() != event.revision()) {
+            // Revised between the send and this listener: its lines are no longer the ones sent, and the customer
+            // cannot accept while a revision is drafted. The revision that replaces it is checked when it is sent.
+            log.info("Quote {} revision {} is now revision {}; its discount is checked when that one is sent",
+                    LogSafe.text(quote.quoteNumber()), event.revision(), quote.revision());
+            return;
+        }
         List<Below> below = below(quote);
         if (below.isEmpty()) {
             return;

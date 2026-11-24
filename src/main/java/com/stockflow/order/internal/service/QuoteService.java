@@ -635,7 +635,7 @@ class QuoteService implements Quotes {
      * it was last edited, but an order of the SKU may have been cancelled since, or the draft may predate fee lines.
      * Sales edits the draft, which adds it, and prices or waives it. The other way round, the plate is charged once
      * (QD4): a SKU produced since the draft was edited - confirmed on an order, or in production - is refused with its
-     * plate fee still on, and editing the draft drops it.
+     * plate fee still on; Sales edits the draft and takes the fee off (an edit that keeps it is refused as well).
      */
     private void requirePlateFees(Quote quote) {
         if (quote.offer().legacy()) {
