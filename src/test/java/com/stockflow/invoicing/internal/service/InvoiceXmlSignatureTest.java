@@ -77,6 +77,37 @@ class InvoiceXmlSignatureTest {
     }
 
     @Test
+    void BE56_anInvoiceSignedWithSha1IsUncheckedNeverInvalid() throws IOException {
+        String sha1 = signed().replace("http://www.w3.org/2001/04/xmldsig-more#rsa-sha256",
+                "http://www.w3.org/2000/09/xmldsig#rsa-sha1");
+        assertThat(sha1).isNotEqualTo(signed());
+
+        Check check = check(sha1);
+
+        assertThat(check.status()).isEqualTo(Status.SHA1_UNCHECKED);
+        assertThat(check.valid()).isFalse();
+        assertThat(check.invalid()).as("no mail withheld, no replacement asked for").isFalse();
+        assertThat(check.signer()).as("still says whose signature it is").isEqualTo("MẮT BÃO - KIỂM THỬ HĐĐT CÓ MÃ");
+    }
+
+    @Test
+    void BE56_aSha1DigestAloneIsUncheckedToo() throws IOException {
+        String sha1 = signed().replaceFirst("http://www.w3.org/2001/04/xmlenc#sha256",
+                "http://www.w3.org/2000/09/xmldsig#sha1");
+
+        assertThat(check(sha1).status()).isEqualTo(Status.SHA1_UNCHECKED);
+    }
+
+    @Test
+    void BE56_aSha256FileChangedAfterSigningIsStillInvalid() throws IOException {
+        Check check = check(signed().replace("<TgTTTBSo>2862000</TgTTTBSo>", "<TgTTTBSo>2962000</TgTTTBSo>"));
+
+        assertThat(check.status()).isEqualTo(Status.CONTENT_CHANGED);
+        assertThat(check.invalid()).isTrue();
+        assertThat(check(signed()).invalid()).isFalse();
+    }
+
+    @Test
     void anInvoiceWithoutTheSellersSignatureIsNotSigned() {
         assertThat(check("<HDon><DLHDon Id=\"data\"><TTChung><SHDon>1</SHDon></TTChung></DLHDon><MCCQT>SBX-1</MCCQT>"
                 + "<DSCKS><NBan/><NMua/></DSCKS></HDon>").status()).isEqualTo(Status.NOT_SIGNED);

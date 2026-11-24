@@ -152,17 +152,19 @@ class InstallmentDeliveryCorrectionTest {
     }
 
     @Test
-    @DisplayName("GH-3: heard after the redelivery's own event, the correction moves the due day to the redelivery; "
-            + "heard twice, it changes nothing more")
+    @DisplayName("GH-3 / WF-05 BE-04: the redelivery's own event, heard before the correction, already moves the due "
+            + "day to the redelivery (one follow rule on every path); the correction heard after it, and heard twice, "
+            + "changes nothing more")
     void heardLateOrTwice() {
         Installment first = of(2, BATCH_1, 300, 30);
         book(List.of(first));
         orderSays(Map.of(BATCH_1, WRONG_DELIVERY), null);
         service.delivered(ORDER, WRONG_DELIVERY, false);
-        // The redelivery's event came first: reached already, it moved nothing.
+        // The redelivery's event came first: the order now says the batch was delivered then, and the installment
+        // follows it (BE-04) - before, reached already, it moved nothing until the correction was heard.
         orderSays(Map.of(BATCH_1, REDELIVERY), null);
         service.delivered(ORDER, REDELIVERY, false);
-        assertThat(first.reachedAt()).isEqualTo(WRONG_DELIVERY);
+        assertThat(first.reachedAt()).isEqualTo(REDELIVERY);
 
         service.deliveryCorrected(ORDER);
         assertThat(first.status()).isEqualTo(InstallmentStatus.DUE);

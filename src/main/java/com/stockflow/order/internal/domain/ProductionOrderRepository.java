@@ -3,6 +3,7 @@ package com.stockflow.order.internal.domain;
 import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -20,6 +21,12 @@ public interface ProductionOrderRepository {
 
     /** Every production order of a sales order, oldest first. */
     List<ProductionOrder> ofSalesOrder(UUID salesOrderId);
+
+    /**
+     * Of these write-offs, those a live replacement production order - any but a CANCELLED one - already makes up, with
+     * that replacement's code (17 BR-31: a damaged carton is made up once).
+     */
+    Map<UUID, String> madeUpBy(Collection<UUID> adjustmentIds);
 
     /** The next code, {@code PRD-yyyyMMdd-nnnn} (QD-6), from {@code platform.document_sequence}. */
     String nextCode(LocalDate day);

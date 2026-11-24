@@ -139,8 +139,16 @@ class ShipmentService implements Shipments {
         return detail(row);
     }
 
+    /**
+     * Every outcome a person records takes {@code fulfillment-delivery-outcomes:APPROVE} (09 BR-02, 17 BR-27; WF-05
+     * Q-7, BE-14) - RETURNED too. RETURNED used to need UPDATE only, from when it merely held the order for Sales; it
+     * now closes the shipment's units, starts the return receipt the money is settled at, and has no correction back,
+     * so it is the warehouse manager's to record. Checked here, where every caller passes, rather than in the
+     * controller alone.
+     */
     @Override
     public ShipmentDetail recordOutcome(UUID shipmentId, Outcome outcome, CurrentUser actor) {
+        actor.require(FulfillmentPermissions.DELIVERY_OUTCOMES, com.stockflow.common.security.Action.APPROVE);
         ShipmentJpaEntity row = lock(shipmentId);
         Shipment shipment = row.toDomain();
         ShipmentStatus before = shipment.status();
@@ -204,8 +212,22 @@ class ShipmentService implements Shipments {
         if (target == ShipmentStatus.DELIVERY_FAILED && correction.deliveredAt() != null) {
             throw deliveryTimeOnlyWithDelivery();
         }
-        // Corrected to a delivery: dated by the time it was delivered; the correction itself is dated now.
-        Instant at = target == ShipmentStatus.DELIVERED && correction.deliveredAt() != null ? correction.deliveredAt() : now;
+        // Corrected to a delivery: dated by the time it was delivered; the correction itself is dated now. With no time
+        // given, a failure that was itself the correction of a delivery is taken back to that delivery (audit r3
+        // EINV-1): the carrier was right after all, and the delivery is the one that happened then. Dated now instead,
+        // a correction made on a later day read as a new delivery on that day - the issued invoice stayed reduced to
+        // nothing and a second original was drawn up dated a day the goods did not change hands (NĐ 254/2026 Điều 9
+        // khoản 1), with the payment and return windows moved to it.
+        Instant at = target == ShipmentStatus.DELIVERED
+                ? correction.deliveredAt() != null ? correction.deliveredAt()
+                        : (before == ShipmentStatus.DELIVERY_FAILED ? undoneDelivery(row.getId()) : null)
+                : null;
+        if (at == null) {
+            at = now;
+        }
+        // A delivery corrected to a failure keeps the time it undid on the correction's row, for the correction back.
+        Instant undone = target == ShipmentStatus.DELIVERY_FAILED && before == ShipmentStatus.DELIVERED
+                ? shipment.snapshot().outcomeAt() : null;
         UUID by = actor.userId();
         if (target == ShipmentStatus.DELIVERY_FAILED && before == ShipmentStatus.DELIVERED && !knownToOrder(row)) {
             // Left as the whole order before shipments were recorded: its delivery is the order's own, not a shipment's.
@@ -221,7 +243,7 @@ class ShipmentService implements Shipments {
                 : tellOrder(row, ShipmentStatus.DELIVERED, null, null, by, at);
         corrections.save(new com.stockflow.fulfillment.internal.entity.DeliveryOutcomeCorrectionJpaEntity(
                 com.stockflow.common.id.Identifiers.newId(), row.getId(), before.name(), target.name(),
-                reason == null ? null : reason.name(), note, why, by, now));
+                reason == null ? null : reason.name(), note, why, by, now, undone));
         row.apply(shipment);
         shipments.saveAndFlush(row);
         String carrierName = row.getCarrierId() == null ? null
@@ -231,6 +253,19 @@ class ShipmentService implements Shipments {
         timeline.record(shipment, before, order, null, carrierName, loadCode);
         log.info("Shipment {}: {} corrected to {} by hand ({})", row.getCode(), before, target, why);
         return detail(row);
+    }
+
+    /**
+     * The delivery a correction back to delivered restores (audit r3 EINV-1): the time the shipment's latest correction
+     * - a delivery corrected to a failure - undid; null when its failure is not such a correction (the carrier's, or
+     * one a person recorded), or the correction is older than the record of it.
+     */
+    private Instant undoneDelivery(UUID shipmentId) {
+        return corrections.findFirstByShipmentIdOrderByCorrectedAtDescIdDesc(shipmentId)
+                .filter(c -> ShipmentStatus.DELIVERED.name().equals(c.getFromStatus())
+                        && ShipmentStatus.DELIVERY_FAILED.name().equals(c.getToStatus()))
+                .map(com.stockflow.fulfillment.internal.entity.DeliveryOutcomeCorrectionJpaEntity::getUndoneDeliveredAt)
+                .orElse(null);
     }
 
     @Override
@@ -281,7 +316,8 @@ class ShipmentService implements Shipments {
      * @return whether it changed anything; false when the shipment already had that outcome
      * @throws BusinessException {@code SHIPMENT_STATE_CONFLICT} when the shipment cannot take it (not handed over, or
      *         already further along), or reported delivered after a person recorded it failed (09 edge: another outcome
-     *         than the one recorded by hand goes to the error list) - the caller's NEEDS_REVIEW
+     *         than the one recorded by hand goes to the error list); {@code SHIPMENT_DELIVERY_TIME_*} for a delivery
+     *         time a person could not have entered either (BE-38) - each the caller's NEEDS_REVIEW
      */
     public boolean carrierOutcome(UUID shipmentId, ShipmentStatus target, DeliveryFailureReason reason, String note,
                                   Instant at, UUID carrierEventId) {
@@ -304,7 +340,7 @@ class ShipmentService implements Shipments {
         String trimmed = note == null || note.isBlank() ? null : note.strip();
         String kept = trimmed == null || trimmed.length() <= 500 ? trimmed : trimmed.substring(0, 497) + "...";
         boolean changed = switch (target) {
-            case DELIVERED -> shipment.carrierDelivered(at);
+            case DELIVERED -> shipment.carrierDelivered(at, clock.instant());
             case DELIVERY_FAILED -> shipment.carrierFailed(Objects.requireNonNull(reason, "reason"), kept, at);
             case RETURNED -> shipment.carrierReturned(at);
             default -> throw new IllegalArgumentException(target.name());
@@ -312,7 +348,9 @@ class ShipmentService implements Shipments {
         if (!changed) {
             return false;
         }
-        OrderSummary order = tellOrder(row, target, reason, kept, null, at);
+        // A delivery a carrier's clock dated a moment ahead of ours is dated now (BE-38): the order hears the same time.
+        OrderSummary order = tellOrder(row, target, reason, kept, null,
+                target == ShipmentStatus.DELIVERED ? shipment.snapshot().outcomeAt() : at);
         row.apply(shipment);
         shipments.saveAndFlush(row);
         String carrierName = row.getCarrierId() == null ? null
@@ -411,7 +449,8 @@ class ShipmentService implements Shipments {
                         names.get(e.getRecordedBy()), e.getNote(), e.getSource(), e.getCarrierEvent())).toList(),
                 edits.stream().map(c -> new ReasonCorrection(c.getFromReason(), c.getFromNote(), c.getToReason(),
                         c.getToNote(), c.getReason(), c.getCorrectedBy(), names.get(c.getCorrectedBy()),
-                        c.getCorrectedAt())).toList());
+                        c.getCorrectedAt())).toList(),
+                row.getStatus() == ShipmentStatus.DELIVERY_FAILED ? undoneDelivery(row.getId()) : null);
     }
 
     /** Rows with their order numbers, carriers and loads, read in one query each. */

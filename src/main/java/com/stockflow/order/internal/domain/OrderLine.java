@@ -270,6 +270,32 @@ public final class OrderLine {
         return grossOf(to).minus(grossOf(from));
     }
 
+    /**
+     * What {@code count} units after the first {@code from} are worth with the VAT they were invoiced at (WF-05 O-1):
+     * the money given back for goods returned is what the return's adjustment invoice takes off for them.
+     *
+     * <p>Invoiced at the line's own rate - the usual case - they sit on the line's cumulative scale
+     * ({@link #grossBetween}), so the line's returns and closures add up to its gross to the dong (BE-50). Invoiced at
+     * another rate - the contract fixed 10% and the delivery day's rate was 8% (NĐ 174/2025) - they are worth what the
+     * adjustment states: their price, plus the VAT of that at the invoiced rate rounded half up to the dong, line by
+     * line (BR-21, as {@code EInvoiceLine.vat} rounds). The line's scale cannot say it: it is the contract's total, and
+     * the invoices of this line no longer add up to it.</p>
+     *
+     * @param invoicedRate the rate the units were invoiced at; null when not known, which values them at the line's own
+     */
+    public Money grossAt(int from, int count, java.math.BigDecimal invoicedRate) {
+        if (from < 0 || count < 0 || from + count > quantity) {
+            throw new IllegalArgumentException("Between 0 and the line's " + quantity + " units, not " + count
+                    + " after " + from);
+        }
+        if (invoicedRate == null || (taxRate != null && taxRate.compareTo(invoicedRate) == 0)
+                || (taxRate == null && invoicedRate.signum() == 0)) {
+            return grossBetween(from, from + count);
+        }
+        Money net = unitPrice.times(count);
+        return net.plus(Vat.of(net, invoicedRate));
+    }
+
     /** The SKU's carton unit the line was ordered in; null for a line not ordered in cartons. */
     public UUID uomConversionId() { return uomConversionId; }
     /** Cartons ordered; null for a line not ordered in cartons. */

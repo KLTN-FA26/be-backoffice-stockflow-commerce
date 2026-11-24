@@ -102,6 +102,26 @@ public interface EInvoiceRepository {
     /** Whether an adjustment was ever drawn up for a return, voided or not: a return is taken off its invoices once. */
     boolean hasAdjustmentForReturn(UUID returnRequestId);
 
+    /**
+     * Audit r3 EINV-2: the RETURN adjustments of {@code invoiceId} that were voided, latest first per return, of
+     * returns that have no adjustment of it left that was not voided - what the accountant may still record from the
+     * provider's portal when the invoice's provider could not send them (Q-8, HĐ-5).
+     */
+    List<EInvoice> findVoidedReturnAdjustmentsOf(UUID invoiceId);
+
+    /**
+     * Audit r3 EINV-2, the ERROR half: the ERROR adjustments of {@code invoiceId} that were voided and that no
+     * adjustment recorded from the provider's portal stands for yet ({@code invoicing.einvoice_portal_record}), latest
+     * voided first - what the accountant may still record when the invoice's provider could not send them (Q-8, HĐ-5).
+     */
+    List<EInvoice> findUnrecordedVoidedErrorAdjustmentsOf(UUID invoiceId);
+
+    /**
+     * Notes that the adjustment {@code recordedId}, recorded from the provider's portal, stands for the voided draft
+     * {@code voidedDraftId}: each voided draft is recorded once ({@code pk_einvoice_portal_record}).
+     */
+    void notePortalRecordOf(UUID voidedDraftId, UUID recordedId);
+
     /** Whether an adjustment for this return, not voided, already names this invoice ({@code uk_einvoice_return_adjustment}). */
     boolean hasLiveReturnAdjustment(UUID returnRequestId, UUID invoiceId);
 
@@ -119,6 +139,26 @@ public interface EInvoiceRepository {
      * voided or replaced, else what replaced it - as {@link #findLiveOriginalOfShipment} answers for a shipment.
      */
     Optional<EInvoice> findLiveShippingFeeInvoice(UUID orderId);
+
+    /**
+     * Audit r3 LM-2: the order's rest invoice not issued yet - a draft, a refused one or one at the provider; at most one
+     * ({@code uk_einvoice_shipping_fee_rest}).
+     */
+    Optional<EInvoice> findUnissuedShippingFeeInvoice(UUID orderId);
+
+    /**
+     * Audit r3 LM-2: the order's issued rest invoices - invoices naming no shipment, the original of the rest or, once it
+     * was replaced (Q-9), the replacement in force - the latest first. A replaced original is not among them: what
+     * replaced it carries its lines (confirmation audit CF-4: read as originals only, a replaced rest invoice was no
+     * rest invoice at all, and the shipping fee it carries beyond what payment keeps was never taken off).
+     */
+    List<EInvoice> findIssuedShippingFeeInvoices(UUID orderId);
+
+    /**
+     * Audit r3 LM-2: the shipping fee, before tax, the live reductions of {@code invoiceId} take off it - its
+     * {@code DELIVERY_FAILED} adjustments that were not voided, drafts too; at or below 0.
+     */
+    java.math.BigDecimal shippingFeeReducedOf(UUID invoiceId);
 
     /**
      * Takes the order's invoicing lock until the transaction ends: drafts of one order are drawn up one after the
@@ -214,6 +254,148 @@ public interface EInvoiceRepository {
      */
     boolean markStuckAnnounced(UUID id, String transactionId, Instant now);
 
+    /**
+     * Up to {@code limit} drafts the automatic issuing would take but for a warning that holds them back - originals,
+     * never sent, whose warnings are more than a missing e-mail ({@link #findAutoIssuable}'s complement) - and whose
+     * accountants were not told of these warnings yet (audit r2 M-2), the earliest dated first.
+     */
+    List<UUID> findHeldUnannounced(int limit);
+
+    /**
+     * Notes that the accountants were told that a draft is held back for the warnings it carries now - the draft read
+     * in the same statement, so the reason noted is exactly the one {@link #findHeldUnannounced} compares.
+     *
+     * @return the warnings noted; empty when the draft is no longer held back, or was told of them before
+     */
+    Optional<String> markHeldForWarnings(UUID id, Instant now);
+
+    /**
+     * Notes that the accountants were told that the automatic issuing was refused for {@code reason} (an error code).
+     *
+     * @return false when that was noted before: a draft is told of one reason once
+     */
+    boolean markHeldAnnounced(UUID id, String reason, Instant now);
+
     /** The next internal invoice code of {@code day}: {@code EINV-yyyyMMdd-nnnn}. */
     String nextCode(java.time.LocalDate day);
+
+    // ---- WF-05 -----------------------------------------------------------------------------------------------------
+
+    /**
+     * Takes back the mark of {@link #markReversed} (BE-29): the shipment was delivered after all and the reduction of
+     * its failed delivery was voided as {@code DELIVERY_CORRECTED_BACK} in this transaction ({@code tg_einvoice_guard}
+     * refuses it otherwise).
+     *
+     * @return false when it was not marked
+     */
+    boolean clearReversed(UUID invoiceId);
+
+    /** The shipment's invoice most recently reversed for a failed delivery ({@link #markReversed}), if any. */
+    Optional<EInvoice> findReversedOfShipment(UUID shipmentId);
+
+    /**
+     * Whether a reduction of a failed delivery naming {@code invoiceId} was voided as {@code UNSENDABLE_REVERSAL}: the
+     * accountant reduces it on the provider's portal instead and records that (BE-10).
+     */
+    boolean hasVoidedUnsendableReversal(UUID invoiceId);
+
+    /** The reduction of a failed delivery naming {@code invoiceId} that is not voided, if any. */
+    Optional<EInvoice> findLiveDeliveryFailedReductionOf(UUID invoiceId);
+
+    /**
+     * The corrections of an invoice not issued yet - adjustments naming or listing it and replacements of it, drafts,
+     * refused or at the provider - oldest first.
+     */
+    List<EInvoice> findUnissuedCorrectionsOf(UUID invoiceId);
+
+    /** The lines of every adjustment issued against {@code invoiceId} (naming it, not listing it), in order. */
+    List<EInvoiceLine> issuedAdjustmentLinesOf(UUID invoiceId);
+
+    /** How many attempts of the invoice the provider refused under {@code rejectionCode} (BE-10: "for good"). */
+    int refusalsUnder(UUID invoiceId, String rejectionCode);
+
+    /** Whether a return adjustment drawn up for the order is not issued yet (X-6, Q-16 b: information only). */
+    boolean returnAdjustmentUnissued(UUID orderId);
+
+    /**
+     * Whether a reduction of the order's invoices for a delivery that did not happen ({@code DELIVERY_FAILED}) is drawn
+     * up and not issued yet (audit r3 EINV-7: information only).
+     */
+    boolean deliveryReductionUnissued(UUID orderId);
+
+    /**
+     * Starts watching a transaction let go without the provider's word (BE-07, Q-5): withdrawn, or refused on the
+     * provider's processing report alone. Asked about daily until {@code until}. Twice for one transaction is once.
+     */
+    void watchTransaction(UUID einvoiceId, String transactionId, String provider, String letGoAs, Instant until);
+
+    /** A transaction watched after it was let go. */
+    record WatchedTransaction(UUID einvoiceId, String transactionId, String provider, String letGoAs) {
+    }
+
+    /**
+     * The watch of the invoice's latest transaction let go (audit r3 EINV-3; decision §4.4 HĐ-1 step 3: "sau khi rút có
+     * dòng 'đang tra lại tới ngày ...'"): until when its old transaction is asked about, and when the provider was
+     * found holding it after all.
+     */
+    record TransactionWatch(String transactionId, String letGoAs, Instant watchUntil, Instant foundAt) {
+    }
+
+    /**
+     * {@link TransactionWatch} of the transaction of the invoice let go last, its {@code foundAt} the latest time any
+     * watch of the invoice found the provider holding its transaction (confirmation audit CF-9: a watch found after a
+     * later one began is still a duplicate to settle); empty when none was let go.
+     */
+    java.util.Optional<TransactionWatch> latestWatchOf(UUID einvoiceId);
+
+    /** Up to {@code limit} watched transactions still to ask about now, not asked since {@code askedBefore}. */
+    List<WatchedTransaction> findWatchedToAsk(Instant now, Instant askedBefore, int limit);
+
+    /**
+     * Whether a transaction of the invoice let go earlier was found issued by the provider after all (BE-07): the
+     * delivery already has an invoice in law under it, and no further attempt may be sent.
+     */
+    boolean watchFound(UUID einvoiceId);
+
+    /** Notes that a watched transaction was asked about at {@code at}. */
+    void markWatchAsked(UUID einvoiceId, String transactionId, Instant at);
+
+    /**
+     * Records what the provider holds under a watched transaction: it issued it after all.
+     *
+     * @return false when it was recorded before - the accountants are told once
+     */
+    boolean markWatchFound(UUID einvoiceId, String transactionId, Instant at, int number, String templateCode,
+                           String symbol, String taxAuthorityCode);
+
+    /** Up to {@code limit} invoices at the provider since before {@code submittedBefore} not yet told overdue (BE-08). */
+    List<UUID> findResultOverdueUnannounced(Instant submittedBefore, int limit);
+
+    /** Notes that the accountants were told this submission is overdue; false when told before. */
+    boolean markResultOverdueAnnounced(UUID id, String transactionId, Instant now);
+
+    /** Notes that the accountants were told the provider numbered this submission under another series (BE-30). */
+    boolean markSeriesMismatchAnnounced(UUID id, String transactionId, Instant now);
+
+    /**
+     * Notes that the accountants were told an invoice's deadline is near, outside the version (BE-57): the warning
+     * says nothing new about the invoice, and must not make the accountant's open screen stale.
+     *
+     * @return false when it was told before, or is no longer to be issued
+     */
+    boolean markDueWarned(UUID id, Instant now);
+
+    /** Pieces of a return the shipment's own invoice could not take yet, kept until it is issued (BE-28). */
+    record PendingReturnPieces(UUID returnRequestId, String rmaNumber, UUID orderId, String orderNumber,
+                               UUID shipmentId, UUID orderLineId, long pieces) {
+    }
+
+    /** Keeps pieces of a return to be taken off the shipment's invoice once it is issued (BE-28). */
+    void keepPendingReturn(PendingReturnPieces pieces, Instant now);
+
+    /** The pieces of returns waiting for the shipment's invoice to be issued. */
+    List<PendingReturnPieces> findPendingReturnsOfShipment(UUID shipmentId);
+
+    /** The return's pieces were placed (or announced as unplaceable): no longer pending. */
+    void settlePendingReturn(UUID returnRequestId, UUID shipmentId, Instant now);
 }

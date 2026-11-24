@@ -1,7 +1,7 @@
 package com.stockflow.invoicing.internal.service;
 
-import com.stockflow.common.label.LabelFonts;
-import com.stockflow.common.label.PrintedDocument;
+import com.stockflow.common.document.DocumentFonts;
+import com.stockflow.common.document.DocumentSamples;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceFixtures;
 import com.stockflow.invoicing.internal.domain.EInvoiceLine;
@@ -124,42 +124,40 @@ class SandboxDocumentsTest {
     }
 
     @Test
-    @DisplayName("the PDF says it is a test invoice first and last, and states what an invoice must")
-    void pdfSaysItIsATestInvoice() {
+    @DisplayName("the PDF says it is a test invoice first, last and across the page, and states what an invoice must: "
+            + "the goods in a table, the tax by rate, the totals in figures and in words")
+    void pdfSaysItIsATestInvoice() throws Exception {
         InvoiceDocument invoice = document(EInvoiceFixtures.BUYER, EInvoiceFixtures.lines());
 
-        List<String> lines = SandboxInvoicePdf.lines(invoice, ISSUED).stream().map(PrintedDocument.Line::text).toList();
+        byte[] pdf = DocumentSamples.keep("sandbox-einvoice-sample",
+                new SandboxInvoicePdf(new DocumentFonts()).render(invoice, ISSUED));
 
-        String banner = "HOÁ ĐƠN THỬ NGHIỆM – KHÔNG CÓ GIÁ TRỊ PHÁP LÝ";
-        assertThat(lines.getFirst()).isEqualTo(banner);
-        assertThat(lines.getLast()).isEqualTo(banner);
-        String all = String.join("\n", lines);
-        assertThat(all).contains("HÓA ĐƠN GIÁ TRỊ GIA TĂNG")
-                .contains("Mẫu số: 1    Ký hiệu: C26TSB    Số: 00000042")
-                .contains("Ngày 12 tháng 11 năm 2026")
-                .contains("Mã của cơ quan thuế: SBX0123456789")
-                .contains("Đơn vị bán hàng: " + EInvoiceFixtures.SELLER.name())
-                .contains("Đơn vị mua hàng: Cong ty Tra Sua")
-                .contains("Mã số thuế: 0398765432")
-                .contains("Hình thức thanh toán: Chuyển khoản")
-                .contains("ĐVT: Thung; số lượng: 20; đơn giá: 100.000 đ; thành tiền: 2.000.000 đ; thuế suất GTGT 10%: "
-                        + "200.000 đ")
-                .contains("(50 cái / thùng)")
-                .contains("Thuế suất 8%: thành tiền 500.000 đ; tiền thuế GTGT 40.000 đ")
-                .contains("Tổng cộng tiền thanh toán: 2.740.000 đ")
-                .contains("Số tiền viết bằng chữ: Hai triệu bảy trăm bốn mươi nghìn đồng")
-                .contains("Mã tra cứu: SBXLOOKUP01");
-
-        byte[] pdf = new SandboxInvoicePdf(new LabelFonts()).render(invoice, ISSUED);
         assertThat(new String(pdf, 0, 5, StandardCharsets.ISO_8859_1)).isEqualTo("%PDF-");
+        assertThat(DocumentSamples.within(pdf, 20, 15)).as("inside the margins").isTrue();
+        String banner = "HOÁ ĐƠN THỬ NGHIỆM – KHÔNG CÓ GIÁ TRỊ PHÁP LÝ";
+        String all = DocumentSamples.text(pdf);
+        assertThat(all).startsWith(banner);
+        assertThat(all).containsSubsequence(banner, "HÓA ĐƠN GIÁ TRỊ GIA TĂNG",
+                "Mẫu số: 1 Ký hiệu: C26TSB Số: 00000042", "Ngày 12 tháng 11 năm 2026",
+                "Mã của cơ quan thuế: SBX0123456789",
+                "Đơn vị bán hàng: " + EInvoiceFixtures.SELLER.name(),
+                "Đơn vị mua hàng: Cong ty Tra Sua", "Mã số thuế", "0398765432",
+                "Hình thức thanh toán", "Chuyển khoản",
+                "Tên hàng hóa, dịch vụ", "Thuế suất", "Tiền thuế GTGT",
+                "(50 cái / thùng)", "Thung", "20", "100.000", "2.000.000", "10%", "200.000",
+                "Thuế suất 8%", "500.000", "40.000", "540.000",
+                "Tổng cộng", "2.500.000", "240.000", "2.740.000 đ",
+                "Số tiền viết bằng chữ: Hai triệu bảy trăm bốn mươi nghìn đồng",
+                "NGƯỜI MUA HÀNG", "NGƯỜI BÁN HÀNG", "(chữ ký mô phỏng)", banner);
+        assertThat(all).contains("Mã tra cứu: SBXLOOKUP01");
     }
 
     @Test
     @DisplayName("NĐ 254 Phụ lục 4.a: a buyer's name and address too long for the layout are abbreviated on the PDF only")
-    void pdfAbbreviatesOnlyWhatDoesNotFit() {
+    void pdfAbbreviatesOnlyWhatDoesNotFit() throws Exception {
         String name = "Công ty Trách nhiệm hữu hạn Sản xuất Thương mại Dịch vụ Bao bì Giấy và Ly Nhựa Cao Cấp Xuất Khẩu "
                 + "Việt Nam - Chi nhánh Thành phố Hồ Chí Minh";
-        String address = "Lô B12 đường số 7, Khu công nghiệp Tân Bình mở rộng, Phường Tây Thạnh, Quận Tân Phú, Thành phố "
+        String address = "Lô B12 đường số 7, Khu công nghiệp Tân Bình mở rộng, Phường Tây Thạnh, Thành phố "
                 + "Hồ Chí Minh, Việt Nam, toà nhà xưởng số 3, tầng 2, khu văn phòng điều hành phía Đông, cổng số 4 đường "
                 + "nội bộ D2, đối diện bãi xe container";
         assertThat(name.length()).isGreaterThan(SandboxInvoicePdf.NAME_ROOM);
@@ -167,15 +165,17 @@ class SandboxDocumentsTest {
         InvoiceDocument invoice = document(new InvoiceParty(name, "0398765432", address, "a@b.vn"),
                 EInvoiceFixtures.lines());
 
-        String all = String.join("\n", SandboxInvoicePdf.lines(invoice, ISSUED).stream()
-                .map(PrintedDocument.Line::text).toList());
+        byte[] pdf = DocumentSamples.keep("sandbox-einvoice-long-buyer",
+                new SandboxInvoicePdf(new DocumentFonts()).render(invoice, ISSUED));
+        String all = DocumentSamples.text(pdf);
 
+        assertThat(DocumentSamples.within(pdf, 20, 15)).as("inside the margins").isTrue();
         assertThat(all).contains("Đơn vị mua hàng: Công ty TNHH Sản xuất Thương mại");
         assertThat(all).contains("KCN Tân Bình mở rộng").contains("Lô B12 đường số 7").contains("Tây Thạnh")
                 .contains("Hồ Chí Minh");
         assertThat(invoice.buyer().name()).as("the invoice itself keeps the full text").isEqualTo(name);
         // The seller fits and is written as registered.
-        assertThat(all).contains("Địa chỉ: " + EInvoiceFixtures.SELLER.address());
+        assertThat(all).contains(EInvoiceFixtures.SELLER.address());
         assertThat(TaxAuthorityInvoiceXml.write(invoice, ISSUED, null)).as("the XML carries the full name")
                 .contains("Trách nhiệm hữu hạn");
         assertThat(TaxRateTotal.of(invoice.lines())).hasSize(2);

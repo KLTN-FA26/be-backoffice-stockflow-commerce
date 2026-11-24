@@ -21,10 +21,14 @@ import java.util.UUID;
 /**
  * One VAT e-invoice (WF-05 E2, plan §1.4-§1.5; kltn-docs 21; NĐ 254/2026/NĐ-CP, TT 91/2026/TT-BTC).
  *
- * <p><b>Date and number.</b> An invoice's date is the day of its delivery (NĐ 254 Điều 9), fixed when it is drawn up;
- * its number is the provider's, given when it is issued. The law asks for numbers that run on within a symbol in the
- * order of the dates (Phụ lục điểm 2) and for signing by the next working day (điểm 7), which is why a draft carries a
- * deadline. So an invoice is not sent while one of the same series dated earlier is at the provider, where it may
+ * <p><b>Date and number.</b> An original's date is the day of its delivery (NĐ 254 Điều 9), set when it is drawn up;
+ * a correction's is the day it is issued (WF-05 Q-1, {@link #dateForIssue}). Under a provider that takes only today's
+ * date (SePay, {@code EInvoiceProvider.datesOnlyToday}) an original issued after its delivery day is dated the day it
+ * is issued and flagged {@link Warning#ISSUED_LATE} - its delivery day stays on it ({@link #deliveredOn}) and is never
+ * changed to match. Its number is the provider's, given when it is issued. The law asks for numbers that run on within a symbol in the
+ * order of the dates (Phụ lục điểm 2) and for issuing on the invoice's own date (Điều 9 khoản 1; the next working day of
+ * khoản 5 and Phụ lục điểm 7 is for night sales without automatic issuing, not for this system - owner, 23/11/2026),
+ * which is why a draft carries a deadline ({@link IssueDeadline}). So an invoice is not sent while one of the same series dated earlier is at the provider, where it may
  * already hold the next number ({@code EInvoiceIssuanceSteps.submit}, {@code EINVOICE_OLDER_DRAFT_PENDING}); a draft
  * or a rejected invoice holds no number and keeps nothing back (HĐ-2) - one stuck invoice must not leave every later
  * one overdue - and is only named on the screen of a later draft. An invoice dated before others that were already
@@ -73,19 +77,19 @@ import java.util.UUID;
 public final class EInvoice {
 
     /**
-     * What the accountant should look at. A draft with any of them is never issued automatically; an invoice at the
-     * provider carries only {@link #UNKNOWN_TO_PROVIDER}.
+     * What the accountant should look at. A draft with one that {@link #blocksAutomaticIssue() blocks} is never issued
+     * automatically; an invoice at the provider carries only {@link #UNKNOWN_TO_PROVIDER} and {@link #ISSUED_LATE}.
      */
     public enum Warning {
         /** The buyer's name, tax code or address is missing: issuing is refused until it is there. */
         BUYER_PROFILE_INCOMPLETE,
         /**
-         * HĐ-8: the buyer has no e-mail to receive the invoice. kltn-docs 21 BR-06 wants one before issuing, so the
-         * draft is not issued automatically and Sales are told to add it ({@code EInvoiceBuyerIncomplete}). It does not
-         * refuse an accountant's issuing, though: the e-mail is not invoice content in law (legal review WF05-E0 L7,
-         * which is why {@code ck_einvoice_buyer_complete} does not ask for it), while issuing after the deadline is an
-         * offence of its own, so a missing address must not hold a lawful invoice back (owner's decision 2026-11-18).
-         * The provider then cannot mail it; the customer still finds it on the portal.
+         * HĐ-8: the buyer has no e-mail to receive the invoice. It blocks nothing - not the accountant's issuing, and
+         * since WF-05 Q-22 (row BR-06) not the automatic issuing either: the e-mail is not invoice content in law (NĐ
+         * 254/2026 Điều 10 khoản 1; {@code ck_einvoice_buyer_complete} does not ask for it), it is no longer sent to the
+         * provider at all (Q-14: the system mails the buyer), and an original held back for it would miss the delivery
+         * day it must be issued on (Q-1). Sales are told to add it ({@code EInvoiceBuyerIncomplete}); the customer
+         * finds the invoice on the portal meanwhile.
          */
         BUYER_EMAIL_MISSING,
         /** A line's VAT rate on the day of delivery is not the one the contract fixed: the totals differ from the contract's. */
@@ -95,6 +99,14 @@ public final class EInvoice {
          * product without a tax class, assumed standard. The customer agreed to no rate: the accountant decides.
          */
         TAX_RATE_NOT_ON_CONTRACT,
+        /**
+         * WF-05 Q-21 (BE-31): a line's product has no tax class, so the line was taxed at the highest rate, 10% (Luật
+         * Thuế GTGT 48/2024/QH15 Điều 9 khoản 4: where the rate cannot be determined, the highest applies) - never the
+         * rate the contract happened to carry, which silently went out at 8% after the reduction period. A draft drawn
+         * up cannot change its rate, so the accountant gives the product its class, voids the draft and draws it up
+         * again; it blocks the automatic issuing until then.
+         */
+        TAX_CLASS_UNKNOWN,
         /**
          * Found just before the automatic issuing (WF-05 review, defect 4): a line's rate is not the one a draft drawn
          * up now for the same delivery would carry - the draft was drawn up before a rate period that covers its day was
@@ -128,7 +140,23 @@ public final class EInvoice {
          * The only warning an issued invoice carries; set as it is issued, since an issued invoice changes no more and
          * its stored XML always checks the same.
          */
-        SIGNATURE_INVALID
+        SIGNATURE_INVALID,
+        /**
+         * WF-05 Q-1, Q-10: an original issued after the day of its delivery, under a provider that takes only today's
+         * date - it carries the day it was issued, its delivery day stays on it ({@link EInvoice#deliveredOn}), and the
+         * days between are how late it was ("Lập trễ N ngày"). Set as it is submitted, after the automatic issuing chose
+         * it, so it never holds an invoice back - every hour waited would make it later. Kept once issued, so late
+         * invoices can be counted ({@code ck_einvoice_issued_late} says the same).
+         */
+        ISSUED_LATE;
+
+        /**
+         * Whether a draft carrying it waits for the accountant instead of being issued automatically: everything that
+         * changes what the invoice says or whether it can be issued. Not a missing e-mail (Q-22, BR-06) and not lateness.
+         */
+        public boolean blocksAutomaticIssue() {
+            return this != BUYER_EMAIL_MISSING && this != ISSUED_LATE;
+        }
     }
 
     /** The rejection code of an invoice taken back from a provider that confirmed it holds no such transaction. */
@@ -140,6 +168,38 @@ public final class EInvoice {
      * under a new transaction like any refused one. The accountant's reason is its rejection message.
      */
     public static final String WITHDRAWN_CODE = "WITHDRAWN_NO_PROVIDER_RECORD";
+
+    /**
+     * WF-05 BE-07 (Q-5): the rejection code of an invoice taken back while the provider still could not confirm what
+     * became of it, on the written word of the provider's support - whose ticket or reply is its rejection message. The
+     * old transaction is watched for 30 days afterwards, in case the provider issued it after all.
+     */
+    public static final String WITHDRAWN_RESULT_UNCONFIRMED_CODE = "WITHDRAWN_RESULT_UNCONFIRMED";
+
+    /**
+     * WF-05 BE-08 (Q-8): the rejection code of an invoice the accountant recorded as refused by the tax authority, as
+     * the provider's portal shows it - the way out for an invoice the provider holds without a code for good.
+     */
+    public static final String REFUSED_BY_TAX_AUTHORITY_CODE = "REFUSED_BY_TAX_AUTHORITY";
+
+    /** How an issued invoice came to be recorded (WF-05 Q-8). */
+    public enum IssuedVia {
+        /** The provider's answer recorded it. */
+        PROVIDER,
+        /**
+         * The accountant recorded what the provider's portal shows: an invoice stuck at the provider (BE-08), or a
+         * reduction made on the portal because no provider could send it (BE-10, Q-9).
+         */
+        PORTAL_RECORD
+    }
+
+    /** Why the reduction of a failed delivery - otherwise never voided - was voided (WF-05 Q-8, BE-29). */
+    public enum VoidReasonCode {
+        /** No provider can send it: the accountant makes it on the provider's portal and records it (BE-10). */
+        UNSENDABLE_REVERSAL,
+        /** The delivery was corrected back to delivered before it left: the system voids it (BE-29). */
+        DELIVERY_CORRECTED_BACK
+    }
 
     /** How the customer pays: by bank transfer against the contract's installments (kltn-docs 15), always. */
     public static final String BANK_TRANSFER = "BANK_TRANSFER";
@@ -155,7 +215,14 @@ public final class EInvoice {
      * <p>{@code deliveryFailedAt} (WF-05 HĐ-3) is carried for reading only: the mark is written and taken back in SQL
      * by {@link EInvoiceRepository#markDeliveryFailed} and {@link EInvoiceRepository#clearDeliveryFailed}, guarded by
      * {@code tg_einvoice_delivery_failed}, and nothing the aggregate does changes it. It is here so that every answer
-     * built from a snapshot can show it; null for a new invoice and for one never marked.</p>
+     * built from a snapshot can show it; null for a new invoice and for one never marked. {@code reversedAt} likewise
+     * ({@link EInvoiceRepository#markReversed}): read so that an invoice reduced in full for a failed delivery refuses
+     * every other correction (BE-36) and its screen says so.</p>
+     *
+     * <p>{@code deliveredOn} (WF-05 Q-1): the day of the delivery an original invoices, set when it is drawn up and never
+     * changed; null on a correction and on invoices from before. {@code issuedVia}, {@code portalRecordedBy},
+     * {@code portalRecordedAt} (Q-8): how an issued invoice was recorded. {@code voidReasonCode}: why the reduction of
+     * a failed delivery was voided.</p>
      */
     public record Snapshot(UUID id, String code, EInvoiceType type, EInvoiceStatus status, boolean adjusted,
                            UUID orderId, String orderNumber, String contractNumber, UUID shipmentId,
@@ -170,10 +237,46 @@ public final class EInvoice {
                            UUID submittedBy, Instant issuedAt, Instant voidedAt, UUID voidedBy, String voidReason,
                            long version, CorrectionBasis correctionBasis, String agreementNumber,
                            LocalDate agreementDate, UUID returnRequestId, List<UUID> listedInvoiceIds,
-                           Instant deliveryFailedAt) {
+                           Instant deliveryFailedAt, LocalDate deliveredOn, Instant reversedAt, IssuedVia issuedVia,
+                           UUID portalRecordedBy, Instant portalRecordedAt, VoidReasonCode voidReasonCode) {
 
         public Snapshot {
             listedInvoiceIds = listedInvoiceIds == null ? List.of() : List.copyOf(listedInvoiceIds);
+        }
+
+        /**
+         * Whether the buyer is sent this invoice (WF-05 E5, HĐ-8): issued - or replaced since, the buyer was issued it
+         * all the same - and its seller's signature holds. One whose signature does not is announced to the
+         * accountants and replaced, never mailed: "Chữ ký sai thì báo Kế toán ngay, không gửi khách hoá đơn lỗi"
+         * (decision §3 HĐ-8). The one rule for the first mail and every mail sent again (audit r2 M-1).
+         */
+        public boolean sendableToBuyer() {
+            return status.wasIssued() && !warnings.contains(Warning.SIGNATURE_INVALID);
+        }
+
+        /** As every snapshot was before WF-05: no delivery day, never reversed, issued through the provider. */
+        public Snapshot(UUID id, String code, EInvoiceType type, EInvoiceStatus status, boolean adjusted,
+                        UUID orderId, String orderNumber, String contractNumber, UUID shipmentId,
+                        String shipmentCode, UUID deliveryBatchId, UUID customerId, UUID originalEInvoiceId,
+                        String provider, int attempt, String transactionId, String templateCode, String symbol,
+                        Integer invoiceNumber, String taxAuthorityCode, String lookupCode, LocalDate issueDate,
+                        Instant issueDueAt, Instant dueWarnedAt, Instant signedAt, InvoiceParty seller,
+                        InvoiceParty buyer, String currency, String paymentMethod, List<EInvoiceLine> lines,
+                        BigDecimal subtotal, BigDecimal taxTotal, BigDecimal grandTotal, String amountInWords,
+                        Set<Warning> warnings, String adjustmentReason, String agreementFileKey, String xmlFileKey,
+                        String pdfFileKey, String rejectionCode, String rejectionMessage, Instant submittedAt,
+                        UUID submittedBy, Instant issuedAt, Instant voidedAt, UUID voidedBy, String voidReason,
+                        long version, CorrectionBasis correctionBasis, String agreementNumber,
+                        LocalDate agreementDate, UUID returnRequestId, List<UUID> listedInvoiceIds,
+                        Instant deliveryFailedAt) {
+            this(id, code, type, status, adjusted, orderId, orderNumber, contractNumber, shipmentId, shipmentCode,
+                    deliveryBatchId, customerId, originalEInvoiceId, provider, attempt, transactionId, templateCode,
+                    symbol, invoiceNumber, taxAuthorityCode, lookupCode, issueDate, issueDueAt, dueWarnedAt, signedAt,
+                    seller, buyer, currency, paymentMethod, lines, subtotal, taxTotal, grandTotal, amountInWords,
+                    warnings, adjustmentReason, agreementFileKey, xmlFileKey, pdfFileKey, rejectionCode,
+                    rejectionMessage, submittedAt, submittedBy, issuedAt, voidedAt, voidedBy, voidReason, version,
+                    correctionBasis, agreementNumber, agreementDate, returnRequestId, listedInvoiceIds,
+                    deliveryFailedAt, null, null, null, null, null, null);
         }
 
         /** An invoice that corrects nothing, as every snapshot was before corrections existed. */
@@ -242,8 +345,15 @@ public final class EInvoice {
     private Integer invoiceNumber;
     private String taxAuthorityCode;
     private String lookupCode;
-    private final LocalDate issueDate;
-    private final Instant issueDueAt;
+    /** Re-dated at submit ({@link #dateForIssue}); otherwise as drawn up. */
+    private LocalDate issueDate;
+    private Instant issueDueAt;
+    private final LocalDate deliveredOn;
+    private final Instant reversedAt;
+    private IssuedVia issuedVia;
+    private UUID portalRecordedBy;
+    private Instant portalRecordedAt;
+    private VoidReasonCode voidReasonCode;
     private Instant dueWarnedAt;
     private Instant signedAt;
     private final InvoiceParty seller;
@@ -324,6 +434,12 @@ public final class EInvoice {
         this.returnRequestId = s.returnRequestId();
         this.listedInvoiceIds = s.listedInvoiceIds();
         this.deliveryFailedAt = s.deliveryFailedAt();
+        this.deliveredOn = s.deliveredOn();
+        this.reversedAt = s.reversedAt();
+        this.issuedVia = s.issuedVia();
+        this.portalRecordedBy = s.portalRecordedBy();
+        this.portalRecordedAt = s.portalRecordedAt();
+        this.voidReasonCode = s.voidReasonCode();
         this.xmlFileKey = s.xmlFileKey();
         this.pdfFileKey = s.pdfFileKey();
         this.rejectionCode = s.rejectionCode();
@@ -338,29 +454,45 @@ public final class EInvoice {
     }
 
     /**
+     * As {@link #drawUpOriginal(UUID, String, Delivery, InvoiceParty, InvoiceParty, List, boolean, boolean, boolean)}
+     * for lines whose tax classes are all known.
+     */
+    public static EInvoice drawUpOriginal(UUID id, String code, Delivery delivery, InvoiceParty seller,
+                                          InvoiceParty buyer, List<EInvoiceLine> lines,
+                                          boolean taxRateDiffersFromContract, boolean taxRateNotOnContract) {
+        return drawUpOriginal(id, code, delivery, seller, buyer, lines, taxRateDiffersFromContract,
+                taxRateNotOnContract, false);
+    }
+
+    /**
      * Draws up the original invoice of a delivered shipment, as a draft: dated the day of the delivery (NĐ 254 Điều 9
-     * khoản 1 - the day the goods changed hands, whenever the invoice is issued), due by the end of the next working
-     * day ({@link IssueDeadline}), its totals added up from {@code lines}.
+     * khoản 1 - the day the goods changed hands), which it keeps as its {@link #deliveredOn} for good, due by the end
+     * of that day ({@link IssueDeadline}; WF-05 Q-1: no next-working-day grace for a system that issues
+     * automatically), its totals added up from {@code lines}.
      *
-     * <p>An original names no shipment in one case only: the rest of the order's shipping fee once its undelivered rest
-     * was closed and no delivery is left to carry it ({@link FeeAllocation#shippingRest}). It carries that fee and
-     * nothing else - goods are always a shipment's - and {@code ck_einvoice_original} with
-     * {@code tg_einvoice_shipping_fee_rest_lines} say so in the database.</p>
+     * <p>An original names no shipment in one case only: the rest of the order's fees once its deliveries are over -
+     * the shipping fee no delivery carried ({@link FeeAllocation#shippingRest}) and a plate fee none did (WF-05 BE-62:
+     * an order whose goods all came back). It carries fees and nothing else - goods are always a shipment's - and
+     * {@code ck_einvoice_original} with {@code tg_einvoice_shipping_fee_rest_lines} say so in the database.</p>
      *
      * @param taxRateDiffersFromContract whether a line carries a VAT rate other than the one its order line fixed
      * @param taxRateNotOnContract       whether a line's order fixed no VAT rate at all
+     * @param taxClassUnknown            whether a line's product has no tax class, so it was taxed at the highest rate
+     *                                   ({@link Warning#TAX_CLASS_UNKNOWN})
      * @throws IllegalArgumentException for a seller missing its name, tax code or address, no lines, two lines with one
      *                                  number, a line below zero, or a line other than the shipping fee on an
      *                                  original that names no shipment - none of which a delivery produces
      */
     public static EInvoice drawUpOriginal(UUID id, String code, Delivery delivery, InvoiceParty seller,
                                           InvoiceParty buyer, List<EInvoiceLine> lines,
-                                          boolean taxRateDiffersFromContract, boolean taxRateNotOnContract) {
+                                          boolean taxRateDiffersFromContract, boolean taxRateNotOnContract,
+                                          boolean taxClassUnknown) {
         Objects.requireNonNull(delivery, "delivery");
-        if (delivery.shipmentId() == null && lines != null && lines.stream().anyMatch(line ->
-                line.kind() != EInvoiceLine.Kind.FEE || line.feeKind() != EInvoiceLine.FeeKind.SHIPPING_FEE)) {
+        if (delivery.shipmentId() == null && lines != null
+                && lines.stream().anyMatch(line -> line.kind() != EInvoiceLine.Kind.FEE)) {
+            // The rest of an order's fees (BE-62): the shipping fee and plate fees no delivery's invoice carried.
             throw new IllegalArgumentException(
-                    "An original invoices a shipment; one without a shipment carries the order's shipping fee only");
+                    "An original invoices a shipment; one without a shipment carries the order's fees only");
         }
         if (seller == null || seller.name() == null || seller.taxCode() == null || seller.address() == null) {
             throw new IllegalArgumentException("An invoice names its seller: name, tax code and address");
@@ -390,52 +522,184 @@ public final class EInvoice {
         if (taxRateNotOnContract) {
             warnings.add(Warning.TAX_RATE_NOT_ON_CONTRACT);
         }
+        if (taxClassUnknown) {
+            warnings.add(Warning.TAX_CLASS_UNKNOWN);
+        }
         if (atZeroRate(lines)) {
             warnings.add(Warning.TAX_EXEMPT_NOT_SUPPORTED);
         }
         return new EInvoice(new Snapshot(id, code, EInvoiceType.ORIGINAL, EInvoiceStatus.DRAFT, false,
                 delivery.orderId(), delivery.orderNumber(), delivery.contractNumber(), delivery.shipmentId(),
                 delivery.shipmentCode(), delivery.deliveryBatchId(), delivery.customerId(), null, null, 0, null, null,
-                null, null, null, null, delivery.deliveredOn(), IssueDeadline.of(delivery.deliveredOn()), null, null,
-                seller, buyer, VND, BANK_TRANSFER, lines, net, tax, total, VietnameseAmountInWords.of(total),
-                warnings, null, null, null, null, null, null, null, null, null, null, null, null, 0));
+                null, null, null, null, delivery.deliveredOn(),
+                IssueDeadline.of(delivery.deliveredOn()), null, null, seller, buyer, VND,
+                BANK_TRANSFER, lines, net, tax, total, VietnameseAmountInWords.of(total), warnings, null, null, null,
+                null, null, null, null, null, null, null, null, null, 0, null, null, null, null, List.of(), null,
+                delivery.deliveredOn(), null, null, null, null, null));
     }
 
     /**
-     * Draws up the reduction of a whole issued invoice - the original, or the replacement standing for the shipment -
-     * whose delivery was corrected to a failure, as a draft
-     * ({@link CorrectionBasis#DELIVERY_FAILED}; kltn-docs 21 §4.4, 09 §4.3 step 5; WF-05 HĐ-3): every line of the
-     * invoice taken off at its own quantity, price and rate, so that the two together come to nothing - each line's tax
-     * is rounded the same way below zero as above it ({@link EInvoiceLine#vat}).
-     *
-     * <p>Only an invoice of a shipment that nothing corrects yet: an adjustment already drawn up of it, issued or not, or
-     * a replacement, would leave the full reduction either reducing it below nothing or reducing the wrong invoice.
-     * Such an invoice is the accountant's to bring to nothing by hand. Whether to reduce at all is the caller's to decide -
-     * the delivery is what was corrected, not the invoice.</p>
-     *
-     * @param original read under its lock
-     * @throws BusinessException {@code EINVOICE_NOT_IN_FORCE} unless it is issued; {@code
-     *         EINVOICE_CORRECTION_NOT_APPLICABLE} for an adjustment, or an invoice of no shipment or that something
-     *         corrects
+     * As {@link #drawUpDeliveryReversal(UUID, String, EInvoice, String, LocalDate, Corrections, List)} for an invoice
+     * no adjustment was issued against.
      */
     public static EInvoice drawUpDeliveryReversal(UUID id, String code, EInvoice original, String reason,
                                                   LocalDate issueDate, Corrections corrections) {
+        return drawUpDeliveryReversal(id, code, original, reason, issueDate, corrections, List.of());
+    }
+
+    /**
+     * Draws up the reduction of what an issued original still invoices, whose delivery was corrected to a failure, as
+     * a draft ({@link CorrectionBasis#DELIVERY_FAILED}; kltn-docs 21 §4.4, 09 §4.3 step 5; WF-05 HĐ-3, BE-11): the
+     * original's lines and the lines of every adjustment issued against it, added up line by line (the same goods or
+     * fee at the same price, rate and unit), and what each still comes to taken off - so that the original, its issued
+     * adjustments and this together come to nothing; each line's tax is rounded the same way below zero as above it
+     * ({@link EInvoiceLine#vat}).
+     *
+     * <p>BE-11: an adjustment issued before the failure used to stop the system from reducing at all, and nothing
+     * reduced the invoice afterwards: the goods were never delivered, yet the invoice stayed in force, and the
+     * shipment delivered again rode on it uninvoiced. Reducing what is left, rather than the original as it was, is
+     * what lets an adjusted invoice be reduced to nothing all the same. Draft corrections are not counted here: the
+     * caller voids them first (nothing was delivered for them to correct), and refuses while one is at the provider.</p>
+     *
+     * <p>Never a replacement (WF-05 Q-9; TT 91 Điều 10 khoản 6 điểm a: a replacement is put right by replacement; SePay
+     * refuses any adjustment of one, sandbox T-5): its failed delivery is the accountant's to settle on the provider's
+     * portal and record ({@code EINVOICE_REPLACEMENT_NOT_ADJUSTABLE}).</p>
+     *
+     * @param original              read under its lock
+     * @param corrections           what corrects it now: no replacement, and no adjustment but issued ones
+     * @param issuedAdjustmentLines the lines of every adjustment issued against it (empty when it has none)
+     * @throws BusinessException {@code EINVOICE_NOT_IN_FORCE} unless it is issued and not reversed;
+     *         {@code EINVOICE_REPLACEMENT_NOT_ADJUSTABLE} for a replacement; {@code EINVOICE_CORRECTION_NOT_APPLICABLE}
+     *         for an adjustment, an invoice of no shipment, one still being corrected, one with nothing left to take
+     *         off, or one an adjustment lowered below its own line (a price taken down: reduced by hand)
+     */
+    public static EInvoice drawUpDeliveryReversal(UUID id, String code, EInvoice original, String reason,
+                                                  LocalDate issueDate, Corrections corrections,
+                                                  List<EInvoiceLine> issuedAdjustmentLines) {
         requireCorrectable(original);
-        // A replacement in force stands for its shipment as an original does, and only an ERROR of it is replaced
-        // again rather than adjusted (TT 91 Điều 10 khoản 6 điểm a): its reduction for a failed delivery is an
-        // adjustment like the original's.
-        if (original.shipmentId == null || original.adjusted
-                || corrections.liveAdjustment() || corrections.liveReplacement()) {
-            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE, ("Invoice %s is not an "
-                    + "invoice of a delivery that nothing corrects yet: it is reduced by hand").formatted(original.code));
+        if (original.type == EInvoiceType.REPLACEMENT) {
+            throw new BusinessException(ErrorCode.EINVOICE_REPLACEMENT_NOT_ADJUSTABLE, ("Invoice %s is a replacement: "
+                    + "a replacement is not adjusted - its failed delivery is settled on the provider's portal and "
+                    + "recorded").formatted(original.code));
         }
-        List<EInvoiceLine> lines = new ArrayList<>();
-        for (EInvoiceLine line : original.lines) {
-            lines.add(line.corrected(Identifiers.newId(), lines.size() + 1, -line.quantity(), line.unitsPerCarton(),
-                    line.unit(), line.unitPrice(), line.taxRate(), line.itemName()));
+        List<EInvoiceLine> adjustments = issuedAdjustmentLines == null ? List.of() : issuedAdjustmentLines;
+        if (original.shipmentId == null || corrections.liveReplacement()
+                || (adjustments.isEmpty() && (original.adjusted || corrections.liveAdjustment()))) {
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE, ("Invoice %s is not an "
+                    + "invoice of a delivery that only issued adjustments correct: it is reduced once they are settled")
+                    .formatted(original.code));
+        }
+        List<EInvoiceLine> lines = whatIsLeft(original, adjustments);
+        if (lines.isEmpty()) {
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE,
+                    "Invoice %s invoices nothing any more: there is nothing to reduce".formatted(original.code));
         }
         return drawUpAdjustment(id, code, original, CorrectionBasis.DELIVERY_FAILED, reason, original.buyer, lines,
                 issueDate, null, List.of(), corrections);
+    }
+
+    /**
+     * What an issued invoice still invoices, as the lines that take it off: its own lines and the lines of the
+     * adjustments issued against it added up line by line - the same goods or fee at the same price, rate and unit -
+     * each that still comes to something taken off whole (WF-05 BE-11; also what a reduction made on the provider's
+     * portal for a failed delivery is recorded as, Q-8).
+     *
+     * <p>Goods returned in loose pieces from a carton line were taken off in pieces, under a unit of their own, which
+     * line by line would leave the pieces below zero and the cartons whole. Such goods are added up in pieces instead,
+     * at the piece's price, and taken off as cartons when what is left is whole cartons, else as pieces.</p>
+     *
+     * @throws BusinessException {@code EINVOICE_CORRECTION_NOT_APPLICABLE} when an adjustment took a line below what the
+     *         invoice invoiced in a way pieces do not explain (a price taken down, a discount): no reduction made of
+     *         whole lines matches it
+     */
+    public static List<EInvoiceLine> whatIsLeft(EInvoice original, List<EInvoiceLine> issuedAdjustmentLines) {
+        List<EInvoiceLine> adjustments = issuedAdjustmentLines == null ? List.of() : issuedAdjustmentLines;
+        // The same goods or fee at the same rate, then the same unit and price within it.
+        java.util.Map<List<Object>, java.util.Map<List<Object>, List<EInvoiceLine>>> groups =
+                new java.util.LinkedHashMap<>();
+        for (List<EInvoiceLine> source : List.of(original.lines, adjustments)) {
+            for (EInvoiceLine line : source) {
+                if (line.kind() == EInvoiceLine.Kind.NOTE) {
+                    continue;
+                }
+                List<Object> group = java.util.Arrays.asList(line.kind(), line.feeKind(), line.orderLineId(),
+                        line.sku(), line.taxRate().stripTrailingZeros());
+                List<Object> key = java.util.Arrays.asList(line.unit(), line.unitsPerCarton(),
+                        line.unitPrice().stripTrailingZeros());
+                groups.computeIfAbsent(group, g -> new java.util.LinkedHashMap<>())
+                        .computeIfAbsent(key, k -> new ArrayList<>()).add(line);
+            }
+        }
+        List<EInvoiceLine> lines = new ArrayList<>();
+        for (java.util.Map<List<Object>, List<EInvoiceLine>> group : groups.values()) {
+            boolean belowZero = group.values().stream()
+                    .anyMatch(same -> same.stream().mapToLong(EInvoiceLine::quantity).sum() < 0);
+            if (!belowZero) {
+                for (List<EInvoiceLine> same : group.values()) {
+                    long quantity = same.stream().mapToLong(EInvoiceLine::quantity).sum();
+                    if (quantity > 0) {
+                        EInvoiceLine line = same.getFirst();
+                        lines.add(line.corrected(Identifiers.newId(), lines.size() + 1, (int) -quantity,
+                                line.unitsPerCarton(), line.unit(), line.unitPrice(), line.taxRate(), line.itemName()));
+                    }
+                }
+                continue;
+            }
+            List<EInvoiceLine> left = inPieces(group.values().stream().flatMap(List::stream).toList(),
+                    lines.size() + 1);
+            if (left == null) {
+                throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE, ("Invoice %s: an adjustment "
+                        + "took a line below what it invoiced; its failed delivery is reduced on the provider's portal "
+                        + "and recorded").formatted(original.code));
+            }
+            lines.addAll(left);
+        }
+        return lines;
+    }
+
+    /**
+     * The lines of one goods line added up in pieces, as the line that takes what is left off: one line, or none when
+     * nothing is left (a line of quantity 0 is no line, {@link EInvoiceLine}); null when they do not add up in pieces
+     * (a fee, a price not the same per piece, below zero, or a rest of loose pieces with no piece line to take its unit
+     * from).
+     */
+    private static List<EInvoiceLine> inPieces(List<EInvoiceLine> same, int lineNo) {
+        if (same.getFirst().kind() != EInvoiceLine.Kind.GOODS) {
+            return null;
+        }
+        BigDecimal piecePrice = null;
+        EInvoiceLine carton = null;
+        EInvoiceLine piece = null;
+        long pieces = 0;
+        for (EInvoiceLine line : same) {
+            int perCarton = line.unitsPerCarton() == null ? 1 : line.unitsPerCarton();
+            BigDecimal[] price = line.unitPrice().divideAndRemainder(BigDecimal.valueOf(perCarton));
+            if (price[1].signum() != 0 || piecePrice != null && piecePrice.compareTo(price[0]) != 0) {
+                return null;
+            }
+            piecePrice = price[0];
+            pieces += line.pieces();
+            if (line.unitsPerCarton() != null && carton == null) {
+                carton = line;
+            } else if (line.unitsPerCarton() == null && piece == null) {
+                piece = line;
+            }
+        }
+        if (pieces < 0) {
+            return null;
+        }
+        if (pieces == 0) {
+            return List.of();
+        }
+        if (carton != null && pieces % carton.unitsPerCarton() == 0) {
+            return List.of(carton.corrected(Identifiers.newId(), lineNo, (int) -(pieces / carton.unitsPerCarton()),
+                    carton.unitsPerCarton(), carton.unit(), carton.unitPrice(), carton.taxRate(), carton.itemName()));
+        }
+        if (piece == null) {
+            return null;
+        }
+        return List.of(piece.corrected(Identifiers.newId(), lineNo, (int) -pieces, null, piece.unit(), piecePrice,
+                piece.taxRate(), piece.itemName()));
     }
 
     /**
@@ -451,7 +715,11 @@ public final class EInvoice {
      * @throws BusinessException {@code EINVOICE_NOT_IN_FORCE} unless the original (and every listed invoice) is issued
      *         and in force; {@code EINVOICE_CORRECTION_NOT_APPLICABLE} for an adjustment of an adjustment, a line that
      *         adds on a return or discount, or a list that is not the buyer's other invoices;
-     *         {@code EINVOICE_CORRECTION_FORM_FIXED} when the invoice's errors are corrected by replacement;
+     *         {@code EINVOICE_CORRECTION_FORM_FIXED} when the invoice is being replaced, or for the correction of an
+     *         error on a replacement (which is replaced again); {@code EINVOICE_REPLACEMENT_NOT_ADJUSTABLE} for a
+     *         return, a trade discount or a failed delivery on a replacement, or a replacement listed by a trade
+     *         discount (WF-05 Q-9: a replacement is never adjusted - TT 91 Điều 10 khoản 6 điểm a; SePay refuses it,
+     *         sandbox T-5 - and a return on it is settled on the provider's portal and recorded);
      *         {@code EINVOICE_ADJUSTMENT_EXCEEDS_INVOICE} when it would reduce what it covers below nothing;
      *         {@code VALIDATION_FAILED} without a reason or lines
      */
@@ -461,11 +729,16 @@ public final class EInvoice {
                                             Corrections corrections) {
         Objects.requireNonNull(basis, "basis");
         requireCorrectable(original);
-        if (corrections.liveReplacement() || (basis == CorrectionBasis.ERROR
-                && original.type == EInvoiceType.REPLACEMENT)) {
+        if (corrections.liveReplacement()
+                || (basis == CorrectionBasis.ERROR && original.type == EInvoiceType.REPLACEMENT)) {
             throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_FORM_FIXED,
                     "Invoice %s has its errors corrected by replacement; it is replaced again, not adjusted"
                             .formatted(original.code));
+        }
+        if (original.type == EInvoiceType.REPLACEMENT) {
+            throw new BusinessException(ErrorCode.EINVOICE_REPLACEMENT_NOT_ADJUSTABLE, ("Invoice %s is a replacement and "
+                    + "is never adjusted: a return or a reduction on it is made on the provider's portal and recorded")
+                    .formatted(original.code));
         }
         if ((basis == CorrectionBasis.RETURN) != (returnRequestId != null)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
@@ -488,6 +761,14 @@ public final class EInvoice {
                     || !seen.add(other.id)) {
                 throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE,
                         "Invoice %s is not another invoice of the same buyer".formatted(other.code));
+            }
+            if (other.type == EInvoiceType.REPLACEMENT) {
+                throw new BusinessException(ErrorCode.EINVOICE_REPLACEMENT_NOT_ADJUSTABLE,
+                        "Invoice %s is a replacement: a trade discount does not adjust it".formatted(other.code));
+            }
+            if (other.reversedAt != null) {
+                throw new BusinessException(ErrorCode.EINVOICE_NOT_IN_FORCE, ("Invoice %s was reduced in full for a "
+                        + "failed delivery").formatted(other.code));
             }
             covered = covered.add(other.grandTotal);
         }
@@ -552,6 +833,12 @@ public final class EInvoice {
             throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE,
                     "Invoice %s is an adjustment: correct the invoice it adjusts".formatted(original.code));
         }
+        // BE-36: reduced in full for a failed delivery, it invoices nothing any more - an adjustment up or a
+        // replacement of it would invoice goods nobody received. tg_einvoice_original_in_force says the same.
+        if (original.reversedAt != null) {
+            throw new BusinessException(ErrorCode.EINVOICE_NOT_IN_FORCE, ("Invoice %s was reduced in full because its "
+                    + "delivery failed; it is not corrected again").formatted(original.code));
+        }
     }
 
     private static Totals totals(List<EInvoiceLine> lines, String reason) {
@@ -594,7 +881,122 @@ public final class EInvoice {
                 issueDate, IssueDeadline.of(issueDate), null, null, original.seller, buyer, VND, BANK_TRANSFER, lines,
                 totals.net(), totals.tax(), totals.total(), VietnameseAmountInWords.of(totals.total()), warnings,
                 reason.strip(), null, null, null, null, null, null, null, null, null, null, null, 0, basis, null, null,
-                returnRequestId, listed, null));
+                returnRequestId, listed, null, null, null, null, null, null, null));
+    }
+
+    /**
+     * A reduction the accountant made on the provider's portal, about to be recorded (WF-05 Q-8; BE-10, Q-9): an
+     * adjustment like any other, marked {@link IssuedVia#PORTAL_RECORD} from the start - it is never sent anywhere,
+     * and the caller takes it to issued in the same transaction ({@link #submit} then {@link #issuedFromPortal}).
+     * Unlike {@link #drawUpAdjustment} it is taken for an invoice already reduced on paper here - an original whose
+     * own reduction no provider could send ({@link VoidReasonCode#UNSENDABLE_REVERSAL}), or a replacement, which no
+     * provider adjusts - and dated the day the portal gave it.
+     *
+     * @param basis {@link CorrectionBasis#DELIVERY_FAILED} or {@link CorrectionBasis#RETURN}
+     * @throws BusinessException {@code EINVOICE_NOT_IN_FORCE} unless the invoice is issued; {@code
+     *         EINVOICE_CORRECTION_NOT_APPLICABLE} for an adjustment, another basis, or a line that adds;
+     *         {@code EINVOICE_ADJUSTMENT_EXCEEDS_INVOICE} below nothing
+     */
+    public static EInvoice recordedReduction(UUID id, String code, EInvoice original, CorrectionBasis basis,
+                                             String reason, List<EInvoiceLine> lines, LocalDate issueDate,
+                                             UUID returnRequestId, Corrections corrections) {
+        Objects.requireNonNull(original, "original");
+        if (original.status != EInvoiceStatus.ISSUED || original.type == EInvoiceType.ADJUSTMENT) {
+            throw new BusinessException(ErrorCode.EINVOICE_NOT_IN_FORCE,
+                    "Invoice %s is %s: only an issued invoice is reduced".formatted(original.code, original.status));
+        }
+        if (basis != CorrectionBasis.DELIVERY_FAILED && basis != CorrectionBasis.RETURN
+                || (basis == CorrectionBasis.RETURN) != (returnRequestId != null)) {
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE,
+                    "A reduction recorded from the portal is for a failed delivery, or for a return it names");
+        }
+        Totals totals = totals(lines, reason);
+        for (EInvoiceLine line : lines) {
+            if (line.quantity() > 0 || line.kind() == EInvoiceLine.Kind.NOTE) {
+                throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE,
+                        "A reduction only takes off (line %d)".formatted(line.lineNo()));
+            }
+        }
+        if (original.grandTotal.add(corrections.liveAdjustmentTotal()).add(totals.total()).signum() < 0) {
+            throw new BusinessException(ErrorCode.EINVOICE_ADJUSTMENT_EXCEEDS_INVOICE,
+                    "Reducing invoice %s by %s would take it below nothing".formatted(original.code,
+                            totals.total().toPlainString()));
+        }
+        EInvoice recorded = correction(id, code, EInvoiceType.ADJUSTMENT, original, basis, reason, original.buyer,
+                lines, totals, issueDate, returnRequestId, List.of());
+        recorded.issuedVia = IssuedVia.PORTAL_RECORD;
+        return recorded;
+    }
+
+    /**
+     * Audit r3 EINV-2, the ERROR half (Q-8: "Cùng một lệnh này dùng cho mọi ca SePay không làm được qua API"; HĐ-5): the
+     * correction of an error that reduces an original, drawn up here and agreed in writing with the buyer, that no
+     * provider could send - the accountant voided the draft and made it on the provider's portal - about to be recorded
+     * as {@link IssuedVia#PORTAL_RECORD}. It states what the voided draft stated, line for line, and carries its
+     * agreement: that is what both parties signed (TT 91/2026/TT-BTC Điều 10 khoản 1 điểm b), so nothing in it is
+     * recomputed or trimmed. Only a reduction is recorded this way - every line takes off, and the whole is below zero;
+     * a correction that raises or only rewords is not a reduction made on the portal.
+     *
+     * @param voided the voided ERROR adjustment of {@code original}, its agreement attached
+     * @throws BusinessException {@code EINVOICE_NOT_IN_FORCE} unless {@code original} is an issued invoice that is not
+     *         an adjustment; {@code EINVOICE_CORRECTION_NOT_APPLICABLE} for anything but a voided ERROR adjustment of
+     *         it, one with no agreement, or one with a line that adds or only words; {@code
+     *         EINVOICE_ADJUSTMENT_EXCEEDS_INVOICE} below nothing
+     */
+    public static EInvoice recordedErrorReduction(UUID id, String code, EInvoice original, EInvoice voided,
+                                                  String reason, LocalDate issueDate, Corrections corrections) {
+        Objects.requireNonNull(original, "original");
+        Objects.requireNonNull(voided, "voided");
+        if (original.status != EInvoiceStatus.ISSUED || original.type == EInvoiceType.ADJUSTMENT) {
+            throw new BusinessException(ErrorCode.EINVOICE_NOT_IN_FORCE,
+                    "Invoice %s is %s: only an issued invoice is reduced".formatted(original.code, original.status));
+        }
+        if (voided.type != EInvoiceType.ADJUSTMENT || voided.correctionBasis != CorrectionBasis.ERROR
+                || voided.status != EInvoiceStatus.VOIDED_DRAFT || !original.id.equals(voided.originalEInvoiceId)) {
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE, ("Invoice %s is not a voided "
+                    + "correction of an error of %s").formatted(voided.code, original.code));
+        }
+        if (voided.agreementFileKey == null) {
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE, ("Invoice %s carries no written "
+                    + "agreement with the buyer: a correction of an error is not made without one").formatted(voided.code));
+        }
+        if (!reducesOnly(voided.lines)) {
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE, ("Invoice %s does not only take "
+                    + "off: only a reduction made on the provider's portal is recorded").formatted(voided.code));
+        }
+        List<EInvoiceLine> lines = new ArrayList<>();
+        for (EInvoiceLine line : voided.lines) {
+            lines.add(line.corrected(Identifiers.newId(), lines.size() + 1, line.quantity(), line.unitsPerCarton(),
+                    line.unit(), line.unitPrice(), line.taxRate(), line.itemName()));
+        }
+        Totals totals = totals(lines, reason);
+        if (original.grandTotal.add(corrections.liveAdjustmentTotal()).add(totals.total()).signum() < 0) {
+            throw new BusinessException(ErrorCode.EINVOICE_ADJUSTMENT_EXCEEDS_INVOICE,
+                    "Reducing invoice %s by %s would take it below nothing".formatted(original.code,
+                            totals.total().toPlainString()));
+        }
+        EInvoice recorded = correction(id, code, EInvoiceType.ADJUSTMENT, original, CorrectionBasis.ERROR, reason,
+                voided.buyer, lines, totals, issueDate, null, List.of());
+        recorded.agreementFileKey = voided.agreementFileKey;
+        recorded.agreementNumber = voided.agreementNumber;
+        recorded.agreementDate = voided.agreementDate;
+        recorded.issuedVia = IssuedVia.PORTAL_RECORD;
+        return recorded;
+    }
+
+    /**
+     * Whether the lines of a correction only take off: none is a note, none adds to the amount or the tax, and they
+     * take something off in all - what {@link #recordedErrorReduction} records.
+     */
+    public static boolean reducesOnly(List<EInvoiceLine> lines) {
+        BigDecimal total = BigDecimal.ZERO;
+        for (EInvoiceLine line : lines) {
+            if (line.kind() == EInvoiceLine.Kind.NOTE || line.amount().signum() > 0 || line.taxAmount().signum() > 0) {
+                return false;
+            }
+            total = total.add(line.amount()).add(line.taxAmount());
+        }
+        return total.signum() < 0;
     }
 
     /** {@link Warning#BUYER_PROFILE_INCOMPLETE} and {@link Warning#BUYER_EMAIL_MISSING}, as the buyer is now. */
@@ -634,6 +1036,19 @@ public final class EInvoice {
      */
     public Set<Warning> recheckBeforeAutomaticIssue(boolean rateOutOfDate, boolean rateDiffersFromContract,
                                                     boolean rateNotOnContract) {
+        return recheckBeforeIssue(rateOutOfDate, rateDiffersFromContract, rateNotOnContract, false);
+    }
+
+    /**
+     * The warnings of a draft worked out again just before it is issued, automatically or by the accountant (WF-05
+     * BE-25: a manual issue applies every check the automatic one does), with {@code taxClassUnknown}: a line's
+     * product has no tax class now ({@link Warning#TAX_CLASS_UNKNOWN}). Only adds.
+     *
+     * @return the warnings added now
+     * @throws BusinessException {@code EINVOICE_NOT_DRAFT}
+     */
+    public Set<Warning> recheckBeforeIssue(boolean rateOutOfDate, boolean rateDiffersFromContract,
+                                           boolean rateNotOnContract, boolean taxClassUnknown) {
         requireDraft("check before issuing");
         Set<Warning> found = EnumSet.noneOf(Warning.class);
         if (!buyer.completeBuyer()) {
@@ -653,6 +1068,9 @@ public final class EInvoice {
         }
         if (rateNotOnContract) {
             found.add(Warning.TAX_RATE_NOT_ON_CONTRACT);
+        }
+        if (taxClassUnknown) {
+            found.add(Warning.TAX_CLASS_UNKNOWN);
         }
         found.removeAll(warnings);
         warnings.addAll(found);
@@ -757,6 +1175,45 @@ public final class EInvoice {
     // ---- lifecycle ----------------------------------------------------------------------------------------------
 
     /**
+     * Dates the draft for the day it is issued, before it is submitted (WF-05 Q-1, BE-01), in the transaction that
+     * submits it - so the series is chosen for that day's year, and nothing changes if the submission is refused.
+     * <ul>
+     *   <li><b>A correction</b> - an adjustment, a replacement, the reduction of a failed delivery - is dated the day
+     *       it is issued, under every provider: it is signed that day, it was only drawn up before, and SePay refuses
+     *       any other day for good (sandbox T-6). It used to keep the day it was drawn up, and a reduction that could
+     *       not be voided was then refused for ever.</li>
+     *   <li><b>An original</b> keeps its delivery day, unless the provider takes only today's date
+     *       ({@code datesOnlyToday}, SePay, sandbox T-1): then it is dated today, and if that is after its delivery
+     *       day it is flagged {@link Warning#ISSUED_LATE} - it was due on its delivery day, and the delivery day is
+     *       never moved to match (Luật Kế toán Điều 13).</li>
+     * </ul>
+     * The deadline follows the date ({@link IssueDeadline#of(LocalDate)}). Never before the delivery day.
+     *
+     * @return whether it was flagged {@link Warning#ISSUED_LATE} now
+     * @throws BusinessException {@code EINVOICE_INVALID_TRANSITION} unless it is a draft
+     */
+    public boolean dateForIssue(LocalDate today, boolean datesOnlyToday) {
+        requireCanBecome(EInvoiceStatus.SUBMITTING);
+        Objects.requireNonNull(today, "today");
+        if (type == EInvoiceType.ORIGINAL && !datesOnlyToday) {
+            return false;
+        }
+        LocalDate floor = deliveredOn != null ? deliveredOn : type == EInvoiceType.ORIGINAL ? issueDate : null;
+        LocalDate day = floor != null && today.isBefore(floor) ? floor : today;
+        if (!day.equals(issueDate)) {
+            this.issueDate = day;
+            this.issueDueAt = IssueDeadline.of(day);
+        }
+        return type == EInvoiceType.ORIGINAL && deliveredOn != null && deliveredOn.isBefore(issueDate)
+                && warnings.add(Warning.ISSUED_LATE);
+    }
+
+    /** Whether, issued on {@code today} under a provider that takes only today's date, it would be late (Q-10). */
+    public boolean lateIfIssuedOn(LocalDate today, boolean datesOnlyToday) {
+        return type == EInvoiceType.ORIGINAL && datesOnlyToday && deliveredOn != null && deliveredOn.isBefore(today);
+    }
+
+    /**
      * Sends the draft on its way to the provider: DRAFT → SUBMITTING, under a new transaction id.
      *
      * @param by who issued it; null when it was issued automatically
@@ -812,6 +1269,23 @@ public final class EInvoice {
     }
 
     /**
+     * A correction at a provider that chose its series itself ({@code EInvoiceProvider.picksCorrectionSeries}, WF-05
+     * BE-30) is recorded under the symbol the provider numbered it under, just before it is recorded issued: the
+     * symbol it was sent under was only the series in use here on its day. Never an original - it was sent under its
+     * series, and one numbered elsewhere is not recorded at all. {@code tg_einvoice_guard} allows the change on this
+     * one step only.
+     *
+     * @throws BusinessException {@code EINVOICE_INVALID_TRANSITION} unless it is a correction at the provider
+     */
+    public void numberedUnder(String providerSymbol) {
+        if (status != EInvoiceStatus.SUBMITTING || type == EInvoiceType.ORIGINAL) {
+            throw new BusinessException(ErrorCode.EINVOICE_INVALID_TRANSITION, ("Invoice %s is %s %s: only a correction "
+                    + "at the provider takes the series the provider chose").formatted(code, type, status));
+        }
+        this.symbol = requireText(providerSymbol, "symbol");
+    }
+
+    /**
      * The provider issued it: SUBMITTING → ISSUED, with the number it gave, the tax authority's code, the code the
      * buyer looks it up by, when it was signed, and the two files as stored.
      */
@@ -829,8 +1303,25 @@ public final class EInvoice {
         this.xmlFileKey = requireText(xmlFileKey, "xmlFileKey");
         this.pdfFileKey = requireText(pdfFileKey, "pdfFileKey");
         this.issuedAt = Objects.requireNonNull(now, "now");
-        // Whatever was worth a look is settled by the invoice having been issued.
-        this.warnings.clear();
+        if (issuedVia == null) {
+            this.issuedVia = IssuedVia.PROVIDER;
+        }
+        // Whatever was worth a look is settled by the invoice having been issued - but that it was issued late stays
+        // for good, to be counted (Q-10).
+        this.warnings.retainAll(EnumSet.of(Warning.ISSUED_LATE));
+    }
+
+    /**
+     * Recorded as issued from the provider's portal by the accountant (WF-05 BE-08, Q-8): SUBMITTING → ISSUED, as
+     * {@link #issued} with what the portal shows, {@link IssuedVia#PORTAL_RECORD} and who recorded it. The caller has
+     * checked it against a fresh look-up and the invoice's own XML.
+     */
+    public void issuedFromPortal(int number, String taxAuthorityCode, String lookupCode, Instant signedAt,
+                                 String xmlFileKey, String pdfFileKey, UUID by, Instant now) {
+        this.issuedVia = IssuedVia.PORTAL_RECORD;
+        issued(number, taxAuthorityCode, lookupCode, signedAt, xmlFileKey, pdfFileKey, now);
+        this.portalRecordedBy = Objects.requireNonNull(by, "by");
+        this.portalRecordedAt = now;
     }
 
     /**
@@ -887,14 +1378,34 @@ public final class EInvoice {
      * @throws BusinessException {@code EINVOICE_CORRECTION_NOT_APPLICABLE} for a failed delivery's reduction
      */
     public void voidDraft(String reason, UUID by, Instant now) {
+        voidDraft(reason, null, by, now);
+    }
+
+    /**
+     * {@link #voidDraft(String, UUID, Instant)}, and for the reduction of a failed delivery only under a
+     * {@link VoidReasonCode} (WF-05 Q-8, BE-29; {@code tg_einvoice_reversal_kept}): one no provider can send, which the
+     * accountant makes on the provider's portal and records instead, and one whose delivery was corrected back to
+     * delivered before it left. Whether it really cannot be sent is the caller's to decide.
+     *
+     * @param code null on anything but the reduction of a failed delivery
+     * @throws BusinessException {@code EINVOICE_CORRECTION_NOT_APPLICABLE} for a failed delivery's reduction without a
+     *         code, or a code on anything else
+     */
+    public void voidDraft(String reason, VoidReasonCode code, UUID by, Instant now) {
         if (reason == null || reason.isBlank()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "reason: required to void a draft");
         }
-        if (correctionBasis != null && correctionBasis.systemOnly()) {
+        boolean reduction = correctionBasis != null && correctionBasis.systemOnly();
+        if (reduction && code == null) {
             throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE, ("Invoice %s reduces an invoice "
-                    + "whose delivery was corrected to a failure: it is issued, not voided").formatted(code));
+                    + "whose delivery was corrected to a failure: it is issued, not voided").formatted(this.code));
+        }
+        if (!reduction && code != null) {
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE,
+                    "Invoice %s does not reduce a failed delivery: %s does not apply".formatted(this.code, code));
         }
         move(EInvoiceStatus.VOIDED_DRAFT);
+        this.voidReasonCode = code;
         this.voidReason = reason.strip().substring(0, Math.min(500, reason.strip().length()));
         this.voidedBy = by;
         this.voidedAt = Objects.requireNonNull(now, "now");
@@ -951,7 +1462,8 @@ public final class EInvoice {
                 amountInWords, Set.copyOf(warnings), adjustmentReason, agreementFileKey, xmlFileKey, pdfFileKey,
                 rejectionCode, rejectionMessage, submittedAt, submittedBy, issuedAt, voidedAt, voidedBy, voidReason,
                 version, correctionBasis, agreementNumber, agreementDate, returnRequestId, listedInvoiceIds,
-                deliveryFailedAt);
+                deliveryFailedAt, deliveredOn, reversedAt, issuedVia, portalRecordedBy, portalRecordedAt,
+                voidReasonCode);
     }
 
     public UUID id() { return id; }
@@ -979,4 +1491,10 @@ public final class EInvoice {
     public BigDecimal grandTotal() { return grandTotal; }
     public String agreementFileKey() { return agreementFileKey; }
     public List<UUID> listedInvoiceIds() { return listedInvoiceIds; }
+    public LocalDate deliveredOn() { return deliveredOn; }
+    public Instant reversedAt() { return reversedAt; }
+    public IssuedVia issuedVia() { return issuedVia; }
+    public VoidReasonCode voidReasonCode() { return voidReasonCode; }
+    public int attempt() { return attempt; }
+    public Instant submittedAt() { return submittedAt; }
 }

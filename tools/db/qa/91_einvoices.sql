@@ -359,7 +359,7 @@ SELECT pg_temp.expect_ok('G4 its shipment is drawn up again', $q$
     SELECT pg_temp.draft('d', 's3', 1000000, 100000);
     SELECT pg_temp.goods('d', 1, 10) $q$);
 
-\echo '--- K. the rest of the shipping fee: an original with no shipment, the fee line only, one per order (V20261120000700)'
+\echo '--- K. the rest of the fees of an order: an original with no shipment, fee lines only, one per order (V20261120000700, V20261219000500)'
 CREATE FUNCTION pg_temp.shipping_fee(tag TEXT, line_no INT) RETURNS void LANGUAGE sql AS $$
     INSERT INTO invoicing.einvoice_line (id, einvoice_id, line_no, kind, fee_kind, sku, item_name, unit, quantity,
                                          unit_price, tax_rate, amount, tax_amount)
@@ -373,8 +373,11 @@ SELECT pg_temp.expect_fail('K2 ... with a goods line on it', $q$
     UPDATE invoicing.einvoice SET subtotal = subtotal + 1000000, tax_total = tax_total + 100000,
            grand_total = grand_total + 1100000 WHERE id = md5('qa91:fee')::uuid;
     SELECT pg_temp.goods('fee', 2, 10) $q$);
-SELECT pg_temp.expect_fail('K3 ... or another fee than the shipping fee', $q$
-    UPDATE invoicing.einvoice_line SET fee_kind = 'PLATE_FEE' WHERE id = md5('qa91:fee:1')::uuid $q$);
+-- WF-05 BE-62 (Q-19): a plate fee no delivery's invoice carried goes on the invoice of the order's fees too
+-- (V20261219000500); set back at once, the checks below read the shipping fee.
+SELECT pg_temp.expect_ok('K3 ... and a plate fee no delivery carried (BE-62)', $q$
+    UPDATE invoicing.einvoice_line SET fee_kind = 'PLATE_FEE' WHERE id = md5('qa91:fee:1')::uuid;
+    UPDATE invoicing.einvoice_line SET fee_kind = 'SHIPPING_FEE' WHERE id = md5('qa91:fee:1')::uuid $q$);
 SELECT pg_temp.expect_fail('K4 a second rest of the same order''s shipping fee', $q$
     SELECT pg_temp.draft('fee2', NULL, 300000, 24000);
     SELECT pg_temp.shipping_fee('fee2', 1) $q$);

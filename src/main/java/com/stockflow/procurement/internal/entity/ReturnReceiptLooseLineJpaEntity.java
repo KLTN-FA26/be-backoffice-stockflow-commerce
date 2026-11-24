@@ -32,30 +32,40 @@ public class ReturnReceiptLooseLineJpaEntity extends BaseEntity {
     @Column(name = "quantity", nullable = false)
     private int quantity;
 
-    @Column(name = "recorded_by", nullable = false, updatable = false)
+    /** Whose count it is now: a recount is its recorder's (WF-05 Q-18). */
+    @Column(name = "recorded_by", nullable = false)
     private UUID recordedBy;
+
+    /** The photo of the units, one of the receipt's own (WF-05 Q-18); null only on lines recorded before. */
+    @Column(name = "photo_id")
+    private UUID photoId;
 
     protected ReturnReceiptLooseLineJpaEntity() {
     }
 
-    public ReturnReceiptLooseLineJpaEntity(UUID id, String sku, String lotNumber, int quantity, UUID recordedBy) {
+    public ReturnReceiptLooseLineJpaEntity(UUID id, String sku, String lotNumber, int quantity, UUID recordedBy,
+                                           UUID photoId) {
         super(id);
         this.sku = sku;
         this.lotNumber = lotNumber;
         this.quantity = quantity;
         this.recordedBy = recordedBy;
+        this.photoId = photoId;
     }
 
     void attachTo(ReturnReceiptJpaEntity owner) {
         this.receipt = owner;
     }
 
-    public void recount(int units) {
+    public void recount(int units, UUID by, UUID photo) {
         this.quantity = units;
+        this.recordedBy = by;
+        this.photoId = photo;
     }
 
     public String getSku() { return sku; }
     public String getLotNumber() { return lotNumber; }
     public int getQuantity() { return quantity; }
     public UUID getRecordedBy() { return recordedBy; }
+    public UUID getPhotoId() { return photoId; }
 }

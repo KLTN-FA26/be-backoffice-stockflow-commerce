@@ -17,7 +17,8 @@ public interface EInvoiceQueries {
                    String orderNumber, UUID shipmentId, String shipmentCode, UUID customerId, String buyerName,
                    String buyerTaxCode, LocalDate issueDate, Instant issueDueAt, String templateCode, String symbol,
                    Integer invoiceNumber, BigDecimal subtotal, BigDecimal taxTotal, BigDecimal grandTotal,
-                   String warnings, String rejectionCode, Instant issuedAt) {
+                   String warnings, String rejectionCode, Instant issuedAt, String correctionBasis,
+                   Instant reversedAt, LocalDate deliveredOn) {
     }
 
     /**
@@ -26,7 +27,13 @@ public interface EInvoiceQueries {
      * @param dueBefore invoices not yet issued whose deadline is before this instant: what is late or about to be
      */
     record Filter(EInvoiceStatus status, EInvoiceType type, UUID orderId, UUID customerId, LocalDate issuedFrom,
-                  LocalDate issuedTo, Instant dueBefore) {
+                  LocalDate issuedTo, Instant dueBefore, EInvoice.Warning warning) {
+
+        /** Every filter but the warning (WF-05 Q-10: "issued late" is the warning ISSUED_LATE). */
+        public Filter(EInvoiceStatus status, EInvoiceType type, UUID orderId, UUID customerId, LocalDate issuedFrom,
+                      LocalDate issuedTo, Instant dueBefore) {
+            this(status, type, orderId, customerId, issuedFrom, issuedTo, dueBefore, null);
+        }
     }
 
     /** A page of invoices: those still to issue first, the nearest deadline first; then the newest. */

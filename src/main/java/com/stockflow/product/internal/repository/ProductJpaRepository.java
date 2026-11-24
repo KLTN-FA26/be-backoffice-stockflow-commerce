@@ -28,6 +28,15 @@ public interface ProductJpaRepository extends BaseJpaRepository<ProductJpaEntity
             + "where v.productId = p.id and v.sku in :skus and p.taxClass is not null")
     List<Object[]> taxClassesOf(@Param("skus") java.util.Collection<String> skus);
 
+    /** WF-05 D-8: SKU, product id, code, name, status, tax class and version, for each of {@code skus}. */
+    @Query("select v.sku, p.id, p.code, p.name, p.status, p.taxClass, p.version from ProductJpaEntity p, "
+            + "VariantJpaEntity v where v.productId = p.id and v.sku in :skus order by v.sku")
+    List<Object[]> taxClassesBySku(@Param("skus") java.util.Collection<String> skus);
+
+    /** WF-05 D-8: id, code, name, status, tax class and version of one product. */
+    @Query("select p.id, p.code, p.name, p.status, p.taxClass, p.version from ProductJpaEntity p where p.id = :id")
+    List<Object[]> taxClassOf(@Param("id") UUID id);
+
     /** The SKU (as stored) and its variant's name, for each of {@code skus}. */
     @Query("select v.sku, v.name from VariantJpaEntity v where v.sku in :skus")
     List<Object[]> variantNamesOf(@Param("skus") java.util.Collection<String> skus);

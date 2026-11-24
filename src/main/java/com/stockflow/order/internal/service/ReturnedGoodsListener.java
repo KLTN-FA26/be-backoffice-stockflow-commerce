@@ -17,6 +17,10 @@ import org.springframework.stereotype.Component;
  * own; one that fails stays in the publication registry and is delivered again, and both steps are idempotent (a
  * receipt is taken once by its id, a refund standing is read afresh under the order's lock).</p>
  *
+ * <p>A return request's receipt has had its goods taken in its own transaction since audit round 2 (M1,
+ * {@code ReturnReceiptTracking.goodsReceived}): the event then finds the receipt taken and is done, without a second
+ * audit row for a step that did not happen. One published before that, still waiting, is taken here as it was.</p>
+ *
  * <p>The handler methods are public: the transaction and the async hop are proxy advice.</p>
  */
 @Component
@@ -35,6 +39,9 @@ class ReturnedGoodsListener {
 
     @ApplicationModuleListener
     public void on(ReturnedGoodsReceived event) {
+        if (event.returnRequestId() != null && returns.tookReceipt(event.returnRequestId(), event.receiptId())) {
+            return;
+        }
         returns.goodsReceived(event);
     }
 

@@ -13,11 +13,13 @@ interface StockPackageWebMapper {
 
     /** The carton's own properties, flattened beside its contents. */
     @Mapping(target = ".", source = "carton")
+    @Mapping(target = "openedOnReturn", expression = "java(detail.carton().openedOnReturn())")
     StockPackageDetailResponse toResponse(StockPackageBalance.Detail detail);
 
     StockPackageDetailResponse.Content toResponse(StockPackageBalance.Content content);
 
     StockPackageLocationLineResponse toResponse(StockPackageBalance.LocationLine line);
 
+    @Mapping(target = "openedOnReturn", expression = "java(carton.openedOnReturn())")
     StockPackageResponse toResponse(StockPackageBalance carton);
 }

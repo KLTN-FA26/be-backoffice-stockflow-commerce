@@ -27,7 +27,8 @@ class IssuedEInvoicesAdapter implements IssuedEInvoices {
         }
         return jdbc.query("""
                 SELECT e.id, e.customer_id, e.code, e.status FROM invoicing.einvoice e
-                 WHERE e.id = :id AND e.status IN ('ISSUED', 'REPLACED')""", Map.of("id", einvoiceId),
+                 WHERE e.id = :id AND e.status IN ('ISSUED', 'REPLACED') AND """
+                + EInvoiceQueriesAdapter.signatureHolds("e"), Map.of("id", einvoiceId),
                 (rs, n) -> new IssuedEInvoice(rs.getObject("id", UUID.class), rs.getObject("customer_id", UUID.class),
                         rs.getString("code"), rs.getString("status"))).stream().findFirst();
     }
@@ -43,7 +44,8 @@ class IssuedEInvoicesAdapter implements IssuedEInvoices {
                        e.invoice_number, e.issue_date, e.currency, e.subtotal, e.tax_total, e.grand_total,
                        e.xml_file_key IS NOT NULL AS has_xml, e.pdf_file_key IS NOT NULL AS has_pdf
                   FROM invoicing.einvoice e
-                 WHERE e.id = :id AND e.status IN ('ISSUED', 'REPLACED')""", Map.of("id", einvoiceId),
+                 WHERE e.id = :id AND e.status IN ('ISSUED', 'REPLACED') AND """
+                + EInvoiceQueriesAdapter.signatureHolds("e"), Map.of("id", einvoiceId),
                 (rs, n) -> new Card(rs.getObject("id", UUID.class), rs.getObject("customer_id", UUID.class),
                         rs.getString("code"), rs.getString("status"), rs.getObject("order_id", UUID.class),
                         rs.getString("order_number"), rs.getString("template_code"), rs.getString("symbol"),

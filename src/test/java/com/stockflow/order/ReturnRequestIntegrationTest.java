@@ -466,6 +466,22 @@ class ReturnRequestIntegrationTest {
                 + "make_interval(days => ?) WHERE id = ?", days, orderId));
     }
 
+    /**
+     * Time passes for the delivery too: the order was delivered {@code days} ago - its shipments, or the order itself
+     * when, as here, its goods were written as rows without shipments of the order. A refunded order closes
+     * only once every delivered shipment's return window has ended (WF-05 Q-16 = b), and that window counts from the
+     * shipment's outcome, not from the refund.
+     */
+    private void deliveredDaysAgo(UUID orderId, int days) {
+        tx.executeWithoutResult(s -> {
+            jdbc.execute("SET LOCAL session_replication_role = replica");   // a test's clock, not a transition
+            jdbc.update("UPDATE ordering.order_shipment SET outcome_at = NOW() - make_interval(days => ?) "
+                    + "WHERE order_id = ? AND status = 'DELIVERED'", days, orderId);
+            jdbc.update("UPDATE ordering.customer_order SET delivered_at = NOW() - make_interval(days => ?) "
+                    + "WHERE id = ?", days, orderId);
+        });
+    }
+
     /** {@code count} OrderRefundRecorded of the order published, and every one handled by its listener. */
     private void refundEventsHandled(UUID orderId, int count) {
         Await.until(count + " refund events handled", ASYNC, () -> Boolean.TRUE.equals(jdbc.queryForObject("""
@@ -483,6 +499,7 @@ class ReturnRequestIntegrationTest {
         UUID first = recordRefund(d, reference());
         Await.until("the order follows the refund", ASYNC, () -> statusOf(d.orderId()) == OrderStatus.REFUNDED);
         refundedDaysAgo(d.orderId(), 40);
+        deliveredDaysAgo(d.orderId(), 60);
 
         refunds.voidRecord(first, "  wrong statement line ", accountant);
         Await.until("the order follows the void", ASYNC, () -> statusOf(d.orderId()) == OrderStatus.RETURNED);
@@ -532,6 +549,7 @@ class ReturnRequestIntegrationTest {
         UUID record = recordRefund(older, reference());
         Await.until("the order follows the refund", ASYNC, () -> statusOf(older.orderId()) == OrderStatus.REFUNDED);
         refundedDaysAgo(older.orderId(), 31);
+        deliveredDaysAgo(older.orderId(), 60);
         assertThat(settlements.close(older.orderId())).isTrue();
 
         refunds.voidRecord(record, "the bank sent the transfer back", accountant);
@@ -590,9 +608,10 @@ class ReturnRequestIntegrationTest {
     // ---- WF-05 TH-4: what came back is what was counted ----------------------------------------------------------------
 
     @Test
-    @DisplayName("TH-4: a carton counted 40 of 50 and 5 loose units: 45 received and refunded (99,000); the opened "
-            + "carton is in quarantine whole, marked, and never released; a count above the label and a loose SKU "
-            + "the order does not have are refused")
+    @DisplayName("TH-4 / WF-05 Q-18: a carton counted 40 of 50 and 5 loose units with a photo: 45 received and refunded "
+            + "(99,000); the opened carton is not stock - it stays consumed, marked, out of the ledger - and a warehouse "
+            + "manager who counted nothing confirms the receipt; a count above the label and a loose SKU the order "
+            + "does not have are refused")
     void anOpenedCartonAndLooseUnits() {
         Delivered d = delivered(4, true);
         ReturnRequest request = approved(d, 100);
@@ -603,32 +622,43 @@ class ReturnRequestIntegrationTest {
         assertThat(scanned.cartons()).singleElement().satisfies(c -> {
             assertThat(c.countedQuantity()).isEqualTo(40);
             assertThat(c.opened()).isTrue();
+            assertThat(c.stockEntered()).isFalse();
         });
         assertThat(code(catchThrowable(() -> asHcmClerk(() -> returnReceipts.scan(draft.id(), opened, null, 51,
                 clerk))))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        UUID photo = receiptPhoto(draft.id());
         assertThat(code(catchThrowable(() -> asHcmClerk(() -> returnReceipts.recordLoose(draft.id(), "NOT-OF-ORDER",
-                null, 1, clerk))))).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        var withLoose = asHcmClerk(() -> returnReceipts.recordLoose(draft.id(), sku.sku(), null, 5, clerk));
+                null, 1, photo, clerk))))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        var withLoose = asHcmClerk(() -> returnReceipts.recordLoose(draft.id(), sku.sku(), null, 5, photo, clerk));
         assertThat(withLoose.looseLines()).singleElement().satisfies(l -> assertThat(l.quantity()).isEqualTo(5));
 
-        asHcmClerk(() -> returnReceipts.confirm(draft.id(), clerk));
+        assertThat(code(catchThrowable(() -> asHcmClerk(() -> returnReceipts.confirm(draft.id(), clerk)))))
+                .isEqualTo(ErrorCode.RETURN_RECEIPT_MANAGER_CONFIRMATION_REQUIRED);
+        asHcmClerk(() -> returnReceipts.confirm(draft.id(), coordinator, true));
         complete(request, draft.id());
         assertThat(jdbc.queryForObject("SELECT received_quantity FROM ordering.return_request_line WHERE "
                 + "return_request_id = ?", Integer.class, request.id())).isEqualTo(45);
-        assertThat(jdbc.queryForMap("""
-                SELECT p.return_opened_at IS NOT NULL AS opened, s.status, s.on_hand
-                  FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
-                 WHERE p.lpn = ?""", opened)).as("in quarantine whole, as the books know a carton")
-                .containsEntry("opened", true).containsEntry("status", "QUARANTINE").containsEntry("on_hand", 50);
+        assertThat(jdbc.queryForMap("SELECT status, return_opened_at IS NOT NULL AS opened FROM inventory.stock_package "
+                + "WHERE lpn = ?", opened)).as("no stock from a label: consumed, marked")
+                .containsEntry("opened", true).containsEntry("status", "CONSUMED");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_movement WHERE reference_type = "
-                + "'GOODS_RECEIPT' AND reference_id = ?", Long.class, draft.id())).as("loose units are no stock")
-                .isEqualTo(1L);
-        assertThat(code(catchThrowable(() -> asHcmClerk(() -> quarantine.release(opened, clerk)))))
-                .isEqualTo(ErrorCode.RETURN_CARTON_OPENED);
+                + "'GOODS_RECEIPT' AND reference_id = ?", Long.class, draft.id())).as("opened and loose units are no stock")
+                .isZero();
 
         ReturnRequest proposed = returns.proposeRefund(request.id(), new ReturnRequestService.ProposeRefundCommand(
                 null, null, null), sales.userId());
         assertThat(proposed.settlementAmount()).as("45 pieces at 2 200").isEqualByComparingTo("99000");
+    }
+
+    /** One of the receipt's own photos, as {@code POST /goods-receipts/{id}/photos} keeps it (WF-05 Q-18). */
+    private UUID receiptPhoto(UUID receipt) {
+        UUID id = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO procurement.goods_receipt_photos (id, receipt_id, stage, storage_key, original_name,
+                    content_type, size_bytes, checksum, taken_by, version, created_at)
+                VALUES (?, ?, 'RECEIPT', ?, 'le.jpg', 'image/jpeg', 10, ?, ?, 0, NOW())""", id, receipt,
+                "qc-evidence/" + id, "a".repeat(64), clerk));
+        return id;
     }
 
     @Test
@@ -638,23 +668,25 @@ class ReturnRequestIntegrationTest {
         ReturnRequest request = approved(d, 50);
         var draft = asHcmClerk(() -> returnReceipts.create(new ReturnReceiptService.Create(null, request.id(),
                 QUARANTINE, null), clerk));
-        asHcmClerk(() -> returnReceipts.recordLoose(draft.id(), sku.sku(), "LOT-UNKNOWN", 30, clerk));
-        assertThat(asHcmClerk(() -> returnReceipts.confirm(draft.id(), clerk)).status().name()).isEqualTo("CLOSED");
+        asHcmClerk(() -> returnReceipts.recordLoose(draft.id(), sku.sku(), "LOT-UNKNOWN", 30, receiptPhoto(draft.id()),
+                clerk));
+        assertThat(asHcmClerk(() -> returnReceipts.confirm(draft.id(), coordinator, true)).status().name())
+                .isEqualTo("CLOSED");
         complete(request, draft.id());
         assertThat(jdbc.queryForObject("SELECT received_quantity FROM ordering.return_request_line WHERE "
                 + "return_request_id = ?", Integer.class, request.id())).isEqualTo(30);
     }
 
     @Test
-    @DisplayName("TH-4: nothing usable came back (one carton counted empty): no refund can be proposed, Sales close "
-            + "the return without one - RESOLVED, no settlement, no money")
+    @DisplayName("TH-4: nothing usable came back (one carton counted empty, confirmed by a manager): no refund can be "
+            + "proposed, Sales close the return without one - RESOLVED, no settlement, no money")
     void nothingUsableClosesWithoutARefund() {
         Delivered d = delivered(2, true);
         ReturnRequest request = approved(d, 50);
         var draft = asHcmClerk(() -> returnReceipts.create(new ReturnReceiptService.Create(null, request.id(),
                 QUARANTINE, null), clerk));
         asHcmClerk(() -> returnReceipts.scan(draft.id(), d.shipped().lpns().getFirst(), "empty", 0, clerk));
-        asHcmClerk(() -> returnReceipts.confirm(draft.id(), clerk));
+        asHcmClerk(() -> returnReceipts.confirm(draft.id(), coordinator, true));
         complete(request, draft.id());
 
         assertThat(code(catchThrowable(() -> returns.proposeRefund(request.id(),
@@ -668,8 +700,9 @@ class ReturnRequestIntegrationTest {
         assertThat(closed.vatAdjustmentRequired()).isFalse();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE source_id = ?", Integer.class,
                 request.id())).isZero();
-        // Its goods came back (RETURNED) and nothing is owed back: settled, as a return refunded in part.
-        assertThat(statusOf(d.orderId())).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
+        // WF-05 BE-45: nothing came back usable and nothing was refunded - never "partially refunded" (the order goes
+        // back to the delivery path by G1's Order.returnsEndedWithoutRefund).
+        assertThat(statusOf(d.orderId())).isNotIn(OrderStatus.PARTIALLY_REFUNDED, OrderStatus.REFUNDED);
     }
 
     // ---- WF-05 TH-3: the goods of one return in several parcels ----------------------------------------------------------
@@ -733,7 +766,8 @@ class ReturnRequestIntegrationTest {
 
     @Test
     @DisplayName("TH-2: an order without installments (no contract signed) had nothing paid in the system: its refund "
-            + "is proposed at 0, approved by someone else, RESOLVED without a settlement; the order PARTIALLY_REFUNDED")
+            + "is proposed at 0, approved by someone else, RESOLVED without a settlement but with the invoice adjusted "
+            + "for the units (WF-05 BE-44); the order PARTIALLY_REFUNDED")
     void noInstallmentsSettlesAtZero() {
         UUID orderId = tx.execute(s -> {
             OrderLine line = Order.line(Identifiers.newId(), new Sku(sku.sku()), 100, Money.vnd(2_000), null)
@@ -766,7 +800,7 @@ class ReturnRequestIntegrationTest {
 
         ReturnRequest resolved = returns.approveSettlement(request.id(), null, accountant);
         assertThat(resolved.status()).isEqualTo(ReturnStatus.RESOLVED);
-        assertThat(resolved.vatAdjustmentRequired()).isFalse();
+        assertThat(resolved.vatAdjustmentRequired()).isTrue();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE source_id = ?", Integer.class,
                 request.id())).isZero();
         assertThat(statusOf(orderId)).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);

@@ -10,14 +10,18 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.inventory.internal.controller.dto.CustomerCustodyResponse;
+import com.stockflow.inventory.internal.controller.dto.EndCustodyRequest;
 import com.stockflow.inventory.internal.controller.dto.PutawayTaskResponse;
 import com.stockflow.inventory.internal.controller.dto.QuarantineStockPackageRequest;
 import com.stockflow.inventory.internal.controller.dto.StockPackageDetailResponse;
 import com.stockflow.inventory.internal.controller.dto.StockPackageLabelRequest;
 import com.stockflow.inventory.internal.controller.dto.StockPackageLocationLineResponse;
 import com.stockflow.inventory.internal.controller.dto.StockPackageResponse;
+import com.stockflow.inventory.internal.domain.ReturnedCartonOwnership;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.service.CartonQuarantineService;
+import com.stockflow.inventory.internal.service.CustomerGoodsCustody;
 import com.stockflow.inventory.internal.service.PutawayService;
 import com.stockflow.inventory.internal.service.StockPackageLabel;
 import com.stockflow.inventory.internal.service.StockPackageLabelPdfRenderer;
@@ -53,6 +57,9 @@ import java.util.UUID;
  * {@code UPDATE}, which only the warehouse manager holds (kltn-docs 20 BR-21; team plan 4D-1; seeded by
  * V20261020000700 for the manager's corrections).
  *
+ * <p>Goods held for a customer whose return refunded nothing (WF-05 Q-4, TH-6) are listed to whoever reads cartons, and
+ * handed back or destroyed - as the customer chose - by the warehouse manager ({@code UPDATE}).</p>
+ *
  * <p>Like location labels, the print answers a binary on success and the JSON envelope on error.</p>
  */
 @RestController
@@ -76,10 +83,12 @@ class StockPackageController {
     private final CartonQuarantineService quarantine;
     private final PutawayService putaway;
     private final Clock clock;
+    private final CustomerGoodsCustody custody;
 
     StockPackageController(StockPackageLabels labels, StockPackageLabelPdfRenderer renderer, StockPackageLookup lookup,
                            StockPackageWebMapper mapper, CartonQuarantineService quarantine, PutawayService putaway,
-                           Clock clock) {
+                           Clock clock, CustomerGoodsCustody custody) {
+        this.custody = custody;
         this.quarantine = quarantine;
         this.putaway = putaway;
         this.labels = labels;
@@ -157,6 +166,44 @@ class StockPackageController {
                                                                   @AuthenticatedUser CurrentUser actor) {
         UUID task = quarantine.release(lpn, actor.userId());
         return ApiResponse.ok(PutawayController.toResponse(putaway.get(task)));
+    }
+
+    @GetMapping("/customer-custody")
+    @Operation(summary = "Cartons held for customers (WF-05 Q-4, TH-6)",
+            description = "Cartons whose return refunded nothing: out of stock (the receipt's stock-in reversed), held "
+                    + "for the customer where they stand, oldest first, in the caller's warehouses. ended=true lists "
+                    + "those handed back or destroyed instead; returnRequestId narrows to one return. choice is what the "
+                    + "customer chose as Sales recorded it on the return; null means wait for it.")
+    @RequiresPermission(resource = InventoryResources.STOCK_PACKAGES, action = Action.READ,
+            scope = DataScope.WAREHOUSE)
+    public ApiResponse<PageResponse<CustomerCustodyResponse>> customerCustody(
+            @RequestParam(required = false) UUID returnRequestId,
+            @RequestParam(defaultValue = "false") boolean ended,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(required = false) Integer size) {
+        return ApiResponse.ok(custody.held(returnRequestId, ended, page,
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size).map(StockPackageController::toResponse));
+    }
+
+    @PostMapping("/{lpn}/customer-custody/end")
+    @Operation(summary = "Hand back or destroy a carton held for the customer, as they chose (warehouse manager)",
+            description = "WF-05 Q-4: the customer's choice recorded by Sales on the return (SEND_BACK or "
+                    + "DESTROY_ON_BEHALF) is carried out, with the record of it in note. No stock moves: the carton "
+                    + "is out of the books already. 404 STOCK_PACKAGE_NOT_FOUND (also for a carton not held for a "
+                    + "customer), 409 STOCK_PACKAGE_DECISION_PENDING while no choice is recorded, "
+                    + "INVALID_STOCK_PACKAGE_TRANSITION once it was carried out.")
+    @RequiresPermission(resource = InventoryResources.STOCK_PACKAGES, action = Action.UPDATE,
+            scope = DataScope.WAREHOUSE)
+    public ApiResponse<CustomerCustodyResponse> endCustomerCustody(@PathVariable String lpn,
+                                                                   @Valid @RequestBody EndCustodyRequest request,
+                                                                   @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(toResponse(custody.end(lpn, request.note(), actor.userId())));
+    }
+
+    private static CustomerCustodyResponse toResponse(ReturnedCartonOwnership.Custody held) {
+        return new CustomerCustodyResponse(held.lpn(), held.sku(), held.lotNumber(), held.quantity(),
+                held.locationCode(), held.returnRequestId(), held.ownership().name(), held.heldAt(), held.choice(),
+                held.endedAt(), held.endedBy(), held.note());
     }
 
     /**

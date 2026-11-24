@@ -1,6 +1,7 @@
 package com.stockflow.fulfillment.internal.service;
 
-import com.stockflow.common.label.LabelFonts;
+import com.stockflow.common.document.DocumentFonts;
+import com.stockflow.common.document.DocumentSamples;
 import com.stockflow.fulfillment.internal.domain.loadplanning.Layout;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -16,8 +17,6 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.text.NumberFormat;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -38,7 +37,8 @@ class LoadingSheetDocumentTest {
 
     private static final Instant PRINTED = Instant.parse("2026-11-18T03:30:00Z");
 
-    private final LoadingSheetDocument document = new LoadingSheetDocument(new LabelFonts());
+    private final LoadingSheetDocument document = new LoadingSheetDocument(new DocumentFonts(),
+            DocumentSamples.seller());
 
     /** Each carton weighs 20 kg: 160 of them are 3,200 kg on a 5,000 kg truck, a load BR-12 allows. */
     private static final BigDecimal CARTON_KG = new BigDecimal("20");
@@ -94,25 +94,28 @@ class LoadingSheetDocumentTest {
 
     @Test
     @DisplayName("a booked vehicle: plan, load, type, warehouse, carrier, waybill, plate, driver, the fills, every LPN "
-            + "with its order, SKU, size, weight, position and orientation - one A4 page, Vietnamese diacritics intact")
+            + "with its order, SKU, size, weight, position and orientation, the three places to sign - Vietnamese diacritics "
+            + "intact")
     void theWholeSheet() throws Exception {
         Layout layout = truck(3);
-        byte[] pdf = document.render(booked(layout));
-        Files.createDirectories(Path.of("target"));
-        Files.write(Path.of("target", "loading-sheet-sample-small.pdf"), pdf);
+        byte[] pdf = DocumentSamples.keep("loading-sheet-small", document.render(booked(layout)));
 
         assertThat(pdf).startsWith("%PDF".getBytes());
-        assertThat(pages(pdf)).isEqualTo(1);
+        // The vehicle, its diagram and a short list are page one; the places to sign follow the list.
+        assertThat(pages(pdf)).isLessThanOrEqualTo(2);
+        assertThat(DocumentSamples.within(pdf, 20, 15)).as("inside the margins").isTrue();
         String text = text(pdf);
-        assertThat(text).contains("PHIẾU XẾP HÀNG", "LP-20261117-0004", "Xe #1 (TRUCK-5T)", "LD-20261117-0006",
+        assertThat(text).contains("CÔNG TY TNHH SẢN XUẤT BAO BÌ AN PHÁT", "PHIẾU XẾP HÀNG", "LP-20261117-0004",
+                "Xe #1 (TRUCK-5T)", "LD-20261117-0006",
                 "Xe tải 5 tấn", "Kho Hồ Chí Minh", "Hãng vận chuyển", "Xe tải Thăng Long", "WB-778899", "51C-246.80",
-                "Nguyễn Văn Tài - 0912345678", "520 × 205 × 205 cm", "5.000 kg", "10:30 18/11/2026",
+                "Nguyễn Văn Tài - 0912345678", "520 × 205 × 205 cm", "5.000 kg", "10:30 ngày 18/11/2026",
+                "ĐIỀU PHỐI KHO", "NGƯỜI XẾP HÀNG", "TÀI XẾ", "(Ký, ghi rõ họ tên)",
                 "TỔNG KẾT: 3 kiện", "Lấp đầy thể tích: 0,22 / 21,85 m³ 1%", "Lấp đầy khối lượng: 60 / 5.000 kg 1,2%",
                 "Sơ đồ nhìn từ trên xuống", "Sơ đồ nhìn từ bên trái xe", "Đầu xe ở bên trái, cửa xe ở bên phải",
                 "DANH SÁCH KIỆN THEO THỨ TỰ XẾP", "STT", "Mã kiện (LPN)", "Hướng đặt", "Giữ nguyên",
                 "LPN-20261117-000001", "LPN-20261117-000002", "LPN-20261117-000003", "SO-20261117-000011",
                 "SO-20261117-000012", "LY-GIAY-DEMO-12OZ-XANH (2 kiện)", "GHE-AN-ACME-01 (1 kiện)", "60×40×30",
-                "0 / 0 / 0", "Trang 1/1", "Tổng: 3 kiện 60");
+                "0 / 0 / 0", "Trang 1/", "Tổng: 3 kiện 60");
         assertThat(text).as("no glyph was replaced by a question mark").doesNotContain("?");
         assertThat(text).as("the stored fill percentages are not what is printed").doesNotContain("42,9%", "3,1%");
     }
@@ -141,7 +144,7 @@ class LoadingSheetDocumentTest {
         Layout empty = new Layout(2, "TRUCK-5T", UUID.randomUUID(), new Layout.Dims(5200, 2050, 2050),
                 new BigDecimal("5000"), List.of(), List.of(), 0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
         byte[] pdf = document.render(booked(empty));
-        assertThat(pages(pdf)).isEqualTo(1);
+        assertThat(pages(pdf)).isLessThanOrEqualTo(2);
         assertThat(text(pdf)).contains("Xe này chưa có kiện nào.", "TỔNG KẾT: 0 kiện");
     }
 
@@ -150,11 +153,10 @@ class LoadingSheetDocumentTest {
             + "number on every page, the table header repeated, everything inside the margins")
     void manyPackages() throws Exception {
         Layout layout = truck(160);
-        byte[] pdf = document.render(booked(layout));
-        Files.write(Path.of("target", "loading-sheet-sample-large.pdf"), pdf);
+        byte[] pdf = DocumentSamples.keep("loading-sheet-large", document.render(booked(layout)));
         int pages = pages(pdf);
-        // Page 1 holds the vehicle and the diagram, with a few rows; then about fifty rows to a page.
-        assertThat(pages).isBetween(4, 5);
+        // Page 1 holds the vehicle and the diagram, with a few rows; then about forty-five rows to a page.
+        assertThat(pages).isBetween(4, 6);
 
         float[] rightmost = {0};
         StringBuilder all = new StringBuilder();
@@ -173,13 +175,13 @@ class LoadingSheetDocumentTest {
                 stripper.setEndPage(page);
                 String onPage = stripper.getText(doc).replaceAll("\\s+", " ");
                 assertThat(onPage).as("page %d is numbered", page).contains("Trang %d/%d".formatted(page, pages));
-                if (page > 1) {
+                if (page > 1 && onPage.contains("LPN-20261117-")) {
                     assertThat(onPage).as("page %d repeats the header", page).contains("Mã kiện (LPN)");
                 }
                 all.append(onPage).append(' ');
             }
         }
-        assertThat(rightmost[0]).isLessThanOrEqualTo(PDRectangle.A4.getWidth() - 36 + 1);
+        assertThat(rightmost[0]).isLessThanOrEqualTo(PDRectangle.A4.getWidth() - 42.5f + 1);
         String text = all.toString();
         List<Integer> positions = new ArrayList<>();
         for (int i = 1; i <= 160; i++) {
@@ -205,7 +207,6 @@ class LoadingSheetDocumentTest {
         byte[] pdf = document.render(booked(withGusset));
         try (PDDocument doc = Loader.loadPDF(pdf)) {
             BufferedImage page = new PDFRenderer(doc).renderImageWithDPI(0, 100);
-            Files.write(Path.of("target", "loading-sheet-page1.png"), png(page));
             assertThat(count(page, 0xA9D6F5)).as("first SKU's colour").isPositive();
             assertThat(count(page, 0xF5C6A0)).as("second SKU's colour").isPositive();
             assertThat(count(page, 0xB0B5BD)).as("the gusset's grey").isPositive();
@@ -246,9 +247,10 @@ class LoadingSheetDocumentTest {
         Layout layout = new Layout(base.seq(), base.code(), base.vehicleTypeId(), base.innerMm(), base.maxPayloadKg(),
                 List.of(), boxes, base.usedVolumeMm3(), base.usedWeightKg(), base.volumeFillPct(),
                 base.weightFillPct());
-        String text = text(document.render(booked(layout)));
+        // A code wider than its column goes on at a hyphen of its own, in its cell: read without the breaks.
+        String text = text(document.render(booked(layout))).replace(" ", "");
         assertThat(text).contains("SO-20261118-8115101-C1", "SO-20261118-8115101-C2", "T3FA69F49614E-C70D3-LONG")
-                .doesNotContain("…");
+                .doesNotContain("...");
     }
 
     @Test
@@ -259,8 +261,9 @@ class LoadingSheetDocumentTest {
                 "Kho " + "Hồ Chí Minh ".repeat(20), "LD-1", "Công ty vận tải ".repeat(15), "WB-1", "51C-1", "Tài xế 😀",
                 null, truck(2), Map.of(), PRINTED);
         byte[] pdf = document.render(facts);
-        assertThat(pages(pdf)).isEqualTo(1);
-        assertThat(text(pdf)).contains("Xe 5 tấn ?", "Công ty vận tải").contains("…");
+        assertThat(pages(pdf)).isLessThanOrEqualTo(2);
+        assertThat(text(pdf)).contains("Xe 5 tấn ?", "Công ty vận tải").contains("...");
+        assertThat(DocumentSamples.within(pdf, 20, 15)).as("cut inside its column").isTrue();
     }
 
     private static int count(BufferedImage image, int rgb) {
@@ -273,11 +276,5 @@ class LoadingSheetDocumentTest {
             }
         }
         return found;
-    }
-
-    private static byte[] png(BufferedImage image) throws IOException {
-        var bytes = new java.io.ByteArrayOutputStream();
-        javax.imageio.ImageIO.write(image, "png", bytes);
-        return bytes.toByteArray();
     }
 }

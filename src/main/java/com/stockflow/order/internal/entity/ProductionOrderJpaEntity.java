@@ -1,6 +1,7 @@
 package com.stockflow.order.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
+import com.stockflow.order.internal.domain.ProductionOrderKind;
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -108,6 +109,15 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     @Column(name = "closing_reason", length = 500)
     private String closingReason;
 
+    /** SCRUM-839 (17 §4.13): STANDARD, or a REPLACEMENT of damaged cartons; written once. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "kind", nullable = false, updatable = false, length = 16)
+    private ProductionOrderKind kind = ProductionOrderKind.STANDARD;
+
+    /** The production order a REPLACEMENT makes up the damaged cartons of (17 BR-31); written once. */
+    @Column(name = "replaces_production_order_id", updatable = false)
+    private UUID replacesProductionOrderId;
+
     protected ProductionOrderJpaEntity() {
     }
 
@@ -120,6 +130,12 @@ public class ProductionOrderJpaEntity extends BaseEntity {
         this.customerId = customerId;
         this.sampleRequiredByDefault = sampleRequiredByDefault;
         this.drawnUpBy = drawnUpBy;
+    }
+
+    /** A new REPLACEMENT of the damaged cartons of production order {@code replacesProductionOrderId} (17 BR-31). */
+    public void replacing(UUID replacesProductionOrderId) {
+        this.kind = ProductionOrderKind.REPLACEMENT;
+        this.replacesProductionOrderId = replacesProductionOrderId;
     }
 
     /** Everything that moves after it was drawn up. */
@@ -185,4 +201,6 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     public UUID getClosedBy() { return closedBy; }
     public Instant getClosedAt() { return closedAt; }
     public String getClosingReason() { return closingReason; }
+    public ProductionOrderKind getKind() { return kind; }
+    public UUID getReplacesProductionOrderId() { return replacesProductionOrderId; }
 }

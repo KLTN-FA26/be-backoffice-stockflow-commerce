@@ -34,11 +34,13 @@ import java.util.concurrent.atomic.AtomicReference;
  *   <li><b>query</b> is {@code GET /v1/invoices/{reference_code}}: SePay's documentation gives exactly this as the way
  *       to learn whether a request whose answer was lost was taken in - a 404 means it was not, and sending it again
  *       under the same reference is safe. When it shows no issued invoice, the latest tracking code of the transaction
- *       is asked too ({@code GET /v1/invoices/{kind}/check/{tracking_code}}): it is the only answer that tells a
- *       submission SePay refused after taking it in ({@code Failed}, REJECTED), one it is still retrying
- *       ({@code Pending}, for up to two hours - never sent again meanwhile) and one whose result it cannot confirm
- *       (UNKNOWN, never sent again; kltn-docs 21 BR-05). Without it such an invoice stayed SUBMITTING for good
- *       (HĐ-1).</li>
+ *       is asked too ({@code GET /v1/invoices/create/check/{tracking_code}}, the one tracking path SePay gives for a
+ *       create, an adjust and a replace - WF-05 BE-61): it is the only answer that tells a submission SePay refused
+ *       after taking it in ({@code Failed}, REJECTED), one it is still retrying ({@code Pending}, for up to two hours -
+ *       never sent again meanwhile), one it finished ({@code Success}, PENDING until the look-up shows it - never
+ *       sent again) and one whose result it cannot confirm (UNKNOWN under
+ *       {@link SepayEInvoiceAnswers#RESULT_UNCONFIRMED}, never sent again; kltn-docs 21 BR-05). Without it such an
+ *       invoice stayed SUBMITTING for good (HĐ-1).</li>
  *   <li><b>download</b> is {@code GET /v1/invoices/{reference_code}/download}, for {@code xml} and {@code pdf}, with the
  *       addresses the look-up gives ({@code xml_url}, {@code pdf_url}) as the fallback.</li>
  *   <li><b>remainingQuota</b> is {@code GET /v1/usage} (kltn-docs 21 BR-09), <b>checkSeries</b> the account's
@@ -122,9 +124,32 @@ class SepayEInvoiceProvider implements EInvoiceProvider {
         return SepayEInvoiceAnswers.ISSUANCE_FAILED.equals(rejectionCode);
     }
 
+    /** The tracking's {@code Failed} that says SePay cannot confirm the result (WF-05 BE-07). */
+    @Override
+    public boolean resultUnconfirmed(String errorCode) {
+        return SepayEInvoiceAnswers.RESULT_UNCONFIRMED.equals(errorCode);
+    }
+
     /** Yes: SePay takes an adjustment and a replacement as such, each naming the invoice it changes. */
     @Override
     public boolean issuesCorrections() {
+        return true;
+    }
+
+    /**
+     * Yes (WF-05 Q-1): SePay refuses at once, creating nothing, an original dated yesterday ({@code ISSUED_DATE_INVALID}
+     * "issued_date không được nhỏ hơn ngày hiện tại", sandbox run T-1) and an adjustment dated yesterday ("issued_date
+     * phải là ngày hiện tại", run T-6), and requires the date on an original (run X-3). So an invoice sent through
+     * SePay carries the day it is sent.
+     */
+    @Override
+    public boolean picksCorrectionSeries() {
+        // POST /v1/invoices/adjust and /replace take no series (sandbox T-4): SePay numbers them where it chooses.
+        return true;
+    }
+
+    @Override
+    public boolean datesOnlyToday() {
         return true;
     }
 
@@ -238,6 +263,11 @@ class SepayEInvoiceProvider implements EInvoiceProvider {
                     "SEPAY_INVOICE_" + status.toUpperCase(Locale.ROOT),
                     "SePay eInvoice shows the invoice as " + status);
         }
+        if (state == ResultState.PENDING && SepayEInvoiceAnswers.saysIssued(data)) {
+            // Issued at SePay, its number not given yet (Q-5): held there, so waited for - no tracking word, however
+            // it reads, may make it a refusal or "cannot say", either of which could lead to a second invoice.
+            return Result.of(ResultState.PENDING);
+        }
         TrackingAnswer tracking = tracking(transactionId);
         return switch (tracking.state()) {
             case FAILED -> new Result(ResultState.REJECTED, null, null, null, null,
@@ -247,8 +277,9 @@ class SepayEInvoiceProvider implements EInvoiceProvider {
                     : "SePay eInvoice cannot confirm the result; ask SePay before anything is sent again");
             // SePay is still retrying it, for up to two hours: never "not there", or it would be sent again.
             case PENDING -> Result.of(ResultState.PENDING);
-            // Done, and the look-up does not show it yet (it lags a few seconds): asked again, never sent again.
-            case SUCCESS -> state == ResultState.NOT_FOUND ? Result.of(ResultState.PENDING) : lookedUp(state, answer);
+            // Done at SePay, and the look-up does not show it issued yet - it lags a few seconds, or answered in a shape
+            // not read (Q-5): SePay holds it, so it is waited for, never sent again and never "cannot say".
+            case SUCCESS -> Result.of(ResultState.PENDING);
             case NONE -> lookedUp(state, answer);
         };
     }

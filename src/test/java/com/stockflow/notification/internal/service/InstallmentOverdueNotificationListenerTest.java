@@ -66,11 +66,13 @@ class InstallmentOverdueNotificationListenerTest {
     }
 
     @Test
-    @DisplayName("the message is keyed by the installment, links to the order and carries only system text")
+    @DisplayName("the message is keyed by the installment and its due date, links to the order and carries only system "
+            + "text")
     void theMessage() {
         InboxMessage message = InstallmentOverdueNotificationListener.message(EVENT);
 
-        assertThat(message.dedupeKey()).as("once per installment, for ever").isEqualTo("installment-overdue:" + INSTALLMENT);
+        assertThat(message.dedupeKey()).as("WF-05 BE-49: once per installment and due date")
+                .isEqualTo("installment-overdue:" + INSTALLMENT + ":2026-11-14");
         assertThat(message.category()).isEqualTo("PAYMENT_OVERDUE");
         assertThat(message.severity()).isEqualTo(InboxSeverity.WARN);
         assertThat(message.link()).isEqualTo("/admin/orders/" + ORDER);
@@ -79,5 +81,18 @@ class InstallmentOverdueNotificationListenerTest {
         assertThat(message.title()).contains("quá hạn").contains("HD-20261110-000001-1");
         assertThat(message.body()).contains("14/11/2026").contains("SO-20261110-000001").contains("treo tay")
                 .contains("5.000.000 VND");
+    }
+
+    @Test
+    @DisplayName("BE-49: the same installment overdue again on a new due date is a new message; the same date is not")
+    void newDueDateNewMessage() {
+        InstallmentOverdue moved = new InstallmentOverdue(EVENT.installmentId(), EVENT.contractId(),
+                EVENT.contractNumber(), EVENT.orderId(), EVENT.orderNumber(), EVENT.customerId(), EVENT.seq(),
+                EVENT.dueDate().plusDays(10), EVENT.outstanding(), EVENT.currency());
+
+        assertThat(InstallmentOverdueNotificationListener.message(moved).dedupeKey())
+                .isNotEqualTo(InstallmentOverdueNotificationListener.message(EVENT).dedupeKey());
+        assertThat(InstallmentOverdueNotificationListener.message(EVENT).dedupeKey())
+                .isEqualTo(InstallmentOverdueNotificationListener.message(EVENT).dedupeKey());
     }
 }

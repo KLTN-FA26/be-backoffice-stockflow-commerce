@@ -59,8 +59,11 @@ class EInvoiceReturnUnadjustedNotificationListener {
 
     static InboxMessage message(EInvoiceReturnUnadjusted event) {
         ResourceBundle texts = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
-        String key = event.cause() == EInvoiceReturnUnadjusted.Cause.REFUSED
-                ? "inbox.einvoice.return-refused" : "inbox.einvoice.return-unadjusted";
+        String key = switch (event.cause()) {
+            case REFUSED -> "inbox.einvoice.return-refused";
+            case ON_A_REPLACEMENT -> "inbox.einvoice.return-on-replacement";
+            case NOT_ON_AN_ISSUED_INVOICE -> "inbox.einvoice.return-unadjusted";
+        };
         String body = event.cause() == EInvoiceReturnUnadjusted.Cause.REFUSED
                 ? texts.getString(key + ".body").formatted(event.rmaNumber(), event.orderNumber(), event.reasonCode())
                 : texts.getString(key + ".body").formatted(event.rmaNumber(), event.orderNumber(), event.pieces(),

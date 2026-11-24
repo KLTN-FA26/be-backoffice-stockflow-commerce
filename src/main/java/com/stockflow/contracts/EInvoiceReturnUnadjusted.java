@@ -12,6 +12,9 @@ import java.util.UUID;
  *       worth whole dong. What could be adjusted was drawn up; the rest is left to the accountant.</li>
  *   <li>{@link Cause#REFUSED} - the invoice's rules refused the adjustment ({@code reasonCode}); nothing was drawn
  *       up.</li>
+ *   <li>{@link Cause#ON_A_REPLACEMENT} - some refunded pieces are on a replacement invoice, which the provider does not
+ *       adjust (WF-05 BE-09, Q-9; TT 91/2026 Điều 10 khoản 6 điểm a): the accountant reduces it on the provider's portal
+ *       and records the result - never by another replacement, since a return is corrected by an adjustment.</li>
  * </ul>
  * Either way the accountant draws the adjustment up by hand, naming the return. Published once per return, from the
  * transaction that handled its {@link ReturnResolved}; a return already adjusted publishes nothing. Notification tells
@@ -28,5 +31,5 @@ public record EInvoiceReturnUnadjusted(UUID returnRequestId, String rmaNumber, U
                                        Cause cause, int orderLines, long pieces, String reasonCode,
                                        Instant resolvedAt) {
 
-    public enum Cause { NOT_ON_AN_ISSUED_INVOICE, REFUSED }
+    public enum Cause { NOT_ON_AN_ISSUED_INVOICE, REFUSED, ON_A_REPLACEMENT }
 }

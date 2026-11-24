@@ -2,32 +2,27 @@ package com.stockflow.invoicing.internal.domain;
 
 import com.stockflow.common.domain.BusinessCalendar;
 
-import java.time.DayOfWeek;
 import java.time.Instant;
 import java.time.LocalDate;
 
 /**
- * By when an invoice must be signed and sent for the tax authority's code: "chậm nhất là ngày làm việc tiếp theo kể từ
- * thời điểm lập hóa đơn" (NĐ 254/2026/NĐ-CP Phụ lục điểm 7, as read in plans/E0-legal.md §2(e)5).
+ * By when an invoice must be issued: by the end of its own date, Vietnam time (WF-05 decision Q-1; NĐ 254/2026/NĐ-CP
+ * Điều 9 khoản 1 - the invoice is made out when the goods change hands).
  *
- * <p>The invoice's date is the day the goods were delivered, not the day the accountant issues it, so a draft that
- * waits is running out of time from the moment it is drawn up. The deadline is the end of the next working day after
- * that date, Vietnam time.</p>
- *
- * <p>A working day here is Monday to Friday. Public holidays are not known to the system, so over a holiday this
- * deadline is earlier than the law's - the safe side: the accountant is warned too soon, never too late.</p>
+ * <p><b>No next working day.</b> The working day after the invoice's date that NĐ 254/2026 Điều 9 khoản 5 and Phụ lục
+ * điểm 7 leave for signing is for sales made at night by a seller without software that issues invoices
+ * automatically - not a general grace period (owner, 23/11/2026). This system issues automatically as the delivery is
+ * recorded, so the grace does not apply to it, under any provider: an original is due by the end of its delivery day,
+ * a correction by the end of the day it is dated (the day it is issued). It used to be the end of the next working day,
+ * which put the warning a day late and the "overdue" mark a working day after the breach.</p>
  */
 public final class IssueDeadline {
 
     private IssueDeadline() {
     }
 
-    /** The instant the next working day after {@code issueDate} ends: issued before it is in time. */
+    /** The instant {@code issueDate} ends in Vietnam: issued before it is in time. */
     public static Instant of(LocalDate issueDate) {
-        LocalDate day = issueDate.plusDays(1);
-        while (day.getDayOfWeek() == DayOfWeek.SATURDAY || day.getDayOfWeek() == DayOfWeek.SUNDAY) {
-            day = day.plusDays(1);
-        }
-        return day.plusDays(1).atStartOfDay(BusinessCalendar.ZONE).toInstant();
+        return issueDate.plusDays(1).atStartOfDay(BusinessCalendar.ZONE).toInstant();
     }
 }

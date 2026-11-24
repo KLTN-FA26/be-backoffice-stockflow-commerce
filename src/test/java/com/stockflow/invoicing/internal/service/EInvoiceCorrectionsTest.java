@@ -74,7 +74,8 @@ class EInvoiceCorrectionsTest {
     private final EInvoiceProvider provider = mock(EInvoiceProvider.class);
     private final FileTransfers files = mock(FileTransfers.class);
     private final EInvoiceIssuanceSteps steps = new EInvoiceIssuanceSteps(invoices, mock(EInvoiceSending.class),
-            settings, providers, files, mock(ApplicationEventPublisher.class), Clock.fixed(NOW, ZoneOffset.UTC));
+            settings, providers, files, mock(ApplicationEventPublisher.class), Clock.fixed(NOW, ZoneOffset.UTC),
+            new InvoicingProperties(java.time.Duration.ofDays(1), null));
 
     @BeforeEach
     void aRepositoryThatKeepsWhatItIsGiven() {
