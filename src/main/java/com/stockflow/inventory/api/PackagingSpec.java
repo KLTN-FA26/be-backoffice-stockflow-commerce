@@ -55,7 +55,7 @@ public record PackagingSpec(
     }
 
     public enum WarningCode {
-        /** The default shipping unit lacks a size or weight; the next level was used. */
+        /** The item's carton ({@link RuleLevel#DEFAULT_SHIPPING_UNIT}) lacks a size or weight. */
         SHIPPING_UNIT_INCOMPLETE,
         /** A packing unit lacks a size or weight; a smaller one, or a lower level, was used. */
         PACKING_UNIT_INCOMPLETE

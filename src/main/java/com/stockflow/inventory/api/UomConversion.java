@@ -11,9 +11,8 @@ import java.util.UUID;
  *
  * <p>{@code active} false: retired (BR-10), kept for the documents that used it, never offered for new ones.</p>
  *
- * <p>{@code defaultShipping}: the unit load planning estimates this SKU's cartons in (one per item);
- * {@link PackagingSpecResolver} falls back to the largest packing unit with a
- * full size when no unit carries it. Never set on a retired unit.</p>
+ * <p>The item's one active unit is its carton (01 BR-03, {@code uk_uom_conversions_one_carton}): the one it is received,
+ * sold and shipped in. There is no unit to choose to ship in, so no "default shipping" mark (V20261226000300).</p>
  */
 public record UomConversion(
         UUID id,
@@ -25,20 +24,16 @@ public record UomConversion(
         BigDecimal widthCm,
         BigDecimal heightCm,
         boolean active,
-        long version,
-        boolean defaultShipping
+        long version
 ) {
     /**
      * The carton of a SKU among its units (kltn-docs 01 BR-03, BR-11): its one active packing unit of more than one
-     * piece - the default shipping one should an older SKU have several. Empty for none, or for several none of which
-     * is the default shipping unit: a SKU is sold by the carton and nothing is guessed. The one rule a quote and the
-     * storefront's stock indicator both count cartons by.
+     * piece. Empty for none - or for several, which {@code uk_uom_conversions_one_carton} does not allow: a SKU is sold
+     * by the carton and nothing is guessed. The one rule a quote and the storefront's stock indicator both count
+     * cartons by.
      */
     public static java.util.Optional<UomConversion> cartonOf(java.util.Collection<UomConversion> units) {
         java.util.List<UomConversion> candidates = units.stream().filter(UomConversion::cartonCandidate).toList();
-        if (candidates.size() > 1) {
-            candidates = candidates.stream().filter(UomConversion::defaultShipping).toList();
-        }
         return candidates.size() == 1 ? java.util.Optional.of(candidates.getFirst()) : java.util.Optional.empty();
     }
 
@@ -49,12 +44,5 @@ public record UomConversion(
      */
     public boolean cartonCandidate() {
         return active && factor > 1;
-    }
-
-    /** A unit that is not the default shipping unit. */
-    public UomConversion(UUID id, String sku, String unitOfMeasure, int factor, BigDecimal weightKg,
-                         BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
-                         boolean active, long version) {
-        this(id, sku, unitOfMeasure, factor, weightKg, lengthCm, widthCm, heightCm, active, version, false);
     }
 }

@@ -214,10 +214,9 @@ public class ProductionReceivables {
         UUID carton = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at,
-                        default_shipping)
-                    VALUES (?, ?, 'CARTON', ?, FALSE, 1.2, 60, 40, 35, TRUE, 0, NOW(), TRUE)""",
+                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
+                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
+                    VALUES (?, ?, 'CARTON', ?, 1.2, 60, 40, 35, TRUE, 0, NOW())""",
                     carton, item, per);
         });
         return new Issued(sku, item, carton, cartons, per);

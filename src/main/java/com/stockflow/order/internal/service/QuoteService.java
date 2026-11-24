@@ -754,9 +754,8 @@ class QuoteService implements Quotes {
     }
 
     /**
-     * The carton unit of each SKU (kltn-docs 01 BR-03, BR-11): its one active packing unit of more than one piece - the
-     * default shipping one should an older SKU have several. None, or several none of which is the default shipping
-     * unit, is refused: the SKU is sold by the carton and nothing is guessed.
+     * The carton unit of each SKU (kltn-docs 01 BR-03, BR-11): its one active packing unit of more than one piece
+     * ({@link UomConversion#cartonOf}). None is refused: the SKU is sold by the carton and nothing is guessed.
      */
     private Map<String, UomConversion> cartonUnits(List<String> skus) {
         Map<String, List<UomConversion>> declared = units.conversionsOf(skus.stream().distinct().map(Sku::new).toList());

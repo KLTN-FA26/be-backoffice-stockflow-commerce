@@ -253,10 +253,9 @@ class ProductionReceiptIntegrationTest {
             UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, code);
             UUID carton = Identifiers.newId();
             jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at,
-                        default_shipping)
-                    VALUES (?, ?, 'CARTON', ?, FALSE, 1.2, 60, 40, 35, TRUE, 0, NOW(), TRUE)""",
+                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
+                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
+                    VALUES (?, ?, 'CARTON', ?, 1.2, 60, 40, 35, TRUE, 0, NOW())""",
                     carton, item, PER_CARTON);
             return new IssuedSku(code, item, carton);
         });
@@ -581,12 +580,11 @@ class ProductionReceiptIntegrationTest {
 
         // BR-10: a unit a document counts in is retired, never changed; its replacement has the same count.
         tx.executeWithoutResult(s -> {
-            jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE WHERE id = ?",
-                    sku.uomConversionId());
+            jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE WHERE id = ?", sku.uomConversionId());
             jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at, default_shipping)
-                    VALUES (?, ?, 'CARTON2', ?, FALSE, 1.2, 60, 40, 35, TRUE, 0, NOW(), TRUE)""",
+                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
+                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
+                    VALUES (?, ?, 'CARTON2', ?, 1.2, 60, 40, 35, TRUE, 0, NOW())""",
                     Identifiers.newId(), sku.itemId(), PER_CARTON);
         });
 

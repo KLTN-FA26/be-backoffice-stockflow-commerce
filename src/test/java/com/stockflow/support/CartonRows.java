@@ -52,7 +52,7 @@ public final class CartonRows {
     public static UUID unit(JdbcTemplate jdbc, String sku, int factor) {
         List<UUID> found = jdbc.queryForList("""
                 SELECT u.id FROM inventory.uom_conversions u JOIN inventory.inventory_items i ON i.id = u.inventory_item_id
-                 WHERE i.sku = ? AND NOT u.is_base AND u.active ORDER BY u.default_shipping DESC, u.created_at, u.id""",
+                 WHERE i.sku = ? AND u.active ORDER BY u.created_at, u.id""",
                 UUID.class, sku);
         if (!found.isEmpty()) {
             return found.getFirst();
@@ -71,7 +71,7 @@ public final class CartonRows {
     public static UUID unitOf(JdbcTemplate jdbc, String sku, int factor) {
         List<UUID> found = jdbc.queryForList("""
                 SELECT u.id FROM inventory.uom_conversions u JOIN inventory.inventory_items i ON i.id = u.inventory_item_id
-                 WHERE i.sku = ? AND NOT u.is_base AND u.active AND u.factor = ? ORDER BY u.created_at, u.id""",
+                 WHERE i.sku = ? AND u.active AND u.factor = ? ORDER BY u.created_at, u.id""",
                 UUID.class, sku, factor);
         if (!found.isEmpty()) {
             return found.getFirst();
@@ -89,9 +89,9 @@ public final class CartonRows {
      */
     public static void reactivate(JdbcTemplate jdbc, UUID unit) {
         jdbc.update("""
-                UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
+                UPDATE inventory.uom_conversions SET active = FALSE
                  WHERE inventory_item_id = (SELECT inventory_item_id FROM inventory.uom_conversions WHERE id = ?)
-                   AND NOT is_base AND active AND id <> ?""", unit, unit);
+                   AND active AND id <> ?""", unit, unit);
         jdbc.update("UPDATE inventory.uom_conversions SET active = TRUE WHERE id = ? AND NOT active", unit);
     }
 
@@ -117,8 +117,8 @@ public final class CartonRows {
                     VALUES (?, ?, ?, ?, FALSE)""", id, item, code, factor);
         }
         jdbc.update("""
-                UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
-                 WHERE inventory_item_id = ? AND NOT is_base AND active AND id <> ?""", item, id);
+                UPDATE inventory.uom_conversions SET active = FALSE
+                 WHERE inventory_item_id = ? AND active AND id <> ?""", item, id);
         jdbc.update("UPDATE inventory.uom_conversions SET active = TRUE WHERE id = ? AND NOT active", id);
         return id;
     }

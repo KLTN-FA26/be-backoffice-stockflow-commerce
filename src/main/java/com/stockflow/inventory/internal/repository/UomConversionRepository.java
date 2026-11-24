@@ -15,16 +15,15 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * {@code inventory.uom_conversions} (V20261019000300), always read with its item for the SKU. The base unit has no
- * size or weight ({@code ck_uom_conversions_base}), and since V20261215000100 neither has the item: only the carton is
- * measured (kltn-docs 01 BR-03).
+ * {@code inventory.uom_conversions} (V20261019000300), always read with its item for the SKU: the item's carton
+ * specifications, one active (kltn-docs 01 BR-03). Since V20261215000100 the item has no size or weight of its own:
+ * only the carton is measured.
  */
 @Repository
 public class UomConversionRepository {
 
     private static final String SELECT = """
-            select c.id, i.sku, c.unit_of_measure, c.factor, c.active, c.version,
-                   c.default_shipping, c.weight_kg, c.length_cm, c.width_cm, c.height_cm
+            select c.id, i.sku, c.unit_of_measure, c.factor, c.active, c.version, c.weight_kg, c.length_cm, c.width_cm, c.height_cm
             from inventory.uom_conversions c join inventory.inventory_items i on i.id = c.inventory_item_id
             """;
 
@@ -32,7 +31,7 @@ public class UomConversionRepository {
             rs.getObject("id", UUID.class), rs.getString("sku"), rs.getString("unit_of_measure"), rs.getInt("factor"),
             rs.getBigDecimal("weight_kg"), rs.getBigDecimal("length_cm"),
             rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm"),
-            rs.getBoolean("active"), rs.getLong("version"), rs.getBoolean("default_shipping"));
+            rs.getBoolean("active"), rs.getLong("version"));
 
     private final JdbcTemplate jdbc;
 
@@ -131,32 +130,22 @@ public class UomConversionRepository {
         return Boolean.TRUE.equals(jdbc.queryForObject("select inventory.unit_in_use(?)", Boolean.class, id));
     }
 
-    /** Unmark the default shipping unit of the item, except {@code keep}. */
-    public void clearDefaultShipping(UUID itemId, UUID keep, String actor) {
-        jdbc.update("""
-                update inventory.uom_conversions set default_shipping = false, version = version + 1,
-                    last_modified_at = now(), last_modified_by = ?
-                where inventory_item_id = ? and default_shipping and id <> ?""", actor, itemId, keep);
-    }
-
     public void insert(UUID id, UUID itemId, UomConversionDraft d, String actor) {
         jdbc.update("""
                 insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
-                    weight_kg, length_cm, width_cm, height_cm, active, default_shipping, created_by)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", id, itemId, d.unitOfMeasure(), d.factor(),
-                d.weightKg(), d.lengthCm(), d.widthCm(), d.heightCm(), d.active(),
-                d.defaultShipping(), actor);
+                    weight_kg, length_cm, width_cm, height_cm, active, created_by)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", id, itemId, d.unitOfMeasure(), d.factor(),
+                d.weightKg(), d.lengthCm(), d.widthCm(), d.heightCm(), d.active(), actor);
     }
 
     /** False when the version moved on. */
     public boolean update(UUID id, long version, UomConversionDraft d, String actor) {
         return jdbc.update("""
                 update inventory.uom_conversions set unit_of_measure = ?, factor = ?, weight_kg = ?, length_cm = ?,
-                    width_cm = ?, height_cm = ?, active = ?, default_shipping = ?,
+                    width_cm = ?, height_cm = ?, active = ?,
                     version = version + 1, last_modified_at = now(), last_modified_by = ?
                 where id = ? and version = ?""", d.unitOfMeasure(), d.factor(), d.weightKg(), d.lengthCm(),
-                d.widthCm(), d.heightCm(), d.active(), d.defaultShipping(), actor, id,
-                version) == 1;
+                d.widthCm(), d.heightCm(), d.active(), actor, id, version) == 1;
     }
 
     public boolean delete(UUID id, long version) {
