@@ -384,4 +384,69 @@ class ProductionOrderTest {
         assertThat(order.receiveAt(UUID.randomUUID())).as("sent: delivered where it was sent to").isFalse();
         assertThat(order.receivingWarehouseId()).isEqualTo(elsewhere);
     }
+
+    // ---- replacements (SCRUM-839, 17 §4.13, BR-31) ----------------------------------------------------------------
+
+    private static ProductionOrder.Replacement writtenOff(int cartons) {
+        return new ProductionOrder.Replacement(UUID.randomUUID(), java.util.stream.IntStream.range(0, cartons)
+                .mapToObj(i -> new ProductionOrder.WriteOff(UUID.randomUUID(), "CUP-12OZ-ACME")).toList());
+    }
+
+    private static ProductionOrder replacement(int cartons, ProductionOrder.Replacement replacement) {
+        return ProductionOrder.drawUpReplacement("PRD-20261109-0002", UUID.randomUUID(), UUID.randomUUID(),
+                UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), LocalDate.of(2026, 12, 1),
+                List.of(new ProductionOrder.Line(UUID.randomUUID(), LINE, "CUP-12OZ-ACME", cartons, 50,
+                        UUID.randomUUID(), "a".repeat(64), null, 0)), replacement, COORDINATOR, NOW);
+    }
+
+    @Test
+    @DisplayName("a replacement is a DRAFT of kind REPLACEMENT, no print sample by default, naming what it makes up")
+    void replacementDrawnUp() {
+        ProductionOrder.Replacement made = writtenOff(2);
+        ProductionOrder order = replacement(2, made);
+
+        assertThat(order.kind()).isEqualTo(ProductionOrderKind.REPLACEMENT);
+        assertThat(order.status()).isEqualTo(ProductionOrderStatus.DRAFT);
+        assertThat(order.sampleApprovalRequired()).isFalse();
+        assertThat(order.sampleRequiredByDefault()).isFalse();
+        assertThat(order.replacement()).contains(made);
+        assertThat(drawn(false).kind()).isEqualTo(ProductionOrderKind.STANDARD);
+        assertThat(drawn(false).replacement()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a replacement makes no more cartons of a SKU than were written off of it, drawn up or edited")
+    void replacementWithinItsWriteOffs() {
+        assertThatThrownBy(() -> replacement(3, writtenOff(2))).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.PRODUCTION_ORDER_EXCEEDS_WRITE_OFFS);
+        ProductionOrder order = replacement(1, writtenOff(2));
+        assertThat(order.maxCartons(Map.of(LINE, 5))).as("the write-offs cap what the batch lacks")
+                .containsEntry(LINE, 2);
+        assertThat(order.maxCartons(Map.of(LINE, 1))).as("and the batch caps the write-offs").containsEntry(LINE, 1);
+        assertThat(drawn(false).maxCartons(Map.of(LINE, 5))).as("a standard one: what the batch lacks")
+                .containsEntry(LINE, 5);
+
+        assertThatThrownBy(() -> order.edit(new ProductionOrder.Draft(order.producerId(), order.needByDate(), null,
+                false, null, Map.of(LINE, new ProductionOrder.LineEdit(3, null))), Map.of(LINE, 5)))
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.PRODUCTION_ORDER_EXCEEDS_WRITE_OFFS);
+        order.edit(new ProductionOrder.Draft(order.producerId(), order.needByDate(), null, false, null,
+                Map.of(LINE, new ProductionOrder.LineEdit(2, null))), order.maxCartons(Map.of(LINE, 5)));
+        assertThat(order.lines().getFirst().cartons()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("a replacement names at least one write-off, each once, and makes only SKUs written off")
+    void replacementNamesItsWriteOffs() {
+        assertThatThrownBy(() -> new ProductionOrder.Replacement(UUID.randomUUID(), List.of()))
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        UUID twice = UUID.randomUUID();
+        assertThatThrownBy(() -> new ProductionOrder.Replacement(UUID.randomUUID(), List.of(
+                new ProductionOrder.WriteOff(twice, "CUP-12OZ-ACME"), new ProductionOrder.WriteOff(twice,
+                        "CUP-12OZ-ACME")))).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        ProductionOrder.Replacement otherSku = new ProductionOrder.Replacement(UUID.randomUUID(), List.of(
+                new ProductionOrder.WriteOff(UUID.randomUUID(), "BOWL-ACME")));
+        assertThatThrownBy(() -> replacement(1, otherSku)).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+    }
 }
