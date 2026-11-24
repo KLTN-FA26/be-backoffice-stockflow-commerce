@@ -124,6 +124,28 @@ class DeliveryNoteDocumentTest {
         assertThat(header).as("the header is printed").isPositive();
         assertThat(firstRow).as("on the page of the header, not the one after").isEqualTo(header);
         assertThat(DocumentSamples.text(pdf)).contains("LPN-20261124-000040");
+
+        // The handover and the signatures follow where the goods end: no page of their own, no third page.
+        int last = DocumentSamples.pages(pdf);
+        assertThat(last).as("the goods run onto page 2, the signatures under them").isEqualTo(2);
+        assertThat(DocumentSamples.text(pdf, last)).containsSubsequence("LPN-20261124-000040", "Tổng cộng",
+                "Thông tin vận chuyển", "Tình trạng hàng hóa khi nhận", "ĐẠI DIỆN BÊN GIAO", "ĐẠI DIỆN BÊN NHẬN");
+    }
+
+    @Test
+    @DisplayName("demo run 24/11: the handover follows the goods on the same page instead of opening one of its own; "
+            + "the signatures move on only when they do not fit, and then with the text before them")
+    void theHandoverFollowsTheGoods() throws IOException {
+        byte[] pdf = DocumentSamples.keep("delivery-note-sample", document.render(facts(List.of(
+                new DeliveryNoteDocument.Vehicle("LD-20261115-0003", "Xe tải Nhanh", "51C-123.45", "Nguyễn Văn Tài",
+                        "0912345678", "WB-778899")), Instant.parse("2026-11-15T02:05:00Z"), false)));
+
+        assertThat(DocumentSamples.text(pdf, 1)).as("the handover right under the goods")
+                .containsSubsequence("Tổng cộng", "Thông tin vận chuyển", "Thời điểm bàn giao");
+        int signed = DocumentSamples.pages(pdf);
+        assertThat(signed).isLessThanOrEqualTo(2);
+        assertThat(DocumentSamples.text(pdf, signed)).as("never the signatures alone on their page")
+                .containsSubsequence("Hai bên đồng ý", "ĐẠI DIỆN BÊN GIAO", "NGƯỜI VẬN CHUYỂN", "ĐẠI DIỆN BÊN NHẬN");
     }
 
     @Test

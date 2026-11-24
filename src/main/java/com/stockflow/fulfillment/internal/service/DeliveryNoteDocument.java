@@ -6,7 +6,6 @@ import com.stockflow.common.document.BusinessDocument.Block;
 import com.stockflow.common.document.BusinessDocument.Cell;
 import com.stockflow.common.document.BusinessDocument.Column;
 import com.stockflow.common.document.BusinessDocument.Field;
-import com.stockflow.common.document.BusinessDocument.PageBreak;
 import com.stockflow.common.document.BusinessDocument.Paragraph;
 import com.stockflow.common.document.BusinessDocument.Run;
 import com.stockflow.common.document.BusinessDocument.Signatures;
@@ -141,9 +140,10 @@ class DeliveryNoteDocument {
         blocks.add(DocumentParts.lead(t.getString("delivery-note.pdf.agreed")));
         blocks.add(goods(t, f.goods()));
 
-        // The handover - the vehicle, the moment, the state of the goods, the confirmation - on the page that is
-        // signed: the head, the parties and the goods already fill the first.
-        blocks.add(new PageBreak());
+        // The handover - the vehicle, the moment, the state of the goods, the confirmation - follows the goods where
+        // they end. It used to open a page of its own, which left most of a page empty under a short goods table and
+        // put the signatures on a third page after a long one (demo run 24/11). The kit keeps the signatures with the
+        // paragraph before them, so they never open a page alone.
         blocks.add(Paragraph.bold(t.getString("delivery-note.pdf.carriage")).align(Align.LEFT).after(1));
         if (f.vehicles().isEmpty()) {
             blocks.add(point(t.getString("delivery-note.pdf.noVehicle").formatted(blank, blank, blank, blank)));

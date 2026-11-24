@@ -242,6 +242,33 @@ class BusinessDocumentTest {
     @Test
     @DisplayName("a heading is never left at the foot of a page, and signature blocks move to the next page whole")
     void headingsAndSignaturesAreNotOrphaned() throws IOException {
+        headingAndSignatureBlocks();
+    }
+
+    @Test
+    @DisplayName("signatures straight after a table that do not fit under it take its last row and totals to the next "
+            + "page: that page never opens with the signatures alone")
+    void signaturesTakeTheTableEndBeforeThem() throws IOException {
+        List<Column> columns = List.of(new Column("STT", 30, Align.CENTRE), new Column("Tên hàng", 300, Align.LEFT),
+                new Column("Số lượng", 70, Align.RIGHT));
+        List<List<Cell>> rows = new ArrayList<>();
+        for (int i = 1; i <= 8; i++) {
+            rows.add(List.of(Cell.of(String.valueOf(i)), Cell.of("Ly giấy mẫu số " + i), Cell.of("1.000")));
+        }
+        float usable = PDRectangle.A4.getHeight() - 2 * BusinessDocument.mm(20);
+        Extent extent = extent(BusinessDocument.draw(FONTS, official(null), "t", List.of(
+                Paragraph.of("Điều khoản đầu tiên."), new Spacer(usable - 280),
+                new Table(columns, rows, List.of(new Summary("Tổng cộng", "8.000", true)), 2),
+                new Signatures(null, List.of(new Signer("ĐẠI DIỆN BÊN GIAO", "(Ký, ghi rõ họ tên)", null),
+                        new Signer("ĐẠI DIỆN BÊN NHẬN", "(Ký, ghi rõ họ tên)", null))))));
+
+        assertThat(extent.pages()).hasSize(2);
+        assertThat(extent.pages().get(0)).contains("mẫu số 1 ").doesNotContain("mẫu số 8", "ĐẠI DIỆN");
+        assertThat(extent.pages().get(1)).as("the last row and the total go over with the signatures")
+                .containsSubsequence("Tên hàng", "mẫu số 8", "Tổng cộng", "8.000", "ĐẠI DIỆN BÊN GIAO");
+    }
+
+    private void headingAndSignatureBlocks() throws IOException {
         // Fills a page to within two lines of its foot: a heading or a signature block no longer fits whole.
         float usable = PDRectangle.A4.getHeight() - 2 * BusinessDocument.mm(20);
         List<Block> blocks = new ArrayList<>(List.of(new Spacer(usable - 30)));

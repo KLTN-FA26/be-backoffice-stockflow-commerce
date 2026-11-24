@@ -429,7 +429,9 @@ public final class BusinessDocument {
                         case Split s -> pen.split(s);
                         case Fields f -> pen.fields(f);
                         case Heading h -> pen.heading(h);
-                        case Table t -> pen.table(t);
+                        // A table the signatures follow straight away keeps its last row and totals with them.
+                        case Table t -> pen.table(t, i + 1 < blocks.size()
+                                && blocks.get(i + 1) instanceof Signatures after ? after : null);
                         case Signatures s -> pen.signatures(s);
                         case Spacer s -> pen.spacer(s);
                         case PageBreak b -> pen.pageBreak();
@@ -875,22 +877,46 @@ public final class BusinessDocument {
             }
         }
 
-        void table(Table t) throws IOException {
+        /**
+         * Draws {@code t}. With {@code signedAfter}, the signature blocks that come straight after it: its last row and
+         * totals go to the next page with them when they do not all fit here, so that page never opens with the
+         * signatures alone - whoever signs sees under what (the rule {@link #keepTogether(Paragraph, Signatures)}
+         * keeps for a paragraph).
+         */
+        void table(Table t, Signatures signedAfter) throws IOException {
             float tableSize = layout.tableSize();
             float lineHeight = leading(tableSize) - 1;
             float[] widths = widths(t);
             List<HeaderCell> header = header(t, widths, tableSize);
             float headerHeight = headerHeight(header, lineHeight);
             float fresh = top - bottom - headerHeight;
-            ensure(start(t));
+            float opening = start(t);
+            if (signedAfter != null && t.rows().size() == 1) {
+                // One row: it is the last too, so the header, the row, the totals and the signatures go together.
+                float whole = opening + t.summaries().size() * (lineHeight + 2 * CELL_PAD) + 18
+                        + signaturesHeight(signedAfter);
+                opening = whole <= top - bottom ? whole : opening;
+            }
+            ensure(opening);
             y -= 3;
             headerRow(widths, header, headerHeight, tableSize, lineHeight);
-            for (List<Cell> row : t.rows()) {
+            int drawnHere = 0;
+            for (int r = 0; r < t.rows().size(); r++) {
+                List<Cell> row = t.rows().get(r);
                 List<List<CellLine>> cells = new ArrayList<>();
                 for (int i = 0; i < widths.length; i++) {
                     cells.add(cellLines(row.get(i), tableSize, widths[i] - 2 * CELL_PAD));
                 }
                 int count = Math.max(1, cells.stream().mapToInt(List::size).max().orElse(1));
+                if (signedAfter != null && r == t.rows().size() - 1 && drawnHere > 0) {
+                    float rest = count * lineHeight + 2 * CELL_PAD + t.summaries().size() * (lineHeight + 2 * CELL_PAD)
+                            + 18 + signaturesHeight(signedAfter);
+                    if (rest <= fresh && y - rest < bottom) {
+                        newPage();
+                        headerRow(widths, header, headerHeight, tableSize, lineHeight);
+                    }
+                }
+                int pageBefore = document.getNumberOfPages();
                 int from = 0;
                 boolean tall = tall(count, lineHeight, fresh);
                 while (from < count) {
@@ -915,6 +941,7 @@ public final class BusinessDocument {
                     rowSlice(t, row, widths, cells, from, to, tableSize, lineHeight);
                     from = to;
                 }
+                drawnHere = document.getNumberOfPages() == pageBefore ? drawnHere + 1 : 1;
             }
             if (!t.summaries().isEmpty()) {
                 summaries(t, widths, header, headerHeight, tableSize, lineHeight);
