@@ -14,6 +14,12 @@ public interface SettlementBook {
     /** The settlement of this cancellation or closure, if it was made already (a replay settles nothing twice). */
     Optional<OrderSettlement> find(OrderSettlement.Kind kind, UUID sourceId);
 
+    /**
+     * The settlement of the shipment's units brought back or lost ({@link OrderSettlement.Kind#SHIPMENT_RETURNED}), if
+     * one was made: a shipment's money settles once, whatever closure asks again.
+     */
+    Optional<OrderSettlement> findOfShipment(UUID shipmentId);
+
     /** The order's settlements, oldest first. */
     List<OrderSettlement> ofOrder(UUID orderId);
 

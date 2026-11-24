@@ -58,7 +58,7 @@ class OrderHistoryEntryTypeTest {
                 org.mockito.Mockito.mock(com.stockflow.order.internal.service.OrderWarehouseVisibility.class);
         when(visibility.visible(any(), any())).thenReturn(true);
         OrderController controller = new OrderController(orders, null, null, identities, decisions,
-                mock(ShippingAddressChanges.class), visibility, null);
+                mock(ShippingAddressChanges.class), visibility, null, settlements());
         CurrentUser staff = new CurrentUser(UUID.randomUUID(), "sales1", Set.of(Role.SALES_STAFF), Set.of(),
                 DataScope.ALL, Set.of());
 
@@ -98,7 +98,7 @@ class OrderHistoryEntryTypeTest {
                 org.mockito.Mockito.mock(com.stockflow.order.internal.service.OrderWarehouseVisibility.class);
         when(visibility.visible(any(), any())).thenReturn(true);
         OrderController controller = new OrderController(orders, null, null, identities, decisions,
-                mock(ShippingAddressChanges.class), visibility, null);
+                mock(ShippingAddressChanges.class), visibility, null, settlements());
         CurrentUser staff = new CurrentUser(UUID.randomUUID(), "sales1", Set.of(Role.SALES_STAFF), Set.of(),
                 DataScope.ALL, Set.of());
 
@@ -135,7 +135,7 @@ class OrderHistoryEntryTypeTest {
                 Instant.parse("2026-11-20T02:00:00Z"))));
         OrderController controller = new OrderController(orders, customers, null, mock(IdentityService.class),
                 mock(PartialShipments.class), mock(ShippingAddressChanges.class),
-                mock(com.stockflow.order.internal.service.OrderWarehouseVisibility.class), null);
+                mock(com.stockflow.order.internal.service.OrderWarehouseVisibility.class), null, settlements());
         CurrentUser customer = new CurrentUser(userId, "cust", Set.of(Role.CUSTOMER), Set.of(), DataScope.OWN, Set.of());
 
         List<OrderStatusChangeResponse> history = controller.history(orderId, customer).data();
@@ -169,7 +169,7 @@ class OrderHistoryEntryTypeTest {
                 org.mockito.Mockito.mock(com.stockflow.order.internal.service.OrderWarehouseVisibility.class);
         when(visibility.visible(any(), any())).thenReturn(true);
         OrderController controller = new OrderController(orders, null, null, identities, mock(PartialShipments.class),
-                addresses, visibility, null);
+                addresses, visibility, null, settlements());
         CurrentUser staff = new CurrentUser(UUID.randomUUID(), "sales1", Set.of(Role.SALES_STAFF), Set.of(),
                 DataScope.ALL, Set.of());
 
@@ -184,5 +184,12 @@ class OrderHistoryEntryTypeTest {
         assertThat(change.newAddress().line1()).isEqualTo("9 Hai Bà Trưng");
         assertThat(change.newAddress().recipientName()).isEqualTo("Kho B");
         assertThat(change.actorName()).isEqualTo("Nguyễn Hải Yến");
+    }
+
+    /** WF-05 BE-52: no refund voided while a claim was open, unless a test says so. */
+    private static com.stockflow.order.internal.service.OrderSettlementService settlements() {
+        var settlements = mock(com.stockflow.order.internal.service.OrderSettlementService.class);
+        when(settlements.refundVoids(any())).thenReturn(List.of());
+        return settlements;
     }
 }

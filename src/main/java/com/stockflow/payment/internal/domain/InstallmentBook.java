@@ -60,6 +60,15 @@ public interface InstallmentBook {
      */
     Overdue overdue(UUID customerId, LocalDate today);
 
+    /**
+     * WF-05 BE-49: writes down that the installment was announced overdue for {@code dueDate} - only while that is
+     * still its due date and it still owes, and only when no other transaction holds its row (a receipt paying it right
+     * now): such a one is left for the next scan rather than waited for, so the scan never deadlocks with a receipt.
+     *
+     * @return whether it was written: false - nothing to announce now
+     */
+    boolean markOverdueAnnounced(UUID installmentId, LocalDate dueDate);
+
     // ---- receipts ---------------------------------------------------------------------------------------------------
 
     /** Writes a new receipt and its lines. */

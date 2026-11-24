@@ -41,6 +41,14 @@ public class EInvoiceProviderAccountService {
         this.cipher = cipher;
     }
 
+    /**
+     * The adapter of a provider, for what it can do (WF-05 BE-58, F-11): read by the settings screen so it offers only
+     * what works with it. Empty for a provider that has no adapter in this deployment.
+     */
+    public java.util.Optional<com.stockflow.invoicing.internal.domain.EInvoiceProvider> adapter(String provider) {
+        return providers.find(provider);
+    }
+
     /** What a provider's password is sealed under: the provider's row. Opening it takes the same. */
     static String secretContext(UUID providerConfigId) {
         return "einvoice-provider:" + providerConfigId + ":secret";

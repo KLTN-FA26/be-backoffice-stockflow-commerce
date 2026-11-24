@@ -73,6 +73,15 @@ class CustomerEInvoiceController {
                 .map(InvoicingWebMapper::toCustomerResponse));
     }
 
+    @GetMapping("/{id}")
+    @Operation(summary = "One of the signed-in customer's own issued e-invoices, as a row of the list (with the invoice "
+            + "it replaces and the issued one that replaced it); 404 EINVOICE_NOT_FOUND for another customer's, an "
+            + "unissued or an unknown one")
+    @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.READ, scope = DataScope.OWN)
+    public ApiResponse<CustomerEInvoiceResponse> get(@PathVariable UUID id, @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(InvoicingWebMapper.toCustomerResponse(queries.issuedInvoice(ownCustomerId(user), id)));
+    }
+
     @GetMapping("/{id}/files/{kind}")
     @Operation(summary = "A short-lived link to the XML or PDF (kind: XML or PDF) of one of the signed-in customer's "
             + "own issued e-invoices; 404 EINVOICE_NOT_FOUND for any other")

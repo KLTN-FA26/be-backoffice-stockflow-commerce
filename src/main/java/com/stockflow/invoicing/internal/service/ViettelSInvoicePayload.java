@@ -116,9 +116,10 @@ final class ViettelSInvoicePayload {
 
     /**
      * {@code invoiceIssuedDate}: milliseconds since the epoch, whole seconds (the description's time standard). An
-     * invoice dated today is issued now; one dated an earlier day - a delivery invoiced the next working day, which the
-     * law allows - is dated the last second of its day, the latest moment that is still that date, so it is least
-     * likely to fall before the previous invoice of the symbol, which SInvoice refuses.
+     * invoice dated today is issued now; one dated an earlier day - an original issued after its delivery day, late
+     * (WF-05 Q-1: due by the end of that day; this provider still takes the delivery's date) - is dated the last
+     * second of its day, the latest moment that is still that date, so it is least likely to fall before the previous
+     * invoice of the symbol, which SInvoice refuses.
      */
     static long issuedAt(LocalDate issueDate, Instant now) {
         LocalDate today = now.atZone(ZONE).toLocalDate();

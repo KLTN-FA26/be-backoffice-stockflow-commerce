@@ -7,19 +7,23 @@ import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.common.security.AssignedWarehouses;
 import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.inventory.api.ReturnRequestNumbers;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.StockPackageBalance;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.repository.StockPackageSearch;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * The carton lookup (SCRUM-473, #125 item 11, the carton lookup screen of #138): a carton by the LPN on its label,
@@ -52,10 +56,13 @@ public class StockPackageLookup {
 
     private final StockPackageSearch search;
     private final LocationDirectory locations;
+    private final ObjectProvider<ReturnRequestNumbers> returnNumbers;
 
-    public StockPackageLookup(StockPackageSearch search, LocationDirectory locations) {
+    public StockPackageLookup(StockPackageSearch search, LocationDirectory locations,
+                              ObjectProvider<ReturnRequestNumbers> returnNumbers) {
         this.search = search;
         this.locations = locations;
+        this.returnNumbers = returnNumbers;
     }
 
     /**
@@ -69,7 +76,7 @@ public class StockPackageLookup {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No carton " + normal);
         }
         WarehouseScope.requireLocation(carton.locationCode());
-        return new StockPackageBalance.Detail(carton, search.contentsOf(carton.id()));
+        return new StockPackageBalance.Detail(named(List.of(carton)).getFirst(), search.contentsOf(carton.id()));
     }
 
     /**
@@ -107,7 +114,26 @@ public class StockPackageLookup {
         List<StockPackageStatus> statuses = asked.isEmpty() ? LIVE : asked;
         var criteria = new StockPackageSearch.CartonCriteria(location, sku, statuses,
                 WarehouseScope.restriction().map(AssignedWarehouses::prefixes).orElse(null));
-        return Pages.toResponse(search.cartons(criteria, Pages.of(query.page(), query.size(), SORT.parse(query.sort()))));
+        PageResponse<StockPackageBalance> page = Pages.toResponse(search.cartons(criteria,
+                Pages.of(query.page(), query.size(), SORT.parse(query.sort()))));
+        return new PageResponse<>(named(page.items()), page.page(), page.size(), page.totalElements(),
+                page.totalPages(), page.hasNext(), page.hasPrevious());
+    }
+
+    /**
+     * The cartons that came back on a return request, naming it by its RMA number (audit round 3, RAD-4): one read for
+     * the page. Without the order module (its slice test) they keep only the id.
+     */
+    private List<StockPackageBalance> named(List<StockPackageBalance> cartons) {
+        List<UUID> requests = cartons.stream().map(StockPackageBalance::returnRequestId).filter(Objects::nonNull)
+                .distinct().toList();
+        ReturnRequestNumbers numbers = requests.isEmpty() ? null : returnNumbers.getIfAvailable();
+        if (numbers == null) {
+            return cartons;
+        }
+        Map<UUID, String> rma = numbers.rmaNumbers(requests);
+        return cartons.stream().map(carton -> carton.returnRequestId() == null ? carton
+                : carton.withReturnRmaNumber(rma.get(carton.returnRequestId()))).toList();
     }
 
     /** Location codes and SKUs are stored upper-case; a client may send either. Blank is absent. */

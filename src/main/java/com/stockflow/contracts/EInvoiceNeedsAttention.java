@@ -1,6 +1,7 @@
 package com.stockflow.contracts;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.UUID;
 
 /**
@@ -35,8 +36,34 @@ import java.util.UUID;
  *       the full reduction as a draft (21 §4.4; WF-05 HĐ-3). {@code einvoiceId} and {@code code} name that
  *       draft, which the accountant issues; {@code submittedAt} is null. Published in the transaction that draws it up,
  *       once.</li>
+ *   <li>WF-05 full fix (decisions of 2026-11-23), one cause per new situation, each published once per invoice and
+ *       submission:
+ *       <ul>
+ *         <li>{@link Cause#DUPLICATE_RISK} - an invoice withdrawn (UNKNOWN, with the provider support's answer) or
+ *             refused by its words turned out ISSUED at the provider when the daily watch asked again within 30 days
+ *             (BE-07, Q-5); the provider's invoice is recorded on it.</li>
+ *         <li>{@link Cause#PROVIDER_RESULT_OVERDUE} - SUBMITTING past the time the provider can still answer; the
+ *             accountant records the result from the provider's portal (BE-08, Q-8).</li>
+ *         <li>{@link Cause#REDUCE_ON_PROVIDER_PORTAL} - the accountant voided a failed delivery's reduction as unsendable;
+ *             the reduction is made on the old provider's portal and recorded (BE-10, Q-8).</li>
+ *         <li>{@link Cause#DELIVERY_FAILED_NOT_REVERSED} - an issued invoice in force stands for a delivery that is not
+ *             delivered now and was not reduced; "reduce for the failed delivery" is for the accountant (BE-11).</li>
+ *         <li>{@link Cause#SERIES_MISMATCH} - the provider's look-up shows a template code or symbol other than the one
+ *             sent; the invoice is not recorded ISSUED (BE-30).</li>
+ *         <li>{@link Cause#ISSUED_LATE} - issued on a day after its delivery day (Q-1, Q-10): informational;
+ *             {@code deliveredOn} and {@code issueDate} are set.</li>
+ *         <li>{@link Cause#REPLACEMENT_NOT_REDUCIBLE} - a delivery invoiced by a replacement failed, and the provider
+ *             does not adjust a replacement: no reduction was drawn up (BE-09, Q-9).</li>
+ *         <li>{@link Cause#AUTO_ISSUE_HELD} - audit r2 M-2: a draft original the automatic issuing holds back - a warning
+ *             that needs a person (decision §1.5 step 5), or a refusal the automatic issuing met when it tried. Told at
+ *             once, not at the deadline warning four hours before midnight (kltn-docs 21 §4.2 step 3): the invoice is
+ *             due by the end of its delivery day (Q-1). Once per draft and reason, which {@code rejectionCode} carries -
+ *             the draft's warnings as stored ({@code TAX_CLASS_UNKNOWN}, ...) or the error code
+ *             ({@code EINVOICE_SERIES_NOT_CONFIGURED}, ...); {@code submittedAt} is null.</li>
+ *       </ul></li>
  * </ul>
- * For the first three the deadline of the working day after the invoice's date keeps running (NĐ 254/2026/NĐ-CP Phụ lục điểm 7).
+ * For the first three the invoice's deadline - the end of its date (NĐ 254/2026/NĐ-CP Điều 9 khoản 1; WF-05 Q-1) -
+ * keeps running.
  * Notification tells the people who issue invoices; nothing else listens.
  *
  * <p>Codes, ids and instants only: the provider's sentence about a refusal stays on the invoice, behind its
@@ -44,15 +71,28 @@ import java.util.UUID;
  * contract.</p>
  *
  * @param code          the invoice's internal code
- * @param rejectionCode the provider's code for the refusal; null for any other cause
+ * @param rejectionCode the provider's code for the refusal; for {@link Cause#AUTO_ISSUE_HELD} the reason it is held;
+ *                      null for any other cause
  * @param submittedAt   when this submission was sent
- * @param issueDueAt    the instant the invoice must have been issued by
+ * @param issueDueAt    the instant the invoice must have been issued by; never null
+ * @param deliveredOn   the delivery day (Asia/Ho_Chi_Minh) for {@link Cause#ISSUED_LATE}; null otherwise and in
+ *                      publications stored before
+ * @param issueDate     the invoice's date for {@link Cause#ISSUED_LATE}; null otherwise and in publications stored before
  */
 public record EInvoiceNeedsAttention(UUID einvoiceId, String code, UUID orderId, String orderNumber, Cause cause,
-                                     String rejectionCode, Instant submittedAt, Instant issueDueAt) {
+                                     String rejectionCode, Instant submittedAt, Instant issueDueAt,
+                                     LocalDate deliveredOn, LocalDate issueDate) {
+
+    /** Every cause but {@link Cause#ISSUED_LATE}, and as published before the dates were carried. */
+    public EInvoiceNeedsAttention(UUID einvoiceId, String code, UUID orderId, String orderNumber, Cause cause,
+                                  String rejectionCode, Instant submittedAt, Instant issueDueAt) {
+        this(einvoiceId, code, orderId, orderNumber, cause, rejectionCode, submittedAt, issueDueAt, null, null);
+    }
 
     public enum Cause {
         REJECTED, STUCK_SUBMITTING, UNKNOWN_TO_PROVIDER, DELIVERY_FAILED_AFTER_SUBMISSION, SIGNATURE_INVALID,
-        DELIVERY_FAILED_REVERSAL_DRAWN_UP, DELIVERY_FAILED_AWAITING_PROVIDER
+        DELIVERY_FAILED_REVERSAL_DRAWN_UP, DELIVERY_FAILED_AWAITING_PROVIDER,
+        DUPLICATE_RISK, PROVIDER_RESULT_OVERDUE, REDUCE_ON_PROVIDER_PORTAL, DELIVERY_FAILED_NOT_REVERSED,
+        SERIES_MISMATCH, ISSUED_LATE, REPLACEMENT_NOT_REDUCIBLE, AUTO_ISSUE_HELD
     }
 }

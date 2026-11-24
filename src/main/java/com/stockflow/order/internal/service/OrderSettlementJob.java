@@ -39,14 +39,16 @@ class OrderSettlementJob {
         // close tonight, but it must be REFUNDED / PARTIALLY_REFUNDED for a later night to find it.
         int settled = drain(Step.SETTLE_FAILED_DELIVERY);
         int closed = drain(Step.CLOSE);
-        if (completed + settled + closed > 0) {
-            log.info("Order settlement: {} completed, {} failed deliveries settled, {} closed", completed, settled,
-                    closed);
+        // WF-05 Q-6: the contracts of orders cancelled after signing, once the cancellation's money is settled.
+        int liquidated = drain(Step.LIQUIDATE_CANCELLED);
+        if (completed + settled + closed + liquidated > 0) {
+            log.info("Order settlement: {} completed, {} failed deliveries settled, {} closed, {} contracts of "
+                    + "cancelled orders liquidated", completed, settled, closed, liquidated);
         }
     }
 
     /** What a run does, in this order. */
-    private enum Step { COMPLETE, SETTLE_FAILED_DELIVERY, CLOSE }
+    private enum Step { COMPLETE, SETTLE_FAILED_DELIVERY, CLOSE, LIQUIDATE_CANCELLED }
 
     /**
      * Batch after batch until nothing is left (review of G3-2: one batch a night fell behind), bounded per run. What
@@ -64,6 +66,7 @@ class OrderSettlementJob {
                 case COMPLETE -> settlements.completionCandidates(leftBehind, BATCH_SIZE);
                 case SETTLE_FAILED_DELIVERY -> settlements.failedDeliveryCandidates(leftBehind, BATCH_SIZE);
                 case CLOSE -> settlements.closingCandidates(leftBehind, BATCH_SIZE);
+                case LIQUIDATE_CANCELLED -> settlements.liquidationCandidates(leftBehind, BATCH_SIZE);
             };
             int moved = 0;
             for (UUID orderId : ids) {
@@ -84,6 +87,7 @@ class OrderSettlementJob {
                 case COMPLETE -> settlements.complete(orderId);
                 case SETTLE_FAILED_DELIVERY -> settlements.settleFailedDelivery(orderId);
                 case CLOSE -> settlements.close(orderId);
+                case LIQUIDATE_CANCELLED -> settlements.liquidateCancelled(orderId);
             };
             return moved ? 1 : 0;
         } catch (RuntimeException failed) {

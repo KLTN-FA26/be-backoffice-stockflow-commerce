@@ -105,6 +105,6 @@ class DispatchWebMapper {
                         s.recordedByName(), s.note(), s.source(), s.carrierEventId())).toList(),
                 d.reasonCorrections().stream().map(c -> new ShipmentResponse.ReasonCorrection(c.fromReason(),
                         c.fromNote(), c.toReason(), c.toNote(), c.reason(), c.correctedBy(), c.correctedByName(),
-                        c.correctedAt())).toList());
+                        c.correctedAt())).toList(), d.undoneDeliveredAt());
     }
 }

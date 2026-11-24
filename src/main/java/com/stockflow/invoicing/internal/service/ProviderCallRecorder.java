@@ -23,4 +23,16 @@ class ProviderCallRecorder {
     public void record(ProviderCallLog.Call call) {
         log.record(call);
     }
+
+    /** {@link ProviderCallLog#providerHeld}, read in a transaction of its own (BE-07). */
+    @Transactional(readOnly = true)
+    public boolean providerHeld(java.util.UUID einvoiceId, String transactionId) {
+        return log.providerHeld(einvoiceId, transactionId);
+    }
+
+    /** {@link ProviderCallLog#lastQuery}, read in a transaction of its own (audit r2 H-2). */
+    @Transactional(readOnly = true)
+    public java.util.Optional<ProviderCallLog.Call> lastQuery(java.util.UUID einvoiceId, String transactionId) {
+        return log.lastQuery(einvoiceId, transactionId);
+    }
 }

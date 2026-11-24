@@ -312,8 +312,8 @@ class OrderLifecycleIntegrationTest {
     }
 
     @Test
-    @DisplayName("split, RTM-RETURNED-PARTIAL: one shipment delivered, the other failed and returned - its unit closed "
-            + "on a closure of its own, the order PARTIALLY_FULFILLED with no hold (never DELIVERED as a whole), and "
+    @DisplayName("split, RTM-RETURNED-PARTIAL: one shipment delivered, the other failed and returned - its unit not "
+            + "closed on the carrier's word (Q-7), the order PARTIALLY_FULFILLED with no hold (never DELIVERED as a whole), and "
             + "nothing is left for staff to close")
     void oneDeliveredOneReturned() {
         OrderSummary order = picking(3);
@@ -329,12 +329,13 @@ class OrderLifecycleIntegrationTest {
         assertThat(back.lifecycle().holdReason()).isNull();
         assertThat(jdbc.queryForList("SELECT reason FROM ordering.order_hold WHERE order_id = ? AND resolved_at IS NULL",
                 String.class, order.orderId())).isEmpty();
+        // WF-05 Q-7 (L-I8): the carrier's word closes nothing - the unit is on its way back, neither owed again nor
+        // closed; its return receipt closes and settles it (DeliveryFailureGoodsReceivedTest, OrderDeliveredInFullTest).
         assertThat(jdbc.queryForObject("SELECT cancelled_quantity FROM ordering.order_line WHERE order_id = ?",
-                Integer.class, order.orderId())).as("the returned unit is no longer owed").isEqualTo(1);
-        assertThat(orders.remainderClosures(order.orderId())).as("the return closed it").singleElement()
-                .satisfies(closure -> assertThat(closure.note()).as("readable note, no shipment id shown to people")
-                        .isEqualTo("Lô giao bị hoàn về kho: phần hàng của lô không giao lại trên đơn này")
-                        .doesNotContain(s2.toString()));
+                Integer.class, order.orderId())).as("nothing closed on the report").isZero();
+        assertThat(jdbc.queryForObject("SELECT units_closed_at IS NULL FROM ordering.order_shipment WHERE id = ?",
+                Boolean.class, s2)).as("the shipment still holds its unit").isTrue();
+        assertThat(orders.remainderClosures(order.orderId())).as("nothing settled before the receipt").isEmpty();
         assertThat(code(catchThrowable(() -> orders.closeRemainder(order.orderId(), CancellationReasonCode.OTHER,
                 "khách không lấy lại", staff)))).as("nothing left to close").isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
         assertThat(statusOf(order.orderId())).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
@@ -609,8 +610,8 @@ class OrderLifecycleIntegrationTest {
     }
 
     @Test
-    @DisplayName("a closure of one order leaves it SHIPPED; its last shipment then fails and comes back: RTM-RETURNED "
-            + "closes its unit as a second closure, on record beside the first, and the order is PARTIALLY_FULFILLED "
+    @DisplayName("a closure of one order leaves it SHIPPED; its last shipment then fails and comes back: its unit "
+            + "waits for its return receipt (Q-7) - nothing closed on the report - and the order is PARTIALLY_FULFILLED "
             + "(DELIVERY_FAILED -> PARTIALLY_FULFILLED, checked by tg_order_status_transition) with nothing left to close")
     void secondClosureIsNotLost() {
         OrderSummary order = picking(4);
@@ -624,13 +625,13 @@ class OrderLifecycleIntegrationTest {
         orders.recordShipmentDeliveryFailed(order.orderId(), b, DeliveryFailureReason.LOST, null, staff);
         assertThat(orders.recordShipmentReturned(order.orderId(), b, staff).status())
                 .as("one delivered, one back").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
-        assertThat(orders.remainderClosures(order.orderId())).as("the return is a closure of its own").hasSize(2);
+        // WF-05 Q-7: the one that came back is closed by its return receipt, not by the report.
+        assertThat(orders.remainderClosures(order.orderId())).as("only the first closure so far").hasSize(1);
         assertThat(jdbc.queryForObject("SELECT cancelled_quantity FROM ordering.order_line WHERE order_id = ?",
-                Integer.class, order.orderId())).as("two pieces closed by the first closure, the one that came back by "
-                + "the second").isEqualTo(3);
+                Integer.class, order.orderId())).as("two pieces closed by the first closure").isEqualTo(2);
         assertThat(code(catchThrowable(() -> orders.closeRemainder(order.orderId(), CancellationReasonCode.OTHER,
                 "hàng thất lạc", staff)))).as("nothing left to close").isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
-        assertThat(orders.remainderClosures(order.orderId())).as("a refused closure leaves no row").hasSize(2);
+        assertThat(orders.remainderClosures(order.orderId())).as("a refused closure leaves no row").hasSize(1);
     }
 
     /** Both calls released at once, each in its own transaction; what each returned or threw. */

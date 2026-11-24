@@ -6,6 +6,7 @@ import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.contracts.PutawayCompleted;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.UomConversion;
+import com.stockflow.inventory.internal.domain.ReturnedCartonOwnership;
 import com.stockflow.inventory.internal.domain.StockAdjustmentRepository;
 import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
@@ -75,11 +76,14 @@ public class CartonQuarantineService {
     private final PutawayTasks tasks;
     private final WarehouseService warehouses;
     private final ApplicationEventPublisher events;
+    private final ReturnedCartonOwnership ownership;
 
     public CartonQuarantineService(StockOperations operations, StockPackageRepository stockPackages,
                                    StockItemRepository stockItems, StockAdjustmentRepository adjustments,
                                    UomConversionRepository units, InventoryPolicyRepository policies,
-                                   PutawayTasks tasks, WarehouseService warehouses, ApplicationEventPublisher events) {
+                                   PutawayTasks tasks, WarehouseService warehouses, ApplicationEventPublisher events,
+                                   ReturnedCartonOwnership ownership) {
+        this.ownership = ownership;
         this.operations = operations;
         this.stockPackages = stockPackages;
         this.stockItems = stockItems;
@@ -131,8 +135,9 @@ public class CartonQuarantineService {
      * @throws BusinessException {@code STOCK_PACKAGE_NOT_FOUND}; 403 for a carton of another warehouse;
      *         {@code INVALID_STOCK_PACKAGE_TRANSITION} for a carton not in stock; {@code STOCK_PACKAGE_NOT_QUARANTINED};
      *         {@code RETURN_CARTON_OPENED} for a carton that came back opened on a return - written off only;
-     *         {@code STOCK_PACKAGE_DECISION_PENDING} when a write-off of it awaits approval, or it has another open
-     *         putaway task
+     *         {@code STOCK_PACKAGE_DECISION_PENDING} when a write-off of it awaits approval, it has another open
+     *         putaway task, or it came back on a return whose refund is not decided ({@code returnOwnership}
+     *         PENDING, WF-05 Q-4)
      */
     @Transactional
     public UUID release(String lpn, UUID actorId) {
@@ -156,6 +161,17 @@ public class CartonQuarantineService {
             throw new BusinessException(ErrorCode.RETURN_CARTON_OPENED, ("%s came back opened on a return: it holds "
                     + "fewer units than its label and is never sold again; write it off").formatted(carton.lpn()),
                     List.of(), Map.of("lpn", carton.lpn()));
+        }
+        Optional<ReturnedCartonOwnership.Owned> waiting = ownership.owned(carton.id())
+                .filter(owned -> owned.ownership() == ReturnedCartonOwnership.Ownership.PENDING);
+        if (waiting.isPresent()) {
+            // WF-05 Q-4 (H1): the return it came back on has not decided its refund. Not refunded, the goods are the
+            // customer's and leave the books; released now, they would be sold back to the customer who owns them.
+            // The details name the return (audit r3 RAD-4), so the screen says what the carton waits for.
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_DECISION_PENDING, ("%s came back on a return whose "
+                    + "refund is not decided yet: it is released once the refund makes it the company's")
+                    .formatted(carton.lpn()), List.of(), Map.of("lpn", carton.lpn(), "returnOwnership", "PENDING",
+                    "returnRequestId", waiting.get().returnRequestId()));
         }
         if (adjustments.findPendingForPackage(carton.id()).isPresent()) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_DECISION_PENDING,

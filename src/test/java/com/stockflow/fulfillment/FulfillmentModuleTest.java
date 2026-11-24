@@ -41,6 +41,8 @@ class FulfillmentModuleTest {
     com.stockflow.notification.api.ProductionOrderResends productionOrderResendsMock;
     // A dependency of a bootstrapped dependency, not of this module: explicit ports only, the slice must not boot more.
     @MockitoBean com.stockflow.payment.api.PaymentService paymentServiceMock;
+    // The contract liquidation reads payment's books for the order's papers (business documents).
+    @MockitoBean com.stockflow.payment.api.ContractLedger contractLedgerMock;
     @MockitoBean com.stockflow.catalog.api.CatalogService catalogServiceMock;
     @MockitoBean com.stockflow.customer.api.CustomerService customerServiceMock;
     // order's SalesFollowUpService posts inbox notices (WF-02 A10)

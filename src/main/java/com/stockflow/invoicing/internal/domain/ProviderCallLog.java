@@ -53,4 +53,17 @@ public interface ProviderCallLog {
 
     /** An invoice's calls, oldest first. */
     List<Call> of(UUID einvoiceId);
+
+    /**
+     * Whether the provider once said it holds the transaction (WF-05 BE-07): a submission answered as a duplicate of
+     * what it already had, or a look-up that found it issued. Proof that the provider holds it, whatever a later answer
+     * says - such a transaction is never taken back.
+     */
+    boolean providerHeld(UUID einvoiceId, String transactionId);
+
+    /**
+     * The provider's last answer to a look-up of the transaction - what the screen goes by to offer taking the invoice
+     * back (audit r2 H-2) without calling the provider on every read; empty when it was never asked.
+     */
+    Optional<Call> lastQuery(UUID einvoiceId, String transactionId);
 }

@@ -233,6 +233,16 @@ class EInvoiceIntegrationTest {
             public java.util.Optional<String> lastProviderReference(String provider, String transactionId) {
                 return logged.lastProviderReference(provider, transactionId);
             }
+
+            @Override
+            public boolean providerHeld(UUID einvoiceId, String transactionId) {
+                return logged.providerHeld(einvoiceId, transactionId);
+            }
+
+            @Override
+            public java.util.Optional<Call> lastQuery(UUID einvoiceId, String transactionId) {
+                return logged.lastQuery(einvoiceId, transactionId);
+            }
         };
         String transaction = draft.id() + "-1";
         java.time.Instant at = java.time.Instant.now();
@@ -256,6 +266,23 @@ class EInvoiceIntegrationTest {
                 com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome.PENDING, 200, null, null, null, at, 5,
                 "create/third"))).as("ck_einvoice_provider_call_reference")
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+
+        // Audit r2 H-2: the last look-up of the transaction, what the screen's "withdrawable" goes by.
+        assertThat(log.lastQuery(draft.id(), transaction)).isEmpty();
+        java.time.Instant asked = at;
+        for (var outcome : List.of(com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome.NOT_FOUND,
+                com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome.PENDING)) {
+            log.record(new com.stockflow.invoicing.internal.domain.ProviderCallLog.Call(draft.id(), "SEPAY_EINVOICE",
+                    transaction, com.stockflow.invoicing.internal.domain.ProviderCallLog.Operation.QUERY, outcome,
+                    200, null, null, null, asked = asked.plusSeconds(30), 5));
+        }
+        log.record(new com.stockflow.invoicing.internal.domain.ProviderCallLog.Call(draft.id(), "SEPAY_EINVOICE",
+                draft.id() + "-2", com.stockflow.invoicing.internal.domain.ProviderCallLog.Operation.QUERY,
+                com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome.NOT_FOUND, 200, null, null, null,
+                asked.plusSeconds(30), 5));
+        assertThat(log.lastQuery(draft.id(), transaction)).hasValueSatisfying(last ->
+                assertThat(last.outcome()).as("the newest of this transaction")
+                        .isEqualTo(com.stockflow.invoicing.internal.domain.ProviderCallLog.Outcome.PENDING));
     }
 
     private List<org.assertj.core.groups.Tuple> calls(UUID invoiceId) {
@@ -290,7 +317,8 @@ class EInvoiceIntegrationTest {
         assertThat(draft.customerId()).isEqualTo(customer);
         assertThat(draft.issueDate()).as("the day of the delivery, Vietnam time")
                 .isEqualTo(LocalDate.now(ConfirmedOrders.VIETNAM));
-        assertThat(draft.issueDueAt()).as("NĐ 254 Phụ lục điểm 7: the next working day").isAfter(Instant.now());
+        assertThat(draft.issueDueAt()).as("WF-05 Q-1: the end of the delivery day").isEqualTo(
+                LocalDate.now(ConfirmedOrders.VIETNAM).plusDays(1).atStartOfDay(ConfirmedOrders.VIETNAM).toInstant());
         assertThat(draft.lines()).hasSize(1);
         EInvoiceLine line = draft.lines().getFirst();
         assertThat(line.kind()).isEqualTo(EInvoiceLine.Kind.GOODS);
@@ -978,7 +1006,9 @@ class EInvoiceIntegrationTest {
         assertThat(drafts.voidForCorrectedDelivery(issuedOne.orderId(), issuedOne.shipmentId()))
                 .as("reversed: nothing stands for the shipment any more")
                 .isEqualTo(EInvoiceDrafts.CorrectionOutcome.NO_INVOICE);
-        assertThat(queries.get(issued.id())).as("issued: what it says is untouched").isEqualTo(issued);
+        assertThat(queries.get(issued.id())).as("issued: what it says is untouched - only marked reversed")
+                .usingRecursiveComparison().ignoringFields("reversedAt").isEqualTo(issued);
+        assertThat(queries.get(issued.id()).reversedAt()).isNotNull();
         assertThat(queries.get(untouched.draft().id()).status()).isEqualTo(EInvoiceStatus.DRAFT);
     }
 
@@ -1156,10 +1186,11 @@ class EInvoiceIntegrationTest {
         assertThat(queries.get(flagged.id()).status()).as("something to look at: left to the accountant")
                 .isEqualTo(EInvoiceStatus.DRAFT);
         assertThat(calls(flagged.id())).isEmpty();
-        EInvoice.Snapshot heldBack = queries.get(drawnBeforeTheRule.id());
-        assertThat(heldBack.status()).as("checked again before it was sent").isEqualTo(EInvoiceStatus.DRAFT);
-        assertThat(heldBack.warnings()).containsExactly(EInvoice.Warning.BUYER_EMAIL_MISSING);
-        assertThat(calls(drawnBeforeTheRule.id())).isEmpty();
+        // Checked again before it was sent: the missing e-mail is stored, and since WF-05 Q-22 (BR-06) it holds
+        // nothing back - the e-mail is not invoice content, and the original must leave on its delivery day (Q-1).
+        EInvoice.Snapshot noEmail = FirstSend.awaited(issuance, queries, drawnBeforeTheRule.id());
+        assertThat(noEmail.status()).isEqualTo(EInvoiceStatus.ISSUED);
+        assertThat(calls(drawnBeforeTheRule.id())).isNotEmpty();
     }
 
     @Test

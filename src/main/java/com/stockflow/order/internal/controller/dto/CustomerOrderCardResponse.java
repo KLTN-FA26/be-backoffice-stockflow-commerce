@@ -22,8 +22,10 @@ public record CustomerOrderCardResponse(
 
         @Schema(example = "PREPARING", description = "What the customer reads: AWAITING_CONTRACT, AWAITING_PAYMENT, "
                 + "UNDER_REVIEW, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION (legacy), PREPARING, SHIPPING, DELIVERED, "
-                + "RETURN_REQUESTED (a return is being decided; the goods are still the customer's), CANCELLED or "
-                + "RETURNED (goods came back, or the order was settled by a return). Parse tolerantly: more may come")
+                + "RETURN_REQUESTED (a return is being decided; the goods are still the customer's), CANCELLED, "
+                + "RETURNED (the order ended in a return and nothing of it stayed with the customer) or "
+                + "PARTIALLY_RETURNED (it ended in a return but the customer kept delivered goods). Parse tolerantly: "
+                + "more may come")
         String statusGroup,
 
         BigDecimal total,
@@ -36,8 +38,9 @@ public record CustomerOrderCardResponse(
         int lineCount,
 
         @Schema(example = "NOT_SHIPPED", description = "NOT_SHIPPED, IN_TRANSIT, PARTIALLY_DELIVERED, DELIVERY_FAILED, "
-                + "DELIVERED or RETURNED - only what staff have recorded; nothing is tracked after handover to the carrier. "
-                + "Parse tolerantly: more may come")
+                + "DELIVERED, RETURNED or PARTIALLY_RETURNED (ended in a return, the customer kept delivered goods) - only "
+                + "what staff have recorded; nothing is tracked after handover to the carrier. Parse tolerantly: more may "
+                + "come")
         String deliveryState,
 
         @Schema(example = "PENDING", description = "The customer's latest cancellation request: PENDING, APPROVED or "

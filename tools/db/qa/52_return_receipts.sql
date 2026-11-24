@@ -145,6 +145,11 @@ VALUES (md5('qa52:rma1')::uuid, 'RMA-QA52-1', md5('qa52:o1')::uuid, 'SO-QA52-O1'
        (md5('qa52:rma2')::uuid, 'RMA-QA52-2', md5('qa52:o1')::uuid, 'SO-QA52-O1', 'c0000000-0000-4000-8000-000000000001',
         gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid, 'REFUND', 'REQUESTED', 'DAMAGED_IN_TRANSIT',
         NOW(), NULL, NULL, NULL, NULL);
+-- WF-05 Q-11 (V20261218000400): a return's receipt takes only what it approved - RMA1 approved 4 of the 8 cups.
+INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, quantity, sku, custom_printed, unit_price,
+                                          approved_quantity)
+VALUES (md5('qa52:rma1:l')::uuid, md5('qa52:rma1')::uuid, md5('qa52:o1:l')::uuid, 4, 'LY-GIAY-DEMO-12OZ-XANH', FALSE, 100,
+        4);
 SET session_replication_role = DEFAULT;
 
 \echo '--- receipt_type: three kinds, and only a RETURN receipt names an order, a source or a quarantine area (03 §1)'
@@ -263,6 +268,34 @@ SELECT pg_temp.expect_ok('RC12 a carton scanned by mistake removed while the rec
     VALUES (md5('qa52:rc12')::uuid, md5('qa52:r:rma1')::uuid, md5('qa52:c1')::uuid, 'QA52-LPN-1', 'LY-GIAY-DEMO-12OZ-XANH',
             'PO-QA52-LOT', 4, md5('demo:user:editor')::uuid);
     DELETE FROM procurement.goods_receipt_return_cartons WHERE id = md5('qa52:rc12')::uuid $q$);
+-- WF-05 Q-11 (BE-22) and Q-18 (BE-43): a return's receipt brings back what the return approved and no more - cartons by
+-- their count and loose units together, over its receipts - and loose units carry a photo of the receipt.
+SELECT pg_temp.expect_ok('RC12b the 4 cups RMA1 approved, back loose with a photo of the receipt', $q$
+    INSERT INTO procurement.goods_receipt_photos (id, receipt_id, stage, storage_key, original_name, content_type,
+                                                  size_bytes, checksum, taken_by)
+    VALUES (md5('qa52:rma1:photo')::uuid, md5('qa52:r:rma1')::uuid, 'RECEIPT', 'qc-evidence/qa52/loose.jpg', 'le.jpg',
+            'image/jpeg', 10, repeat('a', 64), md5('demo:user:editor')::uuid);
+    INSERT INTO procurement.goods_receipt_return_loose_lines (id, receipt_id, sku, lot_number, quantity, recorded_by,
+                                                              photo_id)
+    VALUES (md5('qa52:rma1:loose')::uuid, md5('qa52:r:rma1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', NULL, 4,
+            md5('demo:user:editor')::uuid, md5('qa52:rma1:photo')::uuid) $q$);
+SELECT pg_temp.expect_fail('RC12c a carton beyond what its return approved (the 4 are back): kept in custody', $q$
+    INSERT INTO procurement.goods_receipt_return_cartons (id, receipt_id, stock_package_id, lpn, sku, lot_number,
+                                                          quantity, scanned_by)
+    VALUES (md5('qa52:rc12c')::uuid, md5('qa52:r:rma1')::uuid, md5('qa52:c1')::uuid, 'QA52-LPN-1',
+            'LY-GIAY-DEMO-12OZ-XANH', 'PO-QA52-LOT', 4, md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_fail('RC12d loose units beyond what the return approved', $q$
+    INSERT INTO procurement.goods_receipt_return_loose_lines (id, receipt_id, sku, lot_number, quantity, recorded_by,
+                                                              photo_id)
+    VALUES (gen_random_uuid(), md5('qa52:r:rma1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'LOT-X', 1,
+            md5('demo:user:editor')::uuid, md5('qa52:rma1:photo')::uuid) $q$);
+SELECT pg_temp.expect_fail('RC12e loose units with no photo', $q$
+    DELETE FROM procurement.goods_receipt_return_loose_lines WHERE id = md5('qa52:rma1:loose')::uuid;
+    INSERT INTO procurement.goods_receipt_return_loose_lines (id, receipt_id, sku, lot_number, quantity, recorded_by)
+    VALUES (gen_random_uuid(), md5('qa52:r:rma1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', NULL, 1,
+            md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_ok('RC12f loose units recorded by mistake come off the draft', $q$
+    DELETE FROM procurement.goods_receipt_return_loose_lines WHERE id = md5('qa52:rma1:loose')::uuid $q$);
 SELECT pg_temp.expect_true('RC13 a carton scanned with no count is counted whole (V20261201000310)',
     (SELECT counted_qty = quantity FROM procurement.goods_receipt_return_cartons
       WHERE receipt_id = md5('qa52:r:s1')::uuid));
@@ -355,7 +388,9 @@ SELECT pg_temp.expect_fail('RS11 the condition of a carton changed after the rec
      WHERE receipt_id = md5('qa52:r:s1')::uuid $q$);
 SELECT pg_temp.expect_fail('RS12 a closed return receipt cancelled', $q$
     UPDATE procurement.goods_receipts SET status = 'CANCELLED' WHERE id = md5('qa52:r:s1')::uuid $q$);
-SELECT pg_temp.expect_fail('RS13 another return receipt for the shipment once its goods came back', $q$
+-- WF-05 Q-11 (BE-13, V20261218000200): the carrier may bring a shipment back in several trips, each received on a
+-- receipt of its own; only one is a draft at a time (RR19), and a carton is taken once (it is no longer CONSUMED).
+SELECT pg_temp.expect_ok('RS13 another return receipt for the shipment once the first trip was received', $q$
     INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by,
                                             receipt_type, customer_order_id, return_shipment_id, quarantine_location_id)
     VALUES (gen_random_uuid(), 'GR-QA52-S1C', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(),

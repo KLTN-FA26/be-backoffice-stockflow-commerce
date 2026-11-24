@@ -28,8 +28,14 @@ import java.util.UUID;
  * producer's acceptance with its expected completion day, and the start of mass printing when no print sample is to be
  * approved; with one, the customer's approval of a sample round starts it ({@link SampleRounds}, 4A-4).
  *
+ * <p>A {@link ProductionOrderKind#REPLACEMENT} ({@link #drawUpReplacement}, 17 §4.13, BR-31) makes up cartons of
+ * another production order of the same sales order written off as damaged after they were received: it names them
+ * ({@link Replacement}) and makes no more cartons of a SKU than they wrote off ({@link #maxCartons}). Otherwise it lives
+ * as any other - edited, sent, received, cancelled, closed.</p>
+ *
  * <p>Every change of status is kept with who, when and why ({@link #pullChanges}). The database holds the same rules
- * ({@code ordering.check_production_order}, the CHECKs of {@code production_order}).</p>
+ * ({@code ordering.check_production_order}, the CHECKs of {@code production_order}, and for a replacement
+ * {@code check_production_order_write_off} and {@code check_replacement_cartons}).</p>
  */
 public final class ProductionOrder {
 
@@ -97,6 +103,38 @@ public final class ProductionOrder {
     public record LineEdit(int cartons, String packingRequirements) {
     }
 
+    /** A posted {@code DAMAGED} write-off of one whole carton of {@code sku}, made up by a replacement (17 BR-31). */
+    public record WriteOff(UUID adjustmentId, String sku) {
+
+        public WriteOff {
+            Objects.requireNonNull(adjustmentId, "adjustmentId");
+            Objects.requireNonNull(sku, "sku");
+        }
+    }
+
+    /**
+     * What a {@link ProductionOrderKind#REPLACEMENT} makes up (17 §4.13 step 52): the production order whose cartons
+     * were written off as damaged, and those write-offs - one carton each, at least one.
+     */
+    public record Replacement(UUID replacesId, List<WriteOff> writeOffs) {
+
+        public Replacement {
+            Objects.requireNonNull(replacesId, "replacesId");
+            writeOffs = List.copyOf(writeOffs);
+            if (writeOffs.isEmpty()) {
+                throw invalid("A replacement production order names the write-offs it makes up (BR-31)");
+            }
+            if (writeOffs.stream().map(WriteOff::adjustmentId).distinct().count() != writeOffs.size()) {
+                throw invalid("A write-off is made up once");
+            }
+        }
+
+        /** The cartons of {@code sku} written off: one per write-off. */
+        public int cartonsOf(String sku) {
+            return (int) writeOffs.stream().filter(writeOff -> writeOff.sku().equals(sku)).count();
+        }
+    }
+
     private final UUID id;
     private final String code;
     private final UUID salesOrderId;
@@ -127,6 +165,7 @@ public final class ProductionOrder {
     private Instant closedAt;
     private String closingReason;
     private List<Line> lines;
+    private final Replacement replacement;
     private final long version;
     private final List<Change> changes = new ArrayList<>();
 
@@ -147,7 +186,7 @@ public final class ProductionOrder {
                 cancelledBy, cancelledAt, cancellationReason, closedBy, closedAt, closingReason, lines, version);
     }
 
-    /** Restores one as stored. */
+    /** Restores a {@link ProductionOrderKind#STANDARD} one as stored. */
     public ProductionOrder(UUID id, String code, UUID salesOrderId, UUID deliveryBatchId, UUID customerId,
                            UUID producerId, UUID receivingWarehouseId, LocalDate needByDate,
                            ProductionOrderStatus status, boolean sampleApprovalRequired,
@@ -158,6 +197,24 @@ public final class ProductionOrder {
                            UUID cancelledBy, Instant cancelledAt, String cancellationReason, UUID closedBy, Instant closedAt,
                            String closingReason,
                            List<Line> lines, long version) {
+        this(id, code, salesOrderId, deliveryBatchId, customerId, producerId, receivingWarehouseId, needByDate, status,
+                sampleApprovalRequired, sampleRequiredByDefault, sampleWaiverReason, note, drawnUpBy, submittedAt,
+                approvedBy, approvedAt, returnedReason, sentAt, sentBy, productionStartedAt, expectedCompletionDate,
+                acceptanceNote, cancelledBy, cancelledAt, cancellationReason, closedBy, closedAt, closingReason, lines,
+                null, version);
+    }
+
+    /** Restores one as stored; {@code replacement} is null for a {@link ProductionOrderKind#STANDARD} one. */
+    public ProductionOrder(UUID id, String code, UUID salesOrderId, UUID deliveryBatchId, UUID customerId,
+                           UUID producerId, UUID receivingWarehouseId, LocalDate needByDate,
+                           ProductionOrderStatus status, boolean sampleApprovalRequired,
+                           boolean sampleRequiredByDefault, String sampleWaiverReason, String note,
+                           UUID drawnUpBy, Instant submittedAt, UUID approvedBy,
+                           Instant approvedAt, String returnedReason, Instant sentAt, UUID sentBy,
+                           Instant productionStartedAt, LocalDate expectedCompletionDate, String acceptanceNote,
+                           UUID cancelledBy, Instant cancelledAt, String cancellationReason, UUID closedBy, Instant closedAt,
+                           String closingReason,
+                           List<Line> lines, Replacement replacement, long version) {
         this.id = Objects.requireNonNull(id, "id");
         this.code = Objects.requireNonNull(code, "code");
         this.salesOrderId = Objects.requireNonNull(salesOrderId, "salesOrderId");
@@ -188,6 +245,10 @@ public final class ProductionOrder {
         this.closedAt = closedAt;
         this.closingReason = closingReason;
         this.lines = new ArrayList<>(lines);
+        this.replacement = replacement;
+        if (replacement != null && replacement.replacesId().equals(id)) {
+            throw new IllegalArgumentException("A production order does not replace itself");
+        }
         this.version = version;
     }
 
@@ -210,6 +271,70 @@ public final class ProductionOrder {
                 null, null, null, null, null, null, null, null, null, null, lines, 0L);
         order.changes.add(new Change(null, ProductionOrderStatus.DRAFT, null, Objects.requireNonNull(by, "by"), at));
         return order;
+    }
+
+    /**
+     * A DRAFT {@link ProductionOrderKind#REPLACEMENT} (17 §4.13 step 52, BR-31): for the cartons of a production order
+     * of the same sales order written off as damaged after they were received. Like any other it is for one delivery
+     * batch - the earliest still short - and never more than the batch lacks, which the caller worked out; it makes no
+     * more cartons of a SKU than {@code replacement} wrote off of it. Its print sample is not required by default: the
+     * SKU has been produced (step 52), and the coordinator may still ask for one.
+     *
+     * @throws BusinessException {@code VALIDATION_FAILED} with no line, or a line of a SKU none of the write-offs is
+     *         of; {@code PRODUCTION_ORDER_EXCEEDS_WRITE_OFFS} beyond the cartons written off
+     */
+    public static ProductionOrder drawUpReplacement(String code, UUID salesOrderId, UUID deliveryBatchId,
+                                                    UUID customerId, UUID producerId, UUID receivingWarehouseId,
+                                                    LocalDate needByDate, List<Line> lines, Replacement replacement,
+                                                    UUID by, Instant at) {
+        if (lines == null || lines.isEmpty()) {
+            throw invalid("A production order makes at least one line");
+        }
+        Objects.requireNonNull(replacement, "replacement");
+        ProductionOrder order = new ProductionOrder(Identifiers.newId(), code, salesOrderId, deliveryBatchId,
+                customerId, producerId, receivingWarehouseId, needByDate, ProductionOrderStatus.DRAFT, false, false,
+                null, null, by, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+                null, lines, replacement, 0L);
+        order.requireWrittenOff(order.lines);
+        order.changes.add(new Change(null, ProductionOrderStatus.DRAFT,
+                "Replaces damaged cartons (17 BR-31)", Objects.requireNonNull(by, "by"), at));
+        return order;
+    }
+
+    /**
+     * The most cartons each of its order lines may make (BR-05, BR-31): what the batch lacks, {@code lacking}; for a
+     * replacement, never more than the cartons of the line's SKU it makes up. A line it does not name may make none.
+     */
+    public Map<UUID, Integer> maxCartons(Map<UUID, Integer> lacking) {
+        if (replacement == null) {
+            return lacking;
+        }
+        Map<UUID, Integer> max = new java.util.HashMap<>();
+        lines.forEach(line -> max.put(line.orderLineId(), Math.min(lacking.getOrDefault(line.orderLineId(), 0),
+                replacement.cartonsOf(line.sku()))));
+        return max;
+    }
+
+    /** A replacement's lines make no more cartons of a SKU than its write-offs wrote off of it (BR-31). */
+    private void requireWrittenOff(List<Line> made) {
+        if (replacement == null) {
+            return;
+        }
+        List<String> over = new ArrayList<>();
+        for (Line line : made) {
+            int writtenOff = replacement.cartonsOf(line.sku());
+            if (writtenOff == 0) {
+                throw invalid("%s: none of the write-offs replaced is of this SKU (BR-31)".formatted(line.sku()));
+            }
+            if (line.cartons() > writtenOff) {
+                over.add("%s: %d carton(s) written off, not %d".formatted(line.sku(), writtenOff, line.cartons()));
+            }
+        }
+        if (!over.isEmpty()) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_EXCEEDS_WRITE_OFFS, ("A replacement production "
+                    + "order makes no more cartons than were written off (BR-31): %s").formatted(String.join("; ",
+                    over)));
+        }
     }
 
     /**
@@ -238,8 +363,11 @@ public final class ProductionOrder {
             if (change.cartons() < 1) {
                 throw invalid("A line makes at least one carton");
             }
+            Line changed = line.withCartons(change.cartons(), text(change.packingRequirements()));
+            // A replacement is refused for what it makes up first, so the error names the cap it went past (BR-31).
+            requireWrittenOff(List.of(changed));
             requireWithin(line.sku(), change.cartons(), maxCartons.getOrDefault(line.orderLineId(), 0));
-            edited.add(line.withCartons(change.cartons(), text(change.packingRequirements())));
+            edited.add(changed);
         }
         if (draft.lines() != null && draft.lines().keySet().stream()
                 .anyMatch(key -> lines.stream().noneMatch(line -> line.orderLineId().equals(key)))) {
@@ -609,4 +737,11 @@ public final class ProductionOrder {
     public String closingReason() { return closingReason; }
     public List<Line> lines() { return Collections.unmodifiableList(lines); }
     public long version() { return version; }
+
+    public ProductionOrderKind kind() {
+        return replacement == null ? ProductionOrderKind.STANDARD : ProductionOrderKind.REPLACEMENT;
+    }
+
+    /** What a replacement makes up; empty for a {@link ProductionOrderKind#STANDARD} one. */
+    public Optional<Replacement> replacement() { return Optional.ofNullable(replacement); }
 }

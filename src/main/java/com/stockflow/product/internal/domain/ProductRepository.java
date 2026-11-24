@@ -25,6 +25,12 @@ public interface ProductRepository extends AggregateRepository<Product, ProductI
     /** See {@link com.stockflow.product.api.ProductService#taxClassesOf}. */
     java.util.Map<String, com.stockflow.product.api.TaxClass> taxClassesOf(java.util.Collection<String> skus);
 
+    /** WF-05 D-8: the product of each of {@code skus} that is a variant SKU, with its tax class and version. */
+    List<ProductTaxClass> taxClassesBySku(java.util.Collection<String> skus);
+
+    /** WF-05 D-8: the product's tax class and version as stored now. */
+    Optional<ProductTaxClass> taxClassOf(ProductId id);
+
     /** See {@link com.stockflow.product.api.ProductService#variantNamesOf}. */
     java.util.Map<String, String> variantNamesOf(java.util.Collection<String> skus);
 

@@ -4,6 +4,7 @@ import com.stockflow.common.events.PendingPublicationReader;
 import com.stockflow.common.events.PendingPublicationReader.PendingPublication;
 import com.stockflow.contracts.EInvoiceErrorNoticeRecorded;
 import com.stockflow.contracts.EInvoiceIssued;
+import com.stockflow.contracts.EInvoiceMailRequested;
 import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.contracts.OrderDelivered;
 import com.stockflow.contracts.OrderPlaced;
@@ -102,6 +103,9 @@ class CustomerEmailRetry {
                 // WF-05 E5: the issued e-invoice's mail, with its files; asking for its message reads nothing.
                 route(EInvoiceIssuedNotificationListener.class, EInvoiceIssued.class, einvoiceComposer::issued,
                         einvoices::on),
+                // Audit r2 M-1: the same mail sent again at staff's request, retried like the first.
+                route(EInvoiceIssuedNotificationListener.class, EInvoiceMailRequested.class,
+                        einvoiceComposer::resent, einvoices::on),
                 // The 04/SS notice told to the buyer: no file, asking for its message reads nothing either.
                 route(EInvoiceErrorNoticeNotificationListener.class, EInvoiceErrorNoticeRecorded.class,
                         einvoiceComposer::errorNoticeRecorded, errorNotices::on));

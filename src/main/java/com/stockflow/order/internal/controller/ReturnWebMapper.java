@@ -5,6 +5,7 @@ import com.stockflow.order.internal.controller.dto.ReturnRequestResponse;
 import com.stockflow.order.internal.controller.dto.ReturnRequestRowResponse;
 import com.stockflow.order.internal.controller.dto.ReturnRequests;
 import com.stockflow.order.internal.domain.ReturnDiscrepancy;
+import com.stockflow.order.internal.domain.CustodyOutcome;
 import com.stockflow.order.internal.domain.ReturnEvidence;
 import com.stockflow.order.internal.domain.ReturnLine;
 import com.stockflow.order.internal.domain.ReturnStatus;
@@ -59,7 +60,8 @@ final class ReturnWebMapper {
                 units.put(line.lineId(), line.quantity());
             }
         }
-        return new ReturnRequestService.ProposeRefundCommand(units, body.note(), body.version());
+        return new ReturnRequestService.ProposeRefundCommand(units, body.note(), body.version(),
+                body.refusalReason(), body.refusalNote());
     }
 
     // ---- responses -----------------------------------------------------------------------------------------------------
@@ -71,6 +73,16 @@ final class ReturnWebMapper {
     /** With a thumbnail link per photo ({@code thumbnails} maps a photo's storage key to it, or to null). */
     static ReturnRequestResponse toResponse(ReturnRequest r, List<ReturnTransition> history,
                                             java.util.function.Function<String, String> thumbnails) {
+        return toResponse(r, history, thumbnails, null);
+    }
+
+    /**
+     * With the cartons of the return held for the customer ({@code cartons}, WF-05 Q-4): what a custody choice is about,
+     * read from inventory by the answers that need it; null where they were not read.
+     */
+    static ReturnRequestResponse toResponse(ReturnRequest r, List<ReturnTransition> history,
+                                            java.util.function.Function<String, String> thumbnails,
+                                            List<com.stockflow.inventory.api.HeldCarton> cartons) {
         return new ReturnRequestResponse(r.id(), r.rmaNumber(), r.orderId(), r.orderNumber(), r.customerId(),
                 r.shipmentId(), r.status().name(), r.reason().name(), r.description(), r.requestedResolution().name(),
                 r.channel().name(), r.requestedBy(), r.requestedAt(), r.windowOverride(), r.currency(),
@@ -85,12 +97,18 @@ final class ReturnWebMapper {
                         r.settledAt(), r.money().offset(), r.money().refunded(), r.vatAdjustmentRequired()),
                 r.cancelledBy(), r.cancellationReason(), r.closedAt(),
                 r.lines().stream().map(ReturnWebMapper::toLine).toList(),
-                r.evidence().stream().map(e -> toEvidence(e, thumbnails)).toList(),
+                r.evidence().stream().map(e -> toEvidence(r, e, thumbnails)).toList(),
                 r.discrepancies().stream().map(ReturnWebMapper::toDiscrepancy).toList(),
                 history.stream().map(step -> new ReturnRequestResponse.HistoryEntry(
                         step.from() == null ? null : step.from().name(), step.to() == null ? null : step.to().name(),
                         step.reason(), step.actor(), step.at())).toList(),
-                r.version());
+                r.version(), r.outcome() == null ? null : r.outcome().name(),
+                r.refusalReason() == null ? null : r.refusalReason().name(), r.refusalNote(), r.receiptOpenable(),
+                r.openDraftReceiptId() != null, r.custodyChoice() == null ? null : r.custodyChoice().name(),
+                r.custodyChoiceNote(), r.custodyChoiceBy(), r.custodyChoiceAt(),
+                cartons == null ? null : cartons.stream().map(c -> new ReturnRequestResponse.HeldCarton(c.lpn(),
+                        c.sku(), c.quantity(), c.locationCode(), c.ownership(), c.choice(), c.heldAt(), c.endedAt()))
+                        .toList());
     }
 
     static CustomerReturnResponse toCustomerResponse(ReturnRequest r, List<ReturnTransition> history) {
@@ -115,7 +133,22 @@ final class ReturnWebMapper {
                                 e.uploadedAt(), thumbnails.apply(e.fileKey()))).toList(),
                 history.stream().filter(step -> step.to() != null)
                         .map(step -> new CustomerReturnResponse.Step(step.to().name(), step.at())).toList(),
-                r.version());
+                r.version(), decided(r) && r.outcome() != null ? r.outcome().name() : null,
+                decided(r) && r.refusalReason() != null ? r.refusalReason().name() : null,
+                decided(r) && r.refusalReason() != null ? refusalLabel(r.refusalReason()) : null,
+                decided(r) ? r.refusalNote() : null, r.openDraftReceiptId() != null,
+                r.custodyChoice() == null ? null : r.custodyChoice().name());
+    }
+
+    /**
+     * The refusal reason as the customer reads it (WF-05 Q-4): its label in the Vietnamese bundle, the language of the
+     * portal; the code itself when a label is missing.
+     */
+    static String refusalLabel(com.stockflow.order.internal.domain.ReturnRefusalReason reason) {
+        java.util.ResourceBundle texts = java.util.ResourceBundle.getBundle("i18n.messages",
+                java.util.Locale.forLanguageTag("vi"));
+        String key = "label.ReturnRefusalReason." + reason.name();
+        return texts.containsKey(key) ? texts.getString(key) : reason.name();
     }
 
     /** What the customer is told is refunded only once a second person approved it: never a proposal. */
@@ -123,20 +156,28 @@ final class ReturnWebMapper {
         return r.status() == ReturnStatus.RESOLVED;
     }
 
-    /** The customer's own list: no amount before it is approved, and no accounting flag. */
+    /**
+     * The customer's own list: no amount before it is approved, and no accounting or warehouse flag - except
+     * {@code receiptDraftOpen}, which decides whether the customer may withdraw.
+     */
     static ReturnRequestRowResponse toCustomerRow(ReturnRequestQueries.Item i) {
         boolean decided = i.status() == ReturnStatus.RESOLVED;
         return new ReturnRequestRowResponse(i.id(), i.rmaNumber(), i.orderId(), i.orderNumber(), i.customerId(),
                 i.status().name(), i.reason().name(), i.requestedResolution().name(), i.channel(), i.requestedAt(),
                 i.returnDeadline(), decided ? i.settlementAmount() : null, decided ? i.refundedAmount() : null,
-                decided ? i.offsetAmount() : null, i.currency(), false, i.closedAt(), i.version(), i.shipmentId());
+                decided ? i.offsetAmount() : null, i.currency(), false, i.closedAt(), i.version(), i.shipmentId(),
+                i.outcome() == null ? null : i.outcome().name(), false, i.receiptDraftOpen(),
+                // Audit r2 money L-6: the list says why, as the detail does - the code only, once decided.
+                decided && i.refusalReason() != null ? i.refusalReason().name() : null);
     }
 
     static ReturnRequestRowResponse toRow(ReturnRequestQueries.Item i) {
         return new ReturnRequestRowResponse(i.id(), i.rmaNumber(), i.orderId(), i.orderNumber(), i.customerId(),
                 i.status().name(), i.reason().name(), i.requestedResolution().name(), i.channel(), i.requestedAt(),
                 i.returnDeadline(), i.settlementAmount(), i.refundedAmount(), i.offsetAmount(), i.currency(),
-                i.vatAdjustmentRequired(), i.closedAt(), i.version(), i.shipmentId());
+                i.vatAdjustmentRequired(), i.closedAt(), i.version(), i.shipmentId(),
+                i.outcome() == null ? null : i.outcome().name(), i.receiptOpenable(), i.receiptDraftOpen(),
+                i.refusalReason() == null ? null : i.refusalReason().name());
     }
 
     private static ReturnRequestResponse.Line toLine(ReturnLine l) {
@@ -145,10 +186,18 @@ final class ReturnWebMapper {
                 l.refundAmount());
     }
 
-    private static ReturnRequestResponse.Evidence toEvidence(ReturnEvidence e,
+    private static ReturnRequestResponse.Evidence toEvidence(ReturnRequest r, ReturnEvidence e,
                                                              java.util.function.Function<String, String> thumbnails) {
         return new ReturnRequestResponse.Evidence(e.id(), e.stage().name(), e.originalName(), e.contentType(),
-                e.sizeBytes(), e.uploadedBy(), e.uploadedAt(), thumbnails.apply(e.fileKey()));
+                e.sizeBytes(), e.uploadedBy(), e.uploadedAt(), thumbnails.apply(e.fileKey()),
+                e.custody() == null ? null : new ReturnRequestResponse.Custody(e.custody().sku(), e.custody().lpn(),
+                        e.custody().quantity(), e.custody().note(),
+                        r.custodyOutcome(e.id()).map(ReturnWebMapper::toOutcome).orElse(null)));
+    }
+
+    static ReturnRequestResponse.CustodyOutcome toOutcome(CustodyOutcome o) {
+        return new ReturnRequestResponse.CustodyOutcome(o.choice().name(), o.choiceNote(), o.takenByReturnId(),
+                o.takenByRmaNumber(), o.chosenBy(), o.chosenAt(), o.endedAt(), o.endedBy(), o.endedNote());
     }
 
     private static ReturnRequestResponse.Discrepancy toDiscrepancy(ReturnDiscrepancy d) {

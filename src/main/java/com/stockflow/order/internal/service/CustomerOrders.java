@@ -45,15 +45,28 @@ public interface CustomerOrders {
          */
         RETURN_REQUESTED,
         CANCELLED,
-        /** Goods came back, or the order was settled or closed by a return (RETURNED, REFUNDED, PARTIALLY_REFUNDED). */
-        RETURNED
+        /**
+         * The order ended in a return (RETURNED, REFUNDED, PARTIALLY_REFUNDED, or CLOSED without completing) and nothing
+         * of it stayed with the customer: no shipment delivered, or every delivered unit received back.
+         */
+        RETURNED,
+        /**
+         * BE-35 (contract F-2): the order ended in a return as {@link #RETURNED} does, but the customer kept goods - a
+         * delivered shipment while the carrier brought another back, or a return of part of what was delivered. Apart
+         * from RETURNED so the customer is not told goods came back that are still with them.
+         */
+        PARTIALLY_RETURNED
     }
 
     /**
      * Where the parcels are, as far as staff have recorded it. With several shipments (G4-Q3) it sums them up
-     * (kltn-docs 09 BR-05): PARTIALLY_DELIVERED once one arrived while another has not.
+     * (kltn-docs 09 BR-05): PARTIALLY_DELIVERED once one arrived while another has not. {@code PARTIALLY_RETURNED}
+     * (BE-35): the order ended in a return and the customer kept goods, as {@link StatusGroup#PARTIALLY_RETURNED} -
+     * RETURNED would say the goods they hold came back.
      */
-    enum DeliveryState { NOT_SHIPPED, IN_TRANSIT, PARTIALLY_DELIVERED, DELIVERY_FAILED, DELIVERED, RETURNED }
+    enum DeliveryState {
+        NOT_SHIPPED, IN_TRANSIT, PARTIALLY_DELIVERED, DELIVERY_FAILED, DELIVERED, RETURNED, PARTIALLY_RETURNED
+    }
 
     /**
      * What the customer may do with the order now, so the portal does not keep its own copy of the rules (G3-2):

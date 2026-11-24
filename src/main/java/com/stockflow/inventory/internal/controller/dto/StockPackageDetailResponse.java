@@ -21,6 +21,22 @@ public record StockPackageDetailResponse(
         @Schema(description = "The goods receipt line it arrived on; null for one made in the warehouse")
         UUID goodsReceiptLineId,
         @Schema(description = "When it was emptied, lost or voided") Instant closedAt,
+        @Schema(description = "A return receipt found it opened or empty (WF-05 Q-18): never sold again - it stays "
+                + "CONSUMED, its goods destroyed (in quarantine to be written off, for one received before)")
+        boolean openedOnReturn,
+        @Schema(description = "When a return receipt found it opened or empty; null when it never came back so")
+        Instant returnOpenedAt,
+        @Schema(description = "Whose goods it is after it last came back on a return request (WF-05 Q-4; audit r3 "
+                + "RAD-4). PENDING: its return's refund is not decided - release and write-off answer 409 "
+                + "STOCK_PACKAGE_DECISION_PENDING, so do not offer them; show 'Chờ duyệt hoàn tiền - "
+                + "{returnRmaNumber}'. COMPANY: decidable as any quarantined carton. CUSTOMER_HELD / CUSTOMER_SENT_BACK / "
+                + "CUSTOMER_DESTROYED: the customer's, out of the books (GET /inventory/stock-packages/"
+                + "customer-custody). Null: never came back on a return request",
+                allowableValues = {"PENDING", "COMPANY", "CUSTOMER_HELD", "CUSTOMER_SENT_BACK", "CUSTOMER_DESTROYED"})
+        String returnOwnership,
+        @Schema(description = "The return request it last came back on; null with returnOwnership")
+        UUID returnRequestId,
+        @Schema(description = "That return's RMA number", example = "RMA-20261120-0003") String returnRmaNumber,
         @Schema(description = "Its stock rows holding something, oldest receipt first") List<Content> contents
 ) {
 

@@ -554,9 +554,37 @@ SELECT pg_temp.expect_refused('F16 ... but no return takes off more than the inv
      WHERE id = md5('qa92:ret2')::uuid;
     SELECT pg_temp.correction('f16', 'ADJUSTMENT', 'RETURN', 'b', -8, 'r2');
     SELECT pg_temp.goods('f16', 1, -8) $q$);
-SELECT pg_temp.expect_ok('F17 a return reaches a replacement too: the invoice in force for the shipment, by adjustment', $q$
-    SELECT pg_temp.correction('ret3', 'ADJUSTMENT', 'RETURN', 'rep', -1, 'r1');
+-- WF-05 Q-9 (TT 91 Điều 10 khoản 6 điểm a; SePay 422 INVALID_ORIGIN_INVOICE, sandbox T-5): a replacement is never
+-- adjusted, a return on it included - the accountant reduces it on the provider's portal and records that (Q-8).
+SELECT pg_temp.expect_refused('F17 a return does not adjust a replacement: it is reduced on the portal and recorded',
+    'tg_einvoice_correction_form', $q$
+    SELECT pg_temp.correction('f17', 'ADJUSTMENT', 'RETURN', 'rep', -1, 'r1') $q$);
+SELECT pg_temp.expect_ok('F18 the second return is adjusted on the invoice in force for its shipment (its earlier '
+    || 'draft voided first: F16 rolled back)', $q$
+    UPDATE invoicing.einvoice SET status = 'VOIDED_DRAFT', voided_at = NOW(), void_reason = 'x'
+     WHERE id = md5('qa92:ret2')::uuid;
+    SELECT pg_temp.correction('ret3', 'ADJUSTMENT', 'RETURN', 'b', -1, 'r2');
     SELECT pg_temp.goods('ret3', 1, -1) $q$);
+-- WF-05 BE-30: SePay chooses the series of an adjustment or replacement itself (sandbox T-4); the correction is recorded
+-- under the provider's symbol as it is issued - never while it waits, and never an original.
+SELECT pg_temp.expect_refused('F19 a correction at the provider changes its symbol while it waits', 'tg_einvoice_transaction', $q$
+    SELECT pg_temp.submit('ret3');
+    UPDATE invoicing.einvoice SET symbol = 'C26TSE' WHERE id = md5('qa92:ret3')::uuid $q$);
+SELECT pg_temp.expect_refused('F20 an original is recorded issued under another symbol than it was sent under',
+    'tg_einvoice_transaction', $q$
+    SELECT pg_temp.submit('d');
+    UPDATE invoicing.einvoice SET symbol = 'C26TSE', status = 'ISSUED', invoice_number = 920099,
+           tax_authority_code = 'SBX920099', lookup_code = 'L920099', signed_at = NOW(), issued_at = NOW(),
+           xml_file_key = 'einvoices/2026/11/12/d.xml', pdf_file_key = 'einvoices/2026/11/12/d.pdf'
+     WHERE id = md5('qa92:d')::uuid $q$);
+SELECT pg_temp.expect_ok('F21 a correction is recorded issued under the symbol the provider numbered it under', $q$
+    SELECT pg_temp.submit('ret3');
+    UPDATE invoicing.einvoice SET symbol = 'C26TSE', status = 'ISSUED', invoice_number = 920032,
+           tax_authority_code = 'SBX920032', lookup_code = 'L920032', signed_at = NOW(), issued_at = NOW(),
+           xml_file_key = 'einvoices/2026/11/12/ret3.xml', pdf_file_key = 'einvoices/2026/11/12/ret3.pdf'
+     WHERE id = md5('qa92:ret3')::uuid $q$);
+SELECT pg_temp.expect_true('F22 ... and keeps it', (SELECT symbol = 'C26TSE' AND status = 'ISSUED' FROM invoicing.einvoice
+     WHERE id = md5('qa92:ret3')::uuid));
 
 \echo '--- G. E0 row 5: a trade discount by volume or revenue -> a decrease adjustment with its list of invoices (khoản 5 điểm b)'
 SELECT pg_temp.expect_refused('G1 a trade discount that increases', 'ck_einvoice_decrease', $q$

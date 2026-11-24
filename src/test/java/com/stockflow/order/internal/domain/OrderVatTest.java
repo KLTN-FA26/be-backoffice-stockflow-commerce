@@ -127,7 +127,9 @@ class OrderVatTest {
 
         order.recordShipmentDeliveryFailed(first, DeliveryFailureReason.REFUSED, null, NOW, STAFF);
         order.recordShipmentReturned(first, NOW, STAFF);
-        assertThat(order.closedByReturn()).as("the 400 cups with their tax").isEqualByComparingTo("880000");
+        // WF-05 Q-7: closed when the return receipt is confirmed, not on the carrier's report.
+        assertThat(order.closeReturnedShipment(first, NOW, NOW, STAFF).orElseThrow().goodsValue())
+                .as("the 400 cups with their tax").isEqualByComparingTo("880000");
         order.recordShipmentDelivered(second, NOW, STAFF);
         assertThat(order.status()).isEqualTo(com.stockflow.order.api.OrderStatus.PARTIALLY_FULFILLED);
     }
@@ -147,7 +149,8 @@ class OrderVatTest {
         order.recordHandover(handover(b, line, 1));
         order.recordShipmentDeliveryFailed(a, DeliveryFailureReason.REFUSED, null, NOW, STAFF);
         order.recordShipmentReturned(a, NOW, STAFF);
-        assertThat(order.closedByReturn()).isBetween(new BigDecimal("1055"), new BigDecimal("1056"));
+        assertThat(order.closeReturnedShipment(a, NOW, NOW, STAFF).orElseThrow().goodsValue())
+                .isBetween(new BigDecimal("1055"), new BigDecimal("1056"));
     }
 
     @Test

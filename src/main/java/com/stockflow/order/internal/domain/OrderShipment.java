@@ -44,6 +44,25 @@ public final class OrderShipment {
      * shipment handed over before batches were released one by one.
      */
     private UUID deliveryBatchId;
+    /**
+     * WF-05 Q-7 / Q-12: when the shipment's units were closed on their lines without being delivered - the return
+     * receipt of a shipment the carrier brought back was confirmed (RETURNED), or Sales closed a shipment the carrier
+     * lost (DELIVERY_FAILED, reason LOST). Null while the units are still the shipment's: with the carrier, with the
+     * customer, or on their way back. A carrier's word alone never closes them (L-I8): until the goods are seen, a
+     * RETURNED shipment still holds its units and nothing of its money moves.
+     */
+    private Instant unitsClosedAt;
+    /**
+     * WF-05 Q-2: what the units closed with {@link #unitsClosedAt} were worth with their VAT - what payment settled.
+     * Null while the units are the shipment's, and on a row closed before it was recorded.
+     */
+    private BigDecimal closedGoodsValue;
+    /**
+     * WF-05 Q-19: the part of the order's shipping fee, with its VAT, payment waived when the units were closed - the
+     * shipment's share of the order's goods (payment works it out; the order keeps its answer, for invoicing to
+     * invoice the fee less it). Zero otherwise.
+     */
+    private BigDecimal shippingFeeWaived = BigDecimal.ZERO;
 
     public OrderShipment(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant handedOverAt,
                          UUID handedOverBy, OrderShipmentStatus status, Instant outcomeAt, UUID outcomeBy,
@@ -77,6 +96,19 @@ public final class OrderShipment {
         return shipment;
     }
 
+    /** Rehydration of when its units were closed (WF-05 Q-7 / Q-12); null: they are still the shipment's. */
+    public OrderShipment restoreUnitsClosed(Instant at) {
+        this.unitsClosedAt = at;
+        return this;
+    }
+
+    /** Rehydration of what its closed units were worth and the shipping fee waived with them (WF-05 Q-2, Q-19). */
+    public OrderShipment restoreClosedMoney(BigDecimal goodsValue, BigDecimal feeWaived) {
+        this.closedGoodsValue = goodsValue;
+        this.shippingFeeWaived = feeWaived == null ? BigDecimal.ZERO : feeWaived;
+        return this;
+    }
+
     /** Rehydration of the batch it carried (4B-8). */
     public OrderShipment restoreDeliveryBatch(UUID batchId) {
         this.deliveryBatchId = batchId;
@@ -87,6 +119,12 @@ public final class OrderShipment {
     boolean delivered(Instant at, UUID by) {
         if (status == OrderShipmentStatus.DELIVERED) {
             return false;
+        }
+        // A lost shipment Sales closed: its units are off the order and their money settled (Q-12). Delivering it now
+        // would hand the customer goods the order no longer owes, billed nowhere.
+        if (unitsClosedAt != null) {
+            throw new BusinessException(ErrorCode.ORDER_SHIPMENT_INVALID_TRANSITION, ("Shipment %s was closed as lost "
+                    + "at %s: it is not delivered on this order any more").formatted(id, unitsClosedAt));
         }
         move(OrderShipmentStatus.DELIVERED);
         this.outcomeAt = at;
@@ -176,6 +214,81 @@ public final class OrderShipment {
         return status == OrderShipmentStatus.RETURNED;
     }
 
+    /**
+     * Closes the shipment's units (WF-05 Q-7 / Q-12): from now on they are not the shipment's, and the order counts
+     * them closed on their lines. Only a shipment that came back or failed.
+     *
+     * @return false when they were closed already
+     */
+    boolean closeUnits(Instant at) {
+        if (unitsClosedAt != null) {
+            return false;
+        }
+        if (status != OrderShipmentStatus.RETURNED && status != OrderShipmentStatus.DELIVERY_FAILED) {
+            throw new BusinessException(ErrorCode.ORDER_SHIPMENT_INVALID_TRANSITION,
+                    "Shipment %s is %s: only a shipment not delivered has its units closed".formatted(id, status));
+        }
+        this.unitsClosedAt = Objects.requireNonNull(at, "at");
+        return true;
+    }
+
+    /** What the closure of its units settled (WF-05 Q-2): their value with VAT. */
+    void recordClosedValue(BigDecimal goodsValue) {
+        if (unitsClosedAt == null || goodsValue.signum() < 0) {
+            throw new IllegalStateException("Shipment " + id + ": only closed units carry a value, zero or more");
+        }
+        this.closedGoodsValue = goodsValue;
+    }
+
+    /** The share of the shipping fee payment waived with its closed units (WF-05 Q-19); once, in the closure's unit. */
+    void recordShippingFeeWaived(BigDecimal waived) {
+        if (unitsClosedAt == null || waived.signum() < 0 || shippingFeeWaived.signum() != 0) {
+            throw new IllegalStateException("Shipment " + id + ": a waiver is recorded once, on closed units, zero or "
+                    + "more");
+        }
+        this.shippingFeeWaived = waived;
+    }
+
+    /**
+     * Whether the shipment still holds its units - with the carrier, with the customer, or on their way back after
+     * the carrier reported it returned and before its receipt is confirmed. What the order counts as shipped.
+     */
+    public boolean holdsUnits() {
+        return unitsClosedAt == null;
+    }
+
+    /**
+     * Its units were closed before closures were settled (WF-05 Q-13, BE-16): the backfill of
+     * {@code V20261217000400} closed every shipment RETURNED at that time as of its outcome, with no value, because
+     * before Q-7 such a shipment's units were owed again on the order until Sales decided. Every closure made since -
+     * a return receipt confirmed, a lost shipment closed (Q-12) - records what it settled ({@link #recordClosedValue},
+     * zero or more, never null). So the value missing is what tells a shipment of an order from before RTM-RETURNED
+     * from one Sales closed as lost and the carrier later brought back (audit r2 lifecycle M-3): the first may still
+     * be owed for a decision, the second is owed to nobody.
+     */
+    public boolean closedBeforeSettlement() {
+        return unitsClosedAt != null && closedGoodsValue == null;
+    }
+
+    /** The carrier reported it back and its return receipt is not confirmed yet: its units wait for that (Q-7). */
+    public boolean awaitingReturnReceipt() {
+        return status == OrderShipmentStatus.RETURNED && unitsClosedAt == null;
+    }
+
+    /**
+     * Its goods will not be delivered on this order: it came back (RETURNED), or it failed and Sales closed it as lost.
+     * What makes an order whose other shipments arrived partly fulfilled rather than delivered.
+     */
+    public boolean endedUndelivered() {
+        return status == OrderShipmentStatus.RETURNED || unitsClosedAt != null;
+    }
+
+    /** Still to be decided: in transit, or failed and neither delivered again, brought back nor closed as lost. */
+    public boolean pending() {
+        return status == OrderShipmentStatus.HANDED_OVER
+                || status == OrderShipmentStatus.DELIVERY_FAILED && unitsClosedAt == null;
+    }
+
     public UUID id() { return id; }
     public Map<UUID, Integer> quantities() { return quantities; }
     public BigDecimal amount() { return amount; }
@@ -188,4 +301,9 @@ public final class OrderShipment {
     public String failureNote() { return failureNote; }
     public com.stockflow.order.api.ShipmentHandover.Carriage carriage() { return carriage; }
     public UUID deliveryBatchId() { return deliveryBatchId; }
+    public Instant unitsClosedAt() { return unitsClosedAt; }
+    /** What its closed units were worth with VAT; null while they are not closed, or on a row closed before WF-05. */
+    public BigDecimal closedGoodsValue() { return closedGoodsValue; }
+    /** The part of the order's shipping fee waived when its units were closed (Q-19); zero otherwise. */
+    public BigDecimal shippingFeeWaived() { return shippingFeeWaived; }
 }

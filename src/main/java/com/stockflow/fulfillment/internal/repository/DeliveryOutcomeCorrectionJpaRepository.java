@@ -14,6 +14,10 @@ public interface DeliveryOutcomeCorrectionJpaRepository extends BaseJpaRepositor
 
     List<DeliveryOutcomeCorrectionJpaEntity> findByShipmentIdOrderByCorrectedAtAscIdAsc(UUID shipmentId);
 
+    /** The shipment's latest correction (audit r3 EINV-1: what a correction back to delivered undoes). */
+    java.util.Optional<DeliveryOutcomeCorrectionJpaEntity> findFirstByShipmentIdOrderByCorrectedAtDescIdDesc(
+            UUID shipmentId);
+
     /** The codes of those of {@code shipmentIds} whose outcome was corrected by hand (E17). */
     @Query("select distinct s.code from DeliveryOutcomeCorrectionJpaEntity c, ShipmentJpaEntity s "
             + "where s.id = c.shipmentId and c.shipmentId in :shipmentIds order by s.code")

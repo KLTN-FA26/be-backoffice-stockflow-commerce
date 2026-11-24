@@ -55,9 +55,13 @@ public class RefundService {
 
     private static final Logger log = LoggerFactory.getLogger(RefundService.class);
 
-    /** An order's refund: where it stands, the settlements that made it, and the records against it. */
+    /**
+     * An order's refund: where it stands, the settlements that made it, and the records against it; and what the
+     * order's fee items still owe ({@code feeOwed}, WF-05 BE-51: shown beside the refund, never set off by itself).
+     */
     public record OrderRefundDetail(RefundStanding standing, String orderNumber, String currency,
-                                    List<OrderSettlement> settlements, List<RefundRecord> records) {
+                                    List<OrderSettlement> settlements, List<RefundRecord> records,
+                                    java.math.BigDecimal feeOwed) {
     }
 
     /** What the accountant records. */
@@ -66,14 +70,19 @@ public class RefundService {
     }
 
     private final SettlementBook book;
+    private final com.stockflow.payment.internal.domain.InstallmentBook installments;
     private final RefundSearch search;
     private final InstallmentOrders orders;
     private final ApplicationEventPublisher events;
     private final Clock clock;
+    private final com.stockflow.customer.api.CustomerLegalProfiles legalProfiles;
 
-    RefundService(SettlementBook book, RefundSearch search, InstallmentOrders orders, ApplicationEventPublisher events,
-                  Clock clock) {
+    RefundService(SettlementBook book, com.stockflow.payment.internal.domain.InstallmentBook installments,
+                  RefundSearch search, InstallmentOrders orders, ApplicationEventPublisher events, Clock clock,
+                  com.stockflow.customer.api.CustomerLegalProfiles legalProfiles) {
+        this.legalProfiles = legalProfiles;
         this.book = book;
+        this.installments = installments;
         this.search = search;
         this.orders = orders;
         this.events = events;
@@ -92,9 +101,15 @@ public class RefundService {
                 .orElseThrow(() -> orderNotFound(command.orderId()));
         Instant now = clock.instant();
         LocalDate today = LocalDate.ofInstant(now, InstallmentService.BUSINESS_ZONE);
+        // Audit r3 RAD-6: the account the money went to, as the customer's profile names it now - kept with the
+        // record, so its confirmation never prints an account the customer changed to later.
+        RefundRecord.PayeeAccount payee = legalProfiles.legalProfile(order.customerId())
+                .map(com.stockflow.customer.api.CustomerLegalProfile::bankAccount)
+                .map(bank -> RefundRecord.PayeeAccount.of(bank.accountNumber(), bank.bankName(), bank.accountHolder()))
+                .orElse(null);
         RefundRecord record = RefundRecord.record(order.orderId(), order.customerId(), order.orderNumber(),
                 command.amount(), order.currency(), command.refundedOn(), command.reference(), command.note(),
-                command.recordedBy(), now, today);
+                command.recordedBy(), now, today, payee);
         RefundStanding standing = standingOf(order.orderId());
         if (record.amount().compareTo(standing.remaining()) > 0) {
             throw new BusinessException(ErrorCode.REFUND_EXCEEDS_REFUNDABLE, ("Order %s has %s %s still to refund, "
@@ -150,8 +165,13 @@ public class RefundService {
                 .orElseThrow(() -> orderNotFound(orderId));
         List<OrderSettlement> settlements = book.ofOrder(orderId);
         List<RefundRecord> records = book.recordsOf(orderId);
+        // WF-05 BE-51: the fee items still owed on this order - a cancellation fee a closure left - beside the refund.
+        java.math.BigDecimal feeOwed = installments.ofOrder(orderId).stream()
+                .filter(com.stockflow.payment.internal.domain.Installment::isFeeItem)
+                .map(com.stockflow.payment.internal.domain.Installment::outstanding)
+                .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
         return new OrderRefundDetail(RefundStanding.of(orderId, settlements, records), order.orderNumber(),
-                order.currency(), settlements, records);
+                order.currency(), settlements, records, feeOwed);
     }
 
     @Transactional(readOnly = true)

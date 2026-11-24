@@ -160,6 +160,30 @@ public final class Product extends AggregateRoot {
     }
 
     /**
+     * WF-05 D-8 (decided 24/11; Q-21, HĐ-7): the product's VAT group set or changed on its own, in any status. The
+     * class is a fiscal fact about the goods, not part of what is sold: a published product whose class was never set
+     * is invoiced at the highest rate and held back from the automatic issuing (TAX_CLASS_UNKNOWN), and the only edit
+     * that set a class ({@link #updateDetails}) is for a DRAFT - the accountant was told to assign a class nobody could.
+     * So it is its own action, with its own permission and history, and it moves no workflow status. It affects what
+     * is drawn up from now on (quotes, invoice drafts); a draft drawn up before is caught by the recheck before it is
+     * issued. Never cleared: an unknown class is what this fixes.
+     *
+     * @return whether the class changed (the same class again changes nothing and writes no history)
+     * @throws BusinessException {@code VALIDATION_FAILED} without a class
+     */
+    public boolean changeTaxClass(TaxClass taxClass) {
+        if (taxClass == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A tax class is required",
+                    List.of(new FieldError("taxClass", "A tax class is required", "NotNull")));
+        }
+        if (this.taxClass == taxClass) {
+            return false;
+        }
+        this.taxClass = taxClass;
+        return true;
+    }
+
+    /**
      * An edit quotes the version it read (SCRUM-461): a product changed since answers
      * {@code OPTIMISTIC_LOCK}. The row is locked when this is called, so the comparison cannot be
      * overtaken between the check and the write.

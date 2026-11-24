@@ -163,4 +163,52 @@ SELECT pg_temp.expect_true('B5 the administrator still holds every permission',
         = (SELECT count(*) FROM identity.role_permission rp JOIN identity.app_role r ON r.id = rp.role_id
             WHERE r.code = 'SYSTEM_ADMIN'));
 
+
+\echo '--- audit r3 LM-2 (V20261224000210): the fee rest decided again - several issued, one unissued, a plate fee once'
+CREATE FUNCTION pg_temp.rest(tag TEXT, fee_kind TEXT, sku TEXT, net NUMERIC) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO invoicing.einvoice (id, code, type, status, order_id, order_number, shipment_id, customer_id,
+                                    issue_date, issue_due_at, seller_name, seller_tax_code, seller_address, buyer_name,
+                                    buyer_tax_code, buyer_address, buyer_email, currency, payment_method, subtotal,
+                                    tax_total, grand_total, amount_in_words)
+    SELECT md5('qa95:' || tag)::uuid, 'EINV-QA95-' || tag, 'ORIGINAL', 'DRAFT', o.id, o.order_number, NULL,
+           o.customer_id, DATE '2026-11-14', TIMESTAMPTZ '2026-11-14 17:00:00+00', 'CONG TY BAN', '0312345678',
+           '1 Le Loi', 'CONG TY MUA', '0398765432', '12 Nguyen Hue', 'kt@mua.example.com', 'VND', 'BANK_TRANSFER',
+           net, net / 10, net + net / 10, 'so tien bang chu'
+      FROM ordering.customer_order o WHERE o.id = md5('qa95:order')::uuid;
+    INSERT INTO invoicing.einvoice_line (id, einvoice_id, line_no, kind, fee_kind, sku, item_name, unit, quantity,
+                                         unit_price, tax_rate, amount, tax_amount)
+    VALUES (md5('qa95:' || tag || ':1')::uuid, md5('qa95:' || tag)::uuid, 1, 'FEE', fee_kind, sku, 'Phi', 'Lan', 1,
+            net, 10, net, net / 10);
+END $$;
+-- A delivery's draft carrying the plate fee of QA-ED-OWN.
+SELECT pg_temp.draft('plate', 's2', 500000, 50000);
+INSERT INTO invoicing.einvoice_line (id, einvoice_id, line_no, kind, fee_kind, sku, item_name, unit, quantity,
+                                     unit_price, tax_rate, amount, tax_amount)
+VALUES (md5('qa95:plate:1')::uuid, md5('qa95:plate')::uuid, 1, 'FEE', 'PLATE_FEE', 'QA-ED-OWN', 'Phi khuon', 'Lan', 1,
+        500000, 10, 500000, 50000);
+SELECT pg_temp.rest('r1', 'SHIPPING_FEE', NULL, 50000);
+SET CONSTRAINTS ALL IMMEDIATE;
+SET CONSTRAINTS ALL DEFERRED;
+SELECT pg_temp.expect_fail('L1 a second rest invoice while the first is not issued', $q$
+    SELECT pg_temp.rest('r9', 'SHIPPING_FEE', NULL, 10000) $q$);
+SELECT pg_temp.submit('r1');
+SELECT pg_temp.issue('r1', 951);
+SELECT pg_temp.expect_ok('L2 another rest invoice once the first is issued (the rest decided again)', $q$
+    SELECT pg_temp.rest('r2', 'PLATE_FEE', 'QA-ED-OTHER', 300000) $q$);
+SELECT pg_temp.expect_fail('L3 a plate fee on a rest invoice that another invoice of the order carries', $q$
+    INSERT INTO invoicing.einvoice_line (id, einvoice_id, line_no, kind, fee_kind, sku, item_name, unit, quantity,
+                                         unit_price, tax_rate, amount, tax_amount)
+    VALUES (gen_random_uuid(), md5('qa95:r2')::uuid, 2, 'FEE', 'PLATE_FEE', 'QA-ED-OWN', 'Phi khuon', 'Lan', 1,
+            500000, 10, 500000, 50000) $q$);
+SET CONSTRAINTS ALL IMMEDIATE;
+SET CONSTRAINTS ALL DEFERRED;
+SELECT pg_temp.submit('r2');
+SELECT pg_temp.issue('r2', 952);
+SELECT pg_temp.expect_true('L4 two rest invoices of the order issued side by side',
+    (SELECT count(*) = 2 FROM invoicing.einvoice
+      WHERE order_id = md5('qa95:order')::uuid AND shipment_id IS NULL AND status = 'ISSUED'));
+SELECT pg_temp.expect_fail('L5 the same plate fee on two rest invoices', $q$
+    SELECT pg_temp.rest('r3', 'PLATE_FEE', 'QA-ED-OTHER', 300000) $q$);
+
 ROLLBACK;

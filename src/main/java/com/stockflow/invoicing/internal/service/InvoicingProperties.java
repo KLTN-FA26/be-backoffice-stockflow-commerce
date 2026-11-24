@@ -12,10 +12,11 @@ import java.util.List;
  * provider issues and whether drafts are issued automatically are data ({@code invoicing.einvoice_provider_config}),
  * changed at runtime.
  *
- * @param dueWarningLead how long before an invoice's deadline the accountant is told; a day by default, which is the
- *                       start of the last day it can be issued on
+ * @param dueWarningLead how long before an invoice's deadline the accountant is told; four hours by default (WF-05
+ *                       Q-1): the deadline is the end of the invoice's date, and a day ahead would warn the moment a
+ *                       draft is drawn up
  * @param stuckAfter     how long an invoice may wait for the provider's answer before the accountants are told it is
- *                       stuck; far longer than a provider takes, far shorter than the working day the law leaves
+ *                       stuck; far longer than a provider takes, far shorter than what is left of the invoice's day
  * @param sandbox        how the sandbox provider behaves
  * @param corrections    what is done about an issued invoice that was wrong, where the law read leaves it open
  * @param withdrawAfter  how long after it was last sent an invoice the provider has no record of may be taken back
@@ -32,14 +33,22 @@ import java.util.List;
  *                       ({@code UNKNOWN}) may be taken back by the accountant, who checked with the provider first.
  *                       At least {@code withdrawAfter}; a day by default, far beyond SePay's documented retries, short
  *                       of the issuing deadline the series behind it would otherwise miss
+ * @param withdrawWatchFor how long a transaction let go without the provider's word - withdrawn, or refused on its
+ *                       processing report alone - is asked about daily afterwards (WF-05 BE-07, decision Q-5: 30 days),
+ *                       in case the provider issued it after all
+ * @param resultOverdueAfter how long an invoice may wait at the provider before the accountants are told its result is
+ *                       overdue and may be recorded from the provider's portal (WF-05 BE-08, decision Q-8): past every
+ *                       retry SePay documents (two hours) and the withdrawal's own wait
  */
 @ConfigurationProperties(prefix = "stockflow.invoicing")
-public record InvoicingProperties(@DefaultValue("P1D") Duration dueWarningLead,
+public record InvoicingProperties(@DefaultValue("PT4H") Duration dueWarningLead,
                                   @DefaultValue("PT30M") Duration stuckAfter, @DefaultValue Sandbox sandbox,
                                   @DefaultValue Corrections corrections, @DefaultValue("PT3H") Duration withdrawAfter,
                                   @DefaultValue("50") long quotaWarningBelow,
                                   @DefaultValue("PT1H") Duration autoResendFor,
-                                  @DefaultValue("P1D") Duration withdrawUnknownAfter) {
+                                  @DefaultValue("P1D") Duration withdrawUnknownAfter,
+                                  @DefaultValue("P30D") Duration withdrawWatchFor,
+                                  @DefaultValue("PT4H") Duration resultOverdueAfter) {
 
     /**
      * The constructor properties are bound through. Named, because a record with more than one constructor is
@@ -67,6 +76,20 @@ public record InvoicingProperties(@DefaultValue("P1D") Duration dueWarningLead,
             throw new IllegalArgumentException(
                     "stockflow.invoicing.withdraw-unknown-after must be positive and at least withdraw-after");
         }
+        withdrawWatchFor = withdrawWatchFor == null ? DEFAULT_WITHDRAW_WATCH_FOR : withdrawWatchFor;
+        resultOverdueAfter = resultOverdueAfter == null ? DEFAULT_RESULT_OVERDUE_AFTER : resultOverdueAfter;
+        if (withdrawWatchFor.isNegative() || resultOverdueAfter.isZero() || resultOverdueAfter.isNegative()) {
+            throw new IllegalArgumentException(
+                    "stockflow.invoicing.withdraw-watch-for is not negative; result-overdue-after is positive");
+        }
+    }
+
+    /** As before let-go transactions were watched and overdue results announced: their defaults. */
+    public InvoicingProperties(Duration dueWarningLead, Duration stuckAfter, Sandbox sandbox, Corrections corrections,
+                               Duration withdrawAfter, long quotaWarningBelow, Duration autoResendFor,
+                               Duration withdrawUnknownAfter) {
+        this(dueWarningLead, stuckAfter, sandbox, corrections, withdrawAfter, quotaWarningBelow, autoResendFor,
+                withdrawUnknownAfter, DEFAULT_WITHDRAW_WATCH_FOR, DEFAULT_RESULT_OVERDUE_AFTER);
     }
 
     /** As before an unanswered provider could be withdrawn from: its default. */
@@ -103,6 +126,8 @@ public record InvoicingProperties(@DefaultValue("P1D") Duration dueWarningLead,
     private static final long DEFAULT_QUOTA_WARNING_BELOW = 50;
     private static final Duration DEFAULT_AUTO_RESEND_FOR = Duration.ofHours(1);
     private static final Duration DEFAULT_WITHDRAW_UNKNOWN_AFTER = Duration.ofDays(1);
+    private static final Duration DEFAULT_WITHDRAW_WATCH_FOR = Duration.ofDays(30);
+    private static final Duration DEFAULT_RESULT_OVERDUE_AFTER = Duration.ofHours(4);
 
     /**
      * @param errorNoticeWithCorrection whether a 04/SS-HĐĐT notice may also be recorded for an invoice that was

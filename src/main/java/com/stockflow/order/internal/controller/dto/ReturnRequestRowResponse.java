@@ -17,5 +17,25 @@ public record ReturnRequestRowResponse(UUID id, String rmaNumber, UUID orderId, 
                                        String requestedResolution, String channel, Instant requestedAt,
                                        Instant returnDeadline, BigDecimal settlementAmount, BigDecimal refundedAmount,
                                        BigDecimal offsetAmount, String currency, boolean vatAdjustmentRequired,
-                                       Instant closedAt, long version, UUID shipmentId) {
+                                       Instant closedAt, long version, UUID shipmentId,
+                                       @Schema(description = "How a RESOLVED return ended (WF-05 Q-4): REFUNDED, "
+                                               + "REFUSED (processed, no refund) or NOTHING_TO_REFUND; null before",
+                                               allowableValues = {"REFUNDED", "REFUSED", "NOTHING_TO_REFUND"})
+                                       String outcome,
+                                       @Schema(description = "Whether a return receipt may be opened for it now "
+                                               + "(WF-05 Q-11): approved and its refund not settled")
+                                       boolean receiptOpenable,
+                                       @Schema(description = "Whether a parcel of it is being counted on a DRAFT "
+                                               + "return receipt now (WF-05 BE-23): the customer cannot withdraw it, "
+                                               + "and goods-complete, refund proposal and approval answer 409 "
+                                               + "RETURN_RECEIPT_DRAFT_OPEN, until the warehouse confirms or "
+                                               + "cancels that receipt")
+                                       boolean receiptDraftOpen,
+                                       @Schema(description = "Why units that came back were not refunded (WF-05 "
+                                               + "Q-4): the fixed reason code of the ReturnRefusalReason list, the "
+                                               + "same the detail carries. On the customer's own list only once the "
+                                               + "return is RESOLVED, and never the internal note; null when nothing "
+                                               + "was withheld for a reason",
+                                               example = "CUSTOMER_DAMAGE")
+                                       String refusalReason) {
 }

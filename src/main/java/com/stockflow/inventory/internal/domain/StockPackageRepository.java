@@ -41,6 +41,15 @@ public interface StockPackageRepository {
      */
     void markOpenedOnReturn(Collection<StockPackageId> ids, java.time.Instant at);
 
+    /**
+     * Per warehouse code, how many cartons that came back on a return receipt are in quarantine now (WF-05 BE-24): in
+     * stock, a row of theirs QUARANTINE with something in it, arrived on a return receipt's ledger line.
+     */
+    java.util.Map<String, Integer> returnedCartonsInQuarantine();
+
+    /** When the carton came back opened on a return ({@link #markOpenedOnReturn}); empty when it never did. */
+    java.util.Optional<java.time.Instant> returnOpenedAt(StockPackageId id);
+
     /** Whether the carton came back opened on a return ({@link #markOpenedOnReturn}). */
     boolean openedOnReturn(StockPackageId id);
 

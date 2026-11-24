@@ -12,7 +12,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class InvoiceAbbreviationsTest {
 
     private static final String NAME = "Công ty Trách nhiệm hữu hạn Sản xuất Bao bì Việt Nam - Chi nhánh Thành phố Hồ Chí Minh";
-    private static final String ADDRESS = "12 Nguyễn Huệ, Phường Bến Nghé, Thành phố Hồ Chí Minh, Việt Nam";
+    private static final String ADDRESS = "12 Nguyễn Huệ, Phường Sài Gòn, Thành phố Hồ Chí Minh, Việt Nam";
 
     @Test
     @DisplayName("text that fits is left exactly as registered")
@@ -34,8 +34,8 @@ class InvoiceAbbreviationsTest {
     @DisplayName("an address keeps its house number, street, ward and province whatever is abbreviated")
     void theAddressKeepsItsParts() {
         String shorter = InvoiceAbbreviations.fit(ADDRESS, 20);
-        assertThat(shorter).isEqualTo("12 Nguyễn Huệ, P Bến Nghé, TP Hồ Chí Minh, VN")
-                .contains("12 Nguyễn Huệ").contains("Bến Nghé").contains("Hồ Chí Minh");
+        assertThat(shorter).isEqualTo("12 Nguyễn Huệ, P Sài Gòn, TP Hồ Chí Minh, VN")
+                .contains("12 Nguyễn Huệ").contains("Sài Gòn").contains("Hồ Chí Minh");
         assertThat(shorter.length()).as("still longer than asked: nothing is cut to make it fit").isGreaterThan(20);
     }
 

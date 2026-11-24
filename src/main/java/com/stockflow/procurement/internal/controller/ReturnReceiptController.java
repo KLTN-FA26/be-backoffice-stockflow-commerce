@@ -52,13 +52,15 @@ class ReturnReceiptController {
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "Open a return receipt (DRAFT) for a returned shipment or an approved return request",
             description = """
-                    Exactly one of `shipmentId` (a shipment the carrier brought back: `RETURNED`) and \
-                    `returnRequestId` (a return request approved and awaiting its goods: `AWAITING_RETURN`). The \
+                    Exactly one of `shipmentId` (a shipment the carrier brought back: `RETURNED`; one receipt per \
+                    trip) and `returnRequestId` (a return request approved and its refund not settled - \
+                    AWAITING_RETURN, RECEIVED, SETTLEMENT_PENDING, EXPIRED, or CANCELLED after approval: WF-05 \
+                    Q-11; its `receiptOpenable`). The \
                     receipt is at the warehouse the goods left from, into `quarantineLocationCode`, a usable \
                     QUARANTINE area of it. Refusals: `VALIDATION_FAILED` (neither or both), `SHIPMENT_NOT_FOUND`, \
                     `RETURN_REQUEST_NOT_FOUND` (404), `SHIPMENT_NOT_RETURNED`, `RETURN_NOT_AWAITING_GOODS`, \
-                    `RETURN_RECEIPT_ALREADY_OPEN` (409, one receipt not cancelled per shipment and per return \
-                    request; `details.receiptId` names it), `LOCATION_NOT_FOUND`, `LOCATION_AREA_MISMATCH`, \
+                    `RETURN_RECEIPT_ALREADY_OPEN` (409, one DRAFT at a time per shipment and per return request; \
+                    `details.receiptId` names it), `LOCATION_NOT_FOUND`, `LOCATION_AREA_MISMATCH`, \
                     `LOCATION_NOT_USABLE`.""")
     @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.CREATE)
     public ApiResponse<ReturnReceiptView> create(@Valid @RequestBody CreateReturnReceiptRequest request,
@@ -103,9 +105,13 @@ class ReturnReceiptController {
                     (409). It keeps its LPN, SKU, count and lot. The same LPN again is the same carton: a \
                     `condition` sent replaces the one noted before, and so does a `countedQuantity`. \
                     `countedQuantity` (WF-05 TH-4): the units found inside, 0 to its label (`VALIDATION_FAILED` \
-                    above it); omitted, sealed. Fewer than its label marks it `opened`: it goes into quarantine whole \
-                    and can only be written off (`RETURN_CARTON_OPENED` on a release); the return refunds what was \
-                    counted. A return request against a shipment takes that shipment's cartons only. \
+                    above it); omitted, sealed. Fewer than its label marks it `opened`: it is not put into stock on \
+                    confirmation (`stockEntered` false, WF-05 Q-18) - it stays consumed, its goods destroyed - and \
+                    the receipt is then confirmed by a warehouse manager; the return refunds what was counted. A \
+                    return request against a shipment takes that shipment's cartons only, and only of a SKU the \
+                    return approved while some of it is still to come back: `RETURN_CARTON_NOT_CLAIMED` (409) \
+                    otherwise - record such goods in custody on the return request (`POST /returns/{id}/custody`). \
+                    A carton that came back opened before is `RETURN_CARTON_IN_WAREHOUSE`. \
                     `INVALID_RECEIPT_TRANSITION` once the receipt is not a draft.""")
     @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<ReturnReceiptView> scan(@PathVariable UUID receiptId,
@@ -119,16 +125,19 @@ class ReturnReceiptController {
     @Operation(summary = "Record units that came back with no carton label onto a DRAFT return receipt",
             description = """
                     WF-05 TH-4: the SKU (one of the order's, else `VALIDATION_FAILED`), the lot when it can be read, \
-                    and how many. On a receipt against a return request only (`INVALID_RECEIPT_TRANSITION` for a \
-                    returned shipment's, or once not a draft). Recorded on the receipt and never put into stock - the \
-                    units are destroyed - but received for the return. The same SKU and lot again replaces the \
-                    count.""")
+                    how many, and `photoId` - one of this receipt's photos (`RETURN_LOOSE_PHOTO_REQUIRED` 400 \
+                    without one, WF-05 Q-18). The SKU's units back for the return, every receipt counted, never \
+                    exceed what it approved (`RETURN_LOOSE_EXCEEDS_APPROVED` 409). On a receipt against a return \
+                    request only (`INVALID_RECEIPT_TRANSITION` for a returned shipment's, or once not a draft). \
+                    Recorded on the receipt and never put into stock - the units are destroyed - but received for \
+                    the return; the receipt is then confirmed by a warehouse manager who counted nothing on it. The \
+                    same SKU and lot again replaces the count, the photo and whose count it is.""")
     @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<ReturnReceiptView> recordLoose(@PathVariable UUID receiptId,
                                                       @Valid @RequestBody RecordLooseUnitsRequest request,
                                                       @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(receipts.recordLoose(receiptId, request.sku(), request.lotNumber(), request.quantity(),
-                user.userId()));
+                request.photoId(), user.userId()));
     }
 
     @DeleteMapping("/{receiptId}/loose-lines/{lineId}")
@@ -146,17 +155,23 @@ class ReturnReceiptController {
     }
 
     @PostMapping("/{receiptId}/confirmation")
-    @Operation(summary = "Confirm: the cartons go back into stock in quarantine, and the receipt is CLOSED",
+    @Operation(summary = "Confirm: the sealed cartons go back into stock in quarantine, and the receipt is CLOSED",
             description = """
-                    Each carton comes back whole - CONSUMED to IN_STOCK at the receipt's quarantine area, its stock \
-                    QUARANTINE (not available to promise), its lot kept - with one RECEIPT ledger line naming the \
-                    receipt. No putaway task: a warehouse manager releases or writes off each carton afterwards. \
-                    `ReturnedGoodsReceived` is published for the order and payment. Confirmed again, it answers as \
-                    it is. `INVALID_RECEIPT_TRANSITION` (cancelled, or no carton), \
+                    Each sealed carton comes back whole - CONSUMED to IN_STOCK at the receipt's quarantine area, its \
+                    stock QUARANTINE (not available to promise), its lot kept - with one RECEIPT ledger line naming \
+                    the receipt. An opened or empty carton is not put into stock (WF-05 Q-18): it stays CONSUMED, \
+                    marked opened, its count on the receipt only. No putaway task: a warehouse manager releases or \
+                    writes off each carton afterwards. A receipt with an opened carton or loose units \
+                    (`managerConfirmationRequired`) is confirmed only with procurement-return-receipt-approvals:APPROVE \
+                    (`RETURN_RECEIPT_MANAGER_CONFIRMATION_REQUIRED` 403) by someone who counted nothing on it \
+                    (`RETURN_RECEIPT_SELF_CONFIRMATION` 409). `ReturnedGoodsReceived` is published for the order and \
+                    payment - the money of a carrier's return is settled now (WF-05 Q-7). Confirmed again, it answers \
+                    as it is. `INVALID_RECEIPT_TRANSITION` (cancelled, or nothing received), \
                     `INVALID_STOCK_PACKAGE_TRANSITION` (a carton came back on another receipt meanwhile).""")
     @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<ReturnReceiptView> confirm(@PathVariable UUID receiptId, @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(receipts.confirm(receiptId, user.userId()));
+        return ApiResponse.ok(receipts.confirm(receiptId, user.userId(),
+                user.can(GoodsReceiptResources.RETURN_RECEIPT_APPROVALS, Action.APPROVE)));
     }
 
     @PostMapping("/{receiptId}/cancellation")

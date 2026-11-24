@@ -86,7 +86,7 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
         try (PDDocument doc = Loader.loadPDF(pdf)) {
             String text = new PDFTextStripper().getText(doc);
             assertThat(text).contains("PHIẾU ĐẶT HÀNG SẢN XUẤT", sent.code(), seller.name(),
-                    "CẦN HÀNG TRƯỚC NGÀY", "Xưởng in thử", "Chị Lan - 0909123456 - " + producerEmail,
+                    "Cần hàng trước ngày", "Xưởng in thử", "Chị Lan - 0909123456 - " + producerEmail,
                     "Warehouse " + a.code(), "7 Kho Street", "Thùng 600 x 400 x 350 mm");
             assertThat(text.replaceAll("\\s+", "")).as("codes may wrap in their column")
                     .contains(sku.sku(), sku.snapshotId().toString(), sku.checksum());

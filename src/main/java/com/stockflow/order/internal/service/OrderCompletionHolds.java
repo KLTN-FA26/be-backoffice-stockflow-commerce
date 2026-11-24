@@ -43,15 +43,29 @@ import java.util.UUID;
  * <p>Under the order's row lock, the lock the completion takes: a hold set while the night's run looks at the order
  * is either seen by it or comes after the order is completed - then refused here, as any hold of a completed order
  * is. {@code tg_order_completion_hold_respected} states the rule once more in the database.</p>
+ *
+ * <p><b>Every edge that finalises the order respects it</b> (WF-05 Q-17 = a, BE-05): completion, closing - also from
+ * the refund branch - and every entry into the refund branch, PARTIALLY_FULFILLED or RETURNED → PARTIALLY_REFUNDED or
+ * REFUNDED, by the carrier's path ({@code DeliveryFailureService.followRefunds}) and a customer's return's
+ * ({@code ReturnRequestService.followReturns}) alike (audit r2 L-1, audit r3 LM-1). So a hold may be placed on any
+ * order that is not final yet and has a delivery to dispute: a REFUNDED or PARTIALLY_REFUNDED order is still corrected
+ * (BE-46) and still to be closed. An order with nothing delivered has nothing to verify, and the hold is refused there
+ * ("nothing new"). A hold placed while a delivery stood stays when that delivery is then corrected to a failure and
+ * the goods come back: the order waits RETURNED, COMPLETION_HELD among its blockers, until Sales release it - the hold
+ * is their decision, never lifted by the system. A held order is never cancelled: an order with a delivered shipment
+ * has no edge to CANCELLED, so no hold is left open on a cancelled order.</p>
  */
 @Service
 public class OrderCompletionHolds {
 
     private static final Logger log = LoggerFactory.getLogger(OrderCompletionHolds.class);
 
-    /** Statuses from which the order never completes: there is nothing left to pause. */
+    /**
+     * Statuses past every edge a hold keeps the order from: completed (its deliveries are no longer corrected), closed
+     * or cancelled - there is nothing left to pause.
+     */
     private static final Set<OrderStatus> PAST_COMPLETION = EnumSet.of(OrderStatus.COMPLETED, OrderStatus.CLOSED,
-            OrderStatus.CANCELLED, OrderStatus.RETURNED, OrderStatus.REFUNDED, OrderStatus.PARTIALLY_REFUNDED);
+            OrderStatus.CANCELLED);
 
     /** A pause of the order's completion, open while {@code releasedAt} is null. */
     public record CompletionHold(UUID id, UUID orderId, CompletionHoldReason reason, String note, Instant heldAt,
@@ -60,11 +74,16 @@ public class OrderCompletionHolds {
 
     private final OrderRepository orders;
     private final OrderCompletionHoldJpaRepository holds;
+    private final DeliveryFailureService deliveryFailures;
+    private final ReturnRequestService returns;
     private final Clock clock;
 
-    OrderCompletionHolds(OrderRepository orders, OrderCompletionHoldJpaRepository holds, Clock clock) {
+    OrderCompletionHolds(OrderRepository orders, OrderCompletionHoldJpaRepository holds,
+                         DeliveryFailureService deliveryFailures, ReturnRequestService returns, Clock clock) {
         this.orders = orders;
         this.holds = holds;
+        this.deliveryFailures = deliveryFailures;
+        this.returns = returns;
         this.clock = clock;
     }
 
@@ -81,8 +100,8 @@ public class OrderCompletionHolds {
      * Pauses the order's completion. OTHER says why in the note.
      *
      * @throws BusinessException {@code NOT_FOUND}; {@code VALIDATION_FAILED} for OTHER without a note or a note over
-     *         1000 characters; {@code ORDER_COMPLETION_HOLD_NOT_APPLICABLE} for an order completed, closed, cancelled,
-     *         returned or refunded; {@code ORDER_COMPLETION_ALREADY_HELD}
+     *         1000 characters; {@code ORDER_COMPLETION_HOLD_NOT_APPLICABLE} for an order completed, closed or
+     *         cancelled, or with nothing delivered to dispute; {@code ORDER_COMPLETION_ALREADY_HELD}
      */
     @Transactional
     @Auditable(action = AuditAction.UPDATE, resourceType = "order", resourceId = "#orderId")
@@ -96,9 +115,16 @@ public class OrderCompletionHolds {
                     "note: what the pause is for, at most 1000 characters (required for OTHER)");
         }
         Order order = lock(orderId);
-        if (PAST_COMPLETION.contains(order.status())) {
-            throw new BusinessException(ErrorCode.ORDER_COMPLETION_HOLD_NOT_APPLICABLE,
-                    "Order %s is %s: it will not be completed".formatted(order.orderNumber(), order.status()));
+        // One rule (Order.completionHoldable), the one the order's settlement block shows the back office: past
+        // completion, nothing delivered to verify, or completed once (a late claim on it is open - its deliveries are
+        // no longer corrected, and the claim's end takes it back to COMPLETED, BE-40, which a hold would refuse in the
+        // database).
+        if (!order.completionHoldable()) {
+            throw new BusinessException(ErrorCode.ORDER_COMPLETION_HOLD_NOT_APPLICABLE, PAST_COMPLETION.contains(
+                    order.status()) ? "Order %s is %s: it will not be completed".formatted(order.orderNumber(),
+                    order.status()) : order.completedAt() != null ? "Order %s was completed on %s".formatted(
+                    order.orderNumber(), order.completedAt()) : "Order %s has no delivery to verify".formatted(
+                    order.orderNumber()));
         }
         if (holds.findFirstByOrderIdAndReleasedAtIsNull(orderId).isPresent()) {
             throw new BusinessException(ErrorCode.ORDER_COMPLETION_ALREADY_HELD,
@@ -132,6 +158,11 @@ public class OrderCompletionHolds {
         open.release(by, trimmed, now());
         OrderCompletionHoldJpaEntity released = holds.saveAndFlush(open);
         log.info("Order {}: completion pause released", order.orderNumber());
+        // The refund branch passed the order by while it was held (Q-17): what refunds it was waiting for may all be
+        // made, and no refund record will come to move it any more - a customer's return has no nightly run to find it
+        // again (audit r2 lifecycle L-1). Both paths look again now, under this lock; each moves only its own orders.
+        returns.followRefunds(orderId, by);
+        deliveryFailures.followRefunds(orderId, by);
         return toHold(released);
     }
 

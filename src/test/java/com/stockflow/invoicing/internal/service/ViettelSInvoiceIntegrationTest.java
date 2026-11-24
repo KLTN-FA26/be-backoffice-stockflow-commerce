@@ -410,7 +410,9 @@ class ViettelSInvoiceIntegrationTest {
                 .isInstanceOf(RuntimeException.class);
         assertThat(Arrays.stream(EInvoiceProviderResponse.class.getRecordComponents()).map(c -> c.getName()))
                 .as("what the API answers with has no place for a secret, sealed or not")
-                .containsExactly("provider", "environment", "username", "secretSet", "active", "autoIssue", "version");
+                .containsExactly("provider", "environment", "username", "secretSet", "active", "autoIssue", "version",
+                        "accountInDeployment", "deploymentAccountReady", "issuesCorrections", "adjustsReplacements",
+                        "sendsErrorNotices");
         assertThat(settings.get().provider().secretSet()).as("the sandbox, still in use, has none").isFalse();
 
         assertThatThrownBy(() -> providerAccounts.storeAccount(VIETTEL, "PRODUCTION", USERNAME, null, before.version()))

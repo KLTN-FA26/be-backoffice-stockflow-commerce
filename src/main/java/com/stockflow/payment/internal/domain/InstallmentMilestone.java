@@ -11,10 +11,12 @@ package com.stockflow.payment.internal.domain;
  * the fee item is paid and counted exactly as an installment is (15 §5.1), and every reader that asks "which
  * milestone" already leaves it out by asking for its own.</p>
  *
- * <p>{@code FAILED_TRIP_FEE} is the other fee item (WF-05 fix plan, section 2): what the customer pays for a trip
- * that failed because they refused the goods or gave a wrong address, when Sales decide to deliver again. Due from the
- * day of that decision, it names no plan row either; no settlement counts its money as collected for goods, so it is
- * never refunded.</p>
+ * <p>{@code FAILED_TRIP_FEE} is kept for rows written before WF-05 decision Q-19 and is <b>never made any more</b>: it
+ * was the fee item of a trip that failed because the customer refused the goods or gave a wrong address, charged when
+ * Sales decided to deliver again. That path went with "deliver again" (#377), and Q-19 removed the charge: a failed trip
+ * is not charged without a contract clause that says so (Luật Thương mại 2005 Điều 300-304). The value stays so the rows
+ * already written still read, are paid and count as a fee item - never refunded, never lowered; the database checks
+ * are unchanged.</p>
  */
 public enum InstallmentMilestone {
     ON_SIGNING,

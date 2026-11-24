@@ -116,8 +116,9 @@ class ReturnReceiptIntegrationTest {
     }
 
     private long published(UUID receipt) {
-        return jdbc.queryForObject("SELECT count(*) FROM event_publication WHERE event_type LIKE '%ReturnedGoodsReceived' "
-                + "AND serialized_event LIKE ?", Long.class, "%" + receipt + "%");
+        // One publication row per listener of the event: count the events, not the listeners.
+        return jdbc.queryForObject("SELECT count(DISTINCT serialized_event) FROM event_publication WHERE event_type LIKE "
+                + "'%ReturnedGoodsReceived' AND serialized_event LIKE ?", Long.class, "%" + receipt + "%");
     }
 
     // ---- scenarios -------------------------------------------------------------------------------------------
@@ -177,6 +178,10 @@ class ReturnReceiptIntegrationTest {
                 SELECT count(*) FROM inventory.stock_movement WHERE reference_type = 'GOODS_RECEIPT' AND reference_id = ?
                    AND movement_type = 'RECEIPT'""", Long.class, draft.id())).isEqualTo(2);
         assertThat(published(draft.id())).isEqualTo(1);
+        // WF-05 BE-24: the carrier's return names the carton of the shipment still not back.
+        assertThat(jdbc.queryForObject("SELECT count(DISTINCT serialized_event) FROM event_publication WHERE "
+                + "serialized_event LIKE ? AND serialized_event LIKE ?", Long.class, "%" + draft.id() + "%",
+                "%\"missingCartons\":[\"" + shipped.lpns().get(2) + "\"]%")).isEqualTo(1);
         // The RTO receipt names no return request: nothing to move on the order side.
         assertThat(jdbc.queryForObject("SELECT return_request_id FROM procurement.goods_receipts WHERE id = ?",
                 UUID.class, draft.id())).isNull();
@@ -186,8 +191,20 @@ class ReturnReceiptIntegrationTest {
         assertThat(published(draft.id())).isEqualTo(1);
         // A closed receipt takes no more cartons; the rest of the shipment needs no second receipt to be refused.
         assertThat(code(catchThrowable(() -> scan(draft.id(), shipped.lpns().get(2))))).isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-        assertThat(code(catchThrowable(() -> openForShipment(shipped)))).as("one receipt per returned shipment")
+        // WF-05 Q-11 (BE-13): the carrier brings the rest on a second trip - a receipt of its own, one draft at a time;
+        // the first trip's cartons are not taken again.
+        ReturnReceiptView secondTrip = openForShipment(shipped);
+        assertThat(code(catchThrowable(() -> openForShipment(shipped)))).as("one draft at a time")
                 .isEqualTo(ErrorCode.RETURN_RECEIPT_ALREADY_OPEN);
+        assertThat(code(catchThrowable(() -> scan(secondTrip.id(), shipped.lpns().get(0)))))
+                .isEqualTo(ErrorCode.RETURN_CARTON_IN_WAREHOUSE);
+        scan(secondTrip.id(), shipped.lpns().get(2));
+        assertThat(asHcmStaff(() -> receipts.confirm(secondTrip.id(), staff)).status()).isEqualTo(GoodsReceiptStatus.CLOSED);
+        assertThat(carton(shipped.lpns().get(2)).get("package_status")).isEqualTo("IN_STOCK");
+        assertThat(jdbc.queryForObject("SELECT count(DISTINCT serialized_event) FROM event_publication WHERE "
+                + "serialized_event LIKE ? AND serialized_event LIKE ?", Long.class, "%" + secondTrip.id() + "%",
+                "%\"missingCartons\":[]%"))
+                .as("nothing of the shipment missing any more").isEqualTo(1);
     }
 
     @Test

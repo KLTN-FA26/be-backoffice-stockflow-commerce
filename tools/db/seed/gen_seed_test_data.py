@@ -1664,7 +1664,9 @@ def return_request(o, key, when, reason, status, cartons=0, channel="PORTAL", no
         for pk in back:
             r = pk["row"]
             raw(f"SELECT set_config('stockflow.same_receipt_merge', '{r['id']}', true);")
-            upd("inventory.stock_package", pk["package"], status="IN_STOCK", location_code=qrt, closed_at=None)
+            # WF-05 Q-4 (V20261223000300): back on a return, the carton waits for the refund decision.
+            upd("inventory.stock_package", pk["package"], status="IN_STOCK", location_code=qrt, closed_at=None,
+                return_request_id=rid, return_ownership="PENDING")
             upd("inventory.stock_item", r["id"], location_code=qrt, on_hand=pk["qty"], status="QUARANTINE")
             r.update(loc=qrt, on_hand=pk["qty"], status="QUARANTINE", consumed=False)
             ins("inventory.stock_movement", t, id=uid(f"mv:return:{gid}:{pk['id']}"), movement_type="RECEIPT",
@@ -1675,7 +1677,7 @@ def return_request(o, key, when, reason, status, cartons=0, channel="PORTAL", no
         raw("SELECT set_config('stockflow.same_receipt_merge', '', true);")
         upd("procurement.goods_receipts", gid, status="CLOSED", confirmed_at=t + timedelta(hours=1),
             confirmed_by=U[STAFF_OF[p][0]], closed_at=t + timedelta(hours=1))
-        commit()
+        # The return takes the goods in the receipt's own transaction (audit round 2 M1): no commit in between.
         upd("ordering.return_request", rid, status="RECEIVED", goods_receipt_id=gid, received_at=t + timedelta(hours=1),
             received_by=staff, receiving_location_code=qrt)
         upd("ordering.return_request_line", lid, received_quantity=units)
@@ -1919,8 +1921,10 @@ o.move("CANCELLED", T(10, 24, 10), U["truongkd"], "Khách hủy trước khi in"
 o.cancelled_at = T(10, 24, 10)
 
 
-def refund_cancelled(o, settled, refunded, reference):
-    """The cancelled order's money: everything collected is surplus, refundable in full (no fee before printing)."""
+def refund_cancelled(o, settled, refunded, reference, liquidated):
+    """The cancelled order's money: everything collected is surplus, refundable in full (no fee before printing). Once
+    it is paid back, the nightly run liquidates the signed contract (WF-05 Q-6): nothing was delivered, so LIQUIDATED,
+    never COMPLETED."""
     collected = sum(x["amount"] for x in o.payments if not x["void"])
     ins("payment.order_settlement", settled, id=uid("settlement:" + o.key), order_id=o.id, contract_id=o.contract,
         customer_id=o.c["id"], order_number=o.number, contract_number=o.contract_number, kind="ORDER_CANCELLED",
@@ -1931,9 +1935,11 @@ def refund_cancelled(o, settled, refunded, reference):
         order_number=o.number, amount=collected, currency="VND", refunded_on=refunded.date(), reference=reference,
         note="Hoàn tiền cọc do hủy đơn", status="RECORDED", recorded_by=U["ketoan"], recorded_at=refunded)
     commit()
+    upd("ordering.sales_contract", o.contract, status="LIQUIDATED", liquidated_at=liquidated)
+    commit()
 
 
-AFTER_MONEY = [lambda o=o: refund_cancelled(o, T(10, 24, 15), T(10, 26, 10), "HT26299NEX0001")]
+AFTER_MONEY = [lambda o=o: refund_cancelled(o, T(10, 24, 15), T(10, 26, 10), "HT26299NEX0001", T(10, 27, 1))]
 
 # ---- signed, the deposit not paid yet (due in a week); the customer asks to cancel, not decided
 o = Order("S3", "comtamsg", [(CTS_HOP, 8, 2200)], T(11, 3, 10), "BDG", sales="sales2")

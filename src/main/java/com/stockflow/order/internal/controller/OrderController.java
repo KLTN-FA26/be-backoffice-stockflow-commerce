@@ -81,6 +81,7 @@ class OrderController {
     private final com.stockflow.order.internal.service.ShippingAddressChanges addressChanges;
     private final com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility;
     private final com.stockflow.order.internal.service.OrderSources sources;
+    private final com.stockflow.order.internal.service.OrderSettlementService settlements;
 
     OrderController(OrderService orderService, CustomerService customerService,
                     CustomerOrders customerOrders,
@@ -88,8 +89,10 @@ class OrderController {
                     com.stockflow.order.internal.service.PartialShipments partialShipments,
                     com.stockflow.order.internal.service.ShippingAddressChanges addressChanges,
                     com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility,
-                    com.stockflow.order.internal.service.OrderSources sources) {
+                    com.stockflow.order.internal.service.OrderSources sources,
+                    com.stockflow.order.internal.service.OrderSettlementService settlements) {
         this.sources = sources;
+        this.settlements = settlements;
         this.addressChanges = addressChanges;
         this.warehouseVisibility = warehouseVisibility;
         this.partialShipments = partialShipments;
@@ -116,9 +119,9 @@ class OrderController {
                 .filter(order -> ownCustomerId != null || warehouseVisibility.visible(orderId, user))
                 .map(order -> ownCustomerId == null
                         // Staff read the customer's name on the order; a customer reads their own order as before.
-                        ? OrderWebMapper.toResponse(order, true, OrderWebMapper.labelOf(
+                        ? withSettlement(OrderWebMapper.toResponse(order, true, OrderWebMapper.labelOf(
                                 customerService.labels(java.util.List.of(order.customerId())), order.customerId()),
-                                extras(order))
+                                extras(order)))
                         : OrderWebMapper.toResponse(order, false, null, extras(order)))
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(
@@ -285,6 +288,9 @@ class OrderController {
         List<com.stockflow.order.api.PartialShipmentDecision> decisions = partialShipments.decisions(orderId);
         // WF4-CLOSE-HIST-SCHEMA: so are the closures of the rest (REMAINDER_CLOSURE), whether or not one moved the status.
         List<com.stockflow.order.api.RemainderClosure> closures = orderService.remainderClosures(orderId);
+        // WF-05 BE-52: and so are refund records voided while a claim was open, which moved no status (REFUND_VOIDED).
+        List<com.stockflow.order.internal.service.OrderSettlementService.RefundVoid> voids =
+                settlements.refundVoids(orderId);
         // WF04 G2: and so are Sales' changes of the delivery address (ADDRESS_CHANGE), before the first label.
         List<com.stockflow.order.internal.service.ShippingAddressChanges.Change> addresses =
                 addressChanges.changes(orderId);
@@ -292,7 +298,8 @@ class OrderController {
                         changes.stream().map(com.stockflow.order.api.OrderStatusChange::actorId),
                         decisions.stream().map(com.stockflow.order.api.PartialShipmentDecision::decidedBy),
                         closures.stream().map(com.stockflow.order.api.RemainderClosure::closedBy),
-                        addresses.stream().map(com.stockflow.order.internal.service.ShippingAddressChanges.Change::changedBy))
+                        addresses.stream().map(com.stockflow.order.internal.service.ShippingAddressChanges.Change::changedBy),
+                        voids.stream().map(com.stockflow.order.internal.service.OrderSettlementService.RefundVoid::voidedBy))
                 .flatMap(stream -> stream)
                 .filter(java.util.Objects::nonNull).distinct().toList());
         // Listed first so that a closure and the status change it caused, stamped alike, read closure first.
@@ -309,7 +316,10 @@ class OrderController {
                         decision.decidedBy() == null ? null : names.get(decision.decidedBy()))),
                 addresses.stream().map(change -> OrderStatusChangeResponse.addressChange(
                         OrderWebMapper.toAddress(change.previous()), OrderWebMapper.toAddress(change.next()),
-                        change.changedAt(), change.changedBy(), names.get(change.changedBy()))))
+                        change.changedAt(), change.changedBy(), names.get(change.changedBy()))),
+                voids.stream().map(voided -> OrderStatusChangeResponse.refundVoided(voided.reason(),
+                        voided.voidedAt(), voided.voidedBy(),
+                        voided.voidedBy() == null ? null : names.get(voided.voidedBy()))))
                 .flatMap(stream -> stream)
                 .sorted(java.util.Comparator.comparing(OrderStatusChangeResponse::occurredAt))
                 .toList());
@@ -390,5 +400,12 @@ class OrderController {
         return customerService.findByUserId(user.userId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND))
                 .customerId();
+    }
+
+    /** F-1 (BE-34): the order's detail for staff carries when it was refunded and what it still waits for. */
+    private OrderResponse withSettlement(OrderResponse response) {
+        return settlements.readiness(response.orderId())
+                .map(found -> response.withSettlement(found.refundedAt(), OrderWebMapper.toSettlement(found.view())))
+                .orElse(response);
     }
 }

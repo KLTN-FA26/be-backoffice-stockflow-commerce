@@ -51,7 +51,8 @@ class EInvoiceIssuanceResendTest {
     private final EInvoiceProvider provider = mock(EInvoiceProvider.class);
     private final Clock clock = mock(Clock.class);
     private final EInvoiceIssuance issuance = new EInvoiceIssuance(steps, providers, calls,
-            new InvoicingProperties(Duration.ofDays(1), null), clock, mock(AsyncTaskExecutor.class));
+            new InvoicingProperties(Duration.ofDays(1), null), clock, mock(AsyncTaskExecutor.class),
+            mock(EInvoiceDrafts.class), mock(EInvoiceQuotaGate.class), mock(EInvoicePortalReductions.class));
     private EInvoice.Snapshot invoice;
     private UUID id;
     private String transaction;
@@ -461,28 +462,42 @@ class EInvoiceIssuanceResendTest {
     }
 
     @Test
-    @DisplayName("second review, finding 2b: the provider cannot say what became of it - withdrawal refused until "
-            + "nothing was sent for a day, then allowed with the accountant's reason; 'still working' stays refused")
-    void anUnknownResultIsWithdrawnAfterADay() {
+    @DisplayName("WF-05 BE-07 (Q-5): an answer that says nothing is never a reason to take an invoice back, however "
+            + "long it lasts; only the provider's 'cannot confirm the result' is, after a day and on its support's "
+            + "written answer, under its own code; 'still working' stays refused")
+    void anUnknownResultIsWithdrawnOnlyWhenUnconfirmedAndOnTheSupportsWord() {
         when(provider.query(transaction)).thenReturn(Result.of(ResultState.UNKNOWN));
         lastSent(Duration.ZERO);
-        now(Duration.ofDays(1).minusSeconds(1));
+        now(Duration.ofDays(30));
         assertThatThrownBy(() -> issuance.withdraw(id, invoice.version(), "SePay support: no invoice", null))
                 .isInstanceOfSatisfying(BusinessException.class, refused -> assertThat(refused.errorCode())
                         .isEqualTo(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED));
-        verify(steps, never()).rejected(any(), any(), any(), any());
+
+        Result unconfirmed = new Result(ResultState.UNKNOWN, null, null, null, null, "SEPAY_RESULT_UNCONFIRMED",
+                "chua xac nhan duoc ket qua");
+        when(provider.resultUnconfirmed("SEPAY_RESULT_UNCONFIRMED")).thenReturn(true);
+        when(provider.query(transaction)).thenReturn(unconfirmed);
+        now(Duration.ofDays(1).minusSeconds(1));
+        assertThatThrownBy(() -> issuance.withdraw(id, invoice.version(), "stuck", "Ticket 4411", null))
+                .isInstanceOfSatisfying(BusinessException.class, refused -> assertThat(refused.errorCode())
+                        .isEqualTo(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED));
 
         when(provider.query(transaction)).thenReturn(Result.of(ResultState.PENDING));
         now(Duration.ofDays(2));
-        assertThatThrownBy(() -> issuance.withdraw(id, invoice.version(), "SePay support: no invoice", null))
+        assertThatThrownBy(() -> issuance.withdraw(id, invoice.version(), "stuck", "Ticket 4411", null))
                 .isInstanceOfSatisfying(BusinessException.class, refused -> assertThat(refused.errorCode())
                         .isEqualTo(ErrorCode.EINVOICE_WITHDRAWAL_REFUSED));
         verify(steps, never()).rejected(any(), any(), any(), any());
 
-        when(provider.query(transaction)).thenReturn(Result.of(ResultState.UNKNOWN));
+        when(provider.query(transaction)).thenReturn(unconfirmed);
         now(Duration.ofDays(1));
-        issuance.withdraw(id, invoice.version(), "SePay support: no invoice", null);
-        verify(steps).rejected(id, transaction, EInvoice.WITHDRAWN_CODE, "SePay support: no invoice");
+        assertThatThrownBy(() -> issuance.withdraw(id, invoice.version(), "stuck", null))
+                .isInstanceOfSatisfying(BusinessException.class, refused -> assertThat(refused.errorCode())
+                        .isEqualTo(ErrorCode.EINVOICE_WITHDRAWAL_EVIDENCE_REQUIRED));
+        verify(steps, never()).rejected(any(), any(), any(), any());
+        issuance.withdraw(id, invoice.version(), "SePay could not confirm", " Ticket 4411: no invoice issued ", null);
+        verify(steps).rejected(id, transaction, EInvoice.WITHDRAWN_RESULT_UNCONFIRMED_CODE,
+                "Ticket 4411: no invoice issued");
     }
 
     @Test

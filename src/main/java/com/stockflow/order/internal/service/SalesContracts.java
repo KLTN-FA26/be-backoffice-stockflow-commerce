@@ -110,13 +110,30 @@ public interface SalesContracts {
      * @param returnWindowDays the complaint period agreed, in calendar days from each delivery (Luật Thương mại Điều
      *                         318; WF-05 TH-1); null on a contract drawn up before it was written down, whose returns
      *                         use the configured default
+     * @param appendixAvailable whether the contract has an appendix to download - exactly when
+     *                         {@code GET .../contract/appendix} answers 200 ({@code ContractPaperService}): signed, and a
+     *                         delivery window in force differs from the one signed (17 BR-28). Without it the back
+     *                         office and the portal would show the button on every signed contract and explain a 404
      */
     record ContractView(UUID id, String contractNumber, UUID orderId, String orderNumber, String status, Party seller,
                         Party buyer, int freeSampleRounds, Totals totals, List<BatchView> deliverySchedule,
                         List<InstallmentView> paymentPlan, Instant sentAt, UUID sentBy, LocalDate signedOn,
                         String signedFileName, Instant signedAt, UUID signedBy, Instant cancelledAt,
                         UUID cancelledBy, String cancellationReason, Instant completedAt, long version,
-                        CreditWarning creditWarning, Integer returnWindowDays) {
+                        CreditWarning creditWarning, Integer returnWindowDays, boolean appendixAvailable) {
+
+        /** Before its appendix is looked at: a view drawn for a paper, or a test. */
+        public ContractView(UUID id, String contractNumber, UUID orderId, String orderNumber, String status,
+                            Party seller, Party buyer, int freeSampleRounds, Totals totals,
+                            List<BatchView> deliverySchedule, List<InstallmentView> paymentPlan, Instant sentAt,
+                            UUID sentBy, LocalDate signedOn, String signedFileName, Instant signedAt, UUID signedBy,
+                            Instant cancelledAt, UUID cancelledBy, String cancellationReason, Instant completedAt,
+                            long version, CreditWarning creditWarning, Integer returnWindowDays) {
+            this(id, contractNumber, orderId, orderNumber, status, seller, buyer, freeSampleRounds, totals,
+                    deliverySchedule, paymentPlan, sentAt, sentBy, signedOn, signedFileName, signedAt, signedBy,
+                    cancelledAt, cancelledBy, cancellationReason, completedAt, version, creditWarning,
+                    returnWindowDays, false);
+        }
 
         /** With no complaint period written down. */
         public ContractView(UUID id, String contractNumber, UUID orderId, String orderNumber, String status,
@@ -127,7 +144,7 @@ public interface SalesContracts {
                             long version, CreditWarning creditWarning) {
             this(id, contractNumber, orderId, orderNumber, status, seller, buyer, freeSampleRounds, totals,
                     deliverySchedule, paymentPlan, sentAt, sentBy, signedOn, signedFileName, signedAt, signedBy,
-                    cancelledAt, cancelledBy, cancellationReason, completedAt, version, creditWarning, null);
+                    cancelledAt, cancelledBy, cancellationReason, completedAt, version, creditWarning, null, false);
         }
     }
 

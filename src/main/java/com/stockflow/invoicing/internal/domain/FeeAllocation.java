@@ -41,18 +41,52 @@ public final class FeeAllocation {
      * @param units         the pieces on their goods lines
      * @param shippingFee   the shipping fee on their fee lines, before tax
      * @param plateFeeSkus  the SKUs whose plate fee is on one of them
+     * @param goodsValue    what their goods lines come to before tax (WF-05 Q-19: the fee is shared by value)
      */
-    public record Invoiced(long units, BigDecimal shippingFee, Set<String> plateFeeSkus) {
+    public record Invoiced(long units, BigDecimal shippingFee, Set<String> plateFeeSkus, BigDecimal goodsValue) {
 
-        public static final Invoiced NOTHING = new Invoiced(0, BigDecimal.ZERO, Set.of());
+        public static final Invoiced NOTHING = new Invoiced(0, BigDecimal.ZERO, Set.of(), BigDecimal.ZERO);
 
         public Invoiced {
             shippingFee = shippingFee == null ? BigDecimal.ZERO : shippingFee;
             plateFeeSkus = plateFeeSkus == null ? Set.of() : Set.copyOf(plateFeeSkus);
+            goodsValue = goodsValue == null ? BigDecimal.ZERO : goodsValue;
+        }
+
+        /** Without the goods' value: shares are then measured in pieces only. */
+        public Invoiced(long units, BigDecimal shippingFee, Set<String> plateFeeSkus) {
+            this(units, shippingFee, plateFeeSkus, BigDecimal.ZERO);
         }
     }
 
     private FeeAllocation() {
+    }
+
+    /**
+     * The part of the order's shipping fee, before tax, its invoices carry (WF-05 decision Q-19, owner 2026-11-23): the
+     * fee less the share waived because shipments of the order ended undelivered. Payment waives that share with VAT
+     * ({@code waivedGross}, a share of the fee line with VAT {@code feeGross}); the invoices carry
+     * {@code feeNet - round_half_up(feeNet x waivedGross / feeGross)}, the same share before tax - so a whole return
+     * leaves nothing and the rest invoice carries plate fees only. With VAT on top the invoices come to what payment
+     * keeps within the rounding of the VAT of each fee line: half a dong a line.
+     *
+     * <p>What {@link #shippingShareByValue}, {@link #shippingShare} and {@link #shippingRest} share out, for every
+     * caller alike - a delivery's invoice, the invoice of the order's rest, and the check whether that rest is still
+     * owed - or they would disagree on what is left and an order would wait for good on a rest nobody draws up.</p>
+     */
+    public static BigDecimal shippingFeeOwed(BigDecimal feeNet, BigDecimal feeGross, BigDecimal waivedGross) {
+        if (feeNet == null || feeNet.signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal net = feeNet.setScale(0, RoundingMode.HALF_UP);
+        if (waivedGross == null || waivedGross.signum() <= 0 || feeGross == null || feeGross.signum() <= 0) {
+            return net;
+        }
+        if (waivedGross.compareTo(feeGross) >= 0) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal waivedNet = net.multiply(waivedGross).divide(feeGross, 0, RoundingMode.HALF_UP);
+        return net.subtract(waivedNet).max(BigDecimal.ZERO);
     }
 
     /** Whether this invoice carries the plate fee of {@code sku}: no invoice of the order carries it yet. */
@@ -81,6 +115,36 @@ public final class FeeAllocation {
                         RoundingMode.HALF_UP);
         // Never below zero: invoices drawn up before part of the order was closed may already carry more than is
         // owed against what is left, and an original takes nothing back.
+        return owed.subtract(invoiced.shippingFee()).max(BigDecimal.ZERO);
+    }
+
+    /**
+     * This delivery's share of the order's shipping fee by the value of the goods it delivered (WF-05 Q-19), in whole
+     * dong; 0 when it has none. As {@link #shippingShare}, with value in place of pieces: what the order owes for
+     * everything invoiced so far and this delivery together, less what its invoices already carry; the delivery that
+     * completes the order takes the rest.
+     *
+     * <p><b>Why value.</b> Payment waives the fee of a shipment that came back by its goods' value
+     * ({@code OrderSettlement.shippingFeeShare}). Shared by pieces, a delivery of many cheap pieces invoiced before a
+     * shipment of a few dear ones came back carried more of the fee than payment keeps - and an issued invoice takes
+     * nothing back. Shared by value, each delivered shipment carries {@code fee x its value / the order's value}
+     * whatever came back before or after, which is the fee payment keeps for it: the invoices never carry more than is
+     * collected, beyond rounding.</p>
+     *
+     * @param fee           the fee the order's invoices carry, before tax ({@link #shippingFeeOwed})
+     * @param orderValue    what the goods the order means to deliver as it stands now are worth before tax
+     * @param shipmentValue what this shipment's goods are worth before tax
+     */
+    public static BigDecimal shippingShareByValue(BigDecimal fee, BigDecimal orderValue, BigDecimal shipmentValue,
+                                                  Invoiced invoiced) {
+        if (fee == null || fee.signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal whole = fee.setScale(0, RoundingMode.HALF_UP);
+        BigDecimal through = invoiced.goodsValue().max(BigDecimal.ZERO)
+                .add(shipmentValue == null ? BigDecimal.ZERO : shipmentValue.max(BigDecimal.ZERO));
+        BigDecimal owed = orderValue == null || orderValue.signum() <= 0 || through.compareTo(orderValue) >= 0 ? whole
+                : whole.multiply(through).divide(orderValue, 0, RoundingMode.HALF_UP);
         return owed.subtract(invoiced.shippingFee()).max(BigDecimal.ZERO);
     }
 

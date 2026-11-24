@@ -311,7 +311,7 @@ class DesignReviewIntegrationTest {
                         .get("artifactId").asText());
         try (var in = storage.download(sheetKey); PDDocument sheet = Loader.loadPDF(in.readAllBytes())) {
             String text = new org.apache.pdfbox.text.PDFTextStripper().getText(sheet);
-            assertThat(text.lines().filter(line -> line.contains("SKU riêng của khách")))
+            assertThat(text.lines().filter(line -> line.contains("Mã hàng của khách")))
                     .singleElement().asString().contains(customerSku);
             assertThat(text.lines().filter(line -> line.startsWith("Quy cách")))
                     .anySatisfy(line -> assertThat(line).contains(sku));
