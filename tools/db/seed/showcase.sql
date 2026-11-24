@@ -404,10 +404,10 @@ UPDATE inventory.inventory_items i
    SET rotatable = p.rotatable
   FROM s_product p WHERE i.sku = p.variant_sku;
 
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, weight_kg, length_cm,
-                                       width_cm, height_cm, active, default_shipping, version, created_at, created_by)
-SELECT pg_temp.sid('unit:' || p.variant_sku), i.id, 'THUNG', p.units, FALSE, p.carton_kg, p.length_cm, p.width_cm,
-       p.height_cm, TRUE, TRUE, 0, pg_temp.at(228, '10:30'), pg_temp.staff('quanly.bd')::text
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, weight_kg, length_cm,
+                                       width_cm, height_cm, active, version, created_at, created_by)
+SELECT pg_temp.sid('unit:' || p.variant_sku), i.id, 'THUNG', p.units, p.carton_kg, p.length_cm, p.width_cm,
+       p.height_cm, TRUE, 0, pg_temp.at(228, '10:30'), pg_temp.staff('quanly.bd')::text
   FROM s_product p JOIN inventory.inventory_items i ON i.sku = p.variant_sku;
 
 INSERT INTO product.product_categories (id, product_id, category_id, is_primary, version, created_at, created_by)
@@ -763,10 +763,10 @@ UPDATE inventory.inventory_items i
    SET rotatable = k.rotatable
   FROM s_sku k WHERE i.sku = k.sku;
 
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, weight_kg, length_cm,
-                                       width_cm, height_cm, active, default_shipping, version, created_at, created_by)
-SELECT pg_temp.sid('unit:' || k.sku), i.id, 'THUNG', k.units, FALSE, k.carton_kg, k.length_cm, k.width_cm, k.height_cm,
-       TRUE, TRUE, 0, pg_temp.at(k.since - 2, '14:10'), pg_temp.staff(k.sales)::text
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, weight_kg, length_cm,
+                                       width_cm, height_cm, active, version, created_at, created_by)
+SELECT pg_temp.sid('unit:' || k.sku), i.id, 'THUNG', k.units, k.carton_kg, k.length_cm, k.width_cm, k.height_cm,
+       TRUE, 0, pg_temp.at(k.since - 2, '14:10'), pg_temp.staff(k.sales)::text
   FROM s_sku k JOIN inventory.inventory_items i ON i.sku = k.sku;
 
 -- A SKU is sold by its carton (01 BR-11). Until the list of sales units is dropped (V20261226000100) the product
@@ -5093,7 +5093,7 @@ SELECT o.key, o.id AS order_id, o.wh, o.mgr, o.d,
   FROM h_order o
   JOIN h_line l ON l.key = o.key
   JOIN inventory.inventory_items i ON i.sku = l.sku
-  JOIN inventory.uom_conversions u ON u.inventory_item_id = i.id AND u.default_shipping AND u.active
+  JOIN inventory.uom_conversions u ON u.inventory_item_id = i.id AND u.active
  WHERE o.stage IN ('READY', 'PICKING', 'PACKED')
  GROUP BY o.key, o.id, o.wh, o.mgr, o.d;
 
@@ -5115,7 +5115,7 @@ UPDATE x_ful_est e
           FROM h_carton c
           JOIN h_line l ON l.key = c.key AND l.ln = c.ln
           JOIN inventory.inventory_items i ON i.sku = c.sku
-          JOIN inventory.uom_conversions u ON u.inventory_item_id = i.id AND u.default_shipping AND u.active
+          JOIN inventory.uom_conversions u ON u.inventory_item_id = i.id AND u.active
          GROUP BY c.key) b
  WHERE b.key = e.key;
 
