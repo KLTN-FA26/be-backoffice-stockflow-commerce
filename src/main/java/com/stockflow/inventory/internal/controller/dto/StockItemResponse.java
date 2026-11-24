@@ -11,6 +11,8 @@ import java.util.UUID;
  * duplication and is not. Returning the aggregate would publish its internal shape as the API
  * contract, so renaming a private field becomes a breaking change for the frontend. Returning
  * {@code StockAvailability} would tie the wire format to another module's view type.</p>
+ *
+ * <p>Quantities are in pieces and again in cartons (kltn-docs 01 BR-09). A stock row is the contents of one carton.</p>
  */
 @Schema(name = "StockItem", description = "Stock on hand for one SKU at one location")
 public record StockItemResponse(
@@ -27,6 +29,9 @@ public record StockItemResponse(
         @Schema(description = "Lot number; null when the product is not lot-tracked")
         String lotNumber,
 
+        @Schema(description = "Pieces in one carton of this SKU; null when it has no carton unit", nullable = true,
+                example = "1000")
+        Integer unitsPerCarton,
 
         @Schema(description = "Physical units present, including reserved ones; null while hiddenDuringCount",
                 nullable = true)
@@ -39,6 +44,16 @@ public record StockItemResponse(
                 + "hiddenDuringCount", nullable = true)
         Integer available,
 
+        @Schema(description = "onHand in cartons; null while hiddenDuringCount, when there is no carton unit, or when "
+                + "it is not a whole number of cartons", nullable = true)
+        Integer onHandCartons,
+
+        @Schema(description = "reserved in cartons; null as for onHandCartons", nullable = true)
+        Integer reservedCartons,
+
+        @Schema(description = "available in cartons; null as for onHandCartons", nullable = true)
+        Integer availableCartons,
+
         @Schema(example = "AVAILABLE")
         String status,
 
@@ -47,8 +62,12 @@ public record StockItemResponse(
         boolean hiddenDuringCount
 ) {
 
-    /** The same row with its book quantities withheld (SCRUM-146). */
+    /**
+     * The same row with its book quantities withheld (SCRUM-146). The cartons go too: one carton or none is the book
+     * the counter must not see. The carton's standard count is master data and stays.
+     */
     public StockItemResponse hidden() {
-        return new StockItemResponse(id, sku, locationCode, lotNumber, null, null, null, status, true);
+        return new StockItemResponse(id, sku, locationCode, lotNumber, unitsPerCarton, null, null, null,
+                null, null, null, status, true);
     }
 }

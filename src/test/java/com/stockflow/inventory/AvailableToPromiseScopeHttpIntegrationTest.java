@@ -47,7 +47,7 @@ class AvailableToPromiseScopeHttpIntegrationTest {
     void setUp() {
         mvc = new SecuredMvc(mockMvc, decoder);
         manager = tx.execute(s -> ReferenceRows.user(entityManager));
-        otherPrefix = "E" + UUID.randomUUID().toString().substring(0, 5).toUpperCase(Locale.ROOT);
+        otherPrefix = ReferenceRows.warehousePrefix("E");
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO identity.user_role (id, user_id, role_id, version, created_at)

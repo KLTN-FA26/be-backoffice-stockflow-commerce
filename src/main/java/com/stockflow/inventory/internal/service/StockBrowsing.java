@@ -33,11 +33,16 @@ public interface StockBrowsing {
      * The three quantities are null, and {@code hiddenDuringCount} true, for a row of a slot a cycle count holds when
      * the reader may not see the books (SCRUM-146).
      */
-    record StockRow(UUID stockItemId, String sku, String locationCode, String lotNumber, Integer onHand, Integer reserved, Integer available, StockStatus status, Instant receivedAt,
+    /**
+     * @param unitsPerCarton pieces in one carton of the SKU (kltn-docs 01 BR-09); null when it has no carton unit.
+     *                       Master data, so a row hidden from a blind counter keeps it
+     */
+    record StockRow(UUID stockItemId, String sku, String locationCode, String lotNumber, Integer unitsPerCarton,
+                    Integer onHand, Integer reserved, Integer available, StockStatus status, Instant receivedAt,
                     boolean hiddenDuringCount) {
 
         public StockRow hidden() {
-            return new StockRow(stockItemId, sku, locationCode, lotNumber, null, null, null, status,
+            return new StockRow(stockItemId, sku, locationCode, lotNumber, unitsPerCarton, null, null, null, status,
                     receivedAt, true);
         }
     }

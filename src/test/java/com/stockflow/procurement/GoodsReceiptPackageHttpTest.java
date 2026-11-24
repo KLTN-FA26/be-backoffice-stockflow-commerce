@@ -74,7 +74,8 @@ class GoodsReceiptPackageHttpTest {
     }
 
     @Test
-    @DisplayName("PUT lines with a unit and two cartons of the standard count: 200, the line's cartons with their LPNs, none loose")
+    @DisplayName("PUT lines with a unit and two cartons: 200, the line's cartons with their LPNs at the standard count, "
+            + "none loose; a carton quantity an older client still sends is ignored (03 BR-13: the system assigns it)")
     void countIntoCartonsAnswersWithLpns() throws Exception {
         String body = """
                 {"lines":[{"productionOrderLineId":"%s","locationCode":"%s","unitOfMeasure":"CARTON",

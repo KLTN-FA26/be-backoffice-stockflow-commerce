@@ -334,11 +334,11 @@ class ProductionReceiptIntegrationTest {
         return production.lines().getFirst().id();
     }
 
-    /** {@code n} new cartons, their count left to the standard. */
+    /** {@code n} new cartons, each holding the standard count. */
     private static List<NewPackage> cartons(int n) {
         List<NewPackage> cartons = new ArrayList<>();
         for (int i = 0; i < n; i++) {
-            cartons.add(new NewPackage(null, 0));
+            cartons.add(new NewPackage(null));
         }
         return cartons;
     }
@@ -532,8 +532,8 @@ class ProductionReceiptIntegrationTest {
 
         List<PackageView> first = line.packages();
         GoodsReceipts.LineView again = count(receipt, lineId(production), List.of(
-                new NewPackage(first.get(0).lpn(), PER_CARTON), new NewPackage(first.get(1).lpn().toLowerCase(Locale.ROOT),
-                        0), new NewPackage(null, 0))).lines().getFirst();
+                new NewPackage(first.get(0).lpn()), new NewPackage(first.get(1).lpn().toLowerCase(Locale.ROOT)),
+                new NewPackage(null))).lines().getFirst();
         assertThat(again.id()).as("the line keeps its id").isEqualTo(line.id());
         assertThat(again.packages()).extracting(PackageView::lpn).hasSize(3)
                 .contains(first.get(0).lpn(), first.get(1).lpn()).doesNotContain(first.get(2).lpn());
@@ -545,20 +545,18 @@ class ProductionReceiptIntegrationTest {
         // Every refusal of the request at once, each on its field.
         UUID unknown = Identifiers.newId();
         Throwable refused = catchThrowable(() -> receipts.replaceLines(receipt.id(), List.of(
-                new NewLine(lineId(production), 0, null, a.receiving(), null, null,
-                        List.of(new NewPackage(null, 0), new NewPackage(null, 48)), null),
-                new NewLine(unknown, 0, "LOT-A", a.bin(), null, null, List.of(), null))));
-        assertThat(code(refused)).isEqualTo(ErrorCode.RECEIPT_CARTON_NOT_STANDARD);
+                new NewLine(lineId(production), null, a.receiving(), null, null,
+                        List.of(new NewPackage(first.get(0).lpn()), new NewPackage(first.get(0).lpn())), null),
+                new NewLine(unknown, "LOT-A", a.bin(), null, null, List.of(), null))));
         assertThat(fields(refused)).containsExactlyInAnyOrder(
-                "lines[0].packages[1].quantity:RECEIPT_CARTON_NOT_STANDARD",
+                "lines[0].packages[1].lpn:VALIDATION_FAILED",
                 "lines[1].lotNumber:LOT_NOT_ALLOWED",
                 "lines[1].productionOrderLineId:RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER");
-        assertThat(ErrorCode.RECEIPT_CARTON_NOT_STANDARD.httpStatus()).isEqualTo(422);
         Throwable noCarton = catchThrowable(() -> receipts.replaceLines(receipt.id(), List.of(
-                new NewLine(lineId(production), 100, null, a.bin(), null, "BOX", List.of(), "SOMETHING-ELSE"))));
+                new NewLine(lineId(production), null, a.bin(), null, "BOX", List.of(), "SOMETHING-ELSE"))));
         assertThat(fields(noCarton)).containsExactlyInAnyOrder("lines[0].packages:VALIDATION_FAILED",
                 "lines[0].sku:RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER", "lines[0].locationCode:LOCATION_AREA_MISMATCH",
-                "lines[0].unitOfMeasure:UOM_CONVERSION_NOT_FOUND", "lines[0].quantity:VALIDATION_FAILED");
+                "lines[0].unitOfMeasure:UOM_CONVERSION_NOT_FOUND");
         Throwable twice = catchThrowable(() -> receipts.replaceLines(receipt.id(), List.of(
                 NewLine.ofProductionOrderLine(lineId(production), a.receiving(), cartons(1)),
                 NewLine.ofProductionOrderLine(lineId(production), a.receiving(), cartons(1)))));
@@ -589,7 +587,7 @@ class ProductionReceiptIntegrationTest {
         });
 
         Throwable named = catchThrowable(() -> count(receipt, lineId(production), List.of(
-                new NewPackage(counted.get(0).lpn(), PER_CARTON), new NewPackage(null, 0))));
+                new NewPackage(counted.get(0).lpn()), new NewPackage(null))));
         assertThat(fields(named)).containsExactly("lines[0].unitOfMeasure:RECEIPT_LINE_HAS_PACKAGES");
 
         GoodsReceipts.LineView recounted = count(receipt, lineId(production), cartons(2)).lines().getFirst();

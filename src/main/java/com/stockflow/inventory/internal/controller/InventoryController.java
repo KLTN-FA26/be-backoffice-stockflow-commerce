@@ -1,5 +1,7 @@
 package com.stockflow.inventory.internal.controller;
 
+import com.stockflow.inventory.api.CartonSpec;
+import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.StockAvailability;
 import com.stockflow.inventory.internal.service.StockConsumption;
@@ -71,16 +73,23 @@ import java.util.UUID;
 class InventoryController {
 
     private final InventoryService inventoryService;
+    private final InventoryControlService inventoryControl;
     private final StockConsumption stockConsumption;
     private final StockBrowsing browsing;
     private final InventoryWebMapper mapper;
 
-    InventoryController(InventoryService inventoryService, StockConsumption stockConsumption,
-                        StockBrowsing browsing, InventoryWebMapper mapper) {
+    InventoryController(InventoryService inventoryService, InventoryControlService inventoryControl,
+                        StockConsumption stockConsumption, StockBrowsing browsing, InventoryWebMapper mapper) {
         this.inventoryService = inventoryService;
+        this.inventoryControl = inventoryControl;
         this.stockConsumption = stockConsumption;
         this.browsing = browsing;
         this.mapper = mapper;
+    }
+
+    /** Pieces in one carton of the SKU, for showing stock in cartons too (kltn-docs 01 BR-09); null: no carton unit. */
+    private Integer unitsPerCarton(Sku sku) {
+        return inventoryControl.cartonSpec(sku).map(CartonSpec::unitsPerCarton).orElse(null);
     }
 
     @GetMapping("/stock-items")
@@ -90,13 +99,13 @@ class InventoryController {
     public ApiResponse<List<StockItemResponse>> stockItems(@RequestParam("sku") String sku,
                                                            @AuthenticatedUser Optional<CurrentUser> user) {
         List<StockAvailability> rows = inventoryService.availabilityOf(new Sku(sku));
-        if (!BlindCount.visibilityFor(user).hidesCountedSlots()) {
-            return ApiResponse.ok(mapper.toResponses(rows));
-        }
+        Integer perCarton = unitsPerCarton(new Sku(sku));
         // SCRUM-146: the books of a slot under a count are not for a counter; the row stays, its quantities do not.
-        Set<UUID> held = browsing.underCount(rows.stream().map(StockAvailability::stockItemId).toList());
+        Set<UUID> held = BlindCount.visibilityFor(user).hidesCountedSlots()
+                ? browsing.underCount(rows.stream().map(StockAvailability::stockItemId).toList())
+                : Set.of();
         return ApiResponse.ok(rows.stream().map(row -> held.contains(row.stockItemId())
-                ? mapper.toResponse(row).hidden() : mapper.toResponse(row)).toList());
+                ? mapper.toResponse(row, perCarton).hidden() : mapper.toResponse(row, perCarton)).toList());
     }
 
     @GetMapping("/warehouses/{warehouseId}/stock-items")
@@ -127,7 +136,8 @@ class InventoryController {
     @Operation(summary = "Inventory Level of one SKU per warehouse: on hand, available, reserved, ATP")
     @RequiresPermission(resource = InventoryResources.STOCK_ITEMS, action = Action.READ)
     public ApiResponse<List<StockLevelResponse>> stockLevels(@RequestParam("sku") String sku) {
-        return ApiResponse.ok(mapper.toLevelResponses(inventoryService.levelsOf(new Sku(sku))));
+        return ApiResponse.ok(mapper.toLevelResponses(inventoryService.levelsOf(new Sku(sku)),
+                unitsPerCarton(new Sku(sku))));
     }
 
     @GetMapping("/stock-items/atp")

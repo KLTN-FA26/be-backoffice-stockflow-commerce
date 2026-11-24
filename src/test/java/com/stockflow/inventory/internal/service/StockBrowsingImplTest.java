@@ -7,7 +7,9 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
 import com.stockflow.inventory.internal.domain.ReservationStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
+import com.stockflow.inventory.api.CartonSpec;
 import com.stockflow.inventory.internal.domain.WarehouseDirectory;
+import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.repository.SlotsUnderCount;
 import com.stockflow.inventory.internal.repository.StockBrowseSearch;
 import com.stockflow.support.WithCurrentUser;
@@ -21,6 +23,7 @@ import org.springframework.data.domain.Pageable;
 import java.time.Clock;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -43,7 +46,9 @@ class StockBrowsingImplTest {
     private final StockBrowseSearch search = mock(StockBrowseSearch.class);
     private final WarehouseDirectory warehouses = mock(WarehouseDirectory.class);
     private final SlotsUnderCount underCount = mock(SlotsUnderCount.class);
-    private final StockBrowsingImpl service = new StockBrowsingImpl(search, underCount, warehouses, Clock.fixed(NOW, ZoneOffset.UTC));
+    private final InventoryPolicyRepository policies = mock(InventoryPolicyRepository.class);
+    private final StockBrowsingImpl service = new StockBrowsingImpl(search, underCount, warehouses, policies,
+            Clock.fixed(NOW, ZoneOffset.UTC));
 
     private static CurrentUser clerkOf(UUID id, String prefix) {
         return new CurrentUser(UUID.randomUUID(), "clerk", Set.of(Role.WAREHOUSE_STAFF), Set.of(), DataScope.WAREHOUSE,
@@ -243,6 +248,25 @@ class StockBrowsingImplTest {
         @DisplayName("stock that is not AVAILABLE - quarantine, blocked - has nothing available")
         void notSellableHasNoAvailable() {
             assertThat(oneStockRow(stock(StockStatus.QUARANTINE, 50, 0)).available()).isZero();
+        }
+
+        @Test
+        @DisplayName("kltn-docs 01 BR-09: each row carries its SKU's pieces per carton, read once for the page's SKUs; "
+                + "a SKU with no carton unit has none")
+        void rowsCarryTheCartonCount() {
+            var cup = stock(StockStatus.AVAILABLE, 1000, 0);
+            var other = new StockBrowseSearch.StockRow(UUID.randomUUID(), "BOX-NO-CARTON", "HCM-A01-1-B", "L1", 7, 0,
+                    StockStatus.AVAILABLE, NOW);
+            when(warehouses.prefixOf(HCM)).thenReturn(Optional.of("HCM"));
+            when(search.stock(any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(cup, cup, other)));
+            when(policies.findCartonSpecs(List.of("CUP-12OZ", "BOX-NO-CARTON"))).thenReturn(Map.of("CUP-12OZ",
+                    new CartonSpec("CUP-12OZ", "THUNG", 1000, null, null, null, null, false)));
+
+            var rows = service.warehouseStock(HCM, new StockBrowsing.StockQuery(null, null, null, null, false, 0, 20,
+                    null), BookVisibility.FULL).items();
+
+            assertThat(rows).extracting(StockBrowsing.StockRow::unitsPerCarton).containsExactly(1000, 1000, null);
+            verify(policies).findCartonSpecs(List.of("CUP-12OZ", "BOX-NO-CARTON"));
         }
 
     }

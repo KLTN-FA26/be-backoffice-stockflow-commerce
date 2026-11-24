@@ -30,15 +30,14 @@ public interface GoodsReceipts {
 
     /**
      * One counted line of a production receipt (4A-5): its {@code productionOrderLineId}, the RECEIVING area its cartons
-     * stand in, and its cartons in {@code packages} - at least one, each holding the line's standard count (a carton's
-     * quantity may be left out, 0; any other count is refused, BR-13). {@code quantity} may be left out too (0): it is
-     * the cartons times their count. There is no lot to give: the lot is the production order's code (BR-03), and one
+     * stand in, and its cartons in {@code packages} - at least one, each holding the line's standard count, which the
+     * system assigns: no count of pieces is given (03 §3, BR-13), and a carton of another count is not listed. The
+     * line's pieces are its cartons times that count. There is no lot to give: the lot is the production order's code (BR-03), and one
      * given is refused on its field; nor an expiry date, which nothing records (01 BR-17, 03 BR-06; team plan 5-1).
      * {@code unitOfMeasure} is optional: when given it must be the SKU's carton, its one active packing unit (01 BR-03),
      * which must hold that count; {@code sku}, when given, must be the production order line's.
      */
-    record NewLine(UUID productionOrderLineId, int quantity, String lotNumber,
-                   String locationCode, String note, String unitOfMeasure, List<NewPackage> packages, String sku) {
+    record NewLine(UUID productionOrderLineId, String lotNumber, String locationCode, String note, String unitOfMeasure, List<NewPackage> packages, String sku) {
 
         public NewLine {
             packages = packages == null ? List.of() : List.copyOf(packages);
@@ -47,15 +46,12 @@ public interface GoodsReceipts {
         /** A line as a client usually sends it: its production order line, where its cartons are, the cartons. */
         public static NewLine ofProductionOrderLine(UUID productionOrderLineId, String locationCode,
                                                     List<NewPackage> packages) {
-            return new NewLine(productionOrderLineId, 0, null, locationCode, null, null, packages, null);
+            return new NewLine(productionOrderLineId, null, locationCode, null, null, packages, null);
         }
     }
 
-    /**
-     * One carton of a line: {@code lpn} names one labelled before to recount it; null labels a new one.
-     * {@code quantity} 0 means the line's standard count (4A-5, BR-13).
-     */
-    record NewPackage(String lpn, int quantity) {
+    /** One carton of a line, holding its standard count: {@code lpn} names one labelled before; null labels a new one. */
+    record NewPackage(String lpn) {
     }
 
     /**
