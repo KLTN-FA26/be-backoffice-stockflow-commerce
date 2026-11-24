@@ -114,15 +114,15 @@ class GoodsReceiptController {
             description = """
                     The whole count each time, one line per production order line: its `productionOrderLineId`, its \
                     RECEIVING `locationCode` and at least one carton in `packages`. An entry with an `lpn` recounts \
-                    that carton, one without labels a new one, a carton of the line left out is voided. Every carton \
-                    holds the line's standard count, so `quantity` (the line's and a carton's) may be left out. No \
+                    that carton, one without labels a new one, a carton of the line left out is voided. No count of \
+                    pieces: every carton holds the SKU's standard count, which the system assigns, and a carton of \
+                    another count is not listed - it goes back to the producer (BR-13). No \
                     `lotNumber`: the lot is the production order's code. `unitOfMeasure` names the \
                     SKU's carton of that count when it has several. The response gives each line's `packages` with \
                     their LPNs, to print the labels from.
 
                     Every line is checked before anything is refused; `fieldErrors` names each field at fault. Codes: \
-                    `RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER` (409), `RECEIPT_CARTON_NOT_STANDARD` (422: a carton of \
-                    another count, BR-13), `RECEIPT_EXCEEDS_PRODUCTION_ORDER` (409: more cartons than the line orders \
+                    `RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER` (409), `RECEIPT_EXCEEDS_PRODUCTION_ORDER` (409: more cartons than the line orders \
                     on all its receipts not cancelled, drafts included - BR-02), `PRODUCTION_ORDER_NOT_RECEIVABLE` \
                     (409), `RECEIPT_LINE_UNIT_INVALID` (422), `UOM_CONVERSION_NOT_FOUND` (404), \
                     `RECEIPT_LINE_HAS_PACKAGES` (409: a line that has had cartons left out, or a carton kept in \
@@ -131,13 +131,10 @@ class GoodsReceiptController {
     @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<GoodsReceiptResponse> replaceLines(@PathVariable UUID receiptId,
                                                           @Valid @RequestBody ReceiptLinesRequest request) {
-        // A quantity left out is 0: the count is taken from the cartons.
         return ApiResponse.ok(mapper.toResponse(receipts.replaceLines(receiptId, request.lines().stream()
-                .map(l -> new GoodsReceipts.NewLine(l.productionOrderLineId(), l.quantity() == null ? 0 : l.quantity(),
-                        l.lotNumber(), l.locationCode(), l.note(), l.unitOfMeasure(),
-                        l.packages() == null ? List.of() : l.packages().stream()
-                                .map(p -> new GoodsReceipts.NewPackage(p.lpn(), p.quantity() == null ? 0 : p.quantity()))
-                                .toList(), l.sku()))
+                .map(l -> new GoodsReceipts.NewLine(l.productionOrderLineId(), l.lotNumber(), l.locationCode(),
+                        l.note(), l.unitOfMeasure(), l.packages() == null ? List.of() : l.packages().stream()
+                                .map(p -> new GoodsReceipts.NewPackage(p.lpn())).toList(), l.sku()))
                 .toList())));
     }
 

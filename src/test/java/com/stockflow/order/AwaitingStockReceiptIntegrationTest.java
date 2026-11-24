@@ -313,7 +313,7 @@ class AwaitingStockReceiptIntegrationTest {
     private static List<NewPackage> cartons(int n) {
         List<NewPackage> cartons = new ArrayList<>();
         for (int i = 0; i < n; i++) {
-            cartons.add(new NewPackage(null, 0));
+            cartons.add(new NewPackage(null));
         }
         return cartons;
     }

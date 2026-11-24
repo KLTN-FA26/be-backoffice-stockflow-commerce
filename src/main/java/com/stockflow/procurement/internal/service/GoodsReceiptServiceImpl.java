@@ -166,9 +166,8 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
      * <p>kltn-docs 03 §4.1 step 2: the whole count, one line per production order line, each listing its cartons.
      * Locked as every receipt write is (see the class comment): the production order, then the receipt, then - through
      * inventory - the SKUs. Every line is checked before anything is refused, each refusal on its own field
-     * ({@code lines[i].productionOrderLineId}, {@code .locationCode}, {@code .packages}, {@code .packages[j].quantity},
-     * {@code .packages[j].lpn}, {@code .unitOfMeasure}, {@code .quantity}, {@code .lotNumber},
-     * {@code .sku}); {@code check_goods_receipt_line} checks the same again.</p>
+     * ({@code lines[i].productionOrderLineId}, {@code .locationCode}, {@code .packages}, {@code .packages[j].lpn},
+     * {@code .unitOfMeasure}, {@code .lotNumber}, {@code .sku}); {@code check_goods_receipt_line} checks the same again.</p>
      *
      * <p>BR-02 counts the cartons of every other receipt of the production order line that is not cancelled - drafts
      * included, as the documents say - under the production order's lock, so two counts cannot each see room the
@@ -256,15 +255,10 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             ReceiptLine was = current.get(line.id());
             UUID lineId = was == null ? Identifiers.newId() : was.id();
             List<StockPackageView> cartonsBefore = labelled.getOrDefault(lineId, List.of());
-            int cartons = standardCartons(errors, i, in, line);
+            int cartons = listedCartons(errors, i, in);
             UomConversion unit = cartonUnit(errors, i, in, line, unitsBySku.getOrDefault(line.sku(), List.of()),
                     cartonsBefore);
             int quantity = cartons * line.unitsPerCarton();
-            if (in.quantity() != 0 && in.quantity() != quantity) {
-                errors.add(i, "quantity", ErrorCode.VALIDATION_FAILED, ("%d carton(s) of %d hold %d units, not %d: "
-                        + "leave the quantity out, it is counted from the cartons").formatted(cartons,
-                        line.unitsPerCarton(), quantity, in.quantity()));
-            }
             int onOthers = elsewhere.getOrDefault(line.id(), 0) / line.unitsPerCarton();
             if (cartons > 0 && onOthers + cartons > line.cartons()) {
                 errors.add(i, "packages", ErrorCode.RECEIPT_EXCEEDS_PRODUCTION_ORDER, ("%s orders %d carton(s) and %d "
@@ -275,7 +269,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                 counted.add(ReceiptLine.countedForProductionOrder(lineId, line.id(), item.inventoryItemId(),
                         location.id(), quantity, production.code(), blankToNull(in.note()), unit.id()));
                 cartonCounts.add(new CartonCount(lineId, line.sku(), unit.id(), location.code(), in.packages().stream()
-                        .map(carton -> new NewPackage(carton.lpn(), line.unitsPerCarton())).toList()));
+                        .map(carton -> new NewPackage(carton.lpn())).toList()));
             }
         }
         errors.throwIfAny();
@@ -306,10 +300,10 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     // ------------------------------------------------------------------ production orders (4A-5)
 
     /**
-     * BR-12, BR-13: a line is received in cartons, at least one, each holding the line's standard count - a carton
-     * listed with no count holds it. Answers how many cartons are listed.
+     * BR-12, BR-13: a line is received in cartons, at least one, each holding the line's standard count - the system
+     * assigns it, nobody types a count. Answers how many cartons are listed.
      */
-    private static int standardCartons(LineErrors errors, int index, NewLine in, ReceivableProductionOrder.Line line) {
+    private static int listedCartons(LineErrors errors, int index, NewLine in) {
         if (in.packages().isEmpty()) {
             errors.add(index, "packages", ErrorCode.VALIDATION_FAILED,
                     "Goods are received in cartons: list at least one (BR-12)");
@@ -318,11 +312,6 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         Set<String> named = new HashSet<>();
         for (int j = 0; j < in.packages().size(); j++) {
             NewPackage carton = in.packages().get(j);
-            if (carton.quantity() != 0 && carton.quantity() != line.unitsPerCarton()) {
-                errors.add(index, "packages[%d].quantity".formatted(j), ErrorCode.RECEIPT_CARTON_NOT_STANDARD,
-                        ("A carton of %s holds its standard %d; one of %d is not received, it goes back to the producer "
-                                + "(BR-13)").formatted(line.sku(), line.unitsPerCarton(), carton.quantity()));
-            }
             String lpn = StockPackageView.normalLpn(carton.lpn());
             if (lpn != null && !named.add(lpn)) {
                 errors.add(index, "packages[%d].lpn".formatted(j), ErrorCode.VALIDATION_FAILED,

@@ -65,7 +65,7 @@ class StockPackageLabelHttpTest {
         UUID receiptId = receivables.draftReceipt(goods, clerk).id();
         String body = """
                 {"lines":[{"productionOrderLineId":"%s","locationCode":"%s",
-                           "packages":[{"quantity":1000},{"quantity":1000}]}]}""".formatted(
+                           "packages":[{},{}]}]}""".formatted(
                 goods.productionOrderLineId(), RECEIVING);
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, put("/api/v1/goods-receipts/" + receiptId + "/lines")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
