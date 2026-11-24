@@ -397,6 +397,19 @@ SELECT pg_temp.sid('variant:' || variant_sku), pg_temp.sid('product:' || code), 
        TRUE, signature, 0, 0, pg_temp.at(228, '09:00'), pg_temp.staff('sales1')::text
   FROM s_product;
 
+-- Each printable product's carton specification (01 BR-03), declared by the warehouse manager on its blank variant: a
+-- customer's own SKU inherits it when its design is approved (01 §4.8, ItemSpecifications.copy), so a design approved
+-- after this seed gets a SKU that can be quoted. tg_variant_inventory_item made the items just above.
+UPDATE inventory.inventory_items i
+   SET rotatable = p.rotatable
+  FROM s_product p WHERE i.sku = p.variant_sku;
+
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, weight_kg, length_cm,
+                                       width_cm, height_cm, active, default_shipping, version, created_at, created_by)
+SELECT pg_temp.sid('unit:' || p.variant_sku), i.id, 'THUNG', p.units, FALSE, p.carton_kg, p.length_cm, p.width_cm,
+       p.height_cm, TRUE, TRUE, 0, pg_temp.at(228, '10:30'), pg_temp.staff('quanly.bd')::text
+  FROM s_product p JOIN inventory.inventory_items i ON i.sku = p.variant_sku;
+
 INSERT INTO product.product_categories (id, product_id, category_id, is_primary, version, created_at, created_by)
 SELECT pg_temp.sid('product-category:' || code), pg_temp.sid('product:' || code), pg_temp.sid('category:' || category),
        TRUE, 0, pg_temp.at(228, '09:00'), pg_temp.staff('sales1')::text
@@ -756,10 +769,18 @@ SELECT pg_temp.sid('unit:' || k.sku), i.id, 'THUNG', k.units, FALSE, k.carton_kg
        TRUE, TRUE, 0, pg_temp.at(k.since - 2, '14:10'), pg_temp.staff(k.sales)::text
   FROM s_sku k JOIN inventory.inventory_items i ON i.sku = k.sku;
 
-INSERT INTO product.variant_sales_units (id, variant_id, uom_conversion_id, version, created_at, created_by)
-SELECT pg_temp.sid('sales-unit:' || sku), pg_temp.sid('variant:' || sku), pg_temp.sid('unit:' || sku), 0,
-       pg_temp.at(since - 2, '14:10'), pg_temp.staff(sales)::text
-  FROM s_sku;
+-- A SKU is sold by its carton (01 BR-11). Until the list of sales units is dropped (V20261226000100) the product
+-- screen reads it, so it is written where the table still exists; afterwards the carton above is the sales unit.
+DO $$
+BEGIN
+    IF to_regclass('product.variant_sales_units') IS NOT NULL THEN
+        EXECUTE $q$
+            INSERT INTO product.variant_sales_units (id, variant_id, uom_conversion_id, version, created_at, created_by)
+            SELECT pg_temp.sid('sales-unit:' || sku), pg_temp.sid('variant:' || sku), pg_temp.sid('unit:' || sku), 0,
+                   pg_temp.at(since - 2, '14:10'), pg_temp.staff(sales)::text
+              FROM s_sku $q$;
+    END IF;
+END $$;
 
 -- From 10 cartons the price plus 100, from 30 the price, from 60 the price less 100 (VND a unit).
 INSERT INTO catalog.customer_price (id, customer_id, sku, currency, note, version, created_at, created_by)
