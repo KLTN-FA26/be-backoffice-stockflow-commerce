@@ -129,14 +129,17 @@ class ContractLiquidationDocument {
         blocks.add(DocumentParts.nationalHead(t));
         String title = t.getString("liquidation.pdf.title");
         blocks.add(new Title(title, t.getString("document.number") + " " + f.number(), null));
-        blocks.add(DocumentParts.basis(t.getString("contract.pdf.basis.civil")));
-        blocks.add(DocumentParts.basis(t.getString("contract.pdf.basis.trade")));
+        // The two laws by number and date, a line each: the contract this ends cites them in full.
+        blocks.add(DocumentParts.basis(t.getString("liquidation.pdf.basis.civil")));
+        blocks.add(DocumentParts.basis(t.getString("liquidation.pdf.basis.trade")));
         blocks.add(DocumentParts.basis(t.getString("liquidation.pdf.basis.contract").formatted(f.contractNumber(),
                 contractDate)));
         blocks.add(DocumentParts.basis(t.getString("liquidation.pdf.basis.records")));
         blocks.add(DocumentParts.today(t, head, f.dated()));
-        SalesDocumentLines.party(blocks, t, "contract.pdf.seller", f.seller(), head);
-        SalesDocumentLines.party(blocks, t, "contract.pdf.buyer", f.buyer(), null);
+        DocumentParts.partyOfRecord(blocks, t, t.getString("contract.pdf.seller"),
+                SalesDocumentLines.party(t, f.seller(), head));
+        DocumentParts.partyOfRecord(blocks, t, t.getString("contract.pdf.buyer"),
+                SalesDocumentLines.party(t, f.buyer(), null));
         blocks.add(DocumentParts.lead(t.getString("liquidation.pdf.agreed")));
 
         DocumentClauses clauses = new DocumentClauses(blocks, t, "liquidation.pdf");

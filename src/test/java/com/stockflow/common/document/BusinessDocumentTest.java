@@ -308,6 +308,47 @@ class BusinessDocumentTest {
                 "ĐẠI DIỆN BÊN B");
     }
 
+    /** {@code count} one-line points and two signature blocks: what a short record ends with. */
+    private static List<Block> pointsAndSignatures(int count) {
+        List<Block> blocks = new ArrayList<>();
+        for (int i = 1; i <= count; i++) {
+            blocks.add(Paragraph.numbered("%d.".formatted(i), Run.of("Khoản %d của biên bản.".formatted(i))));
+        }
+        blocks.add(new Signatures(null, List.of(
+                new Signer("ĐẠI DIỆN BÊN A", "(Ký, ghi rõ họ tên, đóng dấu)", "Trần Quốc An"),
+                new Signer("ĐẠI DIỆN BÊN B", "(Ký, ghi rõ họ tên, đóng dấu)", "Lê Thị Mộc Lam"))));
+        return blocks;
+    }
+
+    @Test
+    @DisplayName("demo run 24/11: a paper a few lines too long for its page is set tighter and ends on that page, "
+            + "instead of on a second one that holds its signatures and little else")
+    void aFewLinesOverIsSetTighter() throws IOException {
+        // 28 points and the signature blocks fill a page as the layout sets it; 33 are five lines over.
+        Extent fits = extent(BusinessDocument.draw(FONTS, official(null), "t", pointsAndSignatures(28)));
+        Extent tighter = extent(BusinessDocument.draw(FONTS, official(null), "t", pointsAndSignatures(33)));
+
+        assertThat(fits.pages()).hasSize(1);
+        assertThat(tighter.pages()).hasSize(1);
+        assertThat(tighter.pages().getFirst()).containsSubsequence("Khoản 1 của biên bản.", "Khoản 33 của biên bản.",
+                "ĐẠI DIỆN BÊN A", "Trần Quốc An");
+        assertThat(tighter.lowest()).as("above the bottom margin").isLessThanOrEqualTo(
+                PDRectangle.A4.getHeight() - BusinessDocument.mm(20) + 1);
+    }
+
+    @Test
+    @DisplayName("a paper too long to end on the page before shares its content out: the last page carries a fair "
+            + "part of it with the signatures, not the signatures and the one point before them")
+    void tooLongToSaveThePageIsSharedOut() throws IOException {
+        Extent extent = extent(BusinessDocument.draw(FONTS, official(null), "t", pointsAndSignatures(38)));
+
+        assertThat(extent.pages()).hasSize(2);
+        assertThat(extent.pages().get(0)).contains("Khoản 1 của biên bản.", "Khoản 25 của biên bản.")
+                .doesNotContain("Khoản 33 của biên bản.", "ĐẠI DIỆN");
+        assertThat(extent.pages().get(1)).containsSubsequence("Khoản 33 của biên bản.", "Khoản 38 của biên bản.",
+                "ĐẠI DIỆN BÊN A", "ĐẠI DIỆN BÊN B");
+    }
+
     @Test
     @DisplayName("every page carries the document's number and 'Trang x/y'; a draft carries its watermark on each")
     void footersAndWatermark() throws IOException {

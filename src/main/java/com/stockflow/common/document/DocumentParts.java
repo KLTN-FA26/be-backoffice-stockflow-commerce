@@ -162,6 +162,47 @@ public final class DocumentParts {
         }
     }
 
+    /**
+     * A party's block as a record ("biên bản") names it: its role and name, its address, its tax code and phone on
+     * one line, and who represents it. Not its e-mail or the account it is paid into: a record states what two
+     * companies found or agreed, it is not where one learns how to reach or pay the other - the contract and the
+     * invoice are - and the five lines they took of two blocks are what sent a one-page record to a second page with
+     * its signatures alone (demo run 24/11).
+     */
+    public static void partyOfRecord(List<Block> blocks, ResourceBundle t, String role, Party party) {
+        partyOfRecord(blocks, t, role, party, false);
+    }
+
+    /**
+     * {@link #partyOfRecord(List, ResourceBundle, String, Party)}, with the account the party is paid into where
+     * {@code account} asks for it: a record of what one company owes the other is read for where to pay it.
+     */
+    public static void partyOfRecord(List<Block> blocks, ResourceBundle t, String role, Party party,
+                                     boolean account) {
+        blocks.add(Paragraph.of(Run.bold(role + ": "), Run.bold(party.name())).align(Align.LEFT).after(0));
+        List<Field> fields = new ArrayList<>();
+        field(fields, t, "document.party.address", party.address());
+        if (filled(party.taxCode()) && filled(party.phone())) {
+            fields.add(Field.of(t.getString("document.party.taxCode"), party.taxCode() + " - "
+                    + t.getString("document.party.phone") + ": " + party.phone()));
+        } else {
+            field(fields, t, "document.party.taxCode", party.taxCode());
+            field(fields, t, "document.party.phone", party.phone());
+        }
+        if (account) {
+            field(fields, t, "document.party.account", party.account());
+        }
+        if (filled(party.representative())) {
+            field(fields, t, "document.party.representative", filled(party.representativeTitle())
+                    ? t.getString("document.party.representativeTitled").formatted(party.representative(),
+                    party.representativeTitle())
+                    : party.representative());
+        }
+        if (!fields.isEmpty()) {
+            blocks.add(new Fields(fields, 0));
+        }
+    }
+
     private static void field(List<Field> fields, ResourceBundle t, String key, String value) {
         if (filled(value)) {
             fields.add(Field.of(t.getString(key), value));

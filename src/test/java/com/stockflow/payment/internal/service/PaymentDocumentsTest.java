@@ -158,4 +158,35 @@ class PaymentDocumentsTest {
                 + "số tiền là 1.500.000 đồng.", "Trang " + pages + "/" + pages)
                 .doesNotContain("Căn cứ Hợp đồng", "nợ quá hạn");
     }
+
+    @Test
+    @DisplayName("demo run 24/11: a month of 57 entries with their full descriptions is a ledger of a few pages, not "
+            + "eight - the description has the width, a row two or three lines - and it ends on a page that carries "
+            + "the end of the ledger with the signatures")
+    void aMonthOfEntriesEndsWell() throws IOException {
+        List<DebtReconciliationDocument.Entry> entries = new ArrayList<>();
+        for (int i = 1; i <= 57; i++) {
+            int day = 1 + i / 3;
+            String order = "20261109-95%04d".formatted(i);
+            entries.add(i % 3 == 0
+                    ? entry(day, "FT20261115%05d".formatted(i), "Thanh toán đợt 1, Hợp đồng HD-" + order + "-1", 0,
+                    2_073_600)
+                    : entry(day, "HD-" + order + "-1", "Đến hạn thanh toán đợt " + (1 + i % 2) + " - "
+                    + (i % 2 == 0 ? "Đặt cọc khi ký" : "Thanh toán sau giao hàng") + ", đơn hàng SO-" + order,
+                    2_073_600 + 1_000L * i, 0));
+        }
+        byte[] pdf = DocumentSamples.keep("debt-reconciliation-demo-57",
+                new DebtReconciliationDocument(fonts, DocumentSamples.seller()).render(
+                        new DebtReconciliationDocument.Facts("BBDCCN-0123456789-20261224", LocalDate.of(2026, 12, 24),
+                                LocalDate.of(2026, 12, 1), LocalDate.of(2026, 12, 24), null,
+                                new DocumentParts.Party("Quán cà phê Mộc", "0123456789", "25 Nguyễn Huệ, Phường Sài "
+                                        + "Gòn, TP. Hồ Chí Minh", "Trần Văn Mộc", "Giám đốc"),
+                                new BigDecimal("2948400"), entries, new BigDecimal("2948400"))));
+
+        int pages = DocumentSamples.pages(pdf);
+        assertThat(pages).isLessThanOrEqualTo(5);
+        assertThat(DocumentSamples.within(pdf, 30, 15)).isTrue();
+        assertThat(DocumentSamples.text(pdf, pages)).as("the last page is not the signatures alone")
+                .containsSubsequence("Số dư cuối kỳ", "Kết luận:", "ĐẠI DIỆN BÊN A", "Trần Văn Mộc");
+    }
 }

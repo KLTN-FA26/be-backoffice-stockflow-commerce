@@ -5,6 +5,7 @@ import com.stockflow.common.document.BusinessDocument.Align;
 import com.stockflow.common.document.BusinessDocument.Block;
 import com.stockflow.common.document.BusinessDocument.Cell;
 import com.stockflow.common.document.BusinessDocument.Column;
+import com.stockflow.common.document.BusinessDocument.Layout;
 import com.stockflow.common.document.BusinessDocument.Paragraph;
 import com.stockflow.common.document.BusinessDocument.Run;
 import com.stockflow.common.document.BusinessDocument.Signatures;
@@ -64,6 +65,9 @@ class DebtReconciliationDocument {
     record Entry(LocalDate date, String reference, String description, BigDecimal debit, BigDecimal credit) {
     }
 
+    /** The text in the ledger, in points. */
+    private static final float TABLE = 10;
+
     private final DocumentFonts fonts;
     private final SellerLetterhead letterhead;
 
@@ -90,8 +94,8 @@ class DebtReconciliationDocument {
         blocks.add(DocumentParts.basis(t.getString("debt-reconciliation.pdf.basis.records")));
         blocks.add(DocumentParts.basis(t.getString("debt-reconciliation.pdf.basis.agreement")));
         blocks.add(DocumentParts.today(t, head, f.dated()));
-        DocumentParts.party(blocks, t, t.getString("document.party.seller"), seller);
-        DocumentParts.party(blocks, t, t.getString("document.party.buyer"), f.buyer());
+        DocumentParts.partyOfRecord(blocks, t, t.getString("document.party.seller"), seller, true);
+        DocumentParts.partyOfRecord(blocks, t, t.getString("document.party.buyer"), f.buyer(), true);
         blocks.add(DocumentParts.lead(t.getString("debt-reconciliation.pdf.agreed").formatted(from, to)));
 
         BigDecimal balance = f.opening();
@@ -111,13 +115,17 @@ class DebtReconciliationDocument {
         rows.add(total(t.getString("debt-reconciliation.pdf.movements"), DocumentFormats.money(debits),
                 DocumentFormats.money(credits), null));
         rows.add(total(t.getString("debt-reconciliation.pdf.closing"), "", "", balance));
-        blocks.add(new Table(List.of(new Column(t.getString("document.goods.no"), 26, Align.CENTRE),
-                new Column(t.getString("debt-reconciliation.pdf.col.date"), 56, Align.CENTRE),
-                new Column(t.getString("debt-reconciliation.pdf.col.reference"), 104, Align.LEFT),
-                new Column(t.getString("debt-reconciliation.pdf.col.description"), 102, Align.LEFT),
-                new Column(t.getString("debt-reconciliation.pdf.col.debit"), 62, Align.RIGHT),
-                new Column(t.getString("debt-reconciliation.pdf.col.credit"), 62, Align.RIGHT),
-                new Column(t.getString("debt-reconciliation.pdf.col.balance"), 66, Align.RIGHT)), rows));
+        // The description gets what the other columns can spare. It is the one column of sentences ("Đến hạn thanh
+        // toán đợt 1 - Đặt cọc khi ký, đơn hàng ..."), and in a column as narrow as a figure's it ran to six lines a
+        // row: 57 entries took eight pages (demo run 24/11). The others are as wide as what they hold - a date, a
+        // document number broken at its hyphens, an amount of hundreds of millions in bold.
+        blocks.add(new Table(List.of(new Column(t.getString("document.goods.no"), 22, Align.CENTRE),
+                new Column(t.getString("debt-reconciliation.pdf.col.date"), 53, Align.CENTRE),
+                new Column(t.getString("debt-reconciliation.pdf.col.reference"), 84, Align.LEFT),
+                new Column(t.getString("debt-reconciliation.pdf.col.description"), 134, Align.LEFT),
+                new Column(t.getString("debt-reconciliation.pdf.col.debit"), 58, Align.RIGHT),
+                new Column(t.getString("debt-reconciliation.pdf.col.credit"), 58, Align.RIGHT),
+                new Column(t.getString("debt-reconciliation.pdf.col.balance"), 58, Align.RIGHT)), rows));
 
         String key = balance.signum() > 0 ? "debt-reconciliation.pdf.conclusion.owes"
                 : balance.signum() < 0 ? "debt-reconciliation.pdf.conclusion.owed"
@@ -136,8 +144,12 @@ class DebtReconciliationDocument {
         blocks.add(new Signatures(null, List.of(
                 DocumentParts.signatory(t, t.getString("document.sign.partyA"), seller),
                 DocumentParts.signatory(t, t.getString("document.sign.partyB"), f.buyer()))));
-        return BusinessDocument.draw(fonts, DocumentParts.official(t, f.number(), null), title + " " + f.number(),
-                blocks);
+        // A ledger of seven columns: its table is set at 10 pt, as the delivery note's is, the text around it as any
+        // record's.
+        Layout official = DocumentParts.official(t, f.number(), null);
+        return BusinessDocument.draw(fonts, new Layout(official.margins(), official.size(), TABLE, official.accent(),
+                official.footerLeft(), official.footerCentre(), official.pageLabel(), official.watermark()),
+                title + " " + f.number(), blocks);
     }
 
     /** A row that states a balance or sums the period, in bold across the columns an entry fills. */

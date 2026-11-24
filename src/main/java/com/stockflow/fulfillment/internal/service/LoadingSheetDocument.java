@@ -81,6 +81,11 @@ class LoadingSheetDocument {
     private static final float DIAGRAM_MAX_HEIGHT = 105;
     private static final float FACT_ROW = 14;
     private static final float FACT_LABEL = 100;
+    /**
+     * The room to sign in, in millimetres: three people sign by hand at a loading dock, no one seals - and a seal's
+     * room under a list of three cartons sent the signatures to a page of their own.
+     */
+    private static final double SIGNING_MM = 14;
     /** The carton list's text: eight columns of codes, one line a carton. */
     private static final float LIST_SIZE = 8;
 
@@ -150,7 +155,8 @@ class LoadingSheetDocument {
         blocks.add(new Signatures(null, List.of(
                 new Signer(t.getString("loading-sheet.pdf.sign.dispatcher"), caption, null),
                 new Signer(t.getString("loading-sheet.pdf.sign.loader"), caption, null),
-                new Signer(t.getString("loading-sheet.pdf.sign.driver"), caption, null))));
+                new Signer(t.getString("loading-sheet.pdf.sign.driver"), caption, null)),
+                BusinessDocument.mm(SIGNING_MM)));
 
         float margin = BusinessDocument.mm(15);
         BusinessDocument.Layout page = new BusinessDocument.Layout(
@@ -396,14 +402,14 @@ class LoadingSheetDocument {
                     Cell.of(orientation)));
         }
         BigDecimal total = boxes.stream().map(Layout.Box::weightKg).reduce(BigDecimal.ZERO, BigDecimal::add);
-        return new Table(List.of(new Column(t.getString("loading-sheet.pdf.col.seq"), 24, Align.CENTRE),
-                new Column(t.getString("loading-sheet.pdf.col.lpn"), 88, Align.LEFT),
+        return new Table(List.of(new Column(t.getString("loading-sheet.pdf.col.seq"), 23, Align.CENTRE),
+                new Column(t.getString("loading-sheet.pdf.col.lpn"), 97, Align.LEFT),
                 new Column(t.getString("loading-sheet.pdf.col.order"), 80, Align.LEFT),
-                new Column(t.getString("loading-sheet.pdf.col.sku"), 120, Align.LEFT),
-                new Column(t.getString("loading-sheet.pdf.col.size"), 42, Align.RIGHT),
-                new Column(t.getString("loading-sheet.pdf.col.weight"), 24, Align.RIGHT),
-                new Column(t.getString("loading-sheet.pdf.col.position"), 54, Align.RIGHT),
-                new Column(t.getString("loading-sheet.pdf.col.orientation"), 64, Align.LEFT)), rows,
+                new Column(t.getString("loading-sheet.pdf.col.sku"), 115, Align.LEFT),
+                new Column(t.getString("loading-sheet.pdf.col.size"), 41, Align.RIGHT),
+                new Column(t.getString("loading-sheet.pdf.col.weight"), 25, Align.RIGHT),
+                new Column(t.getString("loading-sheet.pdf.col.position"), 53, Align.RIGHT),
+                new Column(t.getString("loading-sheet.pdf.col.orientation"), 62, Align.LEFT)), rows,
                 List.of(new Summary(t.getString("loading-sheet.pdf.total").formatted(boxes.size()),
                         n.number(total), true)), 5);
     }

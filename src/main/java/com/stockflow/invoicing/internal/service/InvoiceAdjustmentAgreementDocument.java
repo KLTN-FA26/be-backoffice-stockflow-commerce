@@ -84,8 +84,8 @@ class InvoiceAdjustmentAgreementDocument {
         blocks.add(DocumentParts.basis(t.getString("invoice-agreement.pdf.basis.decree")));
         blocks.add(DocumentParts.basis(t.getString("invoice-agreement.pdf.basis.circular")));
         blocks.add(DocumentParts.today(t, head, f.dated()));
-        DocumentParts.party(blocks, t, t.getString("document.party.seller"), seller);
-        DocumentParts.party(blocks, t, t.getString("document.party.buyer"), f.buyer());
+        DocumentParts.partyOfRecord(blocks, t, t.getString("document.party.seller"), seller);
+        DocumentParts.partyOfRecord(blocks, t, t.getString("document.party.buyer"), f.buyer());
 
         String invoice = t.getString("invoice-agreement.pdf.invoice").formatted(f.templateCode(), f.symbol(),
                 "%08d".formatted(f.invoiceNumber()), DocumentFormats.longDate(f.invoiceDate()));

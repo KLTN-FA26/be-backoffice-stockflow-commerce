@@ -94,14 +94,37 @@ class DeliveryNoteDocumentTest {
     }
 
     @Test
-    @DisplayName("demo run 24/11, D-7: forty cartons of one SKU - one tall row of LPNs - and the goods table's header "
-            + "stays on the page its first row is on, never alone at the foot of the page before")
-    void theHeaderStaysWithItsCartons() throws IOException {
+    @DisplayName("demo run 24/11: forty cartons of one packing run are one line of the note - the run's first and "
+            + "last LPN - and the note one page, where they were forty lines and a second page")
+    void aRunOfCartonsIsOneLine() throws IOException {
+        byte[] pdf = DocumentSamples.keep("delivery-note-40-cartons", document.render(fortyCartons(1)));
+
+        assertThat(DocumentSamples.pages(pdf)).isEqualTo(1);
+        assertThat(DocumentSamples.within(pdf, 30, 15)).as("inside the margins").isTrue();
+        assertThat(DocumentSamples.text(pdf)).containsSubsequence("Mã thùng (LPN): LPN-20261124-000001 đến",
+                        "LPN-20261124-000040", "Tổng cộng", "40", "40.000", "Thông tin vận chuyển",
+                        "ĐẠI DIỆN BÊN NHẬN")
+                .doesNotContain("LPN-20261124-000002");
+    }
+
+    @Test
+    @DisplayName("LPNs that follow one another are written as a run from three up; a pair, a gap, another prefix or "
+            + "another length is listed one by one")
+    void runsOfLpns() {
+        assertThat(DeliveryNoteDocument.runs(List.of("LPN-000001", "LPN-000002", "LPN-000003", "LPN-000007",
+                "LPN-000008", "LPN-000010", "LPX-000011", "LPX-000012", "LPX-000013", "LPX-0000014", "C9", "C10",
+                "C11"), "%s đến %s")).containsExactly("LPN-000001 đến LPN-000003", "LPN-000007", "LPN-000008",
+                "LPN-000010", "LPX-000011 đến LPX-000013", "LPX-0000014", "C9", "C10", "C11");
+        assertThat(DeliveryNoteDocument.runs(List.of(), "%s đến %s")).isEmpty();
+    }
+
+    /** Forty cartons of one SKU, their LPNs {@code step} apart: 1 is one packing run, more is forty LPNs to list. */
+    private static DeliveryNoteDocument.Facts fortyCartons(int step) {
         List<ShippedCarton> cartons = new java.util.ArrayList<>();
         for (int i = 1; i <= 40; i++) {
-            cartons.add(new ShippedCarton("LPN-20261124-%06d".formatted(i), "LY12-MOC-01", "LOT-1", 1_000));
+            cartons.add(new ShippedCarton("LPN-20261124-%06d".formatted(i * step), "LY12-MOC-01", "LOT-1", 1_000));
         }
-        DeliveryNoteDocument.Facts facts = new DeliveryNoteDocument.Facts("SO-20261109-950001-S1",
+        return new DeliveryNoteDocument.Facts("SO-20261109-950001-S1",
                 "SO-20261109-950001", "HD-20261109-950001-1", 1, false, "Kho Hồ Chí Minh",
                 "Lô C12, Đường số 3, Phường Tân Tạo, Thành phố Hồ Chí Minh", DocumentSamples.LONG_NAME,
                 "Số 12 Đường Nguyễn Huệ, Phường Sài Gòn, Thành phố Hồ Chí Minh",
@@ -109,7 +132,13 @@ class DeliveryNoteDocumentTest {
                         "Xe tải Nhanh", "51C-123.45", "Nguyễn Văn Tài", "0912345678", "VD-WF5A-1")),
                 Instant.parse("2026-11-24T02:05:00Z"), DeliveryNoteDocument.bySku(cartons,
                         Map.of("LY12-MOC-01", "Ly giấy 2 lớp in logo Mộc - 12 oz")), LocalDate.of(2026, 11, 24));
-        byte[] pdf = DocumentSamples.keep("delivery-note-40-cartons", document.render(facts));
+    }
+
+    @Test
+    @DisplayName("demo run 24/11, D-7: forty cartons that are no run - one tall row of LPNs - and the goods table's "
+            + "header stays on the page its first row is on, never alone at the foot of the page before")
+    void theHeaderStaysWithItsCartons() throws IOException {
+        byte[] pdf = DocumentSamples.keep("delivery-note-40-cartons-listed", document.render(fortyCartons(3)));
 
         int header = -1;
         int firstRow = -1;
@@ -118,18 +147,18 @@ class DeliveryNoteDocumentTest {
             if (header < 0 && text.contains("Số thùng")) {
                 header = page;
             }
-            if (firstRow < 0 && text.contains("LPN-20261124-000001")) {
+            if (firstRow < 0 && text.contains("LPN-20261124-000003")) {
                 firstRow = page;
             }
         }
         assertThat(header).as("the header is printed").isPositive();
         assertThat(firstRow).as("on the page of the header, not the one after").isEqualTo(header);
-        assertThat(DocumentSamples.text(pdf)).contains("LPN-20261124-000040");
+        assertThat(DocumentSamples.text(pdf)).contains("LPN-20261124-000120");
 
         // The handover and the signatures follow where the goods end: no page of their own, no third page.
         int last = DocumentSamples.pages(pdf);
         assertThat(last).as("the goods run onto page 2, the signatures under them").isEqualTo(2);
-        assertThat(DocumentSamples.text(pdf, last)).containsSubsequence("LPN-20261124-000040", "Tổng cộng",
+        assertThat(DocumentSamples.text(pdf, last)).containsSubsequence("LPN-20261124-000120", "Tổng cộng",
                 "Thông tin vận chuyển", "Tình trạng hàng hóa khi nhận", "ĐẠI DIỆN BÊN GIAO", "ĐẠI DIỆN BÊN NHẬN");
     }
 
@@ -187,16 +216,18 @@ class DeliveryNoteDocumentTest {
     @Test
     @DisplayName("eight lines do not leave room for the handover under them, and it goes to the second page whole - "
             + "the vehicle, the boxes to tick, the confirmation and the signatures together, never cut where the "
-            + "page ends")
+            + "page ends - with the last lines of the goods and their total over it, so the page that is signed "
+            + "shows what for")
     void theHandoverMovesOnWhole() throws IOException {
         byte[] pdf = DocumentSamples.keep("delivery-note-8-lines",
                 document.render(linesOfGoods(8, true, "SO-20261109-950003-S1")));
 
         assertThat(DocumentSamples.within(pdf, 30, 15)).as("inside the margins").isTrue();
         assertThat(DocumentSamples.pages(pdf)).isEqualTo(2);
-        assertThat(DocumentSamples.text(pdf, 1)).containsSubsequence("MOC-01-LY", "MOC-08-PK", "Tổng cộng", "12",
-                "6.000").doesNotContain("Thông tin vận chuyển");
-        assertThat(DocumentSamples.text(pdf, 2)).containsSubsequence("Thông tin vận chuyển:",
+        assertThat(DocumentSamples.text(pdf, 1)).containsSubsequence("MOC-01-LY", "MOC-05-PK")
+                .doesNotContain("Thông tin vận chuyển", "Tổng cộng");
+        assertThat(DocumentSamples.text(pdf, 2)).containsSubsequence("Số thùng", "MOC-08-PK", "Tổng cộng", "12",
+                "6.000", "Thông tin vận chuyển:",
                 "Tình trạng hàng hóa khi nhận:", "Hai bên đồng ý", "ĐẠI DIỆN BÊN GIAO", "ĐẠI DIỆN BÊN NHẬN");
     }
 

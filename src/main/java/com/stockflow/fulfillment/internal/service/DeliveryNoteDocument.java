@@ -255,6 +255,48 @@ class DeliveryNoteDocument {
                 : f.warehouseName();
     }
 
+    /**
+     * The LPNs as the note lists them: three or more that follow one another - the cartons of one packing run, which
+     * is how a delivery's cartons are numbered - are written as their first and last ("LPN-...101 đến LPN-...140"),
+     * the others one by one. Every carton is still named: a run names each number between its ends. Forty cartons
+     * listed one by one took forty lines of a narrow column and a second page (demo run 24/11); a receiver checks
+     * the count and the ends of the run, and scans a carton they doubt.
+     *
+     * @param lpns in order
+     * @param run  "%s đến %s", in the note's language
+     */
+    static List<String> runs(List<String> lpns, String run) {
+        List<String> listed = new ArrayList<>();
+        int from = 0;
+        while (from < lpns.size()) {
+            int to = from;
+            while (to + 1 < lpns.size() && follows(lpns.get(to), lpns.get(to + 1))) {
+                to++;
+            }
+            if (to - from >= 2) {
+                listed.add(run.formatted(lpns.get(from), lpns.get(to)));
+            } else {
+                listed.addAll(lpns.subList(from, to + 1));
+            }
+            from = to + 1;
+        }
+        return listed;
+    }
+
+    /** Whether {@code next} is {@code lpn} with its closing number one higher, in as many digits. */
+    private static boolean follows(String lpn, String next) {
+        int digits = 0;
+        while (digits < lpn.length() && digits < 9 && Character.isDigit(lpn.charAt(lpn.length() - 1 - digits))) {
+            digits++;
+        }
+        if (digits == 0 || next.length() != lpn.length()) {
+            return false;
+        }
+        int cut = lpn.length() - digits;
+        return next.startsWith(lpn.substring(0, cut)) && next.substring(cut).chars().allMatch(Character::isDigit)
+                && Long.parseLong(next.substring(cut)) == Long.parseLong(lpn.substring(cut)) + 1;
+    }
+
     private static Paragraph point(String text) {
         return Paragraph.numbered("-", Run.of(text)).indent(14).align(Align.LEFT).after(0);
     }
@@ -273,7 +315,8 @@ class DeliveryNoteDocument {
         for (SkuCartons sku : goods) {
             rows.add(List.of(Cell.of(String.valueOf(++no)), Cell.of(sku.sku()),
                     Cell.bold(DocumentParts.filled(sku.name()) ? sku.name() : sku.sku()).details(List.of(
-                            t.getString("delivery-note.pdf.lpns").formatted(String.join(", ", sku.lpns())))),
+                            t.getString("delivery-note.pdf.lpns").formatted(String.join(", ",
+                                    runs(sku.lpns(), t.getString("delivery-note.pdf.lpnRun")))))),
                     Cell.of(piece), Cell.of(DocumentFormats.number(sku.cartons())),
                     Cell.of(DocumentFormats.number(sku.units())), Cell.of("")));
             cartons += sku.cartons();
@@ -281,13 +324,15 @@ class DeliveryNoteDocument {
         }
         rows.add(List.of(Cell.of(""), Cell.of(""), Cell.bold(t.getString("delivery-note.pdf.total")), Cell.of(""),
                 Cell.bold(DocumentFormats.number(cartons)), Cell.bold(DocumentFormats.number(units)), Cell.of("")));
-        // The name gets what the other columns can spare: a name on one line keeps a row at two (name, LPNs).
-        return new Table(List.of(new Column(t.getString("document.goods.no"), 26, Align.CENTRE),
-                new Column(t.getString("document.goods.code"), 88, Align.LEFT),
-                new Column(t.getString("document.goods.name"), 186, Align.LEFT),
-                new Column(t.getString("document.goods.unit"), 34, Align.CENTRE),
-                new Column(t.getString("delivery-note.pdf.col.cartons"), 56, Align.RIGHT),
-                new Column(t.getString("document.goods.quantity"), 56, Align.RIGHT),
-                new Column(t.getString("delivery-note.pdf.col.note"), 52, Align.LEFT)), rows);
+        // The name gets what the other columns can spare: a name on one line keeps a row at two (name, LPNs), and
+        // two LPNs of twenty characters side by side under it halve the row of cartons that are no run. The widths
+        // are the page's own points (they add up to its 165 mm), each of the others what its heading and figures take.
+        return new Table(List.of(new Column(t.getString("document.goods.no"), 24, Align.CENTRE),
+                new Column(t.getString("document.goods.code"), 82, Align.LEFT),
+                new Column(t.getString("document.goods.name"), 196, Align.LEFT),
+                new Column(t.getString("document.goods.unit"), 30, Align.CENTRE),
+                new Column(t.getString("delivery-note.pdf.col.cartons"), 46, Align.RIGHT),
+                new Column(t.getString("document.goods.quantity"), 46, Align.RIGHT),
+                new Column(t.getString("delivery-note.pdf.col.note"), 44, Align.LEFT)), rows);
     }
 }

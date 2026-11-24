@@ -44,7 +44,8 @@ import java.util.Map;
  * bundle. Text is measured, never counted; a paragraph, a table and a field list carry on over pages, a table repeats
  * its header, and a heading, a signature block or a table's header never stays alone at the foot of a page - a table
  * starts with its first row, or the first lines of a tall one, under its header, the sentence introducing it and the
- * heading over them.</p>
+ * heading over them. Nor does a document end on a page that is all but empty: {@link #draw} sets it tighter to save
+ * that page, or shares the content out over the last two.</p>
  */
 public final class BusinessDocument {
 
@@ -420,8 +421,19 @@ public final class BusinessDocument {
     private static final int TALL_ROW_HERE = 4;
     /** ...and at least this many on the next. */
     private static final int TALL_ROW_NEXT = 2;
+    /** A table of at most this many rows is kept whole on a page where it is no more than a third of one. */
+    private static final int SHORT_TABLE = 6;
     /** Room to sign and to seal: 25 to 30 mm between the caption and the name. */
     private static final float SIGNING_ROOM = mm(27);
+    /** The body text is never set smaller than this, however a document is tightened to end well. */
+    private static final float SMALLEST_BODY = 11;
+    private static final float SMALLEST_TABLE = 9.5f;
+    /** A last page filled less than this far down is worth trying to save by setting the document tighter. */
+    private static final float SPARE_PAGE = 0.6f;
+    /** A last page filled less than this far down is one a document should not end on. */
+    private static final float THIN_PAGE = 0.3f;
+    /** How far down its last page a document ends once its content is shared out over the last two. */
+    private static final float FAIR_SHARE = 0.42f;
     private static final Color GREY_SHADE = new Color(0xEC, 0xEC, 0xEC);
     private static final Color MUTED = new Color(0x55, 0x55, 0x55);
     private static final Color WATERMARK = new Color(0x80, 0x80, 0x80);
@@ -434,10 +446,90 @@ public final class BusinessDocument {
         return (float) (millimetres * 72 / 25.4);
     }
 
-    /** @param title the PDF's own title, shown by a viewer in its window bar */
+    /**
+     * How tightly a document is set: nothing of its content, only the measures the page count hangs on.
+     *
+     * @param sizeDrop  points taken off the body text, never to below {@link #SMALLEST_BODY}
+     * @param tableDrop points taken off the text in tables, never to below {@link #SMALLEST_TABLE}
+     * @param line      a line's height as a multiple of its text's size
+     * @param room      the most left to sign in, in points
+     * @param heldPage  the page (from 1) that ends {@code held} points early, or 0 for none
+     */
+    private record Fit(float sizeDrop, float tableDrop, float line, float room, int heldPage, float held) {
+
+        /** As the layout says: 1.25 lines keeps 13 pt Vietnamese accents well apart. */
+        private static final Fit LOOSE = new Fit(0, 0, 1.25f, Float.MAX_VALUE, 0, 0);
+
+        /**
+         * Tighter and tighter, all of it inside what Nghị định 30 allows of a page (single line spacing and up) and
+         * what stays easy to read: the line spacing first, then the text half a point at a time.
+         */
+        private static final List<Fit> TIGHTER = List.of(new Fit(0, 0, 1.2f, mm(23), 0, 0),
+                new Fit(0.5f, 0.5f, 1.2f, mm(22), 0, 0), new Fit(1, 0.5f, 1.17f, mm(21), 0, 0),
+                new Fit(1.5f, 1, 1.15f, mm(20), 0, 0));
+
+        Fit holding(int page, float points) {
+            return new Fit(sizeDrop, tableDrop, line, room, page, points);
+        }
+    }
+
+    /** A drawing: the file, how many pages it took and how far down the last one its content ends, from 0 to 1. */
+    private record Drawn(byte[] pdf, int pages, float lastFilled) {
+
+        /** Whether the last page holds a signature block or a few lines and little else. */
+        boolean endsThin() {
+            return pages > 1 && lastFilled < THIN_PAGE;
+        }
+
+        /** Whether the last page holds so little that setting the document tighter may well save it. */
+        boolean mayEndSooner() {
+            return pages > 1 && lastFilled < SPARE_PAGE;
+        }
+    }
+
+    /**
+     * Draws the document so that it ends well. A paper whose last page holds the signatures and two lines is a paper
+     * that looks unfinished, and one page more to print, sign and staple. So when the first drawing ends less than
+     * half way down a page, the document is drawn again more tightly - {@link Fit#TIGHTER}, one step at a time,
+     * stopping at the first step that saves the page - and where no step does and the last page is all but empty, the
+     * page before it ends early, so the last carries a fair share of the content with the signatures instead of them
+     * alone. What a document says and the order it says it in never change; a document that already ends well is
+     * drawn once, exactly as its layout says.
+     *
+     * @param title the PDF's own title, shown by a viewer in its window bar
+     */
     public static byte[] draw(DocumentFonts fonts, Layout layout, String title, List<Block> blocks) {
+        Drawn best = drawn(fonts, layout, title, blocks, Fit.LOOSE);
+        Fit fit = Fit.LOOSE;
+        for (Fit tighter : Fit.TIGHTER) {
+            if (!best.mayEndSooner()) {
+                return best.pdf();
+            }
+            Drawn again = drawn(fonts, layout, title, blocks, tighter);
+            if (again.pages() < best.pages()) {
+                best = again;
+                fit = tighter;
+            }
+        }
+        if (!best.endsThin()) {
+            return best.pdf();
+        }
+        // No step saved the page. Share the content out instead: the page before the last gives up what the last
+        // lacks of a fair share - a little more on the second try, since blocks move whole.
+        float page = PAGE_HEIGHT - layout.margins().top() - layout.margins().bottom();
+        for (float share : new float[] {FAIR_SHARE, FAIR_SHARE + 0.12f}) {
+            Drawn shared = drawn(fonts, layout, title, blocks,
+                    fit.holding(best.pages() - 1, (share - best.lastFilled()) * page));
+            if (shared.pages() == best.pages() && !shared.endsThin()) {
+                return shared.pdf();
+            }
+        }
+        return best.pdf();
+    }
+
+    private static Drawn drawn(DocumentFonts fonts, Layout layout, String title, List<Block> blocks, Fit fit) {
         try (PDDocument document = new PDDocument()) {
-            Pen pen = new Pen(document, fonts, layout);
+            Pen pen = new Pen(document, fonts, layout, fit);
             try {
                 for (int i = 0; i < blocks.size(); i++) {
                     Block block = blocks.get(i);
@@ -483,11 +575,12 @@ public final class BusinessDocument {
             } finally {
                 pen.close();
             }
+            float lastFilled = pen.filled();
             pen.finishPages();
             document.getDocumentInformation().setTitle(title);
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             document.save(bytes);
-            return bytes.toByteArray();
+            return new Drawn(bytes.toByteArray(), document.getNumberOfPages(), lastFilled);
         } catch (IOException ex) {
             throw new UncheckedIOException("Could not draw " + title, ex);
         }
@@ -515,28 +608,42 @@ public final class BusinessDocument {
         private final float left;
         private final float width;
         private final float top;
-        private final float bottom;
+        private final float floor;
+        private final Fit fit;
         private final float size;
+        private final float tableSize;
+        /** Where this page's content ends: the bottom margin, or above it on the page {@link Fit} holds short. */
+        private float bottom;
         private final float leading;
         private PDPageContentStream out;
         private float y;
 
-        Pen(PDDocument document, DocumentFonts fonts, Layout layout) throws IOException {
+        Pen(PDDocument document, DocumentFonts fonts, Layout layout, Fit fit) throws IOException {
             this.document = document;
             this.fonts = fonts;
             this.layout = layout;
             this.left = layout.margins().left();
             this.width = PAGE_WIDTH - layout.margins().left() - layout.margins().right();
             this.top = PAGE_HEIGHT - layout.margins().top();
-            this.bottom = layout.margins().bottom();
-            this.size = layout.size();
+            this.floor = layout.margins().bottom();
+            this.bottom = floor;
+            this.fit = fit;
+            // A layout already set smaller than the smallest a tightening goes to keeps its own size.
+            this.size = Math.max(Math.min(layout.size(), SMALLEST_BODY), layout.size() - fit.sizeDrop());
+            this.tableSize = Math.max(Math.min(layout.tableSize(), SMALLEST_TABLE),
+                    layout.tableSize() - fit.tableDrop());
             this.leading = leading(size);
             newPage();
         }
 
-        /** Between single and 1.5 lines, as Nghị định 30 allows; 1.25 keeps 13 pt Vietnamese accents from touching. */
-        private static float leading(float size) {
-            return size * 1.25f;
+        /** Between single and 1.5 lines, as Nghị định 30 allows; how far between is the {@link Fit}'s to say. */
+        private float leading(float size) {
+            return size * fit.line();
+        }
+
+        /** How far down the current page its content ends, from 0 to 1. */
+        float filled() {
+            return (top - y) / (top - floor);
         }
 
         // ---- heads -------------------------------------------------------------------------------------------------
@@ -868,13 +975,25 @@ public final class BusinessDocument {
          * one moves there whole ({@link #table}), and the header stayed behind alone at the foot of the page (demo run
          * 24/11, D-7: a delivery note's 40 LPNs, a liquidation's goods). So it is that whole row - or, for a tall row,
          * which is cut over pages, the lines of it that open the table.
+         *
+         * <p>A table of a few rows that is no more than a third of a page is not cut at all: it is read in one look
+         * - a settlement's five amounts down to what is left - and half of it under a header on the next page is
+         * read as two tables. It needs its whole height where it starts.</p>
          */
         private float start(Table t) throws IOException {
-            float tableSize = layout.tableSize();
             float lineHeight = leading(tableSize) - 1;
             float[] widths = widths(t);
             float headerHeight = headerHeight(header(t, widths, tableSize), lineHeight);
             float fresh = top - bottom - headerHeight;
+            if (t.rows().size() > 1 && t.rows().size() <= SHORT_TABLE) {
+                float whole = 3 + headerHeight + t.summaries().size() * (lineHeight + 2 * CELL_PAD);
+                for (List<Cell> row : t.rows()) {
+                    whole += rowLines(row, widths, tableSize) * lineHeight + 2 * CELL_PAD;
+                }
+                if (whole <= (top - floor) / 3) {
+                    return whole;
+                }
+            }
             int lines = t.rows().isEmpty() ? 1 : rowLines(t.rows().getFirst(), widths, tableSize);
             int kept = tall(lines, lineHeight, fresh) ? Math.min(lines, TALL_ROW_HERE) : lines;
             return 3 + headerHeight + kept * lineHeight + 2 * CELL_PAD;
@@ -926,7 +1045,6 @@ public final class BusinessDocument {
          * keeps for a paragraph).
          */
         void table(Table t, Signatures signedAfter) throws IOException {
-            float tableSize = layout.tableSize();
             float lineHeight = leading(tableSize) - 1;
             float[] widths = widths(t);
             List<HeaderCell> header = header(t, widths, tableSize);
@@ -954,6 +1072,16 @@ public final class BusinessDocument {
                     float rest = count * lineHeight + 2 * CELL_PAD + t.summaries().size() * (lineHeight + 2 * CELL_PAD)
                             + 18 + signaturesHeight(signedAfter);
                     if (rest <= fresh && y - rest < bottom) {
+                        newPage();
+                        headerRow(widths, header, headerHeight, tableSize, lineHeight);
+                    }
+                }
+                if (r == t.rows().size() - 2 && drawnHere > 0) {
+                    // Nor does the last row open a page alone under a repeated header - the total of a goods table,
+                    // read without one figure it sums: the row before it goes over with it.
+                    float here = count * lineHeight + 2 * CELL_PAD;
+                    float both = here + rowLines(t.rows().getLast(), widths, tableSize) * lineHeight + 2 * CELL_PAD;
+                    if (both <= fresh && y - here >= bottom && y - both < bottom) {
                         newPage();
                         headerRow(widths, header, headerHeight, tableSize, lineHeight);
                     }
@@ -1131,7 +1259,7 @@ public final class BusinessDocument {
                 }
             }
             return (blank(s.dateLine()) ? 0 : leading + 2) + titleLines * leading(titleSize)
-                    + captionLines * leading(titleSize - 1) + s.room() + leading;
+                    + captionLines * leading(titleSize - 1) + Math.min(s.room(), fit.room()) + leading;
         }
 
         /** A signer's title, then their position under it, each wrapped in the block's width. */
@@ -1188,7 +1316,7 @@ public final class BusinessDocument {
                 }
                 if (!blank(s.signers().get(i).name())) {
                     float name = start - titleLines * titleLeading - captionLines * leading(titleSize - 1)
-                            - s.room() - leading;
+                            - Math.min(s.room(), fit.room()) - leading;
                     String fitted = s.signers().get(i).name();
                     centred(Style.BOLD, fitting(Style.BOLD, titleSize, fitted, column - 8), centre, name + 3, fitted);
                 }
@@ -1212,6 +1340,7 @@ public final class BusinessDocument {
             PDPage page = new PDPage(PDRectangle.A4);
             document.addPage(page);
             out = new PDPageContentStream(document, page);
+            bottom = floor + (document.getNumberOfPages() == fit.heldPage() ? fit.held() : 0);
             y = top;
         }
 
@@ -1225,7 +1354,7 @@ public final class BusinessDocument {
         /** The foot and the watermark of every page, once the page count is known. */
         void finishPages() throws IOException {
             int pages = document.getNumberOfPages();
-            float baseline = Math.max(bottom - 21, 14);
+            float baseline = Math.max(floor - 21, 14);
             for (int i = 0; i < pages; i++) {
                 try (PDPageContentStream over = new PDPageContentStream(document, document.getPage(i),
                         PDPageContentStream.AppendMode.APPEND, true, true)) {
