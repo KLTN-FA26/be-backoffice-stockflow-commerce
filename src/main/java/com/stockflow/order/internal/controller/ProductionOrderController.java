@@ -11,6 +11,7 @@ import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.order.internal.domain.ProductionOrder;
+import com.stockflow.order.internal.domain.ProductionOrderKind;
 import com.stockflow.order.internal.domain.ProductionOrderRepository;
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
 import com.stockflow.order.internal.service.ProductionOrderService;
@@ -21,6 +22,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
@@ -39,6 +41,7 @@ import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -68,6 +71,25 @@ class ProductionOrderController {
                          @NotNull(message = "deliveryBatchSeq is required") @Min(value = 1, message = "deliveryBatchSeq is at least 1")
                          Integer deliveryBatchSeq,
                          @NotNull(message = "producerId is required") UUID producerId) {
+    }
+
+    /** What the coordinator draws up a replacement production order from (17 §4.13 step 52, BR-31). */
+    @Schema(name = "DrawUpReplacementProductionOrderRequest")
+    record DrawUpReplacementRequest(
+            @Schema(description = "Posted DAMAGED write-offs of cartons of the production order replaced, one carton "
+                    + "each, none already made up by a live replacement")
+            @NotEmpty(message = "adjustmentIds is required") @Size(max = 500, message = "at most 500 write-offs")
+            Set<@NotNull UUID> adjustmentIds,
+            @Schema(description = "Null: the producer of the production order replaced") UUID producerId) {
+    }
+
+    /** A posted damaged write-off of a carton of a production order's goods, and what makes it up. */
+    @Schema(name = "ProductionOrderWriteOff")
+    record WriteOffResponse(UUID adjustmentId, String adjustmentNumber, String sku, UUID stockPackageId, String lpn,
+                            Instant postedAt,
+                            @Schema(description = "The live replacement production order making it up; null while "
+                                    + "none does")
+                            String madeUpBy) {
     }
 
     /** A line's new cartons and packing requirements. */
@@ -156,6 +178,14 @@ class ProductionOrderController {
                                            + "(who accepted, how to reach them); null when none")
                                    String acceptanceNote, Instant cancelledAt, String cancellationReason,
                                    Instant closedAt, String closingReason,
+                                   @Schema(description = "STANDARD, or REPLACEMENT of damaged cartons (17 §4.13)")
+                                   ProductionOrderKind kind,
+                                   @Schema(description = "REPLACEMENT: the production order whose damaged cartons it "
+                                           + "makes up; null otherwise")
+                                   UUID replacesProductionOrderId,
+                                   @Schema(description = "REPLACEMENT: the write-offs it makes up, one carton each; "
+                                           + "empty otherwise")
+                                   List<UUID> writeOffAdjustmentIds,
                                    @Schema(description = "BR-25: true since BE1 - capacity carries the receiving "
                                            + "warehouse's board")
                                    boolean capacityComputed,
@@ -173,7 +203,10 @@ class ProductionOrderController {
                     p.sampleApprovalRequired(), p.sampleRequiredByDefault(), p.sampleWaiverReason(),
                     p.note(), p.drawnUpBy(), p.submittedAt(), p.approvedBy(), p.approvedAt(),
                     p.returnedReason(), p.sentAt(), p.sentBy(), p.productionStartedAt(), p.expectedCompletionDate(),
-                    p.acceptanceNote(), p.cancelledAt(), p.cancellationReason(), p.closedAt(), p.closingReason(), true, capacity,
+                    p.acceptanceNote(), p.cancelledAt(), p.cancellationReason(), p.closedAt(), p.closingReason(),
+                    p.kind(), p.replacement().map(ProductionOrder.Replacement::replacesId).orElse(null),
+                    p.replacement().map(r -> r.writeOffs().stream().map(ProductionOrder.WriteOff::adjustmentId)
+                            .toList()).orElse(List.of()), true, capacity,
                     p.lines().stream().map(l -> new LineResponse(l.id(), l.orderLineId(), l.sku(), l.cartons(),
                             l.unitsPerCarton(), l.totalUnits(), l.designSnapshotId(), l.printFileChecksum(),
                             l.packingRequirements(), l.receivedCartons())).toList(),
@@ -237,6 +270,34 @@ class ProductionOrderController {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(respond(productionOrders.drawUp(request.salesOrderId(),
                 request.deliveryBatchSeq(), request.producerId(), user.userId()), null));
+    }
+
+    @PostMapping("/{id}/replacements")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Draw up a replacement production order for cartons of this one written off as damaged after "
+            + "they were received (Production Coordinator; 17 §4.13, BR-31): for the earliest delivery batch of its "
+            + "sales order still short of them, never more cartons than were written off. 409 "
+            + "PRODUCTION_ORDER_WRITE_OFF_INVALID, PRODUCTION_ORDER_WRITE_OFF_MADE_UP, PRODUCTION_ORDER_NOTHING_SHORT "
+            + "(the cartons were surplus), PRODUCTION_ORDER_NOT_ALLOWED (the order cancelled, closed or on hold)")
+    @RequiresPermission(resource = OrderResources.PRODUCTION_ORDERS, action = Action.CREATE, scope = DataScope.ALL)
+    public ApiResponse<ProductionOrderResponse> drawUpReplacement(@PathVariable UUID id,
+                                                                  @Valid @RequestBody DrawUpReplacementRequest request,
+                                                                  @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(respond(productionOrders.drawUpReplacement(id, request.adjustmentIds(),
+                request.producerId(), user.userId()), null));
+    }
+
+    @GetMapping("/{id}/write-offs")
+    @Operation(summary = "The posted damaged write-offs of this production order's cartons, oldest first, each with "
+            + "the live replacement production order making it up (17 §4.13)")
+    @RequiresPermission(resource = OrderResources.PRODUCTION_ORDERS, action = Action.READ, scope = DataScope.ALL)
+    public ApiResponse<List<WriteOffResponse>> writeOffs(@PathVariable UUID id, @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(productionOrders.writeOffs(id).stream().map(made -> new WriteOffResponse(
+                made.writeOff().adjustmentId(), made.writeOff().adjustmentNumber(), made.writeOff().sku(),
+                made.writeOff().stockPackageId(), made.writeOff().lpn(), made.writeOff().postedAt(), made.madeUpBy()))
+                .toList());
     }
 
     @PutMapping("/{id}")

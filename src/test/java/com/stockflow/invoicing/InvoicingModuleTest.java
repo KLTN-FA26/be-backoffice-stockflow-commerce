@@ -47,6 +47,8 @@ class InvoicingModuleTest {
     // order approval) reads the map's room and the cartons standing in each warehouse.
     @MockitoBean com.stockflow.warehouse.api.WarehouseCapacities warehouseCapacitiesMock;
     @MockitoBean com.stockflow.inventory.api.WarehouseOccupancy warehouseOccupancyMock;
+    // order's ProductionOrderService reads the damaged write-offs a replacement production order makes up (SCRUM-839).
+    @MockitoBean com.stockflow.inventory.api.DamagedWriteOffs damagedWriteOffsMock;
     // order's ReturnRequestService settles whose a returned carton is when the refund is decided (WF-05 Q-4).
     @MockitoBean com.stockflow.inventory.api.CartonReturns cartonReturnsMock;
     // order's SalesFollowUpService posts inbox notices (WF-02 A10)

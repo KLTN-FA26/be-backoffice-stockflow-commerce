@@ -11,6 +11,8 @@ import com.stockflow.common.security.AssignedWarehouses;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.design.api.DesignVerification;
+import com.stockflow.inventory.api.DamagedWriteOff;
+import com.stockflow.inventory.api.DamagedWriteOffs;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.DeliveryBatch;
 import com.stockflow.order.internal.domain.Order;
@@ -62,6 +64,9 @@ import java.util.stream.Collectors;
  *       the batch lacks there after the stock held for it (17 §4.2 step 3) and what other open production orders of the
  *       batch still bring. Received at the shipping warehouse; needed by
  *       the batch's window start (BR-26); a sample required when one of its SKUs was never produced (BR-24).</li>
+ *   <li><b>Draw up a replacement</b> (Production Coordinator; 17 §4.13, BR-31): for cartons of a production order
+ *       written off as damaged after they were received, for the earliest batch of its sales order still short of
+ *       them, never more than were written off - on edit and on sending too.</li>
  *   <li><b>Edit</b> while a draft (B33), and <b>send</b> it (Production Coordinator; BR-23 as rewritten on
  *       2026-11-20 - no approval step, the one who drew it up included): the print files are checked byte by byte
  *       first, then the slip drawn and its producer told ({@link ProductionOrderDispatch}, 4A-3).</li>
@@ -121,6 +126,7 @@ public class ProductionOrderService {
     private final TransactionTemplate tx;
     private final com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords;
     private final WarehouseCapacityService capacity;
+    private final DamagedWriteOffs damagedWriteOffs;
 
     ProductionOrderService(ProductionOrderRepository productionOrders, ProductionOrderReceiptRepository receipts,
                            ProductionOrderSearch search, OrderRepository orders, SalesContractRepository contracts,
@@ -128,8 +134,9 @@ public class ProductionOrderService {
                            WarehouseDirectory warehouses, CustomerSkus customerSkus, DesignService designs,
                            ProductionOrderDispatch dispatch, Clock clock, PlatformTransactionManager transactions,
                            com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords,
-                           WarehouseCapacityService capacity) {
+                           WarehouseCapacityService capacity, DamagedWriteOffs damagedWriteOffs) {
         this.capacity = capacity;
+        this.damagedWriteOffs = damagedWriteOffs;
         this.batchRecords = batchRecords;
         this.productionOrders = productionOrders;
         this.receipts = receipts;
@@ -171,22 +178,7 @@ public class ProductionOrderService {
             throw new BusinessException(ErrorCode.PRODUCTION_ORDER_NOTHING_SHORT, ("Delivery batch %d of order %s lacks "
                     + "nothing: its stock is held, or on its way").formatted(batchSeq, order.orderNumber()));
         }
-        Map<UUID, OrderLine> lines = new HashMap<>();
-        order.lines().forEach(line -> lines.put(line.id(), line));
-        List<ProductionOrder.Line> made = new ArrayList<>();
-        for (Map.Entry<UUID, Integer> entry : lacking.entrySet()) {
-            if (entry.getValue() <= 0) {
-                continue;
-            }
-            OrderLine line = lines.get(entry.getKey());
-            CustomerSku sku = customerSkus.find(line.sku().code()).orElseThrow(() -> new BusinessException(
-                    ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED, "%s is not a customer's own SKU: it is not produced to order"
-                    .formatted(line.sku().code())));
-            String checksum = designs.verifySnapshotForSku(sku.designSnapshotId(), order.customerId(), sku.sku())
-                    .checksum();
-            made.add(new ProductionOrder.Line(Identifiers.newId(), line.id(), line.sku().code(), entry.getValue(),
-                    line.unitsPerCarton(), sku.designSnapshotId(), checksum, null, 0));
-        }
+        List<ProductionOrder.Line> made = linesFor(order, lacking);
         Set<String> producedBefore = productionOrders.producedBefore(made.stream().map(ProductionOrder.Line::sku)
                 .toList());
         boolean firstTime = made.stream().anyMatch(line -> !producedBefore.contains(line.sku()));
@@ -203,6 +195,147 @@ public class ProductionOrderService {
     }
 
     /**
+     * The order lines' cartons to make, as production order lines (17 §4.3 step 6): each of the customer's own SKU, at
+     * the order line's standard count, to the design its SKU was issued for - its print files hashed now, checked
+     * again when it is sent. A line given no carton is left out.
+     */
+    private List<ProductionOrder.Line> linesFor(Order order, Map<UUID, Integer> cartons) {
+        Map<UUID, OrderLine> lines = new HashMap<>();
+        order.lines().forEach(line -> lines.put(line.id(), line));
+        List<ProductionOrder.Line> made = new ArrayList<>();
+        for (Map.Entry<UUID, Integer> entry : cartons.entrySet()) {
+            if (entry.getValue() <= 0) {
+                continue;
+            }
+            OrderLine line = lines.get(entry.getKey());
+            CustomerSku sku = customerSkus.find(line.sku().code()).orElseThrow(() -> new BusinessException(
+                    ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED, "%s is not a customer's own SKU: it is not produced to order"
+                    .formatted(line.sku().code())));
+            String checksum = designs.verifySnapshotForSku(sku.designSnapshotId(), order.customerId(), sku.sku())
+                    .checksum();
+            made.add(new ProductionOrder.Line(Identifiers.newId(), line.id(), line.sku().code(), entry.getValue(),
+                    line.unitsPerCarton(), sku.designSnapshotId(), checksum, null, 0));
+        }
+        return made;
+    }
+
+    /**
+     * Draws up a replacement production order (17 §4.13 step 52, BR-31) for the cartons of production order
+     * {@code replacedId} written off as damaged after they were received - {@code adjustmentIds}, each a posted
+     * {@code DAMAGED} write-off of one whole carton of its lot, none already made up by a live replacement. It is for
+     * the same sales order and, as any production order, for one delivery batch: the earliest that lacks one of the
+     * SKUs written off (step 52), each line the cartons written off of its SKU and never more than that batch lacks.
+     * Its producer is the one replaced unless another is named; it is received at the order's shipping warehouse, needed
+     * by the batch's window start (BR-26), and asks for no print sample by default - the SKU has been produced.
+     *
+     * <p>Not drawn up when nothing is short - the cartons were surplus, no order needing them - or for an order
+     * cancelled, closed for the rest or on hold (step 54; {@link #PRODUCIBLE}): only the write-off stands then. The
+     * sales order is locked first, as everywhere: two replacements of the same write-offs, or a replacement and a
+     * production order of the same batch, are decided one after the other.</p>
+     *
+     * @param producerId the producer, or null for the replaced production order's
+     * @throws BusinessException {@code PRODUCTION_ORDER_NOT_FOUND}; {@code PRODUCTION_ORDER_NOT_ALLOWED};
+     *         {@code PRODUCTION_ORDER_WRITE_OFF_INVALID}; {@code PRODUCTION_ORDER_WRITE_OFF_MADE_UP};
+     *         {@code PRODUCTION_ORDER_NOTHING_SHORT}; {@code PRODUCER_NOT_FOUND}; {@code PRODUCER_INACTIVE};
+     *         {@code VALIDATION_FAILED} with no write-off
+     */
+    @Auditable(action = AuditAction.CREATE, resourceType = "production-order", resourceId = "#result?.id()")
+    public ProductionOrder drawUpReplacement(UUID replacedId, Set<UUID> adjustmentIds, UUID producerId, UUID by) {
+        if (adjustmentIds == null || adjustmentIds.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A replacement production order names the "
+                    + "write-offs it makes up (BR-31)");
+        }
+        Order order = lockOrderOf(replacedId);
+        ProductionOrder replaced = productionOrders.findById(replacedId).orElseThrow(() -> notFound(replacedId));
+        requireProducible(order);
+        SalesContract contract = contracts.findLiveByOrderId(order.id().value()).orElseThrow(() ->
+                new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED, "Order %s has no signed contract"
+                        .formatted(order.orderNumber())));
+        List<ProductionOrder.WriteOff> writeOffs = writeOffsOf(replaced, adjustmentIds);
+        Map<UUID, String> madeUp = productionOrders.madeUpBy(adjustmentIds);
+        if (!madeUp.isEmpty()) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_WRITE_OFF_MADE_UP, ("A damaged carton is made up "
+                    + "once (BR-31): %s").formatted(madeUp.entrySet().stream().map(made -> "%s by %s".formatted(
+                    made.getKey(), made.getValue())).collect(Collectors.joining(", "))));
+        }
+        ProductionOrder.Replacement replacement = new ProductionOrder.Replacement(replacedId, writeOffs);
+        // The order lines of the SKUs written off: the lines of the production order replaced, of the same sales order.
+        Map<UUID, String> skuOfLine = new LinkedHashMap<>();
+        replaced.lines().stream().filter(line -> replacement.cartonsOf(line.sku()) > 0)
+                .forEach(line -> skuOfLine.put(line.orderLineId(), line.sku()));
+        Map<Integer, Map<UUID, Integer>> lackingPerBatch = lackingPerBatch(order, contract.schedule(), null);
+        DeliveryBatch batch = contract.schedule().stream().sorted(Comparator.comparingInt(DeliveryBatch::seq))
+                .filter(b -> skuOfLine.keySet().stream().anyMatch(line -> lackingPerBatch
+                        .getOrDefault(b.seq(), Map.of()).getOrDefault(line, 0) > 0))
+                .findFirst().orElseThrow(() -> new BusinessException(ErrorCode.PRODUCTION_ORDER_NOTHING_SHORT, ("Order %s "
+                        + "lacks none of the cartons written off: they were surplus, only the write-off stands "
+                        + "(17 §4.13 step 54)").formatted(order.orderNumber())));
+        Map<UUID, Integer> lacking = lackingPerBatch.get(batch.seq());
+        Map<UUID, Integer> cartons = new LinkedHashMap<>();
+        skuOfLine.forEach((line, sku) -> cartons.put(line, Math.min(lacking.getOrDefault(line, 0),
+                replacement.cartonsOf(sku))));
+        // A write-off of a SKU this batch lacks none of would be claimed as made up with nothing remade: refused, for a
+        // replacement of its own (another batch), or for none (surplus).
+        List<String> unmade = skuOfLine.entrySet().stream().filter(line -> cartons.get(line.getKey()) == 0)
+                .map(Map.Entry::getValue).distinct().sorted().toList();
+        if (!unmade.isEmpty()) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_NOTHING_SHORT, ("Delivery batch %d of order %s, the "
+                    + "earliest short of the cartons written off, lacks none of %s: draw their write-offs up in a "
+                    + "replacement of their own").formatted(batch.seq(), order.orderNumber(), unmade));
+        }
+        Producer producer = activeProducer(producerId == null ? replaced.producerId() : producerId);
+        Instant now = clock.instant();
+        ProductionOrder drawn = ProductionOrder.drawUpReplacement(productionOrders.nextCode(LocalDate.ofInstant(now,
+                        BUSINESS_ZONE)), order.id().value(), batch.id(), order.customerId(), producer.id(),
+                order.shippingWarehouseId(), batchRecords.windowInForce(order.id().value(), batch).start(),
+                linesFor(order, cartons), replacement, by, now);
+        ProductionOrder saved = productionOrders.save(drawn);
+        log.info("Replacement production order {} drawn up for batch {} of order {}: {} write-off(s) of {}",
+                saved.code(), batch.seq(), order.orderNumber(), writeOffs.size(), replaced.code());
+        return saved;
+    }
+
+    /**
+     * The write-offs named, each a posted {@code DAMAGED} write-off of a whole carton of the lots {@code replaced}
+     * opened (17 §4.13 step 52).
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_WRITE_OFF_INVALID} naming every one that is not
+     */
+    private List<ProductionOrder.WriteOff> writeOffsOf(ProductionOrder replaced, Set<UUID> adjustmentIds) {
+        Map<UUID, DamagedWriteOff> found = new HashMap<>();
+        damagedWriteOffs.ofProductionOrder(replaced.id()).forEach(writeOff -> found.put(writeOff.adjustmentId(),
+                writeOff));
+        List<UUID> invalid = adjustmentIds.stream().filter(id -> !found.containsKey(id)).sorted().toList();
+        if (!invalid.isEmpty()) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_WRITE_OFF_INVALID, ("Not a posted damaged "
+                    + "write-off of a carton of production order %s: %s").formatted(replaced.code(), invalid));
+        }
+        return adjustmentIds.stream().map(found::get).sorted(Comparator.comparing(DamagedWriteOff::adjustmentNumber))
+                .map(writeOff -> new ProductionOrder.WriteOff(writeOff.adjustmentId(), writeOff.sku())).toList();
+    }
+
+    /**
+     * The posted damaged write-offs of production order {@code id}'s goods (17 §4.13 step 52), each with the live
+     * replacement production order that makes it up, if one does: what the coordinator picks the write-offs of a
+     * replacement from.
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_NOT_FOUND}
+     */
+    @Transactional(readOnly = true)
+    public List<WriteOffMadeUp> writeOffs(UUID id) {
+        ProductionOrder production = productionOrders.findById(id).filter(this::visible).orElseThrow(() -> notFound(id));
+        List<DamagedWriteOff> writeOffs = damagedWriteOffs.ofProductionOrder(production.id());
+        Map<UUID, String> madeUp = productionOrders.madeUpBy(writeOffs.stream().map(DamagedWriteOff::adjustmentId)
+                .toList());
+        return writeOffs.stream().map(writeOff -> new WriteOffMadeUp(writeOff, madeUp.get(writeOff.adjustmentId())))
+                .toList();
+    }
+
+    /** A damaged write-off, and the code of the live replacement production order making it up, or null. */
+    public record WriteOffMadeUp(DamagedWriteOff writeOff, String madeUpBy) {
+    }
+
+    /**
      * The coordinator's changes to a draft read at {@code version} (B33). The sales order is locked first, as drawing up
      * locks it: two drafts of one batch edited or drawn up together would otherwise each see the other's old cartons and
      * together make more than the batch lacks.
@@ -215,7 +348,7 @@ public class ProductionOrderService {
     public ProductionOrder edit(UUID id, long version, ProductionOrder.Draft draft) {
         Locked locked = lockedWithOrder(id, version);
         activeProducer(draft.producerId());
-        locked.production().edit(draft, lacking(locked));
+        locked.production().edit(draft, locked.production().maxCartons(lacking(locked)));
         return productionOrders.save(locked.production());
     }
 
@@ -267,7 +400,7 @@ public class ProductionOrderService {
                 ProductionOrder production = locked.production();
                 // Checked again under the lock: the producer may have been deactivated while the files downloaded.
                 activeProducer(production.producerId());
-                production.requireWithin(lacking(locked));
+                production.requireWithin(production.maxCartons(lacking(locked)));
                 // BE1 (06 §4.6 step 8, C42): read while it is still a draft, under the warehouse's capacity lock.
                 capacity.warnIfSendingTurnsNegative(production, now);
                 production.send(by, now);
