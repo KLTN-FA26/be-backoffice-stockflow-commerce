@@ -181,6 +181,8 @@ class BlindCountIntegrationTest {
         String url = INVENTORY + "/stock-items?sku=" + sku;
         asStaff(get(url)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].onHand").value(org.hamcrest.Matchers.contains(CARTON)))
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].onHandCartons").value(org.hamcrest.Matchers.contains(1)))
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].unitsPerCarton").value(org.hamcrest.Matchers.contains(CARTON)))
                 .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].hiddenDuringCount").value(org.hamcrest.Matchers.contains(false)));
 
         CycleCountView count = plan();
@@ -189,6 +191,10 @@ class BlindCountIntegrationTest {
                 .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].onHand").value(org.hamcrest.Matchers.empty()))
                 .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].reserved").value(org.hamcrest.Matchers.empty()))
                 .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].available").value(org.hamcrest.Matchers.empty()))
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].onHandCartons").value(org.hamcrest.Matchers.empty()))
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].reservedCartons").value(org.hamcrest.Matchers.empty()))
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].availableCartons").value(org.hamcrest.Matchers.empty()))
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].unitsPerCarton").value(org.hamcrest.Matchers.contains(CARTON)))
                 .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].hiddenDuringCount").value(org.hamcrest.Matchers.contains(true)));
         asManager(get(url)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].onHand").value(org.hamcrest.Matchers.contains(CARTON)))
@@ -213,6 +219,12 @@ class BlindCountIntegrationTest {
                         .value(org.hamcrest.Matchers.contains(true)))
                 .andExpect(jsonPath("$.data.items[?(@.locationCode == '" + BIN + "')].onHand")
                         .value(org.hamcrest.Matchers.empty()))
+                .andExpect(jsonPath("$.data.items[?(@.locationCode == '" + BIN + "')].onHandCartons")
+                        .value(org.hamcrest.Matchers.empty()))
+                .andExpect(jsonPath("$.data.items[?(@.locationCode == '" + BIN + "')].availableCartons")
+                        .value(org.hamcrest.Matchers.empty()))
+                .andExpect(jsonPath("$.data.items[?(@.locationCode == '" + BIN3 + "')].onHandCartons")
+                        .value(org.hamcrest.Matchers.contains(1)))
                 .andExpect(jsonPath("$.data.items[?(@.locationCode == '" + BIN3 + "')].onHand")
                         .value(org.hamcrest.Matchers.contains(CARTON)))
                 .andExpect(jsonPath("$.data.items[?(@.locationCode == '" + BIN3 + "')].hiddenDuringCount")
@@ -221,6 +233,15 @@ class BlindCountIntegrationTest {
                 .andExpect(jsonPath("$.data.items[?(@.locationCode == '" + BIN + "')].onHand")
                         .value(org.hamcrest.Matchers.contains(CARTON)));
         assertThat(cartonC).isNotNull();
+    }
+
+    @Test
+    @DisplayName("kltn-docs 01 BR-09: the warehouse level of a SKU shows its three cartons beside their pieces")
+    void stockLevelInCartons() throws Exception {
+        asManager(get(INVENTORY + "/stock-levels?sku=" + sku)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].unitsPerCarton").value(CARTON))
+                .andExpect(jsonPath("$.data[0].onHand").value(3 * CARTON))
+                .andExpect(jsonPath("$.data[0].onHandCartons").value(3));
     }
 
     // ------------------------------------------------------------------ ledger and adjustments
