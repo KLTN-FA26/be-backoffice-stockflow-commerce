@@ -68,8 +68,8 @@ class DraftViewsTest {
         when(customers.fullNames(anyCollection())).thenReturn(Map.of(customer, "Quán A", other, "Quán B"));
         // R5-13: the cup's SKU has one carton of 1,000; the mug's has only its base unit, so no carton.
         when(units.conversionsOf(anyCollection())).thenReturn(Map.of(
-                "LY12-0101-001", List.of(unit("LY12-0101-001", "PCS", 1, true), unit("LY12-0101-001", "CTN", 1000, false)),
-                "LY12-0101-002", List.of(unit("LY12-0101-002", "PCS", 1, true))));
+                "LY12-0101-001", List.of(unit("LY12-0101-001", "CTN", 1000)),
+                "LY12-0101-002", List.<com.stockflow.inventory.api.UomConversion>of()));
 
         var shown = views.of(List.of(cup, mug, draft));
 
@@ -108,8 +108,8 @@ class DraftViewsTest {
         verify(customerSkus, never()).ofSnapshots(anyCollection());
     }
 
-    private static com.stockflow.inventory.api.UomConversion unit(String sku, String code, int factor, boolean base) {
-        return new com.stockflow.inventory.api.UomConversion(UUID.randomUUID(), sku, code, factor, base, null, null,
+    private static com.stockflow.inventory.api.UomConversion unit(String sku, String code, int factor) {
+        return new com.stockflow.inventory.api.UomConversion(UUID.randomUUID(), sku, code, factor, null, null,
                 null, null, true, 0);
     }
 

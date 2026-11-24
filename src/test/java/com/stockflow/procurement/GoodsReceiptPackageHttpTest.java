@@ -88,9 +88,13 @@ class GoodsReceiptPackageHttpTest {
                 .andExpect(jsonPath("$.data.lines[0].lotTracked").doesNotExist())
                 .andExpect(jsonPath("$.data.lines[0].warnings").doesNotExist())
                 .andExpect(jsonPath("$.data.warnings").doesNotExist())
-                .andExpect(jsonPath("$.data.lines[0].units[0].defaultPurchase").value(true))
-                .andExpect(jsonPath("$.data.lines[0].units[?(@.base == true)].defaultPurchase", everyItem(org.hamcrest.Matchers.is(true))))
-                .andExpect(jsonPath("$.data.lines[0].units[?(@.base == false)].defaultPurchase", everyItem(org.hamcrest.Matchers.is(false))))
+                // The line's item has one unit to count in, its carton: the item's own unit has no row (V20261226000200).
+                // base and defaultPurchase stay in the answer for the FE, constant false.
+                .andExpect(jsonPath("$.data.lines[0].units.length()").value(1))
+                .andExpect(jsonPath("$.data.lines[0].units[0].unitOfMeasure").value("CARTON"))
+                .andExpect(jsonPath("$.data.lines[0].units[0].factor").value(1000))
+                .andExpect(jsonPath("$.data.lines[0].units[0].base").value(false))
+                .andExpect(jsonPath("$.data.lines[0].units[0].defaultPurchase").value(false))
                 .andExpect(jsonPath("$.data.lines[0].looseQuantity").value(0))
                 .andExpect(jsonPath("$.data.lines[0].packages.length()").value(2))
                 .andExpect(jsonPath("$.data.lines[0].packages[*].lpn", everyItem(matchesPattern("^LPN-\\d{8}-\\d{6}$"))))
@@ -99,7 +103,6 @@ class GoodsReceiptPackageHttpTest {
                         everyItem(org.hamcrest.Matchers.is(1000))))
                 .andExpect(jsonPath("$.data.lines[0].packages[*].receivedQty",
                         org.hamcrest.Matchers.containsInAnyOrder(1000, 1000)))
-                .andExpect(jsonPath("$.data.lines[0].units[0].base").value(true))
                 .andExpect(jsonPath("$.data.lines[0].units[?(@.unitOfMeasure == 'CARTON')].factor",
                         org.hamcrest.Matchers.contains(1000)))
                 .andExpect(jsonPath("$.data.lines[0].units[?(@.unitOfMeasure == 'CARTON')].active",

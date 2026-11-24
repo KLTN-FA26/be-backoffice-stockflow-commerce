@@ -5,7 +5,8 @@ import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
- * One unit of measure of a SKU; for the base unit, factor 1 and the item's own size and weight.
+ * One packing unit of a SKU: a carton specification - the pieces it holds ({@code factor}), its size and full weight.
+ * The unit the pieces are counted in is the item's own and is not listed (V20261226000200).
  * {@code defaultShipping}: the unit load planning estimates this SKU's cartons in; one per item.
  */
 public record UomConversionResponse(
@@ -13,7 +14,6 @@ public record UomConversionResponse(
         String sku,
         String unitOfMeasure,
         int factor,
-        boolean base,
         BigDecimal weightKg,
         BigDecimal lengthCm,
         BigDecimal widthCm,
@@ -24,12 +24,22 @@ public record UomConversionResponse(
 ) {
 
     /**
-     * Constant, kept for the FE until FE issue 220; removed with the gated Task 6. The default purchase unit is gone:
-     * this is {@code true} for the base unit and {@code false} otherwise, worked out here from {@code base}, never stored.
+     * Constant false, kept for the FE: no unit listed is a base unit any more - the base unit has no row
+     * (V20261226000200) - so a screen that hid or locked the base row finds none.
+     */
+    @Deprecated
+    @JsonProperty("base")
+    public boolean base() {
+        return false;
+    }
+
+    /**
+     * Constant false, kept for the FE until FE issue 220; removed with the gated Task 6. The default purchase unit is
+     * gone; it was {@code true} for the base unit only.
      */
     @Deprecated
     @JsonProperty("defaultPurchase")
     public boolean defaultPurchase() {
-        return base;
+        return false;
     }
 }

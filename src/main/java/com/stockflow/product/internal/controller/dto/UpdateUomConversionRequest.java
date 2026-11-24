@@ -9,8 +9,8 @@ import jakarta.validation.constraints.Positive;
 import java.math.BigDecimal;
 
 /**
- * PUT replaces a unit. On the base unit only {@code defaultShipping} may change (send the rest as read);
- * {@code active=false} retires a packing unit (BR-10), which cannot then be the default shipping unit.
+ * PUT replaces a packing unit; {@code active=false} retires it (BR-10), and it cannot then be the default shipping
+ * unit.
  */
 public record UpdateUomConversionRequest(
         @NotNull(message = "version is required") @Min(0)

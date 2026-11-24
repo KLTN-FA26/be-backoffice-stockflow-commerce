@@ -232,7 +232,7 @@ class ApprovalFilesTest {
 
     @Test
     void theProductionInstructionStatesTheJobInVietnamese() throws Exception {
-        var carton = new UomConversion(UUID.randomUUID(), "CUP-12", "CARTON", 50, false, new BigDecimal("4.2"),
+        var carton = new UomConversion(UUID.randomUUID(), "CUP-12", "CARTON", 50, new BigDecimal("4.2"),
                 new BigDecimal("60"), new BigDecimal("40"), new BigDecimal("35"), true, 0);
         byte[] sheet = new ProductionInstructionSheet(new DocumentFonts(), DocumentSamples.seller(), INTERIM).render(new ProductionInstructionSheet.Facts(
                 "CUP12-0312345678-01", "Ly giấy 12oz", "CUP-12", cup(), carton, "a".repeat(64), "b".repeat(64),

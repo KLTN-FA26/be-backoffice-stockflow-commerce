@@ -80,10 +80,12 @@ SELECT pg_temp.expect_ok('PR6 an entry is listed without a price', $q$
                                        source_revision)
     VALUES (gen_random_uuid(), 'QA-PRC-BLANK', 'QA', 'qa30-entry', NULL, TRUE, 0, NOW(), md5('qa30:product')::uuid, 0) $q$);
 
-\echo '--- a sales unit names a unit, never a price'
-SELECT pg_temp.expect_true('PR16 product.variant_sales_units has no price column',
-    NOT EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_schema = 'product' AND table_name = 'variant_sales_units' AND column_name = 'price'));
+\echo '--- a sales unit is the SKU''s carton, never a price'
+SELECT pg_temp.expect_true('PR16 no price column on a unit: product.variant_sales_units is gone (V20261226000100, QA 44) '
+    'and inventory.uom_conversions has none',
+    to_regclass('product.variant_sales_units') IS NULL
+    AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                     WHERE table_schema = 'inventory' AND table_name = 'uom_conversions' AND column_name ~ 'price'));
 
 \echo '--- the customer''s own price is the one price, for its own SKU only'
 SELECT pg_temp.expect_fail('PR7 a new customer price on a variant (quy cach) - there it would be a base price by another name', $q$

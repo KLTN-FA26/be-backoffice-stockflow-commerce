@@ -46,7 +46,7 @@ class UomConversionController {
     }
 
     @GetMapping
-    @Operation(summary = "The SKU's units: the base unit first, then the packing units by code")
+    @Operation(summary = "The SKU's packing units by code: its carton specification and the retired ones")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.READ)
     public ApiResponse<PageResponse<UomConversionResponse>> list(@PathVariable UUID productId,
                                                                  @PathVariable UUID variantId,
@@ -74,12 +74,12 @@ class UomConversionController {
     }
 
     @PutMapping("/{conversionId}")
-    @Operation(summary = "Replace a unit; on the base unit only defaultShipping changes",
+    @Operation(summary = "Replace a packing unit",
             description = "Marking "
                     + "defaultShipping unmarks the item's previous default shipping unit atomically (no 409); "
-                    + "unmarking it leaves the item without one. Retiring (active=false) a unit the variant "
-                    + "sells in, or changing the factor or code of a unit a document counts in (BR-10): "
-                    + "409 UOM_CONVERSION_IN_USE. Stale version: 409 OPTIMISTIC_LOCK.")
+                    + "unmarking it leaves the item without one. active=false retires the unit; the variant's "
+                    + "sales unit follows the active carton by itself. Changing the factor or code of a unit a "
+                    + "document counts in (BR-10): 409 UOM_CONVERSION_IN_USE. Stale version: 409 OPTIMISTIC_LOCK.")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.UPDATE)
     public ApiResponse<UomConversionResponse> update(@PathVariable UUID productId, @PathVariable UUID variantId,
                                                      @PathVariable UUID conversionId,

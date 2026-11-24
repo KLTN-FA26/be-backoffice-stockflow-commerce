@@ -124,7 +124,7 @@ public class InventoryPolicyRepository {
                        u.default_shipping, i.rotatable
                   from inventory.uom_conversions u
                   join inventory.inventory_items i on i.id = u.inventory_item_id
-                 where i.sku = any (?) and u.active and not u.is_base
+                 where i.sku = any (?) and u.active
                 """, ps -> ps.setArray(1, ps.getConnection().createArrayOf("text", skus.toArray())),
                 (rs, n) -> new Unit(new com.stockflow.inventory.api.CartonSpec(rs.getString("sku"),
                         rs.getString("unit_of_measure"), rs.getInt("factor"), rs.getBigDecimal("length_cm"),
@@ -160,12 +160,12 @@ public class InventoryPolicyRepository {
                 """, l.unitOfMeasure(), l.barcode(), l.rotatable(), actor, sku, version) == 1;
     }
 
-    /** Whether a packing unit of the SKU (not its base unit) already uses this unit code. */
+    /** Whether a packing unit of the SKU already uses this unit code. */
     public boolean packingUnitUses(String sku, String unitOfMeasure) {
         return Boolean.TRUE.equals(jdbc.queryForObject("""
                 select exists(select 1 from inventory.uom_conversions c
                     join inventory.inventory_items i on i.id = c.inventory_item_id
-                    where i.sku = ? and not c.is_base and c.unit_of_measure = ?)
+                    where i.sku = ? and c.unit_of_measure = ?)
                 """, Boolean.class, sku, unitOfMeasure));
     }
 }

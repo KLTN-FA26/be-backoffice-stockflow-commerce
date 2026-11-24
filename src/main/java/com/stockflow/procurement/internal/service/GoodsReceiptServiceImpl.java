@@ -338,7 +338,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     "%s has no unit %s".formatted(line.sku(), code));
             return null;
         }
-        UomConversion unit = itemUnits.stream().filter(u -> !u.base() && u.active()).findFirst().orElse(null);
+        UomConversion unit = itemUnits.stream().filter(UomConversion::active).findFirst().orElse(null);
         if (unit == null) {
             errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID, ("%s has no active carton: its "
                     + "carton specification is set up first (01 BR-11)").formatted(line.sku()));
@@ -774,7 +774,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     line.uomConversionId() == null ? null : unitCodes.get(line.uomConversionId()),
                     line.receivedQuantity() - inCartons, packages,
                     item == null ? List.of() : unitsBySku.getOrDefault(item.sku(), List.of()).stream()
-                            .map(u -> new UnitView(u.unitOfMeasure(), u.factor(), u.base(), u.active()))
+                            .map(u -> new UnitView(u.unitOfMeasure(), u.factor(), u.active()))
                             .toList(),
                     line.productionOrderLineId(), production == null ? null
                             : production.line(line.productionOrderLineId())

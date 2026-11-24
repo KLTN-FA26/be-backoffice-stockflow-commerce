@@ -82,10 +82,10 @@ public interface GoodsReceipts {
     }
 
     /**
-     * A unit the line's item can be counted in, the base unit first, then by code. Cartons take an {@code active}
-     * unit that is not {@code base}; {@code factor} is what one of them holds.
+     * A packing unit of the line's item, by code: cartons are counted in the {@code active} one; {@code factor} is the
+     * pieces one of them holds.
      */
-    record UnitView(String unitOfMeasure, int factor, boolean base, boolean active) {
+    record UnitView(String unitOfMeasure, int factor, boolean active) {
     }
 
     /**

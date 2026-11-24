@@ -3,7 +3,6 @@ package com.stockflow.inventory.internal.domain;
 import com.stockflow.common.api.FieldError;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.api.UomConversionDraft;
 
 import java.math.BigDecimal;
@@ -28,24 +27,13 @@ public final class UomConversionRules {
         }
         // BR-09: "hệ số phải là số nguyên dương".
         if (d.factor() < 1) {
-            throw invalid("factor", "factor must be a positive whole number of base units");
+            throw invalid("factor", "factor must be a positive whole number of pieces");
         }
         positive(d.weightKg(), "weightKg");
         positive(d.lengthCm(), "lengthCm");
         positive(d.widthCm(), "widthCm");
         positive(d.heightCm(), "heightCm");
         retiredIsNotDefaultShipping(d);
-    }
-
-    /**
-     * The base unit: only its default shipping mark is edited here, and it can never be retired. Its code,
-     * factor, size and weight in the draft are ignored: the code is the item's, edited there, and a base unit is never
-     * measured (only the carton is, kltn-docs 01 BR-03).
-     */
-    public static void validateBase(UomConversion current, UomConversionDraft d) {
-        if (!d.active()) {
-            throw new BusinessException(ErrorCode.UOM_CONVERSION_IN_USE, "The base unit cannot be retired");
-        }
     }
 
     private static void retiredIsNotDefaultShipping(UomConversionDraft d) {

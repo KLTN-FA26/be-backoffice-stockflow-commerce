@@ -1,15 +1,12 @@
 package com.stockflow.product.internal.service;
 
-import com.stockflow.common.api.FieldError;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
-import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.api.UomConversionDraft;
 import com.stockflow.inventory.api.UomConversionService;
@@ -18,8 +15,6 @@ import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.internal.domain.ProductChangeType;
 import com.stockflow.product.internal.repository.ProductChangeLogRepository;
 import com.stockflow.product.internal.repository.ProductCommerceRepository;
-import com.stockflow.product.internal.repository.VariantSalesUnitRepository;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,13 +26,13 @@ import java.util.UUID;
  * BR-09, BR-10) and the variant's sales units (§3 "Đơn vị bán", BR-11). Both are edited through the
  * product, under the same guard as the logistics: not while it is under review, never once discontinued.
  *
- * <p>The product module owns the sales units, so it is the one that refuses to delete or retire a unit
- * the variant still sells in ({@code UOM_CONVERSION_IN_USE}) before asking inventory to.</p>
- *
- * <p>Sales units: a variant with none sells in its base unit only (docs: "mặc định: đơn vị cơ sở"); the list then
- * shows that default as one entry with no id. Listing a unit replaces the default, so a variant can be sold by the
- * carton only. A unit carries no price since 5-3: there is no base price (kltn-docs 13 BR-04), and a customer's SKU is
- * sold by the carton at a price per piece agreed on the quote (01 BR-11).</p>
+ * <p>Sales unit: a SKU is sold by the carton of its carton specification, which the system assigns (kltn-docs 01 §3
+ * "Đơn vị bán", BR-11): quotes, orders and contracts count cartons, priced per piece. So there is nothing to list or
+ * choose - the sales unit <em>is</em> the item's one active packing unit (01 BR-03,
+ * {@code uk_uom_conversions_one_carton}), read when asked for; a SKU with no carton yet has none. The table that once
+ * listed units a variant sells in ({@code product.variant_sales_units}, dropped by V20261226000100) recorded that same
+ * fact a second time, was never written by the system, and kept a carton from being retired (BR-10) while it was
+ * listed.</p>
  */
 @Service
 @Transactional
@@ -46,24 +41,18 @@ public class SkuUnitService {
     private final ProductPublication products;
     private final ProductCommerceRepository variants;
     private final UomConversionService units;
-    private final VariantSalesUnitRepository salesUnits;
     private final ProductChangeLogRepository history;
-    private final CurrentUserProvider users;
 
     public SkuUnitService(ProductPublication products, ProductCommerceRepository variants, UomConversionService units,
-                          VariantSalesUnitRepository salesUnits, ProductChangeLogRepository history,
-                          CurrentUserProvider users) {
+                          ProductChangeLogRepository history) {
         this.products = products;
         this.variants = variants;
         this.units = units;
-        this.salesUnits = salesUnits;
         this.history = history;
-        this.users = users;
     }
 
-    /** One sales unit as shown: {@code id} and {@code version} are null for the default (nothing listed). */
-    public record SalesUnitView(UUID id, UUID variantId, UUID uomConversionId, String unitOfMeasure, int factor,
-                                boolean base, boolean active, boolean implicitDefault, Long version) {
+    /** The unit a variant is sold in: its carton, holding {@code factor} pieces. */
+    public record SalesUnitView(UUID variantId, UUID uomConversionId, String unitOfMeasure, int factor) {
     }
 
     // ---- units of measure ---------------------------------------------------------------------------------
@@ -92,9 +81,6 @@ public class SkuUnitService {
                                           UomConversionDraft draft) {
         Sku sku = editableSku(productId, variantId);
         var before = units.conversion(sku, conversionId);
-        if (before.active() && !draft.active() && salesUnits.sells(variantId, conversionId)) {
-            throw inUse(before);
-        }
         var after = units.change(sku, conversionId, version, draft);
         var changed = RecordDiff.changedFields(withoutVersion(before), withoutVersion(after));
         if (!changed.isEmpty()) {
@@ -107,69 +93,26 @@ public class SkuUnitService {
     public void removeConversion(UUID productId, UUID variantId, UUID conversionId, long version) {
         Sku sku = editableSku(productId, variantId);
         var current = units.conversion(sku, conversionId);
-        if (salesUnits.sells(variantId, conversionId)) throw inUse(current);
         units.remove(sku, conversionId, version);
         history.record(productId, ProductChangeType.UOM_CONVERSION, variantId, null, null, null,
                 List.of("unit:" + current.unitOfMeasure(), "deleted"));
     }
 
-    // ---- sales units --------------------------------------------------------------------------------------
+    // ---- sales unit ---------------------------------------------------------------------------------------
 
+    /** The unit the variant is sold in: its item's one active carton; an empty page while it has none. */
     @Transactional(readOnly = true)
     public PageResponse<SalesUnitView> salesUnits(UUID productId, UUID variantId, int page, int size) {
         Sku sku = readSku(productId, variantId);
-        var pageable = Pages.of(page, size);
-        long total = salesUnits.count(variantId);
-        if (total == 0) {
-            UomConversion base = units.baseUnit(sku);
-            var implicit = new SalesUnitView(null, variantId, base.id(), base.unitOfMeasure(), 1, true, true,
-                    true, null);
-            return PageResponse.of(page == 0 ? List.of(implicit) : List.of(), page, size, 1);
+        Pages.of(page, size);   // the same bounds as every list
+        var carton = units.conversionsOf(List.of(sku)).getOrDefault(sku.code(), List.of()).stream()
+                .filter(UomConversion::active)
+                .findFirst();
+        if (carton.isEmpty()) {
+            return PageResponse.of(List.of(), page, size, 0);
         }
-        var rows = salesUnits.page(variantId, pageable.getPageSize(), pageable.getOffset());
-        var conversions = units.conversions(sku, rows.stream().map(VariantSalesUnitRepository.Row::uomConversionId)
-                .toList());
-        return PageResponse.of(rows.stream().map(r -> view(r, conversions.get(r.uomConversionId()))).toList(),
-                page, size, total);
-    }
-
-    @Transactional(readOnly = true)
-    public SalesUnitView salesUnit(UUID productId, UUID variantId, UUID salesUnitId) {
-        Sku sku = readSku(productId, variantId);
-        var row = salesUnits.find(variantId, salesUnitId).orElseThrow(() -> salesUnitNotFound(salesUnitId));
-        return view(row, units.conversion(sku, row.uomConversionId()));
-    }
-
-    /** BR-11: only a unit of the variant's own inventory item, and only one that is not retired. */
-    @Auditable(action = AuditAction.CREATE, resourceType = "sales-unit", resourceId = "#result?.id()")
-    public SalesUnitView addSalesUnit(UUID productId, UUID variantId, UUID uomConversionId) {
-        Sku sku = editableSku(productId, variantId);
-        var unit = units.conversion(sku, uomConversionId);
-        if (!unit.active()) {
-            throw invalid("uomConversionId", "Unit %s is retired and cannot be sold in".formatted(unit.unitOfMeasure()));
-        }
-        if (salesUnits.sells(variantId, uomConversionId)) throw duplicate(unit);
-        UUID id = Identifiers.newId();
-        try {
-            salesUnits.insert(id, variantId, uomConversionId, actor());
-        } catch (DuplicateKeyException race) {
-            throw duplicate(unit);
-        }
-        history.record(productId, ProductChangeType.SALES_UNIT, variantId, null, null, null,
-                List.of("unit:" + unit.unitOfMeasure()));
-        return salesUnit(productId, variantId, id);
-    }
-
-    /** Removing the last one brings back the default: the base unit. */
-    @Auditable(action = AuditAction.DELETE, resourceType = "sales-unit", resourceId = "#salesUnitId")
-    public void removeSalesUnit(UUID productId, UUID variantId, UUID salesUnitId, long version) {
-        Sku sku = editableSku(productId, variantId);
-        var row = salesUnits.find(variantId, salesUnitId).orElseThrow(() -> salesUnitNotFound(salesUnitId));
-        if (row.version() != version || !salesUnits.delete(salesUnitId, version)) {
-            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
-        }
-        history.record(productId, ProductChangeType.SALES_UNIT, variantId, null, null, null,
-                List.of("unit:" + units.conversion(sku, row.uomConversionId()).unitOfMeasure(), "deleted"));
+        var view = new SalesUnitView(variantId, carton.get().id(), carton.get().unitOfMeasure(), carton.get().factor());
+        return PageResponse.of(page == 0 ? List.of(view) : List.of(), page, size, 1);
     }
 
     // ---- helpers ------------------------------------------------------------------------------------------
@@ -191,36 +134,8 @@ public class SkuUnitService {
         return new Sku(variant.sku());
     }
 
-    private static SalesUnitView view(VariantSalesUnitRepository.Row row, UomConversion unit) {
-        return new SalesUnitView(row.id(), row.variantId(), row.uomConversionId(), unit.unitOfMeasure(),
-                unit.factor(), unit.base(), unit.active(), false, row.version());
-    }
-
     private static UomConversion withoutVersion(UomConversion c) {
-        return new UomConversion(c.id(), c.sku(), c.unitOfMeasure(), c.factor(), c.base(), c.weightKg(), c.lengthCm(),
+        return new UomConversion(c.id(), c.sku(), c.unitOfMeasure(), c.factor(), c.weightKg(), c.lengthCm(),
                 c.widthCm(), c.heightCm(), c.active(), 0, c.defaultShipping());
-    }
-
-    private String actor() {
-        return users.current().map(u -> u.userId().toString()).orElse("system");
-    }
-
-    private static BusinessException inUse(UomConversion unit) {
-        return new BusinessException(ErrorCode.UOM_CONVERSION_IN_USE,
-                "The variant still sells in unit %s; remove that sales unit first".formatted(unit.unitOfMeasure()));
-    }
-
-    private static BusinessException duplicate(UomConversion unit) {
-        return new BusinessException(ErrorCode.SALES_UNIT_DUPLICATE,
-                "The variant already sells in unit " + unit.unitOfMeasure());
-    }
-
-    private static BusinessException salesUnitNotFound(UUID id) {
-        return new BusinessException(ErrorCode.SALES_UNIT_NOT_FOUND, "No sales unit " + id);
-    }
-
-    private static BusinessException invalid(String field, String message) {
-        return new BusinessException(ErrorCode.VALIDATION_FAILED, message,
-                List.of(new FieldError(field, message, ErrorCode.VALIDATION_FAILED.name())));
     }
 }
