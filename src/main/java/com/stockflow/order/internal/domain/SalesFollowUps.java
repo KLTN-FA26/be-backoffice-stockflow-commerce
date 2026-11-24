@@ -33,4 +33,24 @@ public interface SalesFollowUps {
 
     /** PENDING_PAYMENT orders whose contract was signed at or before {@code signedBy}, the newest first. */
     List<UnpaidOrder> unpaidSince(Instant signedBy, int limit);
+
+    /**
+     * An order whose next step waits on someone inside (WF-02 FLOW-1..3).
+     *
+     * @param salesUserId who sent its signed contract, or - for none recorded - who recorded it signed; null without one
+     * @param since       when the hold now open was raised, or for a confirmed order when its contract was signed
+     */
+    record WaitingOrder(UUID orderId, String orderNumber, UUID salesUserId, Instant since) { }
+
+    /** ON_HOLD orders held for {@code reason} ({@code CREDIT}, {@code PAYMENT}), the newest hold first. */
+    List<WaitingOrder> heldFor(String reason, int limit);
+
+    /** CONFIRMED orders of a signed contract with no shipping warehouse chosen yet, the newest first. */
+    List<WaitingOrder> confirmedWithoutWarehouse(int limit);
+
+    /**
+     * PENDING_PAYMENT orders of a signed contract (WF-02 CONC-2), the oldest signature first: those the installments may
+     * already have paid while the event that would have confirmed them was lost.
+     */
+    List<UUID> awaitingOnSigning(int limit);
 }
