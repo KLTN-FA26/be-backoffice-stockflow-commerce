@@ -152,7 +152,7 @@ public class ProductionReceivables {
 
     /** {@code n} new cartons, their count left to the standard. */
     public static List<GoodsReceipts.NewPackage> newCartons(int n) {
-        return IntStream.range(0, n).mapToObj(i -> new GoodsReceipts.NewPackage(null, 0)).toList();
+        return IntStream.range(0, n).mapToObj(i -> new GoodsReceipts.NewPackage(null)).toList();
     }
 
     /**
