@@ -5838,7 +5838,7 @@ CREATE TEMP TABLE x_ret_parcel (key TEXT, parcel INT, day INT, note TEXT, photos
 INSERT INTO x_ret_parcel VALUES
     ('O247', 1, 17, 'Khách gửi trả 2 thùng qua nhà xe Bắc Việt.', 1),
     ('O151', 1, 9, 'Khách gửi trả qua nhà xe Phương Trang: 1 thùng nguyên, 1 thùng rách đã mở.', 2),
-    ('O259', 1, 12, 'Kinh doanh nhận lại tại cửa hàng khách: 2 thùng nguyên và 150 hộp lẻ không nhãn thùng.', 0),
+    ('O259', 1, 12, 'Kinh doanh nhận lại tại cửa hàng khách: 2 thùng nguyên và 150 hộp lẻ không nhãn thùng.', 2),
     ('O223', 1, 18, 'Nhà xe Bắc Việt chở trả 3 thùng móp vỏ.', 2),
     ('O199', 1, 41, NULL, 0),
     ('O187', 1, 43, NULL, 0),
@@ -6055,12 +6055,16 @@ SET CONSTRAINTS ALL DEFERRED;
 --   60.4 Opened by the warehouse against the approved return, into its QUARANTINE area; each carton scanned by LPN as
 --        it was shipped (LPN, SKU, count, lot), the units inside counted; loose units without a label recorded; photos
 --        of what arrived while the receipt is a draft.
---   60.5 Confirmed (CartonReturnService.receive): each carton back whole into quarantine - the carton IN_STOCK at the
---        area, its one row QUARANTINE at the label's count in its own lot, a RECEIPT ledger line; a carton counted
---        short is marked opened (never released, only written off); the receipt CLOSED.
---   60.6 Taken by the return after the receipt committed (ReturnRequestService.goodsReceived): each line adds the units
---        counted inside its cartons and the loose ones; RECEIVED once every line has what was approved, AWAITING_RETURN
---        until then; the order RETURNED once goods of an open return are back.
+--        The return names the draft as its open one (open_draft_receipt_id, V20261218000300) until it is confirmed.
+--   60.5 Confirmed (CartonReturnService.receive): each sealed carton back whole into quarantine - the carton IN_STOCK
+--        at the area, waiting for the return's refund decision (return_ownership PENDING, V20261223000300), its one
+--        row QUARANTINE at the label's count in its own lot, a RECEIPT ledger line. A carton counted short is not put
+--        into stock at all (V20261218000400): it stays CONSUMED, marked opened, no ledger line. A receipt with an
+--        opened carton or loose units is confirmed by the warehouse manager, who counted nothing on it; the receipt
+--        CLOSED.
+--   60.6 Taken by the return in the same transaction (ReturnRequestService.goodsReceived, V20261223000320 M1): each
+--        line adds the units counted inside its cartons and the loose ones; RECEIVED once every line has what was
+--        approved, AWAITING_RETURN until then; the order RETURNED once goods of an open return are back.
 CREATE FUNCTION pg_temp.ret_parcel(rnd INTEGER) RETURNS VOID LANGUAGE plpgsql AS $fn$
 DECLARE
     carton RECORD;
@@ -6075,27 +6079,21 @@ BEGIN
       FROM x_ret_parcel p JOIN x_ret r ON r.key = p.key
      WHERE p.parcel = rnd;
 
+    UPDATE ordering.return_request q
+       SET open_draft_receipt_id = pg_temp.sid('ret:receipt:' || r.key || ':' || rnd), version = q.version + 1
+      FROM x_ret r JOIN x_ret_parcel p ON p.key = r.key AND p.parcel = rnd
+     WHERE q.id = r.rid;
+
     INSERT INTO procurement.goods_receipt_return_cartons (id, receipt_id, stock_package_id, lpn, sku, lot_number,
                                                           quantity, condition_note, scanned_by, version, created_at,
-                                                          created_by, counted_qty)
+                                                          created_by, counted_qty, stock_entered, counted_by)
     SELECT pg_temp.sid('ret:receipt-carton:' || c.key || ':' || c.n), c.receipt_id, c.package_id, c.lpn, c.sku,
            r.po_code, c.upc, c.cond, pg_temp.staff(r.kho), 0,
            pg_temp.at(c.day, '08:35')
                + (row_number() OVER (PARTITION BY c.receipt_id ORDER BY c.n) || ' minutes')::interval,
-           pg_temp.staff(r.kho)::text, c.counted
+           pg_temp.staff(r.kho)::text, c.counted, NOT c.opened, pg_temp.staff(r.kho)
       FROM x_ret_carton c JOIN x_ret r ON r.key = c.key
      WHERE c.parcel = rnd;
-
-    INSERT INTO procurement.goods_receipt_return_loose_lines (id, receipt_id, sku, lot_number, quantity, recorded_by,
-                                                              version, created_at, created_by)
-    SELECT pg_temp.sid('ret:receipt-loose:' || x.key || ':' || x.ln || ':' || x.parcel),
-           pg_temp.sid('ret:receipt:' || x.key || ':' || x.parcel), l.sku, r.po_code, x.qty, pg_temp.staff(r.kho), 0,
-           pg_temp.at(p.day, '09:00'), pg_temp.staff(r.kho)::text
-      FROM x_ret_loose x
-      JOIN x_ret_line l ON l.key = x.key AND l.ln = x.ln
-      JOIN x_ret r ON r.key = x.key
-      JOIN x_ret_parcel p ON p.key = x.key AND p.parcel = x.parcel
-     WHERE x.parcel = rnd;
 
     INSERT INTO procurement.goods_receipt_photos (id, receipt_id, receipt_line_id, stage, storage_key, original_name,
                                                   content_type, size_bytes, checksum, taken_by, version, created_at,
@@ -6111,23 +6109,42 @@ BEGIN
       FROM x_ret_parcel p JOIN x_ret r ON r.key = p.key CROSS JOIN LATERAL generate_series(1, p.photos) n
      WHERE p.parcel = rnd;
 
+    -- Loose units name a photo of them, one of the receipt's own (V20261218000500, WF-05 Q-18): its first.
+    INSERT INTO procurement.goods_receipt_return_loose_lines (id, receipt_id, sku, lot_number, quantity, recorded_by,
+                                                              version, created_at, created_by, photo_id)
+    SELECT pg_temp.sid('ret:receipt-loose:' || x.key || ':' || x.ln || ':' || x.parcel),
+           pg_temp.sid('ret:receipt:' || x.key || ':' || x.parcel), l.sku, r.po_code, x.qty, pg_temp.staff(r.kho), 0,
+           pg_temp.at(p.day, '09:10'), pg_temp.staff(r.kho)::text,
+           pg_temp.sid('ret:receipt-photo:' || x.key || ':' || x.parcel || ':1')
+      FROM x_ret_loose x
+      JOIN x_ret_line l ON l.key = x.key AND l.ln = x.ln
+      JOIN x_ret r ON r.key = x.key
+      JOIN x_ret_parcel p ON p.key = x.key AND p.parcel = x.parcel
+     WHERE x.parcel = rnd;
+
     -- (the application commits here: the deferred checks run on what this step leaves)
     SET CONSTRAINTS ALL IMMEDIATE;
     SET CONSTRAINTS ALL DEFERRED;
 
     -- 60.5: the carton stands at the area before the ledger line names it there (tg_stock_movement_package).
     UPDATE inventory.stock_package p
-       SET status = 'IN_STOCK', location_code = r.qc_code, closed_at = NULL,
-           return_opened_at = CASE WHEN c.opened THEN pg_temp.at(c.day, '09:30') END, version = p.version + 1,
+       SET status = 'IN_STOCK', location_code = r.qc_code, closed_at = NULL, return_request_id = r.rid,
+           return_ownership = 'PENDING', version = p.version + 1,
            last_modified_at = pg_temp.at(c.day, '09:30'), last_modified_by = pg_temp.staff(r.kho)::text
       FROM x_ret_carton c JOIN x_ret r ON r.key = c.key
-     WHERE p.id = c.package_id AND c.parcel = rnd;
+     WHERE p.id = c.package_id AND c.parcel = rnd AND NOT c.opened;
+
+    UPDATE inventory.stock_package p
+       SET return_opened_at = pg_temp.at(c.day, '09:30'), version = p.version + 1,
+           last_modified_at = pg_temp.at(c.day, '09:30'), last_modified_by = pg_temp.staff(r.kho)::text
+      FROM x_ret_carton c JOIN x_ret r ON r.key = c.key
+     WHERE p.id = c.package_id AND c.parcel = rnd AND c.opened;
 
     -- The carton's own row is filled again in place (StockItemRepositoryAdapter.saveMerged names the row it merges
     -- into for that one statement, so enforce_sku_policy does not take it for a new FIFO layer).
     FOR carton IN SELECT c.stock_item_id, c.upc, c.day, r.qc_code, r.kho
                     FROM x_ret_carton c JOIN x_ret r ON r.key = c.key
-                   WHERE c.parcel = rnd ORDER BY c.stock_item_id LOOP
+                   WHERE c.parcel = rnd AND NOT c.opened ORDER BY c.stock_item_id LOOP
         PERFORM set_config('stockflow.same_receipt_merge', carton.stock_item_id::text, true);
         UPDATE inventory.stock_item s
            SET location_code = carton.qc_code, status = 'QUARANTINE', on_hand = carton.upc, reserved = 0,
@@ -6145,18 +6162,24 @@ BEGIN
            r.qc_code, c.upc, NULL, 'QUARANTINE', 'GOODS_RECEIPT', c.receipt_id, pg_temp.staff(r.kho), c.package_id,
            r.order_id, pg_temp.at(c.day, '09:30'), 0, pg_temp.at(c.day, '09:30'), pg_temp.staff(r.kho)::text
       FROM x_ret_carton c JOIN x_ret r ON r.key = c.key
-     WHERE c.parcel = rnd;
+     WHERE c.parcel = rnd AND NOT c.opened;
 
     UPDATE procurement.goods_receipts g
-       SET status = 'CLOSED', confirmed_at = pg_temp.at(p.day, '09:30'), confirmed_by = pg_temp.staff(r.kho),
+       SET status = 'CLOSED', confirmed_at = pg_temp.at(p.day, '09:30'), confirmed_by = pg_temp.staff(x.confirmer),
            closed_at = pg_temp.at(p.day, '09:30'), version = 1, last_modified_at = pg_temp.at(p.day, '09:30'),
-           last_modified_by = pg_temp.staff(r.kho)::text
+           last_modified_by = pg_temp.staff(x.confirmer)::text
       FROM x_ret_parcel p JOIN x_ret r ON r.key = p.key
+     CROSS JOIN LATERAL (SELECT CASE WHEN EXISTS (SELECT 1 FROM x_ret_carton c
+                                                   WHERE c.key = p.key AND c.parcel = p.parcel AND c.opened)
+                                          OR EXISTS (SELECT 1 FROM x_ret_loose l
+                                                      WHERE l.key = p.key AND l.parcel = p.parcel)
+                                     THEN r.mgr ELSE r.kho END AS confirmer) x
      WHERE g.id = pg_temp.sid('ret:receipt:' || p.key || ':' || p.parcel) AND p.parcel = rnd;
 
-    -- (the application commits here: the deferred checks run on what this step leaves)
-    SET CONSTRAINTS ALL IMMEDIATE;
-    SET CONSTRAINTS ALL DEFERRED;
+    UPDATE ordering.return_request q
+       SET open_draft_receipt_id = NULL, version = q.version + 1
+      FROM x_ret r JOIN x_ret_parcel p ON p.key = r.key AND p.parcel = rnd
+     WHERE q.id = r.rid;
 
     -- 60.6
     INSERT INTO ordering.return_request_receipt (goods_receipt_id, return_request_id, parcel, receipt_number,
@@ -6400,6 +6423,43 @@ INSERT INTO payment.installment_reduction (id, settlement_id, installment_id, am
 SELECT pg_temp.sid('ret:reduction:' || x.key || ':' || x.installment_id), pg_temp.sid('ret:settlement:' || x.key),
        x.installment_id, x.taken, pg_temp.at(r.settle, '15:00')
   FROM x_ret_reduce x JOIN x_ret r ON r.key = x.key;
+
+-- Each carton that came back sealed follows the refund of its SKU (ReturnedCartonSettlement.split, V20261224000300):
+-- the units refunded cover first what came back outside a sealed carton (opened cartons, loose units), then the sealed
+-- cartons in LPN order; a carton they reach is the company's. Every return here refunds all that came back, so every
+-- sealed carton is the company's - none is held for the customer, which the check below makes sure of.
+CREATE TEMP TABLE x_ret_owner ON COMMIT DROP AS
+WITH lines AS (
+    SELECT x.return_request_id, x.sku, sum(x.refund_quantity) AS refunded,
+           sum(COALESCE(x.received_quantity, 0)) AS back
+      FROM ordering.return_request_line x
+     WHERE x.return_request_id IN (SELECT r.rid FROM x_ret r JOIN x_ret_settle t ON t.key = r.key)
+     GROUP BY x.return_request_id, x.sku
+), cartons AS (
+    SELECT p.id, p.return_request_id, i.sku,
+           COALESCE(sum(COALESCE(p.received_qty, 0)) OVER (PARTITION BY p.return_request_id, i.sku ORDER BY p.lpn
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS before,
+           sum(COALESCE(p.received_qty, 0)) OVER (PARTITION BY p.return_request_id, i.sku) AS sealed
+      FROM inventory.stock_package p
+      JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+     WHERE p.return_ownership = 'PENDING'
+       AND p.return_request_id IN (SELECT r.rid FROM x_ret r JOIN x_ret_settle t ON t.key = r.key)
+)
+SELECT c.id, c.before < GREATEST(0, COALESCE(l.refunded, 0) - GREATEST(0, COALESCE(l.back, 0) - c.sealed)) AS company
+  FROM cartons c LEFT JOIN lines l ON l.return_request_id = c.return_request_id AND l.sku = c.sku;
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM x_ret_owner WHERE NOT company) THEN
+        RAISE EXCEPTION 'returns: a returned carton would be held for the customer; the seed writes no custody';
+    END IF;
+END $$;
+
+UPDATE inventory.stock_package p
+   SET return_ownership = 'COMPANY', version = p.version + 1, last_modified_at = pg_temp.at(r.settle, '15:00'),
+       last_modified_by = pg_temp.staff('truongkd')::text
+  FROM x_ret_owner o, x_ret r
+ WHERE p.id = o.id AND r.rid = p.return_request_id;
 
 UPDATE ordering.return_request q
    SET status = 'RESOLVED', settled_by = pg_temp.staff('truongkd'), settled_at = pg_temp.at(r.settle, '15:00'),
