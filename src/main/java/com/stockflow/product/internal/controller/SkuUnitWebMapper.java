@@ -31,7 +31,6 @@ class SkuUnitWebMapper {
     }
 
     SalesUnitResponse toResponse(SkuUnitService.SalesUnitView v) {
-        return new SalesUnitResponse(v.id(), v.variantId(), v.uomConversionId(), v.unitOfMeasure(), v.factor(),
-                v.base(), v.active(), v.implicitDefault(), v.version());
+        return new SalesUnitResponse(v.variantId(), v.uomConversionId(), v.unitOfMeasure(), v.factor());
     }
 }

@@ -108,7 +108,6 @@ public enum ErrorCode {
     /** No such unit of measure on this SKU's inventory item (docs 01 UoM conversion). */
     UOM_CONVERSION_NOT_FOUND("No such unit of measure on this SKU", 404),
     /** No such sales unit on this variant (docs 01 BR-11). */
-    SALES_UNIT_NOT_FOUND("No such sales unit on this variant", 404),
 
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */
@@ -182,7 +181,6 @@ public enum ErrorCode {
      */
     UOM_CONVERSION_IN_USE("This unit of measure is the base unit, is still sold in, or is used by a document", 409),
     /** The variant already sells in this unit. */
-    SALES_UNIT_DUPLICATE("The variant already sells in this unit", 409),
     INSUFFICIENT_STOCK("Not enough available stock", 409),
     /** The destination already holds this SKU and lot in another status (stock of two statuses does not merge). */
     STOCK_STATUS_MISMATCH("The destination holds this lot in a different status", 409),
