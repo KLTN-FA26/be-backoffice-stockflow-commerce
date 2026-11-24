@@ -76,12 +76,15 @@ public class PutawayTripService {
     }
 
     /**
-     * @param startLocationCode the source area the route starts from; null until the trip set off
-     * @param stops             the places still to visit, in order; empty unless the trip is on its way
+     * @param startLocationCode  the source area the route starts from; null until the trip set off
+     * @param originLocationCode where the stops still to visit were ordered from - the last carton's bin, else the
+     *                           start area - with its point; the first stop's path starts there (issue #410)
+     * @param stops              the places still to visit, in order; empty unless the trip is on its way
      */
     public record TripView(UUID id, UUID warehouseId, UUID operatorId, String status, String startLocationCode,
-                           BigDecimal startX, BigDecimal startY, Instant startedAt, Instant lastActivityAt,
-                           Instant closedAt, UUID closedBy, List<CartonView> cartons, List<StopView> stops) {
+                           BigDecimal startX, BigDecimal startY, String originLocationCode, BigDecimal originX,
+                           BigDecimal originY, Instant startedAt, Instant lastActivityAt, Instant closedAt,
+                           UUID closedBy, List<CartonView> cartons, List<StopView> stops) {
     }
 
     /**
@@ -94,8 +97,13 @@ public class PutawayTripService {
                              Instant placedAt) {
     }
 
-    /** A stop of the route: where to stand, and the cartons to put there. */
-    public record StopView(int sequence, String locationCode, BigDecimal x, BigDecimal y, List<String> lpns) {
+    /**
+     * A stop of the route: where to stand, the cartons to put there, and the line to walk to it.
+     *
+     * @param path round shelves, walls and closed doors, both ends included; null when none can be drawn
+     */
+    public record StopView(int sequence, String locationCode, BigDecimal x, BigDecimal y, List<String> lpns,
+                           List<PutawayTripView.MapPoint> path) {
     }
 
     /**
@@ -345,9 +353,10 @@ public class PutawayTripService {
         List<StopView> stops = trip.stops().stream().map(stop -> new StopView(stop.sequence(), stop.locationCode(),
                 stop.x(), stop.y(), cartons.stream()
                 .filter(c -> "ON_CART".equals(c.status()) && stop.locationCode().equals(c.assignedLocationCode()))
-                .map(CartonView::lpn).toList())).toList();
+                .map(CartonView::lpn).toList(), stop.path())).toList();
         return new TripView(trip.id(), trip.warehouseId(), trip.operatorId(), trip.status(),
-                code.apply(trip.startLocationId()), trip.startX(), trip.startY(), trip.startedAt(),
+                code.apply(trip.startLocationId()), trip.startX(), trip.startY(),
+                code.apply(trip.originLocationId()), trip.originX(), trip.originY(), trip.startedAt(),
                 trip.lastActivityAt(), trip.closedAt(), trip.closedBy(), cartons, stops);
     }
 }
