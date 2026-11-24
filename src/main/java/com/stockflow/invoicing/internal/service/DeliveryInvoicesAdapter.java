@@ -1,5 +1,7 @@
 package com.stockflow.invoicing.internal.service;
 
+import com.stockflow.invoicing.internal.domain.EInvoice;
+import com.stockflow.invoicing.internal.domain.EInvoiceLine;
 import com.stockflow.invoicing.internal.domain.EInvoiceQueries;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
 import com.stockflow.order.api.DeliveredShipments;
@@ -7,8 +9,12 @@ import com.stockflow.order.api.DeliveryInvoices;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -95,5 +101,34 @@ class DeliveryInvoicesAdapter implements DeliveryInvoices {
     @Transactional(readOnly = true)
     public boolean deliveryReductionUnissued(UUID orderId) {
         return orderId != null && invoices.deliveryReductionUnissued(orderId);
+    }
+
+    /**
+     * WF-05 O-1: the rates the shipment's goods are invoiced at, read where the return's adjustment reads them
+     * ({@link EInvoiceCorrections#drawUpForReturn} reduces the invoice that stands for the shipment, each line at its
+     * own rate) - one source for the refund and the adjustment, so they cannot disagree. An invoice drawn up and not
+     * issued yet is what will be issued unless the accountant voids it and draws it up again, and the approval reads
+     * the rates again ({@code ReturnRequest.revalue}). No invoice at all yet - the delivery's draft is drawn up after
+     * its commit - is the rate the draw-up gives ({@link DeliveredShipments#find}, the one rule a draft takes its rates
+     * from). A shipment reversed for a failed delivery stands for no invoice and has no delivered goods: nothing.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public Map<UUID, BigDecimal> invoicedRates(UUID orderId, UUID shipmentId) {
+        if (orderId == null || shipmentId == null) {
+            return Map.of();
+        }
+        Map<UUID, BigDecimal> rates = new HashMap<>();
+        Optional<EInvoice> invoice = invoices.findLiveOriginalOfShipment(shipmentId);
+        if (invoice.isPresent()) {
+            invoice.get().lines().stream()
+                    .filter(line -> line.kind() == EInvoiceLine.Kind.GOODS && line.orderLineId() != null)
+                    .forEach(line -> rates.putIfAbsent(line.orderLineId(), line.taxRate()));
+            return Map.copyOf(rates);
+        }
+        shipments.find(orderId, shipmentId).ifPresent(delivered -> delivered.lines().stream()
+                .filter(line -> line.taxRate() != null)
+                .forEach(line -> rates.putIfAbsent(line.orderLineId(), line.taxRate())));
+        return Map.copyOf(rates);
     }
 }

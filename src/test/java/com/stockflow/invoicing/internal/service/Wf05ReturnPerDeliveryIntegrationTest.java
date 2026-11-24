@@ -160,6 +160,32 @@ class Wf05ReturnPerDeliveryIntegrationTest {
         return WithCurrentUser.call(clerk, DataScope.WAREHOUSE, call);
     }
 
+    /**
+     * WF-05 O-1: what {@code pieces} of shipment {@code shipment}'s goods are refunded - their price and the VAT the
+     * shipment's invoice charged them, as the return's adjustment takes them off. The order line is at 10%; the invoice
+     * at the delivery day's rate (8% during NĐ 174's reduction through 2026, 10% after), so the figure is read from the
+     * invoice rather than written here.
+     */
+    private BigDecimal invoiced(UUID shipment, int pieces) {
+        Await.until("the e-invoice of shipment " + shipment, ASYNC, () -> jdbc.queryForObject(
+                "SELECT count(*) FROM invoicing.einvoice WHERE shipment_id = ? AND type = 'ORIGINAL'", Long.class,
+                shipment) == 1);
+        BigDecimal rate = jdbc.queryForObject("""
+                SELECT l.tax_rate FROM invoicing.einvoice_line l JOIN invoicing.einvoice e ON e.id = l.einvoice_id
+                 WHERE e.shipment_id = ? AND e.type = 'ORIGINAL' AND l.kind = 'GOODS' AND l.order_line_id = ?""",
+                BigDecimal.class, shipment, lineId);
+        BigDecimal net = BigDecimal.valueOf(PRICE * pieces);
+        return net.add(com.stockflow.invoicing.internal.domain.EInvoiceLine.vat(net, rate));
+    }
+
+    /** What the RETURN adjustment of {@code original} takes off, with its VAT, as a positive amount. */
+    private BigDecimal adjustmentOf(UUID original) {
+        return jdbc.queryForObject("""
+                SELECT -sum(l.amount + l.tax_amount) FROM invoicing.einvoice_line l
+                  JOIN invoicing.einvoice e ON e.id = l.einvoice_id
+                 WHERE e.type = 'ADJUSTMENT' AND e.original_einvoice_id = ?""", BigDecimal.class, original);
+    }
+
     private BigDecimal reduced(int seq) {
         return jdbc.queryForObject("SELECT reduced_amount FROM payment.installment WHERE order_id = ? AND seq = ?",
                 BigDecimal.class, orderId, seq);
@@ -316,12 +342,14 @@ class Wf05ReturnPerDeliveryIntegrationTest {
         assertThat(code(catchThrowable(() -> asHcmClerk(() -> quarantine.release(opened, staff)))))
                 .isEqualTo(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION);
 
-        // The refund: 40 pieces at 2,000 with 10% VAT, off batch 1's installment - batch 2's is left alone.
+        // The refund: 40 pieces at 2,000 with the VAT shipment 1's invoice charged them (O-1: 86,400 at the 8% of
+        // NĐ 174 though the order line says 10%), off batch 1's installment - batch 2's is left alone.
+        BigDecimal refund = invoiced(first, 40);
         ReturnRequest proposed = returns.proposeRefund(request.id(), new ReturnRequestService.ProposeRefundCommand(
                 null, null, null), confirmedOrders.sales().userId());
-        assertThat(proposed.settlementAmount()).isEqualByComparingTo("88000");
+        assertThat(proposed.settlementAmount()).isEqualByComparingTo(refund);
         assertThat(returns.approveSettlement(request.id(), null, accountant).status()).isEqualTo(ReturnStatus.RESOLVED);
-        assertThat(reduced(2)).as("batch 1's installment").isEqualByComparingTo("88000");
+        assertThat(reduced(2)).as("batch 1's installment").isEqualByComparingTo(refund);
         assertThat(reduced(3)).as("batch 2's installment").isEqualByComparingTo("0");
         assertThat(status()).as("resolved, still nothing moves").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
         // Closed, the return claims the 40 refunded, not the 50 approved: 60 of shipment 1's line are left - for Sales,
@@ -332,6 +360,8 @@ class Wf05ReturnPerDeliveryIntegrationTest {
         Await.until("the adjustment of shipment 1's invoice", ASYNC, () -> jdbc.queryForObject("""
                 SELECT count(*) FROM invoicing.einvoice WHERE type = 'ADJUSTMENT' AND original_einvoice_id = ?""",
                 Long.class, firstInvoice.id()) == 1);
+        assertThat(adjustmentOf(firstInvoice.id())).as("O-1: the refund is what the adjustment takes off")
+                .isEqualByComparingTo(refund);
 
         // Batch 2 goes out as if nothing happened; delivered, the order is DELIVERED and stays so.
         UUID second = batchTwoHandedOver();
@@ -375,15 +405,17 @@ class Wf05ReturnPerDeliveryIntegrationTest {
         asHcmClerk(() -> returnReceipts.confirm(thursday.id(), staff));
         Await.until("the return received", ASYNC, () -> returnStatus(request.id()) == ReturnStatus.RECEIVED);
 
-        // 100 pieces at 2,000 with 10% VAT: 220,000. Batch 1 owes nothing any more; batch 2 has not left.
+        // 100 pieces at 2,000 with the VAT shipment 1's invoice - a draft still, or the one drawing it up would give -
+        // charges (O-1): 216,000 at 8%. Batch 1 owes nothing any more; batch 2 has not left.
+        BigDecimal refund = invoiced(first, 100);
         assertThat(returns.proposeRefund(request.id(), new ReturnRequestService.ProposeRefundCommand(null, null, null),
-                confirmedOrders.sales().userId()).settlementAmount()).isEqualByComparingTo("220000");
+                confirmedOrders.sales().userId()).settlementAmount()).isEqualByComparingTo(refund);
         returns.approveSettlement(request.id(), null, accountant);
         assertThat(reduced(2)).isEqualByComparingTo("0");
         assertThat(reduced(3)).as("batch 2's installment: its goods are still to come").isEqualByComparingTo("0");
         assertThat(jdbc.queryForObject("SELECT refundable_amount FROM payment.order_settlement WHERE kind = "
                 + "'GOODS_RETURNED' AND source_id = ?", BigDecimal.class, request.id()))
-                .as("handed back: 176,000 + 132,000 was paid").isEqualByComparingTo("220000");
+                .as("handed back: 176,000 + 132,000 was paid").isEqualByComparingTo(refund);
     }
 
     @Test

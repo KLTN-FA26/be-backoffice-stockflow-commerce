@@ -1,6 +1,7 @@
 package com.stockflow.invoicing.internal.service;
 
 import com.stockflow.invoicing.internal.domain.EInvoice;
+import com.stockflow.invoicing.internal.domain.EInvoiceLine;
 import com.stockflow.invoicing.internal.domain.EInvoiceQueries;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
 import com.stockflow.invoicing.internal.domain.FeeAllocation;
@@ -15,13 +16,19 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
+import java.util.ResourceBundle;
 import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -162,5 +169,63 @@ class DeliveryInvoicesAdapterTest {
         anOrderWithAPlateFee(4000, new FeeAllocation.Invoiced(2000, BigDecimal.ZERO, Set.of()));
 
         assertThat(adapter.shippingFeeUnissued(ORDER)).isFalse();
+    }
+
+    // ================================================================================================= O-1
+
+    private static final UUID SHIPMENT = UUID.randomUUID();
+    private static final UUID LINE = UUID.randomUUID();
+
+    /** WF5-C's invoice: 3 cartons of 1,000 cups at 1,200,000 a carton, at the delivery day's 8%. */
+    private static EInvoiceLine wf5cGoods() {
+        return EInvoiceLine.goods(UUID.randomUUID(), 1, LINE, "LY-GIAY-DEMO-12OZ-MOC", "Ly giấy 12oz", "Thùng", 3,
+                1000, new BigDecimal("1200000"), new BigDecimal("8.00"));
+    }
+
+    @Test
+    @DisplayName("O-1: the rates are the invoice's that stands for the shipment - the one the return's adjustment "
+            + "reduces - and the refund at them is that adjustment to the dong: 1,101,600 for 850 of WF5-C's cups")
+    void ratesAreTheInvoicesAndTheRefundIsTheAdjustment() {
+        EInvoice invoice = mock(EInvoice.class);
+        EInvoiceLine goods = wf5cGoods();
+        when(invoice.lines()).thenReturn(List.of(goods, EInvoiceLine.fee(UUID.randomUUID(), 2,
+                EInvoiceLine.FeeKind.SHIPPING_FEE, null, "Phí vận chuyển", "Lần", new BigDecimal("300000"),
+                new BigDecimal("8.00"))));
+        when(invoices.findLiveOriginalOfShipment(SHIPMENT)).thenReturn(Optional.of(invoice));
+
+        Map<UUID, BigDecimal> rates = adapter.invoicedRates(ORDER, SHIPMENT);
+
+        assertThat(rates).containsOnlyKeys(LINE);
+        assertThat(rates.get(LINE)).isEqualByComparingTo("8");
+        // What the adjustment takes off for those 850 cups (EInvoiceCorrections.drawUpForReturn): the order side
+        // values them at the same rate (OrderLine.grossAt, ReturnWf05DecisionsTest.InvoicedRate) to 1,101,600.
+        EInvoiceLine reduction = EInvoiceCorrections.reduction(goods, 850, 1,
+                ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi")));
+        assertThat(reduction.amount().add(reduction.taxAmount())).isEqualByComparingTo("-1101600");
+        verify(shipments, never()).find(any(), any());
+    }
+
+    @Test
+    @DisplayName("O-1: no invoice drawn up yet - the rate drawing one up would give, the delivery day's")
+    void noInvoiceYetIsTheDrawUpsRate() {
+        when(invoices.findLiveOriginalOfShipment(SHIPMENT)).thenReturn(Optional.empty());
+        when(shipments.find(ORDER, SHIPMENT)).thenReturn(Optional.of(new DeliveredShipment(ORDER, "SO-1",
+                UUID.randomUUID(), "HD-1", SHIPMENT, null, null, NOW, "VND", List.of(new DeliveredShipment.Line(LINE,
+                "LY-GIAY-DEMO-12OZ-MOC", "Ly giấy 12oz", 3, 1000, 3000, new BigDecimal("1200"),
+                new BigDecimal("8.00"), new BigDecimal("10.00"))), List.of(), 3000, 3000, null, null)));
+
+        assertThat(adapter.invoicedRates(ORDER, SHIPMENT)).containsOnlyKeys(LINE)
+                .hasEntrySatisfying(LINE, rate -> assertThat(rate).isEqualByComparingTo("8"));
+    }
+
+    @Test
+    @DisplayName("O-1: a return that names no shipment, or a shipment neither invoiced nor delivered: nothing - its "
+            + "lines keep their own rates")
+    void nothingKnown() {
+        when(invoices.findLiveOriginalOfShipment(SHIPMENT)).thenReturn(Optional.empty());
+        when(shipments.find(ORDER, SHIPMENT)).thenReturn(Optional.empty());
+
+        assertThat(adapter.invoicedRates(ORDER, null)).isEmpty();
+        assertThat(adapter.invoicedRates(ORDER, SHIPMENT)).isEmpty();
     }
 }

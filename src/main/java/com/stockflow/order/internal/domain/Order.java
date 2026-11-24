@@ -1650,6 +1650,12 @@ public final class Order extends AggregateRoot {
     /**
      * The units a shipment still holds, closed on their lines, and the shipment marked closed; their gross value. Each
      * line closes the shipment's units, never more than the line has open beside what its other shipments hold.
+     *
+     * <p>At the contract's rate, unlike a return's refund (WF-05 O-1, {@link OrderLine#grossAt}): these goods never
+     * reached the customer. No invoice charges them - or the one issued for a delivery corrected to a failure is reduced
+     * in full (HĐ-3) - so the only charge left to take back is the installments', which hold them at the contract's
+     * value; taking off the invoiced value instead would leave the customer owing the difference for goods they never
+     * had. A closure of the rest (below) is the same: nothing of it was delivered or invoiced.</p>
      */
     private BigDecimal closeUnitsOf(OrderShipment shipment, Instant at) {
         Money closed = Money.zero(total().currency());

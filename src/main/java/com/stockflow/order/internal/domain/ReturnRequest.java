@@ -1044,6 +1044,14 @@ public final class ReturnRequest extends AggregateRoot {
         proposeRefund(by, now, units, order, note, nothingPaid, null, null, Map.of());
     }
 
+    /** {@link #proposeRefund(UUID, Instant, Map, Order, String, boolean, ReturnRefusalReason, String, Map, Map)}, every line
+     * invoiced at its own rate. */
+    public void proposeRefund(UUID by, Instant now, Map<UUID, Integer> units, Order order, String note,
+                              boolean nothingPaid, ReturnRefusalReason refusal, String refusalNote,
+                              Map<UUID, Integer> refundedBefore) {
+        proposeRefund(by, now, units, order, note, nothingPaid, refusal, refusalNote, refundedBefore, Map.of());
+    }
+
     /**
      * The whole proposal: what is refunded, why anything that came back is withheld, and where on each order line the
      * refunded units sit.
@@ -1066,15 +1074,27 @@ public final class ReturnRequest extends AggregateRoot {
      * what was settled by then ({@link #revalue}), since returns of one line may be approved in another order than
      * proposed.</p>
      *
+     * <p><b>At the rate they were invoiced at</b> (WF-05 O-1, decided 24/11): the refund of units that were invoiced is
+     * what the return's adjustment invoice takes off for them - the adjustment is the legal basis of the refund
+     * (TT 91/2026 Điều 10 khoản 5 điểm c.1). An order line keeps the rate its contract fixed, but its goods are invoiced at
+     * the law's rate of the day they were delivered (NĐ 174/2025: 8% where the contract said 10%), so the line's own
+     * scale would refund 10% for goods the buyer was invoiced and charged 8% for: 1,122,000 against an adjustment of
+     * 1,101,600 on the same 850 cups. {@code invoicedRates} - what the invoice of the return's shipment carries for each
+     * line, {@code DeliveryInvoices.invoicedRates} - decides the rate; a line invoiced at its own rate stays on the
+     * cumulative scale above ({@link OrderLine#grossAt}). The difference between the contract and the invoice stays the
+     * accountant's ({@code TAX_RATE_DIFFERS_FROM_CONTRACT}).</p>
+     *
      * @param refusal        why units that came back usable are withheld; required when every one of them is, refused
      *                       when none is
      * @param refusalNote    the note the customer reads beside the reason (at most {@value #REFUSAL_NOTE_LIMIT}
      *                       characters); required for {@link ReturnRefusalReason#OTHER}
      * @param refundedBefore per order line, the units other returns of it already refunded (RESOLVED)
+     * @param invoicedRates  per order line, the VAT rate the return's shipment invoiced its goods at; a line left out
+     *                       is valued at its own rate
      */
     public void proposeRefund(UUID by, Instant now, Map<UUID, Integer> units, Order order, String note,
                               boolean nothingPaid, ReturnRefusalReason refusal, String refusalNote,
-                              Map<UUID, Integer> refundedBefore) {
+                              Map<UUID, Integer> refundedBefore, Map<UUID, BigDecimal> invoicedRates) {
         Objects.requireNonNull(by, "by");
         Objects.requireNonNull(order, "order");
         requireStatus(ReturnStatus.RECEIVED, "have a refund proposed");
@@ -1118,7 +1138,8 @@ public final class ReturnRequest extends AggregateRoot {
         BigDecimal value = BigDecimal.ZERO;
         for (ReturnLine line : lines) {
             int count = refunded.getOrDefault(line.id(), 0);
-            BigDecimal amount = nothingPaid ? BigDecimal.ZERO : valueOf(order, line, count, refundedBefore);
+            BigDecimal amount = nothingPaid ? BigDecimal.ZERO
+                    : valueOf(order, line, count, refundedBefore, invoicedRates);
             line.refund(count, amount);
             value = value.add(amount);
         }
@@ -1141,9 +1162,16 @@ public final class ReturnRequest extends AggregateRoot {
      * their amounts would no longer add up to it. A settlement of nothing (a refusal, an order with nothing paid) has
      * nothing to value.
      *
-     * @return whether the amount changed - by the rounding of a dong, never more
+     * <p>At the rates read now (O-1): the invoice of the shipment may have been issued, or replaced, since the proposal.</p>
+     *
+     * @return whether the amount changed
      */
     public boolean revalue(Order order, Map<UUID, Integer> refundedBefore) {
+        return revalue(order, refundedBefore, Map.of());
+    }
+
+    /** {@link #revalue(Order, Map)} with the rates the return's shipment invoiced each line at (O-1). */
+    public boolean revalue(Order order, Map<UUID, Integer> refundedBefore, Map<UUID, BigDecimal> invoicedRates) {
         Objects.requireNonNull(order, "order");
         requireStatus(ReturnStatus.SETTLEMENT_PENDING, "have its refund valued");
         if (settlementAmount.signum() == 0) {
@@ -1151,7 +1179,7 @@ public final class ReturnRequest extends AggregateRoot {
         }
         BigDecimal value = BigDecimal.ZERO;
         for (ReturnLine line : lines) {
-            BigDecimal amount = valueOf(order, line, line.refundQuantity(), refundedBefore);
+            BigDecimal amount = valueOf(order, line, line.refundQuantity(), refundedBefore, invoicedRates);
             line.refund(line.refundQuantity(), amount);
             value = value.add(amount);
         }
@@ -1160,8 +1188,12 @@ public final class ReturnRequest extends AggregateRoot {
         return changed;
     }
 
-    /** {@code count} units of {@code line} refunded after the {@code refundedBefore} its other returns refunded. */
-    private BigDecimal valueOf(Order order, ReturnLine line, int count, Map<UUID, Integer> refundedBefore) {
+    /**
+     * {@code count} units of {@code line} refunded after the {@code refundedBefore} its other returns refunded, at the
+     * rate its shipment invoiced them at (O-1).
+     */
+    private BigDecimal valueOf(Order order, ReturnLine line, int count, Map<UUID, Integer> refundedBefore,
+                               Map<UUID, BigDecimal> invoicedRates) {
         if (count == 0) {
             return BigDecimal.ZERO;
         }
@@ -1173,7 +1205,8 @@ public final class ReturnRequest extends AggregateRoot {
             throw new IllegalStateException("Return %s refunds %d unit(s) of %s after %d refunded already: more than "
                     + "its %d".formatted(rmaNumber, count, line.sku(), from, sold.quantity()));
         }
-        return sold.grossBetween(from, from + count).amount();
+        return sold.grossAt(from, count, invoicedRates == null ? null : invoicedRates.get(line.orderLineId()))
+                .amount();
     }
 
     /**

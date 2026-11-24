@@ -1,6 +1,8 @@
 package com.stockflow.order.api;
 
+import java.math.BigDecimal;
 import java.util.Collection;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -56,5 +58,20 @@ public interface DeliveryInvoices {
      */
     default boolean deliveryReductionUnissued(UUID orderId) {
         return false;
+    }
+
+    /**
+     * WF-05 O-1 (decided 24/11): per order line, the VAT rate the goods of delivered shipment {@code shipmentId} are
+     * invoiced at - what a return of them is refunded at, so the refund is exactly what the return's adjustment invoice
+     * takes off ({@code OrderLine.grossAt}). Read from the invoice that stands for the shipment - its original, drawn up
+     * or issued, or the replacement issued in its place - since that is the invoice the adjustment reduces, at its own
+     * lines' rates; before any is drawn up, the rate drawing one up would give. A line the invoice does not carry is
+     * left out. Read in the caller's transaction.
+     *
+     * <p>Answers nothing by default, which values every line at its own rate: a module test that boots order without
+     * invoicing.</p>
+     */
+    default Map<UUID, BigDecimal> invoicedRates(UUID orderId, UUID shipmentId) {
+        return Map.of();
     }
 }

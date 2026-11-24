@@ -594,4 +594,91 @@ class ReturnWf05DecisionsTest {
             return request.lines().stream().filter(l -> l.orderLineId().equals(line)).findFirst().orElseThrow();
         }
     }
+
+    // ================================================================================================= O-1
+
+    @Nested
+    @DisplayName("O-1: goods invoiced at another rate than the contract's are refunded what the adjustment takes off")
+    class InvoicedRate {
+
+        private static final UUID LINE = UUID.randomUUID();
+
+        /**
+         * WF5-C: 3 cartons of 1,000 cups at 1,200, the contract at 10% (3,960,000 with VAT); delivered during NĐ 174's
+         * reduction and invoiced at 8%.
+         */
+        private Order wf5c() {
+            Order order = new Order(new OrderId(UUID.randomUUID()), OrderNumber.of(LocalDate.of(2026, 11, 8), 1),
+                    CUSTOMER, UUID.randomUUID(), List.of(new OrderLine(LINE, new Sku("LY-GIAY-DEMO-12OZ-MOC"), 3_000,
+                    Money.vnd(1_200), null, List.of()).withTax(BigDecimal.TEN)), OrderStatus.DELIVERED,
+                    DELIVERED.minus(Duration.ofDays(10)), null, 3L);
+            order.restoreLifecycle(null, null, null, DELIVERED.minus(Duration.ofDays(1)), DELIVERED, null, null, null,
+                    null);
+            return order;
+        }
+
+        private ReturnRequest back(Order order, int units) {
+            ReturnRequest request = ReturnRequest.open("RMA-C", UUID.randomUUID(), order, ReturnChannel.PORTAL,
+                    ReturnReason.DAMAGED_IN_TRANSIT, null, ReturnResolution.REFUND,
+                    List.of(new ReturnRequest.Claim(LINE, units)), Map.of(), Set.of(), CUSTOMER, NOW, POLICY);
+            request.addEvidence(claimPhoto(), POLICY);
+            request.approve(SALES, NOW, null, null, null, POLICY);
+            request.goodsReceived(UUID.randomUUID(), "GR-1", "HCM-QC01",
+                    List.of(new ReturnRequest.ReturnedCarton("LY-GIAY-DEMO-12OZ-MOC", units)), WAREHOUSE, NOW);
+            return request;
+        }
+
+        @Test
+        @DisplayName("TH-4 on WF5-C: 850 cups refunded 850 x 1,200 + 8% = 1,101,600 - the adjustment - not 1,122,000")
+        void refundedAtTheInvoicedRate() {
+            Order order = wf5c();
+            ReturnRequest request = back(order, 850);
+
+            request.proposeRefund(SALES, NOW, null, order, null, false, null, null, Map.of(),
+                    Map.of(LINE, new BigDecimal("8.00")));
+
+            assertThat(request.settlementAmount()).isEqualByComparingTo("1101600");
+            assertThat(request.lines().getFirst().refundAmount()).isEqualByComparingTo("1101600");
+            assertThat(request.lines().getFirst().refundNetAmount()).as("the price paid, whatever the rate")
+                    .isEqualByComparingTo("1020000");
+        }
+
+        @Test
+        @DisplayName("the rate not known (no shipment, no invoice): the contract's line, as before - 1,122,000")
+        void unknownRateKeepsTheLine() {
+            Order order = wf5c();
+            ReturnRequest request = back(order, 850);
+
+            request.proposeRefund(SALES, NOW, null, order, null, false, null, null, Map.of(), Map.of());
+
+            assertThat(request.settlementAmount()).isEqualByComparingTo("1122000");
+        }
+
+        @Test
+        @DisplayName("approval reads the rate again: proposed before the invoice was issued, approved after - 1,101,600")
+        void revaluedAtTheRateReadAtApproval() {
+            Order order = wf5c();
+            ReturnRequest request = back(order, 850);
+            request.proposeRefund(SALES, NOW, null, order, null, false, null, null, Map.of(), Map.of());
+
+            assertThat(request.revalue(order, Map.of(), Map.of(LINE, new BigDecimal("8.00")))).isTrue();
+
+            assertThat(request.settlementAmount()).isEqualByComparingTo("1101600");
+        }
+
+        @Test
+        @DisplayName("invoiced at the line's own rate: still the line's cumulative scale (BE-50), to the dong")
+        void ownRateKeepsTheCumulativeScale() {
+            Order order = new Order(new OrderId(UUID.randomUUID()), OrderNumber.of(LocalDate.of(2026, 10, 15), 12),
+                    CUSTOMER, UUID.randomUUID(), List.of(new OrderLine(LINE, new Sku("BOWL-7"), 7, Money.vnd(1_001),
+                    null, List.of()).withTax(BigDecimal.TEN)), OrderStatus.DELIVERED,
+                    DELIVERED.minus(Duration.ofDays(10)), null, 3L);
+            OrderLine line = order.lines().getFirst();
+
+            assertThat(line.grossAt(3, 1, new BigDecimal("10.00"))).isEqualTo(line.grossBetween(3, 4));
+            assertThat(line.grossAt(3, 1, new BigDecimal("10.00")).amount()).isEqualByComparingTo("1102");
+            assertThat(line.grossAt(3, 1, new BigDecimal("8.00")).amount()).as("1,001 + 80.08")
+                    .isEqualByComparingTo("1081");
+        }
+    }
 }

@@ -18,6 +18,7 @@ import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.inventory.api.CartonReturns;
 import com.stockflow.inventory.api.CustodyInstruction;
+import com.stockflow.order.api.DeliveryInvoices;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.ReturnReceiptTracking;
 import com.stockflow.order.internal.domain.Order;
@@ -176,12 +177,15 @@ public class ReturnRequestService implements ReturnReceiptTracking {
     private final ReturnAllowances allowances;
     private final CartonReturns cartonReturns;
     private final ReturnWarehouseScope warehouseScope;
+    private final DeliveryInvoices deliveryInvoices;
 
     ReturnRequestService(ReturnRequestRepository returns, OrderRepository orders, OrderEventPublisher events,
                          PaymentService payments, CustomerService customers, FileTransfers files,
                          StagedUploads staged, TransactionOperations tx, ReturnPolicy policy, Clock clock,
                          DeliveryFailureService deliveryFailures, ReturnAllowances allowances,
-                         CartonReturns cartonReturns, ReturnWarehouseScope warehouseScope) {
+                         CartonReturns cartonReturns, ReturnWarehouseScope warehouseScope,
+                         DeliveryInvoices deliveryInvoices) {
+        this.deliveryInvoices = deliveryInvoices;
         this.cartonReturns = cartonReturns;
         this.warehouseScope = warehouseScope;
         this.deliveryFailures = deliveryFailures;
@@ -523,7 +527,8 @@ public class ReturnRequestService implements ReturnReceiptTracking {
         Locked locked = lock(returnId, null, command.version());
         boolean nothingPaid = !payments.installmentStanding(locked.order().id().value()).opened();
         locked.request().proposeRefund(by, now(), command.units(), locked.order(), command.note(), nothingPaid,
-                command.refusalReason(), command.refusalNote(), refundedBefore(locked.request()));
+                command.refusalReason(), command.refusalNote(), refundedBefore(locked.request()),
+                invoicedRates(locked.request()));
         return finish(locked, by);
     }
 
@@ -545,6 +550,17 @@ public class ReturnRequestService implements ReturnReceiptTracking {
     }
 
     /**
+     * WF-05 O-1: per order line, the VAT rate the invoice of the return's shipment carries for its goods - what the
+     * return's adjustment invoice will take them off at, so the refund is that adjustment to the dong. Asked of
+     * invoicing ({@link DeliveryInvoices#invoicedRates}), which answers from the invoice it adjusts. A return that names
+     * no shipment (one opened before returns were per delivery) keeps its lines' own rates.
+     */
+    private Map<UUID, java.math.BigDecimal> invoicedRates(ReturnRequest request) {
+        return request.shipmentId() == null ? Map.of()
+                : deliveryInvoices.invoicedRates(request.orderId(), request.shipmentId());
+    }
+
+    /**
      * The second person approves the refund (four eyes): payment takes the goods' value off what the order's
      * installments still owe and makes the rest refundable (15 §4.5 step 15), the return is RESOLVED - all in this
      * transaction, or none of it. The accountant then records the transfer (15 §4.5 step 16); the order is REFUNDED
@@ -560,9 +576,10 @@ public class ReturnRequestService implements ReturnReceiptTracking {
         ReturnRequest request = locked.request();
         request.requireSettlementApprover(by);
         Instant now = now();
-        // WF-05 BE-50: valued where its units sit now, after what the line's other returns settled meanwhile.
-        if (request.revalue(locked.order(), refundedBefore(request))) {
-            log.info("Return {}: refund valued again on its lines' cumulative scale, now {}", request.rmaNumber(),
+        // WF-05 BE-50: valued where its units sit now, after what the line's other returns settled meanwhile; O-1: at
+        // the rate its shipment's invoice carries now.
+        if (request.revalue(locked.order(), refundedBefore(request), invoicedRates(request))) {
+            log.info("Return {}: refund valued again on its lines as they stand now, {}", request.rmaNumber(),
                     request.settlementAmount());
         }
         if (request.settlementAmount().signum() == 0) {
