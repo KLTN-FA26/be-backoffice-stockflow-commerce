@@ -302,4 +302,23 @@ class Round5ReadModelsIntegrationTest {
         assertThat(skus.get(0).path("taxClass").asText()).isEqualTo("STANDARD");
         assertThat(skus.get(0).path("taxRate").decimalValue()).isEqualByComparingTo(standard);
     }
+
+    @Test
+    @DisplayName("SCRUM-716 (12 BR-03): any Sales Staff member and the coordinator look the SKUs up; the customer cannot")
+    void customerSkusAreLookedUpByEverySalesAndTheCoordinator() throws Exception {
+        StaffFixtures people = new StaffFixtures(jdbc, tx, entityManager);
+        UUID otherSales = people.staff("SALES_STAFF");
+        UUID coordinator = people.staff("PRODUCTION_COORDINATOR");
+
+        JsonNode bySales = data(http.asRole(Role.SALES_STAFF, otherSales, get("/api/v1/customer-skus")
+                .param("customerId", customerId.toString())));
+        assertThat(bySales).extracting(sku -> sku.path("sku").asText()).containsExactly(issued.sku());
+
+        JsonNode byCoordinator = data(http.asRole(Role.PRODUCTION_COORDINATOR, coordinator,
+                get("/api/v1/customer-skus").param("customerId", customerId.toString())));
+        assertThat(byCoordinator).extracting(sku -> sku.path("sku").asText()).containsExactly(issued.sku());
+
+        http.asCustomer(portalUser, get("/api/v1/customer-skus").param("customerId", customerId.toString()))
+                .andExpect(status().isForbidden());
+    }
 }

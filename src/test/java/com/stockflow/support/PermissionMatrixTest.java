@@ -357,6 +357,12 @@ class PermissionMatrixTest {
             // 3-6, kltn-docs 09 §4.3 step 5: the warehouse manager corrects an outcome the carrier reported wrongly.
             Map.entry("fulfillment-delivery-corrections:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // RTM-RTDCANCEL, kltn-docs 09 §5.1 "Cancelled": the warehouse manager cancels a shipment before dispatch.
+            // SCRUM-716 (V20261227000100; kltn-docs 12 BR-03, 01 §5.2): every Sales Staff member, the Sales Manager and
+            // the coordinator look a customer's own SKUs up; Sales block one; only the Sales Manager unblocks or retires.
+            Map.entry("product-variants:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("product-variants:UPDATE", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("product-variants:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-shipment-cancellations:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // 09B G13, kltn-docs 09 §2: Sales send the customer the POD / waybill file; never the customer (BR-05).
             Map.entry("fulfillment-delivery-documents:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
