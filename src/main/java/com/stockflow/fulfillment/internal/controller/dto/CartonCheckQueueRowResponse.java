@@ -11,9 +11,14 @@ import java.util.UUID;
  * @param cartonCount  the session's cartons, not removed (none before it starts)
  * @param checkedCount of them, scanned
  * @param labeledCount of them, labelled
+ * @param taskNumber   the task's human number {@code PK-yyyyMMdd-nnnn}, shown instead of its UUID
+ * @param warehouseCode the code (prefix) of {@code warehouseId}, so the queue needs no warehouse list; null only if
+ *                     the warehouse is unknown
+ * @param warehouseName the name of {@code warehouseId}; null only if the warehouse is unknown
  */
 public record CartonCheckQueueRowResponse(UUID taskId, UUID orderId, String orderNumber, UUID warehouseId,
                                           String status, Instant pickedAt, String pickerName, UUID startedBy,
                                           String startedByName, Instant startedAt, int cartonCount, int checkedCount,
-                                          int labeledCount, int shipmentCount) {
+                                          int labeledCount, int shipmentCount, String taskNumber,
+                                          String warehouseCode, String warehouseName) {
 }

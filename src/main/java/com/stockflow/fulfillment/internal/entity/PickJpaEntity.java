@@ -44,6 +44,13 @@ public class PickJpaEntity extends BaseEntity {
     @Column(name = "redelivery_case_id", updatable = false)
     private UUID redeliveryCaseId;
 
+    /**
+     * The task's human number {@code PK-yyyyMMdd-nnnn}, given once when it is opened ({@code PickNumbers}); the back
+     * office showed a slice of the UUID before. {@code uk_pick_task_number}, {@code tg_pick_task_number} (never changes).
+     */
+    @Column(name = "task_number", nullable = false, updatable = false, length = 32)
+    private String taskNumber;
+
     /** The order's number when the task was opened, so a pick list needs no call to the orders module (SCRUM-466). */
     @Column(name = "order_number", nullable = false, length = 32)
     private String orderNumber;
@@ -260,11 +267,18 @@ public class PickJpaEntity extends BaseEntity {
         return this;
     }
 
+    /** Set once, when the task is opened, before it is first saved. */
+    public PickJpaEntity numbered(String taskNumber) {
+        this.taskNumber = java.util.Objects.requireNonNull(taskNumber, "taskNumber");
+        return this;
+    }
+
     /** Set once, when the task is opened. */
     public PickJpaEntity forDeliveryBatch(UUID batchId) {
         this.deliveryBatchId = batchId;
         return this;
     }
+    public String getTaskNumber() { return taskNumber; }
     public String getOrderNumber() { return orderNumber; }
     public UUID getWarehouseId() { return warehouseId; }
     public PickStatus getStatus() { return status; }

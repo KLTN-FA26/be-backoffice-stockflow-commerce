@@ -73,6 +73,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * See {@link Dispatching}. Lock order, as everywhere in fulfillment's dispatch: the load row, then the shipments' rows
@@ -182,16 +183,20 @@ class DispatchService implements Dispatching {
                 .map(DispatchLoadJpaEntity::getCarrierId).filter(Objects::nonNull).collect(Collectors.toSet()));
         Map<UUID, PlanVehicles.VehicleRef> vehicleOf = planVehicles.describe(found.getContent().stream()
                 .map(DispatchLoadJpaEntity::getLoadPlanVehicleId).filter(Objects::nonNull).collect(Collectors.toSet()));
+        Map<UUID, com.stockflow.warehouse.api.WarehouseView> warehouseById = warehouses.findWarehouses(
+                found.getContent().stream().map(DispatchLoadJpaEntity::getWarehouseId).collect(Collectors.toSet()));
         return Pages.toResponse(found, row -> {
             PlanVehicles.VehicleRef vehicle = row.getLoadPlanVehicleId() == null ? null
                     : vehicleOf.get(row.getLoadPlanVehicleId());
+            var warehouse = warehouseById.get(row.getWarehouseId());
             return new LoadRow(row.getId(), row.getCode(), row.getWarehouseId(), row.getStatus().name(),
                     row.getCarrierId(),
                     Optional.ofNullable(carrierById.get(row.getCarrierId())).map(CarrierJpaEntity::getName).orElse(null),
                     row.getVehiclePlate(), row.getDriverName(), row.getShipmentCount(), row.getPackageCount(),
                     row.getLoadingStartedAt(), row.getDispatchedAt(), row.getVersion(),
                     vehicle == null ? null : vehicle.loadPlanId(), vehicle == null ? null : vehicle.loadPlanCode(),
-                    vehicle == null ? null : vehicle.seq(), row.getWaybillNo());
+                    vehicle == null ? null : vehicle.seq(), row.getWaybillNo(),
+                    warehouse == null ? null : warehouse.prefix(), warehouse == null ? null : warehouse.name());
         });
     }
 
@@ -1388,13 +1393,20 @@ class DispatchService implements Dispatching {
                 .collect(Collectors.toMap(PickJpaEntity::getOrderId, PickJpaEntity::getOrderNumber, (a, b) -> a));
         List<LoadShipment> lines = new ArrayList<>();
         Map<UUID, UUID> tasks = context.tasks(rows.values());
+        // Every person the load names - who started loading, booked, dispatched, scanned each parcel on - in one call.
+        Set<UUID> people = new HashSet<>();
+        Stream.of(header.getDispatchedBy(), header.getLoadingStartedBy(), header.getBookedBy())
+                .filter(Objects::nonNull).forEach(people::add);
+        onVehicle.values().stream().map(DispatchLoad.Loaded::loadedBy).filter(Objects::nonNull).forEach(people::add);
+        Map<UUID, String> names = people.isEmpty() ? new HashMap<>() : new HashMap<>(identities.displayNames(people));
         int expected = 0;
         for (DispatchLoad.Member member : active) {
             ShipmentJpaEntity row = rows.get(member.shipmentId());
             List<LoadParcel> own = parcels.getOrDefault(member.shipmentId(), List.of()).stream().map(p -> {
                 DispatchLoad.Loaded l = onVehicle.get(p.getId());
                 return new LoadParcel(p.getId(), p.getLabelCode(), p.getLpn(), p.getWeightKg(), l != null,
-                        l == null ? null : l.loadedAt(), l == null ? null : l.loadedBy());
+                        l == null ? null : l.loadedAt(), l == null ? null : l.loadedBy(),
+                        l == null || l.loadedBy() == null ? null : names.get(l.loadedBy()));
             }).toList();
             expected += own.size();
             lines.add(new LoadShipment(row.getId(), row.getCode(), row.getOrderId(),
@@ -1403,13 +1415,9 @@ class DispatchService implements Dispatching {
         }
         CarrierJpaEntity carrier = header.getCarrierId() == null ? null
                 : carriers.findById(header.getCarrierId()).orElse(null);
-        Set<UUID> people = new HashSet<>();
-        if (header.getDispatchedBy() != null) {
-            people.add(header.getDispatchedBy());
-        }
-        Map<UUID, String> names = people.isEmpty() ? new HashMap<>() : new HashMap<>(identities.displayNames(people));
         DispatchLoadJpaEntity replacement = replacementOf(header, ctx);
-        String warehouseName = warehouses.findWarehouse(header.getWarehouseId()).map(w -> w.name()).orElse(null);
+        var warehouse = warehouses.findWarehouse(header.getWarehouseId()).orElse(null);
+        String warehouseName = warehouse == null ? null : warehouse.name();
         return new LoadDetail(header.getId(), header.getCode(), header.getWarehouseId(), warehouseName,
                 header.getStatus().name(),
                 header.getCarrierId(), carrier == null ? null : carrier.getCode(),
@@ -1428,7 +1436,9 @@ class DispatchService implements Dispatching {
                 header.getWaybillNo(), carrier == null ? null : carrier.getConnectionType(),
                 carrierBookings.findByLoads(List.of(header.getId())).stream().findFirst()
                         .map(b -> new CarrierBookingView(b.getStatus(), b.getCarrierOrderId(), b.getTrackingLink(),
-                                b.getRequestedAt(), b.getBookedAt(), b.getLastError())).orElse(null));
+                                b.getRequestedAt(), b.getBookedAt(), b.getLastError())).orElse(null),
+                List.of(), names.get(header.getLoadingStartedBy()), names.get(header.getBookedBy()),
+                warehouse == null ? null : warehouse.prefix());
     }
 
     /**

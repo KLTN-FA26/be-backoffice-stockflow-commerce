@@ -55,8 +55,14 @@ class FulfillmentServiceImplTest {
     private final CartonCheckService packing = mock(CartonCheckService.class);
     private final Instant now = Instant.parse("2026-09-18T08:00:00Z");
     private final com.stockflow.order.api.PrePicking prePicking = mock(com.stockflow.order.api.PrePicking.class);
+    private final com.stockflow.fulfillment.internal.repository.PickNumbers numbers =
+            mock(com.stockflow.fulfillment.internal.repository.PickNumbers.class);
+
+    {
+        when(numbers.next(any())).thenReturn("PK-20260918-0001");
+    }
     private final FulfillmentServiceImpl service = new FulfillmentServiceImpl(
-            picks, packs, orders, identities, inventory, warehouses, pickLists, packing, prePicking,
+            picks, packs, orders, identities, inventory, warehouses, pickLists, packing, prePicking, numbers,
             Clock.fixed(now, ZoneOffset.UTC));
 
     /**
@@ -256,18 +262,26 @@ class FulfillmentServiceImplTest {
         when(packs.findByPickId(any())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(), UUID.randomUUID(),
                 PackStatus.PENDING, null)));
         when(identities.displayNames(any())).thenReturn(java.util.Map.of(picker, "Kho Nam"));
+        when(warehouses.findWarehouses(List.of(HN))).thenReturn(java.util.Map.of(HN,
+                new com.stockflow.warehouse.api.WarehouseView(HN, "HN", "Kho Ha Noi", null, true)));
 
         var task = service.createTask(order.orderId(), picker, unlimitedManager());
 
         assertThat(task.orderNumber()).isEqualTo("SO-20261014-0001");
         assertThat(task.warehouseId()).isEqualTo(HN);
         assertThat(task.assignedUserName()).isEqualTo("Kho Nam");
+        // The task's human number, drawn for the business day it is opened on, and its warehouse by code and name.
+        verify(numbers).next(java.time.LocalDate.parse("2026-09-18"));
+        assertThat(task.taskNumber()).isEqualTo("PK-20260918-0001");
+        assertThat(task.warehouseCode()).isEqualTo("HN");
+        assertThat(task.warehouseName()).isEqualTo("Kho Ha Noi");
         assertThat(task.lines()).isNull();
         verify(orders).startPicking(eq(order.orderId()), any());
         org.mockito.ArgumentCaptor<PickJpaEntity> saved = org.mockito.ArgumentCaptor.forClass(PickJpaEntity.class);
         verify(picks).saveAndFlush(saved.capture());
         assertThat(saved.getValue().getOrderNumber()).isEqualTo("SO-20261014-0001");
         assertThat(saved.getValue().getWarehouseId()).isEqualTo(HN);
+        assertThat(saved.getValue().getTaskNumber()).isEqualTo("PK-20260918-0001");
         // SCRUM-267: the lines are planned with the task, from the order's holds.
         verify(pickLists).planLines(eq(saved.getValue()), eq(order), any());
     }

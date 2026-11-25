@@ -136,6 +136,7 @@ WITH reviewed(col, why) AS (
     ('notification.delivery_log.provider_message_id', 'the provider''s own id'),
     ('notification.user_notification.source_id', 'polymorphic: the source type names the table'),
     ('ordering.customer_order.order_number', 'the order''s own number'),
+    ('fulfillment.pick.task_number', 'the pick task''s own number (V20261227000200)'),
     ('ordering.customer_order.request_id', 'idempotency key'),
     ('ordering.delay_alert.subject_id', 'redundant copy of production_order_id / delivery_batch_id, kept consistent by ck_delay_alert_subject'),
     ('ordering.quote.request_id', 'idempotency key'),

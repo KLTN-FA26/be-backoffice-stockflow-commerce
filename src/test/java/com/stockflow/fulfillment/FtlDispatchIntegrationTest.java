@@ -416,9 +416,16 @@ class FtlDispatchIntegrationTest {
         book(v2, ghtk, "51C-222.22");
 
         // Vehicle 1 arrives: loading - the plan is locked (BR-14), its booking no longer cancelled.
-        assertThat(data(dispatch(post(LOADS + "/" + v1 + "/loading-start")).andExpect(status().isOk()))
-                .path("status").asText()).isEqualTo("LOADING");
+        JsonNode loading = data(dispatch(post(LOADS + "/" + v1 + "/loading-start")).andExpect(status().isOk()));
+        assertThat(loading.path("status").asText()).isEqualTo("LOADING");
+        // Who started loading and who booked are named, and the warehouse by code: the screen shows no UUID.
+        assertThat(loading.path("loadingStartedByName").asText()).isEqualTo("test-" + dispatcher);
+        assertThat(loading.path("bookedByName").asText()).isEqualTo("test-" + dispatcher);
+        assertThat(loading.path("warehouseCode").asText()).isEqualTo(jdbc.queryForObject(
+                "SELECT prefix FROM warehouse.warehouse WHERE id = ?", String.class, HCM));
         JsonNode now = data(dispatch(get(PLANS + "/" + plan.path("loadPlanId").asText())).andExpect(status().isOk()));
+        assertThat(now.path("warehouseName").asText()).isEqualTo(jdbc.queryForObject(
+                "SELECT name FROM warehouse.warehouse WHERE id = ?", String.class, HCM));
         dispatch(body(post(PLANS + "/" + plan.path("loadPlanId").asText() + "/reopening"), "{\"expectedVersion\":"
                 + now.path("version").asLong() + ",\"reason\":\"x\"}")).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_PLAN_LOADING_STARTED"));
@@ -440,6 +447,10 @@ class FtlDispatchIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("LOAD_NOT_FULLY_LOADED")));
         assertThat(notWhole.path("message").asText()).contains(mine.getFirst());
         scanOnto(v1, mine.getFirst()).andExpect(status().isOk());
+        assertThat(load(v1).path("shipments").get(0).path("packages")).anySatisfy(p -> {
+            assertThat(p.path("labelCode").asText()).isEqualTo(mine.getFirst());
+            assertThat(p.path("loadedByName").asText()).as("who scanned it on").isEqualTo("test-" + dispatcher);
+        });
 
         // The per-vehicle manifest: only this vehicle's parcels.
         JsonNode manifest = data(dispatch(get(LOADS + "/" + v1 + "/manifest")).andExpect(status().isOk()));
@@ -488,6 +499,7 @@ class FtlDispatchIntegrationTest {
         assertThat(rows.path("items")).singleElement().satisfies(r -> {
             assertThat(r.path("loadPlanCode").asText()).isEqualTo(plan.path("code").asText());
             assertThat(r.path("vehicleSeq").asInt()).isEqualTo(1);
+            assertThat(r.path("warehouseName").asText()).isEqualTo(now.path("warehouseName").asText());
         });
     }
 
@@ -658,9 +670,12 @@ class FtlDispatchIntegrationTest {
                 .MockMvcRequestBuilders.multipart(LOADS + "/" + loadId + "/waybill-files").file(file))
                 .andExpect(status().isCreated()));
         assertThat(kept.path("fileName").asText()).isEqualTo("van-don.pdf");
+        assertThat(kept.path("uploadedByName").asText()).isEqualTo("test-" + dispatcher);
         assertThat(data(dispatch(get(LOADS + "/" + loadId + "/waybill-files")).andExpect(status().isOk())))
-                .singleElement().satisfies(f -> assertThat(f.path("fileId").asText())
-                        .isEqualTo(kept.path("fileId").asText()));
+                .singleElement().satisfies(f -> {
+                    assertThat(f.path("fileId").asText()).isEqualTo(kept.path("fileId").asText());
+                    assertThat(f.path("uploadedByName").asText()).isEqualTo("test-" + dispatcher);
+                });
         // The file is found and the link asked of the store; the local store of the tests signs none (MinIO's
         // integration tests cover signing), so it answers STORAGE_ERROR rather than a link.
         dispatch(get(LOADS + "/" + loadId + "/waybill-files/" + kept.path("fileId").asText() + "/download-url"))
@@ -784,10 +799,16 @@ class FtlDispatchIntegrationTest {
                 .satisfies(f -> assertThat(f.path("contentType").asText()).isEqualTo("text/csv"));
         assertThat(data(dispatch(get(LOADS + "/" + second.path("loadId").asText() + "/waybill-files"))
                 .andExpect(status().isOk()))).isEmpty();
-        assertThat(data(dispatch(get(BASE + "/waybill-imports/" + importId)).andExpect(status().isOk()))
-                .path("lines")).hasSize(4);
-        assertThat(data(dispatch(get(BASE + "/waybill-imports")).andExpect(status().isOk())).path("items")
-                .findValuesAsText("importId")).contains(importId);
+        JsonNode importRead = data(dispatch(get(BASE + "/waybill-imports/" + importId)).andExpect(status().isOk()));
+        assertThat(importRead.path("lines")).hasSize(4);
+        assertThat(importRead.path("uploadedByName").asText()).isEqualTo("test-" + dispatcher);
+        JsonNode importRows = data(dispatch(get(BASE + "/waybill-imports")).andExpect(status().isOk())).path("items");
+        assertThat(importRows.findValuesAsText("importId")).contains(importId);
+        importRows.forEach(r -> {
+            if (r.path("importId").asText().equals(importId)) {
+                assertThat(r.path("uploadedByName").asText()).isEqualTo("test-" + dispatcher);
+            }
+        });
         as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(BASE + "/waybill-imports/" + importId))
                 .andExpect(status().isNotFound());
 
@@ -2160,8 +2181,12 @@ class FtlDispatchIntegrationTest {
                 .MockMvcRequestBuilders.multipart(BASE + "/shipments/" + shipment + "/pod-files").file(pod))
                 .andExpect(status().isCreated()));
         assertThat(kept.path("shipmentId").asText()).isEqualTo(shipment.toString());
+        assertThat(kept.path("uploadedByName").asText()).isEqualTo("test-" + manager);
         assertThat(data(dispatch(get(BASE + "/shipments/" + shipment + "/pod-files")).andExpect(status().isOk())))
-                .singleElement().satisfies(f -> assertThat(f.path("fileName").asText()).isEqualTo("bien-ban.pdf"));
+                .singleElement().satisfies(f -> {
+                    assertThat(f.path("fileName").asText()).isEqualTo("bien-ban.pdf");
+                    assertThat(f.path("uploadedByName").asText()).isEqualTo("test-" + manager);
+                });
     }
 
     @Test
@@ -3543,6 +3568,15 @@ class FtlDispatchIntegrationTest {
         List<String> queued = new ArrayList<>();
         queue.forEach(row -> queued.add(row.path("taskId").asText()));
         assertThat(queued).as("the held order's reopened check is in the station's queue").contains(task.toString());
+        // The queue names the task by number and its warehouse by name, so the station shows no UUID.
+        queue.forEach(row -> {
+            if (row.path("taskId").asText().equals(task.toString())) {
+                assertThat(row.path("taskNumber").asText()).isEqualTo(jdbc.queryForObject(
+                        "SELECT task_number FROM fulfillment.pick WHERE id = ?", String.class, task));
+                assertThat(row.path("warehouseName").asText()).isEqualTo(jdbc.queryForObject(
+                        "SELECT name FROM warehouse.warehouse WHERE id = ?", String.class, HCM));
+            }
+        });
         // The removed cartons wait in the put-back queue (their lines still PICKED); only the replacements are scanned.
         List<String> replacements = jdbc.queryForList("SELECT lpn FROM fulfillment.pick_line WHERE pick_id = ? AND "
                 + "replaces_line_id IS NOT NULL AND status = 'PICKED'", String.class, task);

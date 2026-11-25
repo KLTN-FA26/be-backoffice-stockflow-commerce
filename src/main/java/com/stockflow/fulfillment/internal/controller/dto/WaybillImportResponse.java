@@ -9,9 +9,11 @@ import java.util.UUID;
  *
  * @param importId    absent on a preview: nothing was written
  * @param rowsApplied on a preview, the lines that would apply now
+ * @param uploadedByName the display name of {@code uploadedBy}; null on a preview (the caller's own file, nothing
+ *                       written) or if unknown
  */
 public record WaybillImportResponse(UUID importId, String fileName, UUID uploadedBy, Instant uploadedAt, int rowsTotal,
-                                    int rowsApplied, int rowsRejected, List<Line> lines) {
+                                    int rowsApplied, int rowsRejected, List<Line> lines, String uploadedByName) {
 
     /**
      * One line of the file and what it comes to.
@@ -26,8 +28,8 @@ public record WaybillImportResponse(UUID importId, String fileName, UUID uploade
                        String driverPhone, UUID loadId, String outcome, String problem, String holderCode) {
     }
 
-    /** One import in the list. */
+    /** One import in the list; {@code uploadedByName} is the display name of {@code uploadedBy}, null if unknown. */
     public record Row(UUID importId, String fileName, UUID uploadedBy, Instant uploadedAt, int rowsTotal,
-                      int rowsApplied, int rowsRejected) {
+                      int rowsApplied, int rowsRejected, String uploadedByName) {
     }
 }

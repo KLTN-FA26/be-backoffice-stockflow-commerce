@@ -121,6 +121,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
     private final DispatchLoadStore loadStore;
     private final LoadNumbers loadNumbers;
     private final WarehouseService warehouses;
+    private final com.stockflow.identity.api.IdentityService identities;
     private final LoadPlanEstimateComparison estimates;
     private final com.stockflow.fulfillment.internal.repository.PickJpaRepository picks;
     /** What a parcel holds: a carton's pick line or a repack parcel's lines (4C-6). */
@@ -146,7 +147,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                     ShipmentJpaRepository shipments, ShipmentLocks shipmentLocks,
                     VehicleTypeJpaRepository vehicleTypes, DispatchLoadJpaRepository loads,
                     DispatchLoadStore loadStore, LoadNumbers loadNumbers, WarehouseService warehouses,
-                    LoadPlanEstimateComparison estimates,
+                    com.stockflow.identity.api.IdentityService identities, LoadPlanEstimateComparison estimates,
                     com.stockflow.fulfillment.internal.repository.PickJpaRepository picks,
                     com.stockflow.fulfillment.internal.repository.ParcelContents packageLines,
                     com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers,
@@ -171,6 +172,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         this.loadStore = loadStore;
         this.loadNumbers = loadNumbers;
         this.warehouses = warehouses;
+        this.identities = identities;
         this.estimates = estimates;
         this.picks = picks;
         this.packageLines = packageLines;
@@ -341,7 +343,10 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         }
         var found = plans.findAll(Specification.allOf(filters),
                 Pages.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt", "id")));
+        Map<UUID, com.stockflow.warehouse.api.WarehouseView> warehouseById = warehouses.findWarehouses(
+                found.getContent().stream().map(LoadPlanJpaEntity::getWarehouseId).collect(Collectors.toSet()));
         return Pages.toResponse(found, header -> {
+            var warehouse = warehouseById.get(header.getWarehouseId());
             List<LoadPlanPackageJpaEntity> held = members.findByLoadPlanIdOrderByAddedAtAscIdAsc(header.getId())
                     .stream().filter(LoadPlanPackageJpaEntity::isActive).toList();
             long shipmentCount = held.stream().map(LoadPlanPackageJpaEntity::getShipmentId).distinct().count();
@@ -351,7 +356,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
             return new PlanRow(header.getId(), header.getCode(), header.getWarehouseId(), header.getStatus().name(),
                     header.getSelectionMode().name(), (int) shipmentCount, held.size(), (int) vehicleCount,
                     (int) unplaced, header.getCreatedAt(), header.getCalculatedAt(), header.getConfirmedAt(),
-                    header.getVersion(), header.getSourceType());
+                    header.getVersion(), header.getSourceType(), warehouse == null ? null : warehouse.prefix(),
+                    warehouse == null ? null : warehouse.name());
         });
     }
 
@@ -1249,14 +1255,18 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         }).toList();
         LoadPlan.Snapshot s = plan.snapshot();
         Acknowledgement ack = s.acknowledgedAt() == null ? null
-                : new Acknowledgement(s.acknowledgedAt(), s.acknowledgedBy(), s.acknowledgeNote());
+                : new Acknowledgement(s.acknowledgedAt(), s.acknowledgedBy(), s.acknowledgeNote(),
+                        s.acknowledgedBy() == null ? null
+                                : identities.displayNames(List.of(s.acknowledgedBy())).get(s.acknowledgedBy()));
+        var warehouse = warehouses.findWarehouses(List.of(plan.warehouseId())).get(plan.warehouseId());
         return new PlanDetail(plan.id(), plan.code(), plan.warehouseId(), s.sourceType(), plan.mode().name(),
                 plan.status().name(), s.note(), typeViews, shipmentViews, vehicleViews, parcelViews,
                 plan.activePackageIds().size(), plan.placedPackageIds().size(), plan.unplacedPackageIds().size(), ack,
                 s.calculatedAt(), header.getSolverMeta(), s.confirmedAt(), s.reopenedAt(), s.reopenReason(),
                 s.dispatchedAt(), s.cancelledAt(), s.cancelReason(), header.getCreatedAt(), header.getVersion(),
                 plan.cancelReasonCode() == null ? null : plan.cancelReasonCode().name(),
-                pendingUnloads(plan), plan.cancelReasonCode() != null || controlledCancelled(allLoads));
+                pendingUnloads(plan), plan.cancelReasonCode() != null || controlledCancelled(allLoads),
+                warehouse == null ? null : warehouse.prefix(), warehouse == null ? null : warehouse.name());
     }
 
     /**

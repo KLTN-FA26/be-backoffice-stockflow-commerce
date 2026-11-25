@@ -30,6 +30,9 @@ import java.util.UUID;
  * @param carrierBookingToCancel CANCELLED after it was booked (the plan reopened or cancelled, or the system called it
  *                             off with nothing left to carry - {@code cancelReason} "auto-cancelled: ..."): the
  *                             booking made with the carrier outside the system still exists - cancel it there
+ * @param loadingStartedByName the display name of {@code loadingStartedBy}; null before loading started or if unknown
+ * @param bookedByName         the display name of {@code bookedBy}; null while not booked or if unknown
+ * @param warehouseCode        the code (prefix) of {@code warehouseId}; null only if the warehouse can no longer be read
  */
 public record LoadResponse(UUID loadId, String code, UUID warehouseId, String warehouseName, String status,
                            UUID carrierId,
@@ -47,7 +50,8 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String wa
                            @JsonInclude(JsonInclude.Include.NON_NULL) String replacementLoadCode,
                            String waybillNo, String carrierConnectionType,
                            @JsonInclude(JsonInclude.Include.NON_NULL) CarrierBooking carrierBooking,
-                           @JsonInclude(JsonInclude.Include.NON_EMPTY) List<HandoverWarning> handoverWarnings) {
+                           @JsonInclude(JsonInclude.Include.NON_EMPTY) List<HandoverWarning> handoverWarnings,
+                           String loadingStartedByName, String bookedByName, String warehouseCode) {
 
     /**
      * 4B-8 (kltn-docs 08 BR-11, 09 BR-18): an order on the vehicle whose goods may not leave yet, answered when loading
@@ -83,8 +87,13 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String wa
                            int packageCount, int loadedCount, List<Parcel> packages) {
     }
 
-    /** @param lpn the carton's LPN, the barcode on its shipping label (08 §4.3 step 6); a scan may carry it or labelCode */
+    /**
+     * @param lpn          the carton's LPN, the barcode on its shipping label (08 §4.3 step 6); a scan may carry it or
+     *                     labelCode
+     * @param loadedByName the display name of {@code loadedBy}, who scanned it onto the vehicle; null while not loaded
+     *                     or if unknown
+     */
     public record Parcel(UUID packageId, String labelCode, String lpn, BigDecimal weightKg, boolean loaded,
-                         Instant loadedAt, UUID loadedBy) {
+                         Instant loadedAt, UUID loadedBy, String loadedByName) {
     }
 }

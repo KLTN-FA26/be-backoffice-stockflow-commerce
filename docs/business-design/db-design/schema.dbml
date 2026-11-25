@@ -4258,6 +4258,7 @@ Table fulfillment.pick [headercolor: #2C7873] {
   delivery_batch_id     uuid
   redelivery_case_id    uuid
   cancelled_at          timestamptz
+  task_number           varchar(32) [not null, unique]
   indexes {
     (order_id, delivery_batch_id, redelivery_case_id) [unique]
   }
