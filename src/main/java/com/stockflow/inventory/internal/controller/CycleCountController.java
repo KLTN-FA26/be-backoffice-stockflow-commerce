@@ -134,12 +134,12 @@ class CycleCountController {
     }
 
     @PutMapping("/{countId}/lines/{lineId}/count")
-    @Operation(summary = "Scan a line's carton present (found=true) or not found; the books are read again now")
+    @Operation(summary = "Scan a line's carton present (found=true, its LPN) or not found; books read again now")
     @RequiresPermission(resource = InventoryResources.CYCLE_COUNTS, action = Action.UPDATE, scope = DataScope.WAREHOUSE)
     public ApiResponse<CycleCountResponse> count(@PathVariable UUID countId, @PathVariable UUID lineId,
                                                  @Valid @RequestBody CountLineRequest request,
                                                  @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(toResponse(counts.count(countId, lineId, request.found(), actor.userId(),
+        return ApiResponse.ok(toResponse(counts.count(countId, lineId, request.found(), request.lpn(), actor.userId(),
                 decides(actor))));
     }
 

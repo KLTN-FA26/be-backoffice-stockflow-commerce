@@ -237,8 +237,8 @@ class CycleCountService implements CycleCounts {
 
     @Override
     @Transactional
-    public CycleCountView count(UUID id, UUID lineId, boolean found, UUID actor, boolean mayDecide) {
-        return counting.count(id, lineId, found, actor, mayDecide);
+    public CycleCountView count(UUID id, UUID lineId, boolean found, String lpn, UUID actor, boolean mayDecide) {
+        return counting.count(id, lineId, found, lpn, actor, mayDecide);
     }
 
     @Override

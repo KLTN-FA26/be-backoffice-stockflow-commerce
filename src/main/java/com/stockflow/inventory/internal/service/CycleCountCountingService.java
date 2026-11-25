@@ -1,5 +1,6 @@
 package com.stockflow.inventory.internal.service;
 
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.WarehouseScope;
@@ -91,9 +92,23 @@ class CycleCountCountingService {
      * The line's carton scanned at its bin ({@code found}) or not found there. A carton moved whole since planning is
      * counted where it is now: the line follows it (20 §4.2 b6). Only a carton that can hold stock - IN_STOCK, or LOST
      * and found again - is found; one emptied since (picked, written off) is not there to scan.
+     *
+     * <p>Found is the line's own LPN scanned (§4.2 b4), checked against the carton under its lock: a bare "present"
+     * would let a counter state a carton there without having seen it, and the variance - none - would be decided on
+     * their word. The refusal names only the scanned LPN, which the counter holds, and the line's, which the line
+     * already shows, so it tells a blind counter nothing of the books (BR-07).</p>
      */
     @Transactional
-    public CycleCountView count(UUID id, UUID lineId, boolean found, UUID actor, boolean mayDecide) {
+    public CycleCountView count(UUID id, UUID lineId, boolean found, String lpn, UUID actor, boolean mayDecide) {
+        String scanned = CycleCountInput.upper(lpn);
+        if (found && scanned == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Scan the carton's LPN to count it found",
+                    List.of(new FieldError("lpn", "Scan the carton's LPN to count it found", "Required")));
+        }
+        if (!found && scanned != null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A carton not found has no LPN scanned",
+                    List.of(new FieldError("lpn", "A carton not found has no LPN scanned", "NotAllowed")));
+        }
         CycleCount count = lockForCounting(id, actor, mayDecide);
         requireOpen(count);
         CycleCountLine line = count.lines().stream().filter(l -> l.id().equals(lineId)).findFirst()
@@ -106,6 +121,10 @@ class CycleCountCountingService {
         }
         policies.lock(line.slot().sku().code());
         StockPackage carton = lockCarton(line.slot().stockPackageId());
+        if (found && !scanned.equalsIgnoreCase(carton.lpn())) {
+            throw new BusinessException(ErrorCode.CYCLE_COUNT_LPN_MISMATCH,
+                    "%s is not the carton of this line (%s)".formatted(scanned, carton.lpn()));
+        }
         boolean reveal = revealsBooks(count, mayDecide);
         if (carton.status() == StockPackageStatus.IN_STOCK) {
             // The line object is the aggregate's own: relocating it moves this very slot.
