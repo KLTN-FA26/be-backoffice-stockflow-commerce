@@ -109,10 +109,16 @@ class EInvoiceController {
     private final EInvoiceSignatures signatures;
     private final EInvoiceMails mails;
     private final Clock clock;
+    private final com.stockflow.order.api.ReturnRequestLookup returns;
+    private final com.stockflow.identity.api.IdentityService identities;
 
     EInvoiceController(EInvoiceDrafts drafts, EInvoiceIssuance issuance, EInvoiceQueryService queries,
                        EInvoiceCorrections corrections, EInvoiceErrorNotices errorNotices,
-                       EInvoiceSignatures signatures, EInvoiceMails mails, Clock clock) {
+                       EInvoiceSignatures signatures, EInvoiceMails mails, Clock clock,
+                       com.stockflow.order.api.ReturnRequestLookup returns,
+                       com.stockflow.identity.api.IdentityService identities) {
+        this.returns = returns;
+        this.identities = identities;
         this.signatures = signatures;
         this.mails = mails;
         this.corrections = corrections;
@@ -468,7 +474,22 @@ class EInvoiceController {
                                       String earlierPending) {
         return InvoicingWebMapper.toResponse(invoice, now, earlierPending, queries.errorNoticeSupported(invoice),
                 issuance.withdrawability(invoice), issuance.externalReductions(invoice),
-                queries.watch(invoice).orElse(null));
+                queries.watch(invoice).orElse(null),
+                invoice.originalEInvoiceId() == null ? null : queries.find(invoice.originalEInvoiceId()).orElse(null),
+                invoice.returnRequestId() == null ? null : returns.find(invoice.returnRequestId())
+                        .map(com.stockflow.order.api.ReturnRequestReference::rmaNumber).orElse(null));
+    }
+
+    /** Who recorded each of {@code notices}, by user id, in one read. */
+    private java.util.Map<UUID, String> recorders(List<com.stockflow.invoicing.internal.domain.ErrorNotice.Snapshot>
+                                                          notices) {
+        var ids = notices.stream().map(com.stockflow.invoicing.internal.domain.ErrorNotice.Snapshot::recordedBy)
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        return ids.isEmpty() ? java.util.Map.of() : identities.displayNames(ids);
+    }
+
+    private EInvoiceErrorNoticeResponse response(com.stockflow.invoicing.internal.domain.ErrorNotice.Snapshot notice) {
+        return InvoicingWebMapper.toResponse(notice, recorders(List.of(notice)));
     }
 
     // ---- corrections of an issued invoice (WF-05 E4; TT 91/2026/TT-BTC Điều 10) -------------------------------------
@@ -554,7 +575,9 @@ class EInvoiceController {
                                                                        @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         queries.get(id);
-        return ApiResponse.ok(errorNotices.of(id).stream().map(InvoicingWebMapper::toResponse).toList());
+        var notices = errorNotices.of(id);
+        var names = recorders(notices);
+        return ApiResponse.ok(notices.stream().map(notice -> InvoicingWebMapper.toResponse(notice, names)).toList());
     }
 
     @PostMapping("/{id}/error-notices")
@@ -568,7 +591,7 @@ class EInvoiceController {
                                                                 @Valid @RequestBody RecordErrorNoticeRequest request,
                                                                 @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(InvoicingWebMapper.toResponse(errorNotices.record(new EInvoiceErrorNotices.Notify(id,
+        return ApiResponse.ok(response(errorNotices.record(new EInvoiceErrorNotices.Notify(id,
                 request.subject(), request.reason(), request.correctBuyerName(), request.correctBuyerAddress()),
                 user.userId())));
     }
@@ -581,7 +604,7 @@ class EInvoiceController {
     public ApiResponse<EInvoiceErrorNoticeResponse> sendErrorNotice(@PathVariable UUID id, @PathVariable UUID noticeId,
                                                                     @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(InvoicingWebMapper.toResponse(errorNotices.send(id, noticeId)));
+        return ApiResponse.ok(response(errorNotices.send(id, noticeId)));
     }
 
     private static EInvoiceCorrections.Buyer buyer(CorrectionBuyerRequest buyer) {

@@ -323,7 +323,21 @@ class DesignProjectIntegrationTest {
         mvc.perform(get("/api/v1/designs").param("inProject", "true"))
                 .andExpect(jsonPath("$.data.totalElements").value(1))
                 .andExpect(jsonPath("$.data.items[0].id").value(inside))
-                .andExpect(jsonPath("$.data.items[0].projectId").value(project));
+                .andExpect(jsonPath("$.data.items[0].projectId").value(project))
+                // Named on the design itself, so the studio does not read every project to label it.
+                .andExpect(jsonPath("$.data.items[0].projectName").value("Nhận diện quán A"))
+                .andExpect(jsonPath("$.data.items[0].projectStatus").value("ACTIVE"));
+        mvc.perform(get("/api/v1/designs/" + inside))
+                .andExpect(jsonPath("$.data.projectName").value("Nhận diện quán A"));
+        mvc.perform(get("/api/v1/designs/" + alone))
+                .andExpect(jsonPath("$.data.projectName").doesNotExist())
+                .andExpect(jsonPath("$.data.projectStatus").doesNotExist());
+        // The project's history names who took each step.
+        String ownerName = jdbc.queryForObject(
+                "SELECT COALESCE(NULLIF(full_name, ''), username) FROM identity.app_user WHERE id = ?", String.class,
+                owner);
+        mvc.perform(get("/api/v1/design-projects/" + project + "/history")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.event == 'PROJECT_CREATED')].actorName").value(ownerName));
         mvc.perform(get("/api/v1/designs").param("inProject", "false").param("status", "DRAFT"))
                 .andExpect(jsonPath("$.data.totalElements").value(2));
         mvc.perform(get("/api/v1/designs")).andExpect(jsonPath("$.data.totalElements").value(3));

@@ -15,5 +15,5 @@
  * </ul>
  */
 @org.springframework.modulith.ApplicationModule(allowedDependencies = {"product :: api", "product :: spi",
-        "customer :: api", "inventory :: api"})
+        "customer :: api", "inventory :: api", "identity :: api"})
 package com.stockflow.design;

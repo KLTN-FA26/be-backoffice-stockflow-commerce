@@ -6,8 +6,11 @@ import com.stockflow.customer.api.CustomerService;
 import com.stockflow.design.api.DesignArtifactRole;
 import com.stockflow.design.internal.domain.DesignStatus;
 import com.stockflow.design.internal.entity.DesignDraftJpaEntity;
+import com.stockflow.design.internal.entity.DesignProjectJpaEntity;
+import com.stockflow.identity.api.IdentityService;
 import com.stockflow.design.internal.repository.DesignArtifactJpaRepository;
 import com.stockflow.design.internal.repository.DesignDocumentJpaRepository;
+import com.stockflow.design.internal.repository.DesignProjectJpaRepository;
 import com.stockflow.design.internal.repository.DesignSnapshotJpaRepository;
 import com.stockflow.product.api.CustomerSku;
 import com.stockflow.product.api.CustomerSkus;
@@ -27,8 +30,12 @@ import org.springframework.stereotype.Component;
 /**
  * Designs as the API shows them, for both the staff workflow and a customer's own designs. A page costs one read of
  * the layouts' save times, one of its previews' storage keys, one of its variants' names, one of its customers' names,
- * one of its approved designs' snapshots and one of those snapshots' SKUs, and one product read per distinct product,
- * whatever its size.
+ * one of its approved designs' snapshots and one of those snapshots' SKUs, one of its projects, one of its reviewers'
+ * names, and one product read per distinct product, whatever its size.
+ *
+ * <p>The project's name and status and the reviewer's name ride on every design too: without them the studio read every
+ * project of the customer, and one more per project it missed, each time it drew a list of designs, and could not say
+ * who returned or approved a design at all (it held only the reviewer's id).</p>
  *
  * <p>The customer's own SKU of an approved design and the customer's name ride on every design (FE request BE-2): the
  * snapshot that carries the SKU is its owner's alone, and a reviewer no longer reads a design once it is decided, so
@@ -50,11 +57,16 @@ class DraftViews {
     private final CustomerSkus customerSkus;
     private final CustomerService customers;
     private final com.stockflow.inventory.api.UomConversionService units;
+    private final DesignProjectJpaRepository projects;
+    private final IdentityService identities;
 
     DraftViews(ProductService products, DesignDocumentJpaRepository documents, DesignArtifactJpaRepository artifacts,
                FileTransfers files, DesignSnapshotJpaRepository snapshots, CustomerSkus customerSkus,
-               CustomerService customers, com.stockflow.inventory.api.UomConversionService units) {
+               CustomerService customers, com.stockflow.inventory.api.UomConversionService units,
+               DesignProjectJpaRepository projects, IdentityService identities) {
         this.units = units;
+        this.projects = projects;
+        this.identities = identities;
         this.products = products;
         this.documents = documents;
         this.artifacts = artifacts;
@@ -88,16 +100,33 @@ class DraftViews {
                 .collect(Collectors.toSet());
         Map<UUID, String> customerNames = customers.fullNames(customerIds);
         Map<String, Integer> perCarton = piecesPerCarton(drafts, customerSkuOf);
+        Map<UUID, DesignProjectJpaEntity> projectsById = projectsOf(drafts);
+        Set<UUID> reviewers = drafts.stream().map(DesignDraftJpaEntity::getReviewedBy).filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<UUID, String> reviewerNames = reviewers.isEmpty() ? Map.of() : identities.displayNames(reviewers);
         return drafts.stream().map(d -> {
             Optional<ProductSummary> product = productsById.get(d.getProductId());
             String cartonSku = customerSkuOf.getOrDefault(d.getId(), d.getSku());
+            DesignProjectJpaEntity project = d.getProjectId() == null ? null : projectsById.get(d.getProjectId());
             return view(d, product.map(ProductSummary::slug).orElse(null),
                     product.map(ProductSummary::name).orElse(null), saved.get(d.getId()),
                     d.getCurrentArtifactId() == null ? null : previews.get(d.getCurrentArtifactId()),
                     variantName(d.getSku(), variantNames), customerSkuOf.get(d.getId()),
                     d.getCustomerId() == null ? null : customerNames.get(d.getCustomerId()),
-                    cartonSku == null ? null : perCarton.get(cartonSku));
+                    cartonSku == null ? null : perCarton.get(cartonSku), project,
+                    d.getReviewedBy() == null ? null : reviewerNames.get(d.getReviewedBy()));
         }).toList();
+    }
+
+    /** The projects the page's designs are in, by id, in one read. */
+    private Map<UUID, DesignProjectJpaEntity> projectsOf(List<DesignDraftJpaEntity> drafts) {
+        Set<UUID> ids = drafts.stream().map(DesignDraftJpaEntity::getProjectId).filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return projects.findAllById(ids).stream()
+                .collect(Collectors.toMap(DesignProjectJpaEntity::getId, project -> project));
     }
 
     /**
@@ -177,7 +206,8 @@ class DraftViews {
     private static DesignWorkflowService.DraftView view(DesignDraftJpaEntity d, String slug, String productName,
                                                         Instant layoutSaved, String previewUrl, String variantName,
                                                         String customerSku, String customerName,
-                                                        Integer unitsPerCarton) {
+                                                        Integer unitsPerCarton, DesignProjectJpaEntity project,
+                                                        String reviewedByName) {
         Instant rowChanged = d.getLastModifiedAt() != null ? d.getLastModifiedAt() : d.getCreatedAt();
         Instant updatedAt = layoutSaved != null && (rowChanged == null || layoutSaved.isAfter(rowChanged))
                 ? layoutSaved : rowChanged;
@@ -185,6 +215,8 @@ class DraftViews {
                 d.getName(), d.getSpec(), d.getStatus().name(), d.getCurrentArtifactId(), d.getReviewedBy(),
                 d.getReviewNotes(), d.getVersion(), d.getParentSnapshotId(), slug, d.getSku(), d.getTemplateCode(),
                 d.getReviewRequestedAt(), d.getReviewedAt(), updatedAt, d.getProjectId(), previewUrl, variantName,
-                productName, customerSku, customerName, unitsPerCarton);
+                productName, customerSku, customerName, unitsPerCarton,
+                project == null ? null : project.getName(), project == null ? null : project.getStatus().name(),
+                reviewedByName);
     }
 }

@@ -232,6 +232,11 @@ class EInvoiceCorrectionEndpointsIntegrationTest {
                 .andExpect(jsonPath("$.data.type").value("ADJUSTMENT"))
                 .andExpect(jsonPath("$.data.status").value("DRAFT"))
                 .andExpect(jsonPath("$.data.originalEInvoiceId").value(original.id().toString()))
+                // The original named the way it names itself, without a second read.
+                .andExpect(jsonPath("$.data.originalEInvoiceCode").value(original.code()))
+                .andExpect(jsonPath("$.data.originalEInvoiceSymbol").value(original.symbol()))
+                .andExpect(jsonPath("$.data.originalEInvoiceNumber").value(original.invoiceNumber()))
+                .andExpect(jsonPath("$.data.returnRmaNumber").doesNotExist())
                 .andExpect(jsonPath("$.data.correctionBasis").value("ERROR"))
                 .andExpect(jsonPath("$.data.agreementRequired").value(true))
                 .andExpect(jsonPath("$.data.lines.length()").value(1))
@@ -332,10 +337,15 @@ class EInvoiceCorrectionEndpointsIntegrationTest {
                 .andExpect(jsonPath("$.data.status").value("ACCEPTED"))
                 .andExpect(jsonPath("$.data.recordedBy").value(accountant.toString())));
         assertThat(notice.path("responseCode").asText()).startsWith("SBX-TBSS-");
+        String accountantName = jdbc.queryForObject(
+                "SELECT COALESCE(NULLIF(full_name, ''), username) FROM identity.app_user WHERE id = ?", String.class,
+                accountant);
+        assertThat(notice.path("recordedByName").asText()).isEqualTo(accountantName);
 
         asAccountant(EINVOICES + original.id() + "/error-notices").andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(1))
-                .andExpect(jsonPath("$.data[0].id").value(notice.path("id").asText()));
+                .andExpect(jsonPath("$.data[0].id").value(notice.path("id").asText()))
+                .andExpect(jsonPath("$.data[0].recordedByName").value(accountantName));
         asAccountant(EINVOICES + original.id() + "/corrections").andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(0));
         EInvoice.Snapshot after = queries.get(original.id());

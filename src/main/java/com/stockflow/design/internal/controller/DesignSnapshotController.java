@@ -36,9 +36,11 @@ import java.util.UUID;
 class DesignSnapshotController {
 
     private final DesignSnapshotQueryService snapshots;
+    private final DesignWorkflowWebMapper names;
 
-    DesignSnapshotController(DesignSnapshotQueryService snapshots) {
+    DesignSnapshotController(DesignSnapshotQueryService snapshots, DesignWorkflowWebMapper names) {
         this.snapshots = snapshots;
+        this.names = names;
     }
 
     @GetMapping
@@ -51,10 +53,13 @@ class DesignSnapshotController {
             @AuthenticatedUser CurrentUser user) {
         var found = snapshots.confirmedOf(user, customerId, productId, sku,
                 Pages.of(page, size == null ? Pages.DEFAULT_PAGE_SIZE : size));
+        var confirmers = names.names(found.getContent().stream().map(DesignSnapshotQueryService.Summary::confirmedBy)
+                .toList());
         return ApiResponse.ok(Pages.toResponse(found, s -> new ConfirmedSnapshotResponse(s.snapshotId(), s.draftId(),
                 s.designName(), s.customerId(), s.productId(), s.checksum(), s.spec(), s.confirmedAt(), s.confirmedBy(),
                 s.artifacts().stream().map(a -> new DesignSnapshotResponse.Artifact(a.artifactId(), a.role(),
-                        a.originalName(), a.contentType(), a.sizeBytes(), a.checksum())).toList())));
+                        a.originalName(), a.contentType(), a.sizeBytes(), a.checksum())).toList(),
+                s.confirmedBy() == null ? null : confirmers.get(s.confirmedBy()))));
     }
 
     @GetMapping("/{snapshotId}/preview")

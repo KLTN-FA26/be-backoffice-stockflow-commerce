@@ -62,8 +62,8 @@ class DesignWorkflowController {
     public ApiResponse<PageResponse<DesignDecisionResponse>> history(@PathVariable UUID id,
             @AuthenticatedUser CurrentUser user, @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(Pages.toResponse(service.history(id, actor(user), readRights(user), pageOf(page, size))
-                .map(mapper::toResponse)));
+        return ApiResponse.ok(Pages.toResponse(mapper.decisions(service.history(id, actor(user), readRights(user),
+                pageOf(page, size)))));
     }
 
     @GetMapping("/{id}/snapshot")
