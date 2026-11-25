@@ -299,7 +299,9 @@ class QuoteService implements Quotes {
                             Quote.VALID_UNTIL.format(quote.offer().validUntil()));
         }
         requireCustomerSkus(quote, "accepted");
-        requireActiveSkus(quote.quoteNumber(), quote.offer());
+        // NEW-FE-2: the customer reads this one - they ask Sales to revise the quote, they do not revise it.
+        requireActiveSkus(quote.quoteNumber(), quote.offer(), "ask Sales to revise the quote",
+                "refusal.quote.skuInactive.accept");
         QuoteStatus from = quote.status();
         quote.accept(acceptance.cartons(), user.userId(), now);
         quotes.save(quote);
@@ -337,11 +339,20 @@ class QuoteService implements Quotes {
     public QuoteView cancel(CurrentUser user, UUID quoteId, long version, String reason) {
         return backOffice(user, quoteId, version, quote -> {
             // A legacy quote is never converted (QD-16): accepted, it is cancelled for that alone.
-            if (quote.status() == QuoteStatus.ACCEPTED && !quote.offer().legacy()) {
+            if (quote.status() == QuoteStatus.ACCEPTED && !quote.offer().legacy() && customerActive(quote)) {
                 requireAStoppedSku(quote);
             }
             quote.cancel(reason);
         }, reason);
+    }
+
+    /**
+     * LC-2 (QD10): a customer no longer ACTIVE gets no new order, so an accepted quote of theirs can never be converted:
+     * Sales cancels it, with its reason, whatever its SKUs.
+     */
+    private boolean customerActive(Quote quote) {
+        return customers.findById(quote.customerId()).map(customer -> "ACTIVE".equals(customer.status()))
+                .orElse(false);
     }
 
     /**
@@ -380,7 +391,7 @@ class QuoteService implements Quotes {
         }
         requireCustomerSkus(quote, "converted");
         requireActiveSkus(quote.quoteNumber(), quote.offer(), "cancel the quote with its reason and send a new one with "
-                + "an active SKU");
+                + "an active SKU", "refusal.quote.skuInactive.cancel");
         // The order lines are what was accepted: the pieces, the price of one, and the cartons they were ordered in
         // (14 §4.2 step 7, BR-08). The SKU is the design (12 §4.5), so no design snapshot travels with the line.
         List<PlaceOrderCommand.Line> lines = quote.offer().lines().stream()
@@ -526,11 +537,15 @@ class QuoteService implements Quotes {
      * fault with why, on {@code lines[i].sku}, so the form can put it next to the SKU.
      */
     private void requireActiveSkus(String quoteNumber, Quote.Offer offer) {
-        requireActiveSkus(quoteNumber, offer, "change it to an active SKU and send the quote again");
+        requireActiveSkus(quoteNumber, offer, "change it to an active SKU and send the quote again",
+                "refusal.quote.skuInactive.revise");
     }
 
-    /** {@code next}: what Sales does about it - revise and send again, or, for an accepted quote, cancel it. */
-    private void requireActiveSkus(String quoteNumber, Quote.Offer offer, String next) {
+    /**
+     * {@code next}: what the one refused does about it - Sales revises and sends again, or cancels an accepted quote;
+     * the customer accepting asks Sales to revise it. {@code key} words the same for the reader.
+     */
+    private void requireActiveSkus(String quoteNumber, Quote.Offer offer, String next, String key) {
         List<QuoteLine> lines = offer.lines();
         Map<String, Purchasability> verdicts = products.lockedPurchasability(
                 lines.stream().map(line -> line.sku().code()).toList());
@@ -550,8 +565,6 @@ class QuoteService implements Quotes {
             }
         }
         if (!errors.isEmpty()) {
-            // What Sales does next reads as it was asked: an accepted quote is cancelled, any other revised.
-            String key = next.startsWith("cancel") ? "refusal.quote.skuInactive.cancel" : "refusal.quote.skuInactive.revise";
             throw new BusinessException(ErrorCode.SKU_NOT_SELLABLE, "%s holds a SKU that is no longer active: %s; "
                     .formatted(quoteNumber == null ? "The quote" : "Quote " + quoteNumber, String.join(", ", named))
                     + next, errors, Map.of(), key, quoteNumber == null ? "" : " " + quoteNumber,
@@ -620,7 +633,9 @@ class QuoteService implements Quotes {
     /**
      * A SKU still produced for the first time when the quote is sent has its plate fee (14 BR-17): the draft got one when
      * it was last edited, but an order of the SKU may have been cancelled since, or the draft may predate fee lines.
-     * Sales edits the draft, which adds it, and prices or waives it.
+     * Sales edits the draft, which adds it, and prices or waives it. The other way round, the plate is charged once
+     * (QD4): a SKU produced since the draft was edited - confirmed on an order, or in production - is refused with its
+     * plate fee still on; Sales edits the draft and takes the fee off (an edit that keeps it is refused as well).
      */
     private void requirePlateFees(Quote quote) {
         if (quote.offer().legacy()) {
@@ -637,6 +652,12 @@ class QuoteService implements Quotes {
             throw new BusinessException(ErrorCode.QUOTE_PLATE_FEE_MISSING, ("Quote %s: %s produced for the first time "
                     + "without a plate fee; edit the quote to add it").formatted(quote.quoteNumber(), missing))
                     .localized("refusal.quote.plateFeeMissing", quote.quoteNumber(), String.join(", ", missing));
+        }
+        List<String> charged = withFee.stream().filter(produced::contains).sorted().toList();
+        if (!charged.isEmpty()) {
+            throw new BusinessException(ErrorCode.QUOTE_PLATE_FEE_REORDER, ("Quote %s: %s produced before still "
+                    + "carries a plate fee; edit the quote to drop it").formatted(quote.quoteNumber(), charged))
+                    .localized("refusal.quote.plateFeeProduced", quote.quoteNumber(), String.join(", ", charged));
         }
     }
 
@@ -1025,7 +1046,7 @@ class QuoteService implements Quotes {
         com.stockflow.common.domain.Money acceptedTax = acceptedNet == null ? null
                 : untaxed ? com.stockflow.common.domain.Money.vnd(0) : line.taxOf(acceptedNet);
         com.stockflow.common.domain.Money proposed = !line.priced() ? null
-                : line.priceFor(offer.proposedQuantity(line.sku().code()));
+                : line.shownPriceFor(offer.proposedQuantity(line.sku().code()));
         com.stockflow.common.domain.Money proposedNet = proposed == null ? null : line.total(line.quantity(), proposed);
         com.stockflow.common.domain.Money proposedTax = proposedNet == null ? null
                 : untaxed ? com.stockflow.common.domain.Money.vnd(0) : line.taxOf(proposedNet);

@@ -30,7 +30,8 @@ import java.util.UUID;
  * §4.3, BR-10, BR-11; 18 BR-02).
  *
  * <p>Accounting confirms a held order, or refuses it: the order is then cancelled ({@code CREDIT_REJECTED}). Either way
- * the decision is recorded with who made it and why ({@code order_credit_check}). Until 4B-10 a refusal could also
+ * the decision is recorded with who made it and why ({@code order_credit_check}), and the order's salesperson is told
+ * the outcome in the in-app inbox (WF-02 FLOW-1b, {@link SalesFollowUpService#creditDecided}). Until 4B-10 a refusal could also
  * switch a checkout order to prepaid or deposit terms; orders have no payment terms of their own any more.</p>
  */
 @Service
@@ -55,13 +56,16 @@ public class CreditHoldService {
     private final com.stockflow.payment.api.PaymentService paymentService;
     private final Clock clock;
     private final com.stockflow.order.internal.domain.SalesContractRepository contracts;
+    private final SalesFollowUpService followUps;
 
     CreditHoldService(OrderRepository repository, OrderServiceImpl orders, OrderService orderService,
                       OrderEventPublisher events, CreditChecks creditChecks, OrderHoldJpaRepository holds,
                       CustomerService customers, com.stockflow.order.internal.repository.CreditHoldSearch search,
                       com.stockflow.payment.api.PaymentService paymentService, Clock clock,
-                      com.stockflow.order.internal.domain.SalesContractRepository contracts) {
+                      com.stockflow.order.internal.domain.SalesContractRepository contracts,
+                      SalesFollowUpService followUps) {
         this.contracts = contracts;
+        this.followUps = followUps;
         this.repository = repository;
         this.orders = orders;
         this.orderService = orderService;
@@ -102,11 +106,13 @@ public class CreditHoldService {
         Order order = lockHeld(orderId);
         // 14 §5.3: an order held when its contract was signed still waits for the installment on signing - unless the
         // customer paid it while the order was held (4B-6: the installments say).
-        order.approveCredit(by, clock.instant(), signedContract(order).isPresent()
+        var contract = signedContract(order);
+        order.approveCredit(by, clock.instant(), contract.isPresent()
                 && !paymentService.installmentStanding(orderId).onSigningPaid());
         decide(order, CreditChecks.Outcome.APPROVED, note, by);
         repository.save(order);
         events.publishEventsOf(order);
+        followUps.creditDecided(orderId, order.orderNumber().value(), salesOf(contract), true);
         log.info("Credit approved for order {} by {}", order.orderNumber(), by);
         return orderService.findById(orderId).orElseThrow();
     }
@@ -119,8 +125,10 @@ public class CreditHoldService {
     public OrderSummary refuse(UUID orderId, String note, UUID by) {
         requireNote(note);
         Order order = lockHeld(orderId);
+        UUID sales = salesOf(signedContract(order));
         decide(order, CreditChecks.Outcome.REJECTED, note, by);
         orders.cancelLoaded(order, new CancelOrderCommand(CancellationReasonCode.CREDIT_REJECTED, note, null, by));
+        followUps.creditDecided(orderId, order.orderNumber().value(), sales, false);
         log.info("Credit refused for order {} by {}", order.orderNumber(), by);
         return orderService.findById(orderId).orElseThrow();
     }
@@ -129,6 +137,11 @@ public class CreditHoldService {
     private java.util.Optional<com.stockflow.order.internal.domain.SalesContract> signedContract(Order order) {
         return contracts.findLiveByOrderId(order.id().value())
                 .filter(c -> c.status() == com.stockflow.order.internal.domain.SalesContractStatus.SIGNED);
+    }
+
+    /** WF-02 FLOW-1b, Q-11: the salesperson of an order is who sent its contract, or who recorded it signed. */
+    private static UUID salesOf(java.util.Optional<com.stockflow.order.internal.domain.SalesContract> contract) {
+        return contract.map(c -> c.sentBy() != null ? c.sentBy() : c.signedBy()).orElse(null);
     }
 
     private Order lockHeld(UUID orderId) {

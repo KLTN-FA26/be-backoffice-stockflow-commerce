@@ -25,7 +25,7 @@ public record InstallmentResponse(UUID installmentId, UUID contractId,
                                           + "characters of the id); null when the customer record is gone",
                                           example = "0312345678")
                                   String customerCode,
-                                  int seq, @Schema(example = "Đặt cọc") String name,
+                                  int seq, @Schema(example = "Thanh toán trước khi ký") String name,
                                   @Schema(description = "CANCELLATION_FEE: the part of a cancellation fee the "
                                           + "money collected did not cover (15 §4.6 step 18), paid like an installment. "
                                           + "FAILED_TRIP_FEE: the trip of a delivery the customer refused or "
