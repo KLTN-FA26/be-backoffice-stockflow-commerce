@@ -381,4 +381,68 @@ class WarehouseCapacityIntegrationTest extends ProductionOrderDispatchFixtures {
                 Long.class, manager, "capacity-negative:" + w.id() + ":%")).isEqualTo(1);
         m3(board(w).projectedFreeM3(), "-1.428", "1.26 - 2.688: the three on their way, shown negative");
     }
+
+    @Test
+    @DisplayName("#456: one row per bin, empty and blocked ones included, no area; a shelf's bins add up to its row")
+    void binOccupancy() {
+        Layout layout = layout();
+        Warehouse w = layout.warehouse();
+        factor(w, "0.5");
+        cartons(layout.binA(), 10);
+        cartons(layout.binD(), 1);
+        cartons(layout.receiving(), 2);
+
+        List<WarehouseCapacityService.BinOccupancy> bins = capacity.binOccupancy(w.id());
+
+        assertThat(bins).extracting(WarehouseCapacityService.BinOccupancy::locationCode)
+                .as("bins only, by code: the receiving area is not one")
+                .containsExactly(w.code() + "-A01-1-A", w.code() + "-A01-1-B", w.code() + "-B01-1-D");
+        WarehouseCapacityService.BinOccupancy a = bins.get(0);
+        assertThat(a.cartons()).isEqualTo(10);
+        assertThat(a.skus()).isEqualTo(1);
+        assertThat(a.units()).isEqualTo(10 * PER_CARTON);
+        assertThat(a.usable()).isTrue();
+        m3(a.capacityM3(), "4.2", "8.4 m3 x 0.5");
+        m3(a.occupiedM3(), "0.84", "10 cartons of 0.084 m3");
+        m3(a.freeM3(), "3.36", "capacity - occupied");
+        m3(a.occupiedPercent(), "20", "0.84 / 4.2");
+        m3(a.maxWeightKg(), "250", "the bin's limit");
+        assertThat(a.freeKg()).isNotNull();
+        m3(a.heldByTripsM3(), "0", "no trip on its way");
+        assertThat(a.underOpenCount()).isFalse();
+
+        WarehouseCapacityService.BinOccupancy blocked = bins.get(1);
+        assertThat(blocked.usable()).isFalse();
+        assertThat(blocked.status()).isEqualTo("BLOCKED");
+        assertThat(blocked.cartons()).isZero();
+        assertThat(blocked.capacityM3()).as("a blocked bin offers no room, as on the board").isNull();
+        assertThat(blocked.freeM3()).isNull();
+        assertThat(blocked.occupiedPercent()).isNull();
+        m3(blocked.occupiedM3(), "0", "empty");
+
+        Map<String, Group> rows = byKey(board(w));
+        Group shelfA = rows.get("SHELF:" + layout.zonedShelfId());
+        Group shelfB = rows.get("SHELF:" + layout.looseShelfId());
+        m3(a.occupiedM3().add(blocked.occupiedM3()), shelfA.occupiedM3().toPlainString(), "shelf A01 occupied");
+        m3(a.capacityM3(), shelfA.capacityM3().toPlainString(), "shelf A01 capacity: its usable bin");
+        m3(bins.get(2).occupiedM3(), shelfB.occupiedM3().toPlainString(), "shelf B01 occupied");
+        m3(bins.get(2).capacityM3(), shelfB.capacityM3().toPlainString(), "shelf B01 capacity");
+    }
+
+    @Test
+    @DisplayName("#456: a warehouse manager reads the bins of their warehouse only; another is 403, an unknown 404")
+    void binOccupancyScope() {
+        Warehouse mine = layout().warehouse();
+        Warehouse other = layout().warehouse();
+        UUID managerId = managerOf(mine);
+        CurrentUser manager = new CurrentUser(managerId, "wm-" + managerId, Set.of(Role.WAREHOUSE_MANAGER), Set.of(),
+                DataScope.WAREHOUSE, Set.of(mine.code()), Set.of(mine.id()));
+
+        assertThat(WithCurrentUser.call(manager, DataScope.ALL, () -> capacity.binOccupancy(mine.id()))).hasSize(3);
+        assertThatThrownBy(() -> WithCurrentUser.call(manager, DataScope.ALL, () -> capacity.binOccupancy(other.id())))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
+        assertThatThrownBy(() -> capacity.binOccupancy(UUID.randomUUID()))
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.WAREHOUSE_NOT_FOUND);
+    }
 }

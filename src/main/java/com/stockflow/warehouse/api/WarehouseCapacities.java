@@ -16,4 +16,10 @@ public interface WarehouseCapacities {
 
     /** @return empty when no warehouse has this id */
     Optional<WarehouseCapacity> capacityOf(UUID warehouseId);
+
+    /**
+     * Every bin of the warehouse on the layout (its shelf not taken off it), by location code, with its volume, weight
+     * limit and whether it is usable now (#456, the location list). One read; an unknown warehouse has none.
+     */
+    java.util.List<BinCapacity> binsOf(UUID warehouseId);
 }

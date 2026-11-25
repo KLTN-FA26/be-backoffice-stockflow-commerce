@@ -1,5 +1,6 @@
 package com.stockflow.warehouse.internal.service;
 
+import com.stockflow.warehouse.api.BinCapacity;
 import com.stockflow.warehouse.api.BinSize;
 import com.stockflow.warehouse.api.CapacityGroup;
 import com.stockflow.warehouse.api.WarehouseCapacities;
@@ -53,6 +54,22 @@ class WarehouseCapacitiesImpl implements WarehouseCapacities {
         }
         return layout.warehouse(warehouseId).map(warehouse -> assemble(warehouse, layout.zones(warehouseId),
                 layout.shelves(warehouseId), layout.bins(warehouseId), layout.storageAreas(warehouseId)));
+    }
+
+    @Override
+    public List<BinCapacity> binsOf(UUID warehouseId) {
+        if (warehouseId == null) {
+            return List.of();
+        }
+        return layout.warehouse(warehouseId).map(warehouse -> layout.binDetails(warehouseId).stream()
+                .filter(bin -> bin.shelfStatus() != LocationStatus.INACTIVE)
+                .map(bin -> {
+                    LocationStatus effective = EffectiveStatus.ofBin(warehouse.status(), bin.shelfStatus(),
+                            bin.locationStatus());
+                    return new BinCapacity(bin.locationCode(), bin.shelfCode(),
+                            new BinSize(bin.width(), bin.length(), bin.usableHeight()).volumeM3(), bin.maxWeight(),
+                            effective.name(), EffectiveStatus.isUsable(effective));
+                }).toList()).orElse(List.of());
     }
 
     /** The board's map half from the rows read; pure, so the rules can be read in one place. */
