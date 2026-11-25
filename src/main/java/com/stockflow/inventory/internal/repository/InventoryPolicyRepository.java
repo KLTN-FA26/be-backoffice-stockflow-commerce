@@ -112,7 +112,9 @@ public class InventoryPolicyRepository {
 
     /**
      * {@link #findCartonSpec} for many SKUs in one read (BE1: the capacity board sizes every SKU it counts by the same
-     * rule). A SKU with no carton spec is absent.
+     * rule). A SKU with no carton spec is absent, and so is one with several active units - which
+     * {@code uk_uom_conversions_one_carton} refuses - as {@code StockPackageRepository.cartonFactorOf} and
+     * {@code UomConversion.cartonOf} answer: nothing is guessed.
      */
     public java.util.Map<String, com.stockflow.inventory.api.CartonSpec> findCartonSpecs(Collection<String> skus) {
         if (skus.isEmpty()) {
@@ -130,9 +132,13 @@ public class InventoryPolicyRepository {
                         rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm"), rs.getBigDecimal("weight_kg"),
                         rs.getBoolean("rotatable")));
         java.util.Map<String, com.stockflow.inventory.api.CartonSpec> specs = new java.util.HashMap<>();
+        java.util.Set<String> several = new java.util.HashSet<>();
         for (com.stockflow.inventory.api.CartonSpec spec : units) {
-            specs.put(spec.sku(), spec);
+            if (specs.putIfAbsent(spec.sku(), spec) != null) {
+                several.add(spec.sku());
+            }
         }
+        specs.keySet().removeAll(several);
         return specs;
     }
 
