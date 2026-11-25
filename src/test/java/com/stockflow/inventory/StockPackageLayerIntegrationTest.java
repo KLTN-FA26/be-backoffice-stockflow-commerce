@@ -115,11 +115,11 @@ class StockPackageLayerIntegrationTest {
     }
 
     @Test
-    @DisplayName("an adjustment named by SKU, bin and lot and no carton is refused when asked: stock is adjusted by "
+    @DisplayName("an adjustment named by SKU and bin and no carton is refused when asked: stock is adjusted by "
             + "carton only, and no carton is opened for it (review C4 P-3)")
     void adjustmentTakesTheLooseLayer() {
         Throwable refused = org.assertj.core.api.Assertions.catchThrowable(() -> tx.execute(s ->
-                operations.requestAdjustment(new RequestAdjustmentCommand(SHELF, new Sku(sku), lot, -2,
+                operations.requestAdjustment(new RequestAdjustmentCommand(null, SHELF, new Sku(sku),
                         StockAdjustmentReason.DAMAGED, "torn", clerk))));
 
         assertThat(refused).isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class,

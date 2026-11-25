@@ -2,6 +2,7 @@ package com.stockflow.inventory.internal.repository;
 
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.inventory.internal.domain.AdjustmentDirection;
 import com.stockflow.inventory.internal.domain.CountSlot;
 import com.stockflow.inventory.internal.domain.CycleCount;
 import com.stockflow.inventory.internal.domain.CycleCount.CountLineDraft;
@@ -197,7 +198,7 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
                         CountSlot.carton(new LocationId(rs.getString("location_code")), new Sku(rs.getString("sku")),
                                 rs.getString("lot_number"),
                                 new StockPackageId(rs.getObject("stock_package_id", UUID.class))),
-                        rs.getInt("qty"))));
+                        rs.getInt("qty") > 0)));
         return drafts;
     }
 
@@ -241,13 +242,13 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
      * locked, then read. A carton is one row (V20261113000300).</p>
      */
     @Override
-    public int bookQuantity(CountSlot slot) {
+    public boolean booked(CountSlot slot) {
         requireCarton(slot);
         Number total = jdbc.queryForObject("""
                 SELECT COALESCE(sum(q.on_hand), 0)
                   FROM (SELECT s.on_hand FROM inventory.stock_item s WHERE s.stock_package_id = :package FOR SHARE) q""",
                 new MapSqlParameterSource("package", slot.stockPackageId().value()), Number.class);
-        return total == null ? 0 : total.intValue();
+        return total != null && total.intValue() > 0;
     }
 
     /**
@@ -269,10 +270,9 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
                        c.planned_date, c.started_at, c.completed_at, c.note, c.created_at,
                        (SELECT count(*) FROM inventory.cycle_count_line l WHERE l.cycle_count_id = c.id) AS line_count,
                        (SELECT count(*) FROM inventory.cycle_count_line l
-                         WHERE l.cycle_count_id = c.id AND l.counted_qty IS NOT NULL) AS counted_count,
+                         WHERE l.cycle_count_id = c.id AND l.found IS NOT NULL) AS counted_count,
                        (SELECT count(*) FROM inventory.cycle_count_line l
-                         WHERE l.cycle_count_id = c.id AND l.counted_qty IS NOT NULL
-                           AND l.counted_qty <> l.expected_qty) AS variance_count
+                         WHERE l.cycle_count_id = c.id AND l.found <> l.booked) AS variance_count
                   FROM inventory.cycle_count c
                  WHERE %s
                  ORDER BY c.created_at DESC, c.id DESC LIMIT :limit OFFSET :offset""".formatted(where), params,
@@ -310,12 +310,12 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
         }
         Map<UUID, List<LineAdjustment>> byLine = new HashMap<>();
         jdbc.query("""
-                SELECT a.cycle_count_line_id, a.id, a.adjustment_number, a.quantity_delta, a.status
+                SELECT a.cycle_count_line_id, a.id, a.adjustment_number, a.direction, a.status
                   FROM inventory.stock_adjustment a WHERE a.cycle_count_line_id IN (:ids)
                  ORDER BY a.created_at, a.id""", new MapSqlParameterSource("ids", lineIds), (RowCallbackHandler) rs ->
                 byLine.computeIfAbsent(rs.getObject("cycle_count_line_id", UUID.class), id -> new ArrayList<>())
                         .add(new LineAdjustment(rs.getObject("id", UUID.class), rs.getString("adjustment_number"),
-                                rs.getInt("quantity_delta"), rs.getString("status"))));
+                                AdjustmentDirection.valueOf(rs.getString("direction")), rs.getString("status"))));
         return byLine;
     }
 
@@ -379,11 +379,11 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
                                                          WHERE a.cycle_count_line_id = l.id
                                                            AND a.reason_code = 'COUNT_VARIANCE'
                                                            AND a.status = 'PENDING_APPROVAL'
-                                                           AND a.quantity_delta < 0)))
+                                                           AND a.direction = 'WRITE_OFF')))
                                    AND l.stock_package_id = s.stock_package_id)
                         OR EXISTS (SELECT 1 FROM inventory.stock_adjustment w
                                     WHERE w.stock_package_id = s.stock_package_id
-                                      AND w.status = 'PENDING_APPROVAL' AND w.quantity_delta < 0))"""
+                                      AND w.status = 'PENDING_APPROVAL' AND w.direction = 'WRITE_OFF'))"""
                         .formatted(CountBusy.BUSY),
                 new MapSqlParameterSource().addValue("skus", skus),
                 (rs, row) -> new Frozen(rs.getObject("id", UUID.class), rs.getString("sku"),

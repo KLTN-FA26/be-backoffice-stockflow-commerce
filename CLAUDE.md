@@ -338,7 +338,9 @@ more. Carrier webhooks (`CarrierWebhookController`) are kept first and applied a
 
 The count lives in `inventory`: aggregate `CycleCount` (`PLANNED → IN_PROGRESS → COMPLETED`, `CANCELLED`)
 with one line per LPN carton (`CountSlot`), planning in `CycleCountService`, counting and submission in
-`CycleCountCountingService`. A carton is scanned present or marked not found — never a quantity (20 BR-14); "booked" is
+`CycleCountCountingService`. A carton is scanned present or marked not found — never a quantity (20 BR-14), and the
+line stores exactly that: `booked` and `found`, no units; an adjustment stores a `direction` (WRITE_OFF | RESTOCK), no
+delta (ADR-0011, V20261230000100). "booked" is
 read from the carton under its lock when the line is counted, so nothing is frozen while people count. `submit` is one
 `@Transactional` method: count row `FOR UPDATE` → SKU advisory locks in sorted order → cartons `FOR UPDATE` → every
 counted line judged again (BR-09, else `CYCLE_COUNT_STALE` rolls the whole submission back) → `COMPLETED` →
@@ -507,6 +509,7 @@ more than the list: in this stack, the dangerous failures are silent.
 | `docs/adding-a-module.md` | the checklist for a new module: shape, naming, step by step |
 | `docs/adr/0005-modular-monolith.md` | why this is not microservices; ADRs 0001–0003 are what it replaced |
 | `docs/adr/0010-rescope-b2b-printed-goods.md` | the 2026-11 rescope: what was removed, what replaced it, why the in-transaction design still holds |
+| `docs/adr/0011-stock-is-cartons-not-units.md` | inventory records cartons, not units: the target schema, the steps, which are done |
 | kltn-docs repository (`docs/`) | **the business analysis, source of truth**: flows, state machines, business rules, open questions. The `business-docs` skill maps its sections to modules and says where a new decision goes |
 | `docs/superpowers/plans/2026-11-07-rescope/` | the rescope plans and team plan (Vietnamese), package ids (4A-2, 4C-4, …) used in comments |
 | `docs/business-design/` | pre-rescope analysis, kept for history and marked superseded; `db-design/schema.dbml` is current, generated from the migrated database by `tools/db/gen_dbml.py` |

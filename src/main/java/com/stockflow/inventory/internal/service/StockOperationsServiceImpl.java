@@ -169,8 +169,8 @@ class StockOperationsServiceImpl implements StockOperations {
      * never add to it: found units would be nobody's, out of available to promise, unpickable and unmovable, stranded
      * until written down again. {@code tg_stock_movement_staging} refuses the same ledger line.
      */
-    private void requireNoSurplusInStaging(LocationId location, int delta) {
-        if (delta > 0 && locations.isStagingArea(location)) {
+    private void requireNoSurplusInStaging(LocationId location, AdjustmentDirection direction) {
+        if (direction == AdjustmentDirection.RESTOCK && locations.isStagingArea(location)) {
             throw new BusinessException(ErrorCode.STAGING_MOVE_NOT_ALLOWED, ("%s is a staging area: a count or an "
                     + "adjustment writes stock there down, never up; stock enters it only by picking").formatted(location),
                     List.of(), Map.of("locationCode", location.code()));
@@ -872,8 +872,8 @@ class StockOperationsServiceImpl implements StockOperations {
     /**
      * A person asks for a whole carton to be written off, named by its LPN (kltn-docs 20 BR-14: adjusted whole, never
      * in part; §4.8 step 3: a quarantined carton that cannot be used leaves stock as an approved {@code DAMAGED}
-     * adjustment - BR-21, team plan 4D-1). The delta must be minus what the carton holds
-     * ({@code STOCK_PACKAGE_TAKEN_WHOLE} otherwise); a location or SKU given with the LPN must be the carton's. The
+     * adjustment - BR-21, team plan 4D-1). The request gives no quantity: the carton is taken whole, whatever it
+     * holds. A location or SKU given with the LPN must be the carton's. The
      * adjustment names the carton, so its approval drains and consumes the carton whole
      * ({@link StockPackageContents#adjust}). A carton with an open putaway task (a release, or a receipt's carton not
      * yet put away) is already decided the other way: {@code STOCK_PACKAGE_DECISION_PENDING}.
@@ -908,12 +908,6 @@ class StockOperationsServiceImpl implements StockOperations {
         // Under the SKU lock, as a release and an approval take it: a release opened at the same moment either is
         // seen below or sees this request pending.
         policies.lock(unit.sku());
-        int onHand = stockPackages.onHandOf(List.of(carton.id())).getOrDefault(carton.id(), 0);
-        if (command.quantityDelta() != -onHand) {
-            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE,
-                    "%s holds %d; it is written off whole (quantityDelta %d), never in part".formatted(normal, onHand,
-                            -onHand), List.of(), Map.of("lpn", normal));
-        }
         requireNoOpenPutaway(carton);
         String lot = stockItems.findIdsInStockPackage(carton.id()).stream()
                 .map(stockItems::findById).flatMap(Optional::stream)
@@ -922,10 +916,10 @@ class StockOperationsServiceImpl implements StockOperations {
         Instant now = clock.instant();
         StockAdjustment adjustment = StockAdjustment.request(
                         adjustments.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), carton.location(), sku, lot,
-                        command.quantityDelta(), AdjustmentReason.valueOf(command.reason().name()), command.note(),
+                        AdjustmentDirection.WRITE_OFF, AdjustmentReason.valueOf(command.reason().name()), command.note(),
                         command.requestedBy(), now)
                 .inPackage(carton.id());
-        log.info("Write-off of carton {} ({} x {}, {}) asked", normal, onHand, sku, command.reason());
+        log.info("Write-off of carton {} ({}, {}) asked", normal, sku, command.reason());
         return toSummary(adjustments.save(adjustment));
     }
 
@@ -949,14 +943,15 @@ class StockOperationsServiceImpl implements StockOperations {
      */
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "cycle-count-line", resourceId = "#cycleCountLineId")
-    public StockAdjustmentSummary requestCountVariance(UUID cycleCountLineId, CountSlot slot, int delta,
-                                                       UUID requestedBy, String note) {
+    public StockAdjustmentSummary requestCountVariance(UUID cycleCountLineId, CountSlot slot,
+                                                       AdjustmentDirection direction, UUID requestedBy, String note) {
         Objects.requireNonNull(cycleCountLineId, "cycleCountLineId");
-        if (delta == 0 || !slot.isCarton()) {
+        Objects.requireNonNull(direction, "direction");
+        if (!slot.isCarton()) {
             throw new IllegalArgumentException("A count variance is a whole carton found against the books");
         }
         WarehouseScope.requireLocation(slot.location().code());
-        requireNoSurplusInStaging(slot.location(), delta);
+        requireNoSurplusInStaging(slot.location(), direction);
         policies.lock(slot.sku().code());
         // A count's claim leaves out a carton with a pending adjustment (CountBusy.PENDING_ADJUSTMENT); said again here,
         // with its own code, rather than as the unique index's bare conflict.
@@ -968,12 +963,11 @@ class StockOperationsServiceImpl implements StockOperations {
         StockAdjustment adjustment = StockAdjustment.requestCarton(
                 adjustments.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), slot.stockPackageId(),
                 slot.location(), slot.sku(), slot.lotNumber(),
-                delta < 0 ? AdjustmentDirection.WRITE_OFF : AdjustmentDirection.RESTOCK, Math.abs(delta),
-                AdjustmentReason.COUNT_VARIANCE, note, cycleCountLineId, requestedBy, now)
+                direction, AdjustmentReason.COUNT_VARIANCE, note, cycleCountLineId, requestedBy, now)
                 // Who counted the line: the counter does not decide its variance, and the row says so itself.
                 .countedBy(countLines.countedByOf(cycleCountLineId).orElse(null));
         log.info("Count line {}: carton {} {} asked", cycleCountLineId, slot.stockPackageId().value(),
-                delta < 0 ? "write-off" : "restock");
+                direction == AdjustmentDirection.WRITE_OFF ? "write-off" : "restock");
         return toSummary(adjustments.save(adjustment));
     }
 
@@ -1045,7 +1039,7 @@ class StockOperationsServiceImpl implements StockOperations {
         Instant now = clock.instant();
         StockAdjustment adjustment = StockAdjustment.requestCarton(
                 adjustments.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), carton.id(), carton.location(),
-                locked.sku(), locked.lotNumber(), request.direction(), carton.nominalQty(), reason, request.note(),
+                locked.sku(), locked.lotNumber(), request.direction(), reason, request.note(),
                 null, request.requestedBy(), now);
         log.info("Adjustment {} asked: {} of {} ({})", adjustment.number(), request.direction(), carton.lpn(), reason);
         return toSummary(adjustments.save(adjustment));
@@ -1089,7 +1083,7 @@ class StockOperationsServiceImpl implements StockOperations {
     private StockAdjustmentSummary approveCarton(StockAdjustment adjustment, UUID approverId) {
         Instant now = clock.instant();
         adjustment.approveForCarton(approverId, now);
-        if (adjustment.reason() != AdjustmentReason.COUNT_VARIANCE && adjustment.quantityDelta() < 0) {
+        if (adjustment.reason() != AdjustmentReason.COUNT_VARIANCE && adjustment.writesOff()) {
             // Asked through requestPackageAdjustment or requestCartonWriteOff; a release may have been opened since (under
             // this SKU lock, so it is seen here or waits for this write-off).
             stockPackages.findAllById(List.of(adjustment.stockPackageId())).stream().findFirst()
@@ -1099,7 +1093,7 @@ class StockOperationsServiceImpl implements StockOperations {
         // up with the carton and announced, and fulfillment turns the order's line SHORT after the commit. Any other
         // adjustment keeps refusing a held carton.
         List<StockPackageContents.RowChange> changes = cartons.adjust(adjustment.stockPackageId(),
-                adjustment.quantityDelta(), adjustment.reason().leavesCartonLost(),
+                adjustment.direction(), adjustment.reason().leavesCartonLost(),
                 adjustment.reason() == AdjustmentReason.COUNT_VARIANCE ? approverId : null, now);
         StockAdjustment saved = adjustments.save(adjustment);
         String reason = ledgerReason(adjustment);
@@ -1118,7 +1112,7 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         announceCartonWrittenOff(adjustment, changes, approverId);
         announceDamagedProductionCarton(adjustment, changes, approverId, now);
-        log.info("Posted adjustment {}: {} {} in carton {} at {}", adjustment.number(), adjustment.quantityDelta(),
+        log.info("Posted adjustment {}: {} {} in carton {} at {}", adjustment.number(), adjustment.direction(),
                 adjustment.sku(), adjustment.stockPackageId().value(), adjustment.location());
         return toSummary(saved);
     }
@@ -1131,7 +1125,7 @@ class StockOperationsServiceImpl implements StockOperations {
      */
     private void announceCartonWrittenOff(StockAdjustment adjustment, List<StockPackageContents.RowChange> changes,
                                           UUID approverId) {
-        if (adjustment.reason() == AdjustmentReason.COUNT_VARIANCE || adjustment.quantityDelta() >= 0) {
+        if (adjustment.reason() == AdjustmentReason.COUNT_VARIANCE || !adjustment.writesOff()) {
             return;
         }
         for (StockPackageContents.RowChange change : changes) {
@@ -1151,7 +1145,7 @@ class StockOperationsServiceImpl implements StockOperations {
     private void announceDamagedProductionCarton(StockAdjustment adjustment,
                                                  List<StockPackageContents.RowChange> changes, UUID approverId,
                                                  Instant now) {
-        if (adjustment.reason() != AdjustmentReason.DAMAGED || adjustment.quantityDelta() >= 0) {
+        if (adjustment.reason() != AdjustmentReason.DAMAGED || !adjustment.writesOff()) {
             return;
         }
         changes.stream().map(change -> change.row().lotId()).filter(java.util.Objects::nonNull).distinct().findFirst()
@@ -1335,7 +1329,8 @@ class StockOperationsServiceImpl implements StockOperations {
 
     static StockAdjustmentSummary toSummary(StockAdjustment a) {
         return new StockAdjustmentSummary(a.id(), a.number(), a.location().code(), a.sku().code(), a.lotNumber(),
-                a.quantityDelta(), StockAdjustmentReason.valueOf(a.reason().name()), a.note(),
+                com.stockflow.inventory.api.StockAdjustmentDirection.valueOf(a.direction().name()),
+                StockAdjustmentReason.valueOf(a.reason().name()), a.note(),
                 StockAdjustmentStatus.valueOf(a.status().name()), a.requestedBy(), a.requestedAt(),
                 a.decidedBy(), a.decidedAt(), a.rejectionReason(), a.postedAt(), a.withdrawnAt(), a.version(),
                 a.stockPackageId() == null ? null : a.stockPackageId().value(), a.cycleCountLineId(), a.countedBy());

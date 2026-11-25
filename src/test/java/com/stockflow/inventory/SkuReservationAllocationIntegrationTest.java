@@ -540,15 +540,15 @@ class SkuReservationAllocationIntegrationTest {
         UUID freeCarton = jdbc.queryForObject("""
                 SELECT stock_package_id FROM inventory.stock_item
                  WHERE sku = ? AND location_code = 'HCM-A01-1-B' AND reserved = 0""", UUID.class, sku);
-        // Every line is counted before the count is submitted: those two at 0, the bin's other cartons as they are.
+        // Every line is counted before the count is submitted: those two not found, the bin's other cartons as they are.
         for (var line : manual.lines()) {
             boolean missing = shortCarton.equals(line.stockPackageId()) || freeCarton.equals(line.stockPackageId());
             cycleCounts.count(manual.id(), line.id(), !missing, missing ? null : line.lpn(), counter, false);
         }
         cycleCounts.submit(manual.id(), counter, false);
         assertThat(jdbc.queryForList("""
-                SELECT quantity_delta FROM inventory.stock_adjustment WHERE sku = ? AND status = 'PENDING_APPROVAL'
-                   AND reason_code = 'COUNT_VARIANCE'""", Integer.class, sku)).containsExactly(-1, -1);
+                SELECT direction FROM inventory.stock_adjustment WHERE sku = ? AND status = 'PENDING_APPROVAL'
+                   AND reason_code = 'COUNT_VARIANCE'""", String.class, sku)).containsExactly("WRITE_OFF", "WRITE_OFF");
         assertThat(atp()).as("17 - 4 reserved - the free carton a pending shortage doubts").isEqualTo(12);
 
         var recount = tx.execute(s -> consumption.requestRecount(allocation.reservationId(), UUID.randomUUID(), 3));

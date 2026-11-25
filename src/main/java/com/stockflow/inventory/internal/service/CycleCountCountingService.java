@@ -134,8 +134,7 @@ class CycleCountCountingService {
             follow(count, line, carton, prefixOf(count), reveal);
         }
         requireFindable(carton, found, reveal);
-        count.count(lineId, found, booked(carton, line.slot().location()), carton.nominalQty(), actor,
-                clock.instant());
+        count.count(lineId, found, booked(carton, line.slot().location()), actor, clock.instant());
         return views.of(counts.save(count), mayDecide);
     }
 
@@ -182,7 +181,7 @@ class CycleCountCountingService {
                     : cannotCountHere(carton, location));
         }
         CountSlot slot = CountSlot.carton(carton.location(), content.sku(), content.lotNumber(), carton.id());
-        count.addLine(slot, booked(carton, location), carton.nominalQty(), command.actor(), clock.instant(),
+        count.addLine(slot, booked(carton, location), command.actor(), clock.instant(),
                 maxLines);
         return views.of(counts.save(count), command.mayDecide());
     }
@@ -231,12 +230,12 @@ class CycleCountCountingService {
         }
         count.submit(clock.instant());
         String note = "Count " + count.number();
-        List<CycleCountLine> ordered = counted.stream().filter(line -> line.delta() != 0)
+        List<CycleCountLine> ordered = counted.stream().filter(line -> line.variance().isPresent())
                 .sorted(Comparator.comparing((CycleCountLine line) -> line.slot().sku().code())
                         .thenComparing(line -> line.slot().lockKey()))
                 .toList();
         for (CycleCountLine line : ordered) {
-            operations.requestCountVariance(line.id(), line.slot(), line.delta(), actor, note);
+            operations.requestCountVariance(line.id(), line.slot(), line.variance().orElseThrow(), actor, note);
         }
         CycleCount saved = counts.save(count);
         log.info("Cycle count {} submitted by {}: {} carton(s) differ, as many adjustment(s) asked", count.number(),

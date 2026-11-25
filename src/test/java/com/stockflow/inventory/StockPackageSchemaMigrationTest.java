@@ -212,8 +212,8 @@ class StockPackageSchemaMigrationTest {
             String pkg = inStock(db, "DOC", unit(db, "DOC"), "HCM-A01-1-A");
             String user = "(SELECT id FROM identity.app_user ORDER BY id LIMIT 1)";
             String adjustment = "INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku,"
-                    + " quantity_delta, reason_code, requested_by, stock_package_id) VALUES (gen_random_uuid(), '%s', '%s',"
-                    + " '%s', -10, 'DAMAGED', " + user + ", " + pkg + ")";
+                    + " direction, reason_code, requested_by, stock_package_id) VALUES (gen_random_uuid(), '%s', '%s',"
+                    + " '%s', 'WRITE_OFF', 'DAMAGED', " + user + ", " + pkg + ")";
             refused(db, "an adjustment naming a carton of another SKU",
                     adjustment.formatted("ADJ-IT-DOC-1", "HCM-A01-1-A", "LY-GIAY-DEMO-12OZ-DO"));
             refused(db, "an adjustment naming a carton at another bin",
@@ -225,14 +225,14 @@ class StockPackageSchemaMigrationTest {
             update(db, "INSERT INTO inventory.cycle_count (id, count_number, warehouse_id, trigger_type) SELECT " + count
                     + ", 'CC-IT-DOC', id, 'MANUAL' FROM warehouse.warehouse WHERE prefix = 'HCM'");
             String other = inStock(db, "DOC2", unit(db, "DOC2"), "HCM-A01-1-A");
-            String line = "INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty,"
+            String line = "INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, booked,"
                     + " stock_package_id) VALUES (gen_random_uuid(), " + count
-                    + ", '%s', 'LY-GIAY-DEMO-12OZ-XANH', 10, %s)";
+                    + ", '%s', 'LY-GIAY-DEMO-12OZ-XANH', TRUE, %s)";
             update(db, line.formatted("HCM-A01-1-A", pkg));
             update(db, line.formatted("HCM-A01-1-A", other));
             refused(db, "the same carton twice in one count", line.formatted("HCM-A01-1-A", pkg));
             refused(db, "a count line naming a carton at another bin", line.formatted("HCM-A01-1-B", pkg));
-            refused(db, "a loose line: a count states cartons (V20261113000300)", line.formatted("HCM-A01-1-A", "NULL"));
+            refused(db, "a loose line: a count line names its carton (NOT NULL since V20261230000100)", line.formatted("HCM-A01-1-A", "NULL"));
         }
     }
 

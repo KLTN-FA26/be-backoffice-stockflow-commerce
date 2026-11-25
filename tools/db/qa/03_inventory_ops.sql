@@ -147,43 +147,43 @@ VALUES (md5('qa03:pk1:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'UNT
 INSERT INTO inventory.cycle_count (id, count_number, warehouse_id, trigger_type, status, started_at, assigned_user_id)
 VALUES (md5('qa:cc:1')::uuid, 'CC-QA-1', md5('demo:wh:HCM')::uuid, 'SHORT_PICK', 'IN_PROGRESS', NOW(), md5('demo:user:editor')::uuid);
 SELECT pg_temp.expect_fail('I10 counting a location of another warehouse', $q$
-    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
-    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HN-RCV01', 'LY-GIAY-DEMO-12OZ-XANH', 0, md5('qa03:pk1')::uuid) $q$);
-SELECT pg_temp.expect_fail('I10b a loose count line: a count states cartons', $q$
-    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty)
-    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', 0) $q$);
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, booked, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HN-RCV01', 'LY-GIAY-DEMO-12OZ-XANH', FALSE, md5('qa03:pk1')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('I10b a loose count line: a line names its carton (NOT NULL since V20261230000100)', '"stock_package_id"', $q$
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, booked)
+    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', FALSE) $q$);
 SELECT pg_temp.expect_ok('I11 a count line: the carton booked, not found', $q$
-    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, counted_qty, counted_by, counted_at, stock_package_id)
-    VALUES (md5('qa:ccl:1')::uuid, md5('qa:cc:1')::uuid, 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', 4, 0, md5('demo:user:editor')::uuid, NOW(), md5('qa03:pk1')::uuid) $q$);
-SELECT pg_temp.expect_fail('I11b a count line, counted 3 of 4 booked: a carton is counted whole', $q$
-    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, counted_qty, counted_by, counted_at, stock_package_id)
-    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A02-1-A', 'LY-GIAY-DEMO-12OZ-XANH', 4, 3, md5('demo:user:editor')::uuid, NOW(), md5('qa03:pk2')::uuid) $q$);
-SELECT pg_temp.expect_fail('I12 counted quantity without who/when', $q$
-    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, counted_qty, stock_package_id)
-    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A02-1-A', 'LY-GIAY-DEMO-12OZ-XANH', 4, 4, md5('qa03:pk2')::uuid) $q$);
-SELECT pg_temp.expect_fail('I13 the same carton twice in one count', $q$
-    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
-    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', 4, md5('qa03:pk1')::uuid) $q$);
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, booked, found, counted_by, counted_at, stock_package_id)
+    VALUES (md5('qa:ccl:1')::uuid, md5('qa:cc:1')::uuid, 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', TRUE, FALSE, md5('demo:user:editor')::uuid, NOW(), md5('qa03:pk1')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('I11b a count line counted 3 of 4 booked: a carton is found or not, never a number of units', 'boolean', $q$
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, booked, found, counted_by, counted_at, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A02-1-A', 'LY-GIAY-DEMO-12OZ-XANH', TRUE, 3, md5('demo:user:editor')::uuid, NOW(), md5('qa03:pk2')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('I12 a line found without who/when', 'ck_cycle_count_line_counted', $q$
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, booked, found, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A02-1-A', 'LY-GIAY-DEMO-12OZ-XANH', TRUE, TRUE, md5('qa03:pk2')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('I13 the same carton twice in one count', 'uk_cycle_count_line_package', $q$
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, booked, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', TRUE, md5('qa03:pk1')::uuid) $q$);
 SELECT pg_temp.expect_fail('I14 COMPLETED count without completed_at', $q$
     UPDATE inventory.cycle_count SET status = 'COMPLETED' WHERE id = md5('qa:cc:1')::uuid $q$);
-SELECT pg_temp.expect_fail('I15 count variance adjustment without its count line', $q$
-    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, stock_package_id)
-    VALUES (gen_random_uuid(), 'ADJ-QA-X', 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', -4, 'COUNT_VARIANCE', md5('demo:user:editor')::uuid, md5('qa03:pk1')::uuid) $q$);
-SELECT pg_temp.expect_fail('I15b count variance adjustment of no carton', $q$
-    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, cycle_count_line_id, requested_by)
-    VALUES (gen_random_uuid(), 'ADJ-QA-Y', 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', -2, 'COUNT_VARIANCE', md5('qa:ccl:1')::uuid, md5('demo:user:editor')::uuid) $q$);
-SELECT pg_temp.expect_fail('I15c count variance of part of a carton', $q$
-    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, cycle_count_line_id, requested_by, stock_package_id)
-    VALUES (gen_random_uuid(), 'ADJ-QA-Z', 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', -2, 'COUNT_VARIANCE', md5('qa:ccl:1')::uuid, md5('demo:user:editor')::uuid, md5('qa03:pk1')::uuid) $q$);
-SELECT pg_temp.expect_ok('I16 variance adjustment requested: the whole carton', $q$
-    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, cycle_count_line_id, requested_by, stock_package_id)
-    VALUES (md5('qa:adj:1')::uuid, 'ADJ-QA-1', 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', -4, 'COUNT_VARIANCE', md5('qa:ccl:1')::uuid, md5('demo:user:editor')::uuid, md5('qa03:pk1')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('I15 count variance adjustment without its count line', 'ck_stock_adjustment_count_variance', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'ADJ-QA-X', 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', 'WRITE_OFF', 'COUNT_VARIANCE', md5('demo:user:editor')::uuid, md5('qa03:pk1')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('I15b count variance adjustment of no carton', '"stock_package_id"', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, cycle_count_line_id, requested_by)
+    VALUES (gen_random_uuid(), 'ADJ-QA-Y', 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', 'WRITE_OFF', 'COUNT_VARIANCE', md5('qa:ccl:1')::uuid, md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('I15c count variance of part of a carton: a number of units is no direction', 'ck_stock_adjustment_direction', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, cycle_count_line_id, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'ADJ-QA-Z', 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', '-2', 'COUNT_VARIANCE', md5('qa:ccl:1')::uuid, md5('demo:user:editor')::uuid, md5('qa03:pk1')::uuid) $q$);
+SELECT pg_temp.expect_ok('I16 variance adjustment requested: the whole carton written off', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, cycle_count_line_id, requested_by, stock_package_id)
+    VALUES (md5('qa:adj:1')::uuid, 'ADJ-QA-1', 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', 'WRITE_OFF', 'COUNT_VARIANCE', md5('qa:ccl:1')::uuid, md5('demo:user:editor')::uuid, md5('qa03:pk1')::uuid) $q$);
 SELECT pg_temp.expect_fail('I17 adjustment approved by its requester', $q$
     UPDATE inventory.stock_adjustment SET status = 'APPROVED', decided_by = requested_by, decided_at = NOW() WHERE id = md5('qa:adj:1')::uuid $q$);
 SELECT pg_temp.expect_fail('I18 rejection without a reason', $q$
     UPDATE inventory.stock_adjustment SET status = 'REJECTED', decided_by = md5('demo:user:approver')::uuid, decided_at = NOW() WHERE id = md5('qa:adj:1')::uuid $q$);
-SELECT pg_temp.expect_fail('I19 zero adjustment', $q$
-    UPDATE inventory.stock_adjustment SET quantity_delta = 0 WHERE id = md5('qa:adj:1')::uuid $q$);
+SELECT pg_temp.expect_fail_by('I19 an adjustment that goes neither way', '"direction"', $q$
+    UPDATE inventory.stock_adjustment SET direction = NULL WHERE id = md5('qa:adj:1')::uuid $q$);
 SELECT pg_temp.expect_ok('I20 approved by someone else, posted: the carton written off whole and LOST, with its ledger row', $q$
     UPDATE inventory.stock_adjustment SET status = 'APPROVED', decided_by = md5('demo:user:approver')::uuid, decided_at = NOW() WHERE id = md5('qa:adj:1')::uuid;
     UPDATE inventory.stock_adjustment SET status = 'POSTED', posted_at = NOW() WHERE id = md5('qa:adj:1')::uuid;
@@ -223,13 +223,18 @@ SELECT pg_temp.expect_ok('I40 a pinned hold released when its order is cancelled
     UPDATE inventory.stock_reservation SET status = 'RELEASED', release_reason = 'ORDER_CANCELLED',
            closed_at = NOW() WHERE id = md5('qa:res:pinned')::uuid $q$);
 
-\echo '--- adjustment withdrawal, scrap and samples (SCRUM-459)'
-SELECT pg_temp.expect_fail('I41 a SCRAP adjustment that adds stock', $q$
-    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by)
-    VALUES (gen_random_uuid(), 'ADJ-QA-S1', 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', 2, 'SCRAP', md5('demo:user:editor')::uuid) $q$);
-SELECT pg_temp.expect_ok('I42 a SAMPLE adjustment that takes stock', $q$
-    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by)
-    VALUES (md5('qa:adj:sample')::uuid, 'ADJ-QA-S2', 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', -1, 'SAMPLE', md5('demo:user:editor')::uuid) $q$);
+\echo '--- adjustment withdrawal; scrap and samples are reasons of the history (SCRUM-459; 20 BR-04)'
+-- An adjustment names a carton (V20261230000100): the second carton of this script, in stock on HCM-A02-1-A. What the
+-- table says of a SCRAP or SAMPLE row of before (ck_stock_adjustment_writes_down) is asked in 62_carton_counts.sql.
+SELECT pg_temp.expect_fail_by('I41 a SCRAP adjustment that adds stock: no new SCRAP, whichever way', 'BR-04 lists six', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'ADJ-QA-S1', 'HCM-A02-1-A', 'LY-GIAY-DEMO-12OZ-XANH', 'RESTOCK', 'SCRAP', md5('demo:user:editor')::uuid, md5('qa03:pk2')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('I41b a SAMPLE adjustment that takes stock: no new SAMPLE either', 'BR-04 lists six', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'ADJ-QA-S1B', 'HCM-A02-1-A', 'LY-GIAY-DEMO-12OZ-XANH', 'WRITE_OFF', 'SAMPLE', md5('demo:user:editor')::uuid, md5('qa03:pk2')::uuid) $q$);
+SELECT pg_temp.expect_ok('I42 a DAMAGED adjustment that takes the carton', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, stock_package_id)
+    VALUES (md5('qa:adj:sample')::uuid, 'ADJ-QA-S2', 'HCM-A02-1-A', 'LY-GIAY-DEMO-12OZ-XANH', 'WRITE_OFF', 'DAMAGED', md5('demo:user:editor')::uuid, md5('qa03:pk2')::uuid) $q$);
 SELECT pg_temp.expect_fail('I43 WITHDRAWN without the time it was withdrawn', $q$
     UPDATE inventory.stock_adjustment SET status = 'WITHDRAWN' WHERE id = md5('qa:adj:sample')::uuid $q$);
 SELECT pg_temp.expect_fail('I44 WITHDRAWN with a decider', $q$
@@ -237,9 +242,9 @@ SELECT pg_temp.expect_fail('I44 WITHDRAWN with a decider', $q$
            decided_by = md5('demo:user:approver')::uuid, decided_at = NOW() WHERE id = md5('qa:adj:sample')::uuid $q$);
 SELECT pg_temp.expect_ok('I45 withdrawn by its requester', $q$
     UPDATE inventory.stock_adjustment SET status = 'WITHDRAWN', withdrawn_at = NOW() WHERE id = md5('qa:adj:sample')::uuid $q$);
-SELECT pg_temp.expect_fail('I46 a pending adjustment that says it was withdrawn', $q$
-    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, withdrawn_at)
-    VALUES (gen_random_uuid(), 'ADJ-QA-S3', 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', -1, 'DAMAGED', md5('demo:user:editor')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail_by('I46 a pending adjustment that says it was withdrawn', 'ck_stock_adjustment_withdrawn', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, withdrawn_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'ADJ-QA-S3', 'HCM-A02-1-A', 'LY-GIAY-DEMO-12OZ-XANH', 'WRITE_OFF', 'DAMAGED', md5('demo:user:editor')::uuid, NOW(), md5('qa03:pk2')::uuid) $q$);
 
 \echo '--- in-app inbox (SCRUM-147, V20261014000400); I50-I54 belong to the stock-alert migration'
 INSERT INTO notification.user_notification (id, recipient_id, category, severity, title, dedupe_key, created_at)

@@ -76,7 +76,9 @@ public interface StockOperations {
      * adjustment keeps who counted the line (WF-05 fix plan, section 8), read from the line itself - its counter is
      * fixed once the count is submitted - so neither the caller nor a later reader has to be trusted with it.
      */
-    StockAdjustmentSummary requestCountVariance(UUID cycleCountLineId, CountSlot slot, int delta, UUID requestedBy,
+    StockAdjustmentSummary requestCountVariance(UUID cycleCountLineId, CountSlot slot,
+                                                com.stockflow.inventory.internal.domain.AdjustmentDirection direction,
+                                                UUID requestedBy,
                                                 String note);
 
     /**

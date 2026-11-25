@@ -8,6 +8,7 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
+import com.stockflow.inventory.api.StockAdjustmentDirection;
 import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
@@ -101,8 +102,8 @@ class StockOperationsControllerHttpTest {
     }
 
     private StockAdjustmentSummary summary(UUID carton) {
-        return new StockAdjustmentSummary(UUID.randomUUID(), "ADJ-20261113-0001", "HCM-A01-1-A", "CUP_PET", "L1", -50,
-                StockAdjustmentReason.DAMAGED, "Crushed", StockAdjustmentStatus.PENDING_APPROVAL, clerk,
+        return new StockAdjustmentSummary(UUID.randomUUID(), "ADJ-20261113-0001", "HCM-A01-1-A", "CUP_PET", "L1",
+                StockAdjustmentDirection.WRITE_OFF, StockAdjustmentReason.DAMAGED, "Crushed", StockAdjustmentStatus.PENDING_APPROVAL, clerk,
                 java.time.Instant.now(), null, null, null, null, null, 0L, carton, null);
     }
 
@@ -115,7 +116,8 @@ class StockOperationsControllerHttpTest {
                         {"lpn":"lpn-20261113-000001","direction":"WRITE_OFF","reason":"DAMAGED","note":"Crushed"}"""))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.stockPackageId").value(carton.toString()))
-                .andExpect(jsonPath("$.data.quantityDelta").value(-50))
+                .andExpect(jsonPath("$.data.direction").value("WRITE_OFF"))
+                .andExpect(jsonPath("$.data.quantityDelta").doesNotExist())
                 .andExpect(jsonPath("$.data.requestedByName").value("Nguyen Van Kho"))
                 .andExpect(jsonPath("$.data.decidedByName").doesNotExist());
 

@@ -213,7 +213,7 @@ class CycleCountIntegrationTest {
         return tx.execute(s -> {
             LocalDate day = BusinessCalendar.date(Instant.now());
             return repository.save(CycleCount.shortPick(repository.nextNumber(day), WAREHOUSE_HCM,
-                    cartonSlot(carton, location), CARTON_FACTOR, "Short pick: found 1", day));
+                    cartonSlot(carton, location), true, "Short pick: found 1", day));
         });
     }
 
@@ -260,9 +260,9 @@ class CycleCountIntegrationTest {
 
     private List<Map<String, Object>> adjustments() {
         return jdbc.queryForList("""
-                select id, location_code, quantity_delta, status, reason_code, cycle_count_line_id, stock_package_id,
+                select id, location_code, direction, status, reason_code, cycle_count_line_id, stock_package_id,
                        requested_by
-                  from inventory.stock_adjustment where sku = ? order by created_at, quantity_delta""", sku);
+                  from inventory.stock_adjustment where sku = ? order by created_at, direction desc""", sku);
     }
 
     private int onHand(UUID carton) {
@@ -332,8 +332,8 @@ class CycleCountIntegrationTest {
         assertThat(cartonLine(books, inBin).found()).isNull();
         assertThat(cartonLine(books, inBin).lpn()).isEqualTo(lpn("A"));
         assertThat(books.note()).isEqualTo("Fixture count");
-        assertThat(jdbc.queryForList("select expected_qty from inventory.cycle_count_line where cycle_count_id = ?",
-                Integer.class, count.id())).as("the book of a carton is one whole carton").containsOnly(CARTON_FACTOR);
+        assertThat(jdbc.queryForList("select booked from inventory.cycle_count_line where cycle_count_id = ?",
+                Boolean.class, count.id())).as("the book of a carton is the carton, present").containsOnly(true);
     }
 
     @Test
@@ -480,7 +480,7 @@ class CycleCountIntegrationTest {
         assertThat(submitted.lines()).as("blind: the counter does not see the variance")
                 .allSatisfy(line -> assertThat(line.adjustments()).isEmpty());
         assertThat(adjustments()).singleElement().satisfies(a -> assertThat(a)
-                .containsEntry("quantity_delta", -CARTON_FACTOR).containsEntry("status", "PENDING_APPROVAL")
+                .containsEntry("direction", "WRITE_OFF").containsEntry("status", "PENDING_APPROVAL")
                 .containsEntry("reason_code", "COUNT_VARIANCE").containsEntry("stock_package_id", gone)
                 .containsEntry("cycle_count_line_id", cartonLine(planned, gone).id())
                 .containsEntry("requested_by", counter));
@@ -488,10 +488,10 @@ class CycleCountIntegrationTest {
         assertThat(cartonLine(books, gone).found()).isFalse();
         assertThat(cartonLine(books, gone).booked()).isTrue();
         assertThat(cartonLine(books, gone).adjustments()).singleElement()
-                .satisfies(a -> assertThat(a.quantityDelta()).isEqualTo(-CARTON_FACTOR));
+                .satisfies(a -> assertThat(a.direction()).isEqualTo(com.stockflow.inventory.internal.domain.AdjustmentDirection.WRITE_OFF));
         assertThat(cartonLine(books, kept).adjustments()).isEmpty();
-        assertThat(jdbc.queryForList("select counted_qty from inventory.cycle_count_line where id = ?", Integer.class,
-                cartonLine(books, gone).id())).as("units are recorded internally, still whole").containsExactly(0);
+        assertThat(jdbc.queryForList("select found from inventory.cycle_count_line where id = ?", Boolean.class,
+                cartonLine(books, gone).id())).as("the line records an answer, not units").containsExactly(false);
 
         operations.approve((UUID) adjustments().get(0).get("id"), manager);
 
@@ -514,8 +514,8 @@ class CycleCountIntegrationTest {
 
         cycleCounts.submit(planned.id(), counter, false);
 
-        assertThat(adjustments()).extracting(m -> m.get("stock_package_id"), m -> m.get("quantity_delta"))
-                .containsExactlyInAnyOrder(tuple(a, -CARTON_FACTOR), tuple(b, -CARTON_FACTOR));
+        assertThat(adjustments()).extracting(m -> m.get("stock_package_id"), m -> m.get("direction"))
+                .containsExactlyInAnyOrder(tuple(a, "WRITE_OFF"), tuple(b, "WRITE_OFF"));
     }
 
     @Test
@@ -569,7 +569,7 @@ class CycleCountIntegrationTest {
         assertThat(books.lines().get(0).found()).isTrue();
         cycleCounts.submit(second.id(), counter, false);
         assertThat(adjustments()).singleElement().satisfies(a -> assertThat(a)
-                .containsEntry("quantity_delta", CARTON_FACTOR).containsEntry("stock_package_id", lostBefore));
+                .containsEntry("direction", "RESTOCK").containsEntry("stock_package_id", lostBefore));
     }
 
     @Test
@@ -587,7 +587,7 @@ class CycleCountIntegrationTest {
 
         assertThat(adjustments()).singleElement().satisfies(a -> assertThat(a)
                 .containsEntry("location_code", BIN2).containsEntry("stock_package_id", box)
-                .containsEntry("quantity_delta", -CARTON_FACTOR).containsEntry("cycle_count_line_id", line));
+                .containsEntry("direction", "WRITE_OFF").containsEntry("cycle_count_line_id", line));
         assertThat(cartonLine(cycleCounts.get(planned.id(), true), box).locationCode()).isEqualTo(BIN2);
     }
 
@@ -732,8 +732,8 @@ class CycleCountIntegrationTest {
         assertThat(cartonLine(books, box).booked()).as("a LOST carton is not in the books").isFalse();
         cycleCounts.submit(second.id(), counter, false);
         List<Map<String, Object>> found = adjustments().stream()
-                .filter(a -> box.equals(a.get("stock_package_id")) && ((Integer) a.get("quantity_delta")) > 0).toList();
-        assertThat(found).singleElement().satisfies(a -> assertThat(a).containsEntry("quantity_delta", CARTON_FACTOR));
+                .filter(a -> box.equals(a.get("stock_package_id")) && "RESTOCK".equals(a.get("direction"))).toList();
+        assertThat(found).singleElement().satisfies(a -> assertThat(a).containsEntry("direction", "RESTOCK"));
         operations.approve((UUID) found.get(0).get("id"), manager);
 
         assertThat(status(box)).isEqualTo("IN_STOCK");
@@ -1115,7 +1115,8 @@ class CycleCountIntegrationTest {
                 com.stockflow.inventory.api.StockAdjustmentReason.DAMAGED);
 
         Throwable refused = catchThrowable(() -> operations.requestCountVariance(UUID.randomUUID(),
-                cartonSlot(x, BIN), -CARTON_FACTOR, counter, "CC-1"));
+                cartonSlot(x, BIN), com.stockflow.inventory.internal.domain.AdjustmentDirection.WRITE_OFF, counter,
+                "CC-1"));
 
         assertThat(code(refused)).isEqualTo(ErrorCode.STOCK_PACKAGE_ADJUSTMENT_PENDING);
         assertThat(adjustments()).hasSize(1);

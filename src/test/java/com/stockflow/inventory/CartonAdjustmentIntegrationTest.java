@@ -157,7 +157,8 @@ class CartonAdjustmentIntegrationTest {
 
         assertThat(asked.status()).isEqualTo(StockAdjustmentStatus.PENDING_APPROVAL);
         assertThat(asked.stockPackageId()).isEqualTo(box.id());
-        assertThat(asked.quantityDelta()).as("the carton's standard count, never typed").isEqualTo(-CARTON);
+        assertThat(asked.direction()).as("a direction, never a number of units")
+                .isEqualTo(com.stockflow.inventory.api.StockAdjustmentDirection.WRITE_OFF);
         assertThat(asked.reason()).isEqualTo(StockAdjustmentReason.DAMAGED);
         assertThat(asked.locationCode()).isEqualTo(BIN);
         assertThat(asked.lotNumber()).isEqualTo("L1");
@@ -242,7 +243,7 @@ class CartonAdjustmentIntegrationTest {
         assertThat(atp()).isZero();
 
         StockAdjustmentSummary found = ask(box, AdjustmentDirection.RESTOCK, StockAdjustmentReason.FOUND, null);
-        assertThat(found.quantityDelta()).isEqualTo(CARTON);
+        assertThat(found.direction()).isEqualTo(com.stockflow.inventory.api.StockAdjustmentDirection.RESTOCK);
         operations.approve(found.adjustmentId(), manager);
 
         assertThat(state(box)).containsEntry("status", "IN_STOCK").containsEntry("closed", false)

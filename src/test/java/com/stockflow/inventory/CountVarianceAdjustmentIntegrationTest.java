@@ -9,7 +9,6 @@ import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
-import com.stockflow.inventory.internal.domain.AdjustmentDirection;
 import com.stockflow.inventory.internal.domain.CountSlot;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.StockPackageId;
@@ -35,6 +34,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
+import static com.stockflow.inventory.internal.domain.AdjustmentDirection.RESTOCK;
+import static com.stockflow.inventory.internal.domain.AdjustmentDirection.WRITE_OFF;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
@@ -44,8 +45,9 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * asked as one whole-carton COUNT_VARIANCE adjustment and posted through the SCRUM-145 four-eyes approval, with the
  * commit-time carton checks (V20261020000200, V20261113000300) live. A carton a count did not find is written off
  * whole and goes LOST; a LOST carton a later count finds is restocked whole on its own row, its lot kept. A
- * variance of part of a carton cannot be asked (the database refuses it), and a carton held for a customer's order, counted missing, is written off with its hold given up as a short pick (any
- * other adjustment of it is refused).
+ * variance says which way and no quantity (V20261230000100), so part of a carton cannot even be asked; a carton held
+ * for a customer's order, counted missing, is written off with its hold given up as a short pick (any other
+ * adjustment of it is refused).
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -120,7 +122,7 @@ class CountVarianceAdjustmentIntegrationTest {
                     count, "CC-IT-" + count.toString().substring(24).toUpperCase(Locale.ROOT));
             jdbc.update("""
                     insert into inventory.cycle_count_line (id, cycle_count_id, location_code, sku, lot_number,
-                        expected_qty, stock_package_id) values (?, ?, ?, ?, ?, 0, ?)""",
+                        booked, stock_package_id) values (?, ?, ?, ?, ?, false, ?)""",
                     line, count, BIN, sku, lot, carton);
         });
         return line;
@@ -179,10 +181,10 @@ class CountVarianceAdjustmentIntegrationTest {
         UUID box = carton("A");
 
         assertThat(codeOf(catchThrowable(() -> operations.requestPackageAdjustment(
-                new StockOperations.PackageAdjustmentRequest("LPN-" + sku + "-A", AdjustmentDirection.WRITE_OFF,
+                new StockOperations.PackageAdjustmentRequest("LPN-" + sku + "-A", WRITE_OFF,
                         StockAdjustmentReason.COUNT_VARIANCE, "x", clerk))))).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        assertThat(codeOf(catchThrowable(() -> operations.requestAdjustment(new RequestAdjustmentCommand(BIN,
-                new Sku(sku), lot, -1, StockAdjustmentReason.COUNT_VARIANCE, "x", clerk)))))
+        assertThat(codeOf(catchThrowable(() -> operations.requestAdjustment(new RequestAdjustmentCommand(null,
+                BIN, new Sku(sku), StockAdjustmentReason.COUNT_VARIANCE, "x", clerk)))))
                 .isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThat(jdbc.queryForObject("select count(*) from inventory.stock_adjustment where sku = ?", Integer.class,
                 sku)).isZero();
@@ -195,11 +197,11 @@ class CountVarianceAdjustmentIntegrationTest {
         UUID box = carton("L");
         UUID line = countLine(box);
 
-        StockAdjustmentSummary asked = operations.requestCountVariance(line, cartonSlot(box), -CARTON_FACTOR, clerk,
+        StockAdjustmentSummary asked = operations.requestCountVariance(line, cartonSlot(box), WRITE_OFF, clerk,
                 "CC-1");
 
         assertThat(asked.stockPackageId()).isEqualTo(box);
-        assertThat(asked.quantityDelta()).isEqualTo(-CARTON_FACTOR);
+        assertThat(asked.direction()).isEqualTo(com.stockflow.inventory.api.StockAdjustmentDirection.WRITE_OFF);
         assertThat(asked.reason()).isEqualTo(StockAdjustmentReason.COUNT_VARIANCE);
         assertThat(asked.cycleCountLineId()).isEqualTo(line);
         assertThat(asked.status()).isEqualTo(StockAdjustmentStatus.PENDING_APPROVAL);
@@ -225,10 +227,10 @@ class CountVarianceAdjustmentIntegrationTest {
         UUID box = carton("C");
         UUID line = countLine(box);
         UUID counter = tx.execute(s -> ReferenceRows.user(entityManager));
-        tx.executeWithoutResult(s -> jdbc.update("update inventory.cycle_count_line set counted_qty = 0, "
+        tx.executeWithoutResult(s -> jdbc.update("update inventory.cycle_count_line set found = false, "
                 + "counted_by = ?, counted_at = now() where id = ?", counter, line));
 
-        StockAdjustmentSummary asked = operations.requestCountVariance(line, cartonSlot(box), -CARTON_FACTOR, clerk,
+        StockAdjustmentSummary asked = operations.requestCountVariance(line, cartonSlot(box), WRITE_OFF, clerk,
                 "CC-8");
 
         assertThat(asked.countedBy()).as("kept on the adjustment, not looked up when it is decided").isEqualTo(counter);
@@ -265,11 +267,11 @@ class CountVarianceAdjustmentIntegrationTest {
     @DisplayName("a LOST carton a later count finds is restocked whole on its own row: IN_STOCK, lot kept, no new layer")
     void lostCartonFoundAgain() {
         UUID box = carton("F");
-        operations.approve(operations.requestCountVariance(countLine(box), cartonSlot(box), -CARTON_FACTOR, clerk, null)
+        operations.approve(operations.requestCountVariance(countLine(box), cartonSlot(box), WRITE_OFF, clerk, null)
                 .adjustmentId(), manager);
         assertThat(cartonState(box)).containsEntry("status", "LOST");
 
-        StockAdjustmentSummary found = operations.requestCountVariance(countLine(box), cartonSlot(box), CARTON_FACTOR,
+        StockAdjustmentSummary found = operations.requestCountVariance(countLine(box), cartonSlot(box), RESTOCK,
                 clerk, null);
         operations.approve(found.adjustmentId(), manager);
 
@@ -289,24 +291,12 @@ class CountVarianceAdjustmentIntegrationTest {
     }
 
     @Test
-    @DisplayName("a variance of part of a carton cannot be asked: the table refuses it (tg_stock_adjustment_whole_carton)")
-    void partOfACartonIsRefusedByTheTable() {
-        UUID box = carton("O");
-        UUID line = countLine(box);
-
-        assertThatThrownBy(() -> operations.requestCountVariance(line, cartonSlot(box), -4, clerk, null))
-                .hasMessageContaining("adjusted whole");
-        assertThat(jdbc.queryForObject("select count(*) from inventory.stock_adjustment where sku = ?", Integer.class,
-                sku)).isZero();
-        assertThat(cartonState(box)).containsEntry("status", "IN_STOCK").containsEntry("held", (long) CARTON_FACTOR);
-    }
-
-    @Test
     @DisplayName("a count variance of no carton is a caller's bug: refused before anything is written")
     void aVarianceOfNoCartonIsRefused() {
         CountSlot loose = new CountSlot(new LocationId(BIN), new Sku(sku), lot, null);
 
-        assertThatThrownBy(() -> operations.requestCountVariance(UUID.randomUUID(), loose, -1, clerk, null))
+        assertThatThrownBy(() -> operations.requestCountVariance(UUID.randomUUID(), loose, WRITE_OFF, clerk,
+                null))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThat(jdbc.queryForObject("select count(*) from inventory.stock_adjustment where sku = ?", Integer.class,
                 sku)).isZero();
@@ -319,7 +309,7 @@ class CountVarianceAdjustmentIntegrationTest {
         UUID box = carton("H");
         UUID hold = hold(confirmedOrder());
         UUID line = countLine(box);
-        StockAdjustmentSummary asked = operations.requestCountVariance(line, cartonSlot(box), -CARTON_FACTOR, clerk,
+        StockAdjustmentSummary asked = operations.requestCountVariance(line, cartonSlot(box), WRITE_OFF, clerk,
                 null);
 
         StockAdjustmentSummary posted = operations.approve(asked.adjustmentId(), manager);
@@ -349,10 +339,10 @@ class CountVarianceAdjustmentIntegrationTest {
         UUID adjustment = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
                 insert into inventory.stock_adjustment (id, adjustment_number, location_code, sku, lot_number,
-                    quantity_delta, reason_code, status, requested_by, stock_package_id)
-                values (?, ?, ?, ?, ?, ?, 'DAMAGED', 'PENDING_APPROVAL', ?, ?)""", adjustment,
+                    direction, reason_code, status, requested_by, stock_package_id)
+                values (?, ?, ?, ?, ?, 'WRITE_OFF', 'DAMAGED', 'PENDING_APPROVAL', ?, ?)""", adjustment,
                 "ADJ-IT-" + adjustment.toString().substring(24).toUpperCase(Locale.ROOT), BIN, sku, lot,
-                -CARTON_FACTOR, clerk, box));
+                clerk, box));
 
         Throwable refused = catchThrowable(() -> operations.approve(adjustment, manager));
 
@@ -368,7 +358,7 @@ class CountVarianceAdjustmentIntegrationTest {
     void requesterCannotApprove() {
         UUID box = carton("S");
         StockAdjustmentSummary asked = operations.requestCountVariance(countLine(box), cartonSlot(box),
-                -CARTON_FACTOR, clerk, null);
+                WRITE_OFF, clerk, null);
 
         assertThatThrownBy(() -> operations.approve(asked.adjustmentId(), clerk))
                 .isInstanceOf(BusinessException.class)
@@ -382,14 +372,14 @@ class CountVarianceAdjustmentIntegrationTest {
     void rejectedVarianceChangesNothing() {
         UUID box = carton("J");
         StockAdjustmentSummary asked = operations.requestCountVariance(countLine(box), cartonSlot(box),
-                -CARTON_FACTOR, clerk, null);
+                WRITE_OFF, clerk, null);
 
         operations.reject(asked.adjustmentId(), manager, "Counted the wrong bin");
 
         assertThat(cartonState(box)).containsEntry("status", "IN_STOCK").containsEntry("held", (long) CARTON_FACTOR);
         assertThat(adjustmentLedger()).isEmpty();
         // the carton is free of a pending adjustment again (uk_stock_adjustment_pending_package)
-        operations.requestCountVariance(countLine(box), cartonSlot(box), -CARTON_FACTOR, clerk, null);
+        operations.requestCountVariance(countLine(box), cartonSlot(box), WRITE_OFF, clerk, null);
         assertThat(jdbc.queryForObject("select count(*) from inventory.stock_adjustment where stock_package_id = ?",
                 Integer.class, box)).isEqualTo(2);
     }

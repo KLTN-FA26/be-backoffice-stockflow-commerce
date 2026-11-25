@@ -118,8 +118,8 @@ class SameReceiptMergeIntegrationTest {
     void foundOfLooseUnitsIsRefused() {
         cartons(1, 10);
 
-        assertThatThrownBy(() -> tx.execute(s -> operations.requestAdjustment(new RequestAdjustmentCommand(SHELF,
-                new Sku(sku), lot, 2, StockAdjustmentReason.FOUND, "found two", clerk))))
+        assertThatThrownBy(() -> tx.execute(s -> operations.requestAdjustment(new RequestAdjustmentCommand(null,
+                SHELF, new Sku(sku), StockAdjustmentReason.FOUND, "found two", clerk))))
                 .isInstanceOf(BusinessException.class)
                 .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.STOCK_NOT_IN_CARTON);
 

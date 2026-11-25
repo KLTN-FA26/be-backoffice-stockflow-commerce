@@ -44,8 +44,8 @@ public interface CycleCountRepository {
     List<CountLineDraft> stockIn(String warehousePrefix, Collection<String> locationCodes,
                                  Collection<String> locationPrefixes, Collection<String> skus);
 
-    /** The carton's committed on_hand, read FOR SHARE. */
-    int bookQuantity(CountSlot slot);
+    /** Whether the books hold the carton, by its committed stock row read FOR SHARE. */
+    boolean booked(CountSlot slot);
 
     /**
      * A page of counts, newest first, as headers with their line tallies. No line is loaded: a list of counts must
@@ -65,7 +65,7 @@ public interface CycleCountRepository {
     List<Frozen> frozen(Collection<String> skus);
 
     /** A variance adjustment raised from a count line. */
-    record LineAdjustment(UUID id, String number, int quantityDelta, String status) { }
+    record LineAdjustment(UUID id, String number, AdjustmentDirection direction, String status) { }
 
     /**
      * Cartons held back from picking: by an open SHORT_PICK recount (or one whose variance waits for approval), by a

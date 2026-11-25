@@ -2,6 +2,7 @@ package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.inventory.internal.domain.AdjustmentDirection;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.ReturnedCartonOwnership;
 import com.stockflow.inventory.internal.domain.StockItem;
@@ -114,26 +115,25 @@ class StockPackageContents {
      *       otherwise.</li>
      * </ul>
      *
-     * <p>Anything but the whole carton is refused ({@code STOCK_PACKAGE_TAKEN_WHOLE}): a request of the history asked
-     * for part of one, and is rejected rather than posted. The row and the carton are saved here, so the commit-time
-     * check finds them consistent.</p>
+     * <p>The adjustment names a direction and no quantity (ADR-0011): the units moved are the carton's standard count,
+     * read from the carton locked here. The row and the carton are saved here, so the commit-time check finds them
+     * consistent.</p>
      *
      * @return the row changed and the units it gained (positive) or gave (negative) - one ledger line
      */
-    public List<RowChange> adjust(StockPackageId id, int delta, boolean missingWhenEmpty, Instant now) {
-        return adjust(id, delta, missingWhenEmpty, null, now);
+    public List<RowChange> adjust(StockPackageId id, AdjustmentDirection direction, boolean missingWhenEmpty,
+                                  Instant now) {
+        return adjust(id, direction, missingWhenEmpty, null, now);
     }
 
     /**
-     * As {@link #adjust(StockPackageId, int, boolean, Instant)}; with {@code giveUpHoldsBy} (who decided the shortage), a
+     * As {@link #adjust(StockPackageId, AdjustmentDirection, boolean, Instant)}; with {@code giveUpHoldsBy} (who decided the shortage), a
      * write-off gives up the holds on the carton instead of refusing them. The caller publishes the row's events after
      * the call.
      */
-    public List<RowChange> adjust(StockPackageId id, int delta, boolean missingWhenEmpty, UUID giveUpHoldsBy,
-                                  Instant now) {
-        if (delta == 0) {
-            throw new IllegalArgumentException("An adjustment changes the quantity");
-        }
+    public List<RowChange> adjust(StockPackageId id, AdjustmentDirection direction, boolean missingWhenEmpty,
+                                  UUID giveUpHoldsBy, Instant now) {
+        Objects.requireNonNull(direction, "direction");
         StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(id)).stream().findFirst()
                 .orElseThrow(() -> new IllegalStateException("No stock package " + id.value()));
         List<StockItem> rows = stockItems.findIdsInStockPackage(id).stream()
@@ -145,13 +145,8 @@ class StockPackageContents {
             throw new IllegalStateException("Stock package %s has no stock row to adjust".formatted(carton.lpn()));
         }
         requireCompanys(carton);
-        if (Math.abs(delta) != carton.nominalQty()) {
-            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE,
-                    "%s holds %d; it is adjusted whole, not by %d".formatted(carton.lpn(), carton.nominalQty(), delta),
-                    List.of(), Map.of("lpn", carton.lpn()));
-        }
-        RowChange change = delta > 0
-                ? restockLost(carton, rows, delta)
+        RowChange change = direction == AdjustmentDirection.RESTOCK
+                ? restockLost(carton, rows, carton.nominalQty())
                 : writeOff(carton, rows, missingWhenEmpty, giveUpHoldsBy, now);
         if (change.delta() > 0) {
             // Units back in the carton they were counted into: the same receipt, proven by the LPN, so no age is lost.

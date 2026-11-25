@@ -285,9 +285,9 @@ class BlindCountIntegrationTest {
         asStaff(get(INVENTORY + "/adjustments/" + manualAdjustment)).andExpect(status().isOk());
         asManager(get(list)).andExpect(jsonPath("$.data.totalElements").value(2));
         asManager(get(INVENTORY + "/adjustments/" + variance)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.quantityDelta").value(-CARTON));
+                .andExpect(jsonPath("$.data.direction").value("WRITE_OFF"));
 
-        // Approving the variance frees the carton: the delta is now history, and visible.
+        // Approving the variance frees the carton: the variance is now history, and visible.
         mvc.asRole(Role.WAREHOUSE_MANAGER, approver, post(INVENTORY + "/adjustments/" + variance + "/approval"))
                 .andExpect(status().isOk());
 

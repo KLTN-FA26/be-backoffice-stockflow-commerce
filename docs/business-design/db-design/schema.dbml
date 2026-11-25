@@ -73,6 +73,11 @@ Enum inventory.cycle_count_trigger_type {
   MANUAL
 }
 
+Enum inventory.stock_adjustment_direction {
+  WRITE_OFF
+  RESTOCK
+}
+
 Enum inventory.stock_adjustment_reason_code {
   DAMAGED
   LOST
@@ -1527,8 +1532,6 @@ Table inventory.cycle_count_line [headercolor: #3E7C4A] {
   location_code    varchar(64) [not null]
   sku              varchar(64) [not null]
   lot_number       varchar(64)
-  expected_qty     int [not null]
-  counted_qty      int
   counted_by       uuid
   counted_at       timestamptz
   recount_required boolean [not null, default: false]
@@ -1537,7 +1540,9 @@ Table inventory.cycle_count_line [headercolor: #3E7C4A] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
-  stock_package_id uuid
+  stock_package_id uuid [not null]
+  booked           boolean [not null]
+  found            boolean
 }
 
 Table inventory.inventory_items [headercolor: #3E7C4A] {
@@ -1559,7 +1564,6 @@ Table inventory.stock_adjustment [headercolor: #3E7C4A] {
   location_code       varchar(64) [not null]
   sku                 varchar(64) [not null]
   lot_number          varchar(64)
-  quantity_delta      int [not null]
   reason_code         inventory.stock_adjustment_reason_code [not null]
   note                varchar(1000)
   status              inventory.stock_adjustment_status [not null, default: 'PENDING_APPROVAL']
@@ -1577,8 +1581,9 @@ Table inventory.stock_adjustment [headercolor: #3E7C4A] {
   withdrawn_at        timestamptz
   received_at         timestamptz
   reservation_id      uuid
-  stock_package_id    uuid
+  stock_package_id    uuid [not null]
   counted_by          uuid
+  direction           inventory.stock_adjustment_direction [not null]
 }
 
 Table inventory.stock_item [headercolor: #3E7C4A] {
@@ -3674,6 +3679,7 @@ Table design.design_project_quote_request [headercolor: #AA4A9E] {
   status                design.design_project_quote_request_status [not null, default: 'OPEN']
   closed_at             timestamptz
   closed_by             uuid
+  close_reason          varchar(1000)
 }
 
 Table design.design_project_quote_request_line [headercolor: #AA4A9E] {
@@ -4740,9 +4746,9 @@ Table chat.message [headercolor: #4C93A8] {
   deleted_at        timestamptz
   deleted_by        uuid
   indexes {
-    (conversation_id, seq) [unique]
-    (id, kind) [unique]
     (id, conversation_id) [unique]
+    (id, kind) [unique]
+    (conversation_id, seq) [unique]
   }
 }
 

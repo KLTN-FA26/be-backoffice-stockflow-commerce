@@ -103,6 +103,7 @@ class StagingIntegrationTest {
     @Autowired OrderService orders;
     @Autowired com.stockflow.order.internal.service.OrderReleases releases;
     @Autowired InventoryService inventory;
+    @Autowired com.stockflow.inventory.internal.service.StockOperations stockOperations;
     @Autowired PickLists pickLists;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
@@ -646,13 +647,19 @@ class StagingIntegrationTest {
                 .as("released, left in staging").isZero();
 
         String lot = jdbc.queryForObject("SELECT lot_number FROM inventory.stock_item WHERE id = ?::uuid", String.class, row);
-        Throwable surplus = catchThrowable(() -> tx.execute(s -> inventory.requestAdjustment(
-                new com.stockflow.inventory.api.RequestAdjustmentCommand(STAGING, STOCKED, lot, 1,
-                        com.stockflow.inventory.api.StockAdjustmentReason.FOUND, "found in staging", managerHcm))));
+        UUID carton = jdbc.queryForObject("SELECT id FROM inventory.stock_package WHERE lpn = ?", UUID.class, lpn);
+        // An adjustment asked by hand through the inventory API only writes a carton off (RequestAdjustmentCommand has
+        // no direction, ADR-0011); the surplus that can still be asked of a carton in staging is a count's variance.
+        var staged = com.stockflow.inventory.internal.domain.CountSlot.carton(
+                new com.stockflow.inventory.internal.domain.LocationId(STAGING), STOCKED, lot,
+                new com.stockflow.inventory.internal.domain.StockPackageId(carton));
+        Throwable surplus = catchThrowable(() -> tx.execute(s -> stockOperations.requestCountVariance(
+                UUID.randomUUID(), staged, com.stockflow.inventory.internal.domain.AdjustmentDirection.RESTOCK,
+                managerHcm, "found in staging")));
         assertThat(surplus).isInstanceOfSatisfying(BusinessException.class,
                 refusal -> assertThat(refusal.errorCode()).isEqualTo(ErrorCode.STAGING_MOVE_NOT_ALLOWED));
         Throwable writeDown = catchThrowable(() -> tx.execute(s -> inventory.requestAdjustment(
-                new com.stockflow.inventory.api.RequestAdjustmentCommand(STAGING, STOCKED, lot, -1,
+                com.stockflow.inventory.api.RequestAdjustmentCommand.ofCarton(lpn,
                         com.stockflow.inventory.api.StockAdjustmentReason.LOST, "gone from staging", managerHcm))));
         if (writeDown instanceof BusinessException refused) {
             assertThat(refused.errorCode()).as("a write-down is not what is refused")

@@ -64,11 +64,12 @@ INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_
 SELECT md5('qa97:carton')::uuid, 'QA97-LPN-1', i.id, i.id, b.units_per_carton, b.units_per_carton, 'HCM-QUA01',
        'CONSUMED', NOW()
   FROM base b JOIN inventory.inventory_items i ON i.sku = b.sku;
-INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, lot_number, quantity_delta,
+INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, lot_number, direction,
                                         reason_code, note, status, requested_by, decided_by, decided_at, posted_at,
                                         stock_package_id)
 SELECT md5('qa97:adj:' || k)::uuid, 'ADJ-QA97-' || k, 'HCM-QUA01', b.sku,
-       CASE WHEN k = 'other-lot' THEN 'LOT-ELSEWHERE' ELSE b.code END, -b.units_per_carton,
+       CASE WHEN k = 'other-lot' THEN 'LOT-ELSEWHERE' ELSE b.code END,
+       CASE WHEN k = 'restock' THEN 'RESTOCK' ELSE 'WRITE_OFF' END,
        CASE WHEN k = 'other-reason' THEN 'OTHER' ELSE 'DAMAGED' END,
        CASE WHEN k = 'other-reason' THEN 'counted wrong' END,
        CASE WHEN k = 'pending' THEN 'PENDING_APPROVAL' ELSE 'POSTED' END,
@@ -76,7 +77,7 @@ SELECT md5('qa97:adj:' || k)::uuid, 'ADJ-QA97-' || k, 'HCM-QUA01', b.sku,
        CASE WHEN k = 'pending' THEN NULL ELSE md5('demo:user:admin')::uuid END,
        CASE WHEN k = 'pending' THEN NULL ELSE NOW() END, CASE WHEN k = 'pending' THEN NULL ELSE NOW() END,
        md5('qa97:carton')::uuid
-  FROM base b, unnest(ARRAY['d1', 'd2', 'd3', 'other-reason', 'pending', 'other-lot']) k;
+  FROM base b, unnest(ARRAY['d1', 'd2', 'd3', 'other-reason', 'pending', 'other-lot', 'restock']) k;
 SET LOCAL session_replication_role = origin;
 
 CREATE FUNCTION pg_temp.draft(po_id UUID, po_code TEXT, po_kind TEXT, replaces UUID) RETURNS void
@@ -134,6 +135,10 @@ SELECT pg_temp.expect_fail('RP9 a write-off not yet approved', $q$
     SELECT pg_temp.draft(md5('qa97:r0')::uuid, 'PRD-20261216-9700', 'REPLACEMENT', (SELECT po FROM base));
     SELECT pg_temp.line(md5('qa97:r0')::uuid, 1);
     SELECT pg_temp.write_off(md5('qa97:r0')::uuid, 'pending') $q$);
+SELECT pg_temp.expect_fail('RP9b a posted DAMAGED adjustment that restocks: its direction is not WRITE_OFF (V20261230000100)', $q$
+    SELECT pg_temp.draft(md5('qa97:r0')::uuid, 'PRD-20261216-9700', 'REPLACEMENT', (SELECT po FROM base));
+    SELECT pg_temp.line(md5('qa97:r0')::uuid, 1);
+    SELECT pg_temp.write_off(md5('qa97:r0')::uuid, 'restock') $q$);
 SELECT pg_temp.expect_fail('RP10 a write-off of a carton of another lot', $q$
     SELECT pg_temp.draft(md5('qa97:r0')::uuid, 'PRD-20261216-9700', 'REPLACEMENT', (SELECT po FROM base));
     SELECT pg_temp.line(md5('qa97:r0')::uuid, 1);

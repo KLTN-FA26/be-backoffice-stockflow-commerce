@@ -593,16 +593,22 @@ class ProductHistoryAndRemovalIntegrationTest {
     // ------------------------------------------------------------------ SKU-keyed references
 
     @Test
-    @DisplayName("a DRAFT SKU an adjustment refers to (no stock row) is in use: rename INVALID_VARIANT_TRANSITION, delete PRODUCT_IN_USE naming it")
+    @DisplayName("a DRAFT SKU an adjustment refers to (and the carton it names) is in use: rename INVALID_VARIANT_TRANSITION, delete PRODUCT_IN_USE naming it")
     void aSkuKeyedReferenceRefusesRenameAndDeleteByName() {
         ProductSummary created = draft();
         UUID id = created.productId();
         UUID defaultId = defaultVariant(id);
-        String location = jdbc.queryForObject("SELECT location_code FROM warehouse.storage_location ORDER BY location_code LIMIT 1",
-                String.class);
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by)
-                VALUES (?, ?, ?, ?, 5, 'FOUND', ?)""", Identifiers.newId(), "ADJ-" + suffix, location, created.code(), editor));
+        // An adjustment names its carton (stock_package_id NOT NULL since V20261230000100), so the SKU has a carton in
+        // stock and the adjustment that asks to write it off: both refer to the SKU by its code.
+        tx.executeWithoutResult(s -> {
+            var carton = com.stockflow.support.CartonRows.carton(jdbc, created.code(), "HCM-A01-1-A", 5, null,
+                    java.time.Instant.now().minus(java.time.Duration.ofDays(1)), "AVAILABLE");
+            jdbc.update("""
+                    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction,
+                        reason_code, requested_by, stock_package_id)
+                    VALUES (?, ?, 'HCM-A01-1-A', ?, 'WRITE_OFF', 'DAMAGED', ?, ?)""", Identifiers.newId(),
+                    "ADJ-" + suffix, created.code(), editor, carton.id());
+        });
 
         BusinessException rename = refusal(org.assertj.core.api.Assertions.catchThrowable(() ->
                 variants.update(id, defaultId, new NewVariant(created.code() + "-NEW", null, null, null))));

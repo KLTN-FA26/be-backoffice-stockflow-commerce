@@ -38,7 +38,7 @@ class DamagedWriteOffsAdapter implements DamagedWriteOffs {
                           JOIN inventory.stock_lot l ON l.sku = a.sku AND l.lot_number = a.lot_number
                           JOIN inventory.stock_package p ON p.id = a.stock_package_id
                          WHERE l.production_order_id = :productionOrder
-                           AND a.reason_code = 'DAMAGED' AND a.status = 'POSTED' AND a.quantity_delta < 0
+                           AND a.reason_code = 'DAMAGED' AND a.status = 'POSTED' AND a.direction = 'WRITE_OFF'
                          ORDER BY a.posted_at, a.id""",
                 Map.of("productionOrder", productionOrderId),
                 (rs, row) -> {

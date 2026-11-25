@@ -287,25 +287,25 @@ SELECT pg_temp.expect_ok('D1 a whole carton counted in at 10, holding 10, on HCM
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
     VALUES (md5('qa:pk:doc:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'UNTRACED', 10, 0, 'AVAILABLE', NOW(), NOW() - interval '3 day', md5('qa:pk:doc')::uuid) $q$);
 SELECT pg_temp.expect_fail('D2 an adjustment naming a carton of another SKU', $q$
-    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, stock_package_id)
-    VALUES (gen_random_uuid(), 'QA-ADJ-D2', 'HCM-A01-1-A', 'LY-GIAY-DEMO-12OZ-DO', -10, 'DAMAGED',
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'QA-ADJ-D2', 'HCM-A01-1-A', 'LY-GIAY-DEMO-12OZ-DO', 'WRITE_OFF', 'DAMAGED',
             (SELECT id FROM identity.app_user ORDER BY id LIMIT 1), md5('qa:pk:doc')::uuid) $q$);
 SELECT pg_temp.expect_fail('D3 an adjustment naming a carton at another bin', $q$
-    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, stock_package_id)
-    VALUES (gen_random_uuid(), 'QA-ADJ-D3', 'HCM-A01-1-B', 'LY-GIAY-DEMO-12OZ-XANH', -10, 'DAMAGED',
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'QA-ADJ-D3', 'HCM-A01-1-B', 'LY-GIAY-DEMO-12OZ-XANH', 'WRITE_OFF', 'DAMAGED',
             (SELECT id FROM identity.app_user ORDER BY id LIMIT 1), md5('qa:pk:doc')::uuid) $q$);
 SELECT pg_temp.expect_ok('D4 an adjustment of that carton: the whole carton', $q$
-    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, stock_package_id)
-    VALUES (gen_random_uuid(), 'QA-ADJ-D4', 'HCM-A01-1-A', 'LY-GIAY-DEMO-12OZ-XANH', -10, 'DAMAGED',
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'QA-ADJ-D4', 'HCM-A01-1-A', 'LY-GIAY-DEMO-12OZ-XANH', 'WRITE_OFF', 'DAMAGED',
             (SELECT id FROM identity.app_user ORDER BY id LIMIT 1), md5('qa:pk:doc')::uuid) $q$);
 SELECT pg_temp.expect_ok('D5 a count with a line for the carton', $q$
     INSERT INTO inventory.cycle_count (id, count_number, warehouse_id, trigger_type)
     SELECT md5('qa:cc:doc')::uuid, 'QA-CC-D5', id, 'MANUAL' FROM warehouse.warehouse WHERE prefix = 'HCM';
-    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
-    VALUES (gen_random_uuid(), md5('qa:cc:doc')::uuid, 'HCM-A01-1-A', 'LY-GIAY-DEMO-12OZ-XANH', 10, md5('qa:pk:doc')::uuid) $q$);
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, booked, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:doc')::uuid, 'HCM-A01-1-A', 'LY-GIAY-DEMO-12OZ-XANH', TRUE, md5('qa:pk:doc')::uuid) $q$);
 SELECT pg_temp.expect_fail('D6 the same carton counted twice in one count', $q$
-    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
-    VALUES (gen_random_uuid(), md5('qa:cc:doc')::uuid, 'HCM-A01-1-A', 'LY-GIAY-DEMO-12OZ-XANH', 10, md5('qa:pk:doc')::uuid) $q$);
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, booked, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:doc')::uuid, 'HCM-A01-1-A', 'LY-GIAY-DEMO-12OZ-XANH', TRUE, md5('qa:pk:doc')::uuid) $q$);
 SELECT pg_temp.expect_fail('D7 a carton in stock filled past what was counted into it', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
     VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'UNTRACED', 1, 0, 'AVAILABLE', NOW(), NOW() - interval '2 day', md5('qa:pk:doc')::uuid) $q$);

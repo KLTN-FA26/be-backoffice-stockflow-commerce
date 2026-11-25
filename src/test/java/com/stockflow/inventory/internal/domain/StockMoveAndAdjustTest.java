@@ -91,19 +91,31 @@ class StockMoveAndAdjustTest {
     @DisplayName("adjusting stock")
     class Adjusting {
 
-        private StockAdjustment writeOff(int delta, AdjustmentReason reason, String note) {
-            return StockAdjustment.request("ADJ-20261008-0001", BIN, SKU, "LOT-1", delta, reason, note, CLERK, NOW);
+        private StockAdjustment request(AdjustmentDirection direction, AdjustmentReason reason, String note) {
+            return StockAdjustment.request("ADJ-20261008-0001", BIN, SKU, "LOT-1", direction, reason, note, CLERK,
+                    NOW);
         }
 
-        /** Stock is adjusted by carton only (review C4 P-3): the service posts the units, under the carton's lock. */
-        private StockAdjustment cartonWriteOff(int delta, AdjustmentReason reason, String note) {
-            return writeOff(delta, reason, note).inPackage(new StockPackageId(UUID.randomUUID()));
+        private StockAdjustment writeOff(AdjustmentReason reason, String note) {
+            return request(AdjustmentDirection.WRITE_OFF, reason, note);
+        }
+
+        private StockAdjustment restock(AdjustmentReason reason, String note) {
+            return request(AdjustmentDirection.RESTOCK, reason, note);
+        }
+
+        /**
+         * Stock is adjusted by carton only (review C4 P-3), whole: the adjustment says a direction and the service
+         * posts the carton's units, under the carton's lock.
+         */
+        private StockAdjustment cartonWriteOff(AdjustmentReason reason, String note) {
+            return writeOff(reason, note).inPackage(new StockPackageId(UUID.randomUUID()));
         }
 
         @Test
         @DisplayName("an adjustment waits until someone else approves; approving posts it")
         void approvalPosts() {
-            StockAdjustment adjustment = cartonWriteOff(-3, AdjustmentReason.DAMAGED, null);
+            StockAdjustment adjustment = cartonWriteOff(AdjustmentReason.DAMAGED, null);
             assertThat(adjustment.status()).isEqualTo(AdjustmentStatus.PENDING_APPROVAL);
 
             adjustment.approveForCarton(MANAGER, NOW);
@@ -116,7 +128,7 @@ class StockMoveAndAdjustTest {
         @Test
         @DisplayName("the requester cannot approve or reject their own request")
         void fourEyes() {
-            StockAdjustment adjustment = cartonWriteOff(-1, AdjustmentReason.LOST, null);
+            StockAdjustment adjustment = cartonWriteOff(AdjustmentReason.LOST, null);
             assertThatThrownBy(() -> adjustment.approveForCarton(CLERK, NOW))
                     .isInstanceOf(BusinessException.class)
                     .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.ADJUSTMENT_SELF_APPROVAL);
@@ -127,7 +139,7 @@ class StockMoveAndAdjustTest {
         @Test
         @DisplayName("a decided adjustment cannot be decided again")
         void decidedOnce() {
-            StockAdjustment adjustment = cartonWriteOff(-1, AdjustmentReason.LOST, null);
+            StockAdjustment adjustment = cartonWriteOff(AdjustmentReason.LOST, null);
             adjustment.reject(MANAGER, "Counted again, nothing missing", NOW);
             assertThat(adjustment.status()).isEqualTo(AdjustmentStatus.REJECTED);
             assertThatThrownBy(() -> adjustment.approveForCarton(MANAGER, NOW))
@@ -136,13 +148,13 @@ class StockMoveAndAdjustTest {
         }
 
         @Test
-        @DisplayName("OTHER needs a note, zero is not an adjustment, rejecting needs a reason")
+        @DisplayName("OTHER needs a note, an adjustment says which way, rejecting needs a reason")
         void validation() {
-            assertThatThrownBy(() -> writeOff(-1, AdjustmentReason.OTHER, "  "))
+            assertThatThrownBy(() -> writeOff(AdjustmentReason.OTHER, "  "))
                     .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-            assertThatThrownBy(() -> writeOff(0, AdjustmentReason.FOUND, null))
-                    .isInstanceOf(IllegalArgumentException.class);
-            StockAdjustment adjustment = writeOff(2, AdjustmentReason.FOUND, null);
+            assertThatThrownBy(() -> request(null, AdjustmentReason.FOUND, null))
+                    .isInstanceOf(NullPointerException.class);
+            StockAdjustment adjustment = restock(AdjustmentReason.FOUND, null);
             assertThatThrownBy(() -> adjustment.reject(MANAGER, " ", NOW))
                     .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
         }
@@ -151,22 +163,22 @@ class StockMoveAndAdjustTest {
         @DisplayName("scrap and samples only write stock down, and never a carton (kltn-docs 19, 20 BR-04; review P-2)")
         void scrapAndSampleOnlyWriteDown() {
             for (AdjustmentReason reason : new AdjustmentReason[] {AdjustmentReason.SCRAP, AdjustmentReason.SAMPLE}) {
-                assertThatThrownBy(() -> cartonWriteOff(-4, reason, null)).as("%s of a carton", reason)
+                assertThatThrownBy(() -> cartonWriteOff(reason, null)).as("%s of a carton", reason)
                         .extracting(e -> ((BusinessException) e).errorCode())
                         .isEqualTo(ErrorCode.STOCK_ADJUSTMENT_REASON_NOT_FOR_CARTON);
             }
-            assertThat(cartonWriteOff(-4, AdjustmentReason.DAMAGED, null).stockPackageId()).isNotNull();
+            assertThat(cartonWriteOff(AdjustmentReason.DAMAGED, null).stockPackageId()).isNotNull();
 
-            assertThatThrownBy(() -> writeOff(4, AdjustmentReason.SCRAP, null))
+            assertThatThrownBy(() -> restock(AdjustmentReason.SCRAP, null))
                     .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-            assertThatThrownBy(() -> writeOff(1, AdjustmentReason.SAMPLE, null))
+            assertThatThrownBy(() -> restock(AdjustmentReason.SAMPLE, null))
                     .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
         }
 
         @Test
         @DisplayName("the requester withdraws a pending request; stock is untouched and nobody decided it")
         void requesterWithdraws() {
-            StockAdjustment adjustment = cartonWriteOff(-2, AdjustmentReason.DAMAGED, null);
+            StockAdjustment adjustment = cartonWriteOff(AdjustmentReason.DAMAGED, null);
             adjustment.withdraw(CLERK, NOW);
 
             assertThat(adjustment.status()).isEqualTo(AdjustmentStatus.WITHDRAWN);
@@ -184,7 +196,7 @@ class StockMoveAndAdjustTest {
         @Test
         @DisplayName("a count variance is approved or rejected, never withdrawn - not even by its requester")
         void countVarianceIsNotWithdrawn() {
-            StockAdjustment adjustment = writeOff(-2, AdjustmentReason.COUNT_VARIANCE, null)
+            StockAdjustment adjustment = writeOff(AdjustmentReason.COUNT_VARIANCE, null)
                     .forCountLine(UUID.randomUUID());
 
             assertThatThrownBy(() -> adjustment.withdraw(CLERK, NOW))
@@ -200,17 +212,17 @@ class StockMoveAndAdjustTest {
         @DisplayName("a count variance names the count line it comes from")
         void countVarianceNamesItsLine() {
             UUID line = UUID.randomUUID();
-            StockAdjustment adjustment = writeOff(-2, AdjustmentReason.COUNT_VARIANCE, null).forCountLine(line);
+            StockAdjustment adjustment = writeOff(AdjustmentReason.COUNT_VARIANCE, null).forCountLine(line);
 
             assertThat(adjustment.cycleCountLineId()).isEqualTo(line);
-            assertThat(writeOff(-2, AdjustmentReason.DAMAGED, null).cycleCountLineId()).isNull();
+            assertThat(writeOff(AdjustmentReason.DAMAGED, null).cycleCountLineId()).isNull();
         }
 
         @Test
         @DisplayName("a carton's adjustment keeps its carton and is approved for the carton, not onto one row")
         void cartonAdjustmentKeepsItsCarton() {
             StockPackageId carton = new StockPackageId(UUID.randomUUID());
-            StockAdjustment adjustment = writeOff(-2, AdjustmentReason.COUNT_VARIANCE, null).inPackage(carton);
+            StockAdjustment adjustment = writeOff(AdjustmentReason.COUNT_VARIANCE, null).inPackage(carton);
 
             assertThat(adjustment.stockPackageId()).isEqualTo(carton);
             assertThatThrownBy(() -> adjustment.approveForCarton(CLERK, NOW))
@@ -219,14 +231,14 @@ class StockMoveAndAdjustTest {
             adjustment.approveForCarton(MANAGER, NOW);
             assertThat(adjustment.status()).isEqualTo(AdjustmentStatus.POSTED);
             assertThat(adjustment.postedAt()).isEqualTo(NOW);
-            assertThatThrownBy(() -> writeOff(-2, AdjustmentReason.DAMAGED, null).approveForCarton(MANAGER, NOW))
+            assertThatThrownBy(() -> writeOff(AdjustmentReason.DAMAGED, null).approveForCarton(MANAGER, NOW))
                     .isInstanceOf(IllegalStateException.class);
         }
 
         @Test
         @DisplayName("only the requester may withdraw, and only before it is decided")
         void onlyRequesterWithdrawsBeforeDecision() {
-            StockAdjustment adjustment = cartonWriteOff(-2, AdjustmentReason.DAMAGED, null);
+            StockAdjustment adjustment = cartonWriteOff(AdjustmentReason.DAMAGED, null);
             assertThatThrownBy(() -> adjustment.withdraw(MANAGER, NOW))
                     .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.ADJUSTMENT_NOT_REQUESTER);
             assertThat(adjustment.status()).isEqualTo(AdjustmentStatus.PENDING_APPROVAL);

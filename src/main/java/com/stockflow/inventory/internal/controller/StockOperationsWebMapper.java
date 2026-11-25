@@ -34,7 +34,8 @@ interface StockOperationsWebMapper {
     /** @param names display names by user id, for every person the adjustment names */
     default StockAdjustmentResponse toResponse(StockAdjustmentSummary adjustment, Map<UUID, String> names) {
         return new StockAdjustmentResponse(adjustment.adjustmentId(), adjustment.number(), adjustment.locationCode(),
-                adjustment.sku(), adjustment.lotNumber(), adjustment.quantityDelta(),
+                adjustment.sku(), adjustment.lotNumber(),
+                adjustment.direction() == null ? null : adjustment.direction().name(),
                 adjustment.reason() == null ? null : adjustment.reason().name(), adjustment.note(),
                 adjustment.status() == null ? null : adjustment.status().name(), adjustment.requestedBy(),
                 adjustment.requestedAt(), adjustment.decidedBy(), adjustment.decidedAt(), adjustment.rejectionReason(),

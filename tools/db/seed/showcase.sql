@@ -3825,7 +3825,7 @@ $$ SELECT pg_temp.sid('iop:cycle-count:' || p_code) $$;
 CREATE FUNCTION pg_temp.iop_line_id(p_code TEXT, p_seq INTEGER, p_n INTEGER) RETURNS UUID LANGUAGE sql IMMUTABLE AS
 $$ SELECT pg_temp.sid('iop:cycle-count-line:' || p_code || ':' || p_seq || ':' || p_n) $$;
 
--- Plans a count (CycleCountService.plan): the count PLANNED and one line per carton, the books' units of each.
+-- Plans a count (CycleCountService.plan): the count PLANNED and one line per carton, booked as the books have it.
 CREATE FUNCTION pg_temp.iop_plan(p_code TEXT) RETURNS VOID LANGUAGE sql AS
 $$
 INSERT INTO inventory.cycle_count (id, count_number, warehouse_id, trigger_type, status, is_blind, assigned_user_id,
@@ -3834,10 +3834,10 @@ SELECT pg_temp.iop_count_id(c.code), c.number, pg_temp.sid('wh:BDG'), c.trigger_
        pg_temp.staff(c.assignee), pg_temp.day(c.days), c.note, 0, pg_temp.at(c.days, c.planned),
        pg_temp.staff(c.planner)::text
   FROM x_iop_count c WHERE c.code = p_code;
-INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, lot_number, expected_qty,
+INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, lot_number, booked,
                                         recount_required, version, created_at, created_by, stock_package_id)
 SELECT pg_temp.iop_line_id(l.code, l.seq, l.n), pg_temp.iop_count_id(l.code), pg_temp.iop_bin(l.seq, l.n), x.sku,
-       x.lot_number, s.on_hand, FALSE, 0, pg_temp.at(c.days, c.planned), pg_temp.staff(c.planner)::text, x.package_id
+       x.lot_number, s.on_hand > 0, FALSE, 0, pg_temp.at(c.days, c.planned), pg_temp.staff(c.planner)::text, x.package_id
   FROM x_iop_line l JOIN x_iop_count c ON c.code = l.code
   JOIN x_iop_carton x ON x.seq = l.seq AND x.n = l.n JOIN inventory.stock_item s ON s.id = x.stock_item_id
  WHERE l.code = p_code;
@@ -3848,7 +3848,7 @@ $$;
 CREATE FUNCTION pg_temp.iop_count(p_code TEXT) RETURNS VOID LANGUAGE sql AS
 $$
 UPDATE inventory.cycle_count_line cl
-   SET expected_qty = x.upc, counted_qty = CASE WHEN l.found THEN x.upc ELSE 0 END,
+   SET booked = TRUE, found = l.found,
        counted_by = pg_temp.staff(c.assignee),
        counted_at = pg_temp.at(c.days, c.planned) + (l.counted_min || ' minutes')::interval, version = 1,
        last_modified_at = pg_temp.at(c.days, c.planned) + (l.counted_min || ' minutes')::interval,
@@ -3925,10 +3925,10 @@ $$ SELECT pg_temp.sid('iop:adjustment:' || p_code) $$;
 -- Asks for the adjustments of the given codes: the whole carton written off, at its bin, in its lot.
 CREATE FUNCTION pg_temp.iop_request(p_codes TEXT[]) RETURNS VOID LANGUAGE sql AS
 $$
-INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, lot_number, quantity_delta,
+INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, lot_number, direction,
                                         reason_code, note, status, cycle_count_line_id, requested_by, version,
                                         created_at, created_by, stock_package_id, counted_by)
-SELECT pg_temp.iop_adj_id(a.code), a.number, pg_temp.iop_bin(a.seq, a.n), x.sku, x.lot_number, -x.upc, a.reason,
+SELECT pg_temp.iop_adj_id(a.code), a.number, pg_temp.iop_bin(a.seq, a.n), x.sku, x.lot_number, 'WRITE_OFF', a.reason,
        CASE WHEN a.line_code IS NULL THEN a.note ELSE 'Count ' || c.number END, 'PENDING_APPROVAL',
        CASE WHEN a.line_code IS NOT NULL THEN pg_temp.iop_line_id(a.line_code, a.seq, a.n) END,
        pg_temp.staff(a.requester), 0, pg_temp.at(a.days, a.at), pg_temp.staff(a.requester)::text, x.package_id,

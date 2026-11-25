@@ -3,6 +3,7 @@ package com.stockflow.inventory.internal.service;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.inventory.internal.domain.AdjustmentDirection;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
 import com.stockflow.inventory.internal.domain.StockItem;
@@ -176,9 +177,9 @@ class StockPackageContentsTest {
         }
 
         @Test
-        @DisplayName("an adjustment that changes nothing is a caller's bug")
-        void zeroDelta() {
-            assertThatThrownBy(() -> contents.adjust(id, 0, false, NOW)).isInstanceOf(IllegalArgumentException.class);
+        @DisplayName("an adjustment that says no direction is a caller's bug")
+        void noDirection() {
+            assertThatThrownBy(() -> contents.adjust(id, null, false, NOW)).isInstanceOf(NullPointerException.class);
         }
 
         @Test
@@ -186,7 +187,8 @@ class StockPackageContentsTest {
         void unknownCarton() {
             when(stockPackages.findAllByIdForUpdate(List.of(id))).thenReturn(List.of());
 
-            assertThatThrownBy(() -> contents.adjust(id, -1, false, NOW)).isInstanceOf(IllegalStateException.class);
+            assertThatThrownBy(() -> contents.adjust(id, AdjustmentDirection.WRITE_OFF, false, NOW))
+                    .isInstanceOf(IllegalStateException.class);
         }
 
         @Test
@@ -194,36 +196,9 @@ class StockPackageContentsTest {
         void noRows() {
             rowsOf(carton(id, 24));
 
-            assertThatThrownBy(() -> contents.adjust(id, -1, false, NOW)).isInstanceOf(IllegalStateException.class)
+            assertThatThrownBy(() -> contents.adjust(id, AdjustmentDirection.WRITE_OFF, false, NOW))
+                    .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("no stock row");
-        }
-
-        @Test
-        @DisplayName("written down in part: refused before any row changes (STOCK_PACKAGE_TAKEN_WHOLE) - a count states "
-                + "a carton present or missing, never a number of units (team plan 4C-3)")
-        void writeDownInPartIsRefused() {
-            StockPackage carton = carton(id, 24);
-            StockItem only = row(id, 24);
-            rowsOf(carton, only);
-
-            assertThat(codeOf(() -> contents.adjust(id, -12, false, NOW)))
-                    .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
-            assertThat(only.onHand().value()).isEqualTo(24);
-            assertThat(carton.status()).isEqualTo(StockPackageStatus.IN_STOCK);
-            verify(stockPackages, never()).save(org.mockito.ArgumentMatchers.any());
-            verify(stockItems, never()).save(org.mockito.ArgumentMatchers.any());
-        }
-
-        @Test
-        @DisplayName("written up in part, or by more than a carton, is refused too")
-        void writeUpInPartIsRefused() {
-            StockPackage lost = cartonWith(id, StockPackageStatus.LOST, 24);
-            rowsOf(lost, row(id, 0));
-
-            assertThat(codeOf(() -> contents.adjust(id, 4, false, NOW))).isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
-            assertThat(codeOf(() -> contents.adjust(id, 48, false, NOW)))
-                    .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
-            assertThat(lost.status()).isEqualTo(StockPackageStatus.LOST);
         }
 
         @Test
@@ -232,7 +207,8 @@ class StockPackageContentsTest {
             StockPackage consumed = carton(id, 24);
             StockItem consumedRow = row(id, 24);
             rowsOf(consumed, consumedRow);
-            List<StockPackageContents.RowChange> changes = contents.adjust(id, -24, false, NOW);
+            List<StockPackageContents.RowChange> changes =
+                    contents.adjust(id, AdjustmentDirection.WRITE_OFF, false, NOW);
             assertThat(consumed.status()).isEqualTo(StockPackageStatus.CONSUMED);
             assertThat(consumed.closedAt()).isEqualTo(NOW);
             assertThat(consumedRow.onHand().value()).isZero();
@@ -240,7 +216,7 @@ class StockPackageContentsTest {
 
             StockPackage lost = carton(id, 24);
             rowsOf(lost, row(id, 24));
-            contents.adjust(id, -24, true, NOW);
+            contents.adjust(id, AdjustmentDirection.WRITE_OFF, true, NOW);
             assertThat(lost.status()).isEqualTo(StockPackageStatus.LOST);
         }
 
@@ -252,7 +228,8 @@ class StockPackageContentsTest {
             held.allocate(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(24), NOW);
             rowsOf(carton, held);
 
-            assertThat(codeOf(() -> contents.adjust(id, -24, false, NOW))).isEqualTo(ErrorCode.STOCK_PACKAGE_HELD);
+            assertThat(codeOf(() -> contents.adjust(id, AdjustmentDirection.WRITE_OFF, false, NOW)))
+                    .isEqualTo(ErrorCode.STOCK_PACKAGE_HELD);
 
             assertThat(held.onHand().value()).isEqualTo(24);
             assertThat(carton.status()).isEqualTo(StockPackageStatus.IN_STOCK);
@@ -271,7 +248,8 @@ class StockPackageContentsTest {
             held.pullDomainEvents();
             UUID approver = UUID.randomUUID();
 
-            List<StockPackageContents.RowChange> changes = contents.adjust(id, -24, true, approver, NOW);
+            List<StockPackageContents.RowChange> changes =
+                    contents.adjust(id, AdjustmentDirection.WRITE_OFF, true, approver, NOW);
 
             assertThat(changes).singleElement().satisfies(c -> assertThat(c.delta()).isEqualTo(-24));
             assertThat(held.onHand().value()).isZero();
@@ -295,7 +273,8 @@ class StockPackageContentsTest {
                     Quantity.of(24), NOW);
             rowsOf(carton, held);
 
-            assertThat(codeOf(() -> contents.adjust(id, -24, true, null, NOW))).isEqualTo(ErrorCode.STOCK_PACKAGE_HELD);
+            assertThat(codeOf(() -> contents.adjust(id, AdjustmentDirection.WRITE_OFF, true, null, NOW)))
+                    .isEqualTo(ErrorCode.STOCK_PACKAGE_HELD);
 
             assertThat(hold.status()).isEqualTo(com.stockflow.inventory.internal.domain.ReservationStatus.HELD);
             assertThat(carton.status()).isEqualTo(StockPackageStatus.IN_STOCK);
@@ -306,7 +285,7 @@ class StockPackageContentsTest {
         void writeDownNeedsInStock() {
             rowsOf(cartonWith(id, StockPackageStatus.CONSUMED, 24), row(id, 0));
 
-            assertThat(codeOf(() -> contents.adjust(id, -24, false, NOW)))
+            assertThat(codeOf(() -> contents.adjust(id, AdjustmentDirection.WRITE_OFF, false, NOW)))
                     .isEqualTo(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION);
         }
 
@@ -315,7 +294,7 @@ class StockPackageContentsTest {
         void writeUpOfACartonInStockIsRefused() {
             rowsOf(carton(id, 24), row(id, 24));
 
-            assertThat(codeOf(() -> contents.adjust(id, 24, false, NOW)))
+            assertThat(codeOf(() -> contents.adjust(id, AdjustmentDirection.RESTOCK, false, NOW)))
                     .isEqualTo(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION);
         }
 
@@ -326,7 +305,7 @@ class StockPackageContentsTest {
             StockItem emptied = row(id, 0);
             rowsOf(lost, emptied);
 
-            List<StockPackageContents.RowChange> changes = contents.adjust(id, 24, false, NOW);
+            List<StockPackageContents.RowChange> changes = contents.adjust(id, AdjustmentDirection.RESTOCK, false, NOW);
 
             assertThat(lost.status()).isEqualTo(StockPackageStatus.IN_STOCK);
             assertThat(lost.closedAt()).isNull();
@@ -346,7 +325,7 @@ class StockPackageContentsTest {
                 StockItem emptied = rowIn(id, 0, before);
                 rowsOf(lost, emptied);
 
-                contents.adjust(id, 24, false, NOW);
+                contents.adjust(id, AdjustmentDirection.RESTOCK, false, NOW);
 
                 assertThat(emptied.status()).as("a row that was " + before).isEqualTo(StockStatus.AVAILABLE);
                 assertThat(emptied.available().value()).isEqualTo(24);
@@ -362,7 +341,7 @@ class StockPackageContentsTest {
             StockItem emptied = rowIn(id, 0, StockStatus.AVAILABLE);
             rowsOf(lost, emptied);
 
-            contents.adjust(id, 24, false, NOW);
+            contents.adjust(id, AdjustmentDirection.RESTOCK, false, NOW);
 
             assertThat(emptied.status()).isEqualTo(StockStatus.QUARANTINE);
             assertThat(emptied.onHand().value()).isEqualTo(24);
@@ -376,23 +355,8 @@ class StockPackageContentsTest {
                     new LocationId("HCM-A01-1-A"), StockPackageStatus.LOST, UUID.randomUUID(), NOW, 0L);
             rowsOf(lost, row(id, 0));
 
-            assertThat(codeOf(() -> contents.adjust(id, 24, false, NOW)))
+            assertThat(codeOf(() -> contents.adjust(id, AdjustmentDirection.RESTOCK, false, NOW)))
                     .isEqualTo(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION);
-        }
-
-        @Test
-        @DisplayName("a LOST carton is found whole or not at all: part of it is STOCK_PACKAGE_TAKEN_WHOLE, still LOST")
-        void lostCartonIsNotFoundInPart() {
-            StockPackage lost = cartonWith(id, StockPackageStatus.LOST, 24);
-            StockItem emptied = row(id, 0);
-            rowsOf(lost, emptied);
-
-            BusinessException refused = catchThrowableOfType(BusinessException.class,
-                    () -> contents.adjust(id, 20, false, NOW));
-
-            assertThat(refused.errorCode()).isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
-            assertThat(lost.status()).isEqualTo(StockPackageStatus.LOST);
-            assertThat(emptied.onHand().value()).isZero();
         }
 
         @Test
@@ -401,7 +365,7 @@ class StockPackageContentsTest {
             rowsOf(cartonWith(id, StockPackageStatus.CONSUMED, 24), row(id, 0));
 
             BusinessException refused = catchThrowableOfType(BusinessException.class,
-                    () -> contents.adjust(id, 24, false, NOW));
+                    () -> contents.adjust(id, AdjustmentDirection.RESTOCK, false, NOW));
 
             assertThat(refused.errorCode()).isEqualTo(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION);
         }

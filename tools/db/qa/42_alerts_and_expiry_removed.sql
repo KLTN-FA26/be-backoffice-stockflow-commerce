@@ -115,17 +115,24 @@ SELECT pg_temp.expect_ok('AE13 ... and may leave EXPIRED', $q$
     UPDATE inventory.stock_item SET status = 'BLOCKED' WHERE id = md5('qa42:expired')::uuid $q$);
 SELECT pg_temp.expect_fail('AE14 ... but not come back to it', $q$
     UPDATE inventory.stock_item SET status = 'EXPIRED' WHERE id = md5('qa42:expired')::uuid $q$);
-SELECT pg_temp.expect_fail('AE15 a new adjustment for EXPIRED stock', $q$
-    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by)
-    VALUES (gen_random_uuid(), 'ADJ-QA42-1', 'HCM-QC01', 'LY-GIAY-DEMO-12OZ-XANH', -1, 'EXPIRED', md5('demo:user:editor')::uuid) $q$);
+-- An adjustment names its carton and a direction (V20261230000100): the carton of this section, at HCM-QC01.
+SELECT pg_temp.expect_fail_by('AE15 a new adjustment for EXPIRED stock', 'cannot be for EXPIRED stock', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'ADJ-QA42-1', 'HCM-QC01', 'LY-GIAY-DEMO-12OZ-XANH', 'WRITE_OFF', 'EXPIRED', md5('demo:user:editor')::uuid, md5('qa42:p')::uuid) $q$);
 SELECT pg_temp.expect_ok('AE16 an adjustment for DAMAGED stock', $q$
-    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by)
-    VALUES (md5('qa42:adj')::uuid, 'ADJ-QA42-2', 'HCM-QC01', 'LY-GIAY-DEMO-12OZ-XANH', -1, 'DAMAGED', md5('demo:user:editor')::uuid) $q$);
-SELECT pg_temp.expect_fail('AE17 an adjustment changed to EXPIRED afterwards', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, stock_package_id)
+    VALUES (md5('qa42:adj')::uuid, 'ADJ-QA42-2', 'HCM-QC01', 'LY-GIAY-DEMO-12OZ-XANH', 'WRITE_OFF', 'DAMAGED', md5('demo:user:editor')::uuid, md5('qa42:p')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('AE17 an adjustment changed to EXPIRED afterwards', 'cannot be for EXPIRED stock', $q$
     UPDATE inventory.stock_adjustment SET reason_code = 'EXPIRED' WHERE id = md5('qa42:adj')::uuid $q$);
+-- One adjustment of a carton waits at a time (uk_stock_adjustment_pending_package): AE16's is withdrawn before the
+-- old one is written. An EXPIRED adjustment of the history is written past both guards of a new one: the reason
+-- trigger, and the list of reasons a new adjustment gives (tg_stock_adjustment_whole_carton).
+UPDATE inventory.stock_adjustment SET status = 'WITHDRAWN', withdrawn_at = NOW() WHERE id = md5('qa42:adj')::uuid;
 ALTER TABLE inventory.stock_adjustment DISABLE TRIGGER tg_stock_adjustment_no_new_expired;
-INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by)
-VALUES (md5('qa42:adj:old')::uuid, 'ADJ-QA42-3', 'HCM-QC01', 'LY-GIAY-DEMO-12OZ-XANH', -1, 'EXPIRED', md5('demo:user:editor')::uuid);
+ALTER TABLE inventory.stock_adjustment DISABLE TRIGGER tg_stock_adjustment_whole_carton;
+INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, stock_package_id)
+VALUES (md5('qa42:adj:old')::uuid, 'ADJ-QA42-3', 'HCM-QC01', 'LY-GIAY-DEMO-12OZ-XANH', 'WRITE_OFF', 'EXPIRED', md5('demo:user:editor')::uuid, md5('qa42:p')::uuid);
+ALTER TABLE inventory.stock_adjustment ENABLE TRIGGER tg_stock_adjustment_whole_carton;
 ALTER TABLE inventory.stock_adjustment ENABLE TRIGGER tg_stock_adjustment_no_new_expired;
 SELECT pg_temp.expect_ok('AE18 an EXPIRED adjustment recorded before is still decided', $q$
     UPDATE inventory.stock_adjustment SET status = 'REJECTED', decided_by = md5('demo:user:approver')::uuid,

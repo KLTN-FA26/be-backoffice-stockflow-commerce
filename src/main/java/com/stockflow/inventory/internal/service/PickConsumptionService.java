@@ -547,7 +547,7 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         UUID warehouse = locations.warehouseOf(item.location()).orElseThrow(() ->
                 new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + item.location()));
         var day = com.stockflow.common.domain.BusinessCalendar.date(clock.instant());
-        int book = cycleCounts.bookQuantity(slot);
+        boolean book = cycleCounts.booked(slot);
         var recount = cycleCounts.save(com.stockflow.inventory.internal.domain.CycleCount.shortPick(
                 cycleCounts.nextNumber(day), warehouse, slot, book,
                 "Short pick: line %s found %d of %s".formatted(pickLineId, found, hold.quantity()), day));

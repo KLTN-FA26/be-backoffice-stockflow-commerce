@@ -339,7 +339,7 @@ class CartonQuarantineIntegrationTest {
                 "UPDATE inventory.stock_package SET return_opened_at = NULL WHERE lpn = ?", lpn)));
         assertThat(unmarked).as("tg_stock_package_return_opened").hasMessageContaining("came back opened");
 
-        StockAdjustmentSummary asked = operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn, -10,
+        StockAdjustmentSummary asked = operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn,
                 StockAdjustmentReason.DAMAGED, "Came back opened, 8 of 10 inside", manager));
         operations.approve(asked.adjustmentId(), approver);
         assertThat(cartonRow(lpn)).containsEntry("carton", "CONSUMED").containsEntry("on_hand", 0);
@@ -351,11 +351,8 @@ class CartonQuarantineIntegrationTest {
         String lpn = carton(2);
         quarantine(lpn, quarantineArea);
 
-        assertThat(refusal(() -> operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn, -4,
-                StockAdjustmentReason.DAMAGED, null, manager))).errorCode())
-                .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
         StockAdjustmentSummary asked = operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(
-                lpn.toLowerCase(Locale.ROOT), -10, StockAdjustmentReason.DAMAGED, "Water damage", manager));
+                lpn.toLowerCase(Locale.ROOT), StockAdjustmentReason.DAMAGED, "Water damage", manager));
         assertThat(asked.status().name()).isEqualTo("PENDING_APPROVAL");
         // Nothing has left yet, and the carton cannot be released while its write-off waits.
         assertThat(cartonRow(lpn)).containsEntry("on_hand", 10).containsEntry("stock", "QUARANTINE");
@@ -400,7 +397,7 @@ class CartonQuarantineIntegrationTest {
         quarantine(lpn, quarantineArea);
         quarantine.release(lpn, manager);
 
-        assertThat(refusal(() -> operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn, -10,
+        assertThat(refusal(() -> operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn,
                 StockAdjustmentReason.DAMAGED, null, manager))).errorCode())
                 .isEqualTo(ErrorCode.STOCK_PACKAGE_DECISION_PENDING);
     }
@@ -410,13 +407,13 @@ class CartonQuarantineIntegrationTest {
     void writeOffAskedBeforeAReleaseIsNotApprovedAfterIt() {
         String lpn = carton(2);
         quarantine(lpn, quarantineArea);
-        StockAdjustmentSummary asked = operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn, -10,
+        StockAdjustmentSummary asked = operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn,
                 StockAdjustmentReason.DAMAGED, null, manager));
         // The release refuses while it waits; withdrawn, the release goes ahead, and a second request is refused.
         operations.withdraw(asked.adjustmentId(), manager);
         quarantine.release(lpn, manager);
 
-        assertThat(refusal(() -> operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn, -10,
+        assertThat(refusal(() -> operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn,
                 StockAdjustmentReason.DAMAGED, null, manager))).errorCode())
                 .isEqualTo(ErrorCode.STOCK_PACKAGE_DECISION_PENDING);
         assertThat(cartonRow(lpn)).containsEntry("on_hand", 10).containsEntry("stock", "QUARANTINE");
