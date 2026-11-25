@@ -3,6 +3,9 @@ package com.stockflow.inventory;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.security.CurrentUser;
+import com.stockflow.common.security.DataScope;
+import com.stockflow.common.security.Role;
 import com.stockflow.inventory.internal.domain.PutawayRanker;
 import com.stockflow.inventory.internal.service.PutawayService;
 import com.stockflow.inventory.internal.service.PutawayTripService;
@@ -13,6 +16,7 @@ import com.stockflow.support.Await;
 import com.stockflow.support.ProductionReceiptTest;
 import com.stockflow.support.ProductionReceivables;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.WithCurrentUser;
 import com.stockflow.warehouse.api.PutawayTaskView;
 import com.stockflow.warehouse.api.PutawayTasks;
 import com.stockflow.warehouse.api.PutawayTripView;
@@ -32,6 +36,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -611,5 +616,26 @@ class PutawayTripIntegrationTest {
             }
         }
         throw new AssertionError("the path never crosses y = " + y);
+    }
+
+    @Test
+    @DisplayName("BR-SEC-002: a clerk of another warehouse scanning this warehouse's carton onto their cart is told it "
+            + "does not exist - not that it waits for putaway in another warehouse")
+    void aCartonOfAnotherWarehouseIsUnknownToALimitedClerk() {
+        String elsewherePrefix = "U" + UUID.randomUUID().toString().substring(0, 6).toUpperCase(Locale.ROOT);
+        UUID elsewhere = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("INSERT INTO warehouse.warehouse (id, name, status, prefix, address,"
+                + " map_unit, map_width, map_height, version, created_at) VALUES (?, 'Elsewhere', 'ACTIVE', ?,"
+                + " 'Test address', 'M', 50, 50, 0, NOW())", elsewhere, elsewherePrefix));
+        CurrentUser limited = new CurrentUser(otherClerk, "clerk", Set.of(Role.WAREHOUSE_STAFF), Set.of(),
+                DataScope.WAREHOUSE, Set.of(elsewherePrefix), Set.of(elsewhere));
+
+        TripView trip = WithCurrentUser.call(limited, DataScope.WAREHOUSE, () -> trips.open(elsewhere, otherClerk));
+        assertThat(WithCurrentUser.call(limited, DataScope.WAREHOUSE,
+                () -> refused(() -> trips.load(trip.id(), lpn1, otherClerk))))
+                .isEqualTo(ErrorCode.STOCK_PACKAGE_NOT_FOUND);
+
+        // Not limited, the same scan is refused for what it is: a carton standing in another warehouse than the trip.
+        assertThat(refused(() -> trips.load(trip.id(), lpn1, otherClerk))).isEqualTo(ErrorCode.MOVE_ACROSS_WAREHOUSES);
     }
 }

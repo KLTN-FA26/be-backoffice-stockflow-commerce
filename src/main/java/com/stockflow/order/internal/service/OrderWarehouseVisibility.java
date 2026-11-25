@@ -4,6 +4,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
+import com.stockflow.order.internal.domain.DeliveryFailureCases;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,9 +30,11 @@ import java.util.UUID;
 public class OrderWarehouseVisibility {
 
     private final OrderSearchRepository search;
+    private final DeliveryFailureCases deliveryFailures;
 
-    OrderWarehouseVisibility(OrderSearchRepository search) {
+    OrderWarehouseVisibility(OrderSearchRepository search, DeliveryFailureCases deliveryFailures) {
         this.search = search;
+        this.deliveryFailures = deliveryFailures;
     }
 
     /**
@@ -57,5 +60,21 @@ public class OrderWarehouseVisibility {
         if (!visible(orderId, user)) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId);
         }
+    }
+
+    /**
+     * {@link #requireVisible} for a release: the order is of one of the caller's warehouses, or goods of it came back to
+     * one of them and wait to be released from there (a delivery failure case there awaiting release: the redelivery is
+     * released from the warehouse the goods came back to, WF-05 fix plan, section 2). A case already released, closed
+     * or cancelled opens nothing: that warehouse has no more to release for the order. Asked before the release reads the order at all: its refusals name the order, its
+     * return receipt, its batches and its SKUs with their held cartons, none of which an out-of-scope caller may learn.
+     */
+    public void requireReleasable(UUID orderId, CurrentUser user) {
+        Set<UUID> limit = limitOf(user);
+        if (limit == null || search.inWarehouses(orderId, limit) || deliveryFailures.ofOrder(orderId).stream()
+                .anyMatch(failure -> failure.awaitingRelease() && limit.contains(failure.warehouseId()))) {
+            return;
+        }
+        throw new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId);
     }
 }
