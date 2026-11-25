@@ -27,7 +27,8 @@ interface StockOperationsWebMapper {
                 line.sku(), line.lotNumber(), line.fromLocation(), line.toLocation(), line.quantity(), line.status(),
                 line.toStatus(), line.referenceType(), line.referenceId(), line.reason(), line.actorId(),
                 line.occurredAt(), line.requestedBy(), line.countedBy(), ResponseLabels.name(names, line.actorId()),
-                ResponseLabels.name(names, line.requestedBy()), ResponseLabels.name(names, line.countedBy()));
+                ResponseLabels.name(names, line.requestedBy()), ResponseLabels.name(names, line.countedBy()),
+                line.fromLpn(), line.toLpn());
     }
 
     /** @param names display names by user id, for every person the adjustment names */

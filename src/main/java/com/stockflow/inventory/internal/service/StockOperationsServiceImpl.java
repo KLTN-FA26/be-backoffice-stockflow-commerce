@@ -66,6 +66,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -1236,13 +1237,48 @@ class StockOperationsServiceImpl implements StockOperations {
             warehouse = warehouses.prefixOf(filter.warehouseId()).orElseThrow(() -> new BusinessException(
                     ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse " + filter.warehouseId()));
         }
+        UUID carton = null;
+        String lpn = StockPackageView.normalLpn(filter.lpn());
+        if (lpn != null) {
+            // An LPN that is no carton is a filter that matches nothing, as an unknown SKU is; a carton in a warehouse
+            // the caller is not assigned to is refused, as GET /stock-packages/{lpn} refuses it. A carton never
+            // changes warehouse, so where it is now says whose its whole history is.
+            Optional<StockPackage> found = stockPackages.findByLpn(lpn);
+            if (found.isEmpty()) {
+                return PageResponse.empty(pageable.getPageNumber(), pageable.getPageSize());
+            }
+            WarehouseScope.requireLocation(found.get().location().code());
+            carton = found.get().id().value();
+        }
         // Business days, Vietnam time: a line at 23:30 on the 14th is the 14th's, though it is the 15th in UTC.
         Instant from = filter.from() == null ? null : filter.from().atStartOfDay(BusinessCalendar.ZONE).toInstant();
         Instant before = filter.to() == null ? null
                 : filter.to().plusDays(1).atStartOfDay(BusinessCalendar.ZONE).toInstant();
-        return Pages.toResponse(ledgerSearch.search(new StockLedgerSearch.Criteria(filter.sku(), filter.location(),
-                        filter.type(), visibility.hidesCountedSlots(), from, before, warehouse), pageable)
-                .map(StockOperationsServiceImpl::toLine));
+        PageResponse<StockMovement> lines = Pages.toResponse(ledgerSearch.search(new StockLedgerSearch.Criteria(
+                filter.sku(), filter.location(), filter.type(), visibility.hidesCountedSlots(), from, before,
+                warehouse, carton), pageable));
+        Map<StockPackageId, String> lpns = lpnsOf(lines.items());
+        return new PageResponse<>(lines.items().stream().map(m -> toLine(m, lpns)).toList(), lines.page(),
+                lines.size(), lines.totalElements(), lines.totalPages(), lines.hasNext(), lines.hasPrevious());
+    }
+
+    /** The LPN of every carton the page's lines name, in one read: never one per line. */
+    private Map<StockPackageId, String> lpnsOf(List<StockMovement> lines) {
+        Set<StockPackageId> ids = new HashSet<>();
+        for (StockMovement m : lines) {
+            if (m.fromStockPackage() != null) {
+                ids.add(m.fromStockPackage());
+            }
+            if (m.toStockPackage() != null) {
+                ids.add(m.toStockPackage());
+            }
+        }
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        Map<StockPackageId, String> lpns = new HashMap<>();
+        stockPackages.findAllById(ids).forEach(p -> lpns.put(p.id(), p.lpn()));
+        return lpns;
     }
 
     // ------------------------------------------------------------------ helpers
@@ -1287,12 +1323,14 @@ class StockOperationsServiceImpl implements StockOperations {
                 m.to() == null ? null : m.to().code(), m.quantity(), m.occurredAt());
     }
 
-    private static LedgerLine toLine(StockMovement m) {
+    private static LedgerLine toLine(StockMovement m, Map<StockPackageId, String> lpns) {
         return new LedgerLine(m.id(), m.type(), m.sku().code(), m.lotNumber(),
                 m.from() == null ? null : m.from().code(), m.to() == null ? null : m.to().code(),
                 m.quantity(), m.status() == null ? null : m.status().name(),
                 m.toStatus() == null ? null : m.toStatus().name(), m.referenceType().name(), m.referenceId(),
-                m.reason(), m.actorId(), m.occurredAt(), m.requestedBy(), m.countedBy());
+                m.reason(), m.actorId(), m.occurredAt(), m.requestedBy(), m.countedBy(),
+                m.fromStockPackage() == null ? null : lpns.get(m.fromStockPackage()),
+                m.toStockPackage() == null ? null : lpns.get(m.toStockPackage()));
     }
 
     static StockAdjustmentSummary toSummary(StockAdjustment a) {

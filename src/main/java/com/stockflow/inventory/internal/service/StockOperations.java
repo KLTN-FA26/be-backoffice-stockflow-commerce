@@ -122,10 +122,24 @@ public interface StockOperations {
                                                     int page, int size, String sort, BookVisibility visibility);
 
     /** One line of the stock history, as the screen shows it. */
+    /**
+     * One line of the history. {@code fromLpn} / {@code toLpn} name the carton the units left and the one they went
+     * into (V20261020000300), null for a side with no carton - stock that arrived or left, or a line from before
+     * everything was boxed (V20261111000110).
+     */
     record LedgerLine(UUID movementId, StockMovement.MovementType type, String sku, String lotNumber,
                       String fromLocation, String toLocation, int quantity, String status,
                       String toStatus, String referenceType, UUID referenceId, String reason, UUID actorId,
-                      java.time.Instant occurredAt, UUID requestedBy, UUID countedBy) {
+                      java.time.Instant occurredAt, UUID requestedBy, UUID countedBy, String fromLpn, String toLpn) {
+
+        /** A line naming no carton on either side. */
+        public LedgerLine(UUID movementId, StockMovement.MovementType type, String sku, String lotNumber,
+                          String fromLocation, String toLocation, int quantity, String status, String toStatus,
+                          String referenceType, UUID referenceId, String reason, UUID actorId,
+                          java.time.Instant occurredAt, UUID requestedBy, UUID countedBy) {
+            this(movementId, type, sku, lotNumber, fromLocation, toLocation, quantity, status, toStatus, referenceType,
+                    referenceId, reason, actorId, occurredAt, requestedBy, countedBy, null, null);
+        }
     }
 
     default PageResponse<LedgerLine> ledger(String sku, String location, StockMovement.MovementType type,
@@ -147,16 +161,24 @@ public interface StockOperations {
      * @param to          the last business day, inclusive
      * @param warehouseId lines with either side in this warehouse - moves inside it included, which the stock
      *                    summary counts as zero
+     * @param lpn         lines that took units out of this carton or put units into it - its history (kltn-docs 20
+     *                    §4.1, the carton as a lookup key); any case. An LPN that is no carton matches nothing
      */
     record LedgerFilter(String sku, String location, StockMovement.MovementType type, java.time.LocalDate from,
-                        java.time.LocalDate to, UUID warehouseId) {
+                        java.time.LocalDate to, UUID warehouseId, String lpn) {
+
+        public LedgerFilter(String sku, String location, StockMovement.MovementType type, java.time.LocalDate from,
+                            java.time.LocalDate to, UUID warehouseId) {
+            this(sku, location, type, from, to, warehouseId, null);
+        }
     }
 
     /**
      * The history, newest first, by {@code filter}; scoped to the caller's warehouses, as every read of the ledger.
      *
      * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} when {@code from} is after
-     *         {@code to}; {@code WAREHOUSE_NOT_FOUND}; {@code OUT_OF_DATA_SCOPE} for a warehouse not the caller's
+     *         {@code to}; {@code WAREHOUSE_NOT_FOUND}; {@code OUT_OF_DATA_SCOPE} for a warehouse not the caller's, or
+     *         for a carton ({@code lpn}) in one
      */
     PageResponse<LedgerLine> ledger(LedgerFilter filter, int page, int size, BookVisibility visibility);
 }

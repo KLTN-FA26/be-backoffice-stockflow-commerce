@@ -7,7 +7,8 @@ import java.util.UUID;
  * One line of the stock history. {@code fromLocation} is null for stock that arrived, {@code toLocation}
  * for stock that left. {@code toStatus} differs from {@code status} only where the line changed it: a putaway
  * (INBOUND to AVAILABLE), a return's decision, or a QC decision from before receiving QC was removed (INBOUND to
- * QUARANTINE or BLOCKED).
+ * QUARANTINE or BLOCKED). {@code fromLpn} / {@code toLpn} name the carton on each side, so a carton's history can be
+ * read line by line (kltn-docs 20 §4.1); a putaway or a move of a whole carton names the same LPN on both.
  */
 public record StockMovementResponse(UUID movementId, String type, String sku, String lotNumber,
                                     String fromLocation, String toLocation, int quantity, String status,
@@ -30,5 +31,11 @@ public record StockMovementResponse(UUID movementId, String type, String sku, St
                                     String requestedByName,
                                     @io.swagger.v3.oas.annotations.media.Schema(description = "Display name of "
                                             + "countedBy; null whenever countedBy is", nullable = true)
-                                    String countedByName) {
+                                    String countedByName,
+                                    @io.swagger.v3.oas.annotations.media.Schema(description = "The carton (LPN) the "
+                                            + "units left; null for a side with no carton", nullable = true)
+                                    String fromLpn,
+                                    @io.swagger.v3.oas.annotations.media.Schema(description = "The carton (LPN) the "
+                                            + "units went into; null for a side with no carton", nullable = true)
+                                    String toLpn) {
 }
