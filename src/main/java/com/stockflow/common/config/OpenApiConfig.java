@@ -33,6 +33,12 @@ public class OpenApiConfig {
 
     private static final String BEARER_SCHEME = "bearer-jwt";
 
+    /** Nested DTO types get schema names of their own (issue #459); springdoc picks up every converter bean. */
+    @Bean
+    public NestedSchemaNameConverter nestedSchemaNameConverter() {
+        return new NestedSchemaNameConverter();
+    }
+
     @Bean
     public OpenAPI stockflowOpenApi(
             @Value("${spring.application.name:stockflow}") String applicationName,
