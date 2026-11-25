@@ -1,6 +1,15 @@
 {
   "includeCoAuthoredBy": false,
   "permissions": {
+"allow": [
+      "Bash(git push -u origin feat/*)",
+      "Bash(git push -u origin fix/*)",
+      "Bash(git push -u origin refactor/*)",
+      "Bash(git push -u origin chore/*)",
+      "Bash(git push -u origin docs/*)",
+      "Bash(git push -u origin test/*)",
+      "Bash(git push)"
+    ],
     "deny": [
       "Read(./target/**)",
       "Read(./.git/**)",
