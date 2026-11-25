@@ -85,7 +85,7 @@ class WaybillImportController {
         WaybillImports.Preview preview = imports.preview(read(file), warehouseId, actor);
         return ApiResponse.ok(new WaybillImportResponse(null, file.getOriginalFilename(), actor.userId(), null,
                 preview.rowsTotal(), preview.rowsApplicable(), preview.rowsRejected(),
-                preview.lines().stream().map(WaybillImportController::toResponse).toList()));
+                preview.lines().stream().map(WaybillImportController::toResponse).toList(), null));
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -110,7 +110,7 @@ class WaybillImportController {
             @RequestParam(required = false) Integer size, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(imports.list(page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, actor)
                 .map(r -> new WaybillImportResponse.Row(r.id(), r.fileName(), r.uploadedBy(), r.uploadedAt(),
-                        r.rowsTotal(), r.rowsApplied(), r.rowsRejected())));
+                        r.rowsTotal(), r.rowsApplied(), r.rowsRejected(), r.uploadedByName())));
     }
 
     @GetMapping("/{importId}")
@@ -138,7 +138,8 @@ class WaybillImportController {
 
     private static WaybillImportResponse toResponse(WaybillImports.ImportView v) {
         return new WaybillImportResponse(v.id(), v.fileName(), v.uploadedBy(), v.uploadedAt(), v.rowsTotal(),
-                v.rowsApplied(), v.rowsRejected(), v.lines().stream().map(WaybillImportController::toResponse).toList());
+                v.rowsApplied(), v.rowsRejected(), v.lines().stream().map(WaybillImportController::toResponse).toList(),
+                v.uploadedByName());
     }
 
     private static WaybillImportResponse.Line toResponse(WaybillImports.Line l) {

@@ -38,10 +38,15 @@ public interface LoadPlans {
                              boolean allowPartialShipment, Instant readyAt, int packageCount, int packagesInOtherPlans,
                              BigDecimal weightKg, long volumeMm3, List<ParcelView> packages, String sourceType) { }
 
-    /** {@code shipmentCount}: the shipments of the plan; {@code sourceType} is always ORDER. */
+    /**
+     * {@code shipmentCount}: the shipments of the plan; {@code sourceType} is always ORDER. {@code warehouseCode} and
+     * {@code warehouseName} name {@code warehouseId}, so the list needs neither the warehouse list nor
+     * {@code warehouse-warehouses:READ}; null only if the warehouse is unknown.
+     */
     record PlanRow(UUID loadPlanId, String code, UUID warehouseId, String status, String selectionMode,
                    int shipmentCount, int packageCount, int vehicleCount, int unplacedCount, Instant createdAt,
-                   Instant calculatedAt, Instant confirmedAt, long version, String sourceType) { }
+                   Instant calculatedAt, Instant confirmedAt, long version, String sourceType, String warehouseCode,
+                   String warehouseName) { }
 
     record VehicleTypeChoice(UUID vehicleTypeId, String code, String name, String kind, int availableCount,
                              String status) { }
@@ -57,11 +62,14 @@ public interface LoadPlans {
                           long usedVolumeMm3, BigDecimal usedWeightKg, BigDecimal volumeFillPct,
                           BigDecimal weightFillPct, LoadRef load, boolean needsRecalculation) { }
 
-    record Acknowledgement(Instant at, UUID by, String note) { }
+    /** {@code byName}: the display name of {@code by}, who accepted the unplaced parcels; null if unknown. */
+    record Acknowledgement(Instant at, UUID by, String note, String byName) { }
 
     /**
      * {@code controlledCancelled}: the plan, or a vehicle of it, was once called off under control (SCRUM-474
      * UNLOAD-REOPEN): it counts as "loading started" for good - neither reopened nor cancelled the plain way.
+     * {@code warehouseCode} and {@code warehouseName} name {@code warehouseId} (null only if the warehouse is unknown).
+     * A plan has no destination warehouse: transfers between warehouses were removed by the rescope.
      */
     record PlanDetail(UUID loadPlanId, String code, UUID warehouseId, String sourceType, String selectionMode,
                       String status, String note, List<VehicleTypeChoice> vehicleTypes,
@@ -70,7 +78,8 @@ public interface LoadPlans {
                       Instant calculatedAt, Map<String, Object> solverMeta, Instant confirmedAt, Instant reopenedAt,
                       String reopenReason, Instant dispatchedAt, Instant cancelledAt, String cancelReason,
                       Instant createdAt, long version, String cancelReasonCode,
-                      List<PendingUnload> pendingUnloads, boolean controlledCancelled) { }
+                      List<PendingUnload> pendingUnloads, boolean controlledCancelled, String warehouseCode,
+                      String warehouseName) { }
 
     /**
      * A parcel still to be scanned off a vehicle of this plan that was called off after loading started (SCRUM-474

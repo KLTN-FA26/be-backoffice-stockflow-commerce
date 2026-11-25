@@ -75,10 +75,12 @@ class QuoteServiceTest {
             mock(com.stockflow.order.internal.domain.TaxRates.class);
     private final com.stockflow.order.internal.domain.SkuProductionHistory production =
             mock(com.stockflow.order.internal.domain.SkuProductionHistory.class);
+    private final com.stockflow.identity.api.IdentityService identities =
+            mock(com.stockflow.identity.api.IdentityService.class);
     private final QuoteService service = new QuoteService(quotes, search, customers, units, quotedOrders,
             orders, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC), catalog, events, products, customerSkus,
-            taxRates, production, mock(com.stockflow.design.api.SkuDesigns.class),
-            mock(com.stockflow.identity.api.IdentityService.class));
+            taxRates, production, mock(com.stockflow.design.api.SkuDesigns.class), identities,
+            new LineNames(products, customerSkus));
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();
@@ -540,5 +542,64 @@ class QuoteServiceTest {
         assertThat(staff.history()).hasSize(5);
         assertThat(staff.history().getLast().reason()).isEqualTo("internal: margin too low");
         assertThat(staff.history().getFirst().changedBy()).isEqualTo(sales.userId());
+    }
+
+    @Test
+    void aRowNamesItsCustomerAndTheOrderItBecameReadOnceForThePageAndNotADraftOrderToTheCustomer() {
+        UUID confirmed = UUID.randomUUID();
+        UUID drafted = UUID.randomUUID();
+        when(search.search(any(), any())).thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(
+                new QuoteSearch.Row(UUID.randomUUID(), "QT-A", customer, QuoteStatus.CONVERTED, 1, NOW, NOW, confirmed,
+                        NOW, "sales", 3),
+                new QuoteSearch.Row(UUID.randomUUID(), "QT-B", customer, QuoteStatus.CONVERTED, 1, NOW, NOW, drafted,
+                        NOW, "sales", 3),
+                new QuoteSearch.Row(UUID.randomUUID(), "QT-C", customer, QuoteStatus.SENT, 1, NOW.plusSeconds(60), NOW,
+                        null, NOW, "sales", 1))));
+        when(customers.labels(anyCollection())).thenReturn(Map.of(customer,
+                new com.stockflow.customer.api.CustomerLabel(customer, "Acme Coffee", "ACME")));
+        when(search.convertedOrders(anyCollection())).thenReturn(Map.of(
+                confirmed, new QuoteSearch.ConvertedOrderRef(confirmed, "SO-1", "CONFIRMED"),
+                drafted, new QuoteSearch.ConvertedOrderRef(drafted, "SO-2", "DRAFT")));
+
+        List<Quotes.Row> staff = service.list(sales, new Quotes.Criteria(null, null, null, 0, 20, null)).items();
+
+        assertThat(staff).extracting(Quotes.Row::customerName).containsOnly("Acme Coffee");
+        assertThat(staff).extracting(Quotes.Row::customerCode).containsOnly("ACME");
+        assertThat(staff).extracting(Quotes.Row::convertedOrderNumber).containsExactly("SO-1", "SO-2", null);
+        // One read of each for the page, never one per row.
+        verify(customers).labels(anyCollection());
+        verify(search).convertedOrders(anyCollection());
+
+        List<Quotes.Row> mine = service.list(portal, new Quotes.Criteria(null, null, null, 0, 20, null)).items();
+        assertThat(mine).extracting(Quotes.Row::convertedOrderNumber).containsExactly("SO-1", null, null);
+    }
+
+    @Test
+    void aQuoteNamesItsCustomerAndEachSkuForEveryoneAndWhoSentAndAnsweredItForTheBackOfficeOnly() {
+        Quote quote = stored(QuoteStatus.ACCEPTED);
+        when(customers.labels(anyCollection())).thenReturn(Map.of(customer,
+                new com.stockflow.customer.api.CustomerLabel(customer, "Acme Coffee", "ACME")));
+        when(identities.displayNames(anyCollection())).thenReturn(Map.of(sales.userId(), "Sales Person",
+                portalUser, "Portal Buyer"));
+        when(products.variantNamesOf(anyCollection())).thenReturn(Map.of(SKU, "Cup 12oz Acme"));
+        when(products.nameForSku(SKU)).thenReturn(Optional.of("Paper cup 12oz"));
+
+        Quotes.QuoteView staff = service.get(sales, quote.id());
+
+        assertThat(staff.customerName()).isEqualTo("Acme Coffee");
+        assertThat(staff.customerCode()).isEqualTo("ACME");
+        assertThat(staff.sentByName()).isEqualTo("Sales Person");
+        assertThat(staff.respondedByName()).isEqualTo("Portal Buyer");
+        assertThat(staff.lines()).extracting(Quotes.LineView::productName).containsExactly("Paper cup 12oz");
+        assertThat(staff.lines()).extracting(Quotes.LineView::variantName).containsExactly("Cup 12oz Acme");
+        // Every account the view names, in one read.
+        verify(identities).displayNames(anyCollection());
+
+        Quotes.QuoteView mine = service.get(portal, quote.id());
+        assertThat(mine.customerName()).isEqualTo("Acme Coffee");
+        assertThat(mine.sentByName()).isNull();
+        assertThat(mine.respondedByName()).isNull();
+        assertThat(mine.lines()).extracting(Quotes.LineView::productName).containsExactly("Paper cup 12oz");
+        verify(identities).displayNames(anyCollection());   // the customer's copy asked for no name
     }
 }

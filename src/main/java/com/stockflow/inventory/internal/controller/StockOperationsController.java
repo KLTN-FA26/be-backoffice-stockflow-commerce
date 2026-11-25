@@ -13,6 +13,7 @@ import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
+import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.internal.controller.dto.MoveStockPackagesRequest;
 import com.stockflow.inventory.internal.controller.dto.MovedStockPackageResponse;
 import com.stockflow.inventory.internal.controller.dto.RejectAdjustmentRequest;
@@ -37,6 +38,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -64,10 +66,12 @@ class StockOperationsController {
 
     private final StockOperations operations;
     private final StockOperationsWebMapper mapper;
+    private final ResponseLabels labels;
 
-    StockOperationsController(StockOperations operations, StockOperationsWebMapper mapper) {
+    StockOperationsController(StockOperations operations, StockOperationsWebMapper mapper, ResponseLabels labels) {
         this.operations = operations;
         this.mapper = mapper;
+        this.labels = labels;
     }
 
     /**
@@ -112,9 +116,11 @@ class StockOperationsController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @AuthenticatedUser Optional<CurrentUser> user) {
-        return ApiResponse.ok(operations.ledger(new StockOperations.LedgerFilter(sku, location, type, from, to,
-                        warehouseId), page, size == null ? Pages.DEFAULT_PAGE_SIZE : size,
-                BlindCount.visibilityFor(user)).map(mapper::toResponse));
+        PageResponse<StockOperations.LedgerLine> lines = operations.ledger(new StockOperations.LedgerFilter(sku,
+                location, type, from, to, warehouseId), page, size == null ? Pages.DEFAULT_PAGE_SIZE : size,
+                BlindCount.visibilityFor(user));
+        Map<UUID, String> names = labels.names(lines.items().stream().flatMap(StockOperationsWebMapper::people));
+        return ApiResponse.ok(lines.map(line -> mapper.toResponse(line, names)));
     }
 
     /**
@@ -134,7 +140,7 @@ class StockOperationsController {
     @RequiresPermission(resource = InventoryResources.STOCK_ITEMS, action = Action.UPDATE)
     public ApiResponse<StockAdjustmentResponse> requestAdjustment(@Valid @RequestBody RequestAdjustmentRequest request,
                                                                   @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(mapper.toResponse(operations.requestPackageAdjustment(
+        return ApiResponse.ok(toResponse(operations.requestPackageAdjustment(
                 new StockOperations.PackageAdjustmentRequest(request.lpn(), request.direction(), request.reason(),
                         request.note(), user.userId()))));
     }
@@ -150,9 +156,11 @@ class StockOperationsController {
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String sort,
             @AuthenticatedUser Optional<CurrentUser> user) {
-        return ApiResponse.ok(operations.adjustments(status, sku, location, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort, BlindCount.visibilityFor(user))
-                .map(mapper::toResponse));
+        PageResponse<StockAdjustmentSummary> adjustments = operations.adjustments(status, sku, location, page,
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort, BlindCount.visibilityFor(user));
+        Map<UUID, String> names = labels.names(adjustments.items().stream()
+                .flatMap(StockOperationsWebMapper::people));
+        return ApiResponse.ok(adjustments.map(adjustment -> mapper.toResponse(adjustment, names)));
     }
 
     @GetMapping("/adjustments/{adjustmentId}")
@@ -160,7 +168,7 @@ class StockOperationsController {
     @RequiresPermission(resource = InventoryResources.STOCK_ADJUSTMENTS, action = Action.READ)
     public ApiResponse<StockAdjustmentResponse> adjustment(@PathVariable UUID adjustmentId,
                                                            @AuthenticatedUser Optional<CurrentUser> user) {
-        return operations.findAdjustment(adjustmentId, BlindCount.visibilityFor(user)).map(mapper::toResponse)
+        return operations.findAdjustment(adjustmentId, BlindCount.visibilityFor(user)).map(this::toResponse)
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ADJUSTMENT_NOT_FOUND,
                         "No stock adjustment " + adjustmentId));
@@ -175,7 +183,7 @@ class StockOperationsController {
     @RequiresPermission(resource = InventoryResources.STOCK_ADJUSTMENTS, action = Action.APPROVE)
     public ApiResponse<StockAdjustmentResponse> approve(@PathVariable UUID adjustmentId,
                                                         @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(mapper.toResponse(operations.approve(adjustmentId, user.userId())));
+        return ApiResponse.ok(toResponse(operations.approve(adjustmentId, user.userId())));
     }
 
     @PostMapping("/adjustments/{adjustmentId}/rejection")
@@ -184,7 +192,7 @@ class StockOperationsController {
     public ApiResponse<StockAdjustmentResponse> reject(@PathVariable UUID adjustmentId,
                                                        @Valid @RequestBody RejectAdjustmentRequest request,
                                                        @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(mapper.toResponse(operations.reject(adjustmentId, user.userId(), request.reason())));
+        return ApiResponse.ok(toResponse(operations.reject(adjustmentId, user.userId(), request.reason())));
     }
 
     @PostMapping("/adjustments/{adjustmentId}/withdrawal")
@@ -192,6 +200,11 @@ class StockOperationsController {
     @RequiresPermission(resource = InventoryResources.STOCK_ITEMS, action = Action.UPDATE)
     public ApiResponse<StockAdjustmentResponse> withdraw(@PathVariable UUID adjustmentId,
                                                          @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(mapper.toResponse(operations.withdraw(adjustmentId, user.userId())));
+        return ApiResponse.ok(toResponse(operations.withdraw(adjustmentId, user.userId())));
+    }
+
+    /** One adjustment, with the names of the people it names, looked up in one call. */
+    private StockAdjustmentResponse toResponse(StockAdjustmentSummary adjustment) {
+        return mapper.toResponse(adjustment, labels.names(StockOperationsWebMapper.people(adjustment)));
     }
 }

@@ -41,7 +41,7 @@ public class CatalogCommerceWebMapper {
                 v.description(),
                 v.seoTitle(),
                 v.seoDescription(),
-                v.variants().stream().map(s -> new CatalogProductResponse.VariantResponse(s.sku())).toList(),
+                v.variants().stream().map(s -> new CatalogProductResponse.VariantResponse(s.sku(), s.name())).toList(),
                 "/api/v1/catalog/products/" + v.slug() + "/gallery",
                 v.kind());
     }

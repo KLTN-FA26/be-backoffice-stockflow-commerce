@@ -6,8 +6,10 @@ import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.identity.api.CreateStaffUserCommand;
+import com.stockflow.identity.api.CreatedStaffUser;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.ListUsersQuery;
+import com.stockflow.identity.api.StaffUser;
 import com.stockflow.identity.api.UpdateUserCommand;
 import com.stockflow.identity.api.UserStatusChange;
 import com.stockflow.identity.internal.controller.dto.AssignWarehousesRequest;
@@ -19,6 +21,8 @@ import com.stockflow.identity.internal.controller.dto.StatusChangeRequest;
 import com.stockflow.identity.internal.controller.dto.UpdateUserRequest;
 import com.stockflow.identity.internal.controller.dto.UserResponse;
 import com.stockflow.identity.internal.controller.dto.UserStatusChangeResponse;
+import com.stockflow.warehouse.api.WarehouseService;
+import com.stockflow.warehouse.api.WarehouseView;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -34,7 +38,11 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 /**
  * Staff accounts from the back office (SCRUM-454): until this, the only way to create one was
@@ -54,10 +62,13 @@ class UserManagementController {
 
     private final IdentityService identityService;
     private final UserManagementWebMapper mapper;
+    private final WarehouseService warehouses;
 
-    UserManagementController(IdentityService identityService, UserManagementWebMapper mapper) {
+    UserManagementController(IdentityService identityService, UserManagementWebMapper mapper,
+                             WarehouseService warehouses) {
         this.identityService = identityService;
         this.mapper = mapper;
+        this.warehouses = warehouses;
     }
 
     @GetMapping
@@ -71,15 +82,19 @@ class UserManagementController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String sort) {
-        return ApiResponse.ok(identityService.listUsers(new ListUsersQuery(q, status, role, includeCustomers,
-                page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort)).map(mapper::toResponse));
+        PageResponse<StaffUser> users = identityService.listUsers(new ListUsersQuery(q, status, role,
+                includeCustomers, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort));
+        // One warehouse lookup for the whole page, never one per user.
+        Map<UUID, WarehouseView> found = warehousesOf(users.items().stream()
+                .flatMap(user -> user.warehouseIds() == null ? Stream.empty() : user.warehouseIds().stream()));
+        return ApiResponse.ok(users.map(user -> mapper.toResponse(user, found)));
     }
 
     @GetMapping("/{userId}")
     @Operation(summary = "One account with its roles")
     @RequiresPermission(resource = IdentityResources.USERS, action = Action.READ)
     public ApiResponse<UserResponse> get(@PathVariable UUID userId) {
-        return ApiResponse.ok(mapper.toResponse(identityService.user(userId)));
+        return ApiResponse.ok(toResponse(identityService.user(userId)));
     }
 
     @PostMapping
@@ -87,9 +102,10 @@ class UserManagementController {
     @Operation(summary = "Create a staff account; without a password one is generated and returned once")
     @RequiresPermission(resource = IdentityResources.USERS, action = Action.CREATE)
     public ApiResponse<CreatedUserResponse> create(@Valid @RequestBody CreateUserRequest request) {
-        return ApiResponse.ok(mapper.toResponse(identityService.createStaffUser(new CreateStaffUserCommand(
+        CreatedStaffUser created = identityService.createStaffUser(new CreateStaffUserCommand(
                 request.username(), request.email(), request.fullName(), request.password(), request.roles(),
-                request.warehouseIds()))));
+                request.warehouseIds()));
+        return ApiResponse.ok(mapper.toResponse(created, warehousesOf(created.user())));
     }
 
     @PatchMapping("/{userId}")
@@ -97,7 +113,7 @@ class UserManagementController {
     @RequiresPermission(resource = IdentityResources.USERS, action = Action.UPDATE)
     public ApiResponse<UserResponse> update(@PathVariable UUID userId,
                                             @Valid @RequestBody UpdateUserRequest request) {
-        return ApiResponse.ok(mapper.toResponse(identityService.updateUser(
+        return ApiResponse.ok(toResponse(identityService.updateUser(
                 new UpdateUserCommand(userId, request.version(), request.email(), request.fullName()))));
     }
 
@@ -107,7 +123,7 @@ class UserManagementController {
     @RequiresPermission(resource = IdentityResources.USERS, action = Action.UPDATE)
     public ApiResponse<UserResponse> assignWarehouses(@PathVariable UUID userId,
                                                       @Valid @RequestBody AssignWarehousesRequest request) {
-        return ApiResponse.ok(mapper.toResponse(identityService.assignWarehouses(userId, request.warehouseIds())));
+        return ApiResponse.ok(toResponse(identityService.assignWarehouses(userId, request.warehouseIds())));
     }
 
     @PostMapping("/{userId}/lock")
@@ -166,6 +182,19 @@ class UserManagementController {
     }
 
     private ApiResponse<UserResponse> status(UUID userId, UserStatusChange change, StatusChangeRequest request) {
-        return ApiResponse.ok(mapper.toResponse(identityService.changeUserStatus(userId, change, request.reason())));
+        return ApiResponse.ok(toResponse(identityService.changeUserStatus(userId, change, request.reason())));
+    }
+
+    private UserResponse toResponse(StaffUser user) {
+        return mapper.toResponse(user, warehousesOf(user));
+    }
+
+    private Map<UUID, WarehouseView> warehousesOf(StaffUser user) {
+        return warehousesOf(user.warehouseIds() == null ? Stream.empty() : user.warehouseIds().stream());
+    }
+
+    private Map<UUID, WarehouseView> warehousesOf(Stream<UUID> ids) {
+        List<UUID> distinct = ids.filter(Objects::nonNull).distinct().toList();
+        return distinct.isEmpty() ? Map.of() : warehouses.findWarehouses(distinct);
     }
 }

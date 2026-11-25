@@ -101,6 +101,7 @@ class SalesContractService implements SalesContracts {
     private final SalesDocumentFacts shared;
     /** The windows moved since signing, which decide whether the contract has an appendix. */
     private final com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords;
+    private final LineNames lineNames;
 
     SalesContractService(OrderRepository orders, SalesContractRepository contracts, CustomerService customers,
                          CustomerLegalProfiles legalProfiles, CustomerPaymentSchedules paymentSchedules,
@@ -112,7 +113,9 @@ class SalesContractService implements SalesContracts {
                          com.stockflow.design.api.SkuDesigns skuDesigns,
                          com.stockflow.payment.api.CustomerInstallments installments,
                          SalesDocumentFacts shared,
-                         com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords) {
+                         com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords,
+                         LineNames lineNames) {
+        this.lineNames = lineNames;
         this.shared = shared;
         this.batchRecords = batchRecords;
         this.returnPolicy = returnPolicy;
@@ -683,17 +686,23 @@ class SalesContractService implements SalesContracts {
         // R5-3: the design behind each SKU, for the whole schedule at once.
         Map<String, com.stockflow.design.api.SkuDesign> designs = skuDesigns.ofSkus(order.lines().stream()
                 .map(line -> line.sku().code()).distinct().toList());
+        // What each SKU is called, for the whole schedule at once: a schedule line reads as more than a code.
+        Map<String, LineNames.Names> names = lineNames.of(order.lines().stream().map(line -> line.sku().code())
+                .toList());
         List<BatchView> schedule = contract.schedule().stream().map(batch -> new BatchView(batch.seq(),
                 batch.windowStart(), batch.windowEnd(), values.get(batch.seq()).amount(), batch.lines().stream()
                 .map(line -> {
                     OrderLine orderLine = lines.get(line.orderLineId());
                     com.stockflow.design.api.SkuDesign design = orderLine == null ? null
                             : designs.get(orderLine.sku().code());
+                    LineNames.Names named = orderLine == null ? LineNames.Names.NONE
+                            : LineNames.of(names, orderLine.sku().code());
                     return new BatchLineView(line.orderLineId(), orderLine == null ? null : orderLine.sku().code(),
                             line.cartons(), orderLine == null || orderLine.unitsPerCarton() == null ? 0
                             : line.cartons() * orderLine.unitsPerCarton(),
                             orderLine == null ? null : orderLine.unitsPerCarton(),
-                            design == null ? null : design.name(), design == null ? null : design.previewUrl());
+                            design == null ? null : design.name(), design == null ? null : design.previewUrl(),
+                            named.productName(), named.variantName());
                 }).toList())).toList();
         // R5-12: a signed contract's plan made instalments; each row shows when its own falls due and how late it is.
         Map<Integer, com.stockflow.payment.api.CustomerInstallments.PlanDue> dues = contract.signedAt() == null

@@ -181,6 +181,12 @@ class ProductHistoryAndRemovalIntegrationTest {
 
         var image = media.upload(id, defaultId, png(), editor, null);
         media.describe(id, defaultId, image.id(), "Mặt trước", 3, false);
+        // While the image exists its entries name the file and the SKU of the variant it belongs to (the default
+        // variant's SKU is the product code).
+        assertThat(history(id).get(0)).satisfies(c -> {
+            assertThat(c.subjectSku()).isEqualTo(created.code());
+            assertThat(c.subjectLabel()).isEqualTo("cup.png");
+        });
 
         // Logistics and stock policy are edited on the inventory item and leave no trace in the product's history.
 
@@ -272,6 +278,15 @@ class ProductHistoryAndRemovalIntegrationTest {
         assertThat(log.get(19).toStatus()).isEqualTo("DRAFT");
         assertThat(log.get(19).fromStatus()).isNull();
         assertThat(log).extracting(ProductChange::occurredAt).isSortedAccordingTo(java.util.Comparator.reverseOrder());
+        // The subject's SKU and name are read with the page: today's names, none for the product itself or for an
+        // image deleted since.
+        assertThat(log.get(6).subjectSku()).isEqualTo(extra.sku());
+        assertThat(log.get(16).subjectSku()).isEqualTo(extra.sku());
+        assertThat(log.get(17).subjectLabel()).isEqualTo("16oz renamed");
+        assertThat(discontinued.subjectSku()).isNull();
+        assertThat(discontinued.subjectLabel()).isNull();
+        assertThat(log.get(15).subjectSku()).isNull();
+        assertThat(log.get(15).subjectLabel()).isNull();
     }
 
     @Test

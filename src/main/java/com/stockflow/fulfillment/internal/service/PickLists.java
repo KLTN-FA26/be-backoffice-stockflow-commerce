@@ -217,10 +217,14 @@ public interface PickLists {
      *                   onto a bin
      * @param overflowLocationCodes the warehouse's usable OVERFLOW areas, when no bin of it takes the carton (07 BR-12);
      *                   empty while one does
+     * @param taskNumber the task's human number {@code PK-yyyyMMdd-nnnn}
+     * @param warehouseCode the code (prefix) of {@code warehouseId}; null only if the warehouse is unknown
+     * @param warehouseName the name of {@code warehouseId}; null only if the warehouse is unknown
      */
     record PutBackRow(UUID taskId, String orderNumber, UUID warehouseId, UUID lineId, String sku, String lotNumber,
                       String lpn, int pickedQty, String fromLocationCode, Instant pickedAt, boolean quarantine,
-                      List<String> overflowLocationCodes) {
+                      List<String> overflowLocationCodes, String taskNumber, String warehouseCode,
+                      String warehouseName) {
         public PutBackRow {
             overflowLocationCodes = overflowLocationCodes == null ? List.of() : List.copyOf(overflowLocationCodes);
         }
@@ -228,7 +232,7 @@ public interface PickLists {
         PutBackRow(UUID taskId, String orderNumber, UUID warehouseId, UUID lineId, String sku, String lotNumber,
                    String lpn, int pickedQty, String fromLocationCode, Instant pickedAt) {
             this(taskId, orderNumber, warehouseId, lineId, sku, lotNumber, lpn, pickedQty, fromLocationCode, pickedAt,
-                    false, List.of());
+                    false, List.of(), null, null, null);
         }
     }
 }

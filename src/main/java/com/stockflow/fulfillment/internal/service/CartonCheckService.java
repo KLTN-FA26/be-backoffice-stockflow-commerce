@@ -207,15 +207,19 @@ class CartonCheckService implements CartonChecks {
         found.getContent().forEach(pick -> people.add(pick.getAssignedUserId()));
         packByPick.values().forEach(pack -> people.add(pack.getStartedBy()));
         Map<UUID, String> names = identities.displayNames(people.stream().filter(Objects::nonNull).distinct().toList());
+        Map<UUID, com.stockflow.warehouse.api.WarehouseView> warehouseById = warehouses.findWarehouses(
+                found.getContent().stream().map(PickJpaEntity::getWarehouseId).collect(Collectors.toSet()));
         return Pages.toResponse(found, pick -> {
             PackJpaEntity pack = packByPick.get(pick.getId());
+            var warehouse = warehouseById.get(pick.getWarehouseId());
             List<PackageJpaEntity> cartons = cartonsByPack.getOrDefault(pack.getId(), List.of());
             return new QueueRow(pick.getId(), pick.getOrderId(), pick.getOrderNumber(), pick.getWarehouseId(),
                     pack.getStatus().name(), pick.getPickedAt(), names.get(pick.getAssignedUserId()),
                     pack.getStartedBy(), names.get(pack.getStartedBy()), pack.getStartedAt(), cartons.size(),
                     (int) cartons.stream().filter(c -> c.getStatus() != PackageStatus.TO_CHECK).count(),
                     (int) cartons.stream().filter(c -> c.getStatus() == PackageStatus.LABELED).count(),
-                    shipmentsByPack.getOrDefault(pack.getId(), 0L).intValue());
+                    shipmentsByPack.getOrDefault(pack.getId(), 0L).intValue(), pick.getTaskNumber(),
+                    warehouse == null ? null : warehouse.prefix(), warehouse == null ? null : warehouse.name());
         });
     }
 

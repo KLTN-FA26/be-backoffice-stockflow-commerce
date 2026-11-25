@@ -54,9 +54,12 @@ class OrderReleaseController {
     private final OrderReleases releases;
     private final com.stockflow.order.api.OrderService orders;
     private final OrderWarehouseVisibility visibility;
+    private final com.stockflow.warehouse.api.WarehouseService warehouses;
 
     OrderReleaseController(OrderReleases releases, com.stockflow.order.api.OrderService orders,
-                           OrderWarehouseVisibility visibility) {
+                           OrderWarehouseVisibility visibility,
+                           com.stockflow.warehouse.api.WarehouseService warehouses) {
+        this.warehouses = warehouses;
         this.releases = releases;
         this.orders = orders;
         this.visibility = visibility;
@@ -141,8 +144,10 @@ class OrderReleaseController {
         WarehouseScope.requireWarehouse(request.warehouseId());
         // BR-SEC-002: nor is an order of another warehouse - the release's refusals name it, its batches and its SKUs.
         visibility.requireReleasable(orderId, user);
-        return ApiResponse.ok(OrderWebMapper.toResponse(releases.release(orderId, request.warehouseId(),
-                request.deliveryBatchId(), user.userId())));
+        // The answer names the warehouse it was released from, as the detail does.
+        return ApiResponse.ok(OrderWebMapper.withWarehouse(OrderWebMapper.toResponse(releases.release(orderId,
+                request.warehouseId(), request.deliveryBatchId(), user.userId())),
+                warehouses.findWarehouses(java.util.List.of(request.warehouseId()))));
     }
 
     /**

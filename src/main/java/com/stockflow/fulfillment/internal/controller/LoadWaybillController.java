@@ -143,6 +143,6 @@ class LoadWaybillController {
 
     private static WaybillFileResponse toResponse(LoadWaybillFiles.WaybillFile f) {
         return new WaybillFileResponse(f.id(), f.loadId(), f.fileName(), f.contentType(), f.sizeBytes(),
-                f.uploadedBy(), f.uploadedAt());
+                f.uploadedBy(), f.uploadedAt(), f.uploadedByName());
     }
 }

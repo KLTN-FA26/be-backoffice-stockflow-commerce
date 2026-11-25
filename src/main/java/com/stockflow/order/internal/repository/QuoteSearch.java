@@ -49,6 +49,16 @@ public interface QuoteSearch {
      */
     java.util.Map<UUID, Instant> lastSentValidUntil(java.util.Collection<UUID> quoteIds);
 
+    /** The number and status of an order a quote was converted into. */
+    record ConvertedOrderRef(UUID orderId, String orderNumber, String status) {
+    }
+
+    /**
+     * The number and status of each of {@code orderIds}, in one statement: a page of quotes names the order each became
+     * without a read per row. An unknown id is not a key.
+     */
+    java.util.Map<UUID, ConvertedOrderRef> convertedOrders(java.util.Collection<UUID> orderIds);
+
     /** The quote an order was converted from; empty for an order no quote became. */
     java.util.Optional<UUID> quoteConvertedInto(UUID orderId);
 

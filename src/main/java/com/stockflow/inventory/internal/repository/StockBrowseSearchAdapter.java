@@ -79,7 +79,7 @@ class StockBrowseSearchAdapter implements StockBrowseSearch {
         return cb.construct(ReservationRow.class, root.get("id"), root.get("orderId"), stock.get("id"),
                 root.get("sku"), stock.get("locationCode"), stock.get("lotNumber"), root.get("quantity"),
                 root.get("status"), root.get("reservedAt"), root.get("expiresAt"), root.get("releaseReason"),
-                root.get("closedAt"));
+                root.get("closedAt"), root.get("orderNumber"));
     }
 
     private static List<Predicate> reservationFilters(CriteriaBuilder cb, Root<ReservationJpaEntity> root,

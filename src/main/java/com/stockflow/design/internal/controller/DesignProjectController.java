@@ -245,8 +245,7 @@ class DesignProjectController {
     public ApiResponse<PageResponse<DesignProjectEventResponse>> history(@PathVariable UUID id,
             @AuthenticatedUser CurrentUser user, @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(Pages.toResponse(projects.history(id, actor(user), pageOf(page, size))
-                .map(e -> new DesignProjectEventResponse(e.actorId(), e.event(), e.notes(), e.createdAt()))));
+        return ApiResponse.ok(Pages.toResponse(drafts.events(projects.history(id, actor(user), pageOf(page, size)))));
     }
 
     /** As a design's own images: spooled, scanned, measured and stored; the same hourly allowance. */
@@ -319,8 +318,7 @@ class DesignProjectController {
                 .addAll(item.issues().stream().map(i -> new DesignProjectService.ReportedIssue(i.rule().strip(),
                         blankToNull(i.surfaceCode()), blankToNull(i.elementId()))).toList()));
         var event = projects.recordPreflightFailure(id, actor(user), issues);
-        return ApiResponse.ok(new DesignProjectEventResponse(event.actorId(), event.event(), event.notes(),
-                event.createdAt()));
+        return ApiResponse.ok(drafts.toResponse(event));
     }
 
     @GetMapping("/design-projects/{id}/assets")

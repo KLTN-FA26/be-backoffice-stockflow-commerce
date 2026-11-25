@@ -30,7 +30,7 @@ public interface Dispatching {
     record LoadRow(UUID loadId, String code, UUID warehouseId, String status, UUID carrierId, String carrierName,
                    String vehiclePlate, String driverName, int shipmentCount, int packageCount,
                    Instant loadingStartedAt, Instant dispatchedAt, long version, UUID loadPlanId, String loadPlanCode,
-                   Integer vehicleSeq, String waybillNo) { }
+                   Integer vehicleSeq, String waybillNo, String warehouseCode, String warehouseName) { }
 
     /**
      * A parcel still to take off a vehicle (SCRUM-392: its order was cancelled; SCRUM-474: its vehicle was called off
@@ -39,8 +39,9 @@ public interface Dispatching {
     record PendingUnload(UUID packageId, String labelCode, UUID shipmentId, String shipmentCode, String reason,
                          Instant requestedAt, String reasonCode) { }
 
+    /** {@code loadedByName}: the display name of {@code loadedBy}, who scanned it onto the vehicle; null if unknown. */
     record LoadParcel(UUID packageId, String labelCode, String lpn, BigDecimal weightKg, boolean loaded, Instant loadedAt,
-                      UUID loadedBy) { }
+                      UUID loadedBy, String loadedByName) { }
 
     /**
      * A shipment on the manifest.
@@ -60,7 +61,8 @@ public interface Dispatching {
                       Instant bookingCancelledAt, String bookingCancelReason, List<PendingUnload> pendingUnloads,
                       boolean carrierBookingToCancel, String cancelReasonCode, UUID replacementLoadId,
                       String replacementLoadCode, String waybillNo, String carrierConnectionType,
-                      CarrierBookingView carrierBooking, List<HandoverWarning> handoverWarnings) {
+                      CarrierBookingView carrierBooking, List<HandoverWarning> handoverWarnings,
+                      String loadingStartedByName, String bookedByName, String warehouseCode) {
 
         public LoadDetail {
             handoverWarnings = handoverWarnings == null ? List.of() : List.copyOf(handoverWarnings);
@@ -85,7 +87,7 @@ public interface Dispatching {
                     expectedPackageCount, loadedPackageCount, version, shipments, loadPlanId, loadPlanCode, vehicleSeq,
                     vehicleTypeCode, bookedAt, bookedBy, bookingCancelledAt, bookingCancelReason, pendingUnloads,
                     carrierBookingToCancel, cancelReasonCode, replacementLoadId, replacementLoadCode, waybillNo,
-                    carrierConnectionType, carrierBooking, List.of());
+                    carrierConnectionType, carrierBooking, List.of(), null, null, null);
         }
 
         /** The same load with the warnings the start of loading found. */
@@ -96,7 +98,8 @@ public interface Dispatching {
                     shipmentCount, expectedPackageCount, loadedPackageCount, version, shipments, loadPlanId,
                     loadPlanCode, vehicleSeq, vehicleTypeCode, bookedAt, bookedBy, bookingCancelledAt,
                     bookingCancelReason, pendingUnloads, carrierBookingToCancel, cancelReasonCode, replacementLoadId,
-                    replacementLoadCode, waybillNo, carrierConnectionType, carrierBooking, warnings);
+                    replacementLoadCode, waybillNo, carrierConnectionType, carrierBooking, warnings,
+                    loadingStartedByName, bookedByName, warehouseCode);
         }
     }
 

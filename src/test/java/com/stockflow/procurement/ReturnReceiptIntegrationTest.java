@@ -159,6 +159,19 @@ class ReturnReceiptIntegrationTest {
                 .containsExactlyInAnyOrder(shipped.lpns().get(0), shipped.lpns().get(1));
         assertThat(closed.confirmedBy()).isEqualTo(staff);
         assertThat(closed.closedAt()).isNotNull();
+        // Every person and the warehouse by name, so the screen shows no UUID; the list names the shipment by code.
+        assertThat(closed.confirmedByName()).isEqualTo("test-" + staff);
+        assertThat(closed.receivedByName()).isEqualTo("test-" + staff);
+        assertThat(closed.cartons()).allSatisfy(c -> assertThat(c.scannedByName()).isEqualTo("test-" + staff));
+        assertThat(closed.warehouseCode()).isEqualTo(jdbc.queryForObject(
+                "SELECT prefix FROM warehouse.warehouse WHERE id = ?", String.class, DemoData.WAREHOUSE_HCM));
+        assertThat(closed.warehouseName()).isEqualTo(jdbc.queryForObject(
+                "SELECT name FROM warehouse.warehouse WHERE id = ?", String.class, DemoData.WAREHOUSE_HCM));
+        var row = asHcmStaff(() -> receipts.list(null, null, null, shipped.shipmentId(), null, null, 0, 20, null))
+                .items().getFirst();
+        assertThat(row.shipmentCode()).isEqualTo(shipped.shipmentCode());
+        assertThat(row.receivedByName()).isEqualTo("test-" + staff);
+        assertThat(row.warehouseName()).isEqualTo(closed.warehouseName());
 
         for (String lpn : shipped.lpns().subList(0, 2)) {
             Map<String, Object> back = carton(lpn);

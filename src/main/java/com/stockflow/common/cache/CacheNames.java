@@ -50,9 +50,6 @@ public final class CacheNames {
     /** Warehouse, zone and bin definitions. Reference data. */
     public static final String WAREHOUSE_LAYOUT = "warehouseLayout";
 
-    /** Rendered notification templates. Changes only on deployment. */
-    public static final String NOTIFICATION_TEMPLATES = "notificationTemplates";
-
     private CacheNames() {
     }
 
@@ -71,7 +68,6 @@ public final class CacheNames {
         // enough that the identity module is not queried on every single request.
         ttls.put(USER_PERMISSIONS, Duration.ofMinutes(5));
         ttls.put(WAREHOUSE_LAYOUT, Duration.ofHours(2));
-        ttls.put(NOTIFICATION_TEMPLATES, Duration.ofHours(12));
         return java.util.Collections.unmodifiableMap(ttls);
     }
 }

@@ -6,6 +6,9 @@ import com.stockflow.design.internal.domain.DesignStatus;
 import com.stockflow.design.internal.entity.DesignDraftJpaEntity;
 import com.stockflow.design.internal.repository.DesignArtifactJpaRepository;
 import com.stockflow.design.internal.repository.DesignDocumentJpaRepository;
+import com.stockflow.design.internal.repository.DesignProjectJpaRepository;
+import com.stockflow.design.internal.entity.DesignProjectJpaEntity;
+import com.stockflow.identity.api.IdentityService;
 import com.stockflow.design.internal.repository.DesignSnapshotJpaRepository;
 import com.stockflow.product.api.CustomerSku;
 import com.stockflow.product.api.CustomerSkus;
@@ -42,8 +45,10 @@ class DraftViewsTest {
     private final CustomerService customers = mock(CustomerService.class);
     private final com.stockflow.inventory.api.UomConversionService units =
             mock(com.stockflow.inventory.api.UomConversionService.class);
+    private final DesignProjectJpaRepository projects = mock(DesignProjectJpaRepository.class);
+    private final IdentityService identities = mock(IdentityService.class);
     private final DraftViews views = new DraftViews(products, documents, mock(DesignArtifactJpaRepository.class),
-            mock(FileTransfers.class), snapshots, customerSkus, customers, units);
+            mock(FileTransfers.class), snapshots, customerSkus, customers, units, projects, identities);
 
     private static DesignDraftJpaEntity design(UUID customer, UUID product, DesignStatus status) {
         return new DesignDraftJpaEntity(UUID.randomUUID(), customer, product, "Ly", null, status);
@@ -106,6 +111,51 @@ class DraftViewsTest {
         assertThat(shown.customerName()).isEqualTo("Quán A");
         verify(snapshots, never()).snapshotsOf(anyCollection());
         verify(customerSkus, never()).ofSnapshots(anyCollection());
+    }
+
+    @Test
+    void aPageNamesItsProjectsAndReviewersInOneReadEach() {
+        UUID product = UUID.randomUUID();
+        UUID customer = UUID.randomUUID();
+        UUID reviewer = UUID.randomUUID();
+        DesignProjectJpaEntity project = new DesignProjectJpaEntity(customer, UUID.randomUUID(), "Tết 2027", null);
+        DesignDraftJpaEntity returned = design(customer, product, DesignStatus.DRAFT);
+        returned.joinProject(project.getId());
+        returned.returnToDraft(reviewer, "Logo bị mờ", java.time.Instant.now());
+        DesignDraftJpaEntity alsoInIt = design(customer, product, DesignStatus.DRAFT);
+        alsoInIt.joinProject(project.getId());
+        DesignDraftJpaEntity alone = design(customer, product, DesignStatus.DRAFT);
+        when(products.findById(product)).thenReturn(Optional.empty());
+        when(documents.savedAt(any())).thenReturn(List.of());
+        when(customers.fullNames(anyCollection())).thenReturn(Map.of());
+        when(projects.findAllById(any())).thenReturn(List.of(project));
+        when(identities.displayNames(anyCollection())).thenReturn(Map.of(reviewer, "Trần Điều Phối"));
+
+        var shown = views.of(List.of(returned, alsoInIt, alone));
+
+        assertThat(shown).extracting(DesignWorkflowService.DraftView::projectName)
+                .containsExactly("Tết 2027", "Tết 2027", null);
+        assertThat(shown).extracting(DesignWorkflowService.DraftView::projectStatus)
+                .containsExactly("ACTIVE", "ACTIVE", null);
+        assertThat(shown).extracting(DesignWorkflowService.DraftView::reviewedByName)
+                .containsExactly("Trần Điều Phối", null, null);
+        verify(projects, times(1)).findAllById(any());
+        verify(identities, times(1)).displayNames(anyCollection());
+    }
+
+    @Test
+    void aPageInNoProjectAndNeverReviewedReadsNeither() {
+        UUID product = UUID.randomUUID();
+        when(products.findById(product)).thenReturn(Optional.empty());
+        when(documents.savedAt(any())).thenReturn(List.of());
+        when(customers.fullNames(anyCollection())).thenReturn(Map.of());
+
+        var shown = views.of(design(UUID.randomUUID(), product, DesignStatus.DRAFT));
+
+        assertThat(shown.projectName()).isNull();
+        assertThat(shown.reviewedByName()).isNull();
+        verify(projects, never()).findAllById(any());
+        verify(identities, never()).displayNames(anyCollection());
     }
 
     private static com.stockflow.inventory.api.UomConversion unit(String sku, String code, int factor) {

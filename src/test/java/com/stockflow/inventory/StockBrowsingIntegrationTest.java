@@ -47,6 +47,7 @@ class StockBrowsingIntegrationTest {
 
     private String sku;
     private UUID order;
+    private String orderNumber;
 
     private static final CurrentUser HCM_CLERK = clerkOf(DemoData.WAREHOUSE_HCM, "HCM");
     private static final CurrentUser OTHER_CLERK = clerkOf(UUID.randomUUID(), "ZZZ");
@@ -61,6 +62,7 @@ class StockBrowsingIntegrationTest {
     void stockAndAHold() {
         sku = "BROWSE-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         order = Identifiers.newId();
+        orderNumber = "SO-20991231-%06d".formatted(ThreadLocalRandom.current().nextInt(1_000_000));
         tx.executeWithoutResult(s -> {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
@@ -80,7 +82,7 @@ class StockBrowsingIntegrationTest {
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
                                                          currency, placed_at, version, created_at)
                     VALUES (?, ?, ?, ?, 'PENDING_PAYMENT', 1000, 'VND', NOW(), 0, NOW())""",
-                    order, "SO-20991231-%06d".formatted(ThreadLocalRandom.current().nextInt(1_000_000)),
+                    order, orderNumber,
                     DemoData.CUSTOMER_ID, UUID.randomUUID());
         });
         // Sales holds the SKU at HCM (4B-7); releasing the order to HCM puts the hold on the oldest whole carton.
@@ -130,6 +132,9 @@ class StockBrowsingIntegrationTest {
         assertThat(browsing.reservations(new StockBrowsing.ReservationQuery(null, sku, List.of(ReservationStatus.HELD),
                 null, 0, 20)).items()).hasSize(1);
         assertThat(browsing.reservation(holdId).orderId()).isEqualTo(order);
+        // The order's number, snapshotted on the hold by the database, so the list need not depend on order
+        assertThat(browsing.reservation(holdId).orderNumber()).isEqualTo(orderNumber);
+        assertThat(page.items().get(0).orderNumber()).isEqualTo(orderNumber);
         assertThat(codeOf(catchThrowable(() -> browsing.reservation(UUID.randomUUID()))))
                 .isEqualTo(ErrorCode.RESERVATION_NOT_FOUND);
 

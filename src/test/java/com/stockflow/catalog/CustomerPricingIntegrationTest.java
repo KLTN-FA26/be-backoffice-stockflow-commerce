@@ -143,7 +143,15 @@ class CustomerPricingIntegrationTest {
                 .andExpect(jsonPath("$.data.measure").value("CARTON"))
                 .andExpect(jsonPath("$.data.moq").value(1)).andExpect(jsonPath("$.data.version").value(0));
         mvc.perform(get(path(buyer.customerId(), sku)).header("Authorization", "Bearer " + sales))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.tiers[1].unitPrice").value(10_000));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.tiers[1].unitPrice").value(10_000))
+                .andExpect(jsonPath("$.data.customerName").value("Cong ty Mua Ly"))
+                .andExpect(jsonPath("$.data.customerCode").isNotEmpty());
+        // The list carries whose prices they are, so the screen needs no customer lookup.
+        mvc.perform(get("/api/v1/catalog/customer-prices").param("customerId", buyer.customerId().toString())
+                        .header("Authorization", "Bearer " + sales))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].sku").value(sku))
+                .andExpect(jsonPath("$.data[0].customerName").value("Cong ty Mua Ly"))
+                .andExpect(jsonPath("$.data[0].customerCode").isNotEmpty());
         createPrice(buyer.customerId(), sku, tiers).andExpect(status().isConflict());
 
         for (String invalid : List.of(

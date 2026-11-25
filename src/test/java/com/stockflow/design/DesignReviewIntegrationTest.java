@@ -260,6 +260,18 @@ class DesignReviewIntegrationTest {
         mvc.perform(get("/api/v1/designs/review-queue"))
                 .andExpect(jsonPath("$.data.items[?(@.id == '" + design + "')]").isEmpty());
         as(owner, false);
+        // The customer learns who returned it, by name, on the design and on its history.
+        String coordinatorName = jdbc.queryForObject(
+                "SELECT COALESCE(NULLIF(full_name, ''), username) FROM identity.app_user WHERE id = ?", String.class,
+                coordinator);
+        mvc.perform(get("/api/v1/designs/" + design)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.reviewedByName").value(coordinatorName));
+        mvc.perform(get("/api/v1/designs")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + design + "')].reviewedByName").value(coordinatorName));
+        mvc.perform(get("/api/v1/designs/" + design + "/history")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].decision").value("RETURNED"))
+                .andExpect(jsonPath("$.data.items[0].actorId").value(coordinator.toString()))
+                .andExpect(jsonPath("$.data.items[0].actorName").value(coordinatorName));
         mvc.perform(put("/api/v1/designs/" + design + "/name").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"version\":" + version() + ",\"name\":\"Ly quán A - sửa\"}")).andExpect(status().isOk());
     }

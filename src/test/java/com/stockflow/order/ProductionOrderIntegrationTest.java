@@ -121,6 +121,7 @@ class ProductionOrderIntegrationTest {
     private static Warehouse b;
 
     @Autowired ProductionOrderService productionOrders;
+    @Autowired com.stockflow.order.internal.service.ProductionOrderLabels labels;
     @Autowired ProductionSampleService samples;
     @Autowired ProducerService producers;
     @Autowired SalesContracts contracts;
@@ -617,6 +618,30 @@ class ProductionOrderIntegrationTest {
         assertThatThrownBy(() -> productionOrders.edit(moved.id(), moved.version(), draftOf(moved, null)))
                 .as("an inactive producer takes no new production order").extracting(ProductionOrderIntegrationTest::code)
                 .isEqualTo(ErrorCode.PRODUCER_INACTIVE);
+    }
+
+    @Test
+    @DisplayName("A13: a production order's labels name its sales order, customer, producer, receiving warehouse and "
+            + "the people who drew it up, sent it and moved its status")
+    void labelsNameWhatAProductionOrderRefersTo() {
+        UUID orderId = confirmedOrder();
+        choose(orderId, a);
+        ProductionOrder sent = sent(drawUp(orderId, 2));
+        List<HistoryEntry> history = productionOrders.detail(sent.id()).history();
+
+        var found = labels.of(List.of(sent), history);
+
+        assertThat(found.orderNumber(sent.salesOrderId())).isEqualTo(jdbc.queryForObject(
+                "SELECT order_number FROM ordering.customer_order WHERE id = ?", String.class, orderId));
+        assertThat(found.customer(sent.customerId()).name()).isEqualTo("Production Test Co");
+        assertThat(found.producer(sent.producerId())).isEqualTo(producer.name());
+        assertThat(found.warehouse(sent.receivingWarehouseId()).prefix()).isEqualTo(a.code());
+        assertThat(found.warehouse(sent.receivingWarehouseId()).name()).isEqualTo("Warehouse " + a.code());
+        assertThat(found.person(sent.drawnUpBy())).isEqualTo("test-" + coordinator);
+        assertThat(found.person(sent.sentBy())).isEqualTo("test-" + coordinator);
+        assertThat(history).isNotEmpty().allSatisfy(h -> assertThat(found.person(h.by()))
+                .isEqualTo(h.by() == null ? null : "test-" + h.by()));
+        assertThat(labels.of(List.of(), null).person(coordinator)).as("nothing asked, nothing read").isNull();
     }
 
     @Test

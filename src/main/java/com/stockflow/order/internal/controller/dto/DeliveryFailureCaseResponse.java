@@ -12,6 +12,9 @@ import java.util.UUID;
  * receipt. Since RTM-RETURNED and WF-05 Q-7 it is a record of what came back, closed by the system when the receipt
  * settled the shipment ({@code closure} RECORDED_ON_RETURN); only an order from before RTM-RETURNED, still owing the
  * shipment's units, gets an OPEN case for Sales to decide (WF-05 BE-16).
+ *
+ * <p>The people, the customer and the warehouse carry their names beside their ids, looked up once per answer, so the
+ * screen needs no identity, customer or warehouse permission to say who and where.</p>
  */
 @Schema(name = "DeliveryFailureCase")
 public record DeliveryFailureCaseResponse(
@@ -58,7 +61,18 @@ public record DeliveryFailureCaseResponse(
         @Schema(nullable = true) Instant closedAt,
         List<Line> lines,
         List<Carton> cartons,
-        long version) {
+        long version,
+        @Schema(description = "Who decided the case: full name, else username; null when decidedBy is null or unknown",
+                nullable = true) String decidedByName,
+        @Schema(description = "Who released the redelivery; null when releasedBy is null or unknown", nullable = true)
+        String releasedByName,
+        @Schema(description = "The customer's registered name; null when the customer record is gone", nullable = true)
+        String customerName,
+        @Schema(description = "The code the customer is known by; set where customerName is", nullable = true)
+        String customerCode,
+        @Schema(description = "The code (prefix) of the warehouse the goods came back to", example = "HCM",
+                nullable = true) String warehouseCode,
+        @Schema(description = "That warehouse's name", nullable = true) String warehouseName) {
 
     /** The units of an order line that came back, and how many are held for the order again. */
     public record Line(UUID orderLineId, int units, int heldUnits) {

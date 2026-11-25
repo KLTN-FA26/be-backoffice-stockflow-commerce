@@ -47,10 +47,12 @@ class ProductMediaController {
 
     private final ProductMediaService media;
     private final ProductAdminWebMapper mapper;
+    private final ProductMediaResponses responses;
 
-    ProductMediaController(ProductMediaService media, ProductAdminWebMapper mapper) {
+    ProductMediaController(ProductMediaService media, ProductAdminWebMapper mapper, ProductMediaResponses responses) {
         this.media = media;
         this.mapper = mapper;
+        this.responses = responses;
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -63,7 +65,7 @@ class ProductMediaController {
                                              @AuthenticatedUser CurrentUser user) {
         try (var content = file.getInputStream()) {
             var upload = new FileUpload(file.getOriginalFilename(), file.getContentType(), file.getSize(), content);
-            return ApiResponse.ok(mapper.toResponse(media.upload(productId, variantId, upload, user.userId(), requestKey)));
+            return ApiResponse.ok(responses.toResponse(media.upload(productId, variantId, upload, user.userId(), requestKey)));
         } catch (IOException ex) {
             throw new StorageException("Could not read the multipart upload", ex);
         }
@@ -72,14 +74,14 @@ class ProductMediaController {
     @GetMapping
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.READ)
     public ApiResponse<List<MediaResponse>> list(@PathVariable UUID productId, @PathVariable UUID variantId) {
-        return ApiResponse.ok(media.list(productId, variantId).stream().map(mapper::toResponse).toList());
+        return ApiResponse.ok(responses.toResponses(media.list(productId, variantId)));
     }
 
     @GetMapping("/{mediaId}")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.READ)
     public ApiResponse<MediaResponse> get(@PathVariable UUID productId, @PathVariable UUID variantId,
                                           @PathVariable UUID mediaId) {
-        return ApiResponse.ok(mapper.toResponse(media.get(productId, variantId, mediaId)));
+        return ApiResponse.ok(responses.toResponse(media.get(productId, variantId, mediaId)));
     }
 
     @PutMapping("/{mediaId}")
@@ -88,7 +90,7 @@ class ProductMediaController {
     public ApiResponse<MediaResponse> describe(@PathVariable UUID productId, @PathVariable UUID variantId,
                                                @PathVariable UUID mediaId,
                                                @Valid @RequestBody DescribeMediaRequest request) {
-        return ApiResponse.ok(mapper.toResponse(media.describe(productId, variantId, mediaId, request.altText(),
+        return ApiResponse.ok(responses.toResponse(media.describe(productId, variantId, mediaId, request.altText(),
                 request.sortOrder(), request.primary())));
     }
 
@@ -105,8 +107,8 @@ class ProductMediaController {
     public ApiResponse<List<MediaResponse>> publish(@PathVariable UUID productId, @PathVariable UUID variantId,
                                                     @Valid @RequestBody PublishMediaRequest request,
                                                     @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(media.publish(productId, variantId, request.mediaIds(), user.userId()).stream()
-                .map(mapper::toResponse).toList());
+        return ApiResponse.ok(responses.toResponses(
+                media.publish(productId, variantId, request.mediaIds(), user.userId())));
     }
 
     @PostMapping("/{mediaId}/withdrawal")
@@ -114,7 +116,7 @@ class ProductMediaController {
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.APPROVE)
     public ApiResponse<MediaResponse> withdraw(@PathVariable UUID productId, @PathVariable UUID variantId,
                                                @PathVariable UUID mediaId) {
-        return ApiResponse.ok(mapper.toResponse(media.withdraw(productId, variantId, mediaId)));
+        return ApiResponse.ok(responses.toResponse(media.withdraw(productId, variantId, mediaId)));
     }
 
     @GetMapping("/{mediaId}/download-url")
