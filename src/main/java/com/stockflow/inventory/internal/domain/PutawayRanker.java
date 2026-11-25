@@ -35,6 +35,12 @@ import java.util.Map;
  * <p>Among bins without a volume only the group and the code order them.</p>
  *
  * <p>A bin with no weight limit is never weighed, and neither is a carton whose weight nobody recorded.</p>
+ *
+ * <p>A group of cartons moved together to one bin (kltn-docs 11 §4.1, docs#46) is judged carton by carton for size -
+ * one carton too big for the bin excludes it - and together for room: the bin takes the sum of the volumes and of the
+ * known weights, or the group would be split across bins by the first carton that happens to fit. The caller decides
+ * what "holds the lot" means for a group (a bin counts as same lot only if it holds every lot of the group) and passes
+ * it in {@link Occupancy}; this class only reads the flags. A group of one is the single-carton rule exactly.</p>
  */
 public final class PutawayRanker {
 
@@ -57,17 +63,6 @@ public final class PutawayRanker {
      */
     public record Occupancy(int units, BigDecimal volumeM3, BigDecimal weightKg, boolean holdsSku, boolean holdsLot) {
         public static final Occupancy EMPTY = new Occupancy(0, BigDecimal.ZERO, BigDecimal.ZERO, false, false);
-
-        /**
-         * This bin with one more carton counted in it: one a putaway trip holds space for, or one of the same cart
-         * already given the bin (kltn-docs 05 BR-16: held space counts as taken).
-         */
-        public Occupancy plus(int moreUnits, BigDecimal moreVolumeM3, BigDecimal moreWeightKg, boolean sameSku,
-                              boolean sameLot) {
-            return new Occupancy(units + moreUnits, volumeM3.add(moreVolumeM3 == null ? BigDecimal.ZERO : moreVolumeM3),
-                    weightKg.add(moreWeightKg == null ? BigDecimal.ZERO : moreWeightKg), holdsSku || sameSku,
-                    holdsLot || sameLot);
-        }
     }
 
     /** One carton to put away; {@code weightKg} its full weight, null when nobody recorded one. */
@@ -79,12 +74,27 @@ public final class PutawayRanker {
     public record Suggestion(String locationCode, Reason reason, BigDecimal freeVolumeM3, BigDecimal freeWeightKg) {}
 
     /**
-     * The rest of the lot: every carton of the carton's lot that has an open putaway task in the warehouse, this one
-     * included - what an empty bin should take whole (05 §4.2). A weight nobody recorded counts as nothing.
+     * What an empty bin should take whole (05 §4.2): for a putaway, the rest of the lot - every carton of the carton's
+     * lot that has an open putaway task in the warehouse, this one included; for a move of a group of cartons (11 §4.1,
+     * docs#46), the group's own total, since the group goes to one bin together. A weight nobody recorded counts as
+     * nothing.
      */
     public record Lot(BigDecimal volumeM3, BigDecimal weightKg) {
         public static Lot of(Need need) {
-            return new Lot(need.carton().volumeM3(), need.weightKg());
+            return of(List.of(need));
+        }
+
+        /** The group's summed volume and weight; a weight nobody recorded counts as nothing. */
+        public static Lot of(List<Need> needs) {
+            BigDecimal volume = BigDecimal.ZERO;
+            BigDecimal weight = null;
+            for (Need need : needs) {
+                volume = volume.add(need.carton().volumeM3());
+                if (need.weightKg() != null) {
+                    weight = weight == null ? need.weightKg() : weight.add(need.weightKg());
+                }
+            }
+            return new Lot(volume, weight);
         }
     }
 
@@ -114,8 +124,19 @@ public final class PutawayRanker {
      * @param restOfLot what the empty bins are ranked by: the volume and weight of the lot still to put away
      */
     public static List<Suggestion> rank(Need need, Lot restOfLot, List<Bin> bins, Map<String, Occupancy> occupancy) {
+        return rank(List.of(need), restOfLot, bins, occupancy);
+    }
+
+    /**
+     * {@link #rank(Need, Lot, List, Map)} for a group of cartons moved together: a bin must take them all.
+     *
+     * @throws IllegalArgumentException for an empty group, which every bin would take
+     */
+    public static List<Suggestion> rank(List<Need> needs, Lot restOfLot, List<Bin> bins,
+                                        Map<String, Occupancy> occupancy) {
+        requireCartons(needs);
         return bins.stream()
-                .filter(bin -> fits(need, bin, occupancy.getOrDefault(bin.locationCode(), Occupancy.EMPTY)))
+                .filter(bin -> refusal(needs, bin, occupancy.getOrDefault(bin.locationCode(), Occupancy.EMPTY)) == null)
                 .map(bin -> {
                     Suggestion s = suggest(bin, occupancy.getOrDefault(bin.locationCode(), Occupancy.EMPTY));
                     return new Ranked(s, bin.capacityM3() != null, takesTheLot(s, restOfLot));
@@ -161,18 +182,38 @@ public final class PutawayRanker {
 
     /** Why the bin does not take the carton, size first; null when it does. */
     public static Refusal refusal(Need need, Bin bin, Occupancy occupancy) {
-        if (!CartonFit.fits(need.carton(), bin.size())) {
-            return Refusal.DOES_NOT_FIT;
+        return refusal(List.of(need), bin, occupancy);
+    }
+
+    /**
+     * Why the bin does not take the whole group, size first; null when it does. Size is each carton's own; volume is
+     * the sum; weight is the sum of the weights that are known, and is not checked at all when none is.
+     *
+     * @throws IllegalArgumentException for an empty group, which every bin would take
+     */
+    public static Refusal refusal(List<Need> needs, Bin bin, Occupancy occupancy) {
+        requireCartons(needs);
+        for (Need need : needs) {
+            if (!CartonFit.fits(need.carton(), bin.size())) {
+                return Refusal.DOES_NOT_FIT;
+            }
         }
-        if (bin.capacityM3() != null
-                && bin.capacityM3().subtract(occupancy.volumeM3()).compareTo(need.carton().volumeM3()) < 0) {
+        Lot total = Lot.of(needs);
+        if (bin.capacityM3() != null && bin.capacityM3().subtract(occupancy.volumeM3()).compareTo(total.volumeM3()) < 0) {
             return Refusal.NO_ROOM;
         }
-        if (bin.maxWeightKg() != null && need.weightKg() != null
-                && occupancy.weightKg().add(need.weightKg()).compareTo(bin.maxWeightKg()) > 0) {
+        if (bin.maxWeightKg() != null && total.weightKg() != null
+                && occupancy.weightKg().add(total.weightKg()).compareTo(bin.maxWeightKg()) > 0) {
             return Refusal.NO_ROOM;
         }
         return null;
+    }
+
+    /** An empty group fits every bin by size, volume and weight alike: an answer that means nothing, so refused. */
+    private static void requireCartons(List<Need> needs) {
+        if (needs == null || needs.isEmpty()) {
+            throw new IllegalArgumentException("A group of cartons to place must name at least one carton");
+        }
     }
 
     private static Suggestion suggest(Bin bin, Occupancy occupancy) {

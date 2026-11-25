@@ -99,13 +99,15 @@ public class PutawayService {
     private final ApplicationEventPublisher events;
     private final StockItemRepository stockItems;
     private final PutawayTrips trips;
+    private final BinSuggestionInputs inputs;
 
     public PutawayService(PutawayTasks tasks, WarehouseService warehouses, StockPackageRepository stockPackages,
                           StockMovementLog ledger, BinOccupancyQuery occupancy,
                           StockOperations operations, ApplicationEventPublisher events,
-                          StockItemRepository stockItems, PutawayTrips trips) {
+                          StockItemRepository stockItems, PutawayTrips trips, BinSuggestionInputs inputs) {
         this.stockItems = stockItems;
         this.trips = trips;
+        this.inputs = inputs;
         this.tasks = tasks;
         this.warehouses = warehouses;
         this.stockPackages = stockPackages;
@@ -167,7 +169,7 @@ public class PutawayService {
             return view;
         }
         List<PutawayRanker.Suggestion> suggestions = suggest(sourceLocation.warehouseId(), task, view.lotNumber());
-        List<String> overflow = suggestions.isEmpty() ? overflowAreas(sourceLocation.warehouseId()) : List.of();
+        List<String> overflow = suggestions.isEmpty() ? inputs.overflowAreas(sourceLocation.warehouseId()) : List.of();
         return new TaskView(view.id(), view.goodsReceiptId(), view.goodsReceiptLineId(), view.sku(), view.lotNumber(),
                 view.quantity(), view.left(), view.sourceLocationCode(), view.warehouseId(), view.lpn(), view.status(),
                 view.targetLocationCode(), suggestions, overflow, view.source());
@@ -180,42 +182,7 @@ public class PutawayService {
      * (05 §4.2 step 4).
      */
     private List<PutawayRanker.Suggestion> suggest(UUID warehouseId, PutawayTaskView task, String lot) {
-        return suggest(warehouseId, task, lot, heldByTrips(warehouseId, task.id()));
-    }
-
-    /**
-     * Space that counts as taken although no carton stands there yet (kltn-docs 05 BR-16): a putaway trip holds it
-     * for a carton on its cart, or the cart being planned has already given it to an earlier carton.
-     */
-    record Reserved(String locationCode, String sku, String lotNumber, int units, java.math.BigDecimal volumeM3,
-                    java.math.BigDecimal weightKg) {
-    }
-
-    /**
-     * What the putaway trips on their way hold in the warehouse, except for the carton of {@code exceptTaskId}: a
-     * carton does not compete with the space held for itself. A hold in an OVERFLOW area is left out - an area has
-     * no volume to run out of (05 BR-13).
-     */
-    List<Reserved> heldByTrips(UUID warehouseId, UUID exceptTaskId) {
-        List<com.stockflow.warehouse.api.PutawayHold> holds = trips.holds(warehouseId, null).stream()
-                .filter(hold -> !hold.putawayTaskId().equals(exceptTaskId) && hold.stockPackageId() != null).toList();
-        if (holds.isEmpty()) {
-            return List.of();
-        }
-        Map<UUID, BinOccupancyQuery.CartonLoad> loads = occupancy.loadsOf(holds.stream()
-                .map(com.stockflow.warehouse.api.PutawayHold::stockPackageId).distinct().toList());
-        Map<UUID, Optional<StorageLocationView>> locations = new HashMap<>();
-        List<Reserved> reserved = new java.util.ArrayList<>();
-        for (com.stockflow.warehouse.api.PutawayHold hold : holds) {
-            BinOccupancyQuery.CartonLoad load = loads.get(hold.stockPackageId());
-            StorageLocationView location = locations.computeIfAbsent(hold.locationId(), warehouses::findLocation)
-                    .orElse(null);
-            if (load != null && location != null && location.kind() == StorageLocationView.Kind.BIN) {
-                reserved.add(new Reserved(location.locationCode(), load.sku(), load.lotNumber(), load.units(),
-                        load.volumeM3(), load.weightKg()));
-            }
-        }
-        return reserved;
+        return suggest(warehouseId, task, lot, inputs.heldByTrips(warehouseId, task.id()));
     }
 
     /**
@@ -223,22 +190,12 @@ public class PutawayService {
      * planning its cart passes the other trips' holds plus what it has already given to the cartons before this one.
      */
     List<PutawayRanker.Suggestion> suggest(UUID warehouseId, PutawayTaskView task, String lot,
-                                           List<Reserved> reserved) {
-        List<PutawayCandidate> candidates = warehouses.putawayCandidates(warehouseId);
-        Map<String, Occupancy> occupied = new HashMap<>(occupancy.occupancyOf(
-                candidates.stream().map(PutawayCandidate::locationCode).toList(), task.sku(), lot,
-                task.stockPackageId()));
-        for (Reserved r : reserved) {
-            boolean sameSku = r.sku() != null && r.sku().equals(task.sku());
-            occupied.merge(r.locationCode(),
-                    Occupancy.EMPTY.plus(r.units(), r.volumeM3(), r.weightKg(), sameSku,
-                            sameSku && lot != null && lot.equals(r.lotNumber())),
-                    (standing, more) -> standing.plus(more.units(), more.volumeM3(), more.weightKg(),
-                            more.holdsSku(), more.holdsLot()));
-        }
+                                           List<BinSuggestionInputs.Reserved> reserved) {
+        List<Bin> bins = inputs.bins(warehouseId);
+        Map<String, Occupancy> occupied = inputs.occupancy(bins.stream().map(Bin::locationCode).toList(),
+                Set.of(new BinOccupancyQuery.SkuLot(task.sku(), lot)), List.of(task.stockPackageId()), reserved);
         Need need = needOf(task);
-        return PutawayRanker.rank(need, restOfLot(warehouseId, task, lot, need),
-                candidates.stream().map(PutawayService::binOf).toList(), occupied);
+        return PutawayRanker.rank(need, restOfLot(warehouseId, task, lot, need), bins, occupied);
     }
 
     /**
@@ -272,21 +229,8 @@ public class PutawayService {
         return lotOf(task, new Reads());
     }
 
-    /** The usable OVERFLOW areas of a warehouse, by location code. */
-    private List<String> overflowAreas(UUID warehouseId) {
-        return warehouses.areasOf(warehouseId, StorageLocationView.AreaType.OVERFLOW).stream()
-                .filter(StorageLocationView::usable)
-                .map(StorageLocationView::locationCode)
-                .toList();
-    }
-
     private Need needOf(PutawayTaskView task) {
-        return occupancy.needsOf(List.of(task.stockPackageId())).getOrDefault(task.stockPackageId(), Need.UNMEASURED);
-    }
-
-    private static Bin binOf(PutawayCandidate candidate) {
-        return new Bin(candidate.locationCode(), CartonPlacement.spaceOf(candidate.size()),
-                candidate.capacityVolumeM3(), candidate.maxWeightKg());
+        return inputs.needsOf(List.of(task.stockPackageId())).getOrDefault(task.stockPackageId(), Need.UNMEASURED);
     }
 
     /**
@@ -402,7 +346,7 @@ public class PutawayService {
         occupancy.lockBin(target.locationCode());
         Occupancy occupied = occupancy.occupancyOf(List.of(target.locationCode()), task.sku(), lot,
                 task.stockPackageId()).getOrDefault(target.locationCode(), Occupancy.EMPTY);
-        PutawayRanker.Refusal refusal = PutawayRanker.refusal(need, binOf(candidate), occupied);
+        PutawayRanker.Refusal refusal = PutawayRanker.refusal(need, BinSuggestionInputs.binOf(candidate), occupied);
         if (refusal == PutawayRanker.Refusal.DOES_NOT_FIT) {
             throw CartonPlacement.doesNotFit(source.lpn(), target.locationCode());
         }

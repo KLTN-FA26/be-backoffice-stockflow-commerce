@@ -12,6 +12,7 @@ import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.inventory.internal.controller.dto.CustomerCustodyResponse;
 import com.stockflow.inventory.internal.controller.dto.EndCustodyRequest;
+import com.stockflow.inventory.internal.controller.dto.MoveSuggestionResponse;
 import com.stockflow.inventory.internal.controller.dto.PutawayTaskResponse;
 import com.stockflow.inventory.internal.controller.dto.QuarantineStockPackageRequest;
 import com.stockflow.inventory.internal.controller.dto.StockPackageDetailResponse;
@@ -22,6 +23,7 @@ import com.stockflow.inventory.internal.domain.ReturnedCartonOwnership;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.service.CartonQuarantineService;
 import com.stockflow.inventory.internal.service.CustomerGoodsCustody;
+import com.stockflow.inventory.internal.service.MoveSuggestionService;
 import com.stockflow.inventory.internal.service.PutawayService;
 import com.stockflow.inventory.internal.service.StockPackageLabel;
 import com.stockflow.inventory.internal.service.StockPackageLabelPdfRenderer;
@@ -87,12 +89,15 @@ class StockPackageController {
     private final Clock clock;
     private final CustomerGoodsCustody custody;
     private final ResponseLabels responseLabels;
+    private final MoveSuggestionService moveSuggestions;
 
     StockPackageController(StockPackageLabels labels, StockPackageLabelPdfRenderer renderer, StockPackageLookup lookup,
                            StockPackageWebMapper mapper, CartonQuarantineService quarantine, PutawayService putaway,
-                           Clock clock, CustomerGoodsCustody custody, ResponseLabels responseLabels) {
+                           Clock clock, CustomerGoodsCustody custody, ResponseLabels responseLabels,
+                           MoveSuggestionService moveSuggestions) {
         this.responseLabels = responseLabels;
         this.custody = custody;
+        this.moveSuggestions = moveSuggestions;
         this.quarantine = quarantine;
         this.putaway = putaway;
         this.labels = labels;
@@ -127,6 +132,25 @@ class StockPackageController {
     @RequiresPermission(resource = InventoryResources.STOCK_PACKAGES, action = Action.READ)
     public ApiResponse<List<StockPackageLocationLineResponse>> locationSummary(@RequestParam String location) {
         return ApiResponse.ok(lookup.atLocation(location).stream().map(mapper::toResponse).toList());
+    }
+
+    /**
+     * Issue #412 (kltn-docs 11 §4.1, docs#46): advice before a move, under the move's own permission - whoever may move
+     * the cartons may ask where to. A literal path, so it is not read as the LPN {@code bin-suggestions}.
+     */
+    @GetMapping("/bin-suggestions")
+    @Operation(summary = "Bins a group of cartons may be moved into (advice only)",
+            description = "1..500 LPNs, the lpn parameter repeated; an LPN in either case, named twice, is one carton. "
+                    + "Every suggested bin fits each carton and its free room (volume and load, less what stands there "
+                    + "and what putaway trips hold) takes them all; up to 10, in putaway's order. The bins the cartons "
+                    + "stand in are never suggested. overflowAreas names the warehouse's OVERFLOW areas only when no "
+                    + "bin takes the group. Nothing is held: the move (POST /api/v1/inventory/movements) checks only "
+                    + "what it checks today - size, not room (11 BR-10, C24) - and refuses held cartons itself. "
+                    + "400 VALIDATION_FAILED; 404 STOCK_PACKAGE_NOT_FOUND; 403 OUT_OF_DATA_SCOPE for a carton in "
+                    + "another warehouse; 409 MOVE_ACROSS_WAREHOUSES for cartons of two warehouses.")
+    @RequiresPermission(resource = InventoryResources.STOCK_ITEMS, action = Action.UPDATE)
+    public ApiResponse<MoveSuggestionResponse> binSuggestions(@RequestParam(name = "lpn") List<String> lpns) {
+        return ApiResponse.ok(mapper.toResponse(moveSuggestions.suggest(lpns)));
     }
 
     @GetMapping("/{lpn}")
