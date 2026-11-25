@@ -35,7 +35,7 @@
 -- (event_publication stays empty, so nothing is mailed when it loads), the sales rollups (the application rebuilds
 -- them on its next start: SalesRollupBackfill), and the tables nothing writes any more or that only the running
 -- application fills: identity.user_session, platform.idempotency_record, platform.shedlock, platform.legacy_archive
--- (rows of dropped tables), fulfillment.wave, warehouse.move_task, warehouse.slotting_rule (no code writes them) and
+-- (rows of dropped tables), warehouse.slotting_rule (no code writes it) and
 -- ordering.delivery_failure_case_hold (only a case waiting for redelivery has holds, and since 2026-11-19 no code
 -- path leaves one).
 --

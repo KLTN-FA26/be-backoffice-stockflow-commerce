@@ -199,30 +199,6 @@ SELECT pg_temp.expect_fail('I22 a putaway task has no transfer line to come from
     INSERT INTO warehouse.putaway_task (id, sku, quantity, status, created_at)
     VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 4, 'PENDING', NOW()) $q$);
 
-\echo '--- intra-warehouse move task (docs 11)'
-SELECT pg_temp.expect_fail('I31 move to a location of another warehouse (BR-01)', $q$
-    INSERT INTO warehouse.move_task (id, task_number, warehouse_id, origin, sku, from_location_id, to_location_id, requested_qty)
-    VALUES (gen_random_uuid(), 'MT-QA-X', md5('demo:wh:HCM')::uuid, 'MANUAL', 'LY-GIAY-DEMO-12OZ-XANH',
-        md5('demo:loc:HCM-A01-2-B')::uuid, md5('qa:loc:HN-RCV')::uuid, 1) $q$);
-SELECT pg_temp.expect_fail('I32 a manual move waiting as SUGGESTED', $q$
-    INSERT INTO warehouse.move_task (id, task_number, warehouse_id, origin, status, sku, from_location_id, to_location_id, requested_qty)
-    VALUES (gen_random_uuid(), 'MT-QA-Y', md5('demo:wh:HCM')::uuid, 'MANUAL', 'SUGGESTED', 'LY-GIAY-DEMO-12OZ-XANH',
-        md5('demo:loc:HCM-A01-2-B')::uuid, md5('demo:loc:HCM-A01-1-A')::uuid, 1) $q$);
-SELECT pg_temp.expect_fail('I33 re-slotting move executed without approval', $q$
-    INSERT INTO warehouse.move_task (id, task_number, warehouse_id, origin, status, sku, from_location_id, to_location_id, requested_qty)
-    VALUES (gen_random_uuid(), 'MT-QA-Z', md5('demo:wh:HCM')::uuid, 'RESLOTTING', 'PENDING', 'LY-GIAY-DEMO-12OZ-XANH',
-        md5('demo:loc:HCM-A01-2-B')::uuid, md5('demo:loc:HCM-A01-1-A')::uuid, 1) $q$);
-SELECT pg_temp.expect_ok('I34 replenishment move, assigned, done', $q$
-    INSERT INTO warehouse.move_task (id, task_number, warehouse_id, origin, reason, status, sku, from_location_id, to_location_id,
-        requested_qty, picked_qty, placed_qty, assigned_user_id, completed_at)
-    VALUES (gen_random_uuid(), 'MT-QA-1', md5('demo:wh:HCM')::uuid, 'REPLENISHMENT', 'REPLENISHMENT', 'COMPLETED', 'LY-GIAY-DEMO-12OZ-XANH',
-        md5('demo:loc:HCM-A01-2-B')::uuid, md5('demo:loc:HCM-A01-1-A')::uuid, 3, 3, 3, md5('demo:user:editor')::uuid, NOW()) $q$);
-SELECT pg_temp.expect_fail('I35 DISCREPANCY with matching quantities', $q$
-    INSERT INTO warehouse.move_task (id, task_number, warehouse_id, origin, status, sku, from_location_id, to_location_id,
-        requested_qty, picked_qty, placed_qty)
-    VALUES (gen_random_uuid(), 'MT-QA-2', md5('demo:wh:HCM')::uuid, 'MANUAL', 'DISCREPANCY', 'LY-GIAY-DEMO-12OZ-XANH',
-        md5('demo:loc:HCM-A01-2-B')::uuid, md5('demo:loc:HCM-A01-1-A')::uuid, 3, 3, 3) $q$);
-
 \echo '--- document numbers'
 SELECT pg_temp.expect_ok('I36 two document types on one day', $q$
     INSERT INTO platform.document_sequence (document_type, sequence_date, last_value) VALUES ('GR', CURRENT_DATE, 1), ('TO', CURRENT_DATE, 1) $q$);

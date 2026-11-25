@@ -169,7 +169,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
             orders.startPicking(orderId, actor.userId());
         }
         var now = clock.instant();
-        var pick = new PickJpaEntity(Identifiers.newId(), null, orderId, order.orderNumber(), warehouseId,
+        var pick = new PickJpaEntity(Identifiers.newId(), orderId, order.orderNumber(), warehouseId,
                 PickStatus.PENDING, to, stagingArea)
                 .numbered(numbers.next(BusinessCalendar.date(now)))
                 .forDeliveryBatch(redelivery.isPresent() ? redelivery.get().deliveryBatchId()
@@ -200,7 +200,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
         requireWarehouseAssignee(assignedUserId, warehouseId);
         String stagingArea = stagingAreaFor(warehouseId, to, stagingLocationCode);
         var now = clock.instant();
-        var pick = new PickJpaEntity(Identifiers.newId(), null, order.orderId(), order.orderNumber(), warehouseId,
+        var pick = new PickJpaEntity(Identifiers.newId(), order.orderId(), order.orderNumber(), warehouseId,
                 PickStatus.PENDING, to, stagingArea).numbered(numbers.next(BusinessCalendar.date(now)))
                 .forDeliveryBatch(prePick.deliveryBatchId());
         pick.assign(assignedUserId, now);

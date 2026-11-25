@@ -12,7 +12,7 @@ import java.sql.SQLException;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * V20261227000500 on the real upgrade path. It adds {@code fulfillment.pick.task_number} ({@code PK-yyyyMMdd-nnnn}) and
+ * V20261228000200 on the real upgrade path. It adds {@code fulfillment.pick.task_number} ({@code PK-yyyyMMdd-nnnn}) and
  * numbers the tasks already there: per business day (Asia/Ho_Chi_Minh) of their creation, in creation order, after any
  * PK number that day already drew; then moves {@code platform.document_sequence} past them, so the next task of such a
  * day takes the next number, and makes the column NOT NULL, unique and immutable.
@@ -22,8 +22,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class PickTaskNumberMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261227000400";
-    private static final String MIGRATION = "20261227000500";
+    private static final String BEFORE = "20261228000100";
+    private static final String MIGRATION = "20261228000200";
     private static final String CUSTOMER = "00000000-0000-4000-8000-00000000e0a0";
     private static final String WAREHOUSE = "00000000-0000-4000-8000-00000000e0c1";
     private static final String ORDER = "INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, "

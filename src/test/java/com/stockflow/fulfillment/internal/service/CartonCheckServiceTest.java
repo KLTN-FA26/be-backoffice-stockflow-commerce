@@ -116,7 +116,7 @@ class CartonCheckServiceTest {
 
     @BeforeEach
     void aPickedTaskWithTwoCartonsOfOneLine() {
-        pick = new PickJpaEntity(UUID.randomUUID(), null, orderId, "SO-0001", WAREHOUSE, PickStatus.PENDING);
+        pick = new PickJpaEntity(UUID.randomUUID(), orderId, "SO-0001", WAREHOUSE, PickStatus.PENDING);
         pick.assign(worker, NOW.minusSeconds(300));
         pick.start(worker, NOW.minusSeconds(240));
         pick.complete(worker, NOW.minusSeconds(120));
@@ -517,7 +517,7 @@ class CartonCheckServiceTest {
         @Test
         @DisplayName("a task still being picked or staged is PACKING_NOT_READY")
         void notReady() {
-            PickJpaEntity staged = new PickJpaEntity(pick.getId(), null, orderId, "SO-0001", WAREHOUSE,
+            PickJpaEntity staged = new PickJpaEntity(pick.getId(), orderId, "SO-0001", WAREHOUSE,
                     PickStatus.STAGED);
             when(picks.lockById(pick.getId())).thenReturn(Optional.of(staged));
 

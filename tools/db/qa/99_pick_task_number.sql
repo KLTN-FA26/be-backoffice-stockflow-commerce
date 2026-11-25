@@ -1,5 +1,5 @@
 -- =============================================================================
--- Adversarial checks: a pick task's human number PK-yyyyMMdd-nnnn (V20261227000500): every task has one, no two share
+-- Adversarial checks: a pick task's human number PK-yyyyMMdd-nnnn (V20261228000200): every task has one, no two share
 -- one, it never changes, and a task written without one draws the next of its business day from
 -- platform.document_sequence. Needs the demo seed (HCM, the demo customer). Rolled back at the end.
 -- =============================================================================

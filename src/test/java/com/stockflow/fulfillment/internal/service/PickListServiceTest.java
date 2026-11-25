@@ -87,7 +87,7 @@ class PickListServiceTest {
 
     @BeforeEach
     void aTaskBeingPicked() {
-        task = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
+        task = new PickJpaEntity(UUID.randomUUID(), UUID.randomUUID(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
         task.assign(picker, NOW.minusSeconds(120));
         task.start(picker, NOW.minusSeconds(60));
         when(picks.lockById(task.getId())).thenReturn(Optional.of(task));
@@ -112,7 +112,7 @@ class PickListServiceTest {
     }
 
     private void taskIs(PickStatus status) {
-        task = new PickJpaEntity(task.getId(), null, task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
+        task = new PickJpaEntity(task.getId(), task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
         task.assign(picker, NOW);
         switch (status) {
             case PICKING -> task.start(picker, NOW);
@@ -858,7 +858,7 @@ class PickListServiceTest {
 
         @BeforeEach
         void aCancelledTaskWithAPickedLine() {
-            task = new PickJpaEntity(task.getId(), null, task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
+            task = new PickJpaEntity(task.getId(), task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
             task.assign(picker, NOW);
             task.start(picker, NOW);
             task.cancel(NOW);
@@ -989,7 +989,7 @@ class PickListServiceTest {
         @Test
         @DisplayName("a task that was not started before it was cancelled has nothing to put back")
         void nothingToPutBack() {
-            task = new PickJpaEntity(task.getId(), null, task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
+            task = new PickJpaEntity(task.getId(), task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
             task.cancel(NOW);
             when(picks.lockById(task.getId())).thenReturn(Optional.of(task));
             binOf(WAREHOUSE, true, StorageLocationView.Kind.BIN);
@@ -1059,7 +1059,7 @@ class PickListServiceTest {
 
         /** The task of the enclosing test, redrawn with a STAGING destination and walked to {@code status}. */
         private void stagingTaskIs(PickStatus status) {
-            task = new PickJpaEntity(task.getId(), null, task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING,
+            task = new PickJpaEntity(task.getId(), task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING,
                     com.stockflow.fulfillment.api.PickDestination.STAGING, AREA);
             task.assign(picker, NOW);
             if (status != PickStatus.PENDING) {
