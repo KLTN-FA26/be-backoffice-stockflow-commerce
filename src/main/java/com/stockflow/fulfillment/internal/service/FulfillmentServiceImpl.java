@@ -106,6 +106,11 @@ class FulfillmentServiceImpl implements FulfillmentService {
     public FulfillmentTask createTask(UUID orderId, UUID assignedUserId, PickDestination destination,
                                       String stagingLocationCode, CurrentUser actor) {
         require(actor, FulfillmentPermissions.TASK_ASSIGNMENT, Action.CREATE);
+        if (WarehouseScope.restriction().isPresent()) {
+            // BR-SEC-002 first, for a caller limited to warehouses: before the redelivery and batch lookups answer, and
+            // before the order's row lock is taken for a redelivery - neither is an out-of-scope caller's to cause.
+            requireOrderInScope(requireOrder(orderId));
+        }
         List<PickJpaEntity> existing = picks.findAllByOrderId(orderId);
         // WF-05 fix plan, section 2: goods of a shipment that came back, released to be delivered again, get a task of
         // their own - a second pick of a batch (or an order) picked once already. It comes before a new batch: a
@@ -131,7 +136,6 @@ class FulfillmentServiceImpl implements FulfillmentService {
             return toTask(latest);
         }
         OrderSummary order = requireOrder(orderId);
-        requireOrderInScope(order);
         if (order.status() == OrderStatus.AWAITING_STOCK && redelivery.isEmpty() && batch.isEmpty()) {
             return prePickTask(order, assignedUserId, destination, stagingLocationCode, actor);
         }
@@ -531,8 +535,9 @@ class FulfillmentServiceImpl implements FulfillmentService {
     /**
      * BR-SEC-002, before anything is said of the order or done for it: a caller limited to warehouses opens a task only
      * for an order released to one of theirs, or - not released yet, AWAITING_STOCK - shipping from one. Asked again
-     * where the task's warehouse is settled; asked here too because what comes between would otherwise answer first:
-     * a refusal naming the order's status, or a pre-pick allocating the order's stock (rolled back, but taken).
+     * where the task's warehouse is settled; asked first too because what comes between would otherwise answer first:
+     * a refusal naming the order's status, a pre-pick allocating the order's stock (rolled back, but taken), or the
+     * order's row lock taken for a redelivery.
      */
     private void requireOrderInScope(OrderSummary order) {
         if (WarehouseScope.restriction().isEmpty()) {
