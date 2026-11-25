@@ -200,15 +200,30 @@ public class DesignProjectService {
     }
 
     /**
-     * A design just started in the project (§4.1 step 3), in the caller's transaction: the project open, the owner's,
-     * of the design's customer, with room.
+     * The project a new design is started in (§4.1 step 3, BR-23.2), locked in the caller's transaction before the
+     * design is written: the owner's, of {@code customerId}, open and with room. Checked first so that a design is
+     * never left without a project because its project refused it after it was saved; and locked before the
+     * customer's draft limit is, the order every path that writes a new design into a project keeps.
      */
-    void joinOnStart(DesignDraftJpaEntity draft, UUID projectId, UUID actor) {
-        DesignProjectJpaEntity project = lockActive(projectId, actor);
-        if (!project.getCustomerId().equals(draft.getCustomerId())) {
+    DesignProjectJpaEntity lockForNewDesign(UUID projectId, UUID actor, UUID customerId) {
+        DesignProjectJpaEntity project = lock(projectId, actor);
+        if (!project.getCustomerId().equals(customerId)) {
             throw new BusinessException(ErrorCode.NOT_FOUND);
         }
-        join(project, draft, actor);
+        DesignProjectRules.requireActive(project.getStatus());
+        DesignProjectRules.requireRoomForDesign(drafts.countInProject(projectId));
+        return project;
+    }
+
+    /**
+     * Writes a new design into the project {@link #lockForNewDesign} locked for it: in it from its first version, so it
+     * is never, even within its own transaction, a design of no project, and its version starts at 0 as any new
+     * design's does.
+     */
+    void writeNew(DesignProjectJpaEntity project, DesignDraftJpaEntity draft, UUID actor) {
+        draft.joinProject(project.getId());
+        drafts.saveAndFlush(draft);
+        decide(draft, actor, DesignDecisionType.ADDED_TO_PROJECT, "Project " + project.getId());
     }
 
     /**

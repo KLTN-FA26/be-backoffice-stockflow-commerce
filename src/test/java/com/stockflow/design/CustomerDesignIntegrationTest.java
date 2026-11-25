@@ -80,6 +80,8 @@ class CustomerDesignIntegrationTest {
     private String templateId;
     private UUID owner;
     private UUID customerId;
+    /** The customer's project every design here is started in (BR-23.2). */
+    private String project;
 
     @BeforeEach
     void customizableProductWithAnActiveTemplateAndACustomer() throws Exception {
@@ -98,6 +100,8 @@ class CustomerDesignIntegrationTest {
         owner = account[0];
         customerId = account[1];
         as(owner);
+        project = data(mvc.perform(post("/api/v1/design-projects").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"Quán A\"}")).andExpect(status().isCreated())).get("id").asText();
     }
 
     // ---- fixtures ----
@@ -145,7 +149,8 @@ class CustomerDesignIntegrationTest {
     private ResultActions start(String name) throws Exception {
         return mvc.perform(post("/api/v1/designs/mine").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"productId\":\"" + productId + "\",\"sku\":\"" + sku
-                        + "\",\"templateCode\":\"CUP12-BODY\",\"name\":\"" + name + "\"}"));
+                        + "\",\"templateCode\":\"CUP12-BODY\",\"name\":\"" + name + "\",\"projectId\":\"" + project
+                        + "\"}"));
     }
 
     private JsonNode started() throws Exception {
@@ -406,7 +411,8 @@ class CustomerDesignIntegrationTest {
                         Identifiers.newId(), customerId, productId, owner);
             }
         });
-        var command = new CustomerDesignService.StartDesign(productId, sku, "CUP12-BODY", "Cùng lúc", null);
+        var command = new CustomerDesignService.StartDesign(productId, sku, "CUP12-BODY", "Cùng lúc",
+                UUID.fromString(project));
         CountDownLatch go = new CountDownLatch(1);
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
@@ -439,11 +445,12 @@ class CustomerDesignIntegrationTest {
     void whatCannotBeDesignedOnIsRefused() throws Exception {
         mvc.perform(post("/api/v1/designs/mine").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"productId\":\"" + productId + "\",\"sku\":\"" + sku
-                                + "\",\"templateCode\":\"NO-SUCH\",\"name\":\"x\"}"))
+                                + "\",\"templateCode\":\"NO-SUCH\",\"name\":\"x\",\"projectId\":\"" + project + "\"}"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_NOT_FOUND"));
         mvc.perform(post("/api/v1/designs/mine").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"productId\":\"" + productId + "\",\"sku\":\"" + sku + "\",\"name\":\"x\"}"))
+                        .content("{\"productId\":\"" + productId + "\",\"sku\":\"" + sku + "\",\"name\":\"x\","
+                                + "\"projectId\":\"" + project + "\"}"))
                 .andExpect(status().isBadRequest());
 
         tx.executeWithoutResult(s -> jdbc.update("UPDATE product.variants SET status = 'BLOCKED' WHERE sku = ?", sku));
@@ -512,10 +519,12 @@ class CustomerDesignIntegrationTest {
         assertThat(storedLayout(copy)).isEqualTo(storedLayout(id));
         assertThat(jdbc.queryForObject("SELECT storage_key FROM design.design_asset WHERE draft_id = ?::uuid AND id = ?",
                 String.class, copy, logo)).startsWith("design-assets/");
+        // It is a revision of the approved design, and it is in the source's project (BR-23.3).
         mvc.perform(get("/api/v1/designs/" + copy + "/history"))
-                .andExpect(jsonPath("$.data.items[0].decision").value("DERIVED_FROM_SNAPSHOT"));
+                .andExpect(jsonPath("$.data.items[?(@.decision == 'DERIVED_FROM_SNAPSHOT')]").exists())
+                .andExpect(jsonPath("$.data.items[?(@.decision == 'ADDED_TO_PROJECT')]").exists());
         // The copy is a draft of its own: its layout saves, the approved one's does not move.
-        save(copy, 0, layout(image("i1", logo.toString()))).andExpect(status().isOk());
+        save(copy, revision.get("version").asLong(), layout(image("i1", logo.toString()))).andExpect(status().isOk());
         assertThat(storedLayout(id)).contains("t1");
 
         // Once the template is retired, the approved layout has nothing to be drawn on: no revision.

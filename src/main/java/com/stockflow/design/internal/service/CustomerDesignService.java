@@ -21,6 +21,7 @@ import com.stockflow.design.internal.domain.DesignWorkflow;
 import com.stockflow.design.internal.entity.DesignDecisionJpaEntity;
 import com.stockflow.design.internal.entity.DesignDocumentJpaEntity;
 import com.stockflow.design.internal.entity.DesignDraftJpaEntity;
+import com.stockflow.design.internal.entity.DesignProjectJpaEntity;
 import com.stockflow.design.internal.repository.DesignAssetJpaRepository;
 import com.stockflow.design.internal.repository.DesignDecisionJpaRepository;
 import com.stockflow.design.internal.repository.DesignDocumentJpaRepository;
@@ -107,7 +108,7 @@ public class CustomerDesignService {
 
     /**
      * What a customer starts a design from: a product, one of its variants and that variant's template, a name, and the
-     * design project to start it in, if any (§4.1 step 3).
+     * design project to start it in (§4.1 step 3). Every new design belongs to a project (BR-23.2).
      */
     public record StartDesign(UUID productId, String sku, String templateCode, String name, UUID projectId) {
     }
@@ -120,9 +121,15 @@ public class CustomerDesignService {
      * The customer signed in starts a draft (§4.1, BR-01, BR-02): on an ACTIVE variant of an approved or published
      * CUSTOMIZABLE product, drawn on the variant's active template, owned by them and stored with the empty layout
      * the studio starts from. A customer holds at most {@value CustomerDesignRules#MAX_DRAFTS} drafts (B37).
+     *
+     * <p>It is started in one of the caller's open projects with room (BR-23.2): the project is checked and locked
+     * before the draft limit and before anything is written, so a refused start leaves nothing behind.</p>
      */
     @Auditable(action = AuditAction.CREATE, resourceType = "design")
     public DesignWorkflowService.DraftView start(UUID actor, StartDesign command) {
+        if (command.projectId() == null) {
+            throw invalid("projectId", "projectId names the design project to start the design in", "NotNull");
+        }
         CustomerSummary customer = activeCustomerOf(actor);
         requireDesignable(command.productId());
         PrintConfig template = printConfigs.activeOfProduct(command.productId()).stream()
@@ -130,20 +137,18 @@ public class CustomerDesignService {
                 .findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND,
                         "This variant has no active template " + command.templateCode()));
+        DesignProjectJpaEntity project = projects.lockForNewDesign(command.projectId(), actor, customer.customerId());
         requireRoomForDraft(customer.customerId());
 
         var draft = new DesignDraftJpaEntity(Identifiers.newId(), customer.customerId(), command.productId(),
                 command.name().strip(), null, DesignStatus.DRAFT);
         draft.ownedBy(actor);
         draft.drawOn(template.variantId(), template.sku(), template.templateId(), template.code());
-        drafts.saveAndFlush(draft);
+        projects.writeNew(project, draft, actor);
         String layout = CanonicalJson.canonical(DesignDocumentRules.empty(frame(template, List.of())));
         documents.save(new DesignDocumentJpaEntity(draft.getId(), layout, CanonicalJson.sha256Hex(layout),
                 clock.instant()));
         decide(draft, actor, DesignDecisionType.CREATED, "SKU " + template.sku() + ", template " + template.code());
-        if (command.projectId() != null) {
-            projects.joinOnStart(draft, command.projectId(), actor);
-        }
         return views.of(draft);
     }
 

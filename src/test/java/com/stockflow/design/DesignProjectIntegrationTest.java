@@ -45,6 +45,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
@@ -57,6 +58,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -68,6 +70,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @IntegrationTest
 @Import({PostgresContainer.class, RecordedEvents.class})
 @AutoConfigureMockMvc
+// On here, as in production: a retry with the same Idempotency-Key must be told what the first attempt was (BR-23).
+@TestPropertySource(properties = "stockflow.idempotency.enabled=true")
 class DesignProjectIntegrationTest {
 
     private static final Set<PermissionCode> REVIEWER = Set.of(PermissionCode.of("design-designs", Action.APPROVE),
@@ -181,17 +185,60 @@ class DesignProjectIntegrationTest {
         }
     }
 
-    /** A draft started in {@code inProject} (or alone), its logo placed at {@code u}, its three files rendered. */
+    /**
+     * A draft started in {@code inProject}, its logo placed at {@code u}, its three files rendered. {@code null} is a
+     * design in no project: one started before every design had to be in one (BR-23.2), which the table still holds -
+     * started in {@link #project}, then taken out of it, as such a design never was in one.
+     */
     private String draft(String inProject, double u) throws Exception {
-        String design = data(mvc.perform(post("/api/v1/designs/mine").contentType(MediaType.APPLICATION_JSON)
-                .content("{\"productId\":\"" + productId + "\",\"sku\":\"" + sku + "\",\"templateCode\":\"CUP12-BODY\","
-                        + "\"name\":\"Ly\"" + (inProject == null ? "" : ",\"projectId\":\"" + inProject + "\"") + "}"))
-                .andExpect(status().isCreated())).get("id").asText();
+        String design = data(start(inProject == null ? project : inProject, null).andExpect(status().isCreated()))
+                .get("id").asText();
+        if (inProject == null) {
+            tx.executeWithoutResult(s -> jdbc.update("UPDATE design.design_draft SET project_id = NULL "
+                    + "WHERE id = ?::uuid", design));
+        }
         String logo = data(mvc.perform(multipart("/api/v1/designs/" + design + "/assets")
                 .file(new MockMultipartFile("file", "logo.png", "image/png", png(1200, 1200))))
                 .andExpect(status().isCreated())).get("assetId").asText();
         layOut(design, logo, u);
         return design;
+    }
+
+    /** Starts a design in {@code inProject} (none when null), under {@code key} when one is given. */
+    private ResultActions start(String inProject, String key) throws Exception {
+        var request = post("/api/v1/designs/mine").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"productId\":\"" + productId + "\",\"sku\":\"" + sku + "\",\"templateCode\":\"CUP12-BODY\","
+                        + "\"name\":\"Ly\"" + (inProject == null ? "" : ",\"projectId\":\"" + inProject + "\"") + "}");
+        return mvc.perform(key == null ? request : request.header("Idempotency-Key", key));
+    }
+
+    /** One more open project of the caller's. */
+    private String newProject(String name) throws Exception {
+        return data(mvc.perform(post("/api/v1/design-projects").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"" + name + "\"}")).andExpect(status().isCreated())).get("id").asText();
+    }
+
+    /** Fills {@code inProject} up to its 20 designs with drafts of the customer's. */
+    private void fill(String inProject) {
+        long held = jdbc.queryForObject("SELECT count(*) FROM design.design_draft WHERE project_id = ?::uuid "
+                + "AND status <> 'ARCHIVED'", Long.class, inProject);
+        tx.executeWithoutResult(s -> {
+            for (long i = held; i < 20; i++) {
+                jdbc.update("INSERT INTO design.design_draft (id, customer_id, product_id, name, status, created_at, "
+                        + "current_artifacts, owner_user_id, project_id) VALUES (gen_random_uuid(), ?, ?, 'x', 'DRAFT', "
+                        + "NOW(), '{}'::jsonb, ?, ?::uuid)", customerId, productId, owner, inProject);
+            }
+        });
+    }
+
+    private long designsOfTheCustomer() {
+        return jdbc.queryForObject("SELECT count(*) FROM design.design_draft WHERE customer_id = ?", Long.class,
+                customerId);
+    }
+
+    private long draftsOfTheCustomer() {
+        return jdbc.queryForObject("SELECT count(*) FROM design.design_draft WHERE customer_id = ? AND status = 'DRAFT'",
+                Long.class, customerId);
     }
 
     /** A layout with {@code logo} at {@code u} across the wall. */
@@ -250,6 +297,79 @@ class DesignProjectIntegrationTest {
     private List<String> projectEvents() {
         return jdbc.queryForList("SELECT event FROM design.design_project_event WHERE project_id = ?::uuid "
                 + "ORDER BY created_at, id", String.class, project);
+    }
+
+    /**
+     * BR-23.2 (T1): a design is started in a project or not at all. The refusal is a settled answer, so a retry with
+     * the same Idempotency-Key is told the same from the stored response, and nothing was written either time.
+     */
+    @Test
+    void aDesignIsNotStartedWithoutAProject() throws Exception {
+        long designs = designsOfTheCustomer();
+        long drafts = draftsOfTheCustomer();
+        String key = UUID.randomUUID().toString();
+        start(null, key).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("projectId"))
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("NotNull"));
+        start(null, key).andExpect(status().isBadRequest())
+                .andExpect(header().string("Idempotency-Replayed", "true"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("projectId"));
+        assertThat(designsOfTheCustomer()).isEqualTo(designs);
+        assertThat(draftsOfTheCustomer()).isEqualTo(drafts);
+    }
+
+    /**
+     * BR-23.2 (T2): only one of the caller's open projects with room takes a new design. A closed or a full project is
+     * a 409 that a retry with the same key runs again (it may be answered otherwise once there is room); another
+     * customer's project does not exist for the caller, a 404 the retry is told again. No design is written.
+     */
+    @Test
+    void aDesignIsStartedOnlyInAnOpenProjectOfTheCallersWithRoom() throws Exception {
+        String closed = newProject("Đã đóng");
+        mvc.perform(post("/api/v1/design-projects/" + closed + "/archive").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"version\":" + jdbc.queryForObject("SELECT version FROM design.design_project WHERE id = "
+                        + "?::uuid", Long.class, closed) + "}")).andExpect(status().isOk());
+        String full = newProject("Đầy");
+        fill(full);
+        as(tx.execute(s -> {
+            UUID user = ReferenceRows.user(entityManager);
+            jdbc.update("UPDATE customer.customer SET user_id = ? WHERE id = ?", user,
+                    ReferenceRows.customer(entityManager));
+            return user;
+        }), Set.of());
+        String theirs = newProject("Của khách khác");
+        as(owner, Set.of());
+        long designs = designsOfTheCustomer();
+
+        String key = UUID.randomUUID().toString();
+        for (int attempt = 0; attempt < 2; attempt++) {
+            start(closed, key).andExpect(status().isConflict())
+                    .andExpect(header().doesNotExist("Idempotency-Replayed"))
+                    .andExpect(jsonPath("$.errorCode").value("DESIGN_PROJECT_ARCHIVED"));
+        }
+        key = UUID.randomUUID().toString();
+        for (int attempt = 0; attempt < 2; attempt++) {
+            start(full, key).andExpect(status().isConflict())
+                    .andExpect(header().doesNotExist("Idempotency-Replayed"))
+                    .andExpect(jsonPath("$.errorCode").value("DESIGN_PROJECT_FULL"));
+        }
+        key = UUID.randomUUID().toString();
+        start(theirs, key).andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("NOT_FOUND"));
+        start(theirs, key).andExpect(status().isNotFound())
+                .andExpect(header().string("Idempotency-Replayed", "true"))
+                .andExpect(jsonPath("$.errorCode").value("NOT_FOUND"));
+        start(UUID.randomUUID().toString(), null).andExpect(status().isNotFound());
+
+        assertThat(designsOfTheCustomer()).isEqualTo(designs);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM design.design_draft WHERE project_id = ?::uuid",
+                Long.class, theirs)).isZero();
+        // A customer that may take on no new work starts nothing, even in an open project of its own (BR-01).
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE customer.customer SET status = 'BLOCKED' WHERE id = ?",
+                customerId));
+        start(project, null).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CUSTOMER_NOT_ACTIVE"));
+        assertThat(designsOfTheCustomer()).isEqualTo(designs);
     }
 
     @Test
@@ -345,10 +465,8 @@ class DesignProjectIntegrationTest {
         // 19 count: one more fits.
         mvc.perform(post("/api/v1/design-projects/" + project + "/designs").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"designId\":\"" + extra + "\"}")).andExpect(status().isOk());
-        mvc.perform(post("/api/v1/designs/mine").contentType(MediaType.APPLICATION_JSON)
-                .content("{\"productId\":\"" + productId + "\",\"sku\":\"" + sku + "\",\"templateCode\":\"CUP12-BODY\","
-                        + "\"name\":\"Ly\",\"projectId\":\"" + project + "\"}"))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("DESIGN_PROJECT_FULL"));
+        start(project, null).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DESIGN_PROJECT_FULL"));
     }
 
     @Test

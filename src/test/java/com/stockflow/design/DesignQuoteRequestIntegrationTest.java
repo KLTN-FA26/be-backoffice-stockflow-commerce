@@ -141,9 +141,13 @@ class DesignQuoteRequestIntegrationTest {
         owner = account[0];
         customerId = account[1];
         as(owner, Set.of());
+        // Every design is started in one of its customer's projects (BR-23.2).
+        String startedIn = data(mvc.perform(post("/api/v1/design-projects").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"Quán A\"}")).andExpect(status().isCreated())).get("id").asText();
         design = data(mvc.perform(post("/api/v1/designs/mine").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"productId\":\"" + productId + "\",\"sku\":\"" + sku
-                        + "\",\"templateCode\":\"CUP12-BODY\",\"name\":\"Ly quán A\"}"))
+                        + "\",\"templateCode\":\"CUP12-BODY\",\"name\":\"Ly quán A\",\"projectId\":\"" + startedIn
+                        + "\"}"))
                 .andExpect(status().isCreated())).get("id").asText();
         logo = data(mvc.perform(multipart("/api/v1/designs/" + design + "/assets")
                 .file(new MockMultipartFile("file", "logo.png", "image/png", png(1200, 1200))))
