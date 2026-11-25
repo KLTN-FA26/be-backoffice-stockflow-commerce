@@ -65,13 +65,14 @@ SELECT pg_temp.expect_fail('IM5 an item weight written by an old client', $q$
 \echo '--- the carton keeps its measures, and their rules'
 SELECT pg_temp.expect_ok('IM6 the carton of the blue cup measured', $q$
     UPDATE inventory.uom_conversions SET length_cm = 60, width_cm = 50, height_cm = 40, weight_kg = 6
-     WHERE NOT is_base AND active
+     WHERE active
        AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);
 SELECT pg_temp.expect_fail('IM7 a carton of no weight (ck_uom_conversions_weight)', $q$
     UPDATE inventory.uom_conversions SET weight_kg = 0
-     WHERE NOT is_base AND active
+     WHERE active
        AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);
-SELECT pg_temp.expect_true('IM8 no base unit row is left to give a weight to: the base unit is the item''s own (V20261226000200)',
-    NOT EXISTS (SELECT 1 FROM inventory.uom_conversions WHERE is_base));
+SELECT pg_temp.expect_true('IM8 no base unit row is left to give a weight to: the base unit is the item''s own (V20261226000200, V20261226000300)',
+    NOT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'inventory' AND table_name = 'uom_conversions' AND column_name = 'is_base'));
 ROLLBACK;
 \echo 'PASS 43_item_unit_measures_removed'

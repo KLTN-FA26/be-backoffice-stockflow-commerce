@@ -123,7 +123,7 @@ class QuoteServiceTest {
     }
 
     private static UomConversion unit(String sku, UUID id, String code, int factor) {
-        return new UomConversion(id, sku, code, factor, null, null, null, null, true, 0, true);
+        return new UomConversion(id, sku, code, factor, null, null, null, null, true, 0);
     }
 
     /** The customer's own SKUs, as {@code CustomerSkus.ownersOf} answers them. */

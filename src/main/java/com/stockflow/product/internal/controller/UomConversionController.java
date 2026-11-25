@@ -75,9 +75,7 @@ class UomConversionController {
 
     @PutMapping("/{conversionId}")
     @Operation(summary = "Replace a packing unit",
-            description = "Marking "
-                    + "defaultShipping unmarks the item's previous default shipping unit atomically (no 409); "
-                    + "unmarking it leaves the item without one. active=false retires the unit; the variant's "
+            description = "active=false retires the unit; the variant's "
                     + "sales unit follows the active carton by itself. Changing the factor or code of a unit a "
                     + "document counts in (BR-10): 409 UOM_CONVERSION_IN_USE. Stale version: 409 OPTIMISTIC_LOCK.")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.UPDATE)

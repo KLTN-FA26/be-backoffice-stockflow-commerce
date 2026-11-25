@@ -147,10 +147,9 @@ public final class CustomerSkuRows {
             UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, sku);
             UUID carton = Identifiers.newId();
             jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at,
-                        default_shipping)
-                    VALUES (?, ?, 'CARTON', ?, FALSE, 4.2, 60, 40, 35, TRUE, 0, NOW(), TRUE)""",
+                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
+                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
+                    VALUES (?, ?, 'CARTON', ?, 4.2, 60, 40, 35, TRUE, 0, NOW())""",
                     carton, item, unitsPerCarton);
             return new Issued(sku, variant, product.productId(), snapshot, carton, unitsPerCarton);
         });
@@ -184,8 +183,8 @@ public final class CustomerSkuRows {
                   FROM (SELECT cu.length_cm, cu.width_cm, cu.height_cm, cu.weight_kg
                           FROM inventory.uom_conversions cu
                           JOIN inventory.inventory_items ci ON ci.id = cu.inventory_item_id
-                         WHERE ci.sku = ? AND NOT cu.is_base AND cu.active
-                         ORDER BY cu.default_shipping DESC, cu.created_at, cu.id LIMIT 1) c
+                         WHERE ci.sku = ? AND cu.active
+                         ORDER BY cu.created_at, cu.id LIMIT 1) c
                  WHERE u.id = ?""", like, issued.uomConversionId()));
         return issued;
     }

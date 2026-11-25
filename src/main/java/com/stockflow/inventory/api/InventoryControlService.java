@@ -13,8 +13,7 @@ public interface InventoryControlService {
     InventoryItemLogistics logistics(Sku sku);
 
     /**
-     * The SKU's carton spec (kltn-docs 01 BR-03): its carton unit - its one active packing unit, or the default shipping
-     * one among several, the unit V20261111000110 boxed its stock in - with that carton's declared size and full weight,
+     * The SKU's carton spec (kltn-docs 01 BR-03): its carton unit - its one active packing unit - with that carton's declared size and full weight,
      * and the item's may-rotate flag. Empty when the SKU has no item or no carton unit. The unit's
      * measures may still be undeclared ({@link CartonSpec#measured()}): no shipping label prints then (08 BR-07).
      */

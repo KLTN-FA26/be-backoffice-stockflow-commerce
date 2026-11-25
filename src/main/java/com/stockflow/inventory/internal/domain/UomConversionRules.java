@@ -33,13 +33,6 @@ public final class UomConversionRules {
         positive(d.lengthCm(), "lengthCm");
         positive(d.widthCm(), "widthCm");
         positive(d.heightCm(), "heightCm");
-        retiredIsNotDefaultShipping(d);
-    }
-
-    private static void retiredIsNotDefaultShipping(UomConversionDraft d) {
-        if (!d.active() && d.defaultShipping()) {
-            throw invalid("defaultShipping", "A retired unit cannot be the default shipping unit");
-        }
     }
 
     private static void positive(BigDecimal value, String field) {

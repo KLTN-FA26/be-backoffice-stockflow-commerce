@@ -32,7 +32,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** BR-10 (kltn-docs 01 §6): a unit that a document uses keeps its factor and code; defaults move atomically. */
+/** BR-10 (kltn-docs 01 §6): a unit that a document uses keeps its factor and code; 01 BR-03: one active carton. */
 class UomConversionServiceImplTest {
 
     private static final Sku SKU = new Sku("CUP-12OZ");
@@ -51,14 +51,12 @@ class UomConversionServiceImplTest {
         when(users.current()).thenReturn(Optional.empty());
     }
 
-    private static UomConversionDraft draft(String unit, int factor, boolean active,
-                                            boolean defaultShipping) {
-        return new UomConversionDraft(unit, factor, null, null, null, null, active, defaultShipping);
+    private static UomConversionDraft draft(String unit, int factor, boolean active) {
+        return new UomConversionDraft(unit, factor, null, null, null, null, active);
     }
 
-    private static UomConversion unit(UUID id, String code, int factor, boolean defaultShipping, long version) {
-        return new UomConversion(id, SKU.code(), code, factor, BigDecimal.ONE, null, null, null,
-                true, version, defaultShipping);
+    private static UomConversion unit(UUID id, String code, int factor, long version) {
+        return new UomConversion(id, SKU.code(), code, factor, BigDecimal.ONE, null, null, null, true, version);
     }
 
     @Nested
@@ -77,7 +75,7 @@ class UomConversionServiceImplTest {
         @Test
         @DisplayName("the page carries the repository's total, so a client can compute the page count")
         void pageWithTotal() {
-            UomConversion carton = unit(CARTON_ID, "CARTON", 1000, false, 0);
+            UomConversion carton = unit(CARTON_ID, "CARTON", 1000, 0);
             when(conversions.page(SKU.code(), 10, 0)).thenReturn(List.of(carton));
             when(conversions.count(SKU.code())).thenReturn(1L);
 
@@ -98,7 +96,7 @@ class UomConversionServiceImplTest {
         @Test
         @DisplayName("units by id come back keyed by id")
         void byIds() {
-            UomConversion carton = unit(CARTON_ID, "CARTON", 1000, false, 0);
+            UomConversion carton = unit(CARTON_ID, "CARTON", 1000, 0);
             when(conversions.find(SKU.code(), List.of(CARTON_ID))).thenReturn(List.of(carton));
 
             assertThat(service.conversions(SKU, List.of(CARTON_ID))).isEqualTo(Map.of(CARTON_ID, carton));
@@ -122,7 +120,7 @@ class UomConversionServiceImplTest {
         @Test
         @DisplayName("BR-09: the factor is a positive whole number of pieces")
         void factorMustBePositive() {
-            assertThat(codeOf(() -> service.add(SKU, draft("CARTON", 0, true, false))))
+            assertThat(codeOf(() -> service.add(SKU, draft("CARTON", 0, true))))
                     .isEqualTo(ErrorCode.VALIDATION_FAILED);
             verify(conversions, never()).insert(any(), any(), any(), anyString());
         }
@@ -130,14 +128,7 @@ class UomConversionServiceImplTest {
         @Test
         @DisplayName("a unit code is 1-16 upper-case letters, digits or underscore")
         void unitCodeShape() {
-            assertThat(codeOf(() -> service.add(SKU, draft("carton", 12, true, false))))
-                    .isEqualTo(ErrorCode.VALIDATION_FAILED);
-        }
-
-        @Test
-        @DisplayName("a retired unit cannot be the default shipping unit")
-        void retiredCannotBeDefault() {
-            assertThat(codeOf(() -> service.add(SKU, draft("CARTON", 12, false, true))))
+            assertThat(codeOf(() -> service.add(SKU, draft("carton", 12, true))))
                     .isEqualTo(ErrorCode.VALIDATION_FAILED);
         }
 
@@ -146,7 +137,7 @@ class UomConversionServiceImplTest {
         void duplicateUnit() {
             when(conversions.unitTaken(ITEM, "CARTON", null)).thenReturn(true);
 
-            assertThat(codeOf(() -> service.add(SKU, draft("CARTON", 12, true, false))))
+            assertThat(codeOf(() -> service.add(SKU, draft("CARTON", 12, true))))
                     .isEqualTo(ErrorCode.UOM_CONVERSION_DUPLICATE);
             verify(conversions, never()).insert(any(), any(), any(), anyString());
         }
@@ -156,13 +147,13 @@ class UomConversionServiceImplTest {
         void secondActiveCartonIsRefused() {
             when(conversions.activeCartonOf(ITEM, null)).thenReturn(Optional.of("CARTON"));
 
-            assertThat(codeOf(() -> service.add(SKU, draft("BOX", 12, true, false))))
+            assertThat(codeOf(() -> service.add(SKU, draft("BOX", 12, true))))
                     .isEqualTo(ErrorCode.UOM_CARTON_ALREADY_DECLARED);
             verify(conversions, never()).insert(any(), any(), any(), anyString());
 
             when(conversions.find(eq(SKU.code()), any(UUID.class))).thenAnswer(call ->
-                    Optional.of(unit(call.getArgument(1), "BOX", 12, false, 0)));
-            service.add(SKU, draft("BOX", 12, false, false));
+                    Optional.of(unit(call.getArgument(1), "BOX", 12, 0)));
+            service.add(SKU, draft("BOX", 12, false));
             verify(conversions).insert(any(), eq(ITEM), any(), eq("system"));
         }
 
@@ -175,28 +166,14 @@ class UomConversionServiceImplTest {
                 return null;
             }).when(conversions).insert(any(), eq(ITEM), any(), eq("system"));
             when(conversions.find(eq(SKU.code()), any(UUID.class))).thenAnswer(call ->
-                    Optional.of(unit(call.getArgument(1), "CARTON", 12, false, 0)));
+                    Optional.of(unit(call.getArgument(1), "CARTON", 12, 0)));
 
-            UomConversion created = service.add(SKU, draft("CARTON", 12, true, false));
+            UomConversion created = service.add(SKU, draft("CARTON", 12, true));
 
             InOrder order = inOrder(items, conversions);
             order.verify(items).lock(SKU.code());
             order.verify(conversions).insert(any(), eq(ITEM), any(), eq("system"));
             assertThat(created.id()).isEqualTo(inserted[0]);
-            verify(conversions, never()).clearDefaultShipping(any(), any(), anyString());
-        }
-
-        @Test
-        @DisplayName("marking the new unit default shipping unmarks the previous one first")
-        void newDefaultsReplaceOldOnes() {
-            when(conversions.find(eq(SKU.code()), any(UUID.class))).thenAnswer(call ->
-                    Optional.of(unit(call.getArgument(1), "CARTON", 12, true, 0)));
-
-            service.add(SKU, draft("CARTON", 12, true, true));
-
-            InOrder order = inOrder(conversions);
-            order.verify(conversions).clearDefaultShipping(eq(ITEM), any(UUID.class), eq("system"));
-            order.verify(conversions).insert(any(UUID.class), eq(ITEM), any(), eq("system"));
         }
 
         @Test
@@ -204,7 +181,7 @@ class UomConversionServiceImplTest {
         void unknownSku() {
             when(conversions.itemId("NOPE")).thenReturn(Optional.empty());
 
-            assertThat(codeOf(() -> service.add(new Sku("NOPE"), draft("CARTON", 12, true, false))))
+            assertThat(codeOf(() -> service.add(new Sku("NOPE"), draft("CARTON", 12, true))))
                     .isEqualTo(ErrorCode.INVENTORY_ITEM_NOT_FOUND);
         }
     }
@@ -213,7 +190,7 @@ class UomConversionServiceImplTest {
     @DisplayName("changing a unit")
     class Changing {
 
-        private final UomConversion carton = unit(CARTON_ID, "CARTON", 1000, false, 4);
+        private final UomConversion carton = unit(CARTON_ID, "CARTON", 1000, 4);
 
         @BeforeEach
         void cartonExists() {
@@ -226,7 +203,7 @@ class UomConversionServiceImplTest {
         void usedUnitKeepsItsFactor() {
             when(conversions.inUse(CARTON_ID)).thenReturn(true);
 
-            assertThat(codeOf(() -> service.change(SKU, CARTON_ID, 4, draft("CARTON", 500, true, false))))
+            assertThat(codeOf(() -> service.change(SKU, CARTON_ID, 4, draft("CARTON", 500, true))))
                     .isEqualTo(ErrorCode.UOM_CONVERSION_IN_USE);
             verify(conversions, never()).update(any(), anyLong(), any(), anyString());
         }
@@ -236,22 +213,23 @@ class UomConversionServiceImplTest {
         void usedUnitKeepsItsCode() {
             when(conversions.inUse(CARTON_ID)).thenReturn(true);
 
-            assertThat(codeOf(() -> service.change(SKU, CARTON_ID, 4, draft("BOX", 1000, true, false))))
+            assertThat(codeOf(() -> service.change(SKU, CARTON_ID, 4, draft("BOX", 1000, true))))
                     .isEqualTo(ErrorCode.UOM_CONVERSION_IN_USE);
         }
 
         @Test
-        @DisplayName("BR-10 only bites when the factor or code changes: a used unit's weight and default shipping mark stay editable")
+        @DisplayName("BR-10 only bites when the factor or code changes: a used unit's weight stays editable")
         void usedUnitStaysEditableInOtherFields() {
             when(conversions.inUse(CARTON_ID)).thenReturn(true);
             when(conversions.find(SKU.code(), CARTON_ID)).thenReturn(Optional.of(carton),
-                    Optional.of(unit(CARTON_ID, "CARTON", 1000, true, 5)));
+                    Optional.of(unit(CARTON_ID, "CARTON", 1000, 5)));
 
-            UomConversion changed = service.change(SKU, CARTON_ID, 4, draft("CARTON", 1000, true, true));
+            UomConversion changed = service.change(SKU, CARTON_ID, 4, new UomConversionDraft("CARTON", 1000,
+                    new BigDecimal("2.5"), null, null, null, true));
 
-            assertThat(changed.defaultShipping()).isTrue();
+            assertThat(changed.version()).isEqualTo(5);
             verify(conversions, never()).inUse(CARTON_ID);
-            verify(conversions).clearDefaultShipping(ITEM, CARTON_ID, "system");
+            verify(conversions).update(eq(CARTON_ID), eq(4L), any(), eq("system"));
         }
 
         @Test
@@ -259,7 +237,7 @@ class UomConversionServiceImplTest {
         void unusedUnitMayChangeFactor() {
             when(conversions.inUse(CARTON_ID)).thenReturn(false);
 
-            service.change(SKU, CARTON_ID, 4, draft("CARTON", 500, true, false));
+            service.change(SKU, CARTON_ID, 4, draft("CARTON", 500, true));
 
             verify(conversions).update(eq(CARTON_ID), eq(4L), any(), eq("system"));
         }
@@ -269,11 +247,11 @@ class UomConversionServiceImplTest {
         void reactivatingBesideAnActiveCartonIsRefused() {
             UUID retiredId = UUID.randomUUID();
             UomConversion retired = new UomConversion(retiredId, SKU.code(), "OLD", 1000, BigDecimal.ONE, null,
-                    null, null, false, 2, false);
+                    null, null, false, 2);
             when(conversions.find(SKU.code(), retiredId)).thenReturn(Optional.of(retired));
             when(conversions.activeCartonOf(ITEM, retiredId)).thenReturn(Optional.of("CARTON"));
 
-            assertThat(codeOf(() -> service.change(SKU, retiredId, 2, draft("OLD", 1000, true, false))))
+            assertThat(codeOf(() -> service.change(SKU, retiredId, 2, draft("OLD", 1000, true))))
                     .isEqualTo(ErrorCode.UOM_CARTON_ALREADY_DECLARED);
             verify(conversions, never()).update(any(), anyLong(), any(), anyString());
         }
@@ -281,7 +259,7 @@ class UomConversionServiceImplTest {
         @Test
         @DisplayName("a stale version is OPTIMISTIC_LOCK, before anything is written")
         void staleVersion() {
-            assertThat(codeOf(() -> service.change(SKU, CARTON_ID, 3, draft("CARTON", 1000, true, false))))
+            assertThat(codeOf(() -> service.change(SKU, CARTON_ID, 3, draft("CARTON", 1000, true))))
                     .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
             verify(conversions, never()).update(any(), anyLong(), any(), anyString());
         }
@@ -291,7 +269,7 @@ class UomConversionServiceImplTest {
         void lostUpdate() {
             when(conversions.update(eq(CARTON_ID), eq(4L), any(), anyString())).thenReturn(false);
 
-            assertThat(codeOf(() -> service.change(SKU, CARTON_ID, 4, draft("CARTON", 1000, true, false))))
+            assertThat(codeOf(() -> service.change(SKU, CARTON_ID, 4, draft("CARTON", 1000, true))))
                     .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
         }
 
@@ -300,7 +278,7 @@ class UomConversionServiceImplTest {
         void renameToTakenCode() {
             when(conversions.unitTaken(ITEM, "BOX", CARTON_ID)).thenReturn(true);
 
-            assertThat(codeOf(() -> service.change(SKU, CARTON_ID, 4, draft("BOX", 1000, true, false))))
+            assertThat(codeOf(() -> service.change(SKU, CARTON_ID, 4, draft("BOX", 1000, true))))
                     .isEqualTo(ErrorCode.UOM_CONVERSION_DUPLICATE);
         }
 
@@ -310,27 +288,8 @@ class UomConversionServiceImplTest {
             UUID other = UUID.randomUUID();
             when(conversions.find(SKU.code(), other)).thenReturn(Optional.empty());
 
-            assertThat(codeOf(() -> service.change(SKU, other, 1, draft("CARTON", 12, true, false))))
+            assertThat(codeOf(() -> service.change(SKU, other, 1, draft("CARTON", 12, true))))
                     .isEqualTo(ErrorCode.UOM_CONVERSION_NOT_FOUND);
-        }
-
-        @Test
-        @DisplayName("an already-default unit does not clear the others again")
-        void alreadyDefaultIsNotCleared() {
-            UomConversion shipping = unit(CARTON_ID, "CARTON", 1000, true, 4);
-            when(conversions.find(SKU.code(), CARTON_ID)).thenReturn(Optional.of(shipping));
-
-            service.change(SKU, CARTON_ID, 4, draft("CARTON", 1000, true, true));
-
-            verify(conversions, never()).clearDefaultShipping(any(), any(), anyString());
-        }
-
-        @Test
-        @DisplayName("marking a unit default shipping unmarks the previous one in the same transaction, not a 409")
-        void newDefaultShippingReplacesOld() {
-            service.change(SKU, CARTON_ID, 4, draft("CARTON", 1000, true, true));
-
-            verify(conversions).clearDefaultShipping(ITEM, CARTON_ID, "system");
         }
     }
 
@@ -341,7 +300,7 @@ class UomConversionServiceImplTest {
         @Test
         @DisplayName("BR-10: a unit a document uses cannot be deleted")
         void usedUnitCannotBeDeleted() {
-            when(conversions.find(SKU.code(), CARTON_ID)).thenReturn(Optional.of(unit(CARTON_ID, "CARTON", 12, false, 1)));
+            when(conversions.find(SKU.code(), CARTON_ID)).thenReturn(Optional.of(unit(CARTON_ID, "CARTON", 12, 1)));
             when(conversions.inUse(CARTON_ID)).thenReturn(true);
 
             assertThat(codeOf(() -> service.remove(SKU, CARTON_ID, 1))).isEqualTo(ErrorCode.UOM_CONVERSION_IN_USE);
@@ -351,7 +310,7 @@ class UomConversionServiceImplTest {
         @Test
         @DisplayName("a stale version is OPTIMISTIC_LOCK")
         void staleVersion() {
-            when(conversions.find(SKU.code(), CARTON_ID)).thenReturn(Optional.of(unit(CARTON_ID, "CARTON", 12, false, 1)));
+            when(conversions.find(SKU.code(), CARTON_ID)).thenReturn(Optional.of(unit(CARTON_ID, "CARTON", 12, 1)));
 
             assertThat(codeOf(() -> service.remove(SKU, CARTON_ID, 0))).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
         }
@@ -359,7 +318,7 @@ class UomConversionServiceImplTest {
         @Test
         @DisplayName("a lost DELETE race is OPTIMISTIC_LOCK")
         void lostDelete() {
-            when(conversions.find(SKU.code(), CARTON_ID)).thenReturn(Optional.of(unit(CARTON_ID, "CARTON", 12, false, 1)));
+            when(conversions.find(SKU.code(), CARTON_ID)).thenReturn(Optional.of(unit(CARTON_ID, "CARTON", 12, 1)));
             when(conversions.delete(CARTON_ID, 1)).thenReturn(false);
 
             assertThat(codeOf(() -> service.remove(SKU, CARTON_ID, 1))).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
@@ -368,7 +327,7 @@ class UomConversionServiceImplTest {
         @Test
         @DisplayName("an unused unit is deleted under the SKU lock")
         void deleted() {
-            when(conversions.find(SKU.code(), CARTON_ID)).thenReturn(Optional.of(unit(CARTON_ID, "CARTON", 12, false, 1)));
+            when(conversions.find(SKU.code(), CARTON_ID)).thenReturn(Optional.of(unit(CARTON_ID, "CARTON", 12, 1)));
             when(conversions.delete(CARTON_ID, 1)).thenReturn(true);
 
             service.remove(SKU, CARTON_ID, 1);

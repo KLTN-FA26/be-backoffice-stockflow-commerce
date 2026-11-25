@@ -88,9 +88,9 @@ class LoadEstimateIntegrationTest {
         tx.executeWithoutResult(s -> {
             // 24 on a pallet of 181 kg, 120 x 100 x 150 cm, flagged.
             jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        weight_kg, length_cm, width_cm, height_cm, active, default_shipping, created_by)
-                    SELECT ?, i.id, 'PALLET', 24, FALSE, 181, 120, 100, 150, TRUE, TRUE, 'test'
+                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
+                        weight_kg, length_cm, width_cm, height_cm, active, created_by)
+                    SELECT ?, i.id, 'PALLET', 24, 181, 120, 100, 150, TRUE, 'test'
                     FROM inventory.inventory_items i WHERE i.sku = ?""", Identifiers.newId(), palletSku);
             // A table, one to a carton of 160 x 90 x 75 cm, 45 kg.
             carton(tableSku, "TABLE", 1, "45", "160", "90", "75");
@@ -160,12 +160,12 @@ class LoadEstimateIntegrationTest {
         return id;
     }
 
-    /** The SKU's one carton unit, the default shipping one; a null measure is one nobody declared. */
+    /** The SKU's one carton unit, the one it ships in; a null measure is one nobody declared. */
     private void carton(String sku, String code, int factor, String kg, String length, String width, String height) {
         jdbc.update("""
-                INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                    weight_kg, length_cm, width_cm, height_cm, active, default_shipping, created_by)
-                SELECT ?, i.id, ?, ?, FALSE, ?::numeric, ?::numeric, ?::numeric, ?::numeric, TRUE, TRUE, 'test'
+                INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
+                    weight_kg, length_cm, width_cm, height_cm, active, created_by)
+                SELECT ?, i.id, ?, ?, ?::numeric, ?::numeric, ?::numeric, ?::numeric, TRUE, 'test'
                 FROM inventory.inventory_items i WHERE i.sku = ?""", Identifiers.newId(), code, factor, kg, length,
                 width, height, sku);
     }

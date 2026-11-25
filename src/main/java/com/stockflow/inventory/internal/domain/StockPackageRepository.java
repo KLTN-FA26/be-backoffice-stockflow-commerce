@@ -82,9 +82,8 @@ public interface StockPackageRepository {
     List<String> nextLpns(LocalDate day, int count);
 
     /**
-     * How many units one carton of {@code sku} holds: the factor of its carton unit - its one active packing unit, or
-     * the default shipping one among several, as V20261111000110 chose it when it boxed the stock. Empty when it has
-     * no such unit (it then has no stock in cartons either).
+     * How many units one carton of {@code sku} holds: the factor of its carton unit, its one active packing unit
+     * (01 BR-03). Empty when it has none (it then has no stock in cartons either).
      */
     java.util.OptionalInt cartonFactorOf(String sku);
 }
