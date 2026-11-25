@@ -121,7 +121,7 @@ class WarehouseOpenApiIntegrationTest {
         assertThat(prefix.path("pattern").asText()).isEqualTo("[A-Za-z0-9]{1,10}");
         assertThat(schema("FootprintRequest").path("properties").path("rotation").path("description").asText())
                 .contains("90");
-        assertThat(schema("CreateArea").path("properties").path("location").path("description").asText())
+        assertThat(schema("AreaRequestsCreateArea").path("properties").path("location").path("description").asText())
                 .contains("NON_STORAGE");
     }
 
