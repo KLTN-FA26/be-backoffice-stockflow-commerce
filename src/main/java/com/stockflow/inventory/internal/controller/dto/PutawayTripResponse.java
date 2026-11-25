@@ -59,10 +59,13 @@ public record PutawayTripResponse(UUID id, UUID warehouseId, UUID operatorId, St
                        @Schema(description = "Walking polyline to this stop in map units (m), both ends included;"
                                + " null when none can be drawn - fall back to the straight segment",
                                nullable = true)
-                       List<Point> path) {
+                       List<MapPoint> path) {
     }
 
-    /** A point of the warehouse map, in metres. */
-    public record Point(BigDecimal x, BigDecimal y) {
+    /**
+     * A point of the warehouse map, in metres. Not {@code Point}: springdoc names a schema by the simple class name,
+     * and the carrier pickup point would overwrite it (issue #445).
+     */
+    public record MapPoint(BigDecimal x, BigDecimal y) {
     }
 }

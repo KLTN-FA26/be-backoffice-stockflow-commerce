@@ -162,7 +162,7 @@ class PutawayTripController {
                         c.loadedAt(), c.placedAt())).toList(),
                 trip.stops().stream().map(s -> new PutawayTripResponse.Stop(s.sequence(), s.locationCode(), s.x(),
                         s.y(), s.lpns(), s.path() == null ? null : s.path().stream()
-                        .map(p -> new PutawayTripResponse.Point(p.x(), p.y())).toList())).toList(),
+                        .map(p -> new PutawayTripResponse.MapPoint(p.x(), p.y())).toList())).toList(),
                 ResponseLabels.name(names, trip.operatorId()), ResponseLabels.name(names, trip.closedBy()),
                 ResponseLabels.code(warehouses, trip.warehouseId()),
                 ResponseLabels.warehouseName(warehouses, trip.warehouseId()));
