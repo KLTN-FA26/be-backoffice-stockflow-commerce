@@ -17,7 +17,7 @@ public record CountLineRequest(
         Boolean found,
 
         @Schema(description = "The LPN scanned; required when found, absent when not found", example = "LPN-000123")
-        @Size(max = 64, message = "lpn is at most 64 characters")
+        @Size(max = 30, message = "lpn is at most 30 characters")
         String lpn
 ) {
 }

@@ -78,9 +78,9 @@ public interface CycleCounts {
      * that (BR-09). Repeating it before submission overwrites the answer. The line follows a carton moved whole within
      * the warehouse since planning (§4.2 b6).
      *
-     * <p>Found is a scan, not a claim: {@code lpn} must be the line's own carton's (§4.2 b4, as a pick line is
-     * confirmed only by its own LPN, 07 BR-10), so a counter cannot state a carton present without having it in hand.
-     * Not found scans nothing, so it takes no LPN.</p>
+     * <p>Found carries the LPN scanned, which must be the line's own carton's (§4.2 b4, as a pick line is confirmed
+     * only by its own LPN, 07 BR-10), so scanning the wrong carton does not count this line found. The line shows its
+     * LPN, so this catches a wrong scan, not one never made. Not found scans nothing, so it takes no LPN.</p>
      *
      * @param lpn       the LPN scanned, required when {@code found} and absent otherwise; case and padding are ignored
      * @param mayDecide the caller holds {@code inventory-cycle-counts:APPROVE}: counts any line, sees the books
