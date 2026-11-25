@@ -169,7 +169,7 @@ class BlindCountIntegrationTest {
     }
 
     private void countB(CycleCountView count) {
-        cycleCounts.count(count.id(), lineOf(count, cartonB.id()), false, clerk, false);
+        cycleCounts.count(count.id(), lineOf(count, cartonB.id()), false, null, clerk, false);
     }
 
     // ------------------------------------------------------------------ stock rows

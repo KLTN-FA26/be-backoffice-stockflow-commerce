@@ -543,7 +543,7 @@ class SkuReservationAllocationIntegrationTest {
         // Every line is counted before the count is submitted: those two at 0, the bin's other cartons as they are.
         for (var line : manual.lines()) {
             boolean missing = shortCarton.equals(line.stockPackageId()) || freeCarton.equals(line.stockPackageId());
-            cycleCounts.count(manual.id(), line.id(), !missing, counter, false);
+            cycleCounts.count(manual.id(), line.id(), !missing, missing ? null : line.lpn(), counter, false);
         }
         cycleCounts.submit(manual.id(), counter, false);
         assertThat(jdbc.queryForList("""

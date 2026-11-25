@@ -190,7 +190,7 @@ class CountVarianceOfShortCartonIntegrationTest {
                  WHERE l.stock_package_id = ? AND c.trigger_type = 'SHORT_PICK'""", carton);
         UUID count = (UUID) countLine.get("cycle_count_id");
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> {
-            cycleCounts.count(count, (UUID) countLine.get("id"), false, counter, false);
+            cycleCounts.count(count, (UUID) countLine.get("id"), false, null, counter, false);
             cycleCounts.submit(count, counter, false);
         });
         UUID adjustment = jdbc.queryForObject("""
@@ -526,9 +526,12 @@ class CountVarianceOfShortCartonIntegrationTest {
                 new CycleCounts.PlanCycleCountCommand(HCM, null, null, true, "Manual count", List.of(), List.of(),
                         List.of("HCM-A01-1-A"), List.of(cup.code())), false).count().id());
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> {
-            for (Map<String, Object> line : jdbc.queryForList(
-                    "SELECT id, stock_package_id FROM inventory.cycle_count_line WHERE cycle_count_id = ?", count)) {
-                cycleCounts.count(count, (UUID) line.get("id"), !cartons.contains(line.get("stock_package_id")),
+            for (Map<String, Object> line : jdbc.queryForList("""
+                    SELECT l.id, l.stock_package_id, p.lpn FROM inventory.cycle_count_line l
+                      JOIN inventory.stock_package p ON p.id = l.stock_package_id
+                     WHERE l.cycle_count_id = ?""", count)) {
+                boolean found = !cartons.contains(line.get("stock_package_id"));
+                cycleCounts.count(count, (UUID) line.get("id"), found, found ? (String) line.get("lpn") : null,
                         counter, false);
             }
             cycleCounts.submit(count, counter, false);

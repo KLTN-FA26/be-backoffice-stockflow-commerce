@@ -244,6 +244,15 @@ class CycleCountIntegrationTest {
         return view.lines().stream().filter(l -> carton.equals(l.stockPackageId())).findFirst().orElseThrow();
     }
 
+    /** Counts a line found the way a counter does: by scanning its carton's LPN (20 §4.2 b4). */
+    private CycleCountView scanFound(UUID countId, UUID lineId, UUID actor, boolean mayDecide) {
+        String lpn = jdbc.queryForObject("""
+                SELECT p.lpn FROM inventory.cycle_count_line l
+                  JOIN inventory.stock_package p ON p.id = l.stock_package_id
+                 WHERE l.id = ?""", String.class, lineId);
+        return cycleCounts.count(countId, lineId, true, lpn, actor, mayDecide);
+    }
+
     private static Set<String> slots(CycleCountView view) {
         return view.lines().stream().map(l -> l.locationCode() + "|" + l.sku() + "|" + l.lotNumber() + "|"
                 + l.stockPackageId()).collect(Collectors.toSet());
@@ -282,7 +291,7 @@ class CycleCountIntegrationTest {
     private CycleCountView countAllFound(CycleCountView planned) {
         CycleCountView last = planned;
         for (CycleCountView.Line line : planned.lines()) {
-            last = cycleCounts.count(planned.id(), line.id(), true, counter, false);
+            last = scanFound(planned.id(), line.id(), counter, false);
         }
         return last;
     }
@@ -411,7 +420,7 @@ class CycleCountIntegrationTest {
         CycleCountView planned = planBin(BIN).count();
         UUID line = planned.lines().get(0).id();
 
-        CycleCountView counted = cycleCounts.count(planned.id(), line, true, counter, false);
+        CycleCountView counted = scanFound(planned.id(), line, counter, false);
 
         assertThat(counted.status()).isEqualTo("IN_PROGRESS");
         assertThat(counted.startedAt()).isNotNull();
@@ -430,13 +439,41 @@ class CycleCountIntegrationTest {
     }
 
     @Test
+    @DisplayName("20 §4.2 b4: a line is found only by scanning its own carton's LPN; another LPN, or none, "
+            + "counts nothing")
+    void foundRequiresTheLinesOwnLpn() {
+        carton(BIN, "K");
+        UUID other = carton(BIN, "O");
+        CycleCountView planned = planBin(BIN).count();
+        UUID line = planned.lines().stream().filter(l -> !other.equals(l.stockPackageId())).findFirst()
+                .orElseThrow().id();
+
+        assertThat(code(catchThrowable(() -> cycleCounts.count(planned.id(), line, true, lpn("O"), counter, false))))
+                .as("the neighbour's carton").isEqualTo(ErrorCode.CYCLE_COUNT_LPN_MISMATCH);
+        assertThat(code(catchThrowable(() -> cycleCounts.count(planned.id(), line, true, null, counter, false))))
+                .as("nothing scanned").isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(code(catchThrowable(() -> cycleCounts.count(planned.id(), line, true, "  ", counter, false))))
+                .as("a blank scan").isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(code(catchThrowable(() -> cycleCounts.count(planned.id(), line, false, lpn("K"), counter, false))))
+                .as("not found, yet a carton scanned").isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(jdbc.queryForObject("select status from inventory.cycle_count where id = ?", String.class,
+                planned.id())).as("no refused scan starts the count").isEqualTo("PLANNED");
+
+        CycleCountView counted = cycleCounts.count(planned.id(), line, true,
+                " " + lpn("K").toLowerCase(java.util.Locale.ROOT) + " ", counter, false);
+
+        assertThat(counted.lines().stream().filter(l -> l.id().equals(line)).findFirst().orElseThrow().found())
+                .as("a scanner's case and padding do not matter").isTrue();
+    }
+
+    @Test
     @DisplayName("a carton not found is one whole-carton COUNT_VARIANCE; approved, it is LOST with nothing on hand")
     void notFoundIsOneCartonAdjustmentAndLost() {
         UUID kept = carton(BIN, "K");
         UUID gone = carton(BIN, "G");
         CycleCountView planned = planBin(BIN).count();
-        cycleCounts.count(planned.id(), cartonLine(planned, kept).id(), true, counter, false);
-        cycleCounts.count(planned.id(), cartonLine(planned, gone).id(), false, counter, false);
+        scanFound(planned.id(), cartonLine(planned, kept).id(), counter, false);
+        cycleCounts.count(planned.id(), cartonLine(planned, gone).id(), false, null, counter, false);
 
         CycleCountView submitted = cycleCounts.submit(planned.id(), counter, false);
 
@@ -471,9 +508,9 @@ class CycleCountIntegrationTest {
         UUID b = carton(BIN, "B");
         UUID c = carton(BIN2, "C");
         CycleCountView planned = planShelfA01().count();
-        cycleCounts.count(planned.id(), cartonLine(planned, a).id(), false, counter, false);
-        cycleCounts.count(planned.id(), cartonLine(planned, b).id(), false, counter, false);
-        cycleCounts.count(planned.id(), cartonLine(planned, c).id(), true, counter, false);
+        cycleCounts.count(planned.id(), cartonLine(planned, a).id(), false, null, counter, false);
+        cycleCounts.count(planned.id(), cartonLine(planned, b).id(), false, null, counter, false);
+        scanFound(planned.id(), cartonLine(planned, c).id(), counter, false);
 
         cycleCounts.submit(planned.id(), counter, false);
 
@@ -486,7 +523,7 @@ class CycleCountIntegrationTest {
     void submitIsIdempotent() {
         carton(BIN, "A");
         CycleCountView planned = planBin(BIN).count();
-        cycleCounts.count(planned.id(), planned.lines().get(0).id(), false, counter, false);
+        cycleCounts.count(planned.id(), planned.lines().get(0).id(), false, null, counter, false);
 
         CycleCountView first = cycleCounts.submit(planned.id(), counter, true);
         CycleCountView second = cycleCounts.submit(planned.id(), counter, true);
@@ -503,7 +540,7 @@ class CycleCountIntegrationTest {
         UUID a = carton(BIN, "A");
         carton(BIN, "B");
         CycleCountView planned = planBin(BIN).count();
-        cycleCounts.count(planned.id(), cartonLine(planned, a).id(), true, counter, false);
+        scanFound(planned.id(), cartonLine(planned, a).id(), counter, false);
 
         assertThat(code(catchThrowable(() -> cycleCounts.submit(planned.id(), counter, false))))
                 .isEqualTo(ErrorCode.CYCLE_COUNT_LINE_NOT_COUNTED);
@@ -516,17 +553,17 @@ class CycleCountIntegrationTest {
         UUID box = carton(BIN, "A");
         CycleCountView planned = planBin(BIN).count();
         UUID line = planned.lines().get(0).id();
-        cycleCounts.count(planned.id(), line, false, counter, false);
+        cycleCounts.count(planned.id(), line, false, null, counter, false);
         assertThat(cartonLine(cycleCounts.get(planned.id(), true), box).found()).isFalse();
 
-        cycleCounts.count(planned.id(), line, true, counter, false);
+        scanFound(planned.id(), line, counter, false);
 
         assertThat(cartonLine(cycleCounts.get(planned.id(), true), box).found()).isTrue();
         // The carton is lost between planning and counting: the books no longer have it, and the counter finds it.
         UUID lostBefore = carton(BIN2, "B");
         CycleCountView second = planBin(BIN2).count();
         loseWhole(lostBefore);
-        cycleCounts.count(second.id(), second.lines().get(0).id(), true, counter, false);
+        scanFound(second.id(), second.lines().get(0).id(), counter, false);
         CycleCountView books = cycleCounts.get(second.id(), true);
         assertThat(books.lines().get(0).booked()).as("re-read at counting: not in stock any more").isFalse();
         assertThat(books.lines().get(0).found()).isTrue();
@@ -543,7 +580,7 @@ class CycleCountIntegrationTest {
         UUID line = cartonLine(planned, box).id();
         moveWhole(box, BIN2);
 
-        CycleCountView counted = cycleCounts.count(planned.id(), line, false, counter, false);
+        CycleCountView counted = cycleCounts.count(planned.id(), line, false, null, counter, false);
 
         assertThat(cartonLine(counted, box).locationCode()).as("the line follows its carton").isEqualTo(BIN2);
         cycleCounts.submit(planned.id(), counter, false);
@@ -562,7 +599,7 @@ class CycleCountIntegrationTest {
         UUID line = cartonLine(planned, box).id();
         consumeWhole(box);
 
-        assertThat(code(catchThrowable(() -> cycleCounts.count(planned.id(), line, true, counter, false))))
+        assertThat(code(catchThrowable(() -> scanFound(planned.id(), line, counter, false))))
                 .isEqualTo(ErrorCode.CONFLICT);
         assertThat(cartonLine(cycleCounts.get(planned.id(), true), box).found()).as("nothing recorded").isNull();
     }
@@ -575,7 +612,7 @@ class CycleCountIntegrationTest {
         UUID box = carton(BIN, "S");
         CycleCountView planned = planBin(BIN).count();
         UUID line = cartonLine(planned, box).id();
-        cycleCounts.count(planned.id(), line, false, counter, false);
+        cycleCounts.count(planned.id(), line, false, null, counter, false);
         moveWhole(box, BIN2);
 
         Throwable stale = catchThrowable(() -> cycleCounts.submit(planned.id(), counter, true));
@@ -592,7 +629,7 @@ class CycleCountIntegrationTest {
         UUID emptied = carton(BIN, "E");
         CycleCountView first = planBin(BIN).count();
         UUID line = cartonLine(first, emptied).id();
-        cycleCounts.count(first.id(), line, false, counter, false);
+        cycleCounts.count(first.id(), line, false, null, counter, false);
         consumeWhole(emptied);
 
         Throwable stale = catchThrowable(() -> cycleCounts.submit(first.id(), counter, true));
@@ -603,7 +640,7 @@ class CycleCountIntegrationTest {
 
         UUID lost = carton(BIN2, "L");
         CycleCountView second = planBin(BIN2).count();
-        cycleCounts.count(second.id(), cartonLine(second, lost).id(), false, counter, false);
+        cycleCounts.count(second.id(), cartonLine(second, lost).id(), false, null, counter, false);
         loseWhole(lost);
 
         assertThat(code(catchThrowable(() -> cycleCounts.submit(second.id(), counter, false))))
@@ -635,8 +672,8 @@ class CycleCountIntegrationTest {
         UUID first = carton(BIN, "A");
         UUID second = carton(BIN2, "B");
         CycleCountView planned = planShelfA01().count();
-        cycleCounts.count(planned.id(), cartonLine(planned, first).id(), false, counter, false);
-        cycleCounts.count(planned.id(), cartonLine(planned, second).id(), false, counter, false);
+        cycleCounts.count(planned.id(), cartonLine(planned, first).id(), false, null, counter, false);
+        cycleCounts.count(planned.id(), cartonLine(planned, second).id(), false, null, counter, false);
         consumeWhole(second);
 
         assertThat(code(catchThrowable(() -> cycleCounts.submit(planned.id(), counter, false))))
@@ -651,7 +688,7 @@ class CycleCountIntegrationTest {
     void submitOfACancelledCountIsNotOpen() {
         UUID box = carton(BIN, "C");
         CycleCountView planned = planBin(BIN).count();
-        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), false, counter, false);
+        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), false, null, counter, false);
         cycleCounts.cancel(planned.id(), "Not needed", "test");
         consumeWhole(box);
 
@@ -667,7 +704,7 @@ class CycleCountIntegrationTest {
         UUID box = carton(BIN, "L");
         // A first count does not find it, and the manager approves the loss.
         CycleCountView first = planBin(BIN).count();
-        cycleCounts.count(first.id(), cartonLine(first, box).id(), false, counter, false);
+        cycleCounts.count(first.id(), cartonLine(first, box).id(), false, null, counter, false);
         cycleCounts.submit(first.id(), counter, false);
         operations.approve((UUID) adjustments().get(0).get("id"), manager);
         assertThat(status(box)).isEqualTo("LOST");
@@ -675,7 +712,7 @@ class CycleCountIntegrationTest {
         // A count of the next bin: the carton turns up in BIN2, away from its recorded bin - a move, not a count.
         carton(BIN2, "O");
         CycleCountView second = planBin(BIN2).count();
-        cycleCounts.count(second.id(), second.lines().get(0).id(), true, counter, false);
+        scanFound(second.id(), second.lines().get(0).id(), counter, false);
         Throwable elsewhere = catchThrowable(() -> cycleCounts.addLine(second.id(),
                 new AddCountLineCommand(BIN2, lpn("L"), counter, true)));
         assertThat(code(elsewhere)).isEqualTo(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION);
@@ -720,7 +757,7 @@ class CycleCountIntegrationTest {
         CycleCountView rest = cycleCounts.get(planned.id(), true);
         for (CycleCountView.Line line : rest.lines()) {
             if (line.found() == null) {
-                cycleCounts.count(planned.id(), line.id(), true, manager, true);
+                scanFound(planned.id(), line.id(), manager, true);
             }
         }
         cycleCounts.submit(planned.id(), manager, true);
@@ -786,7 +823,7 @@ class CycleCountIntegrationTest {
         CycleCount recount = shortPick(box, BIN);
         assertThat(atp()).as("the carton is in doubt").isEqualTo(CARTON_FACTOR);
 
-        cycleCounts.count(recount.id(), recount.lines().get(0).id(), false, counter, false);
+        cycleCounts.count(recount.id(), recount.lines().get(0).id(), false, null, counter, false);
         cycleCounts.submit(recount.id(), counter, false);
 
         assertThat(atp()).as("still in doubt while the variance waits for approval").isEqualTo(CARTON_FACTOR);
@@ -822,7 +859,7 @@ class CycleCountIntegrationTest {
         UUID box = carton(BIN, "A");
         carton(BIN2, "B");
         CycleCountView planned = planBin(BIN).count();
-        cycleCounts.count(planned.id(), planned.lines().get(0).id(), false, counter, false);
+        cycleCounts.count(planned.id(), planned.lines().get(0).id(), false, null, counter, false);
         cycleCounts.submit(planned.id(), counter, false);
 
         assertThat(atp()).isEqualTo(CARTON_FACTOR);
@@ -844,8 +881,8 @@ class CycleCountIntegrationTest {
         UUID fine = carton(BIN2, "B");
         CycleCountView planned = planShelfA01().count();
         UUID doubtedLine = cartonLine(planned, doubted).id();
-        cycleCounts.count(planned.id(), doubtedLine, false, counter, false);
-        cycleCounts.count(planned.id(), cartonLine(planned, fine).id(), true, counter, false);
+        cycleCounts.count(planned.id(), doubtedLine, false, null, counter, false);
+        scanFound(planned.id(), cartonLine(planned, fine).id(), counter, false);
         cycleCounts.submit(planned.id(), counter, false);
         UUID adjustment = (UUID) adjustments().get(0).get("id");
 
@@ -880,7 +917,7 @@ class CycleCountIntegrationTest {
                 .as("sent for recount once").isEqualTo(ErrorCode.CONFLICT);
 
         // The recount settles the carton: found this time, so no variance.
-        cycleCounts.count(recount.id(), recount.lines().get(0).id(), true, counter, false);
+        scanFound(recount.id(), recount.lines().get(0).id(), counter, false);
         cycleCounts.submit(recount.id(), counter, false);
         assertThat(adjustments()).as("only the rejected one").hasSize(1);
         assertThat(code(catchThrowable(() -> cycleCounts.recount(planned.id(), List.of(doubtedLine), null, manager))))
@@ -893,7 +930,7 @@ class CycleCountIntegrationTest {
         UUID box = carton(BIN2, "R");
         CycleCountView planned = planBin(BIN2).count();
         UUID doubted = cartonLine(planned, box).id();
-        cycleCounts.count(planned.id(), doubted, false, counter, false);
+        cycleCounts.count(planned.id(), doubted, false, null, counter, false);
         cycleCounts.submit(planned.id(), counter, false);
         operations.reject((UUID) adjustments().get(0).get("id"), manager, "Doubtful");
         consumeWhole(box);
@@ -912,7 +949,7 @@ class CycleCountIntegrationTest {
         UUID box = carton(BIN, "A");
         CycleCount shortPick = shortPick(box, BIN);
         UUID doubted = shortPick.lines().get(0).id();
-        cycleCounts.count(shortPick.id(), doubted, false, counter, false);
+        cycleCounts.count(shortPick.id(), doubted, false, null, counter, false);
         cycleCounts.submit(shortPick.id(), counter, false);
         operations.reject((UUID) adjustments().get(0).get("id"), manager, "Doubtful figure");
         assertThat(frozen()).as("the rejection decided the shortage").isEmpty();
@@ -960,11 +997,11 @@ class CycleCountIntegrationTest {
         CycleCountView planned = plan(clerk, List.of(), List.of(), List.of(BIN), List.of(sku)).count();
         UUID line = planned.lines().get(0).id();
 
-        assertThat(code(catchThrowable(() -> cycleCounts.count(planned.id(), line, true, colleague, false))))
+        assertThat(code(catchThrowable(() -> scanFound(planned.id(), line, colleague, false))))
                 .isEqualTo(ErrorCode.CYCLE_COUNT_NOT_ASSIGNEE);
-        assertThat(cycleCounts.count(planned.id(), line, false, manager, true).lines().get(0).countedBy())
+        assertThat(cycleCounts.count(planned.id(), line, false, null, manager, true).lines().get(0).countedBy())
                 .as("who decides counts may count").isEqualTo(manager);
-        assertThat(cycleCounts.count(planned.id(), line, true, clerk, false).lines().get(0).countedBy())
+        assertThat(scanFound(planned.id(), line, clerk, false).lines().get(0).countedBy())
                 .isEqualTo(clerk);
         assertThat(code(catchThrowable(() -> cycleCounts.assign(planned.id(), colleague, true))))
                 .as("a count being counted keeps its counter").isEqualTo(ErrorCode.CONFLICT);
@@ -985,7 +1022,7 @@ class CycleCountIntegrationTest {
     void aFoundBookedLineWhoseCartonLeftIsStale() {
         UUID picked = carton(BIN, "P");
         CycleCountView first = planBin(BIN).count();
-        cycleCounts.count(first.id(), cartonLine(first, picked).id(), true, counter, false);
+        scanFound(first.id(), cartonLine(first, picked).id(), counter, false);
         consumeWhole(picked);
 
         Throwable stale = catchThrowable(() -> cycleCounts.submit(first.id(), counter, true));
@@ -997,7 +1034,7 @@ class CycleCountIntegrationTest {
 
         UUID gone = carton(BIN2, "G");
         CycleCountView second = planBin(BIN2).count();
-        cycleCounts.count(second.id(), cartonLine(second, gone).id(), true, counter, false);
+        scanFound(second.id(), cartonLine(second, gone).id(), counter, false);
         loseWhole(gone);
 
         assertThat(code(catchThrowable(() -> cycleCounts.submit(second.id(), counter, true))))
@@ -1012,7 +1049,7 @@ class CycleCountIntegrationTest {
         UUID box = carton(BIN, "R");
         CycleCountView planned = planBin(BIN).count();
         loseWhole(box);
-        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), false, counter, false);
+        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), false, null, counter, false);
         CycleCountView books = cycleCounts.get(planned.id(), true);
         assertThat(cartonLine(books, box).booked()).isFalse();
         assertThat(cartonLine(books, box).found()).isFalse();
@@ -1028,7 +1065,7 @@ class CycleCountIntegrationTest {
     void aLineAsJudgedSubmitsWithoutVariance() {
         UUID box = carton(BIN, "K");
         CycleCountView planned = planBin(BIN).count();
-        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), true, counter, false);
+        scanFound(planned.id(), cartonLine(planned, box).id(), counter, false);
 
         assertThat(cycleCounts.submit(planned.id(), counter, false).status()).isEqualTo("COMPLETED");
         assertThat(adjustments()).isEmpty();
@@ -1156,8 +1193,8 @@ class CycleCountIntegrationTest {
         // count(found=true) of a carton emptied since planning
         UUID line = cartonLine(planned, counted).id();
         consumeWhole(counted);
-        Throwable foundForCounter = catchThrowable(() -> cycleCounts.count(planned.id(), line, true, counter, false));
-        Throwable foundForManager = catchThrowable(() -> cycleCounts.count(planned.id(), line, true, manager, true));
+        Throwable foundForCounter = catchThrowable(() -> scanFound(planned.id(), line, counter, false));
+        Throwable foundForManager = catchThrowable(() -> scanFound(planned.id(), line, manager, true));
         assertThat(code(foundForCounter)).isEqualTo(ErrorCode.CONFLICT);
         assertThat(message(foundForCounter)).doesNotContain("CONSUMED");
         assertThat(message(foundForManager)).contains("CONSUMED");
@@ -1170,7 +1207,7 @@ class CycleCountIntegrationTest {
     void blindStaleSubmitKeepsTheBooksFromTheCounter() {
         UUID box = carton(BIN, "S");
         CycleCountView planned = planBin(BIN).count();
-        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), false, counter, false);
+        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), false, null, counter, false);
         moveWhole(box, BIN2);
 
         Throwable forCounter = catchThrowable(() -> cycleCounts.submit(planned.id(), counter, false));

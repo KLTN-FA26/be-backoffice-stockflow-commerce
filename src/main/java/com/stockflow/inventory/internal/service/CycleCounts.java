@@ -78,13 +78,20 @@ public interface CycleCounts {
      * that (BR-09). Repeating it before submission overwrites the answer. The line follows a carton moved whole within
      * the warehouse since planning (§4.2 b6).
      *
+     * <p>Found carries the LPN scanned, which must be the line's own carton's (§4.2 b4, as a pick line is confirmed
+     * only by its own LPN, 07 BR-10), so scanning the wrong carton does not count this line found. The line shows its
+     * LPN, so this catches a wrong scan, not one never made. Not found scans nothing, so it takes no LPN.</p>
+     *
+     * @param lpn       the LPN scanned, required when {@code found} and absent otherwise; case and padding are ignored
      * @param mayDecide the caller holds {@code inventory-cycle-counts:APPROVE}: counts any line, sees the books
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code CYCLE_COUNT_NOT_OPEN};
      *         {@code CYCLE_COUNT_NOT_ASSIGNEE}; {@code CYCLE_COUNT_LINE_COUNTED_BY_OTHER};
+     *         {@code VALIDATION_FAILED} (found without an LPN, or not found with one);
+     *         {@code CYCLE_COUNT_LPN_MISMATCH} (an LPN that is not the line's carton's);
      *         {@code STOCK_PACKAGE_WRONG_LOCATION} (the carton left the warehouse); {@code CONFLICT} (found, but the
      *         carton was emptied or voided); {@code OUT_OF_DATA_SCOPE}
      */
-    CycleCountView count(UUID id, UUID lineId, boolean found, UUID actor, boolean mayDecide);
+    CycleCountView count(UUID id, UUID lineId, boolean found, String lpn, UUID actor, boolean mayDecide);
 
     /**
      * Adds a carton the plan did not list, scanned by its LPN in the bin it is recorded at (20 §4.2 b5) - a LOST

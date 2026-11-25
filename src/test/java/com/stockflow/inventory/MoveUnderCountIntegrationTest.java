@@ -117,7 +117,7 @@ class MoveUnderCountIntegrationTest {
 
     private void scan(CycleCountView count, String lpn, boolean found) {
         UUID line = count.lines().stream().filter(l -> lpn.equals(l.lpn())).findFirst().orElseThrow().id();
-        cycleCounts.count(count.id(), line, found, clerk, false);
+        cycleCounts.count(count.id(), line, found, found ? lpn : null, clerk, false);
     }
 
     @Test

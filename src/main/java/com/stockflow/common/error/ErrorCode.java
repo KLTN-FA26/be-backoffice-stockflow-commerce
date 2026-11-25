@@ -707,6 +707,11 @@ public enum ErrorCode {
     CYCLE_COUNT_LINE_COUNTED_BY_OTHER("This line was counted by someone else; only the assignee may count it again", 403),
     /** Submitting a count that still has uncounted lines. */
     CYCLE_COUNT_LINE_NOT_COUNTED("Some lines are not counted yet", 409),
+    /**
+     * A line stated found with an LPN that is not its carton's (kltn-docs 20 §4.2 b4): found means the line's own carton
+     * was scanned, as a pick line is confirmed only by its own LPN (07 BR-10).
+     */
+    CYCLE_COUNT_LPN_MISMATCH("The scanned carton is not this line's carton", 409),
     /** A slot already held by an open count. */
     CYCLE_COUNT_SLOT_BUSY("This stock slot is already on an open count", 409),
     /** A manual move out of or into a slot a cycle count holds (SCRUM-146). */
