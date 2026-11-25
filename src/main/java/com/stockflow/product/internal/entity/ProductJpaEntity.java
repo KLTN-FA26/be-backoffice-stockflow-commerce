@@ -24,9 +24,9 @@ import java.util.UUID;
  *       edited through the catalog by {@code ProductCommerceRepository} (and immutable once the
  *       product was ever published, trigger {@code tg_products_commerce_slug}) — so it is
  *       {@code updatable = false} here, or an admin edit of the name would write back a stale slug;</li>
- *   <li>{@code published_at}, {@code categoryId}, {@code brandName}: read-only. Publication is the
+ *   <li>{@code published_at}, {@code categoryId}, {@code categoryName}, {@code brandName}: read-only. Publication is the
  *       catalog's decision; the primary category lives in {@code product.product_categories} and is
- *       written by the repository adapter; the brand name is read for display. The two
+ *       written by the repository adapter; the brand and category names are read for display. The
  *       {@code @Formula}s are scalar subqueries, so the paginated list reads them without a join
  *       fetch or an N+1.</li>
  * </ul>
@@ -58,6 +58,11 @@ public class ProductJpaEntity extends BaseEntity {
 
     @Formula("(select pc.category_id from product.product_categories pc where pc.product_id = id and pc.is_primary)")
     private UUID categoryId;
+
+    /** The primary category's name, read like the brand's so a list row carries it without a lookup. */
+    @Formula("(select c.name from product.product_categories pc join product.categories c on c.id = pc.category_id"
+            + " where pc.product_id = id and pc.is_primary)")
+    private String categoryName;
 
     @Column(name = "short_description", columnDefinition = "text")
     private String shortDescription;
@@ -157,6 +162,7 @@ public class ProductJpaEntity extends BaseEntity {
     public UUID getBrandId() { return brandId; }
     public String getBrandName() { return brandName; }
     public UUID getCategoryId() { return categoryId; }
+    public String getCategoryName() { return categoryName; }
     public String getShortDescription() { return shortDescription; }
     public String getDescription() { return description; }
     public String getDescriptionEn() { return descriptionEn; }

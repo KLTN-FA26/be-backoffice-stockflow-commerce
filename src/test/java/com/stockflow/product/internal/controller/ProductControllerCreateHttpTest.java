@@ -1,5 +1,7 @@
 package com.stockflow.product.internal.controller;
 
+import com.stockflow.common.security.CurrentUserProvider;
+import com.stockflow.identity.api.IdentityService;
 import com.stockflow.product.api.CreateProductCommand;
 import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
@@ -35,8 +37,9 @@ class ProductControllerCreateHttpTest {
 
     private final ProductService service = mock(ProductService.class);
     private final ProductDuplicateService duplicates = mock(ProductDuplicateService.class);
-    private final MockMvc mvc = MockMvcBuilders.standaloneSetup(
-            new ProductController(service, duplicates, new ProductWebMapperImpl())).build();
+    private final ProductWebMapper mapper = new ProductWebMapperImpl();
+    private final MockMvc mvc = MockMvcBuilders.standaloneSetup(new ProductController(service, duplicates, mapper,
+            new ProductResponses(mapper, mock(IdentityService.class), mock(CurrentUserProvider.class)))).build();
 
     /** What the service answers a create with; its content does not matter to these tests. */
     @BeforeEach
@@ -44,7 +47,7 @@ class ProductControllerCreateHttpTest {
         Instant now = Instant.parse("2026-10-28T03:00:00Z");
         when(service.create(any())).thenReturn(new ProductSummary(UUID.randomUUID(), "CUP-12", "Ly", "Cup", "cup-12",
                 null, null, null, null, null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, ProductStatus.DRAFT, now,
-                "u", now, "u", null, null, null, null, null, null, null, 0L, null, null, null));
+                "u", now, "u", null, null, null, null, null, null, null, 0L, null, null, null, null));
     }
 
     @Test

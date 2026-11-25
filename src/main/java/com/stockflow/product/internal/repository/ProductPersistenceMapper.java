@@ -39,6 +39,6 @@ final class ProductPersistenceMapper {
                 e.getCreatedBy(), e.getLastModifiedAt(), e.getLastModifiedBy(), e.getSubmittedBy(),
                 e.getSubmittedAt(), e.getApprovedBy(), e.getApprovedAt(), e.getRejectionReason(),
                 e.getPublishedAt(), e.getDiscontinuedAt(), e.getVersion(), e.getDiscontinueReason(),
-                e.getSuspendedAt(), e.getSuspendReason());
+                e.getSuspendedAt(), e.getSuspendReason(), e.getCategoryName());
     }
 }
