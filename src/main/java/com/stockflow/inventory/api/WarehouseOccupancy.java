@@ -31,4 +31,11 @@ public interface WarehouseOccupancy {
      * ({@link InventoryControlService#cartonSpec}). A SKU with no carton spec, or one missing a dimension, is absent.
      */
     Map<String, BigDecimal> cartonVolumesM3(Collection<String> skus);
+
+    /**
+     * The load of each location of the warehouse (#456, the location list): what stands there, what putaway trips hold
+     * there, and whether a count is open there. Grouped reads for the whole warehouse, never one per location. A
+     * location with nothing standing, held or counted is absent - an empty bin.
+     */
+    Map<String, LocationLoad> loadsIn(java.util.UUID warehouseId, String warehousePrefix);
 }

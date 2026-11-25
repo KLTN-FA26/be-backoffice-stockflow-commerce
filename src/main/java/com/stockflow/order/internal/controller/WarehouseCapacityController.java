@@ -61,4 +61,23 @@ class WarehouseCapacityController {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(capacity.board(warehouseId));
     }
+
+    /**
+     * The load of each bin of one warehouse (#456; 06 §4.6): the numbers per bin in a table, not a heatmap (honeycombing
+     * and the heatmap stay a later phase, 06 §1, C2). Under the board's path for the reason in the class comment.
+     */
+    @GetMapping("/{warehouseId}/bins")
+    @Operation(summary = "The load of every bin of one warehouse, by location code: cartons, SKUs, units, occupied m3 "
+            + "and kg, what putaway trips hold, free m3 (after the utilization factor) and kg, occupied %, cartons "
+            + "without a size, whether a count is open there. Empty bins included, areas not. Computed when read (06 "
+            + "BR-20)",
+            description = "capacityM3, freeM3 and occupiedPercent are null for a bin with no volume (no clear height) "
+                    + "or not usable now; freeKg is null for a bin with no weight limit. 403 OUT_OF_DATA_SCOPE for a "
+                    + "warehouse the caller is not assigned to; 404 WAREHOUSE_NOT_FOUND.")
+    @RequiresPermission(resource = OrderResources.WAREHOUSE_CAPACITY, action = Action.READ, scope = DataScope.ALL)
+    public ApiResponse<List<WarehouseCapacityService.BinOccupancy>> bins(@PathVariable UUID warehouseId,
+                                                                        @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(capacity.binOccupancy(warehouseId));
+    }
 }

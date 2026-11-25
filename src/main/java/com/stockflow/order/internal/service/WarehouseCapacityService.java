@@ -6,6 +6,7 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.AssignedWarehouses;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.contracts.WarehouseCapacityTurnedNegative;
+import com.stockflow.inventory.api.LocationLoad;
 import com.stockflow.inventory.api.OccupiedVolume;
 import com.stockflow.inventory.api.WarehouseOccupancy;
 import com.stockflow.order.internal.domain.CapacityBoard;
@@ -13,6 +14,7 @@ import com.stockflow.order.internal.domain.ProductionOrder;
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
 import com.stockflow.order.internal.domain.WarehouseDirectory;
 import com.stockflow.order.internal.repository.OpenProductionCartons;
+import com.stockflow.warehouse.api.BinCapacity;
 import com.stockflow.warehouse.api.CapacityGroup;
 import com.stockflow.warehouse.api.WarehouseCapacities;
 import com.stockflow.warehouse.api.WarehouseCapacity;
@@ -119,6 +121,36 @@ public class WarehouseCapacityService {
                                           boolean exceedsIfAllApproved, BigDecimal shortfallM3) {
     }
 
+    /**
+     * One bin's load (#456; kltn-docs 06 §4.6, BR-19, BR-20): the board's columns for a single bin, so a location list
+     * can say which bins are empty, nearly full or blocked. Measured as the board measures a shelf - occupied is every
+     * carton IN_STOCK there, capacity the bin's volume times the warehouse's utilization factor, and the bins of a shelf
+     * add up to the shelf's row. Advisory, computed when read, never stored.
+     */
+    @Schema(name = "BinOccupancy")
+    public record BinOccupancy(
+            String locationCode,
+            String shelfCode,
+            @Schema(description = "The bin's effective status: its own, or its shelf's or warehouse's when those are "
+                    + "not ACTIVE") String status,
+            @Schema(description = "It may hold cartons now. An unusable bin offers no room: capacity, free and the "
+                    + "percentage are null, as the board does not count it") boolean usable,
+            int cartons, int skus, int units,
+            @Schema(description = "Volume x utilization factor; null without a volume (no clear height) or when not "
+                    + "usable") BigDecimal capacityM3,
+            BigDecimal occupiedM3,
+            BigDecimal occupiedKg,
+            @Schema(description = "What putaway trips on their way hold in it (05 BR-16), not in occupied")
+            BigDecimal heldByTripsM3,
+            @Schema(description = "capacity - occupied, as the board's shelf row; null with capacity") BigDecimal freeM3,
+            @Schema(description = "Its weight limit; null for none") BigDecimal maxWeightKg,
+            @Schema(description = "maxWeight - occupied weight; null without a limit") BigDecimal freeKg,
+            @Schema(description = "occupied / capacity, two decimals; null with capacity") BigDecimal occupiedPercent,
+            @Schema(description = "Cartons without a size: they take no volume here, so occupied is short by them")
+            int cartonsWithoutSize,
+            @Schema(description = "A cycle count still open counts a slot in it") boolean underOpenCount) {
+    }
+
     /** A warehouse's board with what it was worked out from, for the callers in this module. */
     public record Computed(CapacityBoard board, Board view) {
     }
@@ -162,6 +194,40 @@ public class WarehouseCapacityService {
             throw new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse " + warehouseId);
         }
         return computed.view();
+    }
+
+    /**
+     * The load of every bin of one warehouse, by location code (#456): empty bins too, with zeros; no areas - an area
+     * has no capacity (06 BR-19, decided 2026-11-13). Constant in the number of bins: the map's bins in one read,
+     * what stands in them and what trips hold in a few grouped reads for the whole warehouse.
+     *
+     * @throws BusinessException {@code OUT_OF_DATA_SCOPE} for a warehouse the caller is not assigned to;
+     *         {@code WAREHOUSE_NOT_FOUND}
+     */
+    public List<BinOccupancy> binOccupancy(UUID warehouseId) {
+        WarehouseScope.requireWarehouse(warehouseId);
+        WarehouseCapacity map = warehouseMaps.capacityOf(warehouseId).orElseThrow(() -> new BusinessException(
+                ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse " + warehouseId));
+        Map<String, LocationLoad> loads = occupancy.loadsIn(warehouseId, map.prefix());
+        List<BinOccupancy> bins = new ArrayList<>();
+        for (BinCapacity bin : warehouseMaps.binsOf(warehouseId)) {
+            LocationLoad load = loads.get(bin.locationCode());
+            BigDecimal occupiedM3 = load == null ? BigDecimal.ZERO : load.occupiedM3();
+            BigDecimal occupiedKg = (load == null ? BigDecimal.ZERO : load.occupiedKg())
+                    .setScale(KG_SCALE, RoundingMode.HALF_UP);
+            CapacityBoard.Level level = CapacityBoard.level(bin.usable() ? bin.volumeM3() : null,
+                    map.utilizationFactor(), occupiedM3);
+            BigDecimal freeKg = bin.maxWeightKg() == null ? null
+                    : bin.maxWeightKg().subtract(occupiedKg).setScale(KG_SCALE, RoundingMode.HALF_UP);
+            bins.add(new BinOccupancy(bin.locationCode(), bin.shelfCode(), bin.status(), bin.usable(),
+                    load == null ? 0 : load.cartons(), load == null ? 0 : load.skus(), load == null ? 0 : load.units(),
+                    level.capacityM3(), level.occupiedM3(), occupiedKg,
+                    (load == null ? BigDecimal.ZERO : load.heldByTripsM3()).setScale(CapacityBoard.SCALE,
+                            RoundingMode.HALF_UP),
+                    level.freeM3(), bin.maxWeightKg(), freeKg, level.occupiedPercent(),
+                    load == null ? 0 : load.cartonsWithoutSize(), load != null && load.underOpenCount()));
+        }
+        return bins;
     }
 
     // ---- for this module --------------------------------------------------------------------------------------------

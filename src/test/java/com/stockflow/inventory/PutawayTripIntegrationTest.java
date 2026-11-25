@@ -56,6 +56,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class PutawayTripIntegrationTest {
 
     @Autowired PutawayTripService trips;
+    @Autowired com.stockflow.inventory.api.WarehouseOccupancy occupancy;
     @Autowired PutawayService putaway;
     @Autowired PutawayTasks putawayTasks;
     @Autowired PutawayTrips tripApi;
@@ -637,5 +638,24 @@ class PutawayTripIntegrationTest {
 
         // Not limited, the same scan is refused for what it is: a carton standing in another warehouse than the trip.
         assertThat(refused(() -> trips.load(trip.id(), lpn1, otherClerk))).isEqualTo(ErrorCode.MOVE_ACROSS_WAREHOUSES);
+    }
+
+    @Test
+    @DisplayName("#456: the bin a trip on its way holds shows it in its load, apart from what stands there")
+    void aTripHoldShowsInTheBinsLoad() {
+        String bin = oneCartonBin("A01");
+        String empty = oneCartonBin("A02");
+        TripView trip = onItsWay(clerk, lpn1);
+        assertThat(carton(trip, lpn1).assignedLocationCode()).isEqualTo(bin);
+
+        var loads = occupancy.loadsIn(warehouse, prefix);
+
+        assertThat(loads.get(bin)).satisfies(load -> {
+            assertThat(load.heldByTripsM3()).as("50 x 40 x 30 cm").isEqualByComparingTo("0.06");
+            assertThat(load.cartons()).as("nothing stands there yet").isZero();
+            assertThat(load.occupiedM3()).isEqualByComparingTo("0");
+        });
+        assertThat(loads).doesNotContainKey(empty);
+        assertThat(loads.get(receiving).cartons()).as("the cartons still on the dock").isEqualTo(3);
     }
 }

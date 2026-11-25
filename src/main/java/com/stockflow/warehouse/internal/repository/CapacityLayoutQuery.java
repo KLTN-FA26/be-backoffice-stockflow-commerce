@@ -35,6 +35,12 @@ public class CapacityLayoutQuery {
     public record ShelfRow(UUID id, String code, String name, UUID zoneId, LocationStatus status) {
     }
 
+    /** One bin as the location list shows it: {@link BinRow} with its shelf's code and its weight limit. */
+    public record BinDetailRow(String locationCode, LocationStatus locationStatus, String shelfCode,
+                               LocationStatus shelfStatus, BigDecimal width, BigDecimal length, BigDecimal usableHeight,
+                               BigDecimal maxWeight) {
+    }
+
     public record ZoneRow(UUID id, String name) {
     }
 
@@ -68,6 +74,21 @@ public class CapacityLayoutQuery {
                         where s.warehouseId = :warehouseId
                         order by loc.locationCode
                         """, BinRow.class)
+                .setParameter("warehouseId", warehouseId)
+                .getResultList();
+    }
+
+    public List<BinDetailRow> binDetails(UUID warehouseId) {
+        return entityManager.createQuery("""
+                        select loc.locationCode, loc.status, s.code, s.status, b.width, b.length, l.usableHeight,
+                               loc.maxWeight
+                        from BinJpaEntity b
+                        join b.level l
+                        join l.shelf s
+                        join b.location loc
+                        where s.warehouseId = :warehouseId
+                        order by loc.locationCode
+                        """, BinDetailRow.class)
                 .setParameter("warehouseId", warehouseId)
                 .getResultList();
     }

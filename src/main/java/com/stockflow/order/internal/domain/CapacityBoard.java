@@ -33,7 +33,7 @@ import java.util.Optional;
 public record CapacityBoard(BigDecimal binVolumeM3, BigDecimal utilizationFactor, BigDecimal occupiedM3,
                             BigDecimal incomingM3, BigDecimal pendingM3, BigDecimal outgoingM3) {
 
-    static final int SCALE = 3;
+    public static final int SCALE = 3;
     private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
 
     public CapacityBoard {

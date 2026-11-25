@@ -1,6 +1,7 @@
 package com.stockflow.inventory.internal.service;
 
 import com.stockflow.inventory.api.CartonSpec;
+import com.stockflow.inventory.api.LocationLoad;
 import com.stockflow.inventory.api.OccupiedVolume;
 import com.stockflow.inventory.api.WarehouseOccupancy;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
@@ -31,10 +32,66 @@ class WarehouseOccupancyImpl implements WarehouseOccupancy {
 
     private final WarehouseOccupancyQuery query;
     private final InventoryPolicyRepository policies;
+    private final BinSuggestionInputs inputs;
 
-    WarehouseOccupancyImpl(WarehouseOccupancyQuery query, InventoryPolicyRepository policies) {
+    WarehouseOccupancyImpl(WarehouseOccupancyQuery query, InventoryPolicyRepository policies,
+                           BinSuggestionInputs inputs) {
         this.query = query;
         this.policies = policies;
+        this.inputs = inputs;
+    }
+
+    /**
+     * What stands, what trips hold - the space putaway and the move suggestions count as taken
+     * ({@link BinSuggestionInputs#heldByTrips}, 05 BR-16; a hold in an area is left out, an area has no volume) - and
+     * the open counts, by location.
+     */
+    @Override
+    public Map<String, LocationLoad> loadsIn(java.util.UUID warehouseId, String warehousePrefix) {
+        Map<String, Builder> loads = new java.util.TreeMap<>();
+        for (WarehouseOccupancyQuery.LoadAt at : query.loadsByLocation(warehousePrefix)) {
+            Builder load = loads.computeIfAbsent(at.locationCode(), Builder::new);
+            load.cartons = at.cartons();
+            load.skus = at.skus();
+            load.units = at.units();
+            load.withoutSize = at.cartonsWithoutSize();
+            load.occupiedM3 = at.volumeM3();
+            load.occupiedKg = at.weightKg();
+        }
+        for (BinSuggestionInputs.Reserved held : inputs.heldByTrips(warehouseId, null)) {
+            Builder load = loads.computeIfAbsent(held.locationCode(), Builder::new);
+            load.heldM3 = load.heldM3.add(held.volumeM3() == null ? BigDecimal.ZERO : held.volumeM3());
+            load.heldKg = load.heldKg.add(held.weightKg() == null ? BigDecimal.ZERO : held.weightKg());
+        }
+        for (String counted : query.locationsUnderOpenCount(warehousePrefix)) {
+            loads.computeIfAbsent(counted, Builder::new).underCount = true;
+        }
+        Map<String, LocationLoad> out = new LinkedHashMap<>();
+        loads.forEach((code, load) -> out.put(code, load.build()));
+        return out;
+    }
+
+    /** A location's load being added up. */
+    private static final class Builder {
+        private final String locationCode;
+        private int cartons;
+        private int skus;
+        private int units;
+        private int withoutSize;
+        private BigDecimal occupiedM3 = BigDecimal.ZERO.setScale(6);
+        private BigDecimal occupiedKg = BigDecimal.ZERO;
+        private BigDecimal heldM3 = BigDecimal.ZERO.setScale(6);
+        private BigDecimal heldKg = BigDecimal.ZERO;
+        private boolean underCount;
+
+        private Builder(String locationCode) {
+            this.locationCode = locationCode;
+        }
+
+        private LocationLoad build() {
+            return new LocationLoad(locationCode, cartons, skus, units, occupiedM3, occupiedKg, withoutSize,
+                    heldM3.setScale(6, RoundingMode.HALF_UP), heldKg, underCount);
+        }
     }
 
     @Override

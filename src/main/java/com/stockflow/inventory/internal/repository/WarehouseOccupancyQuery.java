@@ -51,6 +51,49 @@ public class WarehouseOccupancyQuery {
                 warehousePrefix + "-%");
     }
 
+    /** {@link AtLocation} with the SKUs and units in the cartons: a bin's load for the location list (#456). */
+    public record LoadAt(String locationCode, int cartons, int skus, int units, int cartonsWithoutSize,
+                         BigDecimal volumeM3, BigDecimal weightKg) {
+    }
+
+    /**
+     * Every carton IN_STOCK at a location of the warehouse, by location, as {@link #inStockByLocation} counts them, with
+     * how many SKUs and units they hold. One statement for the warehouse.
+     */
+    public List<LoadAt> loadsByLocation(String warehousePrefix) {
+        return jdbc.query("""
+                select p.location_code,
+                       count(*) as cartons,
+                       count(distinct p.inventory_item_id) as skus,
+                       coalesce(sum(s.on_hand), 0) as units,
+                       count(*) filter (where u.length_cm is null or u.width_cm is null or u.height_cm is null)
+                           as without_size,
+                       coalesce(sum(u.length_cm * u.width_cm * u.height_cm / 1000000), 0) as volume_m3,
+                       coalesce(sum(u.weight_kg), 0) as weight_kg
+                  from inventory.stock_package p
+                  join inventory.uom_conversions u on u.id = p.uom_conversion_id
+                  left join lateral (select sum(i.on_hand) as on_hand from inventory.stock_item i
+                                      where i.stock_package_id = p.id) s on true
+                 where p.status = 'IN_STOCK'
+                   and p.location_code like ?
+                 group by p.location_code
+                 order by p.location_code""",
+                (rs, n) -> new LoadAt(rs.getString("location_code"), rs.getInt("cartons"), rs.getInt("skus"),
+                        rs.getInt("units"), rs.getInt("without_size"), m3(rs.getBigDecimal("volume_m3")),
+                        rs.getBigDecimal("weight_kg")),
+                warehousePrefix + "-%");
+    }
+
+    /** The locations of the warehouse where a cycle count still open (PLANNED, IN_PROGRESS) counts a slot. */
+    public java.util.Set<String> locationsUnderOpenCount(String warehousePrefix) {
+        return new java.util.HashSet<>(jdbc.queryForList("""
+                select distinct l.location_code
+                  from inventory.cycle_count_line l
+                  join inventory.cycle_count c on c.id = l.cycle_count_id
+                 where c.status in ('PLANNED', 'IN_PROGRESS')
+                   and l.location_code like ?""", String.class, warehousePrefix + "-%"));
+    }
+
     /**
      * The units of each SKU held at the warehouse by a hold of its own - {@code HELD}, tied to no stock row, taken at
      * this warehouse (4B-7: {@code warehouse_code}). A hold of before 4B-7 names no warehouse and is not counted.
