@@ -24,17 +24,25 @@ import java.util.function.IntConsumer;
  * a door that is closed or not passable. An open door drawn over a wall cuts its span out of the wall. The map's frame
  * is the outer limit. Only the line drawn changes: the stop order is still {@link PutawayRoute#order}'s.</p>
  *
+ * <p><b>Clearance.</b> People and carts walk an aisle, not an obstacle's edge, so the line keeps {@value #CLEARANCE} m
+ * from every obstacle: each one is grown by that much (its <i>reach</i>) and the line stays out of the reach. A gap
+ * narrower than twice the clearance - the 0.2 m between two shelves of a run, the upright frames - is not a way
+ * through, and the line runs down the middle of an aisle rather than on a shelf's edge (issue #446; the seed's aisles
+ * are 3 to 6 m). Walls and closed doors are not grown: a door is as wide as it is drawn.</p>
+ *
  * <p><b>How.</b> A grid finds the way round (cells of 0.5 m, wider on a map that would need more than
  * {@value #MAX_CELLS} of them), A* with 8 moves walks it, and string pulling straightens the result. The grid only
- * decides the topology: a cell is blocked when its centre is strictly inside an obstacle, and every move, like every
- * straightened segment, is checked against the exact shapes - so a narrow aisle the grid does not line up with is
- * still used, and walls do not eat aisle width. A segment may slide along an obstacle's edge but never enters it, and
- * may not touch a wall or a closed door at all.</p>
+ * decides the topology: a cell is blocked when its centre is strictly inside a reach, and every move, like every
+ * straightened segment, is checked against the exact reaches - so an aisle the grid does not line up with is still
+ * used. A segment may slide along a reach's edge but never enters it, and may not touch a wall or a closed door.</p>
  *
- * <p><b>Endpoints</b> are kept exactly as given, never snapped: a stand point lies on a shelf's pick face and an area
- * stop at the area's centre, so each end is joined to the nearest free cell it can see within {@value #SNAP_RADIUS} m.
- * An obstacle strictly containing an end (an area stop whose area is flagged an obstacle) is ignored for segments
- * starting or ending there, and the {@value #SNAP_RADIUS} m are then counted from that obstacle's nearest edge.</p>
+ * <p><b>Endpoints</b> are kept exactly as given, never snapped: a stand point lies on a shelf's pick face, inside that
+ * shelf's reach. Each end therefore steps back first: straight out from the face it stands on to {@value #CLEARANCE} m
+ * (the <i>stand-off</i>), and the line is found from there. Only that short link may come closer than the clearance;
+ * it still never enters an obstacle. Where the straight step back lands in another reach, the end is joined instead to
+ * the nearest free cell it can see within {@value #SNAP_RADIUS} m. An obstacle strictly containing an end (an area stop
+ * whose area is flagged an obstacle) is ignored for segments starting or ending there, and the {@value #SNAP_RADIUS} m
+ * are then counted from that obstacle's reach.</p>
  *
  * <p>An instance is not thread-safe: it caches the moves it has checked.</p>
  */
@@ -46,6 +54,12 @@ public final class WalkingPath {
     static final int MAX_CELLS = 200_000;
     /** How far an end looks for the grid. */
     static final double SNAP_RADIUS = 3.0;
+    /**
+     * How far the line keeps from an obstacle, in metres: half the narrowest aisle a person with a cart walks (0.8 m).
+     */
+    static final double CLEARANCE = 0.4;
+    /** A stand-off lands this little past the reach's edge, so rounding cannot put it back inside. */
+    private static final double STAND_OFF = CLEARANCE + 1e-6;
 
     /** "On the edge" and "touching" tolerance: the map is in millimetres, so this is far below anything drawn. */
     private static final double EPS = 1e-9;
@@ -77,6 +91,11 @@ public final class WalkingPath {
             double y = footprint.y().doubleValue();
             return new Box(x, y, x + footprint.effectiveWidth().doubleValue(),
                     y + footprint.effectiveLength().doubleValue());
+        }
+
+        /** This box grown by {@code margin} on every side. */
+        Box grown(double margin) {
+            return new Box(minX - margin, minY - margin, maxX + margin, maxY + margin);
         }
 
         boolean strictlyContains(double x, double y) {
@@ -152,12 +171,17 @@ public final class WalkingPath {
         }
     }
 
+    /** An obstacle as drawn ({@code body}) and grown by {@link #CLEARANCE} ({@code reach}). */
+    record Obstacle(Box body, Box reach) {
+    }
+
     private final double width;
     private final double height;
     private final double step;
     private final int cols;
     private final int rows;
     private final List<Box> boxes;
+    private final List<Obstacle> obstacles;
     private final List<Line> lines;
     private final boolean[] free;
     private final byte[] moves;
@@ -167,19 +191,21 @@ public final class WalkingPath {
         this.width = width;
         this.height = height;
         this.boxes = boxes;
+        this.obstacles = boxes.stream().map(box -> new Obstacle(box, box.grown(CLEARANCE))).toList();
         this.lines = lines;
         double area = width * height;
         this.step = area / (STEP * STEP) > MAX_CELLS ? Math.sqrt(area / MAX_CELLS) : STEP;
         this.cols = Math.max(1, (int) Math.ceil(width / step - EPS));
         this.rows = Math.max(1, (int) Math.ceil(height / step - EPS));
-        this.index = new ShapeIndex(width, height, boxes, lines);
+        this.index = new ShapeIndex(width, height, obstacles, lines);
         this.free = new boolean[cols * rows];
         for (int j = 0; j < rows; j++) {
             for (int i = 0; i < cols; i++) {
                 free[j * cols + i] = centreX(i) <= width + EPS && centreY(j) <= height + EPS;
             }
         }
-        for (Box box : boxes) {
+        for (Obstacle obstacle : obstacles) {
+            Box box = obstacle.reach();
             int i0 = Math.max(0, (int) Math.floor(box.minX() / step - 0.5));
             int i1 = Math.min(cols - 1, (int) Math.ceil(box.maxX() / step - 0.5));
             int j0 = Math.max(0, (int) Math.floor(box.minY() / step - 0.5));
@@ -236,37 +262,67 @@ public final class WalkingPath {
         if (from.x().compareTo(to.x()) == 0 && from.y().compareTo(to.y()) == 0) {
             return Optional.of(List.of(from, to));
         }
-        if (clear(fx, fy, true, tx, ty, true)) {
-            return Optional.of(List.of(from, to));
-        }
-        int start = snap(fx, fy);
-        int goal = snap(tx, ty);
-        if (start < 0 || goal < 0) {
+        double[] exemptFrom = {fx, fy};
+        double[] exemptTo = {tx, ty};
+        Optional<double[]> a = standOff(fx, fy);
+        Optional<double[]> b = standOff(tx, ty);
+        if (a.isEmpty() || b.isEmpty()) {
             return Optional.empty();
         }
-        int[] cells = search(start, goal);
-        if (cells == null) {
-            return Optional.empty();
+        double[] start = a.get();
+        double[] end = b.get();
+        List<double[]> middle = new ArrayList<>();
+        if (!clear(start[0], start[1], exemptFrom, end[0], end[1], exemptTo, true)) {
+            int startCell = snap(start[0], start[1], exemptFrom, true);
+            int goalCell = snap(end[0], end[1], exemptTo, true);
+            if (startCell < 0 || goalCell < 0) {
+                return Optional.empty();
+            }
+            int[] cells = search(startCell, goalCell);
+            if (cells == null) {
+                return Optional.empty();
+            }
+            double[][] points = new double[cells.length + 2][];
+            points[0] = start;
+            for (int k = 0; k < cells.length; k++) {
+                points[k + 1] = new double[]{centreX(cells[k] % cols), centreY(cells[k] / cols)};
+            }
+            points[points.length - 1] = end;
+            int last = points.length - 1;
+            int i = 0;
+            while (i < last) {
+                int j = last;
+                while (j > i + 1 && !clear(points[i][0], points[i][1], i == 0 ? exemptFrom : null,
+                        points[j][0], points[j][1], j == last ? exemptTo : null, true)) {
+                    j--;
+                }
+                if (j < last) {
+                    middle.add(points[j]);
+                }
+                i = j;
+            }
         }
-        double[][] points = new double[cells.length + 2][];
-        points[0] = new double[]{fx, fy};
-        for (int k = 0; k < cells.length; k++) {
-            points[k + 1] = new double[]{centreX(cells[k] % cols), centreY(cells[k] / cols)};
-        }
-        points[points.length - 1] = new double[]{tx, ty};
         List<Point> path = new ArrayList<>();
         path.add(from);
-        int last = points.length - 1;
-        int i = 0;
-        while (i < last) {
-            int j = last;
-            while (j > i + 1 && !clear(points[i][0], points[i][1], i == 0, points[j][0], points[j][1], j == last)) {
-                j--;
-            }
-            path.add(j == last ? to : point(points[j][0], points[j][1]));
-            i = j;
+        if (start[0] != fx || start[1] != fy) {
+            add(path, point(start[0], start[1]));
         }
+        middle.forEach(corner -> add(path, point(corner[0], corner[1])));
+        if (end[0] != tx || end[1] != ty) {
+            add(path, point(end[0], end[1]));
+        }
+        add(path, to);
         return Optional.of(List.copyOf(path));
+    }
+
+    /** Appends the point, or puts it in place of the last one when the two are equal: no zero-length segment. */
+    private static void add(List<Point> path, Point point) {
+        Point previous = path.get(path.size() - 1);
+        if (path.size() > 1 && previous.x().compareTo(point.x()) == 0 && previous.y().compareTo(point.y()) == 0) {
+            path.set(path.size() - 1, point);
+            return;
+        }
+        path.add(point);
     }
 
     /**
@@ -290,15 +346,17 @@ public final class WalkingPath {
     }
 
     /**
-     * Whether the straight segment is walkable: it enters no obstacle and touches no wall or closed door. An end
-     * marked {@code exempt} is a route endpoint, and an obstacle strictly containing it does not count.
+     * Whether the straight segment is walkable: it touches no wall or closed door and enters no obstacle - its reach
+     * when {@code keepClear}, else only the obstacle itself (the link from an end to its stand-off). An obstacle
+     * strictly containing {@code exemptA} or {@code exemptB}, the route's own ends, does not count; null exempts none.
      */
-    boolean clear(double ax, double ay, boolean exemptA, double bx, double by, boolean exemptB) {
-        for (Box box : index.boxesNear(ax, ay, bx, by)) {
-            if ((exemptA && box.strictlyContains(ax, ay)) || (exemptB && box.strictlyContains(bx, by))) {
+    boolean clear(double ax, double ay, double[] exemptA, double bx, double by, double[] exemptB,
+                  boolean keepClear) {
+        for (Obstacle obstacle : index.obstaclesNear(ax, ay, bx, by)) {
+            if (exempts(obstacle, exemptA) || exempts(obstacle, exemptB)) {
                 continue;
             }
-            if (box.entered(ax, ay, bx, by)) {
+            if ((keepClear ? obstacle.reach() : obstacle.body()).entered(ax, ay, bx, by)) {
                 return false;
             }
         }
@@ -308,6 +366,88 @@ public final class WalkingPath {
             }
         }
         return true;
+    }
+
+    private static boolean exempts(Obstacle obstacle, double[] end) {
+        return end != null && obstacle.body().strictlyContains(end[0], end[1]);
+    }
+
+    /**
+     * Where the line from or to the end ({@code x}, {@code y}) starts: the end itself when it is out of every reach,
+     * else the point straight out from the nearest obstacle's face at {@value #CLEARANCE} m, else the nearest free
+     * cell the end can see. Empty when none is there.
+     */
+    private Optional<double[]> standOff(double x, double y) {
+        double[] end = {x, y};
+        if (!inReach(x, y, end)) {
+            return Optional.of(end);
+        }
+        Box nearest = null;
+        double nearestDistance = Double.POSITIVE_INFINITY;
+        for (Obstacle obstacle : index.obstaclesNear(x, y, x, y)) {
+            if (!exempts(obstacle, end) && obstacle.reach().strictlyContains(x, y)) {
+                double distance = distanceOutside(obstacle.body(), x, y);
+                if (distance < nearestDistance) {
+                    nearest = obstacle.body();
+                    nearestDistance = distance;
+                }
+            }
+        }
+        if (nearest != null) {
+            double[] out = outward(nearest, x, y);
+            double cx = Math.max(nearest.minX(), Math.min(nearest.maxX(), x));
+            double cy = Math.max(nearest.minY(), Math.min(nearest.maxY(), y));
+            double sx = cx + out[0] * STAND_OFF;
+            double sy = cy + out[1] * STAND_OFF;
+            if (onMap(sx, sy) && !inReach(sx, sy, end) && clear(x, y, end, sx, sy, null, false)) {
+                return Optional.of(new double[]{sx, sy});
+            }
+        }
+        int cell = snap(x, y, end, false);
+        return cell < 0 ? Optional.empty()
+                : Optional.of(new double[]{centreX(cell % cols), centreY(cell / cols)});
+    }
+
+    /** Whether the point is strictly inside the reach of an obstacle that does not strictly contain {@code end}. */
+    private boolean inReach(double x, double y, double[] end) {
+        for (Obstacle obstacle : index.obstaclesNear(x, y, x, y)) {
+            if (!exempts(obstacle, end) && obstacle.reach().strictlyContains(x, y)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** How far a point outside (or on the edge of) the box is from it. */
+    private static double distanceOutside(Box box, double x, double y) {
+        double dx = Math.max(0, Math.max(box.minX() - x, x - box.maxX()));
+        double dy = Math.max(0, Math.max(box.minY() - y, y - box.maxY()));
+        return Math.hypot(dx, dy);
+    }
+
+    /**
+     * The unit direction from the box out to the point: away from its nearest point, or, for a point on its edge,
+     * square to the face it lies on.
+     */
+    private static double[] outward(Box box, double x, double y) {
+        double dx = x < box.minX() ? x - box.minX() : x > box.maxX() ? x - box.maxX() : 0;
+        double dy = y < box.minY() ? y - box.minY() : y > box.maxY() ? y - box.maxY() : 0;
+        double length = Math.hypot(dx, dy);
+        if (length > EPS) {
+            return new double[]{dx / length, dy / length};
+        }
+        double west = Math.abs(x - box.minX());
+        double east = Math.abs(box.maxX() - x);
+        double south = Math.abs(y - box.minY());
+        double north = Math.abs(box.maxY() - y);
+        double least = Math.min(Math.min(west, east), Math.min(south, north));
+        if (least == north) {
+            return new double[]{0, 1};
+        }
+        if (least == south) {
+            return new double[]{0, -1};
+        }
+        return least == east ? new double[]{1, 0} : new double[]{-1, 0};
     }
 
     /** The obstacles and blocking lines of this map, for checking a path from outside. */
@@ -323,12 +463,15 @@ public final class WalkingPath {
         return x >= -EPS && y >= -EPS && x <= width + EPS && y <= height + EPS;
     }
 
-    /** The nearest free cell an end sees in a straight line, or -1. */
-    private int snap(double x, double y) {
+    /**
+     * The nearest free cell the point sees in a straight line, or -1: seen past the reaches when {@code keepClear}
+     * (a stand-off, already in the open), else past the obstacles only (an end inside a reach).
+     */
+    private int snap(double x, double y, double[] end, boolean keepClear) {
         double radius = SNAP_RADIUS;
         for (Box box : boxes) {
-            if (box.strictlyContains(x, y)) {
-                radius = Math.max(radius, SNAP_RADIUS + box.depthOf(x, y));
+            if (box.strictlyContains(end[0], end[1])) {
+                radius = Math.max(radius, SNAP_RADIUS + box.depthOf(end[0], end[1]) + CLEARANCE);
             }
         }
         int i0 = Math.max(0, (int) Math.floor((x - radius) / step));
@@ -348,7 +491,7 @@ public final class WalkingPath {
         candidates.sort(Comparator.<double[]>comparingDouble(c -> c[0]).thenComparingDouble(c -> c[1]));
         for (double[] candidate : candidates) {
             int cell = (int) candidate[1];
-            if (clear(x, y, true, centreX(cell % cols), centreY(cell / cols), false)) {
+            if (clear(x, y, end, centreX(cell % cols), centreY(cell / cols), null, keepClear)) {
                 return cell;
             }
         }
@@ -417,7 +560,7 @@ public final class WalkingPath {
         int ny = cy + DY[d];
         boolean allowed = nx >= 0 && ny >= 0 && nx < cols && ny < rows && free[ny * cols + nx]
                 && (d < 4 || (free[cy * cols + nx] && free[ny * cols + cx]))
-                && clear(centreX(cx), centreY(cy), false, centreX(nx), centreY(ny), false);
+                && clear(centreX(cx), centreY(cy), null, centreX(nx), centreY(ny), null, true);
         moves[cell * DX.length + d] = allowed ? ALLOWED : REFUSED;
         return allowed;
     }
@@ -491,8 +634,8 @@ public final class WalkingPath {
 
     /**
      * Shapes bucketed by area, so checking a short move looks at the few shapes near it rather than every one on the
-     * map. A shape is listed in every bucket its bounding box touches; a query may see one twice, which costs a
-     * check and changes nothing.
+     * map. A shape is listed in every bucket its bounding box touches - an obstacle by its reach, which holds it; a
+     * query may see one twice, which costs a check and changes nothing.
      */
     private static final class ShapeIndex {
 
@@ -500,10 +643,10 @@ public final class WalkingPath {
 
         private final int bucketCols;
         private final int bucketRows;
-        private final List<List<Box>> boxBuckets;
+        private final List<List<Obstacle>> boxBuckets;
         private final List<List<Line>> lineBuckets;
 
-        ShapeIndex(double width, double height, List<Box> boxes, List<Line> lines) {
+        ShapeIndex(double width, double height, List<Obstacle> obstacles, List<Line> lines) {
             this.bucketCols = Math.max(1, (int) Math.ceil(width / BUCKET) + 1);
             this.bucketRows = Math.max(1, (int) Math.ceil(height / BUCKET) + 1);
             this.boxBuckets = new ArrayList<>();
@@ -512,8 +655,10 @@ public final class WalkingPath {
                 boxBuckets.add(new ArrayList<>());
                 lineBuckets.add(new ArrayList<>());
             }
-            for (Box box : boxes) {
-                forEachBucket(box.minX(), box.minY(), box.maxX(), box.maxY(), k -> boxBuckets.get(k).add(box));
+            for (Obstacle obstacle : obstacles) {
+                Box box = obstacle.reach();
+                forEachBucket(box.minX(), box.minY(), box.maxX(), box.maxY(),
+                        k -> boxBuckets.get(k).add(obstacle));
             }
             for (Line line : lines) {
                 forEachBucket(Math.min(line.ax(), line.bx()), Math.min(line.ay(), line.by()),
@@ -522,8 +667,8 @@ public final class WalkingPath {
             }
         }
 
-        List<Box> boxesNear(double ax, double ay, double bx, double by) {
-            List<Box> near = new ArrayList<>();
+        List<Obstacle> obstaclesNear(double ax, double ay, double bx, double by) {
+            List<Obstacle> near = new ArrayList<>();
             forEachBucket(Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by),
                     k -> near.addAll(boxBuckets.get(k)));
             return near;
