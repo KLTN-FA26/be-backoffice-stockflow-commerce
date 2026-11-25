@@ -1,5 +1,5 @@
 -- =============================================================================
--- A project quote request's close reason (V20261228000100, kltn-docs 12 BR-25.3): only on a request a salesperson
+-- A project quote request's close reason (V20261228000400, kltn-docs 12 BR-25.3): only on a request a salesperson
 -- closed, never blank. Builds its own project and request on a demo customer; rolled back.
 -- =============================================================================
 \set ON_ERROR_STOP on
