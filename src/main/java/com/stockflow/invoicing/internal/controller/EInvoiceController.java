@@ -468,7 +468,7 @@ class EInvoiceController {
                                       String earlierPending) {
         return InvoicingWebMapper.toResponse(invoice, now, earlierPending, queries.errorNoticeSupported(invoice),
                 issuance.withdrawability(invoice), issuance.externalReductions(invoice),
-                queries.watch(invoice).orElse(null));
+                queries.watch(invoice).orElse(null), drafts.deliveryFailureReducible(invoice));
     }
 
     // ---- corrections of an issued invoice (WF-05 E4; TT 91/2026/TT-BTC Điều 10) -------------------------------------

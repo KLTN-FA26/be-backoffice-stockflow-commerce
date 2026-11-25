@@ -56,10 +56,19 @@ public class SettlementReadiness {
      *                       r3 EINV-7, {@code DeliveryInvoices#deliveryReductionUnissued}): information only, as
      *                       {@code returnAdjustmentUnissued} (Q-16) - the order may close and its contract be liquidated
      *                       meanwhile, and the block says what the accountant still has to issue
+     * @param failedDeliveryUnreduced the order's shipments that are not delivered now - corrected to a failure, or
+     *                       brought back - whose issued invoice still stands, with no reduction of it drawn up (BE #423,
+     *                       audit 25/11 N-1): the system could not reduce it (a correction of it at the provider, an
+     *                       adjustment it cannot take off, a replacement, Q-9), so the buyer holds an invoice for goods
+     *                       it never received and nothing said so. Information only, as {@code deliveryReductionUnissued}:
+     *                       a decrease has no deadline (TT 91/2026 Điều 10 khoản 5 điểm c.1) and can be made after the
+     *                       order closes - by "Lập bản giảm do giao thất bại" or on the provider's portal (Q-8) - but the
+     *                       block names it until it is
      */
     public record Facts(Duration window, Instant windowsCloseAt, boolean openReturn, boolean held, boolean owing,
                         boolean refundOwed, List<UUID> uninvoiced, boolean shippingFeeUninvoiced,
-                        boolean returnAdjustmentUnissued, boolean deliveryReductionUnissued) {
+                        boolean returnAdjustmentUnissued, boolean deliveryReductionUnissued,
+                        List<UUID> failedDeliveryUnreduced) {
 
         /** A delivery of the order, or the rest of its shipping fee, has no issued e-invoice (WF-05 plan §4, cond. 5). */
         public boolean awaitingInvoice() {
@@ -76,6 +85,8 @@ public class SettlementReadiness {
      *                    the rule {@code OrderCompletionHolds.hold} applies) and it is not paused already - the one
      *                    flag the back office offers "Giữ hoàn tất" by (audit r2 lifecycle M-4)
      * @param deliveryReductionUnissued as {@link Facts#deliveryReductionUnissued}: information only, never a blocker
+     * @param failedDeliveryUnreducedShipmentIds as {@link Facts#failedDeliveryUnreduced}: information only, never a
+     *                    blocker
      *
      * @param completesAt when the order completes as far as time goes (COMPLETION): its return window's end
      * @param closesAt    when it closes as far as time goes: the closing delay after its completion or refund, and -
@@ -85,7 +96,7 @@ public class SettlementReadiness {
                        boolean openReturn, List<UUID> uninvoicedShipmentIds, boolean shippingFeeUninvoiced,
                        boolean refundOutstanding, boolean completionHeld, boolean returnAdjustmentUnissued,
                        Instant completesAt, Instant closesAt, List<Blocker> blockers, boolean completionHoldable,
-                       boolean deliveryReductionUnissued) {
+                       boolean deliveryReductionUnissued, List<UUID> failedDeliveryUnreducedShipmentIds) {
     }
 
     private final SettlementCandidates candidates;
@@ -141,9 +152,17 @@ public class SettlementReadiness {
         var standing = payments.installmentStanding(orderId);
         boolean owing = standing.opened() && standing.paid().compareTo(standing.total()) < 0;
         boolean refundOwed = payments.refundProgress(orderId).outstanding().signum() > 0;
+        // BE #423 / N-1: an issued invoice still standing for a shipment that is not delivered now. `invoiced` leaves
+        // out an invoice reversed, or with its reduction drawn up (deliveryReductionUnissued says that one).
+        List<UUID> undelivered = order.shipments().stream()
+                .filter(shipment -> shipment.status() == OrderShipmentStatus.DELIVERY_FAILED
+                        || shipment.status() == OrderShipmentStatus.RETURNED)
+                .map(shipment -> shipment.id()).toList();
+        List<UUID> unreduced = undelivered.isEmpty() ? List.of()
+                : undelivered.stream().filter(invoices.invoiced(undelivered)::contains).toList();
         return new Facts(window, windowsCloseAt, candidates.hasOpenReturn(orderId), candidates.completionHeld(orderId),
                 owing, refundOwed, List.copyOf(uninvoiced), feeUninvoiced, invoices.returnAdjustmentUnissued(orderId),
-                invoices.deliveryReductionUnissued(orderId));
+                invoices.deliveryReductionUnissued(orderId), unreduced);
     }
 
     /**
@@ -226,7 +245,7 @@ public class SettlementReadiness {
         return new View(branch, days, facts.windowsCloseAt(), facts.owing(), facts.openReturn(), facts.uninvoiced(),
                 facts.shippingFeeUninvoiced(), facts.refundOwed(), facts.held(), facts.returnAdjustmentUnissued(),
                 completesAt, closesAt, List.copyOf(blockers), !facts.held() && order.completionHoldable(),
-                facts.deliveryReductionUnissued());
+                facts.deliveryReductionUnissued(), facts.failedDeliveryUnreduced());
     }
 
     private static Instant later(Instant a, Instant b) {

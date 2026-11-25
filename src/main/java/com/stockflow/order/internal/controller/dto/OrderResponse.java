@@ -201,6 +201,9 @@ public record OrderResponse(
      * {@code deliveryReductionUnissued} (audit r3 EINV-7) is information only too: a reduction for a delivery that did
      * not happen - a shipment's invoice reduced to nothing, or the waived shipping fee taken off the rest invoice - is
      * drawn up and the accountant has not issued it yet.
+     * {@code failedDeliveryUnreducedShipmentIds} (BE #423) is information only too: shipments not delivered now -
+     * corrected to a failure, or brought back - whose issued invoice still stands and that no reduction was drawn up
+     * for; the accountant reduces it ("Lập bản giảm do giao thất bại", or on the provider's portal).
      * {@code completionHoldable}: Sales may pause the completion ("Giữ hoàn tất") now - the rule the hold endpoint
      * applies, false while a pause is on.
      */
@@ -209,7 +212,8 @@ public record OrderResponse(
                                       boolean shippingFeeUninvoiced, boolean refundOutstanding, boolean completionHeld,
                                       boolean returnAdjustmentUnissued, Instant completesAt, Instant closesAt,
                                       List<String> blockers, boolean completionHoldable,
-                                      boolean deliveryReductionUnissued) {
+                                      boolean deliveryReductionUnissued,
+                                      List<UUID> failedDeliveryUnreducedShipmentIds) {
     }
 
     /** This response with F-1's facts, as the order's detail shows them to staff. */

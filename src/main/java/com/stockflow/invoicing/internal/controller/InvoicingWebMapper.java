@@ -40,6 +40,8 @@ final class InvoicingWebMapper {
      * @param earlierPending       the code of an earlier-dated invoice still to be issued under the series this draft
      *                             would take - a warning, not a refusal; null when there is none or it was not asked
      * @param errorNoticeSupported whether its provider sends a Mẫu 04/SS-HĐĐT notice (F-11)
+     * @param deliveryFailureReductionAllowed whether the accountant's reduction for a failed delivery would be drawn now
+     *                             (BE #423, {@code EInvoiceDrafts#deliveryFailureReducible})
      */
     static EInvoiceResponse toResponse(EInvoice.Snapshot s, Instant now, String earlierPending,
                                        boolean errorNoticeSupported,
@@ -47,7 +49,8 @@ final class InvoicingWebMapper {
                                        com.stockflow.invoicing.internal.service.EInvoiceIssuance
                                                .ExternalReductionOptions external,
                                        com.stockflow.invoicing.internal.domain.EInvoiceRepository
-                                               .TransactionWatch watch) {
+                                               .TransactionWatch watch,
+                                       boolean deliveryFailureReductionAllowed) {
         List<String> bases = new java.util.ArrayList<>();
         if (external.deliveryFailed()) {
             bases.add("DELIVERY_FAILED");
@@ -90,7 +93,8 @@ final class InvoicingWebMapper {
                         option.returnRequestId(), option.rmaNumber())).toList(),
                 watch == null ? null : watch.watchUntil(), watch == null ? null : watch.foundAt(),
                 external.errors().stream().map(option -> new EInvoiceResponse.ExternalReductionError(
-                        option.voidedAdjustmentId(), option.code(), option.reason(), option.grandTotal())).toList());
+                        option.voidedAdjustmentId(), option.code(), option.reason(), option.grandTotal())).toList(),
+                deliveryFailureReductionAllowed);
     }
 
     static EInvoiceListItemResponse toResponse(EInvoiceQueries.Listing row, Instant now) {

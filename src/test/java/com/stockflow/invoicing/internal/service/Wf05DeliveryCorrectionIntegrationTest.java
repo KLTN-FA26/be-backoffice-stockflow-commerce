@@ -98,6 +98,7 @@ class Wf05DeliveryCorrectionIntegrationTest {
     @Autowired EInvoiceQueryService queries;
     @Autowired EInvoiceDrafts drafts;
     @Autowired EInvoiceCorrections invoiceCorrections;
+    @Autowired com.stockflow.order.api.DeliveryInvoices deliveryInvoices;
     @Autowired com.stockflow.inventory.api.InventoryService inventory;
     @Autowired ApplicationEventPublisher publisher;
     @Autowired ApplicationContext context;
@@ -579,6 +580,67 @@ class Wf05DeliveryCorrectionIntegrationTest {
         assertThat(originalsOf(shipment).getFirst()).isNotEqualTo(sent.id());
     }
 
+    /** An ERROR adjustment of {@code original} taking {@code cartons} off its goods, agreed in writing, to {@code email}. */
+    private EInvoice.Snapshot agreedAdjustment(EInvoice.Snapshot original, int cartons, String email) throws Exception {
+        EInvoice.Snapshot draft = invoiceCorrections.adjust(new EInvoiceCorrections.Adjust(original.id(),
+                CorrectionBasis.ERROR, "sai so luong", new EInvoiceCorrections.Buyer(null, null, null, email),
+                List.of(new EInvoiceCorrections.LineChange(original.lines().getFirst().id(), cartons, null, null,
+                        null)), null, null));
+        java.io.ByteArrayOutputStream pdf = new java.io.ByteArrayOutputStream();
+        try (org.apache.pdfbox.pdmodel.PDDocument document = new org.apache.pdfbox.pdmodel.PDDocument()) {
+            document.addPage(new org.apache.pdfbox.pdmodel.PDPage());
+            document.save(pdf);
+        }
+        byte[] bytes = pdf.toByteArray();
+        return invoiceCorrections.attachAgreement(draft.id(), draft.version(), "BB-02/2026",
+                LocalDate.now(ConfirmedOrders.VIETNAM), new com.stockflow.common.storage.FileUpload("bien-ban.pdf",
+                        "application/pdf", bytes.length, new java.io.ByteArrayInputStream(bytes)));
+    }
+
+    @Test
+    @DisplayName("BE #423 + audit 25/11 N-1: corrected to a failure while an adjustment of the issued original is at "
+            + "the provider - the system cannot reduce it; the back office is told so (no button, the order's block "
+            + "names the shipment); once the adjustment is issued the flag says the command is accepted, and it is; "
+            + "reduced, the flag and the block clear")
+    void aReductionHeldBackByAnAdjustmentAtTheProviderIsOfferedOnceItSettles() throws Exception {
+        UUID shipment = batchOneDelivered(1);
+        EInvoice.Snapshot original = issuedOriginal(shipment);
+        assertThat(drafts.deliveryFailureReducible(queries.get(original.id())))
+                .as("delivered: nothing failed").isFalse();
+        EInvoice.Snapshot adjustment = issue(agreedAdjustment(original, -1,
+                "ke.toan+sandbox-reply-lost@" + customer + ".example.com"));
+        assertThat(adjustment.status()).as("taken in, its reply lost").isEqualTo(EInvoiceStatus.SUBMITTING);
+
+        correctToFailed(shipment);
+        Await.until("the failure heard", ASYNC, () -> drafts.voidForCorrectedDelivery(orderId, shipment)
+                != EInvoiceDrafts.CorrectionOutcome.NO_INVOICE);
+        assertThat(drafts.reverseOrExplain(orderId, shipment).notReversed())
+                .isEqualTo(com.stockflow.contracts.EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_NOT_REVERSED);
+        assertThat(reductionsOf(original.id())).isZero();
+        EInvoice.Snapshot held = queries.get(original.id());
+        assertThat(held.deliveryFailedAt()).as("issued before the failure: never marked - why #423 exists").isNull();
+        assertThat(drafts.deliveryFailureReducible(held)).as("the adjustment at the provider holds it back").isFalse();
+        assertThat(code(catchThrowable(() -> drafts.reduceForFailedDelivery(held.id(), held.version()))))
+                .as("the flag and the command agree").isEqualTo(ErrorCode.EINVOICE_REVERSAL_NOT_APPLICABLE);
+        assertThat(deliveryInvoices.invoiced(List.of(shipment))).as("N-1: the order's block names the shipment")
+                .containsExactly(shipment);
+
+        assertThat(issuance.reconcile(adjustment.id()).status()).isEqualTo(EInvoiceStatus.ISSUED);
+        Await.until("the adjustment's answer settled", ASYNC, () -> jdbc.queryForObject("""
+                SELECT count(*) FROM event_publication WHERE completion_date IS NULL
+                   AND event_type LIKE '%DeliveryFailedInvoiceAnswered'""", Long.class) == 0);
+        if (reductionsOf(original.id()) == 0) {
+            EInvoice.Snapshot settled = queries.get(original.id());
+            assertThat(drafts.deliveryFailureReducible(settled)).as("BE #423: the button is offered").isTrue();
+            assertThat(reductionsOf(original.id())).as("reading the flag writes nothing").isZero();
+            EInvoice.Snapshot reduction = drafts.reduceForFailedDelivery(settled.id(), settled.version());
+            assertThat(reduction.correctionBasis()).isEqualTo(CorrectionBasis.DELIVERY_FAILED);
+        }
+        assertThat(reductionsOf(original.id())).isEqualTo(1);
+        assertThat(drafts.deliveryFailureReducible(queries.get(original.id()))).as("reduced: no button").isFalse();
+        assertThat(deliveryInvoices.invoiced(List.of(shipment))).as("reduced: the block names nothing").isEmpty();
+    }
+
     @Test
     @DisplayName("WF-05 Q-9, Q-8 (BE-09, BE-10): corrected after the shipment's invoice was replaced - nothing is drawn "
             + "up against the replacement; the accountant reduces it on the provider's portal and records it (an "
@@ -601,6 +663,11 @@ class Wf05DeliveryCorrectionIntegrationTest {
         assertThat(reductionsOf(replacement.id())).isZero();
         assertThat(code(catchThrowable(() -> drafts.reduceForFailedDelivery(replacement.id(),
                 queries.get(replacement.id()).version())))).isEqualTo(ErrorCode.EINVOICE_REPLACEMENT_NOT_ADJUSTABLE);
+        assertThat(drafts.deliveryFailureReducible(queries.get(replacement.id())))
+                .as("BE #423: no button for a replacement (Q-9)").isFalse();
+        assertThat(deliveryInvoices.invoiced(List.of(shipment)))
+                .as("BE #423 / N-1: the order's block names the shipment until the portal's reduction is recorded")
+                .containsExactly(shipment);
 
         int number = 900_000 + ThreadLocalRandom.current().nextInt(99_999);
         EInvoice.Snapshot recorded = issuance.recordExternalReduction(replacement.id(),
@@ -614,6 +681,7 @@ class Wf05DeliveryCorrectionIntegrationTest {
         assertThat(recorded.grandTotal().add(replacement.grandTotal())).isEqualByComparingTo(BigDecimal.ZERO);
         assertThat(jdbc.queryForObject("SELECT reversed_at IS NOT NULL FROM invoicing.einvoice WHERE id = ?",
                 Boolean.class, replacement.id())).isTrue();
+        assertThat(deliveryInvoices.invoiced(List.of(shipment))).as("recorded: nothing stands any more").isEmpty();
         assertThat(code(catchThrowable(() -> issuance.recordExternalReduction(replacement.id(),
                 portalReduction(replacement, number + 1), accountant)))).as("recorded once")
                 .isEqualTo(ErrorCode.EINVOICE_EXTERNAL_REDUCTION_NOT_APPLICABLE);
