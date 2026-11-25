@@ -25,7 +25,7 @@ final class OrderWebMapper {
                 view.uninvoicedShipmentIds(), view.shippingFeeUninvoiced(), view.refundOutstanding(),
                 view.completionHeld(), view.returnAdjustmentUnissued(), view.completesAt(), view.closesAt(),
                 view.blockers().stream().map(Enum::name).toList(), view.completionHoldable(),
-                view.deliveryReductionUnissued());
+                view.deliveryReductionUnissued(), view.failedDeliveryUnreducedShipmentIds());
     }
 
     static OrderResponse toResponse(OrderSummary summary) {

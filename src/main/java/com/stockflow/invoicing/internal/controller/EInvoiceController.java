@@ -477,7 +477,8 @@ class EInvoiceController {
                 queries.watch(invoice).orElse(null),
                 invoice.originalEInvoiceId() == null ? null : queries.find(invoice.originalEInvoiceId()).orElse(null),
                 invoice.returnRequestId() == null ? null : returns.find(invoice.returnRequestId())
-                        .map(com.stockflow.order.api.ReturnRequestReference::rmaNumber).orElse(null));
+                        .map(com.stockflow.order.api.ReturnRequestReference::rmaNumber).orElse(null),
+                drafts.deliveryFailureReducible(invoice));
     }
 
     /** Who recorded each of {@code notices}, by user id, in one read. */
