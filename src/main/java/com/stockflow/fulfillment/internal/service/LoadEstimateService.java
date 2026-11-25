@@ -396,13 +396,15 @@ class LoadEstimateService implements LoadEstimates {
         UUID shipping = order.warehouseId() != null ? order.warehouseId()
                 : orders.shippingWarehouseId(order.orderId()).orElse(null);
         if (shipping == null) {
-            // Of no warehouse yet, so of none the caller is limited to either (RTM-ESTWH still answers why): the
-            // refusals name neither the order nor its status, which a caller limited to warehouses may not read.
+            // Of no warehouse yet, so of none the caller is limited to either (RTM-ESTWH still answers why): for such
+            // a caller the refusals name neither the order nor its status. An unlimited caller is told which order of
+            // the sources it is, or an estimate of several orders would not say which one to fix.
+            String which = WarehouseScope.restriction().isPresent() ? "The order" : "Order " + order.orderNumber();
             if (!ESTIMABLE.contains(order.status())) {
-                throw new BusinessException(ErrorCode.LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE, "The order is in no "
-                        + "status an estimate is made for: from confirmation until everything shipped");
+                throw new BusinessException(ErrorCode.LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE, which + " is in no status an "
+                        + "estimate is made for: from confirmation until everything shipped");
             }
-            throw new BusinessException(ErrorCode.LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN, "The order has no shipping "
+            throw new BusinessException(ErrorCode.LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN, which + " has no shipping "
                     + "warehouse yet: choose it before estimating its load");
         }
         // BR-SEC-002: an order shipping from a warehouse the caller is not assigned to is refused on scope, before a
