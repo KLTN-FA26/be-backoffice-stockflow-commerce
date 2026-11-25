@@ -1046,6 +1046,11 @@ public enum ErrorCode {
      * not quoted: the customer asks again. One closed by a quote answers that quote instead.
      */
     DESIGN_QUOTE_REQUEST_CLOSED("This quote request is closed", 409),
+    /**
+     * A project quote request a quote already answered takes no change (kltn-docs 12 BR-25): the quote is what Sales
+     * answered, so the customer asks a new request instead - answered from the open request, never the quoted one.
+     */
+    QUOTE_REQUEST_ALREADY_QUOTED("This quote request already has a quote", 409),
     /** A closed design project takes no design, batch or quote request; it never reopens (kltn-docs 12 BR-22, B42). */
     DESIGN_PROJECT_ARCHIVED("This design project is closed", 409),
     /** A design project holds at most 20 designs, archived ones not counted (kltn-docs 12 B42). */
@@ -1054,10 +1059,24 @@ public enum ErrorCode {
     DESIGN_PROJECT_LIBRARY_FULL("This design project's library already has the most files allowed", 409),
     /** A design project closes only once none of its designs waits for review (kltn-docs 12 BR-22). */
     DESIGN_PROJECT_HAS_PENDING("A design of this project waits for review", 409),
-    /** A design belongs to one project at most (kltn-docs 12 BR-17). */
+    /**
+     * A design project closes with its open quote request only once every design on it is approved: the request goes
+     * on to its quote (kltn-docs 12 BR-22, 2026-11-25). A line waiting for review or returned for changes is dropped,
+     * or the request closed, first.
+     */
+    PROJECT_HAS_UNAPPROVED_QUOTE_REQUEST("The project's open quote request names a design not approved yet", 409),
+    /**
+     * A design belonged to one project at most and never moved (kltn-docs 12 BR-17). No longer thrown: a design moves
+     * between its owner's open projects (BR-23.4). Kept for the clients that know it.
+     */
     DESIGN_IN_ANOTHER_PROJECT("This design belongs to another project", 409),
-    /** A design waiting for review neither leaves its project nor moves to another (kltn-docs 12 BR-17). */
+    /** A design waiting for review does not move to another project (kltn-docs 12 BR-17, BR-23.4). */
     DESIGN_PENDING_IN_PROJECT("A design waiting for review stays in its project", 409),
+    /**
+     * A design an open quote request of its project names stays in that project until the sales staff answer the
+     * request (BR-23.4; FE request 2026-11-25, point A): the request asks over the project's designs.
+     */
+    DESIGN_IN_OPEN_QUOTE_REQUEST("An open quote request of its project names this design", 409),
     /**
      * A design is cloned only onto another ACTIVE variant of its own product (FE request 2026-11-13 E-3; BR-01, BR-02):
      * not onto its own variant, nor one of another product, nor one that cannot be designed on.

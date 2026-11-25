@@ -101,6 +101,9 @@ class ChatCardsIntegrationTest {
         alice = portal(people);
         bob = portal(people);
         sales = people.staff("SALES_STAFF");
+        // The draw reads a project's request under its lock (12 BR-25): the same request as the card's.
+        when(quoteRequests.lockProjectRequest(any())).thenAnswer(call -> quoteRequests.projectRequest(
+                call.getArgument(0)));
     }
 
     @Test

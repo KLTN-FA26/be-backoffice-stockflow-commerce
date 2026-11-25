@@ -10,6 +10,7 @@ import com.stockflow.design.internal.domain.DesignReadRights;
 import com.stockflow.design.internal.domain.CustomerDesignRules;
 import com.stockflow.design.internal.domain.DesignStatus;
 import com.stockflow.design.internal.entity.DesignDraftJpaEntity;
+import com.stockflow.design.internal.entity.DesignProjectJpaEntity;
 import com.stockflow.design.internal.entity.DesignSnapshotJpaEntity;
 import com.stockflow.design.internal.repository.DesignDecisionJpaRepository;
 import com.stockflow.design.internal.repository.DesignDraftJpaRepository;
@@ -40,17 +41,19 @@ public class DesignWorkflowService {
     private final DesignDecisionJpaRepository decisions;
     private final DraftViews views;
     private final CustomerDesignService customerDesigns;
+    private final DesignProjectService projects;
     private final com.stockflow.product.api.CustomerSkus customerSkus;
 
     public DesignWorkflowService(DesignDraftJpaRepository drafts, DesignSnapshotJpaRepository snapshots,
                                  DesignDecisionJpaRepository decisions, DraftViews views,
-                                 CustomerDesignService customerDesigns,
+                                 CustomerDesignService customerDesigns, DesignProjectService projects,
                                  com.stockflow.product.api.CustomerSkus customerSkus) {
         this.drafts = drafts;
         this.snapshots = snapshots;
         this.decisions = decisions;
         this.views = views;
         this.customerDesigns = customerDesigns;
+        this.projects = projects;
         this.customerSkus = customerSkus;
     }
 
@@ -140,12 +143,16 @@ public class DesignWorkflowService {
      * {@link CustomerDesignService#revise}: same variant and template, the approved layout and images copied, counted
      * against the draft limit. A design staff started has no layout to copy: the revision is a new draft of the same
      * customer and product naming the same snapshot, counted against the limit too (B37).
+     *
+     * <p>Either way the revision is written into a project (BR-23.3): {@code projectId} when the caller names one,
+     * else the source's own while it is open and has room; otherwise it is refused before anything is written
+     * ({@link DesignProjectService#lockForCopy}).</p>
      */
     @Auditable(action = AuditAction.CREATE, resourceType = "design", resourceId = "#id")
-    public DraftView fork(UUID id, UUID actor) {
+    public DraftView fork(UUID id, UUID actor, UUID projectId) {
         var source = readable(id, actor, DesignReadRights.NONE);
         if (source.getTemplateId() != null) {
-            return customerDesigns.revise(id, actor);
+            return customerDesigns.revise(id, actor, projectId);
         }
         if (source.getStatus() != DesignStatus.APPROVED) {
             throw new BusinessException(ErrorCode.CONFLICT, "Only an approved design can be revised");
@@ -153,12 +160,13 @@ public class DesignWorkflowService {
         UUID snapshotId = snapshots.findByDraftId(id)
                 .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT, "The approved design has no snapshot"))
                 .getId();
+        DesignProjectJpaEntity project = projects.lockForCopy(id, projectId, actor, source.getCustomerId());
         customerDesigns.requireRoomForDraft(source.getCustomerId());
         var draft = new DesignDraftJpaEntity(com.stockflow.common.id.Identifiers.newId(), source.getCustomerId(),
                 source.getProductId(), source.getName(), source.getSpec(), DesignStatus.DRAFT);
         draft.ownedBy(source.getOwnerUserId());
         draft.derivedFrom(snapshotId);
-        drafts.saveAndFlush(draft);
+        projects.writeNew(project, draft, actor);
         decisions.save(new com.stockflow.design.internal.entity.DesignDecisionJpaEntity(draft, actor,
                 com.stockflow.design.internal.domain.DesignDecisionType.DERIVED_FROM_SNAPSHOT.name(),
                 snapshotId.toString()));

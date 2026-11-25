@@ -18,6 +18,7 @@ import com.stockflow.design.internal.repository.DesignReviewRoundJpaRepository;
 import jakarta.persistence.EntityManager;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -41,6 +42,10 @@ import org.springframework.transaction.support.TransactionOperations;
  *
  * <p>The same three steps as a design alone: short reads, the print files with no transaction held, and one short
  * transaction that locks the project, then each design in id order, and submits them only if nothing moved.</p>
+ *
+ * <p>A batch may ask a quote over its designs too (BR-25.1): the quote request is checked before anything else - every
+ * fault at once, under {@code quoteRequest.} -, and asked in the transaction that submits the designs, so both happen
+ * or neither ({@link DesignProjectQuoteRequestService#openFromBatch}).</p>
  */
 @Service
 public class DesignBatchSubmissionService {
@@ -65,6 +70,7 @@ public class DesignBatchSubmissionService {
     private final DesignDraftJpaRepository drafts;
     private final DesignReviewRoundJpaRepository rounds;
     private final DesignReviewRoundDesignJpaRepository members;
+    private final DesignProjectQuoteRequestService quoteRequests;
     private final ApplicationEventPublisher events;
     private final EntityManager entityManager;
     private final TransactionOperations tx;
@@ -72,13 +78,16 @@ public class DesignBatchSubmissionService {
 
     public DesignBatchSubmissionService(DesignProjectService projects, DesignSubmissionService submissions,
                                         DesignDraftJpaRepository drafts, DesignReviewRoundJpaRepository rounds,
-                                        DesignReviewRoundDesignJpaRepository members, ApplicationEventPublisher events,
-                                        EntityManager entityManager, TransactionOperations tx, Clock clock) {
+                                        DesignReviewRoundDesignJpaRepository members,
+                                        DesignProjectQuoteRequestService quoteRequests,
+                                        ApplicationEventPublisher events, EntityManager entityManager,
+                                        TransactionOperations tx, Clock clock) {
         this.projects = projects;
         this.submissions = submissions;
         this.drafts = drafts;
         this.rounds = rounds;
         this.members = members;
+        this.quoteRequests = quoteRequests;
         this.events = events;
         this.entityManager = entityManager;
         this.tx = tx;
@@ -89,11 +98,31 @@ public class DesignBatchSubmissionService {
     public record DesignAtVersion(UUID id, long version) {
     }
 
+    /** The quote a batch asks over its designs (BR-25.1): some of them, each at its cartons, and one date or none. */
+    public record QuoteAsk(List<DesignProjectQuoteRequestService.LineInput> lines, LocalDate desiredDeliveryDate) {
+    }
+
+    /** A batch submitted: the round it waits in, and the project's quote request it asked, if it asked one. */
+    public record Submitted(UUID roundId, UUID quoteRequestId) {
+    }
+
+    /** As {@link #submit(UUID, UUID, List, QuoteAsk)}, asking no quote. */
+    @Auditable(action = AuditAction.UPDATE, resourceType = "design-project", resourceId = "#projectId")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public UUID submit(UUID projectId, UUID actor, List<DesignAtVersion> designs) {
+        return submit(projectId, actor, designs, null).roundId();
+    }
+
     /**
-     * Submits {@code designs} of project {@code projectId} together.
+     * Submits {@code designs} of project {@code projectId} together, and asks {@code quote} over them when given.
      *
-     * @return the review round they wait in
-     * @throws BusinessException 422 {@code DESIGN_BATCH_PREFLIGHT_FAILED} with {@code details.designs} - each
+     * @param quote the quote asked with the batch (BR-25.1), or null: the project's open request takes its lines -
+     *              those of other designs kept - or a new one opens
+     * @return the review round they wait in, and the quote request asked
+     * @throws BusinessException 400 {@code VALIDATION_FAILED} with {@code fieldErrors} on {@code quoteRequest.lines[i]
+     *         .designId} (a design not in the batch, or named twice), {@code quoteRequest.lines[i].cartons},
+     *         {@code quoteRequest.desiredDeliveryDate} - before anything else, nothing submitted; 409
+     *         {@code CUSTOMER_NOT_ACTIVE} when a quote is asked; 422 {@code DESIGN_BATCH_PREFLIGHT_FAILED} with {@code details.designs} - each
      *         {@code {designId, issues?, roles?}} - when any does not pass; 400 for fewer than
      *         {@value DesignProjectRules#MIN_BATCH} designs or one named twice; 409 {@code DESIGN_PROJECT_ARCHIVED};
      *         404 {@code NOT_FOUND} for a design gone from the project or never in it, 409 {@code DESIGN_NOT_DRAFT},
@@ -104,7 +133,7 @@ public class DesignBatchSubmissionService {
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "design-project", resourceId = "#projectId")
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    public UUID submit(UUID projectId, UUID actor, List<DesignAtVersion> designs) {
+    public Submitted submit(UUID projectId, UUID actor, List<DesignAtVersion> designs, QuoteAsk quote) {
         if (designs == null || designs.size() < DesignProjectRules.MIN_BATCH) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "A batch is at least " + DesignProjectRules.MIN_BATCH + " drafts; submit one alone instead");
@@ -112,9 +141,17 @@ public class DesignBatchSubmissionService {
         if (new HashSet<>(designs.stream().map(DesignAtVersion::id).toList()).size() != designs.size()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A design is named twice in the batch");
         }
+        if (quote != null) {
+            // All or nothing, before the preflight: a quote asked wrong submits nothing (BR-25.1).
+            quoteRequests.requireValidBatchAsk(quote.lines(), quote.desiredDeliveryDate(),
+                    designs.stream().map(DesignAtVersion::id).toList());
+        }
         Map<UUID, DesignSubmissionService.Plan> plans = tx.execute(status -> {
             DesignProjectJpaEntity project = projects.own(projectId, actor);
             DesignProjectRules.requireActive(project.getStatus());
+            if (quote != null) {
+                quoteRequests.requireActiveCustomer(actor, projectId);
+            }
             Map<UUID, DesignSubmissionService.Plan> found = new LinkedHashMap<>();
             // Every design refused is reported, each with its own reason, not only the first one met: the customer has
             // to know which designs to open again or take out (FE requests 2026-11-15 BE-4, 2026-11-17 S-1, S-3).
@@ -163,12 +200,15 @@ public class DesignBatchSubmissionService {
                     failures.size() + " of " + designs.size() + " designs did not pass; none was submitted", List.of(),
                     Map.of("designs", failures));
         }
-        return tx.execute(status -> submitLocked(projectId, actor, designs, plans));
+        return tx.execute(status -> submitLocked(projectId, actor, designs, plans, quote));
     }
 
-    /** Under the project's lock, then each design's in id order: all submitted in one round, if nothing moved. */
-    private UUID submitLocked(UUID projectId, UUID actor, List<DesignAtVersion> designs,
-                              Map<UUID, DesignSubmissionService.Plan> plans) {
+    /**
+     * Under the project's lock, then each design's in id order: all submitted in one round, if nothing moved - and the
+     * quote asked over them, its request locked last.
+     */
+    private Submitted submitLocked(UUID projectId, UUID actor, List<DesignAtVersion> designs,
+                                   Map<UUID, DesignSubmissionService.Plan> plans, QuoteAsk quote) {
         DesignProjectJpaEntity project = projects.lockActive(projectId, actor);
         Instant now = clock.instant();
         List<DesignAtVersion> ordered = designs.stream().sorted(Comparator.comparing(DesignAtVersion::id)).toList();
@@ -209,7 +249,9 @@ public class DesignBatchSubmissionService {
                 + ids.stream().map(UUID::toString).collect(Collectors.joining(", ")));
         events.publishEvent(new DesignBatchSubmittedForReview(round.getId(), projectId, project.getCustomerId(), ids,
                 now));
-        return round.getId();
+        UUID quoteRequestId = quote == null ? null
+                : quoteRequests.openFromBatch(project, actor, quote.lines(), quote.desiredDeliveryDate(), locked);
+        return new Submitted(round.getId(), quoteRequestId);
     }
 
     private void requireInProject(UUID designId, UUID projectId) {

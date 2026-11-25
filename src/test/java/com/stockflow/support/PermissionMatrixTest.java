@@ -544,9 +544,11 @@ class PermissionMatrixTest {
                 Map.entry("PUT /api/v1/customers/{customerId}/addresses/{addressId}", address),
                 Map.entry("PUT /api/v1/customers/{customerId}", "{\"fullName\":\"Mallory\",\"version\":0}"),
                 Map.entry("PUT /api/v1/customers/me", "{\"fullName\":\"Attacker renamed\",\"version\":0}"),
-                // Customer designs (2F-3): well-formed writes, so only the owner check can refuse the victim's design.
+                // Customer designs (2F-3): well-formed writes, so only the owner check can refuse the victim's design;
+                // a design is started in the victim's project (BR-23.2), which only the project's owner check refuses.
                 Map.entry("POST /api/v1/designs/mine", "{\"productId\":\"" + DemoData.PRODUCT_CUP
-                        + "\",\"sku\":\"LY-GIAY-DEMO-12OZ\",\"templateCode\":\"BODY\",\"name\":\"stolen\"}"),
+                        + "\",\"sku\":\"LY-GIAY-DEMO-12OZ\",\"templateCode\":\"BODY\",\"name\":\"stolen\","
+                        + "\"projectId\":\"" + victimProject + "\"}"),
                 Map.entry("PUT /api/v1/designs/{id}/name", "{\"version\":0,\"name\":\"stolen\"}"),
                 Map.entry("POST /api/v1/designs/{id}/archive", "{\"version\":0}"),
                 Map.entry("POST /api/v1/designs/{id}/technical-review-requests", "{\"version\":0}"),
