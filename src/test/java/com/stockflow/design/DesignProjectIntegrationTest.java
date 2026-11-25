@@ -231,6 +231,65 @@ class DesignProjectIntegrationTest {
         });
     }
 
+    /** The project {@code design} is in, or null. */
+    private String projectOf(String design) {
+        return jdbc.queryForObject("SELECT project_id::text FROM design.design_draft WHERE id = ?::uuid", String.class,
+                design);
+    }
+
+    /**
+     * An approved design staff started for the customer - no template of its own - in {@code inProject} (none when
+     * null), with the snapshot a revision derives from.
+     */
+    private String approvedByStaff(String inProject) {
+        UUID approved = UUID.randomUUID();
+        UUID preview = UUID.randomUUID();
+        tx.executeWithoutResult(s -> {
+            jdbc.update("INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, "
+                    + "current_artifacts, owner_user_id, project_id) VALUES (?, ?, ?, 'APPROVED', NOW(), '{}'::jsonb, "
+                    + "?, ?::uuid)", approved, customerId, productId, owner, inProject);
+            jdbc.update("INSERT INTO design.design_artifact (id, draft_id, storage_key, original_name, content_type, "
+                    + "size_bytes, stored_at, checksum, created_at, artifact_role) VALUES (?, ?, "
+                    + "'design-artifacts/2026/11/' || ? || '.png', 'preview.png', 'image/png', 10, NOW(), ?, NOW(), "
+                    + "'CUSTOMER_PREVIEW')", preview, approved, preview.toString(), "c".repeat(64));
+            jdbc.update("INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, "
+                    + "created_at, artifact_manifest, artifact_id, confirmed_by, reviewed_by, spec) VALUES (?, ?, ?, "
+                    + "'https://example.com/print.pdf', NOW(), NOW(), '[]'::jsonb, ?, ?, ?, 'Logo')", UUID.randomUUID(),
+                    approved, "a".repeat(64), preview, manager, manager);
+        });
+        return approved.toString();
+    }
+
+    /** A second ACTIVE variant of the product, with its own active template CUP16-BODY: somewhere to clone onto. */
+    private String anotherVariantWithItsTemplate() throws Exception {
+        as(manager, Set.of());
+        String other = "PRJ16-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        UUID variant = variants.add(productId, new ProductVariantService.NewVariant(other, "Ly 16oz", List.of(), null))
+                .id();
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE product.variants SET status = 'ACTIVE' WHERE id = ?", variant));
+        String base = "/api/v1/products/" + productId + "/variants/" + variant + "/customization-templates";
+        JsonNode template = data(mvc.perform(TemplateModelFiles.create(base,
+                "{\"code\":\"CUP16-BODY\",\"name\":\"Ly 16oz\",\"allowedFileFormats\":[\"image/png\"],"
+                        + "\"maxFileSizeMb\":20,\"model\":{\"kind\":\"parametric-cup\",\"topDiameterMm\":90,"
+                        + "\"bottomDiameterMm\":60,\"heightMm\":130,\"rimMm\":3,\"seamMm\":8,\"bandTopOffsetMm\":6,"
+                        + "\"bandBottomOffsetMm\":8,\"material\":\"paper-white\"},\"printAreas\":[{\"code\":\"BODY\","
+                        + "\"name\":\"Thân ly\",\"safeMarginMm\":3,\"bleedMm\":2}]}")).andExpect(status().isCreated()));
+        mvc.perform(post(base + "/" + template.get("templateId").asText() + "/activation")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":" + template.get("version") + "}"))
+                .andExpect(status().isOk());
+        as(owner, Set.of());
+        return other;
+    }
+
+    /** Clones {@code design} onto {@code target}, into {@code projectJson} (a raw JSON value) when one is given. */
+    private ResultActions cloneOnto(String design, String target, String key, String projectJson) throws Exception {
+        return mvc.perform(post("/api/v1/designs/" + design + "/clones").header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"variantSku\":\"" + target + "\",\"document\":{"
+                        + "\"schemaVersion\":1,\"templateCode\":\"CUP16-BODY\",\"sku\":\"" + target + "\",\"surfaces\":"
+                        + "{\"BODY\":{\"background\":{\"kind\":\"none\"},\"elements\":[]}}}"
+                        + (projectJson == null ? "" : ",\"projectId\":" + projectJson) + "}"));
+    }
+
     private long designsOfTheCustomer() {
         return jdbc.queryForObject("SELECT count(*) FROM design.design_draft WHERE customer_id = ?", Long.class,
                 customerId);
@@ -370,6 +429,79 @@ class DesignProjectIntegrationTest {
         start(project, null).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("CUSTOMER_NOT_ACTIVE"));
         assertThat(designsOfTheCustomer()).isEqualTo(designs);
+    }
+
+    /**
+     * BR-23.3 (T6), owner decision 2026-11-25: a clone follows the revision's rule - into the source's project while it
+     * is open and has room, else into the open project with room the caller names, else not at all. The source's
+     * project full or closed, it is refused - a 409 a retry with the same Idempotency-Key runs again, not one it is
+     * told from a stored response - and nothing is written.
+     */
+    @Test
+    void aCloneIsWrittenIntoAProjectOrNotAtAll() throws Exception {
+        String target = anotherVariantWithItsTemplate();
+        String source = data(start(project, null).andExpect(status().isCreated())).get("id").asText();
+        // No project named: the clone is written into the source's own while it is open and has room.
+        JsonNode inSource = data(cloneOnto(source, target, UUID.randomUUID().toString(), null)
+                .andExpect(status().isCreated()));
+        assertThat(projectOf(inSource.get("design").get("id").asText())).isEqualTo(project);
+        fill(project);
+        long designs = designsOfTheCustomer();
+
+        String key = UUID.randomUUID().toString();
+        for (int attempt = 0; attempt < 2; attempt++) {
+            cloneOnto(source, target, key, null).andExpect(status().isConflict())
+                    .andExpect(header().doesNotExist("Idempotency-Replayed"))
+                    .andExpect(jsonPath("$.errorCode").value("DESIGN_PROJECT_FULL"))
+                    .andExpect(jsonPath("$.details.projectId").value(project));
+        }
+        assertThat(designsOfTheCustomer()).isEqualTo(designs);
+        cloneOnto(source, target, UUID.randomUUID().toString(), "\"not-an-id\"").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("projectId"));
+        cloneOnto(source, target, UUID.randomUUID().toString(), "\"" + UUID.randomUUID() + "\"")
+                .andExpect(status().isNotFound());
+        assertThat(designsOfTheCustomer()).isEqualTo(designs);
+        // The source's project closed: refused too, naming it.
+        mvc.perform(post("/api/v1/design-projects/" + project + "/archive").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"version\":" + projectVersion() + "}")).andExpect(status().isOk());
+        cloneOnto(source, target, UUID.randomUUID().toString(), null).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DESIGN_PROJECT_ARCHIVED"))
+                .andExpect(jsonPath("$.details.projectId").value(project));
+        assertThat(designsOfTheCustomer()).isEqualTo(designs);
+
+        String other = newProject("Quán B");
+        JsonNode clone = data(cloneOnto(source, target, UUID.randomUUID().toString(), "\"" + other + "\"")
+                .andExpect(status().isCreated()));
+        assertThat(clone.get("design").get("projectId").asText()).isEqualTo(other);
+        assertThat(clone.has("notInProject")).as("always null now, so never in the answer").isFalse();
+        assertThat(projectOf(clone.get("design").get("id").asText())).isEqualTo(other);
+        assertThat(designsOfTheCustomer()).isEqualTo(designs + 1);
+    }
+
+    /**
+     * BR-23.3 (T6b): a revision of a design staff started - no template of its own - is written into a project as any
+     * revision is: the source's own, or the one the caller names. A source in no project, started before every design
+     * had to be in one, has none to lend: the caller must name one.
+     */
+    @Test
+    void aRevisionOfADesignStaffStartedIsWrittenIntoAProjectToo() throws Exception {
+        String inProject = approvedByStaff(project);
+        String revision = data(mvc.perform(post("/api/v1/designs/" + inProject + "/revisions"))
+                .andExpect(status().isOk())).get("id").asText();
+        assertThat(projectOf(revision)).isEqualTo(project);
+
+        String alone = approvedByStaff(null);
+        long designs = designsOfTheCustomer();
+        mvc.perform(post("/api/v1/designs/" + alone + "/revisions")).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("projectId"))
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("NotNull"));
+        assertThat(designsOfTheCustomer()).isEqualTo(designs);
+        String other = newProject("Quán B");
+        String named = data(mvc.perform(post("/api/v1/designs/" + alone + "/revisions")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"projectId\":\"" + other + "\"}"))
+                .andExpect(status().isOk())).get("id").asText();
+        assertThat(projectOf(named)).isEqualTo(other);
     }
 
     @Test
@@ -764,31 +896,37 @@ class DesignProjectIntegrationTest {
         mvc.perform(get("/api/v1/design-project-quote-requests").param("status", "PENDING"))
                 .andExpect(status().isBadRequest());
 
-        // A revision of an approved design joins the open project; once it is closed, a revision stands alone.
+        // BR-23.3 (T3): a revision of an approved design is written into the source's open project.
         as(owner, Set.of());
         String revision = data(mvc.perform(post("/api/v1/designs/" + cup + "/revisions")).andExpect(status().isOk()))
                 .get("id").asText();
         mvc.perform(get("/api/v1/designs/" + revision)).andExpect(jsonPath("$.data.projectId").value(project));
-        // The project full (B42), a revision is not refused: it stands alone.
-        long held = jdbc.queryForObject("SELECT count(*) FROM design.design_draft WHERE project_id = ?::uuid "
-                + "AND status <> 'ARCHIVED'", Long.class, project);
-        tx.executeWithoutResult(s -> {
-            for (long i = held; i < 20; i++) {
-                jdbc.update("INSERT INTO design.design_draft (id, customer_id, product_id, name, status, created_at, "
-                        + "current_artifacts, owner_user_id, project_id) VALUES (gen_random_uuid(), ?, ?, 'x', 'DRAFT', "
-                        + "NOW(), '{}'::jsonb, ?, ?::uuid)", customerId, productId, owner, project);
-            }
-        });
-        String outside = data(mvc.perform(post("/api/v1/designs/" + mug + "/revisions")).andExpect(status().isOk()))
-                .get("id").asText();
-        mvc.perform(get("/api/v1/designs/" + outside)).andExpect(jsonPath("$.data.projectId").doesNotExist());
-        // Closed, the project takes no revision either.
+        // The project full, the revision is refused, naming the project, and nothing is written: a new design never
+        // stands in no project, as B42 once let it.
+        fill(project);
+        long designs = designsOfTheCustomer();
+        mvc.perform(post("/api/v1/designs/" + mug + "/revisions")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DESIGN_PROJECT_FULL"))
+                .andExpect(jsonPath("$.details.projectId").value(project));
+        assertThat(designsOfTheCustomer()).isEqualTo(designs);
+        // T4: closed, the project takes no revision either, and says so.
         tx.executeWithoutResult(s -> jdbc.update("UPDATE design.design_draft SET status = 'ARCHIVED', archived_at = "
                 + "NOW() WHERE project_id = ?::uuid AND name = 'x'", project));
         mvc.perform(post("/api/v1/design-projects/" + project + "/archive").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"version\":" + projectVersion() + "}")).andExpect(status().isOk());
-        String later = data(mvc.perform(post("/api/v1/designs/" + mug + "/revisions")).andExpect(status().isOk()))
-                .get("id").asText();
-        mvc.perform(get("/api/v1/designs/" + later)).andExpect(jsonPath("$.data.projectId").doesNotExist());
+        mvc.perform(post("/api/v1/designs/" + mug + "/revisions")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DESIGN_PROJECT_ARCHIVED"))
+                .andExpect(jsonPath("$.details.projectId").value(project));
+        assertThat(designsOfTheCustomer()).isEqualTo(designs);
+        // T5: named another open project of the caller's, the revision is written there.
+        String other = newProject("Quán B");
+        String later = data(mvc.perform(post("/api/v1/designs/" + mug + "/revisions")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"projectId\":\"" + other + "\"}"))
+                .andExpect(status().isOk())).get("id").asText();
+        mvc.perform(get("/api/v1/designs/" + later)).andExpect(jsonPath("$.data.projectId").value(other));
+        mvc.perform(get("/api/v1/designs/" + later + "/history"))
+                .andExpect(jsonPath("$.data.items[0].decision").value("DERIVED_FROM_SNAPSHOT"))
+                .andExpect(jsonPath("$.data.items[1].decision").value("ADDED_TO_PROJECT"))
+                .andExpect(jsonPath("$.data.items[1].notes").value("Project " + other));
     }
 }

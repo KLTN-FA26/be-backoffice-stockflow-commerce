@@ -1,5 +1,6 @@
 package com.stockflow.design.internal.service;
 
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
@@ -39,10 +40,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * A customer's design projects (kltn-docs 12 §4.9, §5.4; BR-17, BR-22; B42): created, renamed and closed by their owner,
- * holding designs of that customer - at most {@value DesignProjectRules#MAX_DESIGNS}, archived ones not counted. A
- * design joins when it is started in the project, when its owner adds it, or when it is a revision of a design in an
- * open project; it leaves when its owner removes it, never while it waits for review. Joining or leaving changes
- * nothing else about the design.
+ * holding designs of that customer - at most {@value DesignProjectRules#MAX_DESIGNS}, archived ones not counted. Every
+ * new design is written into a project (BR-23.2, BR-23.3): one started in it, or a revision or a clone the caller
+ * puts in it or that follows its source there. An existing design joins when its owner adds it; it leaves when its
+ * owner removes it, never while it waits for review. Joining or leaving changes nothing else about the design.
  *
  * <p>Only the owner sees a project (BR-17); the coordinator and the sales staff see its name alone, on a review round
  * and on a project quote request. Every write takes the project's row lock first, then a design's: the order a batch
@@ -53,11 +54,6 @@ import org.springframework.transaction.annotation.Transactional;
 public class DesignProjectService {
 
     private static final Set<ProjectStatus> LISTED = EnumSet.allOf(ProjectStatus.class);
-
-    /** Why a revision or a clone stands alone: the source's project is closed. */
-    public static final String NOT_JOINED_ARCHIVED = "PROJECT_ARCHIVED";
-    /** Why a revision or a clone stands alone: the source's project holds the most designs it may (B42). */
-    public static final String NOT_JOINED_FULL = "PROJECT_FULL";
 
     private final DesignProjectJpaRepository projects;
     private final DesignDraftJpaRepository drafts;
@@ -227,30 +223,48 @@ public class DesignProjectService {
     }
 
     /**
-     * A revision joins the project of the design it revises while that project is open (§4.7, BR-22); a closed
-     * project takes it not, and it stands on its own. So it does when the project is full (B42): revising is never
-     * refused for the project's sake - the customer may move it in once a place is free. Whether the source is still in
-     * that project is read again under the project's lock, which removing a design takes too.
+     * The project a revision or a clone of {@code sourceId} is written into (§4.7, FE request 2026-11-13 E-3, BR-23.3),
+     * locked as {@link #lockForNewDesign} locks one - before the customer's draft limit and before anything is
+     * written: {@code requested} when the caller names one, any open project of theirs with room, the source's or
+     * another; otherwise the source's own while it is open and has room. A closed or full source project refuses the
+     * new design, naming itself in {@code details.projectId} so the studio can offer another. Nothing is written then:
+     * a new design never stands in no project, where B42 as first built let a revision or a clone stand alone when
+     * its source's project was closed or full.
      *
-     * <p>A clone of a design (FE request 2026-11-13 E-3) joins the same way. The answer says why the new design stands
-     * alone: {@link #NOT_JOINED_ARCHIVED} or {@link #NOT_JOINED_FULL}; {@code null} when it joined, or when the source
-     * has left the project meanwhile and there is no project to join.</p>
+     * <p>Which project the source is in is read again under that project's lock, which moving a design takes too: a
+     * source moved meanwhile is a conflict to try again, rather than a second project locked out of order. A source in
+     * no project - a design started before every design had to be in one - has none to lend, so the caller names one.
+     * </p>
      */
-    String joinRevision(DesignDraftJpaEntity revision, UUID sourceId, UUID sourceProjectId, UUID actor) {
-        DesignProjectJpaEntity project = projects.lockById(sourceProjectId)
+    DesignProjectJpaEntity lockForCopy(UUID sourceId, UUID requested, UUID actor, UUID customerId) {
+        if (requested != null) {
+            return lockForNewDesign(requested, actor, customerId);
+        }
+        UUID sourceProject = drafts.projectIdOf(sourceId);
+        if (sourceProject == null) {
+            String message = "The design is in no project; projectId names the project to write the new design into";
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, message,
+                    List.of(new FieldError("projectId", message, "NotNull")));
+        }
+        DesignProjectJpaEntity project = projects.lockById(sourceProject)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        // The lock read may hand back a copy this transaction loaded before: read the row as it is now.
         entityManager.refresh(project);
-        if (!sourceProjectId.equals(drafts.projectIdOf(sourceId))) {
-            return null;
+        if (!sourceProject.equals(drafts.projectIdOf(sourceId))) {
+            throw new BusinessException(ErrorCode.CONFLICT, "The design moved to another project meanwhile; try again");
         }
+        Map<String, Object> details = Map.of("projectId", sourceProject);
         if (project.getStatus() != ProjectStatus.ACTIVE) {
-            return NOT_JOINED_ARCHIVED;
+            throw new BusinessException(ErrorCode.DESIGN_PROJECT_ARCHIVED,
+                    "The design's project is closed; name an open project to put the new design in", List.of(),
+                    details);
         }
-        if (drafts.countInProject(sourceProjectId) >= DesignProjectRules.MAX_DESIGNS) {
-            return NOT_JOINED_FULL;
+        if (drafts.countInProject(sourceProject) >= DesignProjectRules.MAX_DESIGNS) {
+            throw new BusinessException(ErrorCode.DESIGN_PROJECT_FULL, "The design's project holds at most "
+                    + DesignProjectRules.MAX_DESIGNS + " designs; name another project to put the new design in",
+                    List.of(), details);
         }
-        join(project, revision, actor);
-        return null;
+        return project;
     }
 
     /**

@@ -282,9 +282,13 @@ public class CustomerDesignService {
      * <p>The layout is the approved design's own: once approved it cannot change (BR-08), so it is what was approved.
      * </p>
      *
+     * <p>It is written into a project (BR-23.3): {@code projectId} when the caller names one, else the source's own
+     * while it is open and has room; otherwise it is refused and nothing is written ({@link
+     * DesignProjectService#lockForCopy}).</p>
+     *
      * <p>Reached through {@link DesignWorkflowService#fork}, which audits the request.</p>
      */
-    public DesignWorkflowService.DraftView revise(UUID sourceId, UUID actor) {
+    public DesignWorkflowService.DraftView revise(UUID sourceId, UUID actor, UUID projectId) {
         DesignDraftJpaEntity source = drafts.findById(sourceId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         CustomerDesignRules.requireOwner(actor, source.getOwnerUserId(), source.getStatus());
@@ -304,6 +308,7 @@ public class CustomerDesignService {
                 .findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND,
                         "The variant or its template can no longer be designed on; start a new design"));
+        DesignProjectJpaEntity project = projects.lockForCopy(sourceId, projectId, actor, customer.customerId());
         requireRoomForDraft(customer.customerId());
 
         var draft = new DesignDraftJpaEntity(Identifiers.newId(), source.getCustomerId(), source.getProductId(),
@@ -311,28 +316,21 @@ public class CustomerDesignService {
         draft.ownedBy(actor);
         draft.drawOn(template.variantId(), template.sku(), template.templateId(), template.code());
         draft.derivedFrom(snapshotId);
-        drafts.saveAndFlush(draft);
+        projects.writeNew(project, draft, actor);
         assets.copyAssets(sourceId, draft.getId());
         DesignDocumentJpaEntity layout = documents.findById(sourceId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT, "The approved design has no layout"));
         documents.save(new DesignDocumentJpaEntity(draft.getId(), layout.getDocument(), layout.getChecksum(),
                 clock.instant()));
         decide(draft, actor, DesignDecisionType.DERIVED_FROM_SNAPSHOT, snapshotId.toString());
-        if (source.getProjectId() != null) {
-            // In the same project while it is open and has room; otherwise it stands alone (BR-22, B42).
-            projects.joinRevision(draft, sourceId, source.getProjectId(), actor);
-        }
         return views.of(draft);
-    }
-
-    /** A clone and, when it could not join the source's project, why: {@code PROJECT_ARCHIVED} or {@code PROJECT_FULL}. */
-    public record CloneResult(DesignWorkflowService.DraftView design, String notInProject) {
     }
 
     /**
      * Clones one of the caller's designs onto another variant of the same product (FE request 2026-11-13 E-3, accepted
      * beyond kltn-docs 12): a new draft on the target variant's active template, with the layout the studio fitted to
-     * that template's print areas. {@code body} is {@code {"variantSku": ..., "document": {...}}}, read here as
+     * that template's print areas. {@code body} is {@code {"variantSku": ..., "document": {...}, "projectId": ...}}
+     * ({@code projectId} optional), read here as
      * {@link #saveDocument} reads a layout, so what is checked and stored is exactly what the browser sent.
      *
      * <p>The source is any of the caller's designs but an archived one. The target follows what {@link #start} asks of
@@ -343,13 +341,14 @@ public class CustomerDesignService {
      *
      * <p>The source's images are given to the clone as a revision gets them ({@code copyAssets}: same ids, the same
      * stored files, never removed), so the layout's {@code assetId}s are valid on the clone unchanged. The clone counts
-     * against the draft limit (B37) and joins the source's project as a revision does ({@link
-     * DesignProjectService#joinRevision}); when it cannot, the answer says why. A retry is answered by the
+     * against the draft limit (B37) and is written into a project as a revision is (BR-23.3, {@link
+     * DesignProjectService#lockForCopy}): {@code projectId} when the body names one, else the source's own while it is
+     * open and has room; otherwise it is refused and nothing is written. A retry is answered by the
      * {@code Idempotency-Key} the endpoint requires (the HTTP idempotency filter): the same key and body return the
      * first response, the same key with another body is {@code IDEMPOTENCY_KEY_REUSED}.</p>
      */
     @Auditable(action = AuditAction.CREATE, resourceType = "design")
-    public CloneResult cloneDesign(UUID sourceId, UUID actor, String requestKey, String body) {
+    public DesignWorkflowService.DraftView cloneDesign(UUID sourceId, UUID actor, String requestKey, String body) {
         // Whose design it is comes first: anyone else is told it does not exist, whatever they sent.
         DesignDraftJpaEntity source = drafts.findById(sourceId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
@@ -368,6 +367,7 @@ public class CustomerDesignService {
         if (!(document.get("templateCode") instanceof String templateCode) || templateCode.isBlank()) {
             throw invalid("document", "document.templateCode must name the target variant's template", "NotBlank");
         }
+        UUID projectId = projectIdOf(request);
         String targetSku = sku.strip();
         CustomerSummary customer = activeCustomerOf(actor);
         if (!customer.customerId().equals(source.getCustomerId())) {
@@ -379,6 +379,7 @@ public class CustomerDesignService {
         }
         requireDesignable(source.getProductId());
         PrintConfig template = cloneTarget(source.getProductId(), targetSku, templateCode);
+        DesignProjectJpaEntity project = projects.lockForCopy(sourceId, projectId, actor, customer.customerId());
         requireRoomForDraft(customer.customerId());
 
         String problem = DesignDocumentRules.problem(document,
@@ -392,15 +393,29 @@ public class CustomerDesignService {
                 name.length() <= 200 ? name : name.substring(0, 200).strip(), null, DesignStatus.DRAFT);
         draft.ownedBy(actor);
         draft.drawOn(template.variantId(), template.sku(), template.templateId(), template.code());
-        drafts.saveAndFlush(draft);
+        projects.writeNew(project, draft, actor);
         assets.copyAssets(sourceId, draft.getId());
         documents.save(new DesignDocumentJpaEntity(draft.getId(), layout, CanonicalJson.sha256Hex(layout),
                 clock.instant()));
         decide(draft, actor, DesignDecisionType.CREATED, "Cloned from design " + sourceId + ": SKU " + template.sku()
                 + ", template " + template.code());
-        String notInProject = source.getProjectId() == null ? null
-                : projects.joinRevision(draft, sourceId, source.getProjectId(), actor);
-        return new CloneResult(views.of(draft), notInProject);
+        return views.of(draft);
+    }
+
+    /** The clone's {@code projectId}, when the body names one: a design project's id, or a 400. */
+    private static UUID projectIdOf(Map<?, ?> request) {
+        Object named = request.get("projectId");
+        if (named == null) {
+            return null;
+        }
+        if (named instanceof String text) {
+            try {
+                return UUID.fromString(text.strip());
+            } catch (IllegalArgumentException notAnId) {
+                // answered below
+            }
+        }
+        throw invalid("projectId", "projectId must be a design project's id", "UUID");
     }
 
     /**

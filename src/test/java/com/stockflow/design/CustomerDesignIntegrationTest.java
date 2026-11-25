@@ -596,9 +596,10 @@ class CustomerDesignIntegrationTest {
         UUID approved = Identifiers.newId();
         UUID preview = Identifiers.newId();
         tx.executeWithoutResult(s -> {
+            // In the customer's project, so the revision has a project to be written into (BR-23.3).
             jdbc.update("INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, "
-                    + "current_artifacts, owner_user_id) VALUES (?, ?, ?, 'APPROVED', NOW(), '{}'::jsonb, ?)",
-                    approved, customerId, productId, owner);
+                    + "current_artifacts, owner_user_id, project_id) VALUES (?, ?, ?, 'APPROVED', NOW(), '{}'::jsonb, "
+                    + "?, ?::uuid)", approved, customerId, productId, owner, project);
             jdbc.update("INSERT INTO design.design_artifact (id, draft_id, storage_key, original_name, content_type, "
                     + "size_bytes, stored_at, checksum, created_at, artifact_role) VALUES (?, ?, "
                     + "'design-artifacts/2026/11/' || ? || '.png', 'preview.png', 'image/png', 10, NOW(), ?, NOW(), "
