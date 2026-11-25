@@ -22,4 +22,8 @@ interface StockPackageWebMapper {
 
     @Mapping(target = "openedOnReturn", expression = "java(carton.openedOnReturn())")
     StockPackageResponse toResponse(StockPackageBalance carton);
+
+    StockPackageResponse.Hold toResponse(StockPackageBalance.Hold hold);
+
+    StockPackageResponse.OpenTask toResponse(StockPackageBalance.OpenTask task);
 }

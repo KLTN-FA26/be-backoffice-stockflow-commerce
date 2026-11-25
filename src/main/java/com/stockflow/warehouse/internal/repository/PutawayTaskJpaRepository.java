@@ -17,6 +17,9 @@ interface PutawayTaskJpaRepository extends BaseJpaRepository<PutawayTaskJpaEntit
     Optional<PutawayTaskJpaEntity> findFirstByStockPackageIdAndStatusIn(UUID stockPackageId,
                                                                       Collection<PutawayStatus> statuses);
 
+    List<PutawayTaskJpaEntity> findByStockPackageIdInAndStatusIn(Collection<UUID> stockPackageIds,
+                                                                 Collection<PutawayStatus> statuses);
+
     Optional<PutawayTaskJpaEntity> findFirstByGoodsReceiptLineIdAndStockPackageIdIsNull(UUID goodsReceiptLineId);
 
     List<PutawayTaskJpaEntity> findByGoodsReceiptIdOrderByIdAsc(UUID goodsReceiptId);

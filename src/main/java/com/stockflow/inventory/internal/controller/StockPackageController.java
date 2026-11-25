@@ -20,6 +20,7 @@ import com.stockflow.inventory.internal.controller.dto.StockPackageLocationLineR
 import com.stockflow.inventory.internal.controller.dto.StockPackageResponse;
 import com.stockflow.inventory.internal.domain.ReturnedCartonOwnership;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
+import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.service.CartonQuarantineService;
 import com.stockflow.inventory.internal.service.CustomerGoodsCustody;
 import com.stockflow.inventory.internal.service.PutawayService;
@@ -100,19 +101,30 @@ class StockPackageController {
 
     @GetMapping
     @Operation(summary = "Cartons, page by page",
-            description = "location is one exact location code; status is repeatable and defaults to the live "
-                    + "cartons (RECEIVING, IN_STOCK). Only cartons in the caller's warehouses are listed; naming a "
-                    + "location in another warehouse is 403. Sort: lpn (default), locationCode, sku.")
+            description = "Filters, all optional and combined: location is one exact location code; warehouseId one "
+                    + "warehouse; lotNumber one exact lot; q part of the LPN, any case, at least 3 characters; "
+                    + "status (repeatable) the carton status, default the live cartons (RECEIVING, IN_STOCK); "
+                    + "stockStatus (repeatable) cartons holding stock in that status (AVAILABLE, QUARANTINE, BLOCKED, "
+                    + "DAMAGED, EXPIRED, INBOUND). Only cartons in the caller's warehouses are listed. Sort: lpn "
+                    + "(default), locationCode, sku, receivedAt (FIFO). Each row names its warehouse, product and "
+                    + "variant, stock statuses, oldest receipt, goods receipt, source, the orders holding it and the "
+                    + "open work it is in. 400 VALIDATION_FAILED for q shorter than 3; 403 OUT_OF_DATA_SCOPE for a "
+                    + "location or warehouseId in another warehouse; 404 WAREHOUSE_NOT_FOUND.")
     @RequiresPermission(resource = InventoryResources.STOCK_PACKAGES, action = Action.READ)
     public ApiResponse<PageResponse<StockPackageResponse>> cartons(
             @RequestParam(required = false) String location,
             @RequestParam(required = false) String sku,
             @RequestParam(name = "status", required = false) List<StockPackageStatus> statuses,
+            @RequestParam(required = false) UUID warehouseId,
+            @RequestParam(required = false) String lotNumber,
+            @RequestParam(required = false) String q,
+            @RequestParam(name = "stockStatus", required = false) List<StockStatus> stockStatuses,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String sort) {
         return ApiResponse.ok(lookup.cartons(new StockPackageLookup.CartonQuery(location, sku, statuses, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort)).map(mapper::toResponse));
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort, warehouseId, lotNumber, q, stockStatuses))
+                .map(mapper::toResponse));
     }
 
     @GetMapping("/location-summary")
