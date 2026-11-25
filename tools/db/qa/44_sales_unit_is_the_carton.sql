@@ -56,7 +56,7 @@ SELECT pg_temp.expect_fail('SU5 a sales unit written by an old client', $q$
 
 \echo '--- the carton it stood for is retired and replaced with nothing in the way (01 BR-10)'
 SELECT pg_temp.expect_ok('SU6 the active carton of the blue cup retired', $q$
-    UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
+    UPDATE inventory.uom_conversions SET active = FALSE
      WHERE active AND unit_of_measure <> 'EACH'
        AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);
 SELECT pg_temp.expect_ok('SU7 and a new carton specification declared in its place', $q$

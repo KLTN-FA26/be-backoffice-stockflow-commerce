@@ -217,7 +217,7 @@ class CustomerOrderStatusGroupTest {
         DeliveredAndReturnedUnits deliveredAndReturned = mock(DeliveredAndReturnedUnits.class);
         var service = new CustomerOrdersService(search, orders, mock(CreditChecks.class),
                 mock(CancellationRequestRepository.class), mock(OrderRepository.class), mock(ReturnAllowances.class),
-                deliveredAndReturned, Clock.fixed(NOW, ZoneOffset.UTC));
+                deliveredAndReturned, Clock.fixed(NOW, ZoneOffset.UTC), mock(LineNames.class));
         UUID customer = UUID.randomUUID();
 
         record Case(OrderStatus status, Instant completedAt, Units units, StatusGroup group, DeliveryState delivery) {

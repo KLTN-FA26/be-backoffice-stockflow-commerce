@@ -78,27 +78,32 @@ class UomConversionHttpIntegrationTest {
                 + "\"active\":true" + (defaultShipping == null ? "" : ",\"defaultShipping\":" + defaultShipping) + "}";
     }
 
+    /**
+     * There is no default shipping mark (V20261226000300): the SKU ships in its one active carton. The response keeps
+     * {@code defaultShipping} for old clients, true on the active carton.
+     */
     @Test
-    void defaultShippingIsFalseUntilAskedAndASecondActiveUnitIsRefused() throws Exception {
+    void theActiveCartonReadsAsShippedInAndASecondActiveUnitIsRefused() throws Exception {
         mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(create("BOX", 10, null)))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.defaultShipping").value(false))
+                .andExpect(jsonPath("$.data.defaultShipping").value(true))
                 .andExpect(jsonPath("$.data.active").value(true));
-        // 01 BR-03: the SKU has one active carton; the mark can only be on it, and a second one is refused.
+        // 01 BR-03: the SKU has one active carton, and a second one is refused.
         mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(create("CARTON", 50, true)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("UOM_CARTON_ALREADY_DECLARED"));
         mvc.perform(get(base))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[?(@.unitOfMeasure=='BOX')].defaultShipping").value(false))
+                .andExpect(jsonPath("$.data.items[?(@.unitOfMeasure=='BOX')].defaultShipping").value(true))
                 .andExpect(jsonPath("$.data.items[?(@.unitOfMeasure=='CARTON')]").isEmpty())
                 // The item's own unit (EACH) has no row and is not listed (V20261226000200).
                 .andExpect(jsonPath("$.data.items.length()").value(1))
                 .andExpect(jsonPath("$.data.items[?(@.base==true)]").isEmpty());
     }
 
+    /** An old client still sends defaultShipping, a new one does not: both are accepted, and the value is ignored. */
     @Test
-    void putMarksTheCartonAndNeedsItSpelledOut() throws Exception {
+    void putNeedsNoMarkAndIgnoresOne() throws Exception {
         String box = mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(create("BOX", 10, null)))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
         String id = box.replaceAll(".*\"id\":\"([^\"]+)\".*", "$1");
@@ -107,22 +112,25 @@ class UomConversionHttpIntegrationTest {
 
         mvc.perform(put(base + "/" + id).contentType(MediaType.APPLICATION_JSON)
                         .content(update(version, "BOX", 10, null)))
-                .andExpect(status().isBadRequest());
-        mvc.perform(put(base + "/" + id).contentType(MediaType.APPLICATION_JSON)
-                        .content(update(version, "BOX", 10, true)))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.defaultShipping").value(true));
+        mvc.perform(put(base + "/" + id).contentType(MediaType.APPLICATION_JSON)
+                        .content(update(version + 1, "BOX", 10, false)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.version").value(version + 2))
                 .andExpect(jsonPath("$.data.defaultShipping").value(true));
     }
 
     @Test
-    void aRetiredUnitCannotBeMarked() throws Exception {
+    void aRetiredUnitReadsAsNotShippedIn() throws Exception {
         String box = mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(create("BOX", 10, null)))
                 .andReturn().getResponse().getContentAsString();
         String id = box.replaceAll(".*\"id\":\"([^\"]+)\".*", "$1");
         String retired = update(0, "BOX", 10, true).replace("\"active\":true", "\"active\":false");
         mvc.perform(put(base + "/" + id).contentType(MediaType.APPLICATION_JSON).content(retired))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.fieldErrors[0].field").value("defaultShipping"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.active").value(false))
+                .andExpect(jsonPath("$.data.defaultShipping").value(false));
     }
 
     /** The default purchase unit is gone; a client that still sends it is not refused, and the response says the constant (base: true). */

@@ -19,6 +19,9 @@
  * profile lacks what an invoice needs through {@code EInvoiceBuyerIncomplete} (HĐ-8); this module sends nothing
  * itself.</p>
  *
+ * <p>{@code identity :: api}, only to name the staff member who recorded an error notice
+ * ({@code IdentityService.displayNames}); identity depends on nothing here, so no cycle.</p>
+ *
  * <p>An issued invoice is never cancelled or changed. What was wrong is corrected the ways TT 91/2026/TT-BTC Điều 10
  * gives (WF-05 E4): a notice and no invoice for a wrong buyer name or address ({@code EInvoiceErrorNotices}); an
  * adjustment or a replacement naming the invoice for a wrong tax code, quantity, price, rate or amount, with the
@@ -43,5 +46,6 @@
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>
  */
-@org.springframework.modulith.ApplicationModule(allowedDependencies = {"order :: api", "customer :: api", "notification :: api"})
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"order :: api", "customer :: api", "notification :: api",
+        "identity :: api"})
 package com.stockflow.invoicing;

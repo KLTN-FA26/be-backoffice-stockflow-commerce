@@ -19,4 +19,10 @@ public interface ShipmentCartons {
      * against a delivered order (kltn-docs 17 §4.10), so these are the cartons the customer may send back.
      */
     List<ShippedCarton> deliveredToOrder(UUID orderId);
+
+    /**
+     * The codes of these shipments, by id, in one query - for a list of return receipts that names each one's shipment
+     * beside its id. Null ids are ignored; an unknown id is absent from the map.
+     */
+    java.util.Map<UUID, String> codesOf(java.util.Collection<UUID> shipmentIds);
 }

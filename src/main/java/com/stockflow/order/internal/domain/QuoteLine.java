@@ -191,6 +191,17 @@ public final class QuoteLine {
         return price;
     }
 
+    /**
+     * The price a view shows at {@code quantity}: {@link #priceFor}, except below the MOQ, where it is the lowest break's
+     * price as the quote holds it instead of a refusal. The MOQ is a rule for writing a quote, not for reading one: a
+     * quote kept from before a tier changed (the WF-05 demo seed holds 5-carton lines under a 20-carton break) must still
+     * open and still list, at what it says (owner decision, WF-02 r6 question 1).
+     */
+    public Money shownPriceFor(int quantity) {
+        requirePriced();
+        return quantity < moq() ? tiers.getFirst().unitPrice() : priceFor(quantity);
+    }
+
     /** {@code quantity} (cartons; units on a legacy line) at {@code unitPrice} a piece. */
     public Money total(int quantity, Money unitPrice) {
         return unitPrice.times(Math.multiplyExact(quantity, unitsPerCarton));

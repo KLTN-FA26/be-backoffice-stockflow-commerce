@@ -55,9 +55,11 @@ class CreditHoldServiceTest {
     private final CustomerService customers = mock(CustomerService.class);
     private final PaymentService paymentService = mock(PaymentService.class);
     private final OrderSummary summary = mock(OrderSummary.class);
+    private final SalesFollowUpService followUps = mock(SalesFollowUpService.class);
     private final CreditHoldService service = new CreditHoldService(repository, orders, orderService, events,
             creditChecks, holds, customers, mock(CreditHoldSearch.class), paymentService,
-            Clock.fixed(NOW, ZoneOffset.UTC), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class));
+            Clock.fixed(NOW, ZoneOffset.UTC), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class),
+            followUps);
 
     private static CreditTerms terms(UUID customer, String limit) {
         return new CreditTerms(customer, true, limit == null ? null : new BigDecimal(limit), 30, "VND", null, null,
@@ -157,6 +159,7 @@ class CreditHoldServiceTest {
             verify(holds).save(hold);
             verify(repository).save(order);
             verify(events).publishEventsOf(order);
+            verify(followUps).creditDecided(order.id().value(), order.orderNumber().value(), null, true);
         }
 
         @Test
@@ -184,6 +187,7 @@ class CreditHoldServiceTest {
             assertThat(codeOf(() -> service.approve(order.id().value(), "ok", STAFF)))
                     .isEqualTo(ErrorCode.ORDER_NOT_ON_CREDIT_HOLD);
             verify(repository, never()).save(any());
+            verify(followUps, never()).creditDecided(any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean());
         }
 
         @Test
@@ -222,6 +226,7 @@ class CreditHoldServiceTest {
             assertThat(command.getValue().reasonCode()).isEqualTo(CancellationReasonCode.CREDIT_REJECTED);
             assertThat(command.getValue().note()).isEqualTo("over the limit");
             assertThat(command.getValue().cancelledBy()).isEqualTo(STAFF);
+            verify(followUps).creditDecided(order.id().value(), order.orderNumber().value(), null, false);
         }
 
         @Test

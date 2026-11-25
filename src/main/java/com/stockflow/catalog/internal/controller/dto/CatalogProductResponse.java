@@ -9,5 +9,6 @@ import java.util.UUID;
 public record CatalogProductResponse(UUID productId,String slug,String title,String description,
         String seoTitle,String seoDescription,List<VariantResponse> variants,String galleryUrl,
         com.stockflow.product.api.ProductKind kind) {
-    public record VariantResponse(String sku) {}
+    /** @param name the variant's name, the same as the list card's {@code CardSku.name} */
+    public record VariantResponse(String sku, String name) {}
 }

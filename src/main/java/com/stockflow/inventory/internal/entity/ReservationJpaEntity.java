@@ -103,6 +103,14 @@ public class ReservationJpaEntity {
     @Column(name = "warehouse_code", updatable = false, length = 64)
     private String warehouseCode;
 
+    /**
+     * The order's number, as the database snapshots it ({@code tg_stock_reservation_order_number}) for the lot trace
+     * and the reservation list. Read-only here: inventory may not depend on {@code order}, which depends on it, so
+     * only the trigger writes it; the application never does.
+     */
+    @Column(name = "order_number", insertable = false, updatable = false)
+    private String orderNumber;
+
     /** 4B-7: a new SKU reservation held at {@code code} (20 BR-17). */
     public ReservationJpaEntity heldAt(String code) {
         this.warehouseCode = code;

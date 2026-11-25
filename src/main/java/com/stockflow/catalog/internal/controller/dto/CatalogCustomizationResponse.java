@@ -11,7 +11,12 @@ import java.util.UUID;
  * {@code kind} and {@code type}.
  */
 @Schema(description = "The templates a customer may design on, one per ACTIVE variant that has an active template")
-public record CatalogCustomizationResponse(UUID productId, String kind, List<Template> templates) {
+public record CatalogCustomizationResponse(
+        UUID productId, String kind, List<Template> templates,
+        @Schema(description = "The product's published title: the same value as `title` on GET "
+                + "/api/v1/catalog/products/{slug} and on the list cards, so the studio needs no second call to name "
+                + "a design")
+        String productTitle) {
 
     /**
      * One variant's active template. {@code hasCartonSpec}: the variant has an active packing unit of more than one

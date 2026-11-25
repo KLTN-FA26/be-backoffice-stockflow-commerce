@@ -74,8 +74,8 @@ END $$;
 -- ============================================================================= A2
 \echo '--- A2 fixture: a SENT production order of 5 cartons of 10 blue cups at HCM, a DRAFT receipt against it'
 -- The demo cup already has its one active carton (01 BR-03, B below): retired, so the fixture's own is the one.
-UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
- WHERE NOT is_base AND active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
+UPDATE inventory.uom_conversions SET active = FALSE
+ WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg)
 VALUES (md5('qa96:carton')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'CARTON10', 10, 60, 40, 50, 12);
 SET LOCAL session_replication_role = replica;
@@ -210,7 +210,7 @@ SELECT pg_temp.expect_ok('B.3 a retired unit beside the active one', $q$
 SELECT pg_temp.expect_fail_like('B.4 re-activating the retired one beside the active one', 'uk_uom_conversions_one_carton', $q$
     UPDATE inventory.uom_conversions SET active = TRUE WHERE id = md5('qa96:b:c3')::uuid $q$);
 SELECT pg_temp.expect_ok('B.5 retiring the active one, then re-activating the other', $q$
-    UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE WHERE id = md5('qa96:b:c1')::uuid;
+    UPDATE inventory.uom_conversions SET active = FALSE WHERE id = md5('qa96:b:c1')::uuid;
     UPDATE inventory.uom_conversions SET active = TRUE WHERE id = md5('qa96:b:c3')::uuid $q$);
 SELECT pg_temp.expect_true('B.6 the one active unit is the carton: the item''s own unit has no row (V20261226000200)', $c$
     (SELECT count(*) FROM inventory.uom_conversions

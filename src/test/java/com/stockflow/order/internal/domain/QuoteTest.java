@@ -127,7 +127,8 @@ class QuoteTest {
         // 14 BR-08: the line's total is cartons x pieces per carton x the price of a piece.
         assertThat(line.total(20, line.priceFor(20))).isEqualTo(Money.vnd(2_000_000));
         assertThatThrownBy(() -> line.priceFor(9)).extracting(QuoteTest::code).isEqualTo(ErrorCode.QUOTE_BELOW_MOQ);
-        assertThatThrownBy(() -> offer(line(1, 5))).as("a proposal below its own MOQ")
+        assertThatThrownBy(() -> Quote.draft(UUID.randomUUID(), "QT-1", UUID.randomUUID(), UUID.randomUUID(),
+                offer(line(1, 5)))).as("a proposal below its own MOQ")
                 .extracting(QuoteTest::code).isEqualTo(ErrorCode.QUOTE_BELOW_MOQ);
     }
 
@@ -198,7 +199,8 @@ class QuoteTest {
     @Test
     void skusAreNotCountedTogether() {
         // Two SKUs of 6 cartons each: each below its own MOQ of 10, whatever the two make together.
-        assertThatThrownBy(() -> offer(line(1, "LY12-ACME-01", 6), line(2, "LY16-ACME-01", 6)))
+        assertThatThrownBy(() -> Quote.draft(UUID.randomUUID(), "QT-3", UUID.randomUUID(), UUID.randomUUID(),
+                offer(line(1, "LY12-ACME-01", 6), line(2, "LY16-ACME-01", 6))))
                 .extracting(QuoteTest::code).isEqualTo(ErrorCode.QUOTE_BELOW_MOQ);
 
         Quote quote = Quote.draft(UUID.randomUUID(), "QT-3", UUID.randomUUID(), UUID.randomUUID(),
@@ -208,6 +210,24 @@ class QuoteTest {
         assertThatThrownBy(() -> quote.accept(Map.of(first, 9), customerUser, NOW.plusSeconds(60)))
                 .extracting(QuoteTest::code).isEqualTo(ErrorCode.QUOTE_BELOW_MOQ);
         assertThat(quote.status()).isEqualTo(QuoteStatus.SENT);
+    }
+
+    /** WF-02 r6 question 1: the MOQ is checked when an offer is written, not when one is read back. */
+    @Test
+    void anOfferReadBackBelowItsMoqOpensButIsNotWrittenOrSent() {
+        Quote.Offer below = offer(line(1, 5));
+        Quote stored = Quote.restore(UUID.randomUUID(), "QT-4", UUID.randomUUID(), UUID.randomUUID(),
+                QuoteStatus.DRAFT, 1, below, null, null, null, null, null, null, null, null);
+        QuoteLine line = stored.offer().lines().getFirst();
+        assertThat(line.shownPriceFor(5)).as("the lowest break's price").isEqualTo(Money.vnd(2000));
+        assertThat(line.shownPriceFor(50)).isEqualTo(Money.vnd(1800));
+
+        assertThatThrownBy(() -> stored.send(sales, NOW)).extracting(QuoteTest::code)
+                .isEqualTo(ErrorCode.QUOTE_BELOW_MOQ);
+        assertThatThrownBy(() -> stored.revise(offer(line(1, 9)))).extracting(QuoteTest::code)
+                .isEqualTo(ErrorCode.QUOTE_BELOW_MOQ);
+        assertThat(stored.status()).isEqualTo(QuoteStatus.DRAFT);
+        assertThat(stored.offer()).isSameAs(below);
     }
 
     @Test

@@ -486,11 +486,7 @@ public class InstallmentService {
     public TransferInstructions transferInstructions(UUID installmentId, UUID ownCustomerId) {
         Installment installment = find(installmentId, ownCustomerId);
         if (!installment.status().takesMoney()) {
-            // The status goes in as the enum: Messages.refusal reads it as its label (label.InstallmentStatus.PAID).
-            throw new BusinessException(ErrorCode.INSTALLMENT_NOT_PAYABLE, "Installment %d of contract %s is %s"
-                    .formatted(installment.seq(), installment.contractNumber(), installment.status()))
-                    .localized("refusal.payment.notPayable", installment.seq(), installment.contractNumber(),
-                            installment.status());
+            throw installment.notPayable();
         }
         if (!bank.configured()) {
             throw new BusinessException(ErrorCode.TRANSFER_INSTRUCTIONS_UNAVAILABLE,

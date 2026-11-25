@@ -64,12 +64,21 @@ public interface SalesContracts {
      * @param unitsPerCarton R5-3: the line's pieces per carton; null for a line not ordered in cartons
      * @param designName     R5-3: the name of the design the customer's SKU was made to; null when it has none
      * @param previewUrl     R5-3: a short-lived link showing that design's preview; null when there is none
+     * @param productName    the name of the product the SKU belongs to, so a schedule line reads as more than a code;
+     *                       null for a SKU the catalogue does not know
+     * @param variantName    the SKU's own (variant) name; null for an unknown SKU
      */
     record BatchLineView(UUID orderLineId, String sku, int cartons, int units, Integer unitsPerCarton,
-                         String designName, String previewUrl) {
+                         String designName, String previewUrl, String productName, String variantName) {
 
         public BatchLineView(UUID orderLineId, String sku, int cartons, int units) {
-            this(orderLineId, sku, cartons, units, null, null, null);
+            this(orderLineId, sku, cartons, units, null, null, null, null, null);
+        }
+
+        /** Without the SKU's names. */
+        public BatchLineView(UUID orderLineId, String sku, int cartons, int units, Integer unitsPerCarton,
+                             String designName, String previewUrl) {
+            this(orderLineId, sku, cartons, units, unitsPerCarton, designName, previewUrl, null, null);
         }
     }
 
@@ -184,7 +193,12 @@ public interface SalesContracts {
      */
     PlanSuggestion suggestPaymentPlan(UUID orderId);
 
-    /** Sent to the customer (14 §4.3 step 13); the answer carries the credit warning, if any. */
+    /**
+     * Sent to the customer (14 §4.3 step 13); the answer carries the credit warning, if any.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CUSTOMER_NOT_ACTIVE} (409) when the customer is no
+     *         longer active (Q-9): a contract already sent is still signed, a new one is not sent
+     */
     ContractView send(CurrentUser user, UUID orderId, long version);
 
     /** Where the browser uploads the signed file (FileCategory.DOCUMENT); the contract is sent. */

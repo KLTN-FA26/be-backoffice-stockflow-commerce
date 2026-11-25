@@ -113,10 +113,22 @@ public interface CustomerOrders {
     record Production(ProductionState state, int goodQuantity) {
     }
 
-    /** @param taxRate the line's VAT rate (4B-3); null, with {@code taxAmount}, on a line placed without VAT */
+    /**
+     * @param taxRate     the line's VAT rate (4B-3); null, with {@code taxAmount}, on a line placed without VAT
+     * @param productName the name of the product the SKU belongs to; null for a SKU the product module does not know
+     * @param variantName the SKU's own (variant) name; null for an unknown SKU
+     */
     record Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
                 UUID designSnapshotId, Production production, Integer cartons, Integer unitsPerCarton,
-                BigDecimal taxRate, BigDecimal taxAmount) {
+                BigDecimal taxRate, BigDecimal taxAmount, String productName, String variantName) {
+
+        /** Without the SKU's names. */
+        public Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
+                    UUID designSnapshotId, Production production, Integer cartons, Integer unitsPerCarton,
+                    BigDecimal taxRate, BigDecimal taxAmount) {
+            this(lineId, sku, quantity, unitPrice, lineTotal, designSnapshotId, production, cartons, unitsPerCarton,
+                    taxRate, taxAmount, null, null);
+        }
     }
 
     /**

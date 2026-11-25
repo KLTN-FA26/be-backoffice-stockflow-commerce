@@ -99,7 +99,12 @@ class ProductionSampleRoundController {
                          boolean counted,
                          LocalDate physicalSampleSentOn, UUID openedBy, Instant openedAt,
                          @Schema(description = "Null while it waits for the customer") SampleRound.Result result,
-                         String customerNote, UUID answeredBy, Instant answeredAt, List<MediaResponse> media) {
+                         String customerNote, UUID answeredBy, Instant answeredAt, List<MediaResponse> media,
+                         @Schema(description = "Who opened the round: full name, else username; null when unknown")
+                         String openedByName,
+                         @Schema(description = "Who recorded the customer's answer (the customer's portal account, "
+                                 + "or staff for them); null while it waits and when unknown")
+                         String answeredByName) {
     }
 
     /** A production order's rounds, and its contract's free sample rounds against those counted. */
@@ -114,14 +119,17 @@ class ProductionSampleRoundController {
                           @Schema(description = "The round waiting for the customer, if one does") UUID waitingRoundId,
                           List<RoundResponse> rounds) {
 
-        static RoundsResponse of(ProductionSampleService.RoundsView view) {
+        /** {@code names}: display names by user id, for who opened and who answered each round. */
+        static RoundsResponse of(ProductionSampleService.RoundsView view, java.util.Map<UUID, String> names) {
             var p = view.order();
             return new RoundsResponse(p.id(), p.code(), p.status(), p.sampleApprovalRequired(), p.version(),
                     view.allowance().free(), view.allowance().counted(), view.allowance().exceeded(),
                     view.rounds().waiting().map(SampleRound::id).orElse(null),
                     view.rounds().rounds().stream().map(r -> new RoundResponse(r.id(), r.roundNo(), r.reprintReason(),
                             r.counted(), r.physicalSampleSentOn(), r.openedBy(), r.openedAt(), r.result(),
-                            r.customerNote(), r.answeredBy(), r.answeredAt(), MediaResponse.of(r))).toList());
+                            r.customerNote(), r.answeredBy(), r.answeredAt(), MediaResponse.of(r),
+                            r.openedBy() == null ? null : names.get(r.openedBy()),
+                            r.answeredBy() == null ? null : names.get(r.answeredBy()))).toList());
         }
     }
 
@@ -131,8 +139,18 @@ class ProductionSampleRoundController {
     }
 
     private final ProductionSampleService samples;
+    private final com.stockflow.identity.api.IdentityService identities;
 
-    ProductionSampleRoundController(ProductionSampleService samples) {
+    /** The rounds with who opened and who answered each named, in one lookup for the answer. */
+    private RoundsResponse respond(ProductionSampleService.RoundsView view) {
+        return RoundsResponse.of(view, identities.displayNames(view.rounds().rounds().stream()
+                .flatMap(r -> java.util.stream.Stream.of(r.openedBy(), r.answeredBy()))
+                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet())));
+    }
+
+    ProductionSampleRoundController(ProductionSampleService samples,
+                                    com.stockflow.identity.api.IdentityService identities) {
+        this.identities = identities;
         this.samples = samples;
     }
 
@@ -141,7 +159,7 @@ class ProductionSampleRoundController {
     @RequiresPermission(resource = OrderResources.PRODUCTION_ORDERS, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<RoundsResponse> list(@PathVariable UUID productionOrderId, @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(RoundsResponse.of(samples.rounds(productionOrderId)));
+        return ApiResponse.ok(respond(samples.rounds(productionOrderId)));
     }
 
     @PostMapping(path = "/uploads", consumes = MediaType.APPLICATION_JSON_VALUE)
@@ -166,7 +184,7 @@ class ProductionSampleRoundController {
                                             @Valid @RequestBody OpenRequest request,
                                             @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(RoundsResponse.of(samples.open(productionOrderId, request.reprintReason(),
+        return ApiResponse.ok(respond(samples.open(productionOrderId, request.reprintReason(),
                 request.physicalSampleSentOn(), IncomingFiles.uploaded(user.userId(), request.uploadIds()),
                 user.userId())));
     }
@@ -178,7 +196,7 @@ class ProductionSampleRoundController {
                                                 @Valid @RequestBody MediaRequest request,
                                                 @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(RoundsResponse.of(samples.addMedia(productionOrderId, roundId,
+        return ApiResponse.ok(respond(samples.addMedia(productionOrderId, roundId,
                 IncomingFiles.uploaded(user.userId(), request.uploadIds()), user.userId())));
     }
 
@@ -189,7 +207,7 @@ class ProductionSampleRoundController {
                                                       @Valid @RequestBody PhysicalSampleRequest request,
                                                       @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(RoundsResponse.of(samples.physicalSampleSent(productionOrderId, roundId,
+        return ApiResponse.ok(respond(samples.physicalSampleSent(productionOrderId, roundId,
                 request.sentOn())));
     }
 

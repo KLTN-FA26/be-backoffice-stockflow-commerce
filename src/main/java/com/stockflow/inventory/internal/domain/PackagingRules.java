@@ -22,8 +22,12 @@ import java.util.UUID;
  * No clock, no randomness, no I/O: the same input gives the same answer, which the load estimate relies on.
  * {@link com.stockflow.inventory.api.PackagingSpecResolver} documents the contract.
  *
+ * <p><b>The carton is the item's one active unit</b> (01 BR-03, {@code uk_uom_conversions_one_carton}): it is level
+ * {@link com.stockflow.inventory.api.RuleLevel#DEFAULT_SHIPPING_UNIT}. The "largest packing unit" level is only reached
+ * with several active units, which the database refuses; it is kept so the function stays total.</p>
+ *
  * <p><b>Only a carton is measured.</b> The item has no size or weight of its own (V20261215000100, kltn-docs 01 BR-03,
- * C21), and neither has its base unit ({@code ck_uom_conversions_base}). The levels that read the item's box and the
+ * C21), and the base unit has no row (V20261226000200). The levels that read the item's box and the
  * item's unit are gone with those columns: a SKU whose carton is not measured is MISSING, as 09 §4 step 129 lists it,
  * and nothing stands in for it.</p>
  *
@@ -48,8 +52,9 @@ public final class PackagingRules {
     public static PackagingSpec resolve(UUID itemId, String sku, List<UomConversion> units, boolean rotatable,
                                         int quantity) {
         List<SpecWarning> warnings = new ArrayList<>();
-        UomConversion shipping = units.stream().filter(u -> u.defaultShipping() && u.active()).findFirst()
-                .orElse(null);
+        List<UomConversion> active = units.stream().filter(UomConversion::active).toList();
+        // The item's one active unit is its carton (01 BR-03, uk_uom_conversions_one_carton) and the one it ships in.
+        UomConversion shipping = active.size() == 1 ? active.getFirst() : null;
 
         if (shipping != null) {
             PackagingSpec spec = packingUnit(itemId, sku, shipping, rotatable, quantity,
@@ -59,8 +64,8 @@ public final class PackagingRules {
             }
         }
 
-        List<UomConversion> packing = units.stream()
-                .filter(u -> u.active() && (shipping == null || !u.id().equals(shipping.id())))
+        List<UomConversion> packing = active.stream()
+                .filter(u -> shipping == null || !u.id().equals(shipping.id()))
                 .sorted(Comparator.comparingInt(UomConversion::factor).reversed()
                         .thenComparing(UomConversion::unitOfMeasure))
                 .toList();

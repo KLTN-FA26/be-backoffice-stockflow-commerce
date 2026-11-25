@@ -18,6 +18,10 @@ import java.util.UUID;
  *
  * <p>{@code topUpAvailable} is present only when one task is read by id: whether the order holds cartons for the task
  * that no line takes yet, which {@code POST /tasks/{taskId}/top-up} adds (kltn-docs 07 §4.3 step 7).</p>
+ *
+ * <p>{@code taskNumber} is the task's human number {@code PK-yyyyMMdd-nnnn} - what a screen shows and people say instead
+ * of the UUID. {@code warehouseCode} and {@code warehouseName} name {@code warehouseId}, so the screen needs neither the
+ * warehouse list nor {@code warehouse-warehouses:READ}; null only when the warehouse is unknown.</p>
  */
 public record FulfillmentTaskResponse(UUID taskId, UUID orderId, String orderNumber, UUID warehouseId,
                                       UUID assignedUserId, String assignedUserName, String pickStatus,
@@ -28,7 +32,8 @@ public record FulfillmentTaskResponse(UUID taskId, UUID orderId, String orderNum
                                       @JsonInclude(JsonInclude.Include.NON_NULL) UUID shipmentId,
                                       String destination, String stagingLocationCode, Instant stagedAt,
                                       Instant movedToDispatchAt,
-                                      @JsonInclude(JsonInclude.Include.NON_NULL) Boolean topUpAvailable) {
+                                      @JsonInclude(JsonInclude.Include.NON_NULL) Boolean topUpAvailable,
+                                      String taskNumber, String warehouseCode, String warehouseName) {
 
     /**
      * Set when completing the package of an order that still owes money due before the handover (G3-Q4, G2-3): the

@@ -11,6 +11,7 @@ import com.stockflow.inventory.internal.controller.dto.PutawayTripRequests;
 import com.stockflow.inventory.internal.controller.dto.PutawayTripResponse;
 import com.stockflow.inventory.internal.service.PutawayTripService;
 import com.stockflow.inventory.internal.service.PutawayTripService.TripView;
+import com.stockflow.warehouse.api.WarehouseView;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -22,7 +23,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 /**
  * Putaway trips (kltn-docs 05 §4.5; Jira SCRUM-531): a clerk's cart of cartons, put away along one route. Served
@@ -46,9 +49,11 @@ import java.util.UUID;
 class PutawayTripController {
 
     private final PutawayTripService trips;
+    private final ResponseLabels labels;
 
-    PutawayTripController(PutawayTripService trips) {
+    PutawayTripController(PutawayTripService trips, ResponseLabels labels) {
         this.trips = trips;
+        this.labels = labels;
     }
 
     @PostMapping
@@ -65,7 +70,7 @@ class PutawayTripController {
     @Operation(summary = "The caller's open putaway trip", description = "data is null when the caller has none.")
     @RequiresPermission(resource = InventoryResources.PUTAWAY_TRIPS, action = Action.READ, scope = DataScope.WAREHOUSE)
     public ApiResponse<PutawayTripResponse> current(@AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(trips.current(actor.userId()).map(PutawayTripController::toResponse).orElse(null));
+        return ApiResponse.ok(trips.current(actor.userId()).map(this::toResponse).orElse(null));
     }
 
     @GetMapping("/{tripId}")
@@ -144,7 +149,10 @@ class PutawayTripController {
         return ApiResponse.ok(toResponse(trips.close(tripId, actor.userId(), true)));
     }
 
-    private static PutawayTripResponse toResponse(TripView trip) {
+    /** The trip with the names of its operator and closer and its warehouse, each looked up once. */
+    private PutawayTripResponse toResponse(TripView trip) {
+        Map<UUID, String> names = labels.names(Stream.of(trip.operatorId(), trip.closedBy()));
+        Map<UUID, WarehouseView> warehouses = labels.warehouses(Stream.of(trip.warehouseId()));
         return new PutawayTripResponse(trip.id(), trip.warehouseId(), trip.operatorId(), trip.status(),
                 trip.startLocationCode(), trip.startX(), trip.startY(), trip.originLocationCode(), trip.originX(),
                 trip.originY(), trip.startedAt(), trip.lastActivityAt(),
@@ -154,6 +162,9 @@ class PutawayTripController {
                         c.loadedAt(), c.placedAt())).toList(),
                 trip.stops().stream().map(s -> new PutawayTripResponse.Stop(s.sequence(), s.locationCode(), s.x(),
                         s.y(), s.lpns(), s.path() == null ? null : s.path().stream()
-                        .map(p -> new PutawayTripResponse.Point(p.x(), p.y())).toList())).toList());
+                        .map(p -> new PutawayTripResponse.Point(p.x(), p.y())).toList())).toList(),
+                ResponseLabels.name(names, trip.operatorId()), ResponseLabels.name(names, trip.closedBy()),
+                ResponseLabels.code(warehouses, trip.warehouseId()),
+                ResponseLabels.warehouseName(warehouses, trip.warehouseId()));
     }
 }

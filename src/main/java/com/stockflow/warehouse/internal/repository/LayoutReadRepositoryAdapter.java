@@ -146,6 +146,20 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
     }
 
     @Override
+    public java.util.List<WarehouseHeader> findWarehouseHeaders(java.util.Collection<UUID> warehouseIds) {
+        if (warehouseIds.isEmpty()) {
+            return java.util.List.of();
+        }
+        return entityManager.createQuery("""
+                        select w.id, w.prefix, w.name, w.address, w.status
+                        from WarehouseJpaEntity w
+                        where w.id in :warehouseIds
+                        """, WarehouseHeader.class)
+                .setParameter("warehouseIds", warehouseIds)
+                .getResultList();
+    }
+
+    @Override
     public java.util.List<WarehouseHeader> findActiveWarehouseHeaders() {
         return entityManager.createQuery("""
                         select w.id, w.prefix, w.name, w.address, w.status

@@ -29,26 +29,26 @@ class PackagingRulesTest {
     }
 
     private static UomConversion pack(String code, int factor, String weight, String l, String w, String h,
-                                      boolean active, boolean shipping) {
+                                      boolean active) {
         return new UomConversion(UUID.nameUUIDFromBytes(code.getBytes()), "SKU", code, factor, d(weight), d(l),
-                d(w), d(h), active, 0, shipping);
+                d(w), d(h), active, 0);
     }
 
     private static UomConversion carton(String code, int factor) {
-        return pack(code, factor, "10.0", "50", "40", "30", true, false);
+        return pack(code, factor, "10.0", "50", "40", "30", true);
     }
 
     private static PackagingSpec resolve(int qty, UomConversion... units) {
         return PackagingRules.resolve(ITEM, "SKU", List.of(units), true, qty);
     }
 
-    // ---- level 1: the default shipping unit ----------------------------------------------------------------------
+    // ---- level 1: the item's one active carton (01 BR-03) -----------------------------------------------------------
 
     @Test
-    @DisplayName("level 1: the default shipping unit wins over a larger packing unit")
-    void defaultShippingWins() {
-        PackagingSpec spec = resolve(100, pack("PALLET", 100, "55", "120", "100", "150", true, false),
-                pack("BOX", 10, "5.5", "30", "20", "20", true, true));
+    @DisplayName("level 1: the item's one active carton, whatever larger retired unit stands beside it")
+    void theActiveCartonWins() {
+        PackagingSpec spec = resolve(100, pack("PALLET", 100, "55", "120", "100", "150", false),
+                pack("BOX", 10, "5.5", "30", "20", "20", true));
         assertThat(spec.level()).isEqualTo(RuleLevel.DEFAULT_SHIPPING_UNIT);
         assertThat(spec.unitOfMeasure()).isEqualTo("BOX");
         assertThat(spec.factor()).isEqualTo(10);
@@ -61,11 +61,12 @@ class PackagingRulesTest {
     }
 
     @Test
-    @DisplayName("level 1 incomplete: skipped with a warning, level 2 is used")
-    void incompleteShippingUnitFallsThrough() {
-        PackagingSpec spec = resolve(30, pack("BOX", 10, null, "30", "20", "20", true, true), carton("CTN", 6));
-        assertThat(spec.level()).isEqualTo(RuleLevel.LARGEST_PACKING_UNIT);
-        assertThat(spec.unitOfMeasure()).isEqualTo("CTN");
+    @DisplayName("level 1 incomplete: warned, and with no other active unit the carton is MISSING")
+    void incompleteCartonIsMissing() {
+        PackagingSpec spec = resolve(30, pack("BOX", 10, null, "30", "20", "20", true), pack("OLD", 6, "1", "9", "9",
+                "9", false));
+        assertThat(spec.status()).isEqualTo(PackagingSpec.Status.MISSING);
+        assertThat(spec.missing().fields()).containsExactly("weightKg");
         assertThat(spec.warnings()).singleElement().satisfies(w -> {
             assertThat(w.code()).isEqualTo(WarningCode.SHIPPING_UNIT_INCOMPLETE);
             assertThat(w.unitOfMeasure()).isEqualTo("BOX");
@@ -74,16 +75,16 @@ class PackagingRulesTest {
     }
 
     @Test
-    @DisplayName("a retired unit marked in old data is not the default shipping unit, nor a carton at all")
-    void retiredShippingUnitIsIgnored() {
-        PackagingSpec spec = resolve(10, pack("OLD", 10, "5", "30", "20", "20", false, true));
+    @DisplayName("a retired unit is not a carton at all")
+    void retiredUnitIsIgnored() {
+        PackagingSpec spec = resolve(10, pack("OLD", 10, "5", "30", "20", "20", false));
         assertThat(spec.status()).isEqualTo(PackagingSpec.Status.MISSING);
         assertThat(spec.missing().fields()).isEmpty();
         assertThat(spec.missing().message()).contains("no active carton unit");
         assertThat(spec.warnings()).isEmpty();
     }
 
-    // ---- level 2: the largest packing unit with a full size ------------------------------------------------------
+    // ---- level 2: several active units, which uk_uom_conversions_one_carton refuses: the largest with a full size ----
 
     @Test
     @DisplayName("level 2: the unit with the largest factor, whatever the order it is declared in")
@@ -98,8 +99,8 @@ class PackagingRulesTest {
     @DisplayName("level 2: a larger unit without a size is skipped (warned), the next largest is used; retired ones never")
     void incompletePackingUnitSkipped() {
         PackagingSpec spec = resolve(100,
-                pack("HUGE", 500, "30", null, "40", "30", true, false),
-                pack("RETIRED", 400, "30", "50", "40", "30", false, false),
+                pack("HUGE", 500, "30", null, "40", "30", true),
+                pack("RETIRED", 400, "30", "50", "40", "30", false),
                 carton("MID", 100), carton("SMALL", 10));
         assertThat(spec.unitOfMeasure()).isEqualTo("MID");
         assertThat(spec.warnings()).singleElement().satisfies(w -> {
@@ -121,7 +122,7 @@ class PackagingRulesTest {
     @Test
     @DisplayName("the carton in millimetres rounded up, three-decimal weight, the item's rotatable flag")
     void cartonMeasures() {
-        List<UomConversion> units = List.of(pack("CTN", 10, "6.25", "12.34", "9", "7", true, true));
+        List<UomConversion> units = List.of(pack("CTN", 10, "6.25", "12.34", "9", "7", true));
         PackagingSpec spec = PackagingRules.resolve(ITEM, "SKU", units, false, 10);
         assertThat(spec.carton().lengthMm()).isEqualTo(124);    // 123.4 up
         assertThat(spec.carton().widthMm()).isEqualTo(90);
@@ -135,7 +136,7 @@ class PackagingRulesTest {
     @Test
     @DisplayName("cartons = ceil(qty / factor): the remainder is one full-size carton weighing the carton pro rata")
     void remainderCarton() {
-        PackagingSpec spec = resolve(27, pack("CTN", 10, "8.0", "50", "40", "30", true, false));
+        PackagingSpec spec = resolve(27, pack("CTN", 10, "8.0", "50", "40", "30", true));
         assertThat(spec.fullCartons()).isEqualTo(2);
         assertThat(spec.partialCarton().units()).isEqualTo(7);
         assertThat(spec.partialCarton().weightKg()).isEqualByComparingTo("5.600");   // 8.0 * 7 / 10
@@ -160,7 +161,7 @@ class PackagingRulesTest {
     @Test
     @DisplayName("a carton missing part of its size: MISSING naming what it lacks, no invented defaults")
     void missing() {
-        PackagingSpec spec = resolve(5, pack("CTN", 10, "6", "50", null, "30", true, false));
+        PackagingSpec spec = resolve(5, pack("CTN", 10, "6", "50", null, "30", true));
         assertThat(spec.status()).isEqualTo(PackagingSpec.Status.MISSING);
         assertThat(spec.resolved()).isFalse();
         assertThat(spec.level()).isNull();
@@ -172,13 +173,13 @@ class PackagingRulesTest {
         assertThat(spec.inventoryItemId()).isEqualTo(ITEM);
         assertThat(spec.quantity()).isEqualTo(5);
         assertThat(spec.warnings()).extracting(PackagingSpec.SpecWarning::code)
-                .containsExactly(WarningCode.PACKING_UNIT_INCOMPLETE);
+                .containsExactly(WarningCode.SHIPPING_UNIT_INCOMPLETE);
     }
 
     @Test
     @DisplayName("a carton with no measure at all is MISSING on all four fields")
     void missingEverything() {
-        PackagingSpec spec = resolve(1, pack("CTN", 10, null, null, null, null, true, true));
+        PackagingSpec spec = resolve(1, pack("CTN", 10, null, null, null, null, true));
         assertThat(spec.status()).isEqualTo(PackagingSpec.Status.MISSING);
         assertThat(spec.missing().fields()).containsExactly("lengthCm", "widthCm", "heightCm", "weightKg");
     }
@@ -198,8 +199,8 @@ class PackagingRulesTest {
     @DisplayName("the same input gives the same answer, whatever order the units arrive in")
     void deterministic() {
         UomConversion a = carton("A", 10);
-        UomConversion b = pack("B", 25, "9", "40", "40", "40", true, false);
-        UomConversion c = pack("C", 25, null, "40", "40", "40", true, false);
+        UomConversion b = pack("B", 25, "9", "40", "40", "40", true);
+        UomConversion c = pack("C", 25, null, "40", "40", "40", true);
         PackagingSpec first = resolve(63, a, b, c);
         assertThat(resolve(63, a, b, c)).isEqualTo(first);
         assertThat(resolve(63, c, b, a)).isEqualTo(first);

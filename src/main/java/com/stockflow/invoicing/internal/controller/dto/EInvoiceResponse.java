@@ -19,6 +19,12 @@ import java.util.UUID;
  * {@code listedInvoiceIds} the other invoices a trade discount covers. An adjustment's lines are signed: below zero
  * reduces.</p>
  *
+ * <p>{@code originalEInvoiceCode}, {@code originalEInvoiceSymbol} and {@code originalEInvoiceNumber} name the invoice
+ * {@code originalEInvoiceId} points at the way its own {@code code}, {@code symbol} and {@code invoiceNumber} do, so the
+ * screen can print "Hoá đơn gốc: 1C26TAA số 12" without a second read; the symbol and number are null while that
+ * invoice is not issued, all three null on an original. {@code returnRmaNumber} is the RMA number of the return
+ * {@code returnRequestId} names; null when it names none.</p>
+ *
  * <p>{@code earlierPendingInvoice} (HĐ-2), on the invoice read by itself: the code of an invoice dated before this
  * draft and still to be issued - a draft, a rejected one or one at the provider - under the series this draft would be
  * sent under (the series in use for its year at the provider in use). Issued now, this draft would take a number before
@@ -97,6 +103,8 @@ public record EInvoiceResponse(UUID id, String code, String type, String status,
                                boolean externalReductionAllowed, List<String> externalReductionBases,
                                List<ExternalReductionReturn> externalReductionReturns, Instant watchUntil,
                                Instant watchFoundAt, List<ExternalReductionError> externalReductionErrors,
+                               String originalEInvoiceCode, String originalEInvoiceSymbol,
+                               Integer originalEInvoiceNumber, String returnRmaNumber,
                                boolean deliveryFailureReductionAllowed) {
 
     /** A return whose refunded goods wait on this replacement: {@code returnRequestId} is what the record takes. */

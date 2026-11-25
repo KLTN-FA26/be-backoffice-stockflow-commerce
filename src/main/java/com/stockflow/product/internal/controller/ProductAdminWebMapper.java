@@ -37,7 +37,8 @@ class ProductAdminWebMapper {
                 g.created().stream().map(v -> toResponse(v, inventoryItemIds.get(v.sku()))).toList(), g.skipped());
     }
 
-    MediaResponse toResponse(ProductMediaService.MediaView m) {
+    /** The people's names come from {@link ProductMediaResponses}, which asks identity once per list. */
+    MediaResponse toResponse(ProductMediaService.MediaView m, String uploadedByName, String publishedByName) {
         var file = m.original();
         return new MediaResponse(m.id(), m.variantId(), m.kind(), m.url(),
                 file == null ? null : file.originalName(), file == null ? null : file.contentType(),
@@ -45,7 +46,7 @@ class ProductAdminWebMapper {
                 m.renditions().stream().map(r -> new MediaResponse.Rendition(r.edge(), r.width(), r.height(),
                         r.file().contentType(), r.file().sizeBytes(), m.renditionUrls().get(r.edge()))).toList(),
                 m.altText(), m.sortOrder(), m.primary(), m.published(), m.publishedAt(), m.publishedBy(),
-                m.uploadedBy(), m.uploadedAt(), m.version());
+                m.uploadedBy(), m.uploadedAt(), m.version(), uploadedByName, publishedByName);
     }
 
     PublicGalleryResponse toResponse(ProductMediaService.PublicGallery g) {

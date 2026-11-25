@@ -153,7 +153,16 @@ public record OrderResponse(
                 + "/orders/{orderId}/shipments/{shipmentId}/lost-closure takes back as `version` (409 when the order "
                 + "changed meanwhile). Set on the back-office list, the detail and every write's answer; null where "
                 + "it was not read")
-        Long version
+        Long version,
+
+        @Schema(description = "The code (prefix) of the warehouse the order was released from, beside warehouseId, so "
+                + "the order names it without the warehouse list or warehouse-warehouses:READ. Set on the back-office "
+                + "list, GET /orders/{orderId} for staff and the release's answer; null until released, and elsewhere",
+                example = "HCM")
+        String warehouseCode,
+
+        @Schema(description = "That warehouse's name; set where warehouseCode is")
+        String warehouseName
 ) {
 
     /** Without the version: what was answered before WF-05 Q-12. */
@@ -175,7 +184,7 @@ public record OrderResponse(
                 holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt, deliveryFailureReason,
                 completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments, allowPartialShipment,
                 printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber, refundedAt,
-                settlementReadiness, null);
+                settlementReadiness, null, null, null);
     }
 
     /** This response with the order's version. */
@@ -186,7 +195,18 @@ public record OrderResponse(
                 statusBeforeHold, holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt,
                 deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
                 allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
-                refundedAt, settlementReadiness, version);
+                refundedAt, settlementReadiness, version, warehouseCode, warehouseName);
+    }
+
+    /** This response naming its warehouse: {@code code} and {@code name} of {@code warehouseId}, or nulls. */
+    public OrderResponse withWarehouse(String code, String name) {
+        return new OrderResponse(orderId, orderNumber, customerId, customerName, customerCode, status, totalAmount,
+                currency, lines, placedAt, createdBy, lastModifiedAt, lastModifiedBy, contactName, contactEmail,
+                contactPhone, shippingAddress, billingAddress, warehouseId, releasedAt, cancellation, holdReason,
+                statusBeforeHold, holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt,
+                deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
+                allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
+                refundedAt, settlementReadiness, version, code, name);
     }
 
     /**
@@ -224,7 +244,7 @@ public record OrderResponse(
                 statusBeforeHold, holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt,
                 deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
                 allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
-                refunded, readiness, version);
+                refunded, readiness, version, warehouseCode, warehouseName);
     }
 
     /** With the quote it came from, without F-1's facts. */

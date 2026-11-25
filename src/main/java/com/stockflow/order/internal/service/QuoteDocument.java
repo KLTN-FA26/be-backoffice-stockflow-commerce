@@ -213,6 +213,8 @@ class QuoteDocument {
             list.add(t.getString("quote.pdf.term.warranty").formatted(terms.warrantyMonths()));
         }
         list.add(t.getString("quote.pdf.term.design"));
+        // QD10: an offer, not the contract - the contract is made when both parties sign the sales contract.
+        list.add(t.getString("quote.pdf.term.notContract"));
         return list;
     }
 }

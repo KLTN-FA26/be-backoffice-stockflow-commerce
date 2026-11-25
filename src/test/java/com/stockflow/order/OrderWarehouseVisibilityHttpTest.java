@@ -142,6 +142,24 @@ class OrderWarehouseVisibilityHttpTest {
     }
 
     @Test
+    @DisplayName("A4: a released order names the warehouse it was released from, in the detail and in the list; an "
+            + "order not released yet names none")
+    void releasedOrderNamesItsWarehouse() throws Exception {
+        String code = jdbc.queryForObject("SELECT prefix FROM warehouse.warehouse WHERE id = ?", String.class, here);
+        mvc.asRole(Role.WAREHOUSE_MANAGER, managerHere, get(ORDERS + "/" + releasedHere)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.warehouseId").value(here.toString()))
+                .andExpect(jsonPath("$.data.warehouseCode").value(code))
+                .andExpect(jsonPath("$.data.warehouseName").value("Visibility warehouse"));
+        mvc.asRole(Role.WAREHOUSE_MANAGER, managerHere, get(ORDERS).param("size", "200")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.orderId == '" + releasedHere + "')].warehouseCode").value(code))
+                .andExpect(jsonPath("$.data.items[?(@.orderId == '" + releasedHere + "')].warehouseName")
+                        .value("Visibility warehouse"));
+        mvc.asRole(Role.WAREHOUSE_MANAGER, managerHere, get(ORDERS + "/" + shipsHere)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.warehouseCode").doesNotExist())
+                .andExpect(jsonPath("$.data.warehouseName").doesNotExist());
+    }
+
+    @Test
     @DisplayName("a manager assigned no warehouse sees no order at all")
     void unassignedManagerSeesNothing() throws Exception {
         mvc.asRole(Role.WAREHOUSE_MANAGER, managerNowhere, get(ORDERS).param("size", "200"))

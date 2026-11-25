@@ -43,11 +43,14 @@ class CancellationRequestController {
 
     private final CancellationRequestService requests;
     private final com.stockflow.order.internal.service.CancellationQueue queue;
+    private final com.stockflow.identity.api.IdentityService identities;
 
     CancellationRequestController(CancellationRequestService requests,
-                                  com.stockflow.order.internal.service.CancellationQueue queue) {
+                                  com.stockflow.order.internal.service.CancellationQueue queue,
+                                  com.stockflow.identity.api.IdentityService identities) {
         this.requests = requests;
         this.queue = queue;
+        this.identities = identities;
     }
 
     @GetMapping("/cancellation-requests")
@@ -64,7 +67,8 @@ class CancellationRequestController {
         ScopeGuards.requireBackOffice(user);
         var found = requests.list(status, orderId, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort);
         var facts = queue.of(found.items());
-        return ApiResponse.ok(found.map(r -> toResponse(r, facts.get(r.orderId()))));
+        var names = namesOf(found.items());
+        return ApiResponse.ok(found.map(r -> toResponse(r, facts.get(r.orderId()), names)));
     }
 
     @PostMapping("/{orderId}/cancellation-requests/{requestId}/approval")
@@ -85,21 +89,35 @@ class CancellationRequestController {
     public ApiResponse<CancellationRequestResponse> reject(@PathVariable UUID orderId, @PathVariable UUID requestId,
                                                            @Valid @RequestBody RejectCancellationRequest request,
                                                            @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(toResponse(requests.reject(orderId, requestId, request.note(), user.userId())));
+        CancellationRequest rejected = requests.reject(orderId, requestId, request.note(), user.userId());
+        return ApiResponse.ok(toResponse(rejected, null, namesOf(java.util.List.of(rejected))));
+    }
+
+    /** The display names of everyone who asked or decided among {@code found}, in one lookup. */
+    private java.util.Map<UUID, String> namesOf(java.util.Collection<CancellationRequest> found) {
+        return identities.displayNames(found.stream()
+                .flatMap(r -> java.util.stream.Stream.of(r.requestedBy(), r.decidedBy()))
+                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet()));
     }
 
     static CancellationRequestResponse toResponse(CancellationRequest r) {
-        return toResponse(r, null);
+        return toResponse(r, null, java.util.Map.of());
     }
 
-    /** With what Sales decide it on (R5-6); {@code facts} null leaves those fields out. */
+    /**
+     * With what Sales decide it on (R5-6); {@code facts} null leaves those fields out. {@code names}: display names by
+     * user id, for who asked and who decided.
+     */
     static CancellationRequestResponse toResponse(CancellationRequest r,
-                                                  com.stockflow.order.internal.service.CancellationQueue.Facts facts) {
+                                                  com.stockflow.order.internal.service.CancellationQueue.Facts facts,
+                                                  java.util.Map<UUID, String> names) {
         return new CancellationRequestResponse(r.id(), r.orderId(), r.requestedBy(), r.reasonCode().name(), r.note(),
                 r.requestedAt(), r.status().name(), r.decidedBy(), r.decidedAt(), r.decisionNote(),
                 r.retainedPercent(), r.version(), facts == null ? null : facts.orderNumber(),
                 facts == null ? null : facts.customerName(), facts == null ? null : facts.orderTotal(),
                 facts == null ? null : facts.paidTotal(), facts == null ? null : facts.orderStatus(),
-                facts == null ? null : facts.printingStarted());
+                facts == null ? null : facts.printingStarted(),
+                r.requestedBy() == null ? null : names.get(r.requestedBy()),
+                r.decidedBy() == null ? null : names.get(r.decidedBy()));
     }
 }

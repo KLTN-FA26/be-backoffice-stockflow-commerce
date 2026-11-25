@@ -38,10 +38,13 @@ class OrderCompletionHoldController {
 
     private final OrderCompletionHolds holds;
     private final OrderWarehouseVisibility visibility;
+    private final com.stockflow.identity.api.IdentityService identities;
 
-    OrderCompletionHoldController(OrderCompletionHolds holds, OrderWarehouseVisibility visibility) {
+    OrderCompletionHoldController(OrderCompletionHolds holds, OrderWarehouseVisibility visibility,
+                                  com.stockflow.identity.api.IdentityService identities) {
         this.holds = holds;
         this.visibility = visibility;
+        this.identities = identities;
     }
 
     @GetMapping
@@ -52,7 +55,7 @@ class OrderCompletionHoldController {
         ScopeGuards.requireBackOffice(user);
         // BR-SEC-002: a warehouse manager reads the holds of orders of their warehouses only.
         visibility.requireVisible(orderId, user);
-        return ApiResponse.ok(holds.current(orderId).map(OrderCompletionHoldController::toResponse).orElse(null));
+        return ApiResponse.ok(holds.current(orderId).map(this::toResponse).orElse(null));
     }
 
     @PostMapping
@@ -79,8 +82,13 @@ class OrderCompletionHoldController {
         return ApiResponse.ok(toResponse(holds.release(orderId, request.note(), user.userId())));
     }
 
-    private static CompletionHoldResponse toResponse(OrderCompletionHolds.CompletionHold hold) {
+    /** With who held and who released it, named in one lookup. */
+    private CompletionHoldResponse toResponse(OrderCompletionHolds.CompletionHold hold) {
+        java.util.Map<UUID, String> names = identities.displayNames(java.util.stream.Stream.of(hold.heldBy(),
+                hold.releasedBy()).filter(java.util.Objects::nonNull).toList());
         return new CompletionHoldResponse(hold.id(), hold.orderId(), hold.reason().name(), hold.note(), hold.heldAt(),
-                hold.heldBy(), hold.releasedAt(), hold.releasedBy(), hold.releaseNote());
+                hold.heldBy(), hold.releasedAt(), hold.releasedBy(), hold.releaseNote(),
+                hold.heldBy() == null ? null : names.get(hold.heldBy()),
+                hold.releasedBy() == null ? null : names.get(hold.releasedBy()));
     }
 }

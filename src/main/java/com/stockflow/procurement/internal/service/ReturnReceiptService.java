@@ -31,6 +31,8 @@ import com.stockflow.procurement.internal.repository.GoodsReceiptPhotoJpaReposit
 import com.stockflow.procurement.internal.repository.ReturnReceiptSearch;
 import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.WarehouseService;
+import com.stockflow.warehouse.api.WarehouseView;
+import com.stockflow.identity.api.IdentityService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
@@ -128,14 +130,16 @@ public class ReturnReceiptService {
      */
     public record CartonView(String lpn, String sku, String lotNumber, int quantity, String condition, UUID scannedBy,
                              Instant scannedAt, int countedQuantity, boolean opened, boolean stockEntered,
-                             UUID countedBy, boolean heldForCustomer) {
+                             UUID countedBy, boolean heldForCustomer, String scannedByName, String countedByName) {
     }
 
     /**
      * Units that came back with no carton label: recorded, never put into stock (WF-05 TH-4); {@code photoId} the
-     * receipt photo of them (WF-05 Q-18), {@code recordedBy} whose count it is.
+     * receipt photo of them (WF-05 Q-18), {@code recordedBy} whose count it is, {@code recordedByName} their display
+     * name.
      */
-    public record LooseLineView(UUID id, String sku, String lotNumber, int quantity, UUID recordedBy, UUID photoId) {
+    public record LooseLineView(UUID id, String sku, String lotNumber, int quantity, UUID recordedBy, UUID photoId,
+                                String recordedByName) {
     }
 
     /**
@@ -145,7 +149,11 @@ public class ReturnReceiptService {
     public record ExpectedCarton(String lpn, String sku, String lotNumber, int quantity, boolean scanned) {
     }
 
-    /** One return receipt in full: its source, its cartons, and what its source carried. */
+    /**
+     * One return receipt in full: its source, its cartons, and what its source carried. Every {@code *ByName} is the
+     * display name of the person beside it (null with the id, or if unknown); {@code warehouseCode} and
+     * {@code warehouseName} name {@code warehouseId}, so the screen needs no warehouse list.
+     */
     public record ReturnReceiptView(UUID id, String number, String receiptType, GoodsReceiptStatus status,
                                     UUID warehouseId, UUID orderId, String orderNumber, UUID shipmentId,
                                     String shipmentCode, UUID returnRequestId, String rmaNumber,
@@ -153,13 +161,20 @@ public class ReturnReceiptService {
                                     Instant receivedAt, UUID receivedBy, Instant confirmedAt, UUID confirmedBy,
                                     Instant closedAt, List<CartonView> cartons, List<ExpectedCarton> expectedCartons,
                                     long version, List<LooseLineView> looseLines,
-                                    boolean managerConfirmationRequired) {
+                                    boolean managerConfirmationRequired, String receivedByName,
+                                    String confirmedByName, String warehouseCode, String warehouseName) {
     }
 
-    /** One receipt in the list: its source by id, and how many cartons it lists. */
+    /**
+     * One receipt in the list: its source by id, and how many cartons it lists. {@code shipmentCode} names
+     * {@code shipmentId} (null for a receipt against a return request); {@code warehouseCode}/{@code warehouseName}
+     * name {@code warehouseId}; {@code receivedByName} is the display name of {@code receivedBy} - each null if unknown.
+     */
     public record ReturnReceiptRow(UUID id, String number, String receiptType, GoodsReceiptStatus status,
                                    UUID warehouseId, UUID orderId, UUID shipmentId, UUID returnRequestId,
-                                   Instant receivedAt, UUID receivedBy, Instant closedAt, int cartonCount) {
+                                   Instant receivedAt, UUID receivedBy, Instant closedAt, int cartonCount,
+                                   String shipmentCode, String warehouseCode, String warehouseName,
+                                   String receivedByName) {
     }
 
     private final ReturnReceiptRepository receipts;
@@ -174,12 +189,15 @@ public class ReturnReceiptService {
     private final Clock clock;
     private final ReturnReceiptTracking tracking;
     private final GoodsReceiptPhotoJpaRepository photos;
+    private final IdentityService identities;
 
     public ReturnReceiptService(ReturnReceiptRepository receipts, ReturnReceiptSearch search,
                                 GoodsReceiptRepository numbering, ShipmentCartons shipments,
                                 ReturnRequestLookup returnRequests, OrderService orders, CartonReturns cartonReturns,
                                 WarehouseService warehouses, ApplicationEventPublisher events, Clock clock,
-                                ReturnReceiptTracking tracking, GoodsReceiptPhotoJpaRepository photos) {
+                                ReturnReceiptTracking tracking, GoodsReceiptPhotoJpaRepository photos,
+                                IdentityService identities) {
+        this.identities = identities;
         this.tracking = tracking;
         this.photos = photos;
         this.receipts = receipts;
@@ -607,11 +625,24 @@ public class ReturnReceiptService {
         if (warehouseId != null) {
             WarehouseScope.requireWarehouse(warehouseId);
         }
-        return Pages.toResponse(search.search(new ReturnReceiptSearch.Criteria(statuses, warehouseId, orderId,
+        var found = search.search(new ReturnReceiptSearch.Criteria(statuses, warehouseId, orderId,
                 shipmentId, returnRequestId, number == null || number.isBlank() ? null : number.strip()),
-                Pages.of(page, size, SORT.parse(sort))).map(r -> new ReturnReceiptRow(r.id(), r.number(), "RETURN",
-                r.status(), r.warehouseId(), r.orderId(), r.shipmentId(), r.returnRequestId(), r.receivedAt(),
-                r.receivedBy(), r.closedAt(), r.cartonCount())));
+                Pages.of(page, size, SORT.parse(sort)));
+        // The page's shipments, warehouses and people, each in one call.
+        Map<UUID, String> shipmentCodes = shipments.codesOf(found.getContent().stream()
+                .map(ReturnReceiptSearch.Row::shipmentId).filter(java.util.Objects::nonNull).collect(Collectors.toSet()));
+        Map<UUID, WarehouseView> warehouseById = warehouses.findWarehouses(found.getContent().stream()
+                .map(ReturnReceiptSearch.Row::warehouseId).collect(Collectors.toSet()));
+        Map<UUID, String> names = identities.displayNames(found.getContent().stream()
+                .map(ReturnReceiptSearch.Row::receivedBy).filter(java.util.Objects::nonNull).distinct().toList());
+        return Pages.toResponse(found.map(r -> {
+            WarehouseView warehouse = warehouseById.get(r.warehouseId());
+            return new ReturnReceiptRow(r.id(), r.number(), "RETURN", r.status(), r.warehouseId(), r.orderId(),
+                    r.shipmentId(), r.returnRequestId(), r.receivedAt(), r.receivedBy(), r.closedAt(), r.cartonCount(),
+                    r.shipmentId() == null ? null : shipmentCodes.get(r.shipmentId()),
+                    warehouse == null ? null : warehouse.prefix(), warehouse == null ? null : warehouse.name(),
+                    r.receivedBy() == null ? null : names.get(r.receivedBy()));
+        }));
     }
 
     // ------------------------------------------------------------------ helpers
@@ -724,6 +755,17 @@ public class ReturnReceiptService {
         String orderNumber = orders.findById(receipt.orderId()).map(OrderSummary::orderNumber).orElse(null);
         String areaCode = warehouses.findLocation(receipt.quarantineLocationId())
                 .map(StorageLocationView::locationCode).orElse(null);
+        WarehouseView warehouse = warehouses.findWarehouses(List.of(receipt.warehouseId())).get(receipt.warehouseId());
+        // Every person the receipt names, in one call.
+        Set<UUID> people = new java.util.HashSet<>();
+        java.util.stream.Stream.of(receipt.receivedBy(), receipt.confirmedBy()).forEach(people::add);
+        receipt.cartons().forEach(c -> {
+            people.add(c.scannedBy());
+            people.add(c.countedBy());
+        });
+        receipt.looseLines().forEach(l -> people.add(l.recordedBy()));
+        people.remove(null);
+        Map<UUID, String> names = people.isEmpty() ? Map.of() : identities.displayNames(people);
         return new ReturnReceiptView(receipt.id(), receipt.number(), "RETURN", receipt.status(), receipt.warehouseId(),
                 receipt.orderId(), orderNumber, receipt.shipmentId(), shipmentCode, receipt.returnRequestId(),
                 rmaNumber, receipt.quarantineLocationId(), areaCode, receipt.note(), receipt.receivedAt(),
@@ -731,13 +773,20 @@ public class ReturnReceiptService {
                 receipt.cartons().stream().map(c -> new CartonView(c.lpn(), c.sku(), c.lotNumber(), c.quantity(),
                         c.condition(), c.scannedBy(), c.scannedAt(), c.countedQuantity(), c.opened(),
                         receipt.stockEntered(c),
-                        c.countedBy(), customers.contains(c.lpn()))).toList(),
+                        c.countedBy(), customers.contains(c.lpn()), nameIn(names, c.scannedBy()),
+                        nameIn(names, c.countedBy()))).toList(),
                 expected.stream().map(c -> new ExpectedCarton(c.lpn(), c.sku(), c.lotNumber(), c.quantity(),
                         scanned.contains(StockPackageView.normalLpn(c.lpn())))).toList(),
                 receipt.version(),
                 receipt.looseLines().stream().map(l -> new LooseLineView(l.id(), l.sku(), l.lotNumber(), l.quantity(),
-                        l.recordedBy(), l.photoId())).toList(),
-                receipt.status() == GoodsReceiptStatus.DRAFT && receipt.needsManagerConfirmation());
+                        l.recordedBy(), l.photoId(), nameIn(names, l.recordedBy()))).toList(),
+                receipt.status() == GoodsReceiptStatus.DRAFT && receipt.needsManagerConfirmation(),
+                nameIn(names, receipt.receivedBy()), nameIn(names, receipt.confirmedBy()),
+                warehouse == null ? null : warehouse.prefix(), warehouse == null ? null : warehouse.name());
+    }
+
+    private static String nameIn(Map<UUID, String> names, UUID userId) {
+        return userId == null ? null : names.get(userId);
     }
 
 }

@@ -36,8 +36,7 @@ import java.util.stream.Collectors;
  * <p>Counted in whole cartons of the SKU's standard size (13 BR-12, open-questions A9): available to promise is
  * inventory's system-wide figure, every warehouse together (13 BR-07, C3), read through {@code inventory :: api} in one
  * query for the whole page, then divided by the SKU's carton. The carton is the one {@code QuoteService} quotes in: the
- * SKU's single active packing unit of more than one piece, the default shipping one should there be several
- * ({@link UomConversion#cartonOf}). A SKU without one gets no indicator - a guessed carton would promise stock no quote
+ * SKU's single active packing unit of more than one piece ({@link UomConversion#cartonOf}). A SKU without one gets no indicator - a guessed carton would promise stock no quote
  * can sell - and the gap is logged.</p>
  *
  * <p>Not cached. Docs 13 allows ten seconds of lag; the endpoint's own short {@code Cache-Control} absorbs a page being

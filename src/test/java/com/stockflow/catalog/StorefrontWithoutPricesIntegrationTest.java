@@ -146,6 +146,10 @@ class StorefrontWithoutPricesIntegrationTest {
 
         JsonNode page = storefront(owner, LIST + "/" + slug);
         assertThat(page.get("variants").findValuesAsText("sku")).containsExactly(product.sku());
+        // The page names each variant as the card does.
+        assertThat(page.get("variants").findValuesAsText("name"))
+                .containsExactlyElementsOf(cards.get(0).get("skus").findValuesAsText("name"));
+        assertThat(page.get("variants").get(0).get("name").asText()).isNotBlank();
         assertThat(storefront(owner, LIST + "/" + slug + "/gallery").get("images")).isNotEmpty();
         assertThat(storefront(owner, SUGGEST, "q", marker).findValuesAsText("slug")).contains(slug);
 

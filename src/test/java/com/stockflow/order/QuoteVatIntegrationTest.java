@@ -247,6 +247,55 @@ class QuoteVatIntegrationTest {
     }
 
     @Test
+    @DisplayName("QD4: produced since the draft was edited, the plate fee still on it: refused when sent")
+    void thePlateFeeIsChargedOnce() {
+        String sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, 10, "STANDARD", false).sku();
+        Quotes.QuoteView drafted = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                draft(sku, List.of(new Quotes.Fee(FeeKind.PLATE_FEE, sku, new BigDecimal("500000"))))));
+        assertThat(drafted.fees()).as("produced for the first time").extracting(Quotes.FeeView::kind)
+                .containsExactly(FeeKind.PLATE_FEE);
+        CustomerSkuRows.produced(jdbc, tx, customerId, sku);
+        assertThatThrownBy(() -> quotes.send(sales, drafted.id(), drafted.version()))
+                .extracting(QuoteVatIntegrationTest::code).isEqualTo(ErrorCode.QUOTE_PLATE_FEE_REORDER);
+        Quotes.QuoteView edited = quotes.edit(sales, drafted.id(), drafted.version(), draft(sku, List.of()));
+        assertThat(edited.fees()).as("the reorder has none").isEmpty();
+        assertThat(quotes.send(sales, drafted.id(), edited.version()).status()).isEqualTo(QuoteStatus.SENT);
+    }
+
+    @Test
+    @DisplayName("D-1: a quote sent more than 10% below the customer's own price is told to the sales managers, once; "
+            + "5% below is not")
+    void aDeepDiscountIsToldToTheManagers() {
+        UUID manager = new com.stockflow.support.StaffFixtures(jdbc, tx, entityManager).staff("SALES_MANAGER");
+        String sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, 10).sku();
+        tx.executeWithoutResult(s -> {
+            UUID price = Identifiers.newId();
+            jdbc.update("""
+                    INSERT INTO catalog.customer_price (id, customer_id, sku, currency, version, created_at)
+                    VALUES (?, ?, ?, 'VND', 0, NOW())""", price, customerId, sku);
+            jdbc.update("""
+                    INSERT INTO catalog.customer_price_tier (id, customer_price_id, min_quantity, unit_price, version,
+                        created_at)
+                    VALUES (?, ?, 1, 4000, 0, NOW())""", Identifiers.newId(), price);
+        });
+        Quotes.QuoteView near = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                new Quotes.Draft(Instant.now().plus(Duration.ofDays(7)), null, List.of(new Quotes.Line(sku, 3,
+                        List.of(new Quotes.Tier(1, new BigDecimal("3800"))))), null, List.of())));
+        quotes.send(sales, near.id(), near.version());
+        Quotes.QuoteView deep = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                draft(sku, List.of())));
+        quotes.send(sales, deep.id(), deep.version());
+
+        String title = "Báo giá " + deep.quoteNumber() + " đã gửi với giá thấp hơn giá riêng của khách";
+        Await.until("the managers told", ASYNC, () -> new com.stockflow.support.StaffFixtures(jdbc, tx, entityManager).titles(manager).contains(title));
+        assertThat(jdbc.queryForObject("SELECT body FROM notification.user_notification WHERE recipient_id = ? AND"
+                + " dedupe_key LIKE ?", String.class, manager, "quote-discount:" + deep.id() + ":%"))
+                .contains(sku + ", 3 thùng: 3.000 đ/cái (giá riêng 4.000 đ)");
+        assertThat(new com.stockflow.support.StaffFixtures(jdbc, tx, entityManager).titles(manager))
+                .as("5%% below is within the threshold").noneMatch(t -> t.contains(near.quoteNumber()));
+    }
+
+    @Test
     @DisplayName("a product without a tax class: the quote is drafted, not sent (14 §4.1 step 3)")
     void noTaxClassNoSending() {
         String sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, 10, null, true).sku();

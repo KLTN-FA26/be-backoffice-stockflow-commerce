@@ -20,7 +20,7 @@ public interface StockBrowsing {
 
     record Reservation(UUID reservationId, UUID orderId, UUID stockItemId, String sku, String locationCode,
                        String lotNumber, int quantity, ReservationStatus status, Instant reservedAt,
-                       Instant expiresAt, ReleaseReason releaseReason, Instant closedAt) {
+                       Instant expiresAt, ReleaseReason releaseReason, Instant closedAt, String orderNumber) {
     }
 
     /** @param warehouse a warehouse prefix ({@code HCM}); null for every warehouse the caller may see */

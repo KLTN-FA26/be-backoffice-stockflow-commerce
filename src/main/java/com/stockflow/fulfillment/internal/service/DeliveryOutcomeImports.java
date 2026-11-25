@@ -40,12 +40,14 @@ public interface DeliveryOutcomeImports {
      * A file applied, with its lines.
      *
      * @param rowsApplied the accepted lines whose event changed a shipment
+     * @param uploadedByName the display name of {@code uploadedBy}; null if unknown
      */
     record ImportView(UUID id, String fileName, UUID uploadedBy, Instant uploadedAt, int rowsTotal, int rowsAccepted,
-                      int rowsRejected, int rowsApplied, List<Line> lines) { }
+                      int rowsRejected, int rowsApplied, List<Line> lines, String uploadedByName) { }
 
+    /** {@code uploadedByName}: the display name of {@code uploadedBy}; null if unknown. */
     record ImportRow(UUID id, String fileName, UUID uploadedBy, Instant uploadedAt, int rowsTotal, int rowsAccepted,
-                     int rowsRejected) { }
+                     int rowsRejected, String uploadedByName) { }
 
     /** The empty template, its headings in the request's language. */
     byte[] template();

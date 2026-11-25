@@ -138,8 +138,8 @@ SELECT pg_temp.expect_true('F2 unit_in_use runs', $c$
 -- a DRAFT receipt against it, registered with it (as 22_production_receipts.sql does). The production order's own rows are
 -- written with the row triggers off: its rules are 21_production_orders.sql's.
 -- 01 BR-03: one active carton per item. The demo seed's own is retired, CARTON10 is the one, and OLDCTN is declared retired.
-UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
- WHERE NOT is_base AND active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
+UPDATE inventory.uom_conversions SET active = FALSE
+ WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg, active)
 VALUES (md5('qa61:carton')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'CARTON10', 10, 60, 40, 50, 12, TRUE),
        -- measured, so L7 is refused for being retired, not for the size and weight receiving asks of a carton (V20261215000100)

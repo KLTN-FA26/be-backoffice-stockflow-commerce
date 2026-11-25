@@ -59,6 +59,13 @@ public interface WarehouseService {
     Optional<WarehouseView> findWarehouse(UUID warehouseId);
 
     /**
+     * The warehouses with these ids, by id, in one query - for a list or a detail that names the warehouse beside its
+     * id (code and name), so a screen needs neither the warehouse list nor {@code warehouse-warehouses:READ} to show
+     * it. Null ids are ignored; an unknown id is absent from the map.
+     */
+    java.util.Map<UUID, WarehouseView> findWarehouses(java.util.Collection<UUID> warehouseIds);
+
+    /**
      * 4B-7 (kltn-docs 17 §4.2 step 2): every ACTIVE warehouse, by code - the warehouses an order may ship from, which
      * Sales chooses among.
      */

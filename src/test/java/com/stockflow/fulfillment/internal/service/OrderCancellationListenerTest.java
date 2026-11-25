@@ -40,7 +40,7 @@ class OrderCancellationListenerTest {
             null, BigDecimal.ZERO, BigDecimal.ZERO, "VND", UUID.randomUUID(), NOW, BigDecimal.ZERO);
 
     private PickJpaEntity pick(PickStatus status) {
-        return new PickJpaEntity(UUID.randomUUID(), null, orderId, "SO-0001", WAREHOUSE, status);
+        return new PickJpaEntity(UUID.randomUUID(), orderId, "SO-0001", WAREHOUSE, status);
     }
 
     @Test

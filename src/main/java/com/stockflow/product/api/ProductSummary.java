@@ -18,6 +18,9 @@ import java.util.UUID;
  * <p>{@code version} (SCRUM-461) is what an edit, a suspension, a discontinuation or a deletion quotes
  * back; a product changed since answers {@code OPTIMISTIC_LOCK}. {@code discontinueReason} is set once
  * discontinued; {@code suspendedAt}/{@code suspendReason} while {@link ProductStatus#INACTIVE}.</p>
+ *
+ * <p>{@code categoryName} is the primary category's name, read with the row like {@code brandName}; null when the
+ * product has no primary category.</p>
  */
 public record ProductSummary(
         UUID productId,
@@ -48,6 +51,7 @@ public record ProductSummary(
         long version,
         String discontinueReason,
         Instant suspendedAt,
-        String suspendReason
+        String suspendReason,
+        String categoryName
 ) {
 }

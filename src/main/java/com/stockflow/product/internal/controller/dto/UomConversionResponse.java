@@ -7,7 +7,6 @@ import java.util.UUID;
 /**
  * One packing unit of a SKU: a carton specification - the pieces it holds ({@code factor}), its size and full weight.
  * The unit the pieces are counted in is the item's own and is not listed (V20261226000200).
- * {@code defaultShipping}: the unit load planning estimates this SKU's cartons in; one per item.
  */
 public record UomConversionResponse(
         UUID id,
@@ -19,9 +18,18 @@ public record UomConversionResponse(
         BigDecimal widthCm,
         BigDecimal heightCm,
         boolean active,
-        long version,
-        boolean defaultShipping
+        long version
 ) {
+
+    /**
+     * Kept for the FE: true on the item's active carton, false on a retired unit. There is no default shipping mark any
+     * more (V20261226000300): an item has one active carton (01 BR-03) and ships in it.
+     */
+    @Deprecated
+    @JsonProperty("defaultShipping")
+    public boolean defaultShipping() {
+        return active;
+    }
 
     /**
      * Constant false, kept for the FE: no unit listed is a base unit any more - the base unit has no row

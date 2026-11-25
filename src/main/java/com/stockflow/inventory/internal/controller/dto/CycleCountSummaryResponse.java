@@ -20,5 +20,12 @@ public record CycleCountSummaryResponse(UUID id, String countNumber, UUID wareho
                                         @Schema(description = "Lines counted so far") int countedCount,
                                         @Schema(description = "Counted lines that differ from the books; absent for a "
                                                 + "caller who may not decide counts (inventory-cycle-counts:APPROVE)")
-                                        Integer varianceCount) {
+                                        Integer varianceCount,
+                                        @Schema(description = "Display name of assignedUserId; null while "
+                                                + "unassigned", nullable = true)
+                                        String assignedUserName,
+                                        @Schema(description = "The warehouse's code (its location prefix)",
+                                                example = "HCM", nullable = true)
+                                        String warehouseCode,
+                                        @Schema(nullable = true) String warehouseName) {
 }

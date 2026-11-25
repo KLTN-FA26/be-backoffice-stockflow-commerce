@@ -8,15 +8,20 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
-import java.sql.Types;
+import java.sql.Array;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
  * What the given bins hold right now, and what a carton takes of a bin, for putting it away (SCRUM-92; kltn-docs
- * 05 BR-03, 06 BR-19). Grouped reads of the inventory schema only: sizes and weights come from the carton units (the
+ * 05 BR-03, 06 BR-19) and for suggesting bins to a move of a group of cartons (issue #412; 11 §4.1, docs#46), which
+ * judges room by putaway's rule and so must read it the same way. Grouped reads of the inventory schema only: sizes and weights come from the carton units (the
  * item master gives only the rotatable flag) of the same schema, never from another module's tables.
  *
  * <p>A bin's load is every carton on its rows - any SKU, any status - because the shelf is as full of a quarantined
@@ -58,48 +63,118 @@ public class BinOccupancyQuery {
 
     /**
      * The occupancy of each of these bins; a bin holding nothing is absent, which the ranker reads as empty.
-     * {@code holdsSku} / {@code holdsLot} refer to the SKU (and lot number) being put away.
+     * {@code holdsSku} / {@code holdsLot} refer to the SKU (and lot number) being put away: the group of one carton,
+     * read by {@link #contentsOf} and reduced by {@link BinContents#toOccupancy}.
      *
      * @param leaveOut a carton not to count, or null: the one being put away, when somebody already moved it into
      *                 the bin by hand. Counted, a carton that fills a bin exactly would not fit the bin it stands in
      */
     public Map<String, Occupancy> occupancyOf(Collection<String> locationCodes, String sku, String lotNumber,
                                               UUID leaveOut) {
+        Set<SkuLot> group = Set.of(new SkuLot(sku, lotNumber));
+        Map<String, Occupancy> out = new HashMap<>();
+        contentsOf(locationCodes, group, leaveOut == null ? List.of() : List.of(leaveOut))
+                .forEach((code, contents) -> out.put(code, contents.toOccupancy(group)));
+        return out;
+    }
+
+    /** A SKU and a lot number of it; a null lot is a carton without one, which never matches a lot. */
+    public record SkuLot(String sku, String lotNumber) {
+    }
+
+    /**
+     * What a bin holds: its load over every carton on it, and of a group of cartons to put there, the SKUs and the
+     * (SKU, lot) pairs it already holds - only those of the group, so the set stays as small as the group.
+     */
+    public record BinContents(int units, BigDecimal volumeM3, BigDecimal weightKg, Set<String> skus,
+                              Set<SkuLot> lots) {
+
+        public static final BinContents EMPTY =
+                new BinContents(0, BigDecimal.ZERO, BigDecimal.ZERO, Set.of(), Set.of());
+
+        /**
+         * The bin as the ranker reads it for this group: it holds the SKU when it holds every SKU of the group, and the
+         * lot when it holds every pair of the group and no pair lacks a lot. For a group of one this is the
+         * single-carton rule exactly; for a bigger group a bin holding only part of it is not "the same" bin, or a
+         * group would be grouped by whichever of its cartons the bin happens to share.
+         */
+        public Occupancy toOccupancy(Set<SkuLot> group) {
+            boolean holdsSku = !group.isEmpty()
+                    && group.stream().allMatch(pair -> pair.sku() != null && skus.contains(pair.sku()));
+            boolean holdsLot = !group.isEmpty()
+                    && group.stream().allMatch(pair -> pair.lotNumber() != null && lots.contains(pair));
+            return new Occupancy(units, volumeM3, weightKg, holdsSku, holdsLot);
+        }
+    }
+
+    /**
+     * What each of these bins holds, in one statement; a bin holding nothing is absent. The load counts every carton
+     * on the bin (see the class), the SKUs and pairs only those of {@code group}. A pair of the group without a lot
+     * names its SKU but never a pair.
+     *
+     * @param leaveOut cartons not to count: the ones being put away or moved, wherever they stand now - counted, a
+     *                 carton already in the bin would be judged against room it takes itself
+     */
+    public Map<String, BinContents> contentsOf(Collection<String> locationCodes, Set<SkuLot> group,
+                                               Collection<UUID> leaveOut) {
         if (locationCodes.isEmpty()) {
             return Map.of();
         }
-        Map<String, Occupancy> out = new HashMap<>();
+        List<SkuLot> pairs = List.copyOf(group);
+        Map<String, BinContents> out = new HashMap<>();
         jdbc.query("""
-                with r as (
-                    select s.location_code, s.stock_package_id, s.sku, sum(s.on_hand) as on_hand,
-                           bool_or(s.lot_number is not distinct from cast(? as text)) as same_lot
+                with g as (
+                    select g.sku, g.lot_number, g.i
+                    from unnest(cast(? as text[]), cast(? as text[])) with ordinality as g(sku, lot_number, i)),
+                s as (
+                    select s.location_code, s.stock_package_id, s.sku, s.lot_number, s.on_hand,
+                           s.sku in (select g.sku from g) as in_group
                     from inventory.stock_item s
                     where s.location_code = any (?)
                       and s.on_hand > 0
-                      and (cast(? as uuid) is null or s.stock_package_id is distinct from cast(? as uuid))
-                    group by s.location_code, s.stock_package_id, s.sku)
+                      and (s.stock_package_id is null or s.stock_package_id <> all (cast(? as uuid[])))),
+                r as (
+                    select s.location_code, s.stock_package_id, s.sku, bool_or(s.in_group) as in_group,
+                           sum(s.on_hand) as on_hand
+                    from s
+                    group by s.location_code, s.stock_package_id, s.sku),
+                held as (
+                    select s.location_code, array_agg(distinct g.i) as pairs
+                    from s
+                    join g on g.sku = s.sku and g.lot_number = s.lot_number
+                    group by s.location_code)
                 select r.location_code,
                        sum(r.on_hand) as units,
                        sum(case when r.stock_package_id is null then 0
                                 else coalesce(u.length_cm * u.width_cm * u.height_cm / 1000000, 0) end) as volume_m3,
                        coalesce(sum(u.weight_kg), 0) as weight_kg,
-                       coalesce(bool_or(r.sku = ?), false) as holds_sku,
-                       coalesce(bool_or(r.sku = ? and r.same_lot and cast(? as text) is not null), false) as holds_lot
+                       array_agg(distinct r.sku) filter (where r.in_group) as skus,
+                       (select held.pairs from held where held.location_code = r.location_code) as pairs
                 from r
                 left join inventory.stock_package p on p.id = r.stock_package_id
                 left join inventory.uom_conversions u on u.id = p.uom_conversion_id
                 group by r.location_code""", ps -> {
-            ps.setString(1, lotNumber);
-            ps.setArray(2, ps.getConnection().createArrayOf("text", locationCodes.toArray()));
-            ps.setObject(3, leaveOut, Types.OTHER);
-            ps.setObject(4, leaveOut, Types.OTHER);
-            ps.setString(5, sku);
-            ps.setString(6, sku);
-            ps.setString(7, lotNumber);
+            ps.setArray(1, ps.getConnection().createArrayOf("text", pairs.stream().map(SkuLot::sku).toArray()));
+            ps.setArray(2, ps.getConnection().createArrayOf("text",
+                    pairs.stream().map(SkuLot::lotNumber).toArray()));
+            ps.setArray(3, ps.getConnection().createArrayOf("text", locationCodes.toArray()));
+            ps.setArray(4, ps.getConnection().createArrayOf("uuid", leaveOut.toArray()));
         }, rs -> {
-            out.put(rs.getString("location_code"), new Occupancy(rs.getInt("units"),
-                    orZero(rs.getBigDecimal("volume_m3")), orZero(rs.getBigDecimal("weight_kg")),
-                    rs.getBoolean("holds_sku"), rs.getBoolean("holds_lot")));
+            Set<String> skus = new HashSet<>();
+            Array skuArray = rs.getArray("skus");
+            if (skuArray != null) {
+                skus.addAll(Arrays.asList((String[]) skuArray.getArray()));
+            }
+            Set<SkuLot> held = new HashSet<>();
+            Array pairArray = rs.getArray("pairs");
+            if (pairArray != null) {
+                for (Long i : (Long[]) pairArray.getArray()) {
+                    held.add(pairs.get(i.intValue() - 1));
+                }
+            }
+            out.put(rs.getString("location_code"), new BinContents(rs.getInt("units"),
+                    orZero(rs.getBigDecimal("volume_m3")), orZero(rs.getBigDecimal("weight_kg")), Set.copyOf(skus),
+                    Set.copyOf(held)));
         });
         return out;
     }
