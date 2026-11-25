@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
@@ -31,9 +32,17 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  *
  * <p>Demo {@code HCM}: 25 cartons in bin {@code HCM-A01-2-B} (level 2 of shelf A01, level 1 empty), 30 in area
  * {@code QC01}, 75 in all; bin {@code HCM-A01-1-A} is empty. Every test rolls back.</p>
+ *
+ * <p><b>A context of its own, on purpose</b> (the property below), as in {@code LooseStockToCartonsIntegrationTest}:
+ * every count here is the demo seed as migrated, and the shared context's other classes commit cartons into these same
+ * bins and areas (fixture SKUs stocked into {@code HCM-A01-1-*}, demo cartons quarantined into {@code QC01}). It passed
+ * on the shared context only while cache eviction happened to hand it a fresh database; once classes run grouped by
+ * context ({@code support/ContextGroupingClassOrderer}) it runs after them. A fresh copy of the template is the
+ * isolation, not the order.</p>
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
+@TestPropertySource(properties = "stockflow.test.own-database=place-deactivation")
 @Transactional
 class PlaceDeactivationIntegrationTest {
 
