@@ -1,5 +1,5 @@
 -- =============================================================================
--- Adversarial checks: inventory.uom_conversions has no is_base and no default_shipping (V20261226000300). An item's
+-- Adversarial checks: inventory.uom_conversions has no is_base and no default_shipping (V20261229000100). An item's
 -- units are its carton specifications and one of them is active (kltn-docs 01 BR-03): that one is received, sold and
 -- shipped in, so there is no unit to mark for shipping and no base row to flag. What the columns took with them must
 -- still hold: one active carton per item (the index named it), a unit a document uses keeps its code and factor (the

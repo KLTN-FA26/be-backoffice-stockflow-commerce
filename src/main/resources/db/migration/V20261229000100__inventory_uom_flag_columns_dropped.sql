@@ -1,3 +1,9 @@
+-- Renumbered from V20261226000300, which reached develop after V20261227000100 had been deployed: Flyway does not run a
+-- migration older than the database's newest, so every deploy since failed validation and rolled back. Same statements,
+-- now after every migration on develop (V20261228000500 included, the demo seed shares the history). The drops say
+-- IF EXISTS so a database that ran it under its old number runs it again harmlessly (its history row for
+-- 20261226000300 must still go, see the PR); nothing between the two numbers touches inventory.uom_conversions.
+--
 -- inventory.uom_conversions holds an item's carton specifications and nothing else (V20261226000200), and an item has
 -- one active carton (kltn-docs 01 BR-03, uk_uom_conversions_one_carton). Two flags of the time when an item had several
 -- units are left with nothing to say:
@@ -107,7 +113,7 @@ BEGIN
 END
 $$;
 
-DROP TRIGGER tg_uom_conversions_locked_in_use ON inventory.uom_conversions;
+DROP TRIGGER IF EXISTS tg_uom_conversions_locked_in_use ON inventory.uom_conversions;
 CREATE TRIGGER tg_uom_conversions_locked_in_use BEFORE UPDATE OF factor, inventory_item_id, unit_of_measure
     ON inventory.uom_conversions
     FOR EACH ROW WHEN (NEW.factor IS DISTINCT FROM OLD.factor
@@ -115,12 +121,12 @@ CREATE TRIGGER tg_uom_conversions_locked_in_use BEFORE UPDATE OF factor, invento
                        OR NEW.unit_of_measure IS DISTINCT FROM OLD.unit_of_measure)
     EXECUTE FUNCTION inventory.guard_unit_in_use_change();
 
-DROP INDEX inventory.uk_uom_conversions_one_carton;
-DROP INDEX inventory.uk_uom_conversions_default_shipping;
-ALTER TABLE inventory.uom_conversions DROP CONSTRAINT ck_uom_conversions_no_base;
-ALTER TABLE inventory.uom_conversions DROP CONSTRAINT ck_uom_conversions_default_shipping;
-ALTER TABLE inventory.uom_conversions DROP COLUMN is_base;
-ALTER TABLE inventory.uom_conversions DROP COLUMN default_shipping;
+DROP INDEX IF EXISTS inventory.uk_uom_conversions_one_carton;
+DROP INDEX IF EXISTS inventory.uk_uom_conversions_default_shipping;
+ALTER TABLE inventory.uom_conversions DROP CONSTRAINT IF EXISTS ck_uom_conversions_no_base;
+ALTER TABLE inventory.uom_conversions DROP CONSTRAINT IF EXISTS ck_uom_conversions_default_shipping;
+ALTER TABLE inventory.uom_conversions DROP COLUMN IF EXISTS is_base;
+ALTER TABLE inventory.uom_conversions DROP COLUMN IF EXISTS default_shipping;
 
 CREATE UNIQUE INDEX uk_uom_conversions_one_carton ON inventory.uom_conversions (inventory_item_id) WHERE active;
 

@@ -12,7 +12,7 @@ import java.util.UUID;
  * <p>{@code active} false: retired (BR-10), kept for the documents that used it, never offered for new ones.</p>
  *
  * <p>The item's one active unit is its carton (01 BR-03, {@code uk_uom_conversions_one_carton}): the one it is received,
- * sold and shipped in. There is no unit to choose to ship in, so no "default shipping" mark (V20261226000300).</p>
+ * sold and shipped in. There is no unit to choose to ship in, so no "default shipping" mark (V20261229000100).</p>
  */
 public record UomConversion(
         UUID id,

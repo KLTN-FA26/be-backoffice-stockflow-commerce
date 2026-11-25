@@ -13,15 +13,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * V20261226000300 on the real upgrade path: is_base and default_shipping leave inventory.uom_conversions (kltn-docs 01
+ * V20261229000100 (renumbered from V20261226000300) on the real upgrade path: is_base and default_shipping leave inventory.uom_conversions (kltn-docs 01
  * BR-03: one active carton, nothing to choose to ship in). Units written before it - an active carton with the old
  * mark, one without it, a retired one - keep their ids, codes, factors and active flag, and one active carton per item
  * still holds: the index whose predicate named is_base is rebuilt, not lost.
  */
 class UomFlagColumnsMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261226000200";
-    private static final String MIGRATION = "20261226000300";
+    private static final String BEFORE = "20261228000400";
+    private static final String MIGRATION = "20261229000100";
 
     @Test
     void theFlagsGoAndTheUnitsStay() throws Exception {
