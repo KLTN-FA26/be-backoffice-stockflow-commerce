@@ -121,6 +121,15 @@ public final class Quote {
                             .localized("refusal.quote.onePlateFee", fee.sku().code());
                 }
             }
+        }
+
+        /**
+         * 14 BR-07: the quantity of each priced SKU reaches its MOQ. A rule for writing an offer - drafting, revising,
+         * sending - and not for building one: an offer read back from the rows or from the quote's history is what was
+         * quoted, and a tier changed since (the WF-05 demo seed holds 5-carton lines under a 20-carton break) must not
+         * keep it from opening (owner decision, WF-02 r6 question 1).
+         */
+        void requireMoq() {
             Map<String, Integer> bySku = quantityBySku(lines, QuoteLine::quantity);
             for (QuoteLine line : lines) {
                 int quantity = bySku.get(line.sku().code());
@@ -195,6 +204,7 @@ public final class Quote {
     }
 
     public static Quote draft(UUID id, String quoteNumber, UUID requestId, UUID customerId, Offer offer) {
+        offer.requireMoq();
         return new Quote(id, quoteNumber, requestId, customerId, QuoteStatus.DRAFT, 1, offer);
     }
 
@@ -224,6 +234,7 @@ public final class Quote {
     public void revise(Offer replacement) {
         Objects.requireNonNull(replacement, "replacement");
         requireStatus(QuoteStatus.DRAFT, "edit");
+        replacement.requireMoq();
         offer = replacement;
     }
 
@@ -232,6 +243,7 @@ public final class Quote {
         Objects.requireNonNull(by, "by");
         requireStatus(QuoteStatus.DRAFT, "send");
         requireCartonLines("sent");
+        offer.requireMoq();
         for (QuoteLine line : offer.lines()) {
             if (!line.priced()) {
                 throw new BusinessException(ErrorCode.QUOTE_NOT_PRICED,

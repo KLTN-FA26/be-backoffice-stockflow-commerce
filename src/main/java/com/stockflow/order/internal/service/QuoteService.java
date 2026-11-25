@@ -1047,7 +1047,7 @@ class QuoteService implements Quotes {
         com.stockflow.common.domain.Money acceptedTax = acceptedNet == null ? null
                 : untaxed ? com.stockflow.common.domain.Money.vnd(0) : line.taxOf(acceptedNet);
         com.stockflow.common.domain.Money proposed = !line.priced() ? null
-                : line.priceFor(offer.proposedQuantity(line.sku().code()));
+                : line.shownPriceFor(offer.proposedQuantity(line.sku().code()));
         com.stockflow.common.domain.Money proposedNet = proposed == null ? null : line.total(line.quantity(), proposed);
         com.stockflow.common.domain.Money proposedTax = proposedNet == null ? null
                 : untaxed ? com.stockflow.common.domain.Money.vnd(0) : line.taxOf(proposedNet);
