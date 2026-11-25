@@ -185,8 +185,8 @@ class WalkingPathTest {
 
         List<Point> path = walk(map, p("13.1", "2"), p("13.1", "18"));
 
-        for (String y : List.of("5.6", "10.4", "15.2")) {
-            double x = crossingAt(path.stream().map(q -> new Point(q.y(), q.x())).toList(), Double.parseDouble(y));
+        for (double y : List.of(5.6, 10.4, 15.2)) {
+            double x = crossingAt(path.stream().map(q -> new Point(q.y(), q.x())).toList(), y);
             assertThat(x).as("where the path crosses row y = %s", y).satisfiesAnyOf(
                     across -> assertThat(across).isLessThanOrEqualTo(3 - WalkingPath.CLEARANCE + 1e-3),
                     across -> assertThat(across).isGreaterThanOrEqualTo(23.2 + WalkingPath.CLEARANCE - 1e-3));
