@@ -545,6 +545,11 @@ more than the list: in this stack, the dangerous failures are silent.
 - Cross-module references are foreign keys (ADR-0007). Validate a reference in the service first
   (404/409 with a real error code); tests use `support/DemoData` or `support/ReferenceRows`, never an
   invented id for another module's row.
+- **Code on a branch made from the latest `develop`, never on `develop` or `main`.** Before the first edit:
+  `git fetch origin develop && git switch -c <type>/<short-slug> origin/develop`, `<type>` one of `feat`, `fix`,
+  `refactor`, `chore`, `docs`, `test` (a Jira key in the slug when there is one: `feat/scrum-839-…`). It reaches
+  `develop` only through a PR. `.claude/hooks/require-feature-branch.sh` (PreToolUse) refuses edits inside the repo
+  and `git commit` / `git push` while the checkout is on `develop` or `main`; do not get around it, switch branch.
 - **Never `git commit` or `git push` without asking the repository owner first.** Editing the working
   tree is fine; putting changes into history or onto the remote requires an explicit go-ahead. This
   applies to any automated assistant working in this repo.
