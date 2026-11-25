@@ -655,10 +655,10 @@ stockflow:
       # How long a quote drawn up from a customer's quote request - on the chat's card or in the request inbox - is
       # valid until Sales change it.
       draft-from-request-validity: ${QUOTE_DRAFT_FROM_REQUEST_VALIDITY:P14D}
-      # Decision D-1 (2026-11-25): a quote sent with a line more than this percent below the customer's own price is
-      # told in the in-app inbox to whoever approves customer status (customer-status:APPROVE: the Sales Manager and the
-      # System Admin). It only tells; Sales still price quotes freely.
-      discount-alert-percent: ${QUOTE_DISCOUNT_ALERT_PERCENT:10}
+      # kltn-docs 14 BR-10 (2026-11-26, replacing decision D-1's alert after the send): a quote with a price break more
+      # than this percent below its reference - the customer's own price, else the variant's standard price - or with no
+      # reference, waits for the Sales Manager (sales-quote-price-approvals:APPROVE) to approve it before it is sent.
+      price-approval-percent: ${QUOTE_PRICE_APPROVAL_PERCENT:10}
     contract:
       # Print-sample rounds a new contract offers without charge (14 BR-18, decided 2026-11-05); Sales may change it.
       free-sample-rounds: ${CONTRACT_FREE_SAMPLE_ROUNDS:2}

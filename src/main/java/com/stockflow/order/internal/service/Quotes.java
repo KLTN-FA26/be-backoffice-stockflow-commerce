@@ -201,6 +201,12 @@ public interface Quotes {
      * @param sentByName    the display name of {@code sentBy}, for the back office; null on the customer's copy, which
      *                      names no account (as {@link Transition#changedByName})
      * @param respondedByName the display name of {@code respondedBy}, for the back office; null on the customer's copy
+     * @param priceReviewPending 14 BR-10: the draft waits for the Sales Manager to approve its prices; always false on
+     *                      the customer's copy, which never sees a draft
+     * @param priceReview   14 BR-10: the latest submission of the quote's prices to the Sales Manager, whatever became of
+     *                      it; null when there was none, and on the customer's copy
+     * @param priceCheck    14 BR-10: how a draft's prices stand against their references right now - what sending it
+     *                      would decide; null once sent, and on the customer's copy
      */
     record QuoteView(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
                      Instant validUntil, String terms,
@@ -211,7 +217,23 @@ public interface Quotes {
                      UUID respondedBy, String customerFeedback, String cancellationReason,
                      ConvertedOrder convertedOrder, Instant convertedAt, List<Transition> history,
                      Instant createdAt, String createdBy, long version, String customerName, String customerCode,
-                     String sentByName, String respondedByName) {
+                     String sentByName, String respondedByName, boolean priceReviewPending,
+                     PriceReviewView priceReview, PriceCheckView priceCheck) {
+
+        /** Without the price review (14 BR-10). */
+        public QuoteView(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
+                         Instant validUntil, String terms, java.time.LocalDate requestedDeliveryDate, boolean legacy,
+                         List<LineView> lines, List<FeeView> fees, boolean priced, Totals proposed, Totals accepted,
+                         BigDecimal proposedTotal, BigDecimal acceptedTotal, Instant sentAt, UUID sentBy,
+                         Instant respondedAt, UUID respondedBy, String customerFeedback, String cancellationReason,
+                         ConvertedOrder convertedOrder, Instant convertedAt, List<Transition> history,
+                         Instant createdAt, String createdBy, long version, String customerName, String customerCode,
+                         String sentByName, String respondedByName) {
+            this(id, quoteNumber, customerId, status, revision, validUntil, terms, requestedDeliveryDate, legacy, lines,
+                    fees, priced, proposed, accepted, proposedTotal, acceptedTotal, sentAt, sentBy, respondedAt,
+                    respondedBy, customerFeedback, cancellationReason, convertedOrder, convertedAt, history, createdAt,
+                    createdBy, version, customerName, customerCode, sentByName, respondedByName, false, null, null);
+        }
 
         /** Without the names beside the ids: a view drawn for a paper, or a test. */
         public QuoteView(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
@@ -224,8 +246,47 @@ public interface Quotes {
             this(id, quoteNumber, customerId, status, revision, validUntil, terms, requestedDeliveryDate, legacy, lines,
                     fees, priced, proposed, accepted, proposedTotal, acceptedTotal, sentAt, sentBy, respondedAt,
                     respondedBy, customerFeedback, cancellationReason, convertedOrder, convertedAt, history, createdAt,
-                    createdBy, version, null, null, null, null);
+                    createdBy, version, null, null, null, null, false, null, null);
         }
+    }
+
+    /**
+     * 14 BR-10: one price break of a line measured against its reference.
+     *
+     * @param referencePrice  the reference at the break's start - the customer's own price, else the variant's
+     *                        standard price; null when there is none
+     * @param source          {@code CUSTOMER_PRICE} or {@code STANDARD_PRICE}; null with no reference
+     * @param discountPercent how far below the reference, in percent (negative when above); null with no reference
+     * @param needsApproval   more than the threshold below, or no reference
+     */
+    record PriceCheckTier(int minQuantity, BigDecimal unitPrice, BigDecimal referencePrice, String source,
+                          BigDecimal discountPercent, boolean needsApproval) {
+    }
+
+    /** 14 BR-10: one line's breaks as measured; {@code needsApproval} when one of them does. */
+    record PriceCheckLine(int lineNo, String sku, int cartons, boolean needsApproval, List<PriceCheckTier> tiers) {
+    }
+
+    /**
+     * 14 BR-10: a quote's prices against their references.
+     *
+     * @param thresholdPercent how far below its reference a break may be before the quote waits for the Sales Manager
+     * @param needsApproval    whether sending it would hold it for approval
+     */
+    record PriceCheckView(BigDecimal thresholdPercent, boolean needsApproval, List<PriceCheckLine> lines) {
+    }
+
+    /**
+     * 14 BR-10: one submission of the quote's prices to the Sales Manager, as decided on.
+     *
+     * @param outcome  {@code PENDING}, {@code APPROVED}, {@code REJECTED} or {@code WITHDRAWN} (by Sales, or by the
+     *                 quote's cancellation)
+     * @param reason   why it was rejected; a note the approver left; null otherwise
+     * @param lines    every break as measured when it was submitted - a standard price changed since does not alter it
+     */
+    record PriceReviewView(UUID id, int revision, String outcome, BigDecimal thresholdPercent, Instant submittedAt,
+                           UUID submittedBy, String submittedByName, Instant decidedAt, UUID decidedBy,
+                           String decidedByName, String reason, List<PriceCheckLine> lines) {
     }
 
     /**
@@ -240,27 +301,43 @@ public interface Quotes {
      * @param customerCode  the customer's code
      * @param convertedOrderNumber the number of the order {@code convertedOrderId} names; null when there is none, and
      *                      on the customer's copy while that order is a DRAFT (17 §5.2, as the quote's own view)
+     * @param priceReviewPending 14 BR-10: the draft waits for the Sales Manager to approve its prices; false on the
+     *                      customer's copy
      */
     record Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
                Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt, long version,
                BigDecimal total, Integer lineCount, String firstItemName, String customerName, String customerCode,
-               String convertedOrderNumber) {
+               String convertedOrderNumber, boolean priceReviewPending) {
+
+        public Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
+                   Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt, long version,
+                   BigDecimal total, Integer lineCount, String firstItemName, String customerName, String customerCode,
+                   String convertedOrderNumber) {
+            this(id, quoteNumber, customerId, status, revision, validUntil, sentAt, convertedOrderId, createdAt,
+                    version, total, lineCount, firstItemName, customerName, customerCode, convertedOrderNumber, false);
+        }
 
         public Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
                    Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt, long version,
                    BigDecimal total, Integer lineCount, String firstItemName) {
             this(id, quoteNumber, customerId, status, revision, validUntil, sentAt, convertedOrderId, createdAt,
-                    version, total, lineCount, firstItemName, null, null, null);
+                    version, total, lineCount, firstItemName, null, null, null, false);
         }
 
         public Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
                    Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt, long version) {
             this(id, quoteNumber, customerId, status, revision, validUntil, sentAt, convertedOrderId, createdAt,
-                    version, null, null, null, null, null, null);
+                    version, null, null, null, null, null, null, false);
         }
     }
 
-    record Criteria(UUID customerId, List<QuoteStatus> statuses, String search, int page, int size, String sort) {
+    /** @param priceReviewPendingOnly 14 BR-10: only drafts waiting for their prices to be approved - the Sales Manager's queue */
+    record Criteria(UUID customerId, List<QuoteStatus> statuses, String search, int page, int size, String sort,
+                    boolean priceReviewPendingOnly) {
+
+        public Criteria(UUID customerId, List<QuoteStatus> statuses, String search, int page, int size, String sort) {
+            this(customerId, statuses, search, page, size, sort, false);
+        }
     }
 
     /** @param cartons per line id; a line not named is accepted at its proposed cartons */
@@ -279,7 +356,20 @@ public interface Quotes {
 
     QuoteView edit(CurrentUser user, UUID quoteId, long version, Draft draft);
 
+    /**
+     * DRAFT → SENT, or - when a price break is more than the threshold below its reference, or has none (14 BR-10) - held
+     * as a DRAFT for the Sales Manager to approve: {@link QuoteView#priceReviewPending} says which.
+     */
     QuoteView send(CurrentUser user, UUID quoteId, long version);
+
+    /** 14 BR-10: the Sales Manager approves the prices of a quote held for approval; it is sent at once. */
+    QuoteView approvePrice(CurrentUser user, UUID quoteId, long version, String note);
+
+    /** 14 BR-10: the Sales Manager rejects them, saying why; the draft goes back to Sales. */
+    QuoteView rejectPrice(CurrentUser user, UUID quoteId, long version, String reason);
+
+    /** 14 BR-10: Sales takes a quote held for approval back, to change it. */
+    QuoteView withdrawPriceReview(CurrentUser user, UUID quoteId, long version);
 
     QuoteView accept(CurrentUser user, UUID quoteId, Acceptance acceptance);
 

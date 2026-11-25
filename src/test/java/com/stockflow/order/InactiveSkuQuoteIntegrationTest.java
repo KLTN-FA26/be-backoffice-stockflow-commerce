@@ -94,6 +94,7 @@ class InactiveSkuQuoteIntegrationTest {
         productId = ProductFixtures.approved(products, ProductFixtures.taxonomy(taxonomy, suffix), suffix, editor,
                 approver).productId();
         UUID variant = jdbc.queryForObject("SELECT id FROM product.variants WHERE sku = ?", UUID.class, "FX-" + suffix);
+        tx.executeWithoutResult(s -> ReferenceRows.standardPriceOfOne(entityManager, "FX-" + suffix));
         // 4B-2: what is quoted is the customer's own SKU, drawn on this product - suspending the product stops it too.
         sku = CustomerSkuRows.issueOn(jdbc, tx, customerId, new ReferenceRows.ProductRow(productId, variant,
                 "FX-" + suffix), 10).sku();

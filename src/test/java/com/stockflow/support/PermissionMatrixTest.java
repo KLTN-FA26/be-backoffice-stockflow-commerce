@@ -462,6 +462,17 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-delivery-outcomes:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:APPROVE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("customer-status:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // V20261230000100 (kltn-docs 13 BR-04, 2026-11-26): the Sales Manager keeps the variants' standard prices; Sales
+            // read them to quote. No customer: a price is seen only on a quote, order or contract.
+            Map.entry("catalog-standard-prices:VIEW_PAGE", Set.of(Role.SALES_MANAGER, Role.SALES_STAFF,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("catalog-standard-prices:READ", Set.of(Role.SALES_MANAGER, Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            Map.entry("catalog-standard-prices:CREATE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("catalog-standard-prices:UPDATE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("catalog-standard-prices:DELETE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // V20261230000200 (kltn-docs 14 BR-10, 2026-11-26): the prices of a quote held for approval are the Sales
+            // Manager's to approve or reject - not Sales', who sent it, nor the customer's.
+            Map.entry("sales-quote-price-approvals:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("catalog-storefront:READ", Set.of(Role.CUSTOMER, Role.SYSTEM_ADMIN)),
             // V20261209000100 (permission review 2026-11-20, A1; kltn-docs 00 §2.1): running the system is the System
             // Admin's; the Sales Manager kept the actuator only because it reached it before the permission existed.

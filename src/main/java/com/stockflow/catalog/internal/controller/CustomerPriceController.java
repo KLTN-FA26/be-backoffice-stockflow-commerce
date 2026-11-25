@@ -28,8 +28,8 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Back office: customers' own prices by SKU and quantity tier (SCRUM-428) - the internal price, the one source of a
- * price (kltn-docs 13 BR-04, BR-10). Sales Manager edits (13 §2); Sales reads - to start
+ * Back office: customers' own prices by SKU and quantity tier (SCRUM-428) - the internal price a quote line of the SKU
+ * starts from, ahead of the variant's standard price (kltn-docs 13 BR-04 as changed on 2026-11-26, BR-10). Sales Manager edits (13 §2); Sales reads - to start
  * a quote from the customer's price (14 step 2). Only staff hold this resource, and there is no portal path to a price
  * at all: a customer sees one only on a quote, order or contract.
  */

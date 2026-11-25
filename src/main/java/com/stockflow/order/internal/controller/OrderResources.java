@@ -54,6 +54,13 @@ public final class OrderResources {
     public static final String QUOTE_CONVERSIONS = "sales-quote-conversions";
 
     /**
+     * Approving or rejecting the prices of a quote held for approval (kltn-docs 14 BR-10 as changed on 2026-11-26): the
+     * Sales Manager's. Its own resource: neither editing quotes ({@code sales-quotes:UPDATE}, Sales') nor the customer's
+     * answer ({@code sales-quotes:APPROVE}, the portal's) stands for it. Seeded by V20261230000200.
+     */
+    public static final String QUOTE_PRICE_APPROVALS = "sales-quote-price-approvals";
+
+    /**
      * 4B-4 (kltn-docs 14 §4.3): the sales contract of an order - Sales draws it up, edits, sends and records it signed
      * (APPROVE); accounting and the Sales Manager read it. Seeded by V20261108002200.
      */

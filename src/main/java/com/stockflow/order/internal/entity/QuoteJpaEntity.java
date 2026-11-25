@@ -75,6 +75,10 @@ public class QuoteJpaEntity extends BaseEntity {
     @Column(name = "requested_delivery_date")
     private java.time.LocalDate requestedDeliveryDate;
 
+    /** V20261230000200 (14 BR-10): PENDING while the draft waits for its prices to be approved, else NONE. */
+    @Column(name = "price_review", nullable = false, length = 16)
+    private String priceReview = "NONE";
+
     @OneToMany(mappedBy = "quote", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("lineNo")
     private List<QuoteLineJpaEntity> lines = new ArrayList<>();
@@ -109,6 +113,12 @@ public class QuoteJpaEntity extends BaseEntity {
         this.convertedOrderId = convertedOrderId;
         this.convertedAt = convertedAt;
     }
+
+    public void priceReview(boolean pending) {
+        this.priceReview = pending ? "PENDING" : "NONE";
+    }
+
+    public boolean isPriceReviewPending() { return "PENDING".equals(priceReview); }
 
     public void addLine(QuoteLineJpaEntity line) {
         line.attachTo(this);
