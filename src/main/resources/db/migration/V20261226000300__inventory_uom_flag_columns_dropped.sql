@@ -4,9 +4,12 @@
 --   - is_base: always false since V20261226000200 (ck_uom_conversions_no_base). The base unit is
 --     inventory_items.unit_of_measure and has no row.
 --   - default_shipping: "the unit load planning estimates the SKU's cartons in", chosen among the item's units. With one
---     active unit there is nothing to choose: every reader took the marked unit only when it found several active ones,
---     which the unique index no longer allows, and a retired unit could not carry the mark. The carton a SKU ships in
---     is its active carton.
+--     active unit there is nothing to choose: the carton readers (cartonOf, findCartonSpecs, cartonFactorOf) took the
+--     marked unit only when they found several active ones, which the unique index no longer allows, and a retired
+--     unit could not carry the mark. The carton a SKU ships in is its active carton. One visible change: the load
+--     estimate (PackagingRules) tried the marked unit first, so an active carton nobody marked used to resolve at
+--     LARGEST_PACKING_UNIT (warning PACKING_UNIT_INCOMPLETE); it now resolves at DEFAULT_SHIPPING_UNIT (warning
+--     SHIPPING_UNIT_INCOMPLETE), like a marked one.
 -- Both columns go, with what names them:
 --  1. The two trigger functions that still refused a base unit: the refusal can no longer fire, and a function body
 --     naming a dropped column fails at its next call (Postgres does not track dependencies in function bodies).
