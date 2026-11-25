@@ -138,7 +138,7 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
                            and exists (select 1 from inventory.stock_item s
                                         where s.stock_package_id = p.id and s.status = 'QUARANTINE' and s.on_hand > 0)
                            and exists (select 1 from inventory.stock_movement m
-                                        where m.to_stock_package_id = p.id and m.movement_type = 'RECEIPT'
+                                        where m.stock_package_id = p.id and m.movement_type = 'RECEIPT'
                                           and m.reference_type = 'GOODS_RECEIPT')
                          group by split_part(p.location_code, '-', 1)""").getResultList();
         java.util.Map<String, Integer> counts = new java.util.TreeMap<>();

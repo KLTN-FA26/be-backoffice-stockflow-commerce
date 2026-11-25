@@ -28,13 +28,17 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
 
     @Override
     public void append(StockMovement m) {
+        // ck_stock_movement_names_carton: stock is whole cartons, so a line with no carton records nothing that can
+        // happen. Refused here by name rather than left to the constraint's message.
+        if (m.stockPackage() == null) {
+            throw new IllegalArgumentException("A ledger line names the carton it is about");
+        }
         jpa.save(new StockMovementJpaEntity(m.id(), m.type(), m.sku().code(), m.lotNumber(),
                 m.from() == null ? null : m.from().code(), m.to() == null ? null : m.to().code(),
                 m.quantity(),
                 m.from() == null ? null : m.status(), m.to() == null ? null : m.toStatus(),
                 m.referenceType(), m.referenceId(), m.reason(), m.actorId(), m.occurredAt(), m.lotId(), m.orderId(),
-                m.fromStockPackage() == null ? null : m.fromStockPackage().value(),
-                m.toStockPackage() == null ? null : m.toStockPackage().value())
+                m.stockPackage().value())
                 .askedBy(m.requestedBy(), m.countedBy()));
     }
 
@@ -64,7 +68,7 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
     @Override
     public Optional<StockMovement> findLooseByReference(StockMovement.MovementType type,
                                                         StockMovement.ReferenceType referenceType, UUID referenceId) {
-        return jpa.findFirstByMovementTypeAndReferenceTypeAndReferenceIdAndFromStockPackageIdIsNullAndToStockPackageIdIsNullOrderByIdAsc(
+        return jpa.findFirstByMovementTypeAndReferenceTypeAndReferenceIdAndStockPackageIdIsNullOrderByIdAsc(
                         type, referenceType, referenceId)
                 .map(StockMovementLogAdapter::toDomain);
     }
@@ -115,13 +119,12 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
                 cb.equal(root.get("fromLocationCode"), code), cb.equal(root.get("toLocationCode"), code));
     }
 
-    /** Lines that took units out of the carton or put units into it: its history. */
+    /** The lines about the carton: its history. */
     private static Specification<StockMovementJpaEntity> carton(UUID stockPackageId) {
         if (stockPackageId == null) {
             return null;
         }
-        return (root, query, cb) -> cb.or(cb.equal(root.get("fromStockPackageId"), stockPackageId),
-                cb.equal(root.get("toStockPackageId"), stockPackageId));
+        return (root, query, cb) -> cb.equal(root.get("stockPackageId"), stockPackageId);
     }
 
     /**
@@ -150,10 +153,8 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
                 e.getToStatus() != null ? e.getToStatus() : e.getFromStatus(),
                 e.getReferenceType(), e.getReferenceId(), e.getReason(), e.getActorId(), e.getOccurredAt(),
                 e.getLotId(), e.getOrderId(),
-                e.getFromStockPackageId() == null ? null
-                        : new com.stockflow.inventory.internal.domain.StockPackageId(e.getFromStockPackageId()),
-                e.getToStockPackageId() == null ? null
-                        : new com.stockflow.inventory.internal.domain.StockPackageId(e.getToStockPackageId()),
+                e.getStockPackageId() == null ? null
+                        : new com.stockflow.inventory.internal.domain.StockPackageId(e.getStockPackageId()),
                 e.getRequestedBy(), e.getCountedBy());
     }
 }

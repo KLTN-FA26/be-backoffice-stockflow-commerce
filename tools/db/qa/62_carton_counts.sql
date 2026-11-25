@@ -456,28 +456,28 @@ SELECT pg_temp.expect_fail_by('CD4 approved by the person who counted the line',
            decided_at = NOW(), posted_at = NOW() WHERE id = md5('qa62:adj:cv')::uuid $q$);
 SELECT pg_temp.expect_fail('CD5 a ledger line of that adjustment naming another requester', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, from_status,
-                                          reference_type, reference_id, actor_id, occurred_at, from_stock_package_id,
+                                          reference_type, reference_id, actor_id, occurred_at, stock_package_id,
                                           requested_by, counted_by)
     VALUES (gen_random_uuid(), 'ADJUSTMENT', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 4, 'AVAILABLE', 'STOCK_ADJUSTMENT',
             md5('qa62:adj:cv')::uuid, md5('demo:user:approver')::uuid, NOW(), md5('qa62:a')::uuid,
             md5('demo:user:approver')::uuid, md5('qa62:counter')::uuid) $q$);
 SELECT pg_temp.expect_fail('CD6 a ledger line of that adjustment naming nobody', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, from_status,
-                                          reference_type, reference_id, actor_id, occurred_at, from_stock_package_id)
+                                          reference_type, reference_id, actor_id, occurred_at, stock_package_id)
     VALUES (gen_random_uuid(), 'ADJUSTMENT', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 4, 'AVAILABLE', 'STOCK_ADJUSTMENT',
             md5('qa62:adj:cv')::uuid, md5('demo:user:approver')::uuid, NOW(), md5('qa62:a')::uuid) $q$);
 SELECT pg_temp.expect_ok('CD7 approved by a third person, its ledger line naming requester and counter', $q$
     UPDATE inventory.stock_adjustment SET status = 'POSTED', decided_by = md5('demo:user:approver')::uuid,
            decided_at = NOW(), posted_at = NOW() WHERE id = md5('qa62:adj:cv')::uuid;
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, from_status,
-                                          reference_type, reference_id, actor_id, occurred_at, from_stock_package_id,
+                                          reference_type, reference_id, actor_id, occurred_at, stock_package_id,
                                           requested_by, counted_by)
     VALUES (md5('qa62:mv:cv')::uuid, 'ADJUSTMENT', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 4, 'AVAILABLE', 'STOCK_ADJUSTMENT',
             md5('qa62:adj:cv')::uuid, md5('demo:user:approver')::uuid, NOW(), md5('qa62:a')::uuid,
             md5('demo:user:editor')::uuid, md5('qa62:counter')::uuid) $q$);
 SELECT pg_temp.expect_fail('CD8 who asked, named on a line that posts no adjustment', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, from_status,
-                                          reference_type, reference_id, actor_id, occurred_at, from_stock_package_id,
+                                          reference_type, reference_id, actor_id, occurred_at, stock_package_id,
                                           requested_by)
     VALUES (gen_random_uuid(), 'PICK', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 4, 'AVAILABLE', 'PICK_LINE', gen_random_uuid(),
             md5('demo:user:approver')::uuid, NOW(), md5('qa62:a')::uuid, md5('demo:user:editor')::uuid) $q$);

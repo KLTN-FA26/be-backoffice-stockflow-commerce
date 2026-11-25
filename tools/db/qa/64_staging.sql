@@ -143,14 +143,11 @@ CREATE FUNCTION pg_temp.move_sql(movement TEXT, from_loc TEXT, to_loc TEXT, ref_
     SELECT format($f$
         INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, quantity,
                                               from_status, to_status, reference_type, reference_id, occurred_at,
-                                              from_stock_package_id, to_stock_package_id)
+                                              stock_package_id)
         SELECT gen_random_uuid(), %L, 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', %L, %L, coalesce(c.units, 1), %L, %L, %L,
-               %L::uuid, NOW(),
-               CASE WHEN %L IS NOT NULL AND %L IS NOT NULL THEN c.package_id END,
-               CASE WHEN %L IS NOT NULL AND %L IS NOT NULL THEN c.package_id END
+               %L::uuid, NOW(), c.package_id
           FROM (SELECT 1) one LEFT JOIN qa64_carton c ON c.n = %s $f$,
-        movement, from_loc, to_loc, from_status, to_status, ref_type, ref,
-        from_loc, carton, to_loc, carton, coalesce(carton, 0))
+        movement, from_loc, to_loc, from_status, to_status, ref_type, ref, coalesce(carton, 0))
 $$;
 SELECT pg_temp.expect_fail_by('LG1 a return line moves a loose unit into the staging area', 'cannot touch staging area',
     pg_temp.move_sql('MOVE', 'HCM-A01-2-B', 'HCM-STG01', 'RETURN_REQUEST_LINE', gen_random_uuid()));
@@ -165,7 +162,7 @@ SELECT pg_temp.expect_fail_by('LG5 a status change on stock standing in the stag
 SELECT pg_temp.expect_fail_by('LG6 a receipt straight into the staging area', 'cannot touch staging area',
     pg_temp.move_sql('RECEIPT', NULL, 'HCM-STG01', 'GOODS_RECEIPT_LINE', gen_random_uuid()));
 SELECT pg_temp.expect_ok('LG7 a MOVE between two ordinary bins is what it was',
-    pg_temp.move_sql('MOVE', 'HCM-A01-2-B', 'HCM-A01-1-A', 'RETURN_REQUEST_LINE', gen_random_uuid()));
+    pg_temp.move_sql('MOVE', 'HCM-A01-2-B', 'HCM-A01-1-A', 'RETURN_REQUEST_LINE', gen_random_uuid(), 7));
 -- A pick line stages its carton out of its bin, and puts it back out of the staging area.
 SELECT pg_temp.expect_ok('LG8 a pick line stages a carton: a MOVE naming the line, bin to staging',
     pg_temp.move_sql('MOVE', 'HCM-A01-2-B', 'HCM-STG01', 'PICK_LINE', md5('qa64:line:A')::uuid, 7));
@@ -182,12 +179,13 @@ SELECT pg_temp.expect_ok('LG12 a task moved to dispatch deducts from the staging
     pg_temp.move_sql('PICK', 'HCM-STG01', NULL, 'PICK_LINE', md5('qa64:line:B')::uuid, 8, 'AVAILABLE'));
 SELECT pg_temp.expect_fail_by('LG13 a second PICK of the line', 'uk_stock_movement_pick_line',
     pg_temp.move_sql('PICK', 'HCM-STG01', NULL, 'PICK_LINE', md5('qa64:line:B')::uuid, 8, 'AVAILABLE'));
+-- The write-downs name the carton they take, still standing in the staging area (V20261230000200: a line names its carton).
+SELECT pg_temp.expect_ok('LG14 a count corrects a staging area (20 section 4.9 step 4): COUNT_CORRECTION out of it',
+    pg_temp.move_sql('COUNT_CORRECTION', 'HCM-STG01', NULL, 'CYCLE_COUNT_LINE', gen_random_uuid(), 7, 'AVAILABLE'));
+SELECT pg_temp.expect_ok('LG15 ... and an approved adjustment writes it down: ADJUSTMENT out of it',
+    pg_temp.move_sql('ADJUSTMENT', 'HCM-STG01', NULL, 'STOCK_ADJUSTMENT', gen_random_uuid(), 8, 'AVAILABLE'));
 UPDATE inventory.stock_package SET location_code = 'HCM-A01-2-B' WHERE id IN (SELECT package_id FROM qa64_carton WHERE n IN (7, 8));
 UPDATE inventory.stock_item SET location_code = 'HCM-A01-2-B' WHERE id IN (SELECT row_id FROM qa64_carton WHERE n IN (7, 8));
-SELECT pg_temp.expect_ok('LG14 a count corrects a staging area (20 section 4.9 step 4): COUNT_CORRECTION out of it',
-    pg_temp.move_sql('COUNT_CORRECTION', 'HCM-STG01', NULL, 'CYCLE_COUNT_LINE', gen_random_uuid(), NULL, 'AVAILABLE'));
-SELECT pg_temp.expect_ok('LG15 ... and an approved adjustment writes it down: ADJUSTMENT out of it',
-    pg_temp.move_sql('ADJUSTMENT', 'HCM-STG01', NULL, 'STOCK_ADJUSTMENT', gen_random_uuid(), NULL, 'AVAILABLE'));
 -- Review L5: never up - found units there would be nobody's, out of ATP, unpickable and unmovable.
 SELECT pg_temp.expect_fail_by('LG16 an ADJUSTMENT into a staging area (a surplus)', 'cannot add to staging area',
     pg_temp.move_sql('ADJUSTMENT', NULL, 'HCM-STG01', 'STOCK_ADJUSTMENT', gen_random_uuid(), NULL, NULL, 'AVAILABLE'));

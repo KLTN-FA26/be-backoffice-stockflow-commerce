@@ -56,8 +56,9 @@ final class CountBusy {
     }
 
     /**
-     * True when the ledger line {@code alias} (a {@code inventory.stock_movement}) touches a busy slot on either
-     * side. A loose slot matches by bin on either side whatever the line's carton columns say: over-hiding the move of
+     * True when the ledger line {@code alias} (a {@code inventory.stock_movement}) touches a busy slot: it is about
+     * the slot's carton, or, for a loose slot, either of its places is the slot's bin. A loose slot matches by bin on
+     * either side whatever carton the line names: over-hiding the move of
      * a carton through a bin whose loose stock is being counted is the safe side of a rule about what a counter may
      * infer.
      */
@@ -66,7 +67,7 @@ final class CountBusy {
                 EXISTS (SELECT 1 FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
                          WHERE %1$s AND l.sku = %2$s.sku
                            AND ((l.stock_package_id IS NOT NULL
-                                 AND l.stock_package_id IN (%2$s.from_stock_package_id, %2$s.to_stock_package_id))
+                                 AND l.stock_package_id = %2$s.stock_package_id)
                                 OR (l.stock_package_id IS NULL
                                     AND l.location_code IN (%2$s.from_location_code, %2$s.to_location_code)
                                     AND COALESCE(btrim(l.lot_number), '') = COALESCE(btrim(%2$s.lot_number), ''))))"""

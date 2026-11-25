@@ -1,6 +1,6 @@
 # ADR-0011 — Stock is recorded as cartons, not as units
 
-* **Status:** Accepted — being carried out in steps; step 1 is done (see *Steps*). Amends kltn-docs 01 BR-09 and
+* **Status:** Accepted — being carried out in steps; steps 1 and 2 are done (see *Steps*). Amends kltn-docs 01 BR-09 and
   20 §1 ("base units are kept internally"), which must be reworded in the kltn-docs repository.
 * **Date:** 2026-11-26
 * **Deciders:** repository owner (Phương)
@@ -62,7 +62,13 @@ its own:
    `location_code` snapshots on both tables, because the lot still lives on `stock_item` until step 3.
    The HTTP contract changes with it: `StockAdjustmentResponse.direction` and `CycleCountLineAdjustment.direction`
    (`WRITE_OFF` | `RESTOCK`) replace `quantityDelta`. A count line already answered `booked` / `found`.
-2. **Ledger** - `stock_movement.stock_package_id` replaces the two sides and is required on new lines.
+2. **Ledger** - done, `V20261230000200`: `stock_movement.stock_package_id` replaces `from_stock_package_id` and
+   `to_stock_package_id`, and every new line must name its carton (`ck_stock_movement_names_carton`, NOT VALID so that
+   loose lines a hand-kept database has stay as they are). The four CHECKs that said "this kind of line names a carton"
+   and `ck_stock_movement_package_side` went into that one rule; whether a carton arrived, moved or left is read from
+   `movement_type` and the line's places. `quantity` stays until step 3.
+   The HTTP contract changes with it: a ledger line (`GET /inventory/movements`) answers one `lpn` where it answered
+   `fromLpn` and `toLpn`.
 3. **The carton is the stock** - `stock_item` folded into `stock_package`, `stock_reservation` by carton,
    `stock_movement.quantity` dropped, the `inventory :: api` availability types answer in cartons.
 
@@ -72,8 +78,8 @@ its own:
   still rules (the 500-line cap of a count, the six adjustment reasons).
 * A reader of stock asks one table. `reserved` cannot drift from the reservations because it no longer exists.
 * A report that wants units multiplies by `nominal_qty`; the ledger no longer answers "how many units" on its own.
-* The frontend must read `direction` where it read `quantityDelta` (step 1), and cartons where it read `onHand` /
-  `available` (step 3).
+* The frontend must read `direction` where it read `quantityDelta` (step 1), `lpn` where it read `fromLpn` / `toLpn` on
+  a ledger line (step 2), and cartons where it read `onHand` / `available` (step 3).
 * History: rows of loose stock from before the baseline are removed, not converted (QD-1: every database is rebuilt
   from the demo seed on deploy; the baseline had already boxed all loose stock).
 

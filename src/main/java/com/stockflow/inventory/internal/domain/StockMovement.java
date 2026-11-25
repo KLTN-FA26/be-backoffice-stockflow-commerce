@@ -19,9 +19,11 @@ import java.util.UUID;
  *                 the line touched, when that is unambiguous ({@code tg_stock_movement_lot})
  * @param orderId  the customer order the units left for or came back from (a pick, a put-back, a package),
  *                 so the lot trace reaches the order without reading another module's tables (SCRUM-153)
- * @param fromStockPackage the stock package (carton) the units left, if any (V20261020000300); only on a line
- *                 with a {@code from}
- * @param toStockPackage   the stock package they went into, if any; only on a line with a {@code to}
+ * @param stockPackage the carton the line is about (ADR-0011, V20261230000200). One, not one per side: stock is whole
+ *                 sealed cartons, so nothing is ever taken out of one carton into another, and whether the carton
+ *                 arrived, moved or left is said by {@code type} and by which of {@code from} / {@code to} is set.
+ *                 Every line written now names it ({@code ck_stock_movement_names_carton}); null only on a line read
+ *                 back from before stock was only cartons
  * @param requestedBy who asked for the adjustment an {@code ADJUSTMENT} line posts (WF-05 fix plan, section 8); null on
  *                 every other line. {@code actorId} is who approved it: the ledger alone then names both pairs of eyes
  * @param countedBy   who counted the line, when that adjustment is a cycle count's variance; null otherwise
@@ -43,8 +45,7 @@ public record StockMovement(
         Instant occurredAt,
         UUID lotId,
         UUID orderId,
-        StockPackageId fromStockPackage,
-        StockPackageId toStockPackage,
+        StockPackageId stockPackage,
         UUID requestedBy,
         UUID countedBy
 ) {
@@ -53,9 +54,9 @@ public record StockMovement(
     public StockMovement(UUID id, MovementType type, Sku sku, String lotNumber, LocationId from, LocationId to,
                          int quantity, StockStatus status, StockStatus toStatus, ReferenceType referenceType,
                          UUID referenceId, String reason, UUID actorId, Instant occurredAt, UUID lotId, UUID orderId,
-                         StockPackageId fromStockPackage, StockPackageId toStockPackage) {
+                         StockPackageId stockPackage) {
         this(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType, referenceId, reason,
-                actorId, occurredAt, lotId, orderId, fromStockPackage, toStockPackage, null, null);
+                actorId, occurredAt, lotId, orderId, stockPackage, null, null);
     }
 
     /**
@@ -64,22 +65,19 @@ public record StockMovement(
      */
     public StockMovement askedBy(UUID requester, UUID counter) {
         return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
-                referenceId, reason, actorId, occurredAt, lotId, orderId, fromStockPackage, toStockPackage, requester,
-                counter);
+                referenceId, reason, actorId, occurredAt, lotId, orderId, stockPackage, requester, counter);
     }
 
     /** The same line, of the lot {@code lot} (null keeps the database's resolution). */
     public StockMovement ofLot(UUID lot) {
         return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
-                referenceId, reason, actorId, occurredAt, lot, orderId, fromStockPackage, toStockPackage, requestedBy,
-                countedBy);
+                referenceId, reason, actorId, occurredAt, lot, orderId, stockPackage, requestedBy, countedBy);
     }
 
     /** The same line, naming the customer order the units moved for. */
     public StockMovement forOrder(UUID order) {
         return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
-                referenceId, reason, actorId, occurredAt, lotId, order, fromStockPackage, toStockPackage, requestedBy,
-                countedBy);
+                referenceId, reason, actorId, occurredAt, lotId, order, stockPackage, requestedBy, countedBy);
     }
 
     public StockMovement {
@@ -90,36 +88,27 @@ public record StockMovement(
         if ((requestedBy != null || countedBy != null) && type != MovementType.ADJUSTMENT) {
             throw new IllegalArgumentException("Only an ADJUSTMENT line names who requested and who counted");
         }
-        // ck_stock_movement_package_side: a side's stock package belongs to that side's location.
-        if ((fromStockPackage != null && from == null) || (toStockPackage != null && to == null)) {
-            throw new IllegalArgumentException("A stock package is named only on a side that has a location");
-        }
         toStatus = toStatus == null ? status : toStatus;
     }
 
     /**
-     * A line of loose stock on both sides, naming no customer order, whose lot the database resolves from the stock
-     * row it touched.
+     * A line naming no customer order, whose lot the database resolves from the stock row it touched, and no carton
+     * yet: {@link #ofCarton} names it before the line is appended.
      */
     public StockMovement(UUID id, MovementType type, Sku sku, String lotNumber, LocationId from, LocationId to,
                          int quantity, StockStatus status, StockStatus toStatus, ReferenceType referenceType,
                          UUID referenceId, String reason, UUID actorId, Instant occurredAt) {
         this(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType, referenceId, reason,
-                actorId, occurredAt, null, null, null, null);
+                actorId, occurredAt, null, null, null);
     }
 
-    /** The same line, the units having left this stock package ({@code null}: loose stock). */
-    public StockMovement leaving(StockPackageId stockPackage) {
+    /**
+     * The same line, about this carton. There is no "leaving" and "arriving" carton any more (ADR-0011): a line is one
+     * whole carton, and {@code from} / {@code to} say which way it went.
+     */
+    public StockMovement ofCarton(StockPackageId carton) {
         return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
-                referenceId, reason, actorId, occurredAt, lotId, orderId, stockPackage, toStockPackage, requestedBy,
-                countedBy);
-    }
-
-    /** The same line, the units having gone into this stock package ({@code null}: loose stock). */
-    public StockMovement arriving(StockPackageId stockPackage) {
-        return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
-                referenceId, reason, actorId, occurredAt, lotId, orderId, fromStockPackage, stockPackage, requestedBy,
-                countedBy);
+                referenceId, reason, actorId, occurredAt, lotId, orderId, carton, requestedBy, countedBy);
     }
 
     /** A line that does not change the status of what it moves. */

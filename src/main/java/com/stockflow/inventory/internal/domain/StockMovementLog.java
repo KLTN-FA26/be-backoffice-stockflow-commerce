@@ -9,10 +9,10 @@ public interface StockMovementLog {
     void append(StockMovement movement);
 
     /**
-     * The cartons a document moved whole, and where to: the carton named on the arriving side of its MOVE lines, each
-     * once, in no particular order; empty when it moved none. How a person's repeated carton move is recognised
-     * (kltn-docs 11 BR-07): the request id is the reference, and the cartons and the place say whether the repeat is
-     * the same request.
+     * The cartons a document moved whole, and where to: the carton each of its MOVE lines names, each once, in no
+     * particular order; empty when it moved none. How a person's repeated carton move is recognised (kltn-docs 11
+     * BR-07): the request id is the reference, and the cartons and the place say whether the repeat is the same
+     * request.
      */
     java.util.List<MovedCarton> cartonsMovedBy(StockMovement.ReferenceType referenceType, UUID referenceId);
 
@@ -38,10 +38,12 @@ public interface StockMovementLog {
                                                      StockMovement.ReferenceType referenceType, UUID referenceId);
 
     /**
-     * {@link #findByReference}, among the lines that name no carton on either side: how a retried loose move is
-     * recognised. A document can move a carton whole and loose units under one reference (SCRUM-473: a receipt line's
-     * cartons and its loose remainder); a lookup that also saw the carton's lines would take them for the loose
-     * move's first attempt and skip it, so whichever ran first would decide whether the loose units moved at all.
+     * {@link #findByReference}, among the lines that name no carton: the lines of loose stock. History only - every
+     * line written since V20261230000200 names its carton ({@code ck_stock_movement_names_carton}), so this finds
+     * nothing newer. Kept for what still reads that history: a loose putaway task from before everything was boxed
+     * (V20261111000110) is located by its receipt line's loose RECEIPT line, and a lookup that also saw the same
+     * receipt line's carton lines (SCRUM-473: a line's cartons and its loose remainder shared one reference) would
+     * answer the wrong lot.
      */
     Optional<StockMovement> findLooseByReference(StockMovement.MovementType type,
                                                  StockMovement.ReferenceType referenceType, UUID referenceId);

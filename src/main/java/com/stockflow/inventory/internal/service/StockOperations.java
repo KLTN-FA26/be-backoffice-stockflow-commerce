@@ -123,24 +123,23 @@ public interface StockOperations {
     PageResponse<StockAdjustmentSummary> adjustments(StockAdjustmentStatus status, String sku, String location,
                                                     int page, int size, String sort, BookVisibility visibility);
 
-    /** One line of the stock history, as the screen shows it. */
     /**
-     * One line of the history. {@code fromLpn} / {@code toLpn} name the carton the units left and the one they went
-     * into (V20261020000300), null for a side with no carton - stock that arrived or left, or a line from before
-     * everything was boxed (V20261111000110).
+     * One line of the stock history, as the screen shows it. {@code lpn} names the carton the line is about
+     * (V20261230000200: one carton, where {@code fromLpn} / {@code toLpn} named one per side); null only on a line
+     * from before everything was boxed (V20261111000110).
      */
     record LedgerLine(UUID movementId, StockMovement.MovementType type, String sku, String lotNumber,
                       String fromLocation, String toLocation, int quantity, String status,
                       String toStatus, String referenceType, UUID referenceId, String reason, UUID actorId,
-                      java.time.Instant occurredAt, UUID requestedBy, UUID countedBy, String fromLpn, String toLpn) {
+                      java.time.Instant occurredAt, UUID requestedBy, UUID countedBy, String lpn) {
 
-        /** A line naming no carton on either side. */
+        /** A line naming no carton. */
         public LedgerLine(UUID movementId, StockMovement.MovementType type, String sku, String lotNumber,
                           String fromLocation, String toLocation, int quantity, String status, String toStatus,
                           String referenceType, UUID referenceId, String reason, UUID actorId,
                           java.time.Instant occurredAt, UUID requestedBy, UUID countedBy) {
             this(movementId, type, sku, lotNumber, fromLocation, toLocation, quantity, status, toStatus, referenceType,
-                    referenceId, reason, actorId, occurredAt, requestedBy, countedBy, null, null);
+                    referenceId, reason, actorId, occurredAt, requestedBy, countedBy, null);
         }
     }
 

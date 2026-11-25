@@ -189,7 +189,7 @@ class DemoDataIntegrationTest {
                 SELECT m.to_location_code || ' ' || m.to_status AS place, count(DISTINCT p.id) AS cartons
                   FROM inventory.stock_package p
                   JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
-                  JOIN inventory.stock_movement m ON m.to_stock_package_id = p.id AND m.movement_type = 'RECEIPT'
+                  JOIN inventory.stock_movement m ON m.stock_package_id = p.id AND m.movement_type = 'RECEIPT'
                                                  AND m.reference_type = 'STOCK_PACKAGE' AND m.reference_id = p.id
                  WHERE i.sku = ? AND m.created_by = 'flyway'
                  GROUP BY 1

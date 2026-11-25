@@ -210,7 +210,7 @@ class CartonQuarantineIntegrationTest {
         assertThat(jdbc.queryForList("""
                 SELECT m.movement_type, m.from_location_code, m.to_location_code, m.from_status, m.to_status,
                        m.quantity, m.reference_type, m.reason
-                  FROM inventory.stock_movement m JOIN inventory.stock_package p ON p.id = m.to_stock_package_id
+                  FROM inventory.stock_movement m JOIN inventory.stock_package p ON p.id = m.stock_package_id
                  WHERE p.lpn = ?""", lpn)).singleElement().satisfies(line -> {
                     assertThat(line).containsEntry("movement_type", "STATUS_CHANGE")
                             .containsEntry("from_location_code", bin).containsEntry("to_location_code", quarantineArea)

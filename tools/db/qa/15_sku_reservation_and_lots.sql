@@ -116,14 +116,14 @@ SELECT pg_temp.expect_fail('LT3 a layer moved into a lot of another SKU', $q$
      WHERE id = md5('qa15:layer')::uuid $q$);
 SELECT pg_temp.expect_fail('LT4 a ledger line naming a lot of another SKU', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, reference_type,
-        reference_id, occurred_at, lot_id)
+        reference_id, occurred_at, lot_id, stock_package_id)
     VALUES (gen_random_uuid(), 'PICK', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-B01-2-B', 1, 'ORDER', md5('qa15:order')::uuid, NOW(),
-            (SELECT id FROM inventory.stock_lot WHERE sku <> 'LY-GIAY-DEMO-12OZ-XANH' LIMIT 1)) $q$);
+            (SELECT id FROM inventory.stock_lot WHERE sku <> 'LY-GIAY-DEMO-12OZ-XANH' LIMIT 1), md5('qa15:p')::uuid) $q$);
 SELECT pg_temp.expect_ok('LT5 a pick from the layer takes its lot and its order number', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, quantity,
-        reference_type, reference_id, occurred_at, order_id)
+        reference_type, reference_id, occurred_at, order_id, stock_package_id)
     VALUES (md5('qa15:pick')::uuid, 'PICK', 'LY-GIAY-DEMO-12OZ-XANH', 'QA15-LOT', 'HCM-B01-2-B', 1, 'ORDER',
-            md5('qa15:order')::uuid, NOW(), md5('qa15:order')::uuid) $q$);
+            md5('qa15:order')::uuid, NOW(), md5('qa15:order')::uuid, md5('qa15:p')::uuid) $q$);
 SELECT pg_temp.expect_true('LT6 ... with the layer''s lot and the order''s number',
     (SELECT m.lot_id = s.lot_id AND m.order_number = 'SO-QA-15'
        FROM inventory.stock_movement m, inventory.stock_item s

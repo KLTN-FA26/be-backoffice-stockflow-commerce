@@ -71,12 +71,13 @@ public class StockMovementJpaEntity extends BaseEntity {
     @Column(name = "order_id", updatable = false)
     private UUID orderId;
 
-    /** The stock package the units left / went into (V20261020000300); null for loose stock. */
-    @Column(name = "from_stock_package_id", updatable = false)
-    private UUID fromStockPackageId;
-
-    @Column(name = "to_stock_package_id", updatable = false)
-    private UUID toStockPackageId;
+    /**
+     * The carton the line is about (V20261230000200, ADR-0011): one column where there were two sides. Required on a
+     * new line by {@code ck_stock_movement_names_carton}; not {@code nullable = false} here, because that CHECK is
+     * NOT VALID on purpose - a line from before stock was only cartons may name none.
+     */
+    @Column(name = "stock_package_id", updatable = false)
+    private UUID stockPackageId;
 
     /** WF-05 fix plan, section 8: who asked for the adjustment an ADJUSTMENT line posts; null on any other line. */
     @Column(name = "requested_by", updatable = false)
@@ -104,17 +105,15 @@ public class StockMovementJpaEntity extends BaseEntity {
                                   int quantity, StockStatus fromStatus, StockStatus toStatus,
                                   StockMovement.ReferenceType referenceType, UUID referenceId,
                                   String reason, UUID actorId, Instant occurredAt, UUID lotId, UUID orderId,
-                                  UUID fromStockPackageId, UUID toStockPackageId) {
+                                  UUID stockPackageId) {
         this(id, movementType, sku, lotNumber, fromLocationCode, toLocationCode, quantity, fromStatus, toStatus,
                 referenceType, referenceId, reason, actorId, occurredAt);
         this.lotId = lotId;
         this.orderId = orderId;
-        this.fromStockPackageId = fromStockPackageId;
-        this.toStockPackageId = toStockPackageId;
+        this.stockPackageId = stockPackageId;
     }
 
-    public UUID getFromStockPackageId() { return fromStockPackageId; }
-    public UUID getToStockPackageId() { return toStockPackageId; }
+    public UUID getStockPackageId() { return stockPackageId; }
 
     public StockMovementJpaEntity(UUID id, StockMovement.MovementType movementType, String sku,
                                   String lotNumber, String fromLocationCode, String toLocationCode,

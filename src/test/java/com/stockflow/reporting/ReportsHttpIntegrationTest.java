@@ -2,6 +2,7 @@ package com.stockflow.reporting;
 
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
@@ -52,6 +53,9 @@ class ReportsHttpIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
+
+    /** Units in one carton of the fixture's SKU: 4 and 6 units are 2 and 3 cartons. */
+    private static final int PER_CARTON = 2;
 
     private SecuredMvc mvc;
     private UUID accountant;
@@ -111,14 +115,23 @@ class ReportsHttpIntegrationTest {
         return user;
     }
 
+    /**
+     * A line into {@code location}. It names a carton standing there, as every ledger line must
+     * ({@code ck_stock_movement_names_carton}); the report under test sums the ledger's units, so the carton is only
+     * what the line needs to exist. Cartons of {@link #PER_CARTON}: both lines are whole cartons.
+     */
     private void ledgerLine(String location, int quantity) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
-                    to_location_code, quantity, to_status, reference_type, reference_id, occurred_at, version,
-                    created_at)
-                VALUES (?, 'ADJUSTMENT', ?, 'UNTRACED', NULL, ?, ?, 'AVAILABLE', 'STOCK_ADJUSTMENT', ?, ?, 0, NOW())""",
-                Identifiers.newId(), sku, location, quantity, Identifiers.newId(),
-                OffsetDateTime.ofInstant(Instant.now(), ZoneOffset.UTC)));
+        tx.executeWithoutResult(s -> {
+            UUID carton = CartonRows.stock(jdbc, sku, location, 1, PER_CARTON, null, Instant.now()).getFirst().id();
+            jdbc.update("""
+                    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
+                        to_location_code, quantity, to_status, reference_type, reference_id, occurred_at, version,
+                        created_at, stock_package_id)
+                    VALUES (?, 'ADJUSTMENT', ?, 'UNTRACED', NULL, ?, ?, 'AVAILABLE', 'STOCK_ADJUSTMENT', ?, ?, 0, NOW(),
+                            ?)""",
+                    Identifiers.newId(), sku, location, quantity, Identifiers.newId(),
+                    OffsetDateTime.ofInstant(Instant.now(), ZoneOffset.UTC), carton);
+        });
     }
 
     private static void isSpreadsheet(MvcResult result, String stem) throws Exception {
@@ -167,7 +180,9 @@ class ReportsHttpIntegrationTest {
                 .andExpect(jsonPath("$.data.rows.items[0].warehouseId").value(WAREHOUSE_HCM.toString()))
                 .andExpect(jsonPath("$.data.rows.items[0].closing.units").value(4))
                 .andExpect(jsonPath("$.data.rows.items[0].adjustedIn.units").value(4))
-                .andExpect(jsonPath("$.data.rows.items[0].cartonNote").value("NO_CARTON_UNIT"));
+                // A SKU with ledger lines has a carton unit since a line names its carton (V20261230000200): the
+                // NO_CARTON_UNIT note is StockSummaryReportServiceTest's.
+                .andExpect(jsonPath("$.data.rows.items[0].cartonNote").value("NONE"));
         mvc.asRole(Role.WAREHOUSE_MANAGER, manager, get("/api/v1/reports/stock-summary")
                         .param("warehouseId", otherWarehouse.toString()))
                 .andExpect(status().isForbidden());

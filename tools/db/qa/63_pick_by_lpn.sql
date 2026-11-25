@@ -164,21 +164,23 @@ SELECT pg_temp.expect_true('PD1 no packing-damage or damage-report column is lef
        AND column_name IN ('damaged_qty', 'damage_report_id', 'packing_damaged_qty')) = 0);
 
 \echo '--- the ledger line of a put-back names the carton it goes back into'
-SELECT pg_temp.expect_fail_by('LG1 a pick line put-back in the ledger with no carton', 'ck_stock_movement_put_back_carton', $q$
+-- Every ledger line names its carton since V20261230000200 (ADR-0011); the put-back's own CHECK went into that one.
+SELECT pg_temp.expect_fail_by('LG1 a pick line put-back in the ledger with no carton', 'ck_stock_movement_names_carton', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, to_status, reference_type,
                                           reference_id, occurred_at)
     VALUES (gen_random_uuid(), 'PUT_BACK', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 1000, 'AVAILABLE', 'PICK_LINE',
             gen_random_uuid(), NOW()) $q$);
 SELECT pg_temp.expect_ok('LG2 ... naming its carton, which is at the bin it goes back onto', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, to_status, reference_type,
-                                          reference_id, occurred_at, to_stock_package_id)
+                                          reference_id, occurred_at, stock_package_id)
     SELECT gen_random_uuid(), 'PUT_BACK', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', c.units, 'AVAILABLE', 'PICK_LINE', gen_random_uuid(),
            NOW(), c.package_id FROM qa63_carton c WHERE c.n = 7 $q$);
-SELECT pg_temp.expect_ok('LG3 a ledger line of what a damage report once put back into quarantine from nowhere is still valid history', $q$
+-- The shape still allows it (history). Written here it names a carton like any line, so onto the bin that carton stands at.
+SELECT pg_temp.expect_ok('LG3 a put-back from nowhere that a damage report caused is still a valid shape (history)', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, to_status, reference_type,
-                                          reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'PUT_BACK', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-QC01', 1, 'DAMAGED', 'DAMAGE_REPORT',
-            gen_random_uuid(), NOW()) $q$);
+                                          reference_id, occurred_at, stock_package_id)
+    SELECT gen_random_uuid(), 'PUT_BACK', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 1, 'DAMAGED', 'DAMAGE_REPORT',
+           gen_random_uuid(), NOW(), c.package_id FROM qa63_carton c WHERE c.n = 7 $q$);
 
 \echo '--- the carton comes back whole: CONSUMED to IN_STOCK, sealed, its row refilled (20 §4.6; 4C-2)'
 -- Carton 8: picked (its hold consumed, the row emptied, the carton CONSUMED), then put back onto another bin.
@@ -214,7 +216,7 @@ SELECT pg_temp.expect_ok('CB6 put back whole onto another bin: IN_STOCK sealed, 
     UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-A', on_hand = (SELECT units FROM qa63_carton WHERE n = 8)
      WHERE id = (SELECT row_id FROM qa63_carton WHERE n = 8);
     INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, to_status, reference_type,
-                                          reference_id, occurred_at, to_stock_package_id)
+                                          reference_id, occurred_at, stock_package_id)
     SELECT gen_random_uuid(), 'PUT_BACK', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', c.units, 'AVAILABLE', 'PICK_LINE',
            md5('qa63:pb:8')::uuid,
            NOW(), c.package_id FROM qa63_carton c WHERE c.n = 8 $q$);
@@ -224,7 +226,7 @@ SELECT pg_temp.expect_true('CB7 the carton is IN_STOCK, sealed, at the bin, its 
        FROM qa63_carton c JOIN inventory.stock_package p ON p.id = c.package_id
        JOIN inventory.stock_item s ON s.id = c.row_id WHERE c.n = 8));
 SELECT pg_temp.expect_true('CB8 and the ledger names it once',
-    (SELECT count(*) FROM inventory.stock_movement m JOIN qa63_carton c ON c.package_id = m.to_stock_package_id
+    (SELECT count(*) FROM inventory.stock_movement m JOIN qa63_carton c ON c.package_id = m.stock_package_id
       WHERE c.n = 8 AND m.movement_type = 'PUT_BACK' AND m.reference_type = 'PICK_LINE'
         AND m.reference_id = md5('qa63:pb:8')::uuid) = 1);
 SELECT pg_temp.expect_fail('CB9 a second live line on a hold that already has one (uk_pick_line_reservation_live)', $q$
@@ -234,9 +236,9 @@ SELECT pg_temp.expect_fail('CB9 a second live line on a hold that already has on
            'HCM-A01-2-B', 5, c.units, c.lpn, TRUE FROM qa63_carton c WHERE c.n = 5 $q$);
 
 \echo '--- the rules are in the database, validated where nothing written before breaks them'
-SELECT pg_temp.expect_true('CK1 the four rules exist',
+SELECT pg_temp.expect_true('CK1 the rules exist',
     (SELECT count(*) FROM pg_constraint WHERE conname IN ('ck_pick_line_lpn', 'ck_pick_line_short_reported',
-        'ck_pick_line_put_back_whole', 'ck_pick_line_short_reason', 'ck_stock_movement_put_back_carton')) = 5);
+        'ck_pick_line_put_back_whole', 'ck_pick_line_short_reason', 'ck_stock_movement_names_carton')) = 5);
 SELECT pg_temp.expect_true('CK2 a task cannot be SHORT, the other statuses are still allowed',
     (SELECT pg_get_constraintdef(oid) NOT LIKE '%SHORT%' AND pg_get_constraintdef(oid) LIKE '%PENDING%'
             AND pg_get_constraintdef(oid) LIKE '%PICKING%' AND pg_get_constraintdef(oid) LIKE '%PICKED%'
@@ -247,10 +249,12 @@ SELECT pg_temp.expect_true('CK3 short_reason is a VARCHAR(16)',
       WHERE table_schema = 'fulfillment' AND table_name = 'pick_line' AND column_name = 'short_reason'));
 -- NOT VALID is for history only: a database whose orders were all picked by carton - the demo seed - has every rule
 -- validated, so every stored row is checked, not only the new ones.
-SELECT pg_temp.expect_true('CK4 on the demo seed (no loose history) all four NOT VALID rules are validated',
-    (SELECT bool_and(convalidated) AND count(*) = 4 FROM pg_constraint
-      WHERE conname IN ('ck_pick_line_lpn', 'ck_pick_line_short_reported', 'ck_pick_line_put_back_whole',
-                        'ck_stock_movement_put_back_carton')));
+SELECT pg_temp.expect_true('CK4 on the demo seed (no loose history) the pick line''s three NOT VALID rules are validated',
+    (SELECT bool_and(convalidated) AND count(*) = 3 FROM pg_constraint
+      WHERE conname IN ('ck_pick_line_lpn', 'ck_pick_line_short_reported', 'ck_pick_line_put_back_whole')));
+-- The ledger's is left NOT VALID on purpose (V20261230000200): new lines are judged, loose history is not.
+SELECT pg_temp.expect_true('CK4a the ledger''s carton rule judges new lines only',
+    (SELECT NOT convalidated FROM pg_constraint WHERE conname = 'ck_stock_movement_names_carton'));
 
 ROLLBACK;
 \echo 'PASS 63_pick_by_lpn'

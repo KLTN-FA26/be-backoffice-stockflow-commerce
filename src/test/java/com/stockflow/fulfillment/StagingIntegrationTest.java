@@ -755,7 +755,7 @@ class StagingIntegrationTest {
                 ErrorCode.STOCK_PACKAGE_HELD);
         assertThat(locationOf(staged)).isEqualTo(STAGING);
         assertThat(jdbc.queryForObject("""
-                SELECT count(*) FROM inventory.stock_movement m JOIN inventory.stock_package p ON p.id = m.to_stock_package_id
+                SELECT count(*) FROM inventory.stock_movement m JOIN inventory.stock_package p ON p.id = m.stock_package_id
                  WHERE p.lpn IN (?, ?) AND m.reference_type = 'MOVE_TASK'""", Integer.class, free, staged)).isZero();
     }
 

@@ -888,7 +888,7 @@ class PickConfirmationIntegrationTest {
         assertThat(ledgerRows("PUT_BACK", lineId)).isEqualTo(1);
         assertThat(jdbc.queryForMap("""
                 SELECT from_location_code, to_location_code, to_status, actor_id,
-                       to_stock_package_id = (SELECT id FROM inventory.stock_package WHERE lpn = ?) AS names_the_carton
+                       stock_package_id = (SELECT id FROM inventory.stock_package WHERE lpn = ?) AS names_the_carton
                   FROM inventory.stock_movement
                  WHERE movement_type = 'PUT_BACK' AND reference_type = 'PICK_LINE' AND reference_id = ?::uuid""",
                 lpn, lineId))
@@ -1051,7 +1051,7 @@ class PickConfirmationIntegrationTest {
                 Integer.class, lpn, location)).isEqualTo(1);
         assertThat(ledgerRows("PUT_BACK", lineId)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT p.lpn FROM inventory.stock_movement m JOIN inventory.stock_package p"
-                + " ON p.id = m.to_stock_package_id WHERE m.movement_type = 'PUT_BACK' AND m.reference_id = ?::uuid",
+                + " ON p.id = m.stock_package_id WHERE m.movement_type = 'PUT_BACK' AND m.reference_id = ?::uuid",
                 String.class, lineId)).as("the ledger names the carton").isEqualTo(lpn(lineId));
     }
 

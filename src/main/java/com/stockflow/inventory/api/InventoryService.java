@@ -218,7 +218,7 @@ public interface InventoryService {
 
     /**
      * Move labelled cartons whole (SCRUM-473; kltn-docs 11 BR-04): each carton and its rows change location together,
-     * keeping their ids, holds and sealed state; one MOVE ledger line per row names the carton on both sides. Only an
+     * keeping their ids, holds and sealed state; one MOVE ledger line per row names the carton. Only an
      * IN_STOCK carton moves, and all or none of them do (11 BR-07). A move a person asks for ({@link
      * MoveReference#MOVE_TASK}) never takes a carton held for an order (11 BR-05: the picker would find its bin empty)
      * nor one a cycle count holds, and is answered again, not repeated, for the same reference id. Locks, once for the

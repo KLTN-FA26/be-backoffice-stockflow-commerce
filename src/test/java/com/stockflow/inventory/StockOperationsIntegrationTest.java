@@ -150,8 +150,7 @@ values (?,?,?,'Move fixture','')
                 .containsEntry("from_location_code", BIN)
                 .containsEntry("to_location_code", PACKING)
                 .containsEntry("quantity", 10)
-                .containsEntry("from_stock_package_id", carton.id())
-                .containsEntry("to_stock_package_id", carton.id())
+                .containsEntry("stock_package_id", carton.id())
                 .containsEntry("actor_id", clerk);
 
         // The same request again is the same move, not a second one, and not an "already there" refusal.

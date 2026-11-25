@@ -19,6 +19,23 @@ BEGIN
     RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
 END $$;
 
+-- Refused by the named rule: a statement that breaks something else proves nothing.
+CREATE FUNCTION pg_temp.expect_fail_by(label TEXT, rule TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    BEGIN
+        EXECUTE stmt;
+        SET CONSTRAINTS ALL IMMEDIATE;
+        SET CONSTRAINTS ALL DEFERRED;
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM NOT LIKE '%' || rule || '%' THEN
+            RAISE EXCEPTION 'FAIL  %: refused, but not by %: %', label, rule, SQLERRM;
+        END IF;
+        RAISE NOTICE 'ok    %  [%]', label, rule;
+        RETURN;
+    END;
+    RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
+END $$;
+
 CREATE FUNCTION pg_temp.expect_ok(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     EXECUTE stmt;
@@ -152,19 +169,46 @@ SELECT pg_temp.expect_fail('K26 one lot received at two times in one stock packa
     VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-DO', 'HCM-A01-1-A', 'L1', 2, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:26')::uuid),
            (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-DO', 'HCM-A01-1-A', 'L1', 3, 0, 'AVAILABLE', NOW(), NOW() - interval '3 hour', md5('qa:pk:26')::uuid) $q$);
 
-\echo '--- ledger (V20261020000300)'
-SELECT pg_temp.expect_fail('K27 a source stock package with no source location', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, reference_type, reference_id, occurred_at, from_stock_package_id)
-    VALUES (gen_random_uuid(), 'RECEIPT', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 1, 'GOODS_RECEIPT_LINE', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
-SELECT pg_temp.expect_ok('K28 a whole stock package moved, named on both sides', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, from_stock_package_id, to_stock_package_id)
-    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'HCM-A01-1-B', 4, 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid, md5('qa:pk:2')::uuid) $q$);
-SELECT pg_temp.expect_fail('K28a a movement naming a stock package of another SKU', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, from_stock_package_id)
+\echo '--- ledger: a line names one carton (V20261020000300; one column since V20261230000200, ADR-0011)'
+-- The two carton columns, one per side, are one: a line is one whole carton, and its places say which way it went.
+SELECT pg_temp.expect_true('K27 the ledger has one carton column, indexed, and the two sides are gone', $c$
+    (SELECT count(*) FILTER (WHERE column_name = 'stock_package_id') = 1
+            AND count(*) FILTER (WHERE column_name IN ('from_stock_package_id', 'to_stock_package_id')) = 0
+       FROM information_schema.columns WHERE table_schema = 'inventory' AND table_name = 'stock_movement')
+    AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'inventory' AND indexname = 'ix_stock_movement_package')
+    AND NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'inventory'
+                     AND indexname IN ('ix_stock_movement_from_package', 'ix_stock_movement_to_package')) $c$);
+SELECT pg_temp.expect_true('K27a a new line must name its carton; lines from before stock was only cartons are not judged (NOT VALID)', $c$
+    (SELECT NOT convalidated AND pg_get_constraintdef(oid) LIKE '%stock_package_id IS NOT NULL%'
+       FROM pg_constraint WHERE conname = 'ck_stock_movement_names_carton'
+        AND conrelid = 'inventory.stock_movement'::regclass) $c$);
+SELECT pg_temp.expect_true('K27b the CHECKs that said so kind by kind, and the one about sides, are gone', $c$
+    NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'inventory.stock_movement'::regclass
+                 AND conname IN ('ck_stock_movement_package_side', 'ck_stock_movement_receipt_in_carton',
+                                 'ck_stock_movement_putaway_carton', 'ck_stock_movement_move_task_carton',
+                                 'ck_stock_movement_put_back_carton')) $c$);
+SELECT pg_temp.expect_fail_by('K27c a new ledger line that names no carton', 'ck_stock_movement_names_carton', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, reference_type, reference_id, occurred_at)
+    VALUES (gen_random_uuid(), 'RECEIPT', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 1, 'GOODS_RECEIPT_LINE', gen_random_uuid(), NOW()) $q$);
+SELECT pg_temp.expect_fail_by('K27d ... whatever kind of line it is', 'ck_stock_movement_names_carton', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, reference_type, reference_id, occurred_at)
+    VALUES (gen_random_uuid(), 'ADJUSTMENT', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 1, 'STOCK_ADJUSTMENT', gen_random_uuid(), NOW()) $q$);
+SELECT pg_temp.expect_ok('K28 a whole stock package moved, its line naming it', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'HCM-A01-1-B', 4, 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('K28a a movement naming a stock package of another SKU', 'names a stock package of', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, stock_package_id)
     VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-DO', 'HCM-A01-1-A', 'HCM-A01-1-B', 1, 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
-SELECT pg_temp.expect_fail('K28b a movement naming a stock package at a bin it never touched', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, from_stock_package_id)
+SELECT pg_temp.expect_fail_by('K28b a movement naming a stock package at a bin it never touched', 'names a stock package at', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, stock_package_id)
     VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-B', 'HCM-RCV01', 1, 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('K28b2 ... a line that leaves, from a bin the carton does not stand at', 'names a stock package at', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, reference_type, reference_id, occurred_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'PICK', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-B', 10, 'PICK_LINE', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('K28b3 a held carton is still not moved by hand: the trigger reads the one carton', 'it is not moved by hand', $q$
+    UPDATE inventory.stock_item SET reserved = on_hand WHERE id = md5('qa:pk:2:row')::uuid;
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'HCM-A01-1-B', 10, 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
 
 \echo '--- a carton is one stock row, wherever it is (V20261020000200; one row since V20261113000300, 20 BR-18)'
 SELECT pg_temp.expect_fail('K28c a second row, an emptied one, in the stock package (uk_stock_item_package)', $q$

@@ -136,7 +136,7 @@ class StockPackageConsumptionIntegrationTest {
                 .containsEntry("held", 0L);
 
         assertThat(jdbc.queryForList("""
-                select from_stock_package_id from inventory.stock_movement
+                select stock_package_id from inventory.stock_movement
                  where sku = ? and movement_type = 'PICK'""", UUID.class, sku)).containsExactly(box);
     }
 

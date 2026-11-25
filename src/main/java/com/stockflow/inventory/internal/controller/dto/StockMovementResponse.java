@@ -7,8 +7,9 @@ import java.util.UUID;
  * One line of the stock history. {@code fromLocation} is null for stock that arrived, {@code toLocation}
  * for stock that left. {@code toStatus} differs from {@code status} only where the line changed it: a putaway
  * (INBOUND to AVAILABLE), a return's decision, or a QC decision from before receiving QC was removed (INBOUND to
- * QUARANTINE or BLOCKED). {@code fromLpn} / {@code toLpn} name the carton on each side, so a carton's history can be
- * read line by line (kltn-docs 20 §4.1); a putaway or a move of a whole carton names the same LPN on both.
+ * QUARANTINE or BLOCKED). {@code lpn} names the carton the line is about, so a carton's history can be read line by
+ * line (kltn-docs 20 §4.1). One LPN, where there were {@code fromLpn} and {@code toLpn} (V20261230000200, ADR-0011):
+ * a line is one whole carton, and which way it went is {@code type} with {@code fromLocation} / {@code toLocation}.
  */
 public record StockMovementResponse(UUID movementId, String type, String sku, String lotNumber,
                                     String fromLocation, String toLocation, int quantity, String status,
@@ -33,9 +34,7 @@ public record StockMovementResponse(UUID movementId, String type, String sku, St
                                             + "countedBy; null whenever countedBy is", nullable = true)
                                     String countedByName,
                                     @io.swagger.v3.oas.annotations.media.Schema(description = "The carton (LPN) the "
-                                            + "units left; null for a side with no carton", nullable = true)
-                                    String fromLpn,
-                                    @io.swagger.v3.oas.annotations.media.Schema(description = "The carton (LPN) the "
-                                            + "units went into; null for a side with no carton", nullable = true)
-                                    String toLpn) {
+                                            + "line is about; null only on a line from before stock was only "
+                                            + "cartons", nullable = true)
+                                    String lpn) {
 }

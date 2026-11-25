@@ -290,9 +290,9 @@ class SeedTestDataLoadTest {
                 .as("a carton holds its standard count or, consumed, nothing").isZero();
         assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package p JOIN inventory.stock_item s ON "
                 + "s.stock_package_id = p.id WHERE p.created_by = 'seed' AND s.on_hand <> COALESCE((SELECT "
-                + "COALESCE(sum(m.quantity) FILTER (WHERE m.to_stock_package_id = p.id), 0) - COALESCE(sum(m.quantity) "
-                + "FILTER (WHERE m.from_stock_package_id = p.id), 0) FROM inventory.stock_movement m WHERE p.id IN "
-                + "(m.to_stock_package_id, m.from_stock_package_id)), 0)")).as("each carton's ledger adds up").isZero();
+                + "COALESCE(sum(m.quantity) FILTER (WHERE m.to_location_code IS NOT NULL), 0) - COALESCE(sum(m.quantity) "
+                + "FILTER (WHERE m.from_location_code IS NOT NULL), 0) FROM inventory.stock_movement m WHERE "
+                + "m.stock_package_id = p.id), 0)")).as("each carton's ledger adds up").isZero();
         assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_item s JOIN inventory.stock_lot l ON l.id = "
                 + "s.lot_id LEFT JOIN ordering.production_order o ON o.id = l.production_order_id WHERE s.created_by = "
                 + "'seed' AND (l.origin_type <> 'PRODUCTION_ORDER' OR s.lot_number IS DISTINCT FROM o.code)"))

@@ -126,7 +126,7 @@ class ReturnedCartonOwnershipAdapter implements ReturnedCartonOwnership {
         // naming a return request only as the reversal of one carton's stock-in, and a return reverses a carton once.
         return new java.util.HashSet<>(jdbc.queryForList("""
                 SELECT DISTINCT p.lpn FROM inventory.stock_movement m
-                  JOIN inventory.stock_package p ON p.id = m.from_stock_package_id
+                  JOIN inventory.stock_package p ON p.id = m.stock_package_id
                  WHERE m.reference_type = 'RETURN_REQUEST' AND m.reference_id = :request
                    AND m.movement_type = 'ADJUSTMENT' AND p.lpn IN (:lpns)""",
                 new MapSqlParameterSource("request", returnRequestId).addValue("lpns", List.copyOf(lpns)),

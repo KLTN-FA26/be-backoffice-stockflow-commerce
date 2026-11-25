@@ -141,8 +141,7 @@ class CountVarianceAdjustmentIntegrationTest {
 
     private List<Map<String, Object>> adjustmentLedger() {
         return jdbc.queryForList("""
-                select reference_id, quantity, from_location_code, to_location_code, from_stock_package_id,
-                       to_stock_package_id
+                select reference_id, quantity, from_location_code, to_location_code, stock_package_id
                   from inventory.stock_movement where sku = ? and movement_type = 'ADJUSTMENT'
                  order by occurred_at, quantity""", sku);
     }
@@ -214,7 +213,7 @@ class CountVarianceAdjustmentIntegrationTest {
         assertThat(jdbc.queryForObject("select closed_at is not null from inventory.stock_package where id = ?",
                 Boolean.class, box)).isTrue();
         assertThat(adjustmentLedger()).singleElement().satisfies(row -> {
-            assertThat(row.get("from_stock_package_id")).isEqualTo(box);
+            assertThat(row.get("stock_package_id")).isEqualTo(box);
             assertThat(row.get("from_location_code")).isEqualTo(BIN);
             assertThat(row.get("quantity")).isEqualTo(CARTON_FACTOR);
         });
@@ -256,7 +255,7 @@ class CountVarianceAdjustmentIntegrationTest {
         // A ledger line of an adjustment that names other people than the adjustment does is refused.
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update("""
                 insert into inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, quantity,
-                    from_status, reference_type, reference_id, actor_id, occurred_at, from_stock_package_id,
+                    from_status, reference_type, reference_id, actor_id, occurred_at, stock_package_id,
                     requested_by)
                 values (?, 'ADJUSTMENT', ?, ?, ?, ?, 'AVAILABLE', 'STOCK_ADJUSTMENT', ?, ?, now(), ?, ?)""",
                 Identifiers.newId(), sku, lot, BIN, CARTON_FACTOR, asked.adjustmentId(), manager, box, manager)))
@@ -284,9 +283,9 @@ class CountVarianceAdjustmentIntegrationTest {
                 String.class, box)).as("BR-18: its own lot").isEqualTo(lot);
         assertThat(adjustmentLedger()).filteredOn(row -> found.adjustmentId().equals(row.get("reference_id")))
                 .singleElement().satisfies(row -> {
-                    assertThat(row.get("to_stock_package_id")).isEqualTo(box);
+                    assertThat(row.get("stock_package_id")).isEqualTo(box);
                     assertThat(row.get("to_location_code")).isEqualTo(BIN);
-                    assertThat(row.get("from_stock_package_id")).isNull();
+                    assertThat(row.get("from_location_code")).as("back into stock: no place it left").isNull();
                 });
     }
 
@@ -317,7 +316,7 @@ class CountVarianceAdjustmentIntegrationTest {
         assertThat(posted.status()).isEqualTo(StockAdjustmentStatus.POSTED);
         assertThat(cartonState(box)).containsEntry("status", "LOST").containsEntry("held", 0L);
         assertThat(adjustmentLedger()).singleElement().satisfies(row -> {
-            assertThat(row.get("from_stock_package_id")).isEqualTo(box);
+            assertThat(row.get("stock_package_id")).isEqualTo(box);
             assertThat(row.get("quantity")).isEqualTo(CARTON_FACTOR);
         });
         assertThat(jdbc.queryForObject("select status || ':' || release_reason from inventory.stock_reservation "

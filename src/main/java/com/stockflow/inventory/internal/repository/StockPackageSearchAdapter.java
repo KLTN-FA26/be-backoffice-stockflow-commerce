@@ -39,6 +39,11 @@ class StockPackageSearchAdapter implements StockPackageSearch {
      * The view's columns, then what the list shows of each carton without opening it (#454), each a subquery on the
      * carton's own rows: still one statement for a page, whatever its size. A carton is one stock row
      * (V20261113000300), so {@code stock_statuses} holds one status, but it is read as the rows say.
+     *
+     * <p>{@code source} reads the ledger by the carton a line names ({@code stock_package_id}, V20261230000200). A
+     * PRODUCTION carton was one a production order's line put goods <em>into</em> - the arriving side, when a line had
+     * two - and not one it took blanks out of; that is now said by the line having a place it went to
+     * ({@code to_location_code}). A return receipt's line is a RECEIPT, which only ever arrives.</p>
      */
     private static final String CARTON_COLUMNS = """
             b.stock_package_id, b.lpn, b.sku, b.unit_of_measure, b.nominal_qty, b.received_qty, b.location_code,
@@ -57,12 +62,12 @@ class StockPackageSearchAdapter implements StockPackageSearch {
               WHERE s.stock_package_id = b.stock_package_id AND s.on_hand > 0) AS received_at,
             CASE
                 WHEN EXISTS (SELECT 1 FROM inventory.stock_movement m
-                              WHERE m.to_stock_package_id = b.stock_package_id AND m.reference_type = 'GOODS_RECEIPT')
+                              WHERE m.stock_package_id = b.stock_package_id AND m.reference_type = 'GOODS_RECEIPT')
                     THEN 'RETURN'
                 WHEN b.goods_receipt_line_id IS NOT NULL THEN 'GOODS_RECEIPT'
                 WHEN EXISTS (SELECT 1 FROM inventory.stock_movement m
-                              WHERE m.to_stock_package_id = b.stock_package_id
-                                AND m.reference_type = 'PRODUCTION_ORDER')
+                              WHERE m.stock_package_id = b.stock_package_id
+                                AND m.reference_type = 'PRODUCTION_ORDER' AND m.to_location_code IS NOT NULL)
                     THEN 'PRODUCTION'
                 ELSE 'IN_WAREHOUSE'
             END AS source,

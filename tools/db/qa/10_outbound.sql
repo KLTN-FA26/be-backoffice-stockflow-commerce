@@ -164,40 +164,45 @@ SELECT pg_temp.expect_fail('F11 PUT_BACK onto a location that does not exist', $
 \echo '--- the ledger: a pick line deducts once and is put back once (inventory.stock_movement)'
 SELECT pg_temp.expect_ok('F12 the deduction of a pick line', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, from_status, reference_type,
-                                          reference_id, occurred_at)
+                                          reference_id, occurred_at, stock_package_id)
     VALUES (gen_random_uuid(), 'PICK', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 1000, 'AVAILABLE', 'PICK_LINE', md5('qa:pl:f5')::uuid,
-            NOW()) $q$);
-SELECT pg_temp.expect_fail('F13 a second deduction of the same pick line', $q$
+            NOW(), (SELECT package_id FROM qa10_carton WHERE n = 1)) $q$);
+-- Each line names a carton standing at its place (V20261230000200), so the rule its label names is the one that answers.
+SELECT pg_temp.expect_fail_by('F13 a second deduction of the same pick line', 'uk_stock_movement_pick_line', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, from_status, reference_type,
-                                          reference_id, occurred_at)
+                                          reference_id, occurred_at, stock_package_id)
     VALUES (gen_random_uuid(), 'PICK', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A02-1-A', 1000, 'AVAILABLE', 'PICK_LINE', md5('qa:pl:f5')::uuid,
-            NOW()) $q$);
-SELECT pg_temp.expect_fail('F14 a put-back from nowhere that no pick line caused', $q$
+            NOW(), md5('qa10x:demo:p8')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('F14 a put-back from nowhere that no pick line caused', 'ck_stock_movement_shape', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, to_status, reference_type,
-                                          reference_id, occurred_at)
+                                          reference_id, occurred_at, stock_package_id)
     VALUES (gen_random_uuid(), 'PUT_BACK', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 1000, 'AVAILABLE', 'MOVE_TASK', gen_random_uuid(),
-            NOW()) $q$);
-SELECT pg_temp.expect_fail('F15 a put-back with no bin to go to', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, quantity, reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'PUT_BACK', 'LY-GIAY-DEMO-12OZ-XANH', 1000, 'PICK_LINE', md5('qa:pl:f5')::uuid, NOW()) $q$);
+            NOW(), (SELECT package_id FROM qa10_carton WHERE n = 1)) $q$);
+-- A carton stands somewhere, so a line with no place names one that does not exist: the shape answers before the key.
+SELECT pg_temp.expect_fail_by('F15 a put-back with no bin to go to', 'ck_stock_movement_shape', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, quantity, reference_type, reference_id, occurred_at,
+                                          stock_package_id)
+    VALUES (gen_random_uuid(), 'PUT_BACK', 'LY-GIAY-DEMO-12OZ-XANH', 1000, 'PICK_LINE', md5('qa:pl:f5')::uuid, NOW(),
+            gen_random_uuid()) $q$);
 SELECT pg_temp.expect_ok('F16 the order is cancelled: the line goes back onto its bin, one PUT_BACK row from nowhere', $q$
     UPDATE fulfillment.pick SET status = 'CANCELLED', needs_put_back = TRUE, cancelled_at = NOW() WHERE id = md5('qa:pick:f1')::uuid;
     UPDATE fulfillment.pick_line SET status = 'PUT_BACK', put_back_qty = picked_qty, put_back_by = md5('demo:user:editor')::uuid,
            put_back_location_code = 'HCM-A01-2-B', put_back_at = NOW() WHERE id = md5('qa:pl:f5')::uuid;
     INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, to_status, reference_type,
-                                          reference_id, occurred_at, to_stock_package_id)
+                                          reference_id, occurred_at, stock_package_id)
     SELECT gen_random_uuid(), 'PUT_BACK', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', c.units, 'AVAILABLE', 'PICK_LINE',
            md5('qa:pl:f5')::uuid, NOW(), c.package_id FROM qa10_carton c WHERE c.n = 1 $q$);
 SELECT pg_temp.expect_fail_by('F17 a second put-back of the same pick line', 'uk_stock_movement', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, to_status, reference_type,
-                                          reference_id, occurred_at, to_stock_package_id)
+                                          reference_id, occurred_at, stock_package_id)
     SELECT gen_random_uuid(), 'PUT_BACK', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', c.units, 'AVAILABLE', 'PICK_LINE',
            md5('qa:pl:f5')::uuid, NOW(), c.package_id FROM qa10_carton c WHERE c.n = 1 $q$);
 SELECT pg_temp.expect_ok('F18 a put-back moved back from a staging location still has both ends (unchanged shape)', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity,
-                                          from_status, to_status, reference_type, reference_id, occurred_at)
+                                          from_status, to_status, reference_type, reference_id, occurred_at,
+                                          stock_package_id)
     VALUES (gen_random_uuid(), 'PUT_BACK', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-PACK01', 'HCM-A01-2-B', 1000, 'AVAILABLE', 'AVAILABLE',
-            'MOVE_TASK', gen_random_uuid(), NOW()) $q$);
+            'MOVE_TASK', gen_random_uuid(), NOW(), (SELECT package_id FROM qa10_carton WHERE n = 1)) $q$);
 SELECT pg_temp.expect_ok('F19 a cancelled line frees its hold for a new live line', $q$
     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
     VALUES (md5('qa:ol:f19')::uuid, md5('qa:order:f1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 1000, 6000, 'VND');
@@ -358,11 +363,11 @@ SELECT pg_temp.expect_fail('F45 a parcel loaded once its load left', $q$
     UPDATE fulfillment.dispatch_load_package SET active = TRUE, removed_at = NULL WHERE id = md5('qa:lp:f38')::uuid $q$);
 
 \echo '--- the per-unit damage reports are gone (V20261114000400, 5-6); the ledger keeps what they wrote'
-SELECT pg_temp.expect_fail('F63 a ledger line of goods that went back to the supplier into a location (they left to nowhere; the ledger keeps its history rule)', $q$
+SELECT pg_temp.expect_fail_by('F63 a ledger line of goods that went back to the supplier into a location (they left to nowhere; the ledger keeps its history rule)', 'ck_stock_movement_shape', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity,
-                                          from_status, reference_type, reference_id, occurred_at)
+                                          from_status, reference_type, reference_id, occurred_at, stock_package_id)
     VALUES (gen_random_uuid(), 'SUPPLIER_RETURN', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-QC01', 'HCM-A01-2-B', 1, 'DAMAGED',
-            'DAMAGE_REPORT', gen_random_uuid(), NOW()) $q$);
+            'DAMAGE_REPORT', gen_random_uuid(), NOW(), (SELECT package_id FROM qa10_carton WHERE n = 1)) $q$);
 
 -- 3-1: what each kind of carrier connection needs (V20261108001300).
 INSERT INTO fulfillment.carrier (id, code, name, status) VALUES (md5('qa:carrier:f64')::uuid, 'QA-AHA', 'QA Ahamove',

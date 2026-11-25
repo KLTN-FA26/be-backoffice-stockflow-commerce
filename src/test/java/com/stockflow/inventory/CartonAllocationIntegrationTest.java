@@ -128,7 +128,7 @@ class CartonAllocationIntegrationTest {
 
     private int handMoves(String lpn) {
         return jdbc.queryForObject("""
-                select count(*) from inventory.stock_movement m join inventory.stock_package p on p.id = m.to_stock_package_id
+                select count(*) from inventory.stock_movement m join inventory.stock_package p on p.id = m.stock_package_id
                  where p.lpn = ? and m.movement_type = 'MOVE' and m.reference_type = 'MOVE_TASK'""", Integer.class, lpn);
     }
 
@@ -241,7 +241,7 @@ class CartonAllocationIntegrationTest {
         assertThat(locationOf(held)).isEqualTo(SHELF);
         assertThat(jdbc.queryForObject("""
                 select count(*) from inventory.stock_movement m
-                  join inventory.stock_package p on p.id in (m.from_stock_package_id, m.to_stock_package_id)
+                  join inventory.stock_package p on p.id = m.stock_package_id
                  where p.lpn in (?, ?) and m.movement_type = 'MOVE'""", Integer.class, free, held)).isZero();
 
         moveByHand(List.of(free), OTHER_BIN);

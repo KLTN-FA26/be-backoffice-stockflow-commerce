@@ -184,10 +184,10 @@ class ReceivingPackagesIntegrationTest {
                 "1000:INBOUND:" + RECEIVING + ":carton of 1000",
                 "1000:INBOUND:" + RECEIVING + ":carton of 1000");
         assertThat(jdbc.query("""
-                select quantity, to_stock_package_id from inventory.stock_movement
+                select quantity, stock_package_id from inventory.stock_movement
                  where movement_type = 'RECEIPT' and reference_type = 'GOODS_RECEIPT_LINE' and reference_id = ?
                  order by quantity""",
-                (rs, n) -> rs.getInt("quantity") + ":" + (rs.getObject("to_stock_package_id") == null ? "loose" : "carton"),
+                (rs, n) -> rs.getInt("quantity") + ":" + (rs.getObject("stock_package_id") == null ? "loose" : "carton"),
                 line)).containsExactly("1000:carton", "1000:carton");
         Map<UUID, List<StockPackageView>> shown = inventory.receivingPackagesOf(List.of(line));
         assertThat(shown.get(line)).extracting(StockPackageView::status, StockPackageView::quantity)

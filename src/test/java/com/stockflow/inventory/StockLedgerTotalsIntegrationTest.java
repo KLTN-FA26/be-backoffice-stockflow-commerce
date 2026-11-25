@@ -27,6 +27,7 @@ import com.stockflow.inventory.internal.domain.AdjustmentDirection;
 import com.stockflow.inventory.internal.service.BookVisibility;
 import com.stockflow.inventory.internal.service.StockOperations;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.Holds;
 import com.stockflow.support.ProductionReceiptTest;
@@ -126,7 +127,7 @@ class StockLedgerTotalsIntegrationTest {
     private String lpnPickedBy(UUID pickLine) {
         return jdbc.queryForObject("""
                 SELECT p.lpn FROM inventory.stock_movement m
-                  JOIN inventory.stock_package p ON p.id = m.from_stock_package_id
+                  JOIN inventory.stock_package p ON p.id = m.stock_package_id
                  WHERE m.movement_type = 'PICK' AND m.reference_id = ?""", String.class, pickLine);
     }
 
@@ -148,14 +149,21 @@ class StockLedgerTotalsIntegrationTest {
                  WHERE sku = ? AND location_code LIKE 'HCM-%'""", Long.class, sku);
     }
 
+    /**
+     * A line into {@link #BIN} at {@code at}, naming a carton standing there as every ledger line must
+     * ({@code ck_stock_movement_names_carton}). The test that uses it reads the ledger's days and units, not the stock.
+     */
     private void ledgerLine(int quantity, Instant at) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
-                    to_location_code, quantity, to_status, reference_type, reference_id, occurred_at, version,
-                    created_at)
-                VALUES (?, 'ADJUSTMENT', ?, ?, NULL, ?, ?, 'AVAILABLE', 'STOCK_ADJUSTMENT', ?, ?, 0, NOW())""",
-                Identifiers.newId(), sku, goods.productionCode(), BIN, quantity, Identifiers.newId(),
-                OffsetDateTime.ofInstant(at, ZoneOffset.UTC)));
+        tx.executeWithoutResult(s -> {
+            UUID carton = CartonRows.stock(jdbc, sku, BIN, 1, PER_CARTON, goods.productionCode(), at).getFirst().id();
+            jdbc.update("""
+                    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
+                        to_location_code, quantity, to_status, reference_type, reference_id, occurred_at, version,
+                        created_at, stock_package_id)
+                    VALUES (?, 'ADJUSTMENT', ?, ?, NULL, ?, ?, 'AVAILABLE', 'STOCK_ADJUSTMENT', ?, ?, 0, NOW(), ?)""",
+                    Identifiers.newId(), sku, goods.productionCode(), BIN, quantity, Identifiers.newId(),
+                    OffsetDateTime.ofInstant(at, ZoneOffset.UTC), carton);
+        });
     }
 
     private static ErrorCode code(Throwable thrown) {

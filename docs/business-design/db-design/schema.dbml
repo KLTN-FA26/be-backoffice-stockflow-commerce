@@ -1621,32 +1621,31 @@ Table inventory.stock_lot [headercolor: #3E7C4A] {
 }
 
 Table inventory.stock_movement [headercolor: #3E7C4A] {
-  id                    uuid [pk]
-  movement_type         inventory.stock_movement_movement_type [not null]
-  sku                   varchar(64) [not null]
-  lot_number            varchar(64)
-  from_location_code    varchar(64)
-  to_location_code      varchar(64)
-  quantity              int [not null]
-  from_status           varchar(32)
-  to_status             varchar(32)
-  reference_type        inventory.stock_movement_reference_type [not null]
-  reference_id          uuid [not null]
-  reason                varchar(500)
-  actor_id              uuid
-  occurred_at           timestamptz [not null]
-  version               bigint [not null, default: 0]
-  created_at            timestamptz [not null, default: `now()`]
-  created_by            varchar(100)
-  last_modified_at      timestamptz
-  last_modified_by      varchar(100)
-  from_stock_package_id uuid
-  to_stock_package_id   uuid
-  lot_id                uuid
-  order_id              uuid
-  order_number          varchar(32)
-  requested_by          uuid
-  counted_by            uuid
+  id                 uuid [pk]
+  movement_type      inventory.stock_movement_movement_type [not null]
+  sku                varchar(64) [not null]
+  lot_number         varchar(64)
+  from_location_code varchar(64)
+  to_location_code   varchar(64)
+  quantity           int [not null]
+  from_status        varchar(32)
+  to_status          varchar(32)
+  reference_type     inventory.stock_movement_reference_type [not null]
+  reference_id       uuid [not null]
+  reason             varchar(500)
+  actor_id           uuid
+  occurred_at        timestamptz [not null]
+  version            bigint [not null, default: 0]
+  created_at         timestamptz [not null, default: `now()`]
+  created_by         varchar(100)
+  last_modified_at   timestamptz
+  last_modified_by   varchar(100)
+  lot_id             uuid
+  order_id           uuid
+  order_number       varchar(32)
+  requested_by       uuid
+  counted_by         uuid
+  stock_package_id   uuid
 }
 
 Table inventory.stock_package [headercolor: #3E7C4A] {
@@ -5193,13 +5192,12 @@ Ref: inventory.stock_lot.warehouse_id > warehouse.warehouse.id [delete: restrict
 Ref: inventory.stock_movement.actor_id > identity.app_user.id
 Ref: inventory.stock_movement.counted_by > identity.app_user.id
 Ref: inventory.stock_movement.from_location_code > warehouse.storage_location.location_code [delete: restrict]
-Ref: inventory.stock_movement.from_stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: inventory.stock_movement.lot_id > inventory.stock_lot.id [delete: restrict]
 Ref: inventory.stock_movement.order_id > ordering.customer_order.id [delete: restrict]
 Ref: inventory.stock_movement.requested_by > identity.app_user.id
 Ref: inventory.stock_movement.sku > inventory.inventory_items.sku [delete: restrict]
+Ref: inventory.stock_movement.stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: inventory.stock_movement.to_location_code > warehouse.storage_location.location_code [delete: restrict]
-Ref: inventory.stock_movement.to_stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: inventory.stock_package.custody_ended_by > identity.app_user.id
 Ref: inventory.stock_package.goods_receipt_line_id > procurement.goods_receipt_lines.id [delete: restrict]
 Ref: inventory.stock_package.inventory_item_id > inventory.inventory_items.id [delete: restrict]

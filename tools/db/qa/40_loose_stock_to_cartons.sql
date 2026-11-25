@@ -93,7 +93,7 @@ SELECT pg_temp.expect_true('LC6 each of the 75 demo cartons has the ledger line 
                      WHERE p.created_by = 'V20261206000100'
                        AND s.on_hand <> COALESCE((SELECT sum(m.quantity) FROM inventory.stock_movement m
                                                    WHERE m.movement_type = 'RECEIPT' AND m.reference_type = 'STOCK_PACKAGE'
-                                                     AND m.reference_id = p.id AND m.to_stock_package_id = p.id
+                                                     AND m.reference_id = p.id AND m.stock_package_id = p.id
                                                      AND m.to_location_code = p.location_code
                                                      AND m.lot_id = s.lot_id), 0)));
 SELECT pg_temp.expect_true('LC7 the guards the migration turned off are on again',
@@ -101,19 +101,21 @@ SELECT pg_temp.expect_true('LC7 the guards the migration turned off are on again
       WHERE tgname IN ('trg_stock_sku_policy', 'tg_stock_package_transition')));
 
 \echo '--- the ledger: a MOVE stays in place only to box units into the carton it names'
-SELECT pg_temp.expect_fail('LC8 a MOVE in place for a move task', $q$
+SELECT pg_temp.expect_fail_by('LC8 a MOVE in place for a move task', 'ck_stock_movement_shape', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity,
-                                          reference_type, reference_id, occurred_at)
+                                          reference_type, reference_id, occurred_at, stock_package_id)
     VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'HCM-A01-2-B', 1, 'MOVE_TASK',
-            gen_random_uuid(), NOW()) $q$);
-SELECT pg_temp.expect_fail('LC9 a MOVE in place naming a carton it does not put the units into', $q$
+            gen_random_uuid(), NOW(),
+            (SELECT p.id FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+              WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' ORDER BY p.lpn LIMIT 1)) $q$);
+SELECT pg_temp.expect_fail_by('LC9 a MOVE in place naming a carton that is not its reference', 'ck_stock_movement_shape', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity,
-                                          reference_type, reference_id, to_stock_package_id, occurred_at)
+                                          reference_type, reference_id, stock_package_id, occurred_at)
     SELECT gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'HCM-A01-2-B', p.nominal_qty,
            'STOCK_PACKAGE', gen_random_uuid(), p.id, NOW()
       FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
      WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' LIMIT 1 $q$);
-SELECT pg_temp.expect_fail('LC10 a MOVE in place naming a carton and putting the units nowhere', $q$
+SELECT pg_temp.expect_fail('LC10 a MOVE in place whose reference is a carton, naming no carton', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity,
                                           reference_type, reference_id, occurred_at)
     SELECT gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'HCM-A01-2-B', p.nominal_qty,
@@ -122,22 +124,27 @@ SELECT pg_temp.expect_fail('LC10 a MOVE in place naming a carton and putting the
      WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' LIMIT 1 $q$);
 SELECT pg_temp.expect_ok('LC11 a MOVE in place into the carton it names', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
-                                          quantity, reference_type, reference_id, to_stock_package_id, occurred_at)
+                                          quantity, reference_type, reference_id, stock_package_id, occurred_at)
     SELECT gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-2-B', 'HCM-A01-2-B', p.nominal_qty,
            'STOCK_PACKAGE', p.id, p.id, NOW()
       FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
      WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' LIMIT 1 $q$);
--- A loose one names a return line: a person's move names its carton since V20261111000200 (QA 41).
+-- Not a move by hand (QA 41 has those): it names a return line, and its carton as every line does (V20261230000200).
 SELECT pg_temp.expect_ok('LC12 a MOVE from one place to another is what it was', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity,
-                                          reference_type, reference_id, occurred_at)
+                                          reference_type, reference_id, occurred_at, stock_package_id)
     VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'HCM-A01-1-A', 1, 'RETURN_REQUEST_LINE',
-            gen_random_uuid(), NOW()) $q$);
-SELECT pg_temp.expect_fail('LC13 a STATUS_CHANGE that changes no status', $q$
+            gen_random_uuid(), NOW(),
+            (SELECT p.id FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+              WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' ORDER BY p.lpn LIMIT 1)) $q$);
+SELECT pg_temp.expect_fail_by('LC13 a STATUS_CHANGE that changes no status', 'ck_stock_movement_shape', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity,
-                                          from_status, to_status, reference_type, reference_id, occurred_at)
+                                          from_status, to_status, reference_type, reference_id, occurred_at,
+                                          stock_package_id)
     VALUES (gen_random_uuid(), 'STATUS_CHANGE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'HCM-A01-2-B', 1, 'AVAILABLE',
-            'AVAILABLE', 'STOCK_PACKAGE', gen_random_uuid(), NOW()) $q$);
+            'AVAILABLE', 'STOCK_PACKAGE', gen_random_uuid(), NOW(),
+            (SELECT p.id FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+              WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' ORDER BY p.lpn LIMIT 1)) $q$);
 
 \echo '--- every unit has a lot (20 BR-22): any SKU may carry one, a lot-tracked one must'
 -- In a carton of 2: a row with units outside one is refused by ck_stock_item_whole_cartons (QA 41).

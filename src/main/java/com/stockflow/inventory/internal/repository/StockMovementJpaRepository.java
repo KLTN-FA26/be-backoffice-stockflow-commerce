@@ -16,13 +16,13 @@ interface StockMovementJpaRepository extends BaseJpaRepository<StockMovementJpaE
             StockMovement.MovementType movementType, StockMovement.ReferenceType referenceType, UUID referenceId);
 
     Optional<StockMovementJpaEntity>
-            findFirstByMovementTypeAndReferenceTypeAndReferenceIdAndFromStockPackageIdIsNullAndToStockPackageIdIsNullOrderByIdAsc(
+            findFirstByMovementTypeAndReferenceTypeAndReferenceIdAndStockPackageIdIsNullOrderByIdAsc(
             StockMovement.MovementType movementType, StockMovement.ReferenceType referenceType, UUID referenceId);
 
     @org.springframework.data.jpa.repository.Query("""
             select m from StockMovementJpaEntity m
             where m.movementType = :type and m.referenceType = :referenceType and m.referenceId in :referenceIds
-              and m.fromStockPackageId is null and m.toStockPackageId is null
+              and m.stockPackageId is null
             order by m.id
             """)
     java.util.List<StockMovementJpaEntity> findLooseByReferences(
@@ -31,9 +31,9 @@ interface StockMovementJpaRepository extends BaseJpaRepository<StockMovementJpaE
             @org.springframework.data.repository.query.Param("referenceIds") java.util.Collection<UUID> referenceIds);
 
     @org.springframework.data.jpa.repository.Query("""
-            select distinct m.toStockPackageId, m.toLocationCode from StockMovementJpaEntity m
+            select distinct m.stockPackageId, m.toLocationCode from StockMovementJpaEntity m
             where m.movementType = com.stockflow.inventory.internal.domain.StockMovement.MovementType.MOVE
-              and m.referenceType = :referenceType and m.referenceId = :referenceId and m.toStockPackageId is not null
+              and m.referenceType = :referenceType and m.referenceId = :referenceId and m.stockPackageId is not null
             """)
     java.util.List<Object[]> cartonsMovedBy(
             @org.springframework.data.repository.query.Param("referenceType") StockMovement.ReferenceType referenceType,

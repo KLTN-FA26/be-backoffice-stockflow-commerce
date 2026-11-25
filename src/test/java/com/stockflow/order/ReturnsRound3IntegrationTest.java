@@ -266,7 +266,7 @@ class ReturnsRound3IntegrationTest {
     private long reversals(ReturnRequest request, String lpn) {
         return jdbc.queryForObject("""
                 SELECT count(*) FROM inventory.stock_movement m JOIN inventory.stock_package p
-                    ON p.id = m.from_stock_package_id
+                    ON p.id = m.stock_package_id
                  WHERE m.reference_type = 'RETURN_REQUEST' AND m.reference_id = ? AND p.lpn = ?""", Long.class,
                 request.id(), lpn);
     }

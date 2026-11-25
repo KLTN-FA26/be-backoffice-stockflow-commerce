@@ -207,7 +207,7 @@ class SameReceiptMergeIntegrationTest {
         assertThat(jdbc.queryForObject("""
                 select count(*) from inventory.stock_movement
                  where movement_type = 'PUT_BACK' and reference_type = 'PICK_LINE' and reference_id in (?, ?)
-                   and to_stock_package_id is not null""",
+                   and stock_package_id is not null""",
                 Integer.class, lines.get(0), lines.get(1))).as("one per line, naming its carton").isEqualTo(2);
     }
 

@@ -93,7 +93,7 @@ class PickConsumptionServiceTest {
         @Override
         public Optional<StockMovement> findLooseByReference(StockMovement.MovementType type,
                                                             StockMovement.ReferenceType referenceType, UUID referenceId) {
-            return ledgerRows.stream().filter(row -> row.fromStockPackage() == null && row.toStockPackage() == null)
+            return ledgerRows.stream().filter(row -> row.stockPackage() == null)
                     .filter(row -> row.type() == type && row.referenceType() == referenceType
                             && row.referenceId().equals(referenceId)).findFirst();
         }
@@ -404,8 +404,7 @@ class PickConsumptionServiceTest {
                 assertThat(row.quantity()).isEqualTo(3);
                 assertThat(row.toStatus()).isEqualTo(StockStatus.AVAILABLE);
                 assertThat(row.lotNumber()).isEqualTo("LOT-1");
-                assertThat(row.toStockPackage()).as("the ledger names the carton").isEqualTo(picked.carton().id());
-                assertThat(row.fromStockPackage()).isNull();
+                assertThat(row.stockPackage()).as("the ledger names the carton").isEqualTo(picked.carton().id());
             });
             verify(policies).lock("LY-GIAY-DEMO-12OZ-XANH");
         }
@@ -427,7 +426,7 @@ class PickConsumptionServiceTest {
             assertThat(saved).isEmpty();
             assertThat(ledgerRows).singleElement().satisfies(row -> {
                 assertThat(row.to()).isEqualTo(OTHER_BIN);
-                assertThat(row.toStockPackage()).isEqualTo(picked.carton().id());
+                assertThat(row.stockPackage()).isEqualTo(picked.carton().id());
             });
         }
 
@@ -458,7 +457,7 @@ class PickConsumptionServiceTest {
                 assertThat(row.referenceId()).isEqualTo(line);
                 assertThat(row.to()).isEqualTo(quarantine);
                 assertThat(row.toStatus()).isEqualTo(StockStatus.QUARANTINE);
-                assertThat(row.toStockPackage()).isEqualTo(picked.carton().id());
+                assertThat(row.stockPackage()).isEqualTo(picked.carton().id());
             });
             var order = org.mockito.Mockito.inOrder(policies, stockPackages, stockItems);
             order.verify(policies).lock("LY-GIAY-DEMO-12OZ-XANH");
@@ -770,8 +769,7 @@ class PickConsumptionServiceTest {
                 assertThat(row.from()).isEqualTo(BIN);
                 assertThat(row.to()).isEqualTo(staging);
                 assertThat(row.quantity()).isEqualTo(6);
-                assertThat(row.fromStockPackage()).isEqualTo(held.carton().id());
-                assertThat(row.toStockPackage()).isEqualTo(held.carton().id());
+                assertThat(row.stockPackage()).isEqualTo(held.carton().id());
             });
             verify(publisher, never()).publishEvent(any(Object.class));
         }
@@ -976,7 +974,7 @@ class PickConsumptionServiceTest {
                 assertThat(row.referenceId()).isEqualTo(line);
                 assertThat(row.from()).isEqualTo(staging);
                 assertThat(row.to()).isEqualTo(OTHER_BIN);
-                assertThat(row.toStockPackage()).isEqualTo(held.carton().id());
+                assertThat(row.stockPackage()).isEqualTo(held.carton().id());
             });
         }
 

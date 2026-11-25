@@ -51,10 +51,14 @@ $$;
 \echo '--- the check bites'
 SAVEPOINT breach;
 -- An adjustment line with no stock moved (as if a write-up were posted to the ledger only).
+-- It names a carton standing there, as every line does (V20261230000200); the carton itself is not touched.
 INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, to_location_code, quantity, to_status,
-                                      reference_type, reference_id, occurred_at, version, created_at)
-VALUES (md5('qa99:ledger-only')::uuid, 'ADJUSTMENT', 'LY-GIAY-DEMO-12OZ-DO', 'LOT-2026-03', 'HCM-B01-1-A', 5, 'AVAILABLE',
-        'STOCK_ADJUSTMENT', md5('qa99:no-adjustment')::uuid, NOW(), 0, NOW());
+                                      reference_type, reference_id, occurred_at, version, created_at, stock_package_id)
+SELECT md5('qa99:ledger-only')::uuid, 'ADJUSTMENT', 'LY-GIAY-DEMO-12OZ-DO', 'LOT-2026-03', 'HCM-B01-1-A', 5, 'AVAILABLE',
+       'STOCK_ADJUSTMENT', md5('qa99:no-adjustment')::uuid, NOW(), 0, NOW(), p.id
+  FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+ WHERE i.sku = 'LY-GIAY-DEMO-12OZ-DO' AND p.location_code = 'HCM-B01-1-A' AND p.status = 'IN_STOCK'
+ ORDER BY p.lpn LIMIT 1;
 SELECT pg_temp.expect_true('LB1 a ledger line with no stock behind it is seen, by warehouse and SKU',
     EXISTS (SELECT 1 FROM pg_temp.unbalanced() u
              WHERE u.warehouse = 'HCM' AND u.sku = 'LY-GIAY-DEMO-12OZ-DO' AND u.ledger_units = u.on_hand + 5));
@@ -79,7 +83,7 @@ SELECT pg_temp.expect_true('LB3 every warehouse and SKU: the ledger summed is th
     NOT EXISTS (SELECT 1 FROM pg_temp.unbalanced()));
 SELECT pg_temp.expect_true('LB4 the seeded opening stock has its opening line: one RECEIPT per carton of HCM (C45)',
     (SELECT count(*) FROM inventory.stock_movement m
-       JOIN inventory.stock_package p ON p.id = m.to_stock_package_id
+       JOIN inventory.stock_package p ON p.id = m.stock_package_id
       WHERE m.movement_type = 'RECEIPT' AND m.reference_type = 'STOCK_PACKAGE' AND m.reference_id = p.id
         AND p.created_by = 'V20261206000100') = 75);
 

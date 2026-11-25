@@ -97,31 +97,48 @@ INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, 
 VALUES (gen_random_uuid(), md5('qa:wh:HN')::uuid, md5('qa:loc:HN-RCV')::uuid, 'RCV01', 'RECEIVING', 'x', 1, 1, 5, 5, 0, FALSE, 'ACTIVE');
 
 \echo '--- stock movement ledger (docs 11 BR-06)'
--- Loose, so a return's decision: a person's move names its carton since V20261111000200 (QA 41).
+-- A ledger line names its carton (ck_stock_movement_names_carton, V20261230000200): one of the demo's blue-cup cartons
+-- standing at the place, so that each line below is judged by the rule its label names.
+CREATE FUNCTION pg_temp.blue_carton(place TEXT) RETURNS uuid LANGUAGE sql AS $$
+    SELECT p.id FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+     WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = place AND p.status = 'IN_STOCK'
+     ORDER BY p.lpn LIMIT 1
+$$;
+-- Not a move by hand (a MOVE_TASK refuses a carton held for an order, QA 41): the line names a return line.
 SELECT pg_temp.expect_ok('I1 a MOVE between two bins', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity,
-        reference_type, reference_id, actor_id, occurred_at)
+        reference_type, reference_id, actor_id, occurred_at, stock_package_id)
     VALUES (md5('qa:mv:1')::uuid, 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'HCM-A01-1-A', 2, 'RETURN_REQUEST_LINE', gen_random_uuid(),
+        md5('demo:user:editor')::uuid, NOW(), pg_temp.blue_carton('HCM-A01-2-B')) $q$);
+SELECT pg_temp.expect_fail_by('I1a a line that names no carton (ADR-0011: the ledger is cartons)', 'ck_stock_movement_names_carton', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity,
+        reference_type, reference_id, actor_id, occurred_at)
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'HCM-A01-1-A', 2, 'RETURN_REQUEST_LINE', gen_random_uuid(),
         md5('demo:user:editor')::uuid, NOW()) $q$);
-SELECT pg_temp.expect_fail('I2 a MOVE to the same location', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'HCM-A01-2-B', 1, 'MOVE_TASK', gen_random_uuid(), NOW()) $q$);
-SELECT pg_temp.expect_fail('I3 a RECEIPT that comes from a location', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'RECEIPT', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'HCM-RCV01', 1, 'GOODS_RECEIPT_LINE', gen_random_uuid(), NOW()) $q$);
-SELECT pg_temp.expect_fail('I4 an ADJUSTMENT with both sides', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'ADJUSTMENT', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'HCM-A01-1-A', 1, 'STOCK_ADJUSTMENT', gen_random_uuid(), NOW()) $q$);
-SELECT pg_temp.expect_fail('I5 a STATUS_CHANGE that changes nothing', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, from_status, to_status, reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'STATUS_CHANGE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-QC01', 'HCM-QC01', 1, 'QUARANTINE', 'QUARANTINE', 'QC_INSPECTION', gen_random_uuid(), NOW()) $q$);
+SELECT pg_temp.expect_fail_by('I2 a MOVE to the same location', 'ck_stock_movement_shape', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'HCM-A01-2-B', 1, 'MOVE_TASK', gen_random_uuid(), NOW(), pg_temp.blue_carton('HCM-A01-2-B')) $q$);
+SELECT pg_temp.expect_fail_by('I3 a RECEIPT that comes from a location', 'ck_stock_movement_shape', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'RECEIPT', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'HCM-RCV01', 1, 'GOODS_RECEIPT_LINE', gen_random_uuid(), NOW(), pg_temp.blue_carton('HCM-A01-2-B')) $q$);
+SELECT pg_temp.expect_fail_by('I4 an ADJUSTMENT with both sides', 'ck_stock_movement_shape', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'ADJUSTMENT', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'HCM-A01-1-A', 1, 'STOCK_ADJUSTMENT', gen_random_uuid(), NOW(), pg_temp.blue_carton('HCM-A01-2-B')) $q$);
+-- On the bin the carton stands at: the statuses are what the line does not change.
+SELECT pg_temp.expect_fail_by('I5 a STATUS_CHANGE that changes nothing', 'ck_stock_movement_shape', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, from_status, to_status, reference_type, reference_id, occurred_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'STATUS_CHANGE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'HCM-A01-2-B', 1, 'AVAILABLE', 'AVAILABLE', 'QC_INSPECTION', gen_random_uuid(), NOW(), pg_temp.blue_carton('HCM-A01-2-B')) $q$);
 SELECT pg_temp.expect_fail_by('I6 movement to a location that does not exist', 'fk_stock_movement_to', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'HCM-NOWHERE', 1, 'RETURN_REQUEST_LINE', gen_random_uuid(), NOW()) $q$);
--- Loose reference type on purpose: a RECEIPT or MOVE_TASK line is refused earlier by the carton checks, which would hide the key.
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'HCM-NOWHERE', 1, 'RETURN_REQUEST_LINE', gen_random_uuid(), NOW(), pg_temp.blue_carton('HCM-A01-2-B')) $q$);
+-- No carton is of an unknown SKU, and a carton of another SKU is refused before the key is asked (QA 15 K28a): the
+-- line names a carton that does not exist either, and the SKU's key is the one that answers first.
 SELECT pg_temp.expect_fail_by('I7 movement of an unknown sku', 'fk_stock_movement_item', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'MOVE', 'NOPE', 'HCM-A01-2-B', 'HCM-A01-1-A', 1, 'RETURN_REQUEST_LINE', gen_random_uuid(), NOW()) $q$);
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'MOVE', 'NOPE', 'HCM-A01-2-B', 'HCM-A01-1-A', 1, 'RETURN_REQUEST_LINE', gen_random_uuid(), NOW(), gen_random_uuid()) $q$);
+SELECT pg_temp.expect_fail_by('I7a movement naming a carton that does not exist', 'fk_stock_movement_package', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'HCM-A01-1-A', 1, 'RETURN_REQUEST_LINE', gen_random_uuid(), NOW(), gen_random_uuid()) $q$);
 SELECT pg_temp.expect_fail('I8 ledger row edited', $q$ UPDATE inventory.stock_movement SET quantity = 3 WHERE id = md5('qa:mv:1')::uuid $q$);
 SELECT pg_temp.expect_fail('I9 ledger row deleted', $q$ DELETE FROM inventory.stock_movement WHERE id = md5('qa:mv:1')::uuid $q$);
 
@@ -189,8 +206,8 @@ SELECT pg_temp.expect_ok('I20 approved by someone else, posted: the carton writt
     UPDATE inventory.stock_adjustment SET status = 'POSTED', posted_at = NOW() WHERE id = md5('qa:adj:1')::uuid;
     UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa03:pk1:row')::uuid;
     UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW() WHERE id = md5('qa03:pk1')::uuid;
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, reference_type, reference_id, actor_id, occurred_at)
-    VALUES (gen_random_uuid(), 'COUNT_CORRECTION', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 4, 'STOCK_ADJUSTMENT', md5('qa:adj:1')::uuid, md5('demo:user:approver')::uuid, NOW()) $q$);
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, reference_type, reference_id, actor_id, occurred_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'COUNT_CORRECTION', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 4, 'STOCK_ADJUSTMENT', md5('qa:adj:1')::uuid, md5('demo:user:approver')::uuid, NOW(), md5('qa03:pk1')::uuid) $q$);
 
 \echo '--- inter-warehouse transfer (removed, V20261108000300)'
 SELECT pg_temp.expect_fail('I21 transfer orders are gone: stock never changes warehouse', $q$

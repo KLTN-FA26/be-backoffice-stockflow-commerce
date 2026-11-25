@@ -242,7 +242,7 @@ class CountVarianceOfShortCartonIntegrationTest {
 
     private List<Map<String, Object>> ledgerOf(UUID adjustment) {
         return jdbc.queryForList("""
-                SELECT movement_type, quantity, from_stock_package_id, to_stock_package_id, from_location_code
+                SELECT movement_type, quantity, stock_package_id, from_location_code, to_location_code
                   FROM inventory.stock_movement WHERE reference_id = ? AND reference_type = 'STOCK_ADJUSTMENT'""",
                 adjustment);
     }
@@ -268,8 +268,9 @@ class CountVarianceOfShortCartonIntegrationTest {
                 .satisfies(row -> {
                     assertThat(row.get("movement_type")).isEqualTo("ADJUSTMENT");
                     assertThat(row.get("quantity")).isEqualTo(2);
-                    assertThat(row.get("from_stock_package_id")).isEqualTo(s.carton());
-                    assertThat(row.get("to_stock_package_id")).isNull();
+                    assertThat(row.get("stock_package_id")).isEqualTo(s.carton());
+                    assertThat(row.get("from_location_code")).as("out of the place it stood").isNotNull();
+                    assertThat(row.get("to_location_code")).as("into nowhere: the carton left").isNull();
                 });
         assertThat(jdbc.queryForObject("SELECT status FROM inventory.stock_adjustment WHERE id = ?", String.class,
                 s.variance().adjustmentId())).isEqualTo("POSTED");

@@ -174,11 +174,11 @@ class CartonAdjustmentIntegrationTest {
         assertThat(state(box)).containsEntry("status", "CONSUMED").containsEntry("closed", true)
                 .containsEntry("held", 0L);
         assertThat(jdbc.queryForList("""
-                select quantity, from_stock_package_id, from_location_code from inventory.stock_movement
+                select quantity, stock_package_id, from_location_code from inventory.stock_movement
                  where reference_type = 'STOCK_ADJUSTMENT' and reference_id = ?""", asked.adjustmentId()))
                 .singleElement().satisfies(row -> {
                     assertThat(row.get("quantity")).isEqualTo(CARTON);
-                    assertThat(row.get("from_stock_package_id")).isEqualTo(box.id());
+                    assertThat(row.get("stock_package_id")).isEqualTo(box.id());
                     assertThat(row.get("from_location_code")).isEqualTo(BIN);
                 });
     }

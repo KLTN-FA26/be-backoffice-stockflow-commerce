@@ -117,11 +117,10 @@ class StockPackageMoveIntegrationTest {
         assertThat(jdbc.queryForObject("select id from inventory.stock_item where stock_package_id = ?", UUID.class,
                 cartonId)).as("the row is the same one").isEqualTo(row);
         assertThat(jdbc.query("""
-                select from_stock_package_id, to_stock_package_id, quantity from inventory.stock_movement
+                select stock_package_id, quantity from inventory.stock_movement
                  where movement_type = 'MOVE' and sku = ?""",
-                (rs, n) -> rs.getObject("from_stock_package_id", UUID.class) + "|"
-                        + rs.getObject("to_stock_package_id", UUID.class) + "|" + rs.getInt("quantity"), sku))
-                .containsExactly(cartonId + "|" + cartonId + "|1000");
+                (rs, n) -> rs.getObject("stock_package_id", UUID.class) + "|" + rs.getInt("quantity"), sku))
+                .containsExactly(cartonId + "|1000");
     }
 
     @Test
@@ -167,9 +166,9 @@ class StockPackageMoveIntegrationTest {
         assertThat(cartonState()).isEqualTo(QUARANTINE + ":IN_STOCK");
         assertThat(rowState()).isEqualTo(QUARANTINE + ":QUARANTINE:1000");
         assertThat(jdbc.query("""
-                select from_status, to_status, from_stock_package_id = to_stock_package_id as same_carton
+                select from_status, to_status, stock_package_id is not null as names_carton
                   from inventory.stock_movement where movement_type = 'MOVE' and sku = ?""",
-                (rs, n) -> rs.getString("from_status") + ">" + rs.getString("to_status") + ":" + rs.getBoolean("same_carton"),
+                (rs, n) -> rs.getString("from_status") + ">" + rs.getString("to_status") + ":" + rs.getBoolean("names_carton"),
                 sku)).containsExactly("INBOUND>QUARANTINE:true");
     }
 
@@ -198,7 +197,7 @@ class StockPackageMoveIntegrationTest {
         assertThat(moved).extracting(StockPackageView::quantity).containsExactly(1000, 1000);
         assertThat(jdbc.queryForObject("""
                 select count(*) from inventory.stock_movement
-                 where movement_type = 'MOVE' and sku = ? and from_stock_package_id = to_stock_package_id""",
+                 where movement_type = 'MOVE' and sku = ? and stock_package_id is not null""",
                 Integer.class, sku)).isEqualTo(2);
     }
 }

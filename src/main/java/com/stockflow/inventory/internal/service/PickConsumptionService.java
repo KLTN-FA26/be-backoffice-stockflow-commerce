@@ -253,7 +253,7 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PUT_BACK,
                 row.sku(), row.lotNumber(), null, target, consumed.quantity().value(), row.status(),
                 StockMovement.ReferenceType.PICK_LINE, command.pickLineId(), null, command.actorId(), now)
-                .ofLot(row.lotId()).forOrder(consumed.orderId()).arriving(row.stockPackageId()));
+                .ofLot(row.lotId()).forOrder(consumed.orderId()).ofCarton(row.stockPackageId()));
         log.info("Pick line {} put back: carton {} ({} x {}) onto {} as {}", command.pickLineId(), cartonView.lpn(),
                 consumed.quantity(), row.sku(), target, row.status());
     }
@@ -323,7 +323,7 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE, row.sku(),
                 row.lotNumber(), from, target, row.onHand().value(), row.status(), row.status(),
                 StockMovement.ReferenceType.PICK_LINE, command.pickLineId(), null, command.actorId(), clock.instant())
-                .ofLot(row.lotId()).forOrder(hold.orderId()).leaving(carton.id()).arriving(carton.id()));
+                .ofLot(row.lotId()).forOrder(hold.orderId()).ofCarton(carton.id()));
         log.info("Pick line {} staged carton {} ({} x {}) from {} to {}", command.pickLineId(), carton.lpn(),
                 hold.quantity(), row.sku(), from, target);
         return new StagedPick(command.reservationId(), carton.lpn(), row.sku().code(), hold.quantity().value(),
@@ -465,7 +465,7 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE, row.sku(),
                 row.lotNumber(), staging, target, row.onHand().value(), row.status(), row.status(),
                 StockMovement.ReferenceType.PICK_LINE, command.pickLineId(), null, command.actorId(), clock.instant())
-                .ofLot(row.lotId()).forOrder(hold.orderId()).leaving(carton.id()).arriving(carton.id()));
+                .ofLot(row.lotId()).forOrder(hold.orderId()).ofCarton(carton.id()));
         log.info("Pick line {} put back staged carton {} ({} x {}) from {} onto {}", command.pickLineId(),
                 carton.lpn(), row.onHand(), row.sku(), staging, target);
     }
@@ -568,7 +568,7 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PICK, item.sku(),
                 item.lotNumber(), item.location(), null, hold.quantity().value(), status, referenceType,
                 referenceId, null, actorId, now).ofLot(item.lotId()).forOrder(hold.orderId())
-                .leaving(item.stockPackageId()));
+                .ofCarton(item.stockPackageId()));
     }
 
     /**

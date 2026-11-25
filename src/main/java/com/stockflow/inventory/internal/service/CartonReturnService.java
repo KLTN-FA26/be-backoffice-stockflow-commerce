@@ -192,7 +192,7 @@ public class CartonReturnService implements CartonReturns {
                     row.lotNumber(), null, to, row.onHand().value(), StockStatus.QUARANTINE, StockStatus.QUARANTINE,
                     StockMovement.ReferenceType.GOODS_RECEIPT, command.receiptId(), null, command.actorId(),
                     command.receivedAt())
-                    .ofLot(row.lotId()).forOrder(command.orderId()).arriving(seen.id()));
+                    .ofLot(row.lotId()).forOrder(command.orderId()).ofCarton(seen.id()));
             stocked.add(seen.id());
             received.add(new ReturnedCarton(seen.id().value(), lpn, skuByLpn.get(lpn), row.lotNumber(),
                     row.onHand().value(), "IN_STOCK", to.code(), null,
@@ -252,7 +252,7 @@ public class CartonReturnService implements CartonReturns {
                     row.lotNumber(), carton.location(), null, -change.delta(), StockStatus.QUARANTINE,
                     StockStatus.QUARANTINE, StockMovement.ReferenceType.RETURN_REQUEST, returnRequestId,
                     "Return did not refund these goods: the customer's, held for them (WF-05 Q-4)", actorId, at)
-                    .ofLot(row.lotId()).leaving(carton.id()));
+                    .ofLot(row.lotId()).ofCarton(carton.id()));
             log.info("Return {}: carton {} ({} x {}) not refunded - out of stock, held for the customer at {}",
                     returnRequestId, carton.lpn(), -change.delta(), row.sku(), carton.location());
         }

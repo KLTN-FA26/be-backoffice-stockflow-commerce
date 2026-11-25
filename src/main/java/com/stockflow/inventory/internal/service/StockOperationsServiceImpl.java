@@ -215,7 +215,7 @@ class StockOperationsServiceImpl implements StockOperations {
     /**
      * Cartons to {@code toCode} with their rows, {@code target} null for a plain move (the status travels) or the
      * status QC gives them. The rows are changed in place, never split off (a carton is not opened by a decision
-     * about it), so each keeps its id and holds; one MOVE ledger line per row names its carton on both sides.
+     * about it), so each keeps its id and holds; one MOVE ledger line per row names its carton.
      *
      * <p>One pass for the whole list: a document moves a line's cartons together, and a call per carton read,
      * locked and wrote the same things once per carton. Lock order, as for one carton: the SKUs (sorted), the
@@ -390,7 +390,7 @@ class StockOperationsServiceImpl implements StockOperations {
                         row.lotNumber(), from.get(row.stockPackageId()), to, row.onHand().value(), before,
                         row.status(), StockMovement.ReferenceType.valueOf(reference.name()), referenceId, reason,
                         actorId, now)
-                        .ofLot(row.lotId()).leaving(row.stockPackageId()).arriving(row.stockPackageId()));
+                        .ofLot(row.lotId()).ofCarton(row.stockPackageId()));
             }
         }
         log.info("Moved {} carton(s) to {} ({} row(s){})", cartons.size(), to, rows.size(),
@@ -534,7 +534,7 @@ class StockOperationsServiceImpl implements StockOperations {
                 ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.STATUS_CHANGE,
                         row.sku(), row.lotNumber(), from, to, row.onHand().value(), before, StockStatus.QUARANTINE,
                         StockMovement.ReferenceType.STOCK_PACKAGE, carton.id().value(), reason, actorId, now)
-                        .ofLot(row.lotId()).leaving(carton.id()).arriving(carton.id()));
+                        .ofLot(row.lotId()).ofCarton(carton.id()));
             }
         }
         if (reportedShort) {
@@ -630,7 +630,7 @@ class StockOperationsServiceImpl implements StockOperations {
      * <p>Every unit goes into one of the line's RECEIVING cartons (kltn-docs 03 BR-12; team plan 4C-2) - one INBOUND
      * row per carton holding its standard count, the carton IN_STOCK and sealed, which is exactly what the commit-time
      * check of V20261020000200 wants of it. Nothing goes loose: cartons holding less than the line received are
-     * refused ({@code RECEIPT_LINE_NOT_IN_CARTONS}), as {@code ck_stock_movement_receipt_in_carton} refuses a receipt
+     * refused ({@code RECEIPT_LINE_NOT_IN_CARTONS}), as {@code ck_stock_movement_names_carton} refuses a
      * ledger line naming no carton. The cartons are locked after the SKU, as every carton write locks them, and
      * checked before anything is written, so a refusal leaves no lot opened.</p>
      *
@@ -691,7 +691,7 @@ class StockOperationsServiceImpl implements StockOperations {
             stockItems.save(StockItem.receiveInboundInto(carton.id(), command.sku(), location, lot,
                     Quantity.of(counted), command.receivedAt(), lotId));
             stockPackages.save(carton);
-            StockMovement line = receiptLine(command, lot, location, counted, lotId, now).arriving(carton.id());
+            StockMovement line = receiptLine(command, lot, location, counted, lotId, now).ofCarton(carton.id());
             ledger.append(line);
             if (first == null) {
                 first = toMove(line);
@@ -1106,7 +1106,7 @@ class StockOperationsServiceImpl implements StockOperations {
                     adjustment.id(), reason, approverId, now).ofLot(row.lotId())
                     // The ledger names both pairs of eyes, and the counter of a count's variance (section 8).
                     .askedBy(adjustment.requestedBy(), adjustment.countedBy());
-            ledger.append(down ? line.leaving(adjustment.stockPackageId()) : line.arriving(adjustment.stockPackageId()));
+            ledger.append(line.ofCarton(adjustment.stockPackageId()));
             // The holds the write-off gave up, if any: announced after the row is saved.
             events.publishEventsOf(row);
         }
@@ -1260,11 +1260,8 @@ class StockOperationsServiceImpl implements StockOperations {
     private Map<StockPackageId, String> lpnsOf(List<StockMovement> lines) {
         Set<StockPackageId> ids = new HashSet<>();
         for (StockMovement m : lines) {
-            if (m.fromStockPackage() != null) {
-                ids.add(m.fromStockPackage());
-            }
-            if (m.toStockPackage() != null) {
-                ids.add(m.toStockPackage());
+            if (m.stockPackage() != null) {
+                ids.add(m.stockPackage());
             }
         }
         if (ids.isEmpty()) {
@@ -1323,8 +1320,7 @@ class StockOperationsServiceImpl implements StockOperations {
                 m.quantity(), m.status() == null ? null : m.status().name(),
                 m.toStatus() == null ? null : m.toStatus().name(), m.referenceType().name(), m.referenceId(),
                 m.reason(), m.actorId(), m.occurredAt(), m.requestedBy(), m.countedBy(),
-                m.fromStockPackage() == null ? null : lpns.get(m.fromStockPackage()),
-                m.toStockPackage() == null ? null : lpns.get(m.toStockPackage()));
+                m.stockPackage() == null ? null : lpns.get(m.stockPackage()));
     }
 
     static StockAdjustmentSummary toSummary(StockAdjustment a) {
