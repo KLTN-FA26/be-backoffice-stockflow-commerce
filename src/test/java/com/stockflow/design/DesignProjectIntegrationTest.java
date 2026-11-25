@@ -10,6 +10,7 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionCode;
 import com.stockflow.common.storage.UploadInspection;
 import com.stockflow.contracts.DesignBatchSubmittedForReview;
+import com.stockflow.contracts.DesignProjectQuoteRequestReady;
 import com.stockflow.contracts.DesignProjectQuoteRequested;
 import com.stockflow.contracts.DesignSubmittedForReview;
 import com.stockflow.design.internal.domain.PrintSurface;
@@ -996,11 +997,13 @@ class DesignProjectIntegrationTest {
                         .value("Nhận diện quán A"));
         mvc.perform(get("/api/v1/design-project-quote-requests").param("customerId", customerId.toString()))
                 .andExpect(jsonPath("$.data.items.length()").value(1));
-        // Answered, they close it; the project then asks anew.
+        // Settled otherwise, they close it with the reason (BR-25.3); the project then asks anew.
         as(tx.execute(s -> ReferenceRows.user(entityManager)), Set.of(PermissionCode.of("design-quote-requests",
                 Action.UPDATE), PermissionCode.of("design-quote-requests", Action.READ)));
-        mvc.perform(post("/api/v1/design-project-quote-requests/" + asked.get("id").asText() + "/closure"))
+        mvc.perform(post("/api/v1/design-project-quote-requests/" + asked.get("id").asText() + "/closure")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"Khách đặt qua điện thoại\"}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("CLOSED"))
+                .andExpect(jsonPath("$.data.closeReason").value("Khách đặt qua điện thoại"))
                 .andExpect(jsonPath("$.data.closedAt").exists());
         as(owner, Set.of());
         mvc.perform(post("/api/v1/design-projects/" + project + "/quote-requests")
@@ -1070,5 +1073,159 @@ class DesignProjectIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].decision").value("DERIVED_FROM_SNAPSHOT"))
                 .andExpect(jsonPath("$.data.items[1].decision").value("ADDED_TO_PROJECT"))
                 .andExpect(jsonPath("$.data.items[1].notes").value("Project " + other));
+    }
+
+    /** A batch of {@code designs} with {@code quoteRequest} asked over some of them (12 BR-25.1). */
+    private ResultActions batchAsking(String quoteRequest, String... designs) throws Exception {
+        StringBuilder body = new StringBuilder("{\"designs\":[");
+        for (int i = 0; i < designs.length; i++) {
+            body.append(i == 0 ? "" : ",").append("{\"id\":\"").append(designs[i]).append("\",\"version\":")
+                    .append(version(designs[i])).append('}');
+        }
+        return mvc.perform(post("/api/v1/design-projects/" + project + "/review-rounds")
+                .contentType(MediaType.APPLICATION_JSON).content(body.append("],\"quoteRequest\":").append(quoteRequest)
+                        .append('}').toString()));
+    }
+
+    private static String quoteOver(String date, Object... designAndCartons) {
+        StringBuilder lines = new StringBuilder();
+        for (int i = 0; i < designAndCartons.length; i += 2) {
+            lines.append(i == 0 ? "" : ",").append("{\"designId\":")
+                    .append(designAndCartons[i] == null ? "null" : "\"" + designAndCartons[i] + "\"")
+                    .append(",\"cartons\":").append(designAndCartons[i + 1]).append('}');
+        }
+        return "{\"lines\":[" + lines + "]" + (date == null ? "" : ",\"desiredDeliveryDate\":\"" + date + "\"") + "}";
+    }
+
+    private long projectRequests() {
+        return jdbc.queryForObject("SELECT count(*) FROM design.design_project_quote_request WHERE project_id = ?::uuid",
+                Long.class, project);
+    }
+
+    /** T15a (12 BR-25.1): four submitted with a quote, one failing its preflight: nothing submitted, nothing asked. */
+    @Test
+    void aBatchAskingAQuoteGoesWholeOrNotAtAll() throws Exception {
+        String a = draft(project, middle());
+        String b = draft(project, middle());
+        String c = draft(project, middle());
+        String broken = draft(project, surface.uTo() + 500);
+        String date = java.time.LocalDate.now(com.stockflow.common.domain.BusinessCalendar.ZONE).plusDays(20).toString();
+
+        batchAsking(quoteOver(date, a, 10, b, 20, c, 30, broken, 40), a, b, c, broken)
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("DESIGN_BATCH_PREFLIGHT_FAILED"))
+                .andExpect(jsonPath("$.details.designs.length()").value(1));
+        assertThat(List.of(statusOf(a), statusOf(b), statusOf(c), statusOf(broken))).containsOnly("DRAFT");
+        assertThat(projectRequests()).isZero();
+        assertThat(recorded.matching(DesignProjectQuoteRequested.class, e -> e.projectId().toString().equals(project)))
+                .isEmpty();
+    }
+
+    /**
+     * BR-25.1: what the batch asks is checked before anything else - every fault named under {@code quoteRequest.},
+     * nothing submitted - then asked with the submission, in one step; Sales read "approved x/y" meanwhile and are told
+     * once when the last design on it is approved (BR-25.2).
+     */
+    @Test
+    void aBatchAsksAQuoteOverItsDesignsAndSalesHearWhenTheLastIsApproved() throws Exception {
+        String cup = draft(project, middle());
+        String mug = draft(project, middle());
+        String bag = draft(project, middle());
+        String alone = draft(null, middle());
+        java.time.LocalDate today = java.time.LocalDate.now(com.stockflow.common.domain.BusinessCalendar.ZONE);
+
+        batchAsking(quoteOver(today.minusDays(1).toString(), alone, 1, cup, 0, cup, 2, null, 3), cup, mug, bag)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors[?(@.field == 'quoteRequest.lines[0].designId')]").isNotEmpty())
+                .andExpect(jsonPath("$.fieldErrors[?(@.field == 'quoteRequest.lines[1].cartons')]").isNotEmpty())
+                .andExpect(jsonPath("$.fieldErrors[?(@.field == 'quoteRequest.lines[2].designId')]").isNotEmpty())
+                .andExpect(jsonPath("$.fieldErrors[?(@.field == 'quoteRequest.lines[3].designId')]").isNotEmpty())
+                .andExpect(jsonPath("$.fieldErrors[?(@.field == 'quoteRequest.desiredDeliveryDate')]").isNotEmpty());
+        batchAsking(quoteOver(null, cup, 1_000_001), cup, mug).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors.length()").value(1))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("quoteRequest.lines[0].cartons"));
+        assertThat(List.of(statusOf(cup), statusOf(mug), statusOf(bag))).containsOnly("DRAFT");
+        assertThat(projectRequests()).isZero();
+
+        String date = today.plusDays(20).toString();
+        JsonNode submitted = data(batchAsking(quoteOver(date, cup, 10, mug, 4), cup, mug, bag)
+                .andExpect(status().isCreated()));
+        JsonNode asked = submitted.get("quoteRequest");
+        assertThat(asked.get("status").asText()).isEqualTo("OPEN");
+        assertThat(asked.get("lines")).hasSize(2);
+        assertThat(asked.get("lines").findValuesAsText("designStatus")).containsOnly("PENDING_REVIEW");
+        assertThat(asked.get("approvedCount").asInt()).isZero();
+        assertThat(asked.get("lineCount").asInt()).isEqualTo(2);
+        assertThat(asked.get("desiredDeliveryDate").asText()).isEqualTo(date);
+        assertThat(List.of(statusOf(cup), statusOf(mug), statusOf(bag))).containsOnly("PENDING_REVIEW");
+        assertThat(recorded.matching(DesignProjectQuoteRequested.class, e -> e.projectId().toString().equals(project)))
+                .singleElement().satisfies(e -> assertThat(e.lines()).hasSize(2));
+        String request = asked.get("id").asText();
+
+        as(manager, REVIEWER);
+        decide(cup, true, null).andExpect(status().isOk());
+        decide(bag, true, null).andExpect(status().isOk());
+        assertThat(recorded.matching(DesignProjectQuoteRequestReady.class,
+                e -> e.requestId().toString().equals(request))).as("the mug still waits").isEmpty();
+        as(owner, Set.of());
+        mvc.perform(get("/api/v1/design-projects/" + project + "/quote-requests"))
+                .andExpect(jsonPath("$.data[0].approvedCount").value(1))
+                .andExpect(jsonPath("$.data[0].lineCount").value(2));
+
+        as(manager, REVIEWER);
+        decide(mug, true, null).andExpect(status().isOk());
+        assertThat(recorded.matching(DesignProjectQuoteRequestReady.class,
+                e -> e.requestId().toString().equals(request))).singleElement()
+                .satisfies(e -> assertThat(e.lines()).isEqualTo(2));
+        as(owner, Set.of());
+        mvc.perform(get("/api/v1/design-projects/" + project + "/quote-requests"))
+                .andExpect(jsonPath("$.data[0].status").value("OPEN"))
+                .andExpect(jsonPath("$.data[0].approvedCount").value(2))
+                .andExpect(jsonPath("$.data[0].lineCount").value(2));
+    }
+
+    /**
+     * BR-25: a line returned for changes reads why; dropped by the customer, the rest is ready and Sales hear it; an
+     * empty ask closes the request (BR-25.4), which is then changed no more.
+     */
+    @Test
+    void aReturnedLineReadsWhyAndDroppingItMakesTheRequestReady() throws Exception {
+        String cup = draft(project, middle());
+        String mug = draft(project, middle());
+        String date = java.time.LocalDate.now(com.stockflow.common.domain.BusinessCalendar.ZONE).plusDays(20).toString();
+        String request = data(batchAsking(quoteOver(date, cup, 10, mug, 4), cup, mug)
+                .andExpect(status().isCreated())).get("quoteRequest").get("id").asText();
+
+        as(manager, REVIEWER);
+        decide(cup, true, null).andExpect(status().isOk());
+        decide(mug, false, "Logo lệch").andExpect(status().isOk());
+        assertThat(recorded.matching(DesignProjectQuoteRequestReady.class,
+                e -> e.requestId().toString().equals(request))).isEmpty();
+        as(owner, Set.of());
+        mvc.perform(get("/api/v1/design-projects/" + project + "/quote-requests"))
+                .andExpect(jsonPath("$.data[0].lines[?(@.designId == '" + mug + "')].designStatus").value("DRAFT"))
+                .andExpect(jsonPath("$.data[0].lines[?(@.designId == '" + mug + "')].returnReason").value("Logo lệch"));
+
+        mvc.perform(post("/api/v1/design-projects/" + project + "/quote-requests")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"lines\":[{\"designId\":\"" + cup
+                                + "\",\"cartons\":10}],\"desiredDeliveryDate\":\"" + date + "\",\"requestId\":\""
+                                + request + "\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.id").value(request))
+                .andExpect(jsonPath("$.data.lines.length()").value(1))
+                .andExpect(jsonPath("$.data.approvedCount").value(1));
+        assertThat(recorded.matching(DesignProjectQuoteRequestReady.class,
+                e -> e.requestId().toString().equals(request))).hasSize(1);
+
+        // An empty ask closes it (BR-25.4); a closed request is changed no more.
+        mvc.perform(post("/api/v1/design-projects/" + project + "/quote-requests")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"lines\":[],\"requestId\":\"" + request
+                                + "\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("CLOSED"));
+        mvc.perform(post("/api/v1/design-projects/" + project + "/quote-requests")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"lines\":[{\"designId\":\"" + cup
+                                + "\",\"cartons\":1}],\"requestId\":\"" + request + "\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DESIGN_QUOTE_REQUEST_CLOSED"));
     }
 }

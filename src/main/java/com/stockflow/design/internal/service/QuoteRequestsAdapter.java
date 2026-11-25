@@ -1,5 +1,7 @@
 package com.stockflow.design.internal.service;
 
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.design.api.QuoteRequests;
 import org.springframework.stereotype.Component;
 
@@ -33,10 +35,34 @@ class QuoteRequestsAdapter implements QuoteRequests {
         if (requestId == null) {
             return Optional.empty();
         }
-        return projectRequests.find(requestId).map(v -> new ProjectRequest(v.id(), v.projectId(), v.projectName(),
-                v.customerId(), v.desiredDeliveryDate(), v.requestedAt(), v.status().name(), v.lines().stream()
+        return projectRequests.find(requestId).map(QuoteRequestsAdapter::toProjectRequest);
+    }
+
+    @Override
+    public Optional<ProjectRequest> lockProjectRequest(UUID requestId) {
+        if (requestId == null) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(toProjectRequest(projectRequests.lockedView(requestId)));
+        } catch (BusinessException e) {
+            if (e.errorCode() == ErrorCode.NOT_FOUND) {
+                return Optional.empty();
+            }
+            throw e;
+        }
+    }
+
+    @Override
+    public Optional<UUID> openProjectRequestOf(UUID designId) {
+        return designId == null ? Optional.empty() : projectRequests.openRequestOf(designId);
+    }
+
+    private static ProjectRequest toProjectRequest(DesignProjectQuoteRequestService.ProjectQuoteRequestView v) {
+        return new ProjectRequest(v.id(), v.projectId(), v.projectName(), v.customerId(), v.desiredDeliveryDate(),
+                v.requestedAt(), v.status().name(), v.lines().stream()
                 .map(l -> new ProjectLine(l.designId(), l.designName(), l.designStatus().name(), l.customerSku(),
-                        l.cartons())).toList()));
+                        l.cartons(), l.returnReason())).toList(), v.closeReason());
     }
 
     @Override

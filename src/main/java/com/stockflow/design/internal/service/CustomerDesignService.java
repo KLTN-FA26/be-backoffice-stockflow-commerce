@@ -75,6 +75,7 @@ public class CustomerDesignService {
     private final PrintConfigs printConfigs;
     private final DraftViews views;
     private final DesignQuoteRequestService quoteRequests;
+    private final DesignProjectQuoteRequestService projectQuoteRequests;
     private final DesignProjectService projects;
     private final EntityManager entityManager;
     private final Clock clock;
@@ -87,7 +88,7 @@ public class CustomerDesignService {
                                  DesignDecisionJpaRepository decisions, DesignSnapshotJpaRepository snapshots,
                                  CustomerService customers, ProductService products, PrintConfigs printConfigs,
                                  DraftViews views, DesignQuoteRequestService quoteRequests,
-                                 DesignProjectService projects, EntityManager entityManager, Clock clock,
+                                 DesignProjectQuoteRequestService projectQuoteRequests, DesignProjectService projects, EntityManager entityManager, Clock clock,
                                  FileTransfers files, TemplateAvailability availability) {
         this.drafts = drafts;
         this.documents = documents;
@@ -99,6 +100,7 @@ public class CustomerDesignService {
         this.printConfigs = printConfigs;
         this.views = views;
         this.quoteRequests = quoteRequests;
+        this.projectQuoteRequests = projectQuoteRequests;
         this.projects = projects;
         this.entityManager = entityManager;
         this.clock = clock;
@@ -162,7 +164,8 @@ public class CustomerDesignService {
 
     /**
      * Deleted while it is a draft (BR-16): archived, never removed, so its history stays. A quote request still open on
-     * it - a design returned after its request - closes with it (B40).
+     * it - a design returned after its request - closes with it (B40); a project's open request drops its line, and
+     * closes when that was its last (12 BR-25.5).
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "design", resourceId = "#id")
     public DesignWorkflowService.DraftView archive(UUID id, UUID actor, long version) {
@@ -171,6 +174,7 @@ public class CustomerDesignService {
         draft.archive(now);
         drafts.saveAndFlush(draft);
         quoteRequests.closeOpen(id, now);
+        projectQuoteRequests.dropDeleted(id, now);
         decide(draft, actor, DesignDecisionType.ARCHIVED, "Deleted by the customer");
         return views.of(draft);
     }

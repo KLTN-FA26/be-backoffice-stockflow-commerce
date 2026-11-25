@@ -15,6 +15,7 @@ import com.stockflow.design.internal.domain.DesignStatus;
 import com.stockflow.design.internal.domain.DesignWorkflow;
 import com.stockflow.design.internal.domain.ProjectEventType;
 import com.stockflow.design.internal.domain.ProjectStatus;
+import com.stockflow.design.internal.domain.QuoteRequestStatus;
 import com.stockflow.design.internal.entity.DesignDecisionJpaEntity;
 import com.stockflow.design.internal.entity.DesignDraftJpaEntity;
 import com.stockflow.design.internal.entity.DesignProjectEventJpaEntity;
@@ -25,6 +26,7 @@ import com.stockflow.design.internal.repository.DesignProjectAssetJpaRepository;
 import com.stockflow.design.internal.repository.DesignProjectEventJpaRepository;
 import com.stockflow.design.internal.repository.DesignProjectJpaRepository;
 import com.stockflow.design.internal.repository.DesignProjectQuoteRequestLineJpaRepository;
+import com.stockflow.design.internal.repository.DesignProjectQuoteRequestJpaRepository;
 import jakarta.persistence.EntityManager;
 import java.time.Clock;
 import java.time.Instant;
@@ -65,6 +67,7 @@ public class DesignProjectService {
     private final DesignProjectEventJpaRepository history;
     private final DesignDecisionJpaRepository decisions;
     private final DesignProjectQuoteRequestLineJpaRepository quoteRequestLines;
+    private final DesignProjectQuoteRequestJpaRepository quoteRequests;
     private final CustomerService customers;
     private final DraftViews views;
     private final EntityManager entityManager;
@@ -73,7 +76,8 @@ public class DesignProjectService {
     public DesignProjectService(DesignProjectJpaRepository projects, DesignDraftJpaRepository drafts,
                                 DesignProjectAssetJpaRepository assets, DesignProjectEventJpaRepository history,
                                 DesignDecisionJpaRepository decisions,
-                                DesignProjectQuoteRequestLineJpaRepository quoteRequestLines, CustomerService customers,
+                                DesignProjectQuoteRequestLineJpaRepository quoteRequestLines,
+                                DesignProjectQuoteRequestJpaRepository quoteRequests, CustomerService customers,
                                 DraftViews views, EntityManager entityManager, Clock clock) {
         this.projects = projects;
         this.drafts = drafts;
@@ -81,6 +85,7 @@ public class DesignProjectService {
         this.history = history;
         this.decisions = decisions;
         this.quoteRequestLines = quoteRequestLines;
+        this.quoteRequests = quoteRequests;
         this.customers = customers;
         this.views = views;
         this.entityManager = entityManager;
@@ -144,6 +149,14 @@ public class DesignProjectService {
     /**
      * Closed for good (BR-22, B42), once none of its designs waits for review. The designs are locked first, so a
      * submission that committed before is seen; one submitted after is the design's own, used on its own.
+     *
+     * <p>An open quote request of the project (BR-25) stays open and goes on to its quote - so only once every design
+     * on it is approved: a line returned for changes could no longer be fixed or dropped in a closed project. Locked
+     * after the designs, as every writer of the request locks it (project, designs, request).</p>
+     *
+     * @throws BusinessException 409 {@code DESIGN_PROJECT_HAS_PENDING}; 409
+     *         {@code PROJECT_HAS_UNAPPROVED_QUOTE_REQUEST} with {@code details.requestId} and {@code details.designIds}
+     *         for an open request naming a design not approved
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "design-project", resourceId = "#id")
     public ProjectView archive(UUID id, UUID actor, long version) {
@@ -156,10 +169,29 @@ public class DesignProjectService {
             throw new BusinessException(ErrorCode.DESIGN_PROJECT_HAS_PENDING,
                     "A design of this project waits for review; close the project once it is decided");
         }
+        requireOpenRequestApproved(id);
         project.archive(clock.instant());
         projects.saveAndFlush(project);
         record(project, actor, ProjectEventType.PROJECT_ARCHIVED, project.getName());
         return view(project);
+    }
+
+    /** The project's open quote request, locked: every design on it approved, or the project does not close. */
+    private void requireOpenRequestApproved(UUID projectId) {
+        quoteRequests.findOpen(projectId).flatMap(found -> quoteRequests.lockById(found.getId())).ifPresent(request -> {
+            entityManager.refresh(request);
+            if (request.getStatus() != QuoteRequestStatus.OPEN) {
+                return;
+            }
+            List<String> waiting = quoteRequests.unapprovedDesigns(request.getId()).stream().map(UUID::toString)
+                    .toList();
+            if (!waiting.isEmpty()) {
+                throw new BusinessException(ErrorCode.PROJECT_HAS_UNAPPROVED_QUOTE_REQUEST, waiting.size()
+                        + " design(s) of the project's open quote request are not approved; drop them or close the "
+                        + "request first", List.of(), Map.of("requestId", request.getId().toString(),
+                        "designIds", waiting), "refusal.design.projectHasUnapprovedQuoteRequest", waiting.size());
+            }
+        });
     }
 
     /**

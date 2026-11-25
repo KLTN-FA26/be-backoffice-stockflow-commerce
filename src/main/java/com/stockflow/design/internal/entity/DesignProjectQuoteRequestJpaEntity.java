@@ -20,6 +20,10 @@ import java.util.UUID;
  * is open, asking again changes what it asks - the customer's latest wish is what the sales staff answer - and asking
  * the same again changes nothing. The sales staff close it once answered; then nothing changes and the project asks
  * anew. {@code ck_design_project_quote_request_closed} states the closing in the database too.</p>
+ *
+ * <p>Closed by nobody when the customer emptied it or its designs were all deleted (BR-25.4, BR-25.5); by a salesperson
+ * when a quote answered it, or when they closed it with a reason because it hung - a returned design never fixed
+ * (BR-25.3, {@code ck_design_project_quote_request_close_reason}).</p>
  */
 @Entity
 @Table(name = "design_project_quote_request", schema = "design")
@@ -38,6 +42,8 @@ public class DesignProjectQuoteRequestJpaEntity extends BaseEntity {
     private Instant closedAt;
     @Column(name = "closed_by")
     private UUID closedBy;
+    @Column(name = "close_reason", length = 1000)
+    private String closeReason;
 
     protected DesignProjectQuoteRequestJpaEntity() {
     }
@@ -62,12 +68,23 @@ public class DesignProjectQuoteRequestJpaEntity extends BaseEntity {
         desiredDeliveryDate = nextDesiredDeliveryDate;
     }
 
-    /** Closed by {@code by}, the salesperson who answered it. Closing a closed request changes nothing. */
+    /**
+     * Closed by {@code by}, the salesperson whose quote answered it, or by nobody (null): emptied by the customer, or
+     * every design of it deleted. Closing a closed request changes nothing.
+     */
     public void close(Instant at, UUID by) {
         if (status == QuoteRequestStatus.OPEN) {
             status = QuoteRequestStatus.CLOSED;
             closedAt = at;
             closedBy = by;
+        }
+    }
+
+    /** Closed without a quote by the salesperson {@code by}, who says why (BR-25.3). Closing a closed one changes nothing. */
+    public void closeByStaff(Instant at, UUID by, String reason) {
+        if (status == QuoteRequestStatus.OPEN) {
+            close(at, by);
+            closeReason = reason;
         }
     }
 
@@ -77,4 +94,5 @@ public class DesignProjectQuoteRequestJpaEntity extends BaseEntity {
     public QuoteRequestStatus getStatus() { return status; }
     public Instant getClosedAt() { return closedAt; }
     public UUID getClosedBy() { return closedBy; }
+    public String getCloseReason() { return closeReason; }
 }

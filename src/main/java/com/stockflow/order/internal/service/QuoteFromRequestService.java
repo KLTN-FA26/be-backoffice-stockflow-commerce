@@ -21,6 +21,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -125,13 +126,22 @@ public class QuoteFromRequestService implements QuotesFromRequests {
                 asked.desiredDeliveryDate());
     }
 
+    /**
+     * A project's request, read under its lock (taken after its project's, as the customer's changes take them): a
+     * line asked before its design was approved (12 BR-25) is drawn only once it is, and no line moves meanwhile.
+     */
     private Asked project(UUID requestId) {
-        QuoteRequests.ProjectRequest asked = requests.projectRequest(requestId)
+        QuoteRequests.ProjectRequest asked = requests.lockProjectRequest(requestId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-        if (asked.lines().stream().anyMatch(l -> !"APPROVED".equals(l.designStatus()) || l.customerSku() == null)) {
-            throw notApproved();
-        }
         requireOpen(asked.status());
+        List<String> waiting = asked.lines().stream()
+                .filter(l -> !"APPROVED".equals(l.designStatus()) || l.customerSku() == null)
+                .map(l -> l.designId().toString()).toList();
+        if (!waiting.isEmpty()) {
+            throw new BusinessException(ErrorCode.DESIGN_NOT_APPROVED, waiting.size() + " design(s) of the request "
+                    + "are not approved yet; the quote follows their approval", List.of(),
+                    Map.of("designIds", waiting), "refusal.quote.requestDesignNotApproved");
+        }
         return new Asked(asked.customerId(), asked.lines().stream()
                 .map(l -> new QuoteCards.DraftLine(l.customerSku(), l.cartons())).toList(), asked.desiredDeliveryDate());
     }

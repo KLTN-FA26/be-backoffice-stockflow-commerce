@@ -114,8 +114,22 @@ class DesignProjectController {
     record DesignAtVersion(@NotNull UUID id, @PositiveOrZero long version) {
     }
 
-    /** At most a project's designs (B42), so a request names nothing a project cannot hold. */
-    record BatchRequest(@NotNull @Size(min = 2, max = 20) List<@Valid @NotNull DesignAtVersion> designs) {
+    /**
+     * At most a project's designs (B42), so a request names nothing a project cannot hold; {@code quoteRequest}, a quote
+     * asked over some of them with the submission (12 BR-25.1).
+     */
+    record BatchRequest(@NotNull @Size(min = 2, max = 20) List<@Valid @NotNull DesignAtVersion> designs,
+                        @Valid BatchQuoteRequest quoteRequest) {
+    }
+
+    /**
+     * A quote asked with a batch. Its lines carry no constraint of their own: the service checks them against the
+     * batch and names every fault at once, as {@code quoteRequest.lines[i].designId} or {@code .cartons}.
+     */
+    record BatchQuoteRequest(@Size(max = 20) List<BatchQuoteLine> lines, LocalDate desiredDeliveryDate) {
+    }
+
+    record BatchQuoteLine(UUID designId, Integer cartons) {
     }
 
     record QuoteLine(@NotNull UUID designId, @Min(1) @Max(QuoteRequestRules.MAX_CARTONS) int cartons) {
@@ -160,8 +174,16 @@ class DesignProjectController {
     record PreflightFailureRequest(@NotNull @Size(min = 1, max = 20) List<@Valid @NotNull FailedDesign> items) {
     }
 
-    record ProjectQuoteRequest(@NotNull @Size(min = 1, max = 20) List<@Valid @NotNull QuoteLine> lines,
-                               LocalDate desiredDeliveryDate) {
+    /**
+     * What a project's request asks now (12 BR-25.4): an empty list closes the open request. {@code requestId}, the
+     * request being changed, as the customer read it: changed only while it is open.
+     */
+    record ProjectQuoteRequest(@NotNull @Size(max = 20) List<@Valid @NotNull QuoteLine> lines,
+                               LocalDate desiredDeliveryDate, UUID requestId) {
+    }
+
+    /** Why a salesperson closes a project request without a quote (12 BR-25.3). */
+    record CloseRequest(@NotBlank @Size(max = DesignProjectQuoteRequestService.MAX_CLOSE_REASON) String reason) {
     }
 
     @PostMapping("/design-projects")
@@ -339,7 +361,10 @@ class DesignProjectController {
 
     /**
      * Submits two or more drafts of the project together (kltn-docs 12 §4.10): all or none. 422
-     * {@code DESIGN_BATCH_PREFLIGHT_FAILED} with {@code details.designs} when any does not pass.
+     * {@code DESIGN_BATCH_PREFLIGHT_FAILED} with {@code details.designs} when any does not pass. With
+     * {@code quoteRequest}, asks a quote over some of them in the same step (BR-25.1); 400 {@code VALIDATION_FAILED}
+     * with {@code fieldErrors} on {@code quoteRequest.lines[i].designId}, {@code .cartons} or
+     * {@code quoteRequest.desiredDeliveryDate} before anything is submitted.
      */
     @PostMapping("/design-projects/{id}/review-rounds")
     @ResponseStatus(HttpStatus.CREATED)
@@ -347,35 +372,51 @@ class DesignProjectController {
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
     public ApiResponse<DesignBatchSubmittedResponse> submitBatch(@PathVariable UUID id,
             @Valid @RequestBody BatchRequest request, @AuthenticatedUser CurrentUser user) {
-        UUID round = batches.submit(id, actor(user), request.designs().stream()
-                .map(d -> new DesignBatchSubmissionService.DesignAtVersion(d.id(), d.version())).toList());
-        return ApiResponse.ok(new DesignBatchSubmittedResponse(round, toResponse(projects.get(id, actor(user)))));
+        BatchQuoteRequest asked = request.quoteRequest();
+        DesignBatchSubmissionService.Submitted submitted = batches.submit(id, actor(user), request.designs().stream()
+                .map(d -> new DesignBatchSubmissionService.DesignAtVersion(d.id(), d.version())).toList(),
+                asked == null ? null : new DesignBatchSubmissionService.QuoteAsk(asked.lines() == null ? List.of()
+                        : asked.lines().stream().map(l -> l == null ? null : new DesignProjectQuoteRequestService
+                        .LineInput(l.designId(), l.cartons() == null ? 0 : l.cartons())).toList(),
+                        asked.desiredDeliveryDate()));
+        DesignProjectQuoteRequestResponse quoteRequest = submitted.quoteRequestId() == null ? null
+                : quotes.find(submitted.quoteRequestId()).map(r -> quoteRequestResponses(List.of(r), user).get(0))
+                .orElse(null);
+        return ApiResponse.ok(new DesignBatchSubmittedResponse(submitted.roundId(),
+                toResponse(projects.get(id, actor(user))), quoteRequest));
     }
 
     /**
      * 201 with a new request; 200 when the project's open request answers - the same ask again changes nothing and
-     * tells nobody, a different one changes what it asks.
+     * tells nobody, a different one changes what it asks, an empty one closes it (12 BR-25.4). A line names a design
+     * waiting for review, returned for changes or approved; 409 {@code DESIGN_NOT_APPROVED} with
+     * {@code details.designIds} otherwise, {@code QUOTE_REQUEST_ALREADY_QUOTED} for a {@code requestId} a quote
+     * answered.
      */
     @PostMapping("/design-projects/{id}/quote-requests")
-    @Operation(summary = "Ask one quote over approved designs of the project; while one is open, asking again answers "
-            + "with it (the same ask) or changes it (another)")
+    @Operation(summary = "Ask one quote over designs of the project (waiting for review, returned or approved); while "
+            + "one is open, asking again answers with it (the same ask), changes it (another) or closes it (none)")
     @RequiresPermission(resource = DesignResources.QUOTE_REQUESTS, action = Action.CREATE)
     public ResponseEntity<ApiResponse<DesignProjectQuoteRequestResponse>> requestQuote(@PathVariable UUID id,
             @Valid @RequestBody ProjectQuoteRequest request, @AuthenticatedUser CurrentUser user) {
         DesignProjectQuoteRequestService.Asked asked = quotes.request(id, actor(user), request.lines().stream()
                 .map(l -> new DesignProjectQuoteRequestService.LineInput(l.designId(), l.cartons())).toList(),
-                request.desiredDeliveryDate());
+                request.desiredDeliveryDate(), request.requestId());
         return ResponseEntity.status(asked.created() ? HttpStatus.CREATED : HttpStatus.OK)
                 .body(ApiResponse.ok(quoteRequestResponses(List.of(asked.request()), user).get(0)));
     }
 
-    /** A salesperson closes a project request they have answered; the project asks again, for its next order, anew. */
+    /**
+     * A salesperson closes a project request without a quote, and says why (12 BR-25.3): one hung on a design returned
+     * and never fixed, or settled otherwise. A request answered by a quote closes when the quote is drawn.
+     */
     @PostMapping("/design-project-quote-requests/{requestId}/closure")
-    @Operation(summary = "Close a project quote request once answered")
+    @Operation(summary = "Close a project quote request without a quote, with the reason the customer reads")
     @RequiresPermission(resource = DesignResources.QUOTE_REQUESTS, action = Action.UPDATE)
     public ApiResponse<DesignProjectQuoteRequestResponse> closeQuoteRequest(@PathVariable UUID requestId,
-                                                                            @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(quoteRequestResponses(List.of(quotes.close(requestId, actor(user))), user).get(0));
+            @Valid @RequestBody CloseRequest request, @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(quoteRequestResponses(List.of(quotes.closeByStaff(requestId, actor(user),
+                request.reason())), user).get(0));
     }
 
     @GetMapping("/design-projects/{id}/quote-requests")
@@ -437,8 +478,9 @@ class DesignProjectController {
                 r.customerName(), r.desiredDeliveryDate(), r.requestedBy(), r.requestedAt(), r.status().name(),
                 r.closedAt(), r.closedBy(), r.lines().stream()
                 .map(l -> new DesignProjectQuoteRequestResponse.Line(l.designId(), l.designName(),
-                        l.designStatus().name(), l.customerSku(), l.cartons())).toList(), outcome.closedOutcome(),
-                outcome.quoteId(), outcome.quoteNumber());
+                        l.designStatus().name(), l.customerSku(), l.cartons(), l.returnReason())).toList(),
+                outcome.closedOutcome(), outcome.quoteId(), outcome.quoteNumber(), r.closeReason(),
+                r.approvedCount(), r.lines().size());
     }
 
     private static org.springframework.data.domain.Pageable pageOf(int page, Integer size) {

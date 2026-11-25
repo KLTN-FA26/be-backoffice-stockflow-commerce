@@ -112,6 +112,7 @@ public class DesignReviewService {
     private final ApplicationEventPublisher events;
     private final DraftViews views;
     private final DesignQuoteRequestService quoteRequests;
+    private final DesignProjectQuoteRequestService projectQuoteRequests;
     private final DesignReviewRounds reviewRounds;
     private final EntityManager entityManager;
     private final TransactionOperations tx;
@@ -125,7 +126,8 @@ public class DesignReviewService {
                                ProductService products, UomConversionService units, FileStorage storage,
                                FileTransfers files, PrintReadyStamp stamp, ProductionInstructionSheet instructions,
                                ApplicationEventPublisher events, DraftViews views,
-                               DesignQuoteRequestService quoteRequests, DesignReviewRounds reviewRounds,
+                               DesignQuoteRequestService quoteRequests,
+                               DesignProjectQuoteRequestService projectQuoteRequests, DesignReviewRounds reviewRounds,
                                EntityManager entityManager, TransactionOperations tx, Clock clock) {
         this.drafts = drafts;
         this.documents = documents;
@@ -145,6 +147,7 @@ public class DesignReviewService {
         this.events = events;
         this.views = views;
         this.quoteRequests = quoteRequests;
+        this.projectQuoteRequests = projectQuoteRequests;
         this.reviewRounds = reviewRounds;
         this.entityManager = entityManager;
         this.tx = tx;
@@ -321,6 +324,8 @@ public class DesignReviewService {
         decide(draft, actor, DesignDecisionType.APPROVED, "Snapshot " + snapshotId + ", SKU " + issued.sku()
                 + ", checksum " + snapshot.getChecksum() + (note == null ? "" : ". " + note));
         reviewRounds.decided(id, "APPROVED", actor, now);
+        // The last design of a project request to be approved tells Sales they can quote it (12 BR-25.2).
+        projectQuoteRequests.designApproved(id, now);
         events.publishEvent(new DesignReviewed(id, draft.getOwnerUserId(), "APPROVED", issued.sku(), now,
                 quoteRequests.openOf(id)));
         return views.of(draft);
