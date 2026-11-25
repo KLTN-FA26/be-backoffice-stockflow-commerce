@@ -121,7 +121,7 @@ SELECT pg_temp.expect_ok('K18 not found by a count (LOST, emptied), then found a
 SELECT pg_temp.expect_fail('K19 created already CONSUMED (skipping the lifecycle)', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status, closed_at)
     VALUES (gen_random_uuid(), 'QA-LPN-19', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, 10, 'HCM-A01-1-A', 'CONSUMED', NOW()) $q$);
-SELECT pg_temp.expect_fail('K20 a base unit row to make a carton in: there is none any more, nor the column that flagged one (V20261226000300, QA 46)', $q$
+SELECT pg_temp.expect_fail('K20 a base unit row to make a carton in: there is none any more, nor the column that flagged one (V20261229000100, QA 46)', $q$
     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base)
     SELECT gen_random_uuid(), id, 'QA15BASE', 1, TRUE
       FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH' $q$);

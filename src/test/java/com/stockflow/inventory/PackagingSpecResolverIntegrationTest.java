@@ -83,7 +83,7 @@ class PackagingSpecResolverIntegrationTest {
 
     @Test
     void theOneCartonIsTheItemsOnlyUnit() {
-        // No base unit row (V20261226000200), and no shipping mark to choose a unit by (V20261226000300).
+        // No base unit row (V20261226000200), and no shipping mark to choose a unit by (V20261229000100).
         units.add(sku, pack("BOX", 10, "5"));
         assertThat(active()).containsExactly("BOX");
         assertThat(units.conversions(sku, 0, 20).items()).extracting(UomConversion::unitOfMeasure)

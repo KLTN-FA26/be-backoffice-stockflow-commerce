@@ -23,7 +23,7 @@ public record UomConversionResponse(
 
     /**
      * Kept for the FE: true on the item's active carton, false on a retired unit. There is no default shipping mark any
-     * more (V20261226000300): an item has one active carton (01 BR-03) and ships in it.
+     * more (V20261229000100): an item has one active carton (01 BR-03) and ships in it.
      */
     @Deprecated
     @JsonProperty("defaultShipping")

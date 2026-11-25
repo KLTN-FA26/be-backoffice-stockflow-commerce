@@ -71,7 +71,7 @@ SELECT pg_temp.expect_fail('IM7 a carton of no weight (ck_uom_conversions_weight
     UPDATE inventory.uom_conversions SET weight_kg = 0
      WHERE active
        AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);
-SELECT pg_temp.expect_true('IM8 no base unit row is left to give a weight to: the base unit is the item''s own (V20261226000200, V20261226000300)',
+SELECT pg_temp.expect_true('IM8 no base unit row is left to give a weight to: the base unit is the item''s own (V20261226000200, V20261229000100)',
     NOT EXISTS (SELECT 1 FROM information_schema.columns
                  WHERE table_schema = 'inventory' AND table_name = 'uom_conversions' AND column_name = 'is_base'));
 ROLLBACK;
