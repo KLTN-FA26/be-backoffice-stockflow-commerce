@@ -115,6 +115,8 @@ class PutawayHttpTest {
                 .andExpect(jsonPath("$.data.status").value("PENDING"))
                 .andExpect(jsonPath("$.data.sourceLocationCode").value(RECEIVING))
                 .andExpect(jsonPath("$.data.warehouseId").value(WAREHOUSE_HCM.toString()))
+                .andExpect(jsonPath("$.data.warehouseCode").value("HCM"))
+                .andExpect(jsonPath("$.data.warehouseName").isNotEmpty())
                 .andExpect(jsonPath("$.data.lpn").isNotEmpty())
                 .andExpect(jsonPath("$.data.suggestions[0].reason").isNotEmpty())
                 .andExpect(jsonPath("$.data.suggestions.length()").value(Matchers.lessThanOrEqualTo(10)));
@@ -128,7 +130,8 @@ class PutawayHttpTest {
                 .andExpect(jsonPath("$.data.totalElements").value(2))
                 .andExpect(jsonPath("$.data.items[0].suggestions.length()").value(0))
                 .andExpect(jsonPath("$.data.items[*].warehouseId")
-                        .value(Matchers.everyItem(Matchers.is(WAREHOUSE_HCM.toString()))));
+                        .value(Matchers.everyItem(Matchers.is(WAREHOUSE_HCM.toString()))))
+                .andExpect(jsonPath("$.data.items[*].warehouseCode").value(Matchers.everyItem(Matchers.is("HCM"))));
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get(TASKS).param("receiptId", receiptId.toString())
                         .param("status", "DONE"))
                 .andExpect(status().isOk())

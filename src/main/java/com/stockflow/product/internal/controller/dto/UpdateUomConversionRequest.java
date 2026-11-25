@@ -1,6 +1,5 @@
 package com.stockflow.product.internal.controller.dto;
 
-import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
@@ -8,10 +7,7 @@ import jakarta.validation.constraints.Positive;
 
 import java.math.BigDecimal;
 
-/**
- * PUT replaces a packing unit; {@code active=false} retires it (BR-10), and it cannot then be the default shipping
- * unit.
- */
+/** PUT replaces a packing unit; {@code active=false} retires it (BR-10). */
 public record UpdateUomConversionRequest(
         @NotNull(message = "version is required") @Min(0)
         Long version,
@@ -23,19 +19,12 @@ public record UpdateUomConversionRequest(
         @NotNull(message = "factor is required") @Min(value = 1, message = "factor must be at least 1")
         Integer factor,
 
-        @Schema(description = "Ignored for the base unit, whose code, size and weight are the item's logistics")
         @Positive(message = "weightKg must be positive") BigDecimal weightKg,
         @Positive(message = "lengthCm must be positive") BigDecimal lengthCm,
         @Positive(message = "widthCm must be positive") BigDecimal widthCm,
         @Positive(message = "heightCm must be positive") BigDecimal heightCm,
 
         @NotNull(message = "active is required")
-        Boolean active,
-
-        @Schema(description = "The default shipping unit of the item (load planning); true unmarks the previous "
-                + "one in the same transaction, never 409. Not allowed on a retired unit. On the base unit it means "
-                + "\"ship in the item's own box\".")
-        @NotNull(message = "defaultShipping is required")
-        Boolean defaultShipping
+        Boolean active
 ) {
 }

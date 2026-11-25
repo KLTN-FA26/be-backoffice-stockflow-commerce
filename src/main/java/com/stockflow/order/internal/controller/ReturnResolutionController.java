@@ -41,9 +41,20 @@ import java.util.UUID;
 class ReturnResolutionController {
 
     private final ReturnRequestService returns;
+    private final com.stockflow.identity.api.IdentityService identities;
+    private final com.stockflow.customer.api.CustomerService customers;
 
-    ReturnResolutionController(ReturnRequestService returns) {
+    ReturnResolutionController(ReturnRequestService returns, com.stockflow.identity.api.IdentityService identities,
+                               com.stockflow.customer.api.CustomerService customers) {
         this.returns = returns;
+        this.identities = identities;
+        this.customers = customers;
+    }
+
+    /** The staff view with the names of its people and its customer, as GET /returns/{id} answers it. */
+    private ReturnRequestResponse staff(com.stockflow.order.internal.domain.ReturnRequest request) {
+        return ReturnWebMapper.toResponse(request, List.of(), key -> null, null,
+                ReturnWebMapper.namesOf(request, List.of(), identities, customers));
     }
 
     @PostMapping("/{returnId}/resolution")
@@ -57,8 +68,8 @@ class ReturnResolutionController {
     public ApiResponse<ReturnRequestResponse> propose(@PathVariable UUID returnId,
                                                       @Valid @RequestBody(required = false) ReturnRequests.Refund request,
                                                       @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(ReturnWebMapper.toResponse(returns.proposeRefund(returnId,
-                ReturnWebMapper.toCommand(request), user.userId()), List.of()));
+        return ApiResponse.ok(staff(returns.proposeRefund(returnId,
+                ReturnWebMapper.toCommand(request), user.userId())));
     }
 
     @PostMapping("/{returnId}/settlement-approval")
@@ -69,8 +80,8 @@ class ReturnResolutionController {
     public ApiResponse<ReturnRequestResponse> approve(@PathVariable UUID returnId,
                                                       @Valid @RequestBody(required = false) ReturnRequests.Version request,
                                                       @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(ReturnWebMapper.toResponse(returns.approveSettlement(returnId,
-                request == null ? null : request.version(), user.userId()), List.of()));
+        return ApiResponse.ok(staff(returns.approveSettlement(returnId,
+                request == null ? null : request.version(), user.userId())));
     }
 
     @PostMapping("/{returnId}/goods-complete")
@@ -83,9 +94,8 @@ class ReturnResolutionController {
     public ApiResponse<ReturnRequestResponse> goodsComplete(@PathVariable UUID returnId,
             @Valid @RequestBody(required = false) ReturnRequests.GoodsComplete request,
             @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(ReturnWebMapper.toResponse(returns.markGoodsComplete(returnId,
-                request == null ? null : request.note(), request == null ? null : request.version(), user.userId()),
-                List.of()));
+        return ApiResponse.ok(staff(returns.markGoodsComplete(returnId,
+                request == null ? null : request.note(), request == null ? null : request.version(), user.userId())));
     }
 
     @PostMapping("/{returnId}/closure-without-refund")
@@ -97,9 +107,8 @@ class ReturnResolutionController {
     public ApiResponse<ReturnRequestResponse> closeWithoutRefund(@PathVariable UUID returnId,
             @Valid @RequestBody(required = false) ReturnRequests.CloseWithoutRefund request,
             @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(ReturnWebMapper.toResponse(returns.closeWithoutRefund(returnId,
-                request == null ? null : request.note(), request == null ? null : request.version(), user.userId()),
-                List.of()));
+        return ApiResponse.ok(staff(returns.closeWithoutRefund(returnId,
+                request == null ? null : request.note(), request == null ? null : request.version(), user.userId())));
     }
 
     @PostMapping("/{returnId}/settlement-rejection")
@@ -108,7 +117,7 @@ class ReturnResolutionController {
     public ApiResponse<ReturnRequestResponse> reject(@PathVariable UUID returnId,
                                                      @Valid @RequestBody ReturnRequests.Reason request,
                                                      @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(ReturnWebMapper.toResponse(returns.rejectSettlement(returnId, request.reason(),
-                request.version(), user.userId()), List.of()));
+        return ApiResponse.ok(staff(returns.rejectSettlement(returnId, request.reason(),
+                request.version(), user.userId())));
     }
 }

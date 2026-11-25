@@ -905,13 +905,13 @@ class CartonCheckStationIntegrationTest {
     }
 
     @Test
-    @DisplayName("the carton spec of a SKU: its one carton unit; the default shipping one among several; none when several have "
-            + "no default or there is no carton unit; measured only with a size and a weight")
+    @DisplayName("the carton spec of a SKU: its one active carton unit, retired ones beside it ignored; none when there is no "
+            + "active carton unit; measured only with a size and a weight")
     void theCartonSpecOfASku() {
         // A SKU of the test's own: its carton unit put through every shape (a SKU needs a catalogue variant to exist at all).
         String sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 2).sku();
         UUID first = jdbc.queryForObject("SELECT u.id FROM inventory.uom_conversions u JOIN inventory.inventory_items i "
-                + "ON i.id = u.inventory_item_id WHERE i.sku = ? AND NOT u.is_base AND u.active", UUID.class, sku);
+                + "ON i.id = u.inventory_item_id WHERE i.sku = ? AND u.active", UUID.class, sku);
         UUID second = Identifiers.newId();
         assertThat(itemControls.cartonSpec(new Sku("CK-NO-SUCH-SKU"))).as("unknown SKU").isEmpty();
         write("UPDATE inventory.uom_conversions SET active = FALSE WHERE id = ?", first);
@@ -935,14 +935,13 @@ class CartonCheckStationIntegrationTest {
         assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().measured()).as("a size without a weight")
                 .isFalse();
 
-        write("UPDATE inventory.uom_conversions SET default_shipping = FALSE WHERE id = ?", first);
         write("INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active) "
-                + "SELECT ?, id, 'CARTON24', 24, TRUE FROM inventory.inventory_items WHERE sku = ?", second, sku);
-        assertThat(itemControls.cartonSpec(new Sku(sku))).as("two units, none the default for shipping").isEmpty();
-        write("UPDATE inventory.uom_conversions SET default_shipping = TRUE WHERE id = ?", second);
-        assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().unitOfMeasure()).isEqualTo("CARTON24");
-        write("UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE WHERE id = ?", second);
+                + "SELECT ?, id, 'CARTON24', 24, FALSE FROM inventory.inventory_items WHERE sku = ?", second, sku);
         assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().unitOfMeasure())
-                .as("an inactive unit is not a candidate").isEqualTo("CARTON");
+                .as("a retired unit beside it is not a candidate").isEqualTo("CARTON");
+        write("UPDATE inventory.uom_conversions SET active = FALSE WHERE id = ?", first);
+        write("UPDATE inventory.uom_conversions SET active = TRUE WHERE id = ?", second);
+        assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().unitOfMeasure())
+                .as("the carton is whichever unit is active").isEqualTo("CARTON24");
     }
 }

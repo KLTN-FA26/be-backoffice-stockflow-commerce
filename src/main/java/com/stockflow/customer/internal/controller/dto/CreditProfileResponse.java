@@ -11,5 +11,8 @@ import java.util.UUID;
 public record CreditProfileResponse(UUID customerId, boolean configured, BigDecimal creditLimit, Integer creditTermDays,
                                     String currency, UUID approvedBy, Instant approvedAt, String note,
                                     @Schema(description = "-1 when none were set; send it back as expectedVersion")
-                                    long version) {
+                                    long version,
+                                    @Schema(description = "The display name of approvedBy (full name, else "
+                                            + "username); null while none were set, or when the account is gone")
+                                    String approvedByName) {
 }

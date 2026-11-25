@@ -25,17 +25,8 @@ class UomConversionRulesTest {
     }
 
     @Test
-    void aRetiredUnitIsNotTheDefaultShippingUnit() {
-        refused(() -> UomConversionRules.validatePacking(shipping("CARTON", 10, true, false)), "defaultShipping");
-        assertThatCode(() -> UomConversionRules.validatePacking(shipping("CARTON", 10, true, true)))
-                .doesNotThrowAnyException();
-        assertThatCode(() -> UomConversionRules.validatePacking(shipping("CARTON", 10, false, false)))
-                .doesNotThrowAnyException();
-    }
-
-    private static UomConversionDraft shipping(String code, int factor, boolean defaultShipping,
-                                               boolean active) {
-        return new UomConversionDraft(code, factor, null, null, null, null, active, defaultShipping);
+    void aRetiredUnitIsValidToo() {
+        assertThatCode(() -> UomConversionRules.validatePacking(draft("CARTON", 10, false))).doesNotThrowAnyException();
     }
 
     private static UomConversionDraft draft(String code, int factor, boolean active) {

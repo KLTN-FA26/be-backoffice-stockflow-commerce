@@ -27,7 +27,7 @@ class PickJpaEntityTest {
     private static final String STAGING = "HCM-STG01";
 
     private static PickJpaEntity task(PickStatus status, PickDestination destination) {
-        return new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-1", UUID.randomUUID(), status,
+        return new PickJpaEntity(UUID.randomUUID(), UUID.randomUUID(), "SO-1", UUID.randomUUID(), status,
                 destination, destination == PickDestination.STAGING ? STAGING : null);
     }
 
@@ -40,7 +40,7 @@ class PickJpaEntityTest {
     @Test
     @DisplayName("a task built without a destination goes to DISPATCH, with no staging area, and confirms into nothing")
     void defaultsToDispatch() {
-        var task = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-1", UUID.randomUUID(),
+        var task = new PickJpaEntity(UUID.randomUUID(), UUID.randomUUID(), "SO-1", UUID.randomUUID(),
                 PickStatus.PENDING);
 
         assertThat(task.getDestination()).isEqualTo(PickDestination.DISPATCH);

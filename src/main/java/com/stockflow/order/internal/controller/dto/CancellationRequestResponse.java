@@ -8,7 +8,8 @@ import java.util.UUID;
 
 /**
  * One customer request to cancel an order (SCRUM-460). R5-6: on the queue ({@code GET /orders/cancellation-requests})
- * each row carries what Sales decide it on; null on the answer to a rejection.
+ * each row carries what Sales decide it on; null on the answer to a rejection. The names of who asked and who decided
+ * are on the queue and on the rejection's answer, from one name lookup per answer.
  */
 @Schema(name = "OrderCancellationRequest")
 public record CancellationRequestResponse(UUID requestId, UUID orderId, UUID requestedBy,
@@ -23,12 +24,17 @@ public record CancellationRequestResponse(UUID requestId, UUID orderId, UUID req
                                                   + "contract is signed") BigDecimal paidTotal,
                                           @Schema(example = "IN_PRODUCTION") String orderStatus,
                                           @Schema(description = "Printing was recorded started: cancelling now costs "
-                                                  + "a fee (17 §4.7)") Boolean printingStarted) {
+                                                  + "a fee (17 §4.7)") Boolean printingStarted,
+                                          @Schema(description = "Who asked (usually the customer's own portal "
+                                                  + "account): full name, else username; null when unknown")
+                                          String requestedByName,
+                                          @Schema(description = "Who in Sales decided it; null while PENDING and when "
+                                                  + "unknown") String decidedByName) {
 
     public CancellationRequestResponse(UUID requestId, UUID orderId, UUID requestedBy, String reasonCode, String note,
                                        Instant requestedAt, String status, UUID decidedBy, Instant decidedAt,
                                        String decisionNote, BigDecimal retainedPercent, long version) {
         this(requestId, orderId, requestedBy, reasonCode, note, requestedAt, status, decidedBy, decidedAt, decisionNote,
-                retainedPercent, version, null, null, null, null, null, null);
+                retainedPercent, version, null, null, null, null, null, null, null, null);
     }
 }

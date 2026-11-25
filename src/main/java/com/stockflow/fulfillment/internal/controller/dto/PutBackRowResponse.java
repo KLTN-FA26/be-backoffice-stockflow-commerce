@@ -17,8 +17,13 @@ import java.util.UUID;
  *                         goes into a QUARANTINE area of the warehouse, not onto a bin
  * @param overflowLocationCodes the warehouse's usable OVERFLOW areas when no bin of it takes the carton (07 BR-12);
  *                         empty while one does
+ * @param taskNumber       the task's human number {@code PK-yyyyMMdd-nnnn}, shown instead of its UUID
+ * @param warehouseCode    the code (prefix) of {@code warehouseId}, so the screen needs no warehouse list; null only
+ *                         if the warehouse is unknown
+ * @param warehouseName    the name of {@code warehouseId}; null only if the warehouse is unknown
  */
 public record PutBackRowResponse(UUID taskId, String orderNumber, UUID warehouseId, UUID lineId, String sku,
                                  String lotNumber, String lpn, int pickedQty, String fromLocationCode,
-                                 Instant pickedAt, boolean quarantine, List<String> overflowLocationCodes) {
+                                 Instant pickedAt, boolean quarantine, List<String> overflowLocationCodes,
+                                 String taskNumber, String warehouseCode, String warehouseName) {
 }

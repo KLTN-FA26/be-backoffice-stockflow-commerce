@@ -10,11 +10,13 @@ import java.util.UUID;
  * LP2-2 to LP2-4). For each SKU, the first level that has a full size (length, width, height) and weight wins:
  *
  * <ol>
- *   <li>the unit marked {@code default_shipping} on the item's units of measure;</li>
- *   <li>the largest active packing unit that has them (most base units per unit, then by code).</li>
+ *   <li>the item's one active unit, its carton;</li>
+ *   <li>should an item have several active units, the largest that has them (most base units per unit, then by
+ *       code).</li>
  * </ol>
  *
- * <p>A SKU has one active carton (01 BR-03), so in practice both levels name it. The item itself has no size or weight
+ * <p>A SKU has one active carton (01 BR-03, {@code uk_uom_conversions_one_carton}), so the second level is not reached
+ * from the database's data. The item itself has no size or weight
  * to fall back on (V20261215000100, 01 BR-03, C21): a level with missing data is skipped and reported as a warning,
  * and when no carton is measured the line is {@link PackagingSpec.Status#MISSING}, as 09 §4 step 129 lists it. The
  * caller decides what that means (the estimate service answers 422 {@code LOAD_ESTIMATE_PACKAGING_MISSING} with a link

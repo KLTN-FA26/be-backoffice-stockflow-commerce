@@ -49,6 +49,7 @@ import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * 4B-4 (kltn-docs 14 §4.3 steps 11-17, §5.2, BR-12, BR-13, BR-14, BR-18, BR-23; 18 BR-05) against the real database: a
@@ -63,6 +64,7 @@ class SalesContractIntegrationTest {
     private static final ZoneId VIETNAM = ZoneId.of("Asia/Ho_Chi_Minh");
 
     @Autowired SalesContracts contracts;
+    @Autowired com.stockflow.order.api.OrderService orderService;
     @Autowired OrderRepository orders;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
@@ -307,6 +309,49 @@ class SalesContractIntegrationTest {
         assertThat(second.contractNumber()).isEqualTo(first.contractNumber().replaceAll("-1$", "-2"));
         assertThat(asSales(() -> contracts.history(orderId))).extracting(SalesContracts.ContractView::status)
                 .containsExactly("DRAFT", "CANCELLED");
+    }
+
+    @Test
+    @DisplayName("LC-1: an order cancelled before its contract is signed announces the contract cancelled, so the "
+            + "contract card the customer holds in chat closes")
+    void anUnsignedContractCancelledWithItsOrderIsAnnounced() {
+        legalProfile();
+        UUID orderId = draftOrder();
+        SalesContracts.ContractView drawn = asSales(() -> contracts.create(sales, orderId, null));
+        SalesContracts.ContractView sent = asSales(() -> contracts.send(sales, orderId, drawn.version()));
+
+        asSales(() -> orderService.cancel(orderId, new com.stockflow.order.api.CancelOrderCommand(
+                com.stockflow.order.api.CancellationReasonCode.DUPLICATE_ORDER, "drawn up twice", null,
+                sales.userId())));
+
+        assertThat(jdbc.queryForObject("SELECT status::text FROM ordering.sales_contract WHERE id = ?", String.class,
+                sent.id())).isEqualTo("CANCELLED");
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM event_publication
+                WHERE event_type LIKE '%SalesContractStatusChanged' AND serialized_event LIKE ?
+                  AND serialized_event LIKE '%CANCELLED%'""", Long.class, "%" + sent.id() + "%"))
+                .as("one announcement of the cancelled contract").isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("Q-9: a customer blocked before the contract is sent is not sent it; one sent before is still signed")
+    void notSentToABlockedCustomer() throws Exception {
+        legalProfile();
+        UUID orderId = draftOrder();
+        SalesContracts.ContractView drawn = asSales(() -> contracts.create(sales, orderId, null));
+        UUID otherOrder = draftOrder();
+        SalesContracts.ContractView other = asSales(() -> contracts.create(sales, otherOrder, null));
+        SalesContracts.ContractView sentBefore = asSales(() -> contracts.send(sales, otherOrder, other.version()));
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE customer.customer SET status = 'BLOCKED' WHERE id = ?",
+                customerId));
+
+        Throwable refused = catchThrowable(() -> asSales(() -> contracts.send(sales, orderId, drawn.version())));
+        assertThat(code(refused)).isEqualTo(ErrorCode.CUSTOMER_NOT_ACTIVE);
+        assertThat(((BusinessException) refused).messageKey()).isEqualTo("refusal.contract.customerNotActive");
+        assertThat(asSales(() -> contracts.get(orderId)).status()).isEqualTo("DRAFT");
+        assertThat(sentBefore.status()).isEqualTo("SENT");
+        assertThat(asSales(() -> contracts.get(otherOrder)).status()).as("sent before the block: left to be signed")
+                .isEqualTo("SENT");
     }
 
     @Test

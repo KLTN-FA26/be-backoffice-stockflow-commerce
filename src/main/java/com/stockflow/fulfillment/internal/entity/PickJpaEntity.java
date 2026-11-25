@@ -27,9 +27,6 @@ import java.time.Instant;
 @Table(name = "pick", schema = "fulfillment")
 public class PickJpaEntity extends BaseEntity {
 
-    @Column(name = "wave_id")
-    private UUID waveId;
-
     @Column(name = "order_id", nullable = false)
     private UUID orderId;
 
@@ -43,6 +40,13 @@ public class PickJpaEntity extends BaseEntity {
      */
     @Column(name = "redelivery_case_id", updatable = false)
     private UUID redeliveryCaseId;
+
+    /**
+     * The task's human number {@code PK-yyyyMMdd-nnnn}, given once when it is opened ({@code PickNumbers}); the back
+     * office showed a slice of the UUID before. {@code uk_pick_task_number}, {@code tg_pick_task_number} (never changes).
+     */
+    @Column(name = "task_number", nullable = false, updatable = false, length = 32)
+    private String taskNumber;
 
     /** The order's number when the task was opened, so a pick list needs no call to the orders module (SCRUM-466). */
     @Column(name = "order_number", nullable = false, length = 32)
@@ -78,10 +82,9 @@ public class PickJpaEntity extends BaseEntity {
     protected PickJpaEntity() {
     }
 
-    public PickJpaEntity(UUID id, UUID waveId, UUID orderId, String orderNumber, UUID warehouseId,
+    public PickJpaEntity(UUID id, UUID orderId, String orderNumber, UUID warehouseId,
                          PickStatus status) {
         super(id);
-        this.waveId = waveId;
         this.orderId = orderId;
         this.orderNumber = java.util.Objects.requireNonNull(orderNumber, "orderNumber");
         this.warehouseId = java.util.Objects.requireNonNull(warehouseId, "warehouseId");
@@ -89,9 +92,9 @@ public class PickJpaEntity extends BaseEntity {
     }
 
     /** A new task with its destination: {@code stagingLocationCode} for a STAGING task, null for a DISPATCH one. */
-    public PickJpaEntity(UUID id, UUID waveId, UUID orderId, String orderNumber, UUID warehouseId,
+    public PickJpaEntity(UUID id, UUID orderId, String orderNumber, UUID warehouseId,
                          PickStatus status, PickDestination destination, String stagingLocationCode) {
-        this(id, waveId, orderId, orderNumber, warehouseId, status);
+        this(id, orderId, orderNumber, warehouseId, status);
         applyDestination(destination, stagingLocationCode);
     }
 
@@ -246,7 +249,6 @@ public class PickJpaEntity extends BaseEntity {
         }
     }
 
-    public UUID getWaveId() { return waveId; }
     public UUID getOrderId() { return orderId; }
 
     /** 4B-8 (07 BR-07): the released delivery batch this task picks; null for an order without a schedule. */
@@ -260,11 +262,18 @@ public class PickJpaEntity extends BaseEntity {
         return this;
     }
 
+    /** Set once, when the task is opened, before it is first saved. */
+    public PickJpaEntity numbered(String taskNumber) {
+        this.taskNumber = java.util.Objects.requireNonNull(taskNumber, "taskNumber");
+        return this;
+    }
+
     /** Set once, when the task is opened. */
     public PickJpaEntity forDeliveryBatch(UUID batchId) {
         this.deliveryBatchId = batchId;
         return this;
     }
+    public String getTaskNumber() { return taskNumber; }
     public String getOrderNumber() { return orderNumber; }
     public UUID getWarehouseId() { return warehouseId; }
     public PickStatus getStatus() { return status; }

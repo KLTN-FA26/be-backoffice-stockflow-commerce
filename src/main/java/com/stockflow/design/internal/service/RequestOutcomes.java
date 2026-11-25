@@ -18,7 +18,8 @@ import org.springframework.stereotype.Component;
  * {@code CLOSED_BY_STAFF}, a database rebuilt since holds none.
  *
  * <p>The customer is given the quote only once it was sent: before that it is Sales' working copy, which they cannot
- * open; the outcome still reads {@code QUOTED}.</p>
+ * open; the outcome still reads {@code QUOTED}. A draft cancelled before it was ever sent answered nothing: the request
+ * reads {@code CLOSED_BY_STAFF} (LC-3). A quote withdrawn after it was sent still answered it.</p>
  */
 @Component
 public class RequestOutcomes {
@@ -67,7 +68,10 @@ public class RequestOutcomes {
                 continue;
             }
             RequestQuotes.Answer answer = answers.get(request.requestId());
-            if (answer != null) {
+            if (answer != null && answer.withdrawn()) {
+                // LC-3: a draft cancelled before it was sent answered nothing; Sales closed the request.
+                outcomes.put(request.requestId(), new Outcome(CLOSED_BY_STAFF, null, null));
+            } else if (answer != null) {
                 boolean shown = !forCustomer || answer.sent();
                 outcomes.put(request.requestId(), new Outcome(QUOTED, shown ? answer.quoteId() : null,
                         shown ? answer.quoteNumber() : null));

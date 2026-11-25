@@ -26,5 +26,15 @@ public record UserResponse(
         String createdBy,
         @Schema(description = "The last administrator lock / unlock / disable / enable and its reason; absent when "
                 + "none was recorded") UserStatusChangeResponse latestStatusChange,
-        @Schema(description = "Send it back with an edit") long version) {
+        @Schema(description = "Send it back with an edit") long version,
+        @Schema(description = "The warehouses of warehouseIds, in the same order, with their code and name, so the "
+                + "screen need not read the warehouse list (which needs warehouse-warehouses:READ) to name them")
+        List<Warehouse> warehouses) {
+
+    @Schema(name = "UserWarehouse", description = "A warehouse the account works in")
+    public record Warehouse(UUID warehouseId,
+                            @Schema(description = "Its code (the location prefix); null if it no longer exists",
+                                    example = "HCM", nullable = true) String code,
+                            @Schema(nullable = true) String name) {
+    }
 }

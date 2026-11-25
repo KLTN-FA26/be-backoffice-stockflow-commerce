@@ -21,7 +21,7 @@ public interface StockBrowseSearch {
 
     record ReservationRow(UUID reservationId, UUID orderId, UUID stockItemId, String sku, String locationCode,
                           String lotNumber, int quantity, ReservationStatus status, Instant reservedAt,
-                          Instant expiresAt, ReleaseReason releaseReason, Instant closedAt) {
+                          Instant expiresAt, ReleaseReason releaseReason, Instant closedAt, String orderNumber) {
     }
 
     /** @param warehousePrefix the warehouse the held stock sits in, by prefix ({@code HCM}); null for all */

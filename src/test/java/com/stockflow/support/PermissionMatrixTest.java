@@ -82,6 +82,8 @@ class PermissionMatrixTest {
     private static final Map<String, String> OWN_DATA_ONLY = Map.ofEntries(
             Map.entry("GET /api/v1/customers/me", "the caller's own profile (resolved from the token, no id taken from the request)"),
             Map.entry("PUT /api/v1/customers/me", "edits the caller's own profile (resolved from the token)"),
+            Map.entry("GET /api/v1/customers/me/addresses", "the caller's own addresses (customer resolved from the "
+                    + "token, no id taken from the request)"),
             Map.entry("GET /api/v1/customers/me/legal-profile", "R5-10: the caller's own legal profile, read-only (the "
                     + "customer resolved from the token; no id is taken from the request)"),
             Map.entry("GET /api/v1/designs", "list filtered to designs the caller owns (owner predicate in the query)"),
@@ -357,6 +359,12 @@ class PermissionMatrixTest {
             // 3-6, kltn-docs 09 §4.3 step 5: the warehouse manager corrects an outcome the carrier reported wrongly.
             Map.entry("fulfillment-delivery-corrections:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // RTM-RTDCANCEL, kltn-docs 09 §5.1 "Cancelled": the warehouse manager cancels a shipment before dispatch.
+            // SCRUM-716 (V20261227000100; kltn-docs 12 BR-03, 01 §5.2): every Sales Staff member, the Sales Manager and
+            // the coordinator look a customer's own SKUs up; Sales block one; only the Sales Manager unblocks or retires.
+            Map.entry("product-variants:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("product-variants:UPDATE", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("product-variants:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-shipment-cancellations:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // 09B G13, kltn-docs 09 §2: Sales send the customer the POD / waybill file; never the customer (BR-05).
             Map.entry("fulfillment-delivery-documents:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
@@ -503,9 +511,10 @@ class PermissionMatrixTest {
             Map.entry("chat-supervision:UPDATE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("chat-canned-responses:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             // The warehouse manager reads the orders of their warehouses only (V20261115000200, 5-7 review M1).
-            Map.entry("sales-orders:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ACCOUNTANT,
+            // The Sales Manager reads orders and quotes, never writes them (V20261227000100, WF-02 QĐ14).
+            Map.entry("sales-orders:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.SALES_MANAGER, Role.ACCOUNTANT,
                     Role.PRODUCTION_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
-            Map.entry("sales-orders:VIEW_PAGE", Set.of(Role.CUSTOMER, Role.SALES_STAFF,
+            Map.entry("sales-orders:VIEW_PAGE", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.SALES_MANAGER,
                     Role.ACCOUNTANT, Role.PRODUCTION_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // WH-READ-COORD (V20261023000500): the release dialog needs a warehouse to pick.
             // SCRUM-474 5b (V20261029004000): the user-management screen picks warehouses too.
@@ -535,9 +544,11 @@ class PermissionMatrixTest {
                 Map.entry("PUT /api/v1/customers/{customerId}/addresses/{addressId}", address),
                 Map.entry("PUT /api/v1/customers/{customerId}", "{\"fullName\":\"Mallory\",\"version\":0}"),
                 Map.entry("PUT /api/v1/customers/me", "{\"fullName\":\"Attacker renamed\",\"version\":0}"),
-                // Customer designs (2F-3): well-formed writes, so only the owner check can refuse the victim's design.
+                // Customer designs (2F-3): well-formed writes, so only the owner check can refuse the victim's design;
+                // a design is started in the victim's project (BR-23.2), which only the project's owner check refuses.
                 Map.entry("POST /api/v1/designs/mine", "{\"productId\":\"" + DemoData.PRODUCT_CUP
-                        + "\",\"sku\":\"LY-GIAY-DEMO-12OZ\",\"templateCode\":\"BODY\",\"name\":\"stolen\"}"),
+                        + "\",\"sku\":\"LY-GIAY-DEMO-12OZ\",\"templateCode\":\"BODY\",\"name\":\"stolen\","
+                        + "\"projectId\":\"" + victimProject + "\"}"),
                 Map.entry("PUT /api/v1/designs/{id}/name", "{\"version\":0,\"name\":\"stolen\"}"),
                 Map.entry("POST /api/v1/designs/{id}/archive", "{\"version\":0}"),
                 Map.entry("POST /api/v1/designs/{id}/technical-review-requests", "{\"version\":0}"),
@@ -1172,6 +1183,35 @@ class PermissionMatrixTest {
                 .doesNotContain(PermissionCode.parse("warehouse-warehouses:VIEW_PAGE"),
                         PermissionCode.parse("warehouse-warehouses:CREATE"),
                         PermissionCode.parse("warehouse-warehouses:UPDATE"));
+    }
+
+    /**
+     * WF-02 QĐ14, QĐ15 (V20261227000100): the Sales Manager opens the quotes and orders a chat card links to, and the
+     * Accountant the customer whose credit limit they set - READ only, so drawing up a quote, changing an order and
+     * changing a customer stay refused.
+     */
+    @Test
+    void salesManagerReadsQuotesAndOrdersAndTheAccountantReadsCustomers() throws Exception {
+        SecuredMvc http = new SecuredMvc(mvc, decoder);
+        UUID manager = tx.execute(s -> ReferenceRows.user(entityManager));
+        UUID accountant = tx.execute(s -> ReferenceRows.user(entityManager));
+        // A customer of its own: the lists are read for the guard, not for the seed's quotes (the WF-05 seed has
+        // quotes below their first price break, which the staff list answers 409 for).
+        String ofOne = "?customerId=" + tx.execute(s -> ReferenceRows.customer(entityManager));
+        assertThat(http.asRole(Role.SALES_MANAGER, manager, MockMvcRequestBuilders.get("/api/v1/quotes" + ofOne))
+                .andReturn().getResponse().getStatus()).as("quotes as SALES_MANAGER").isEqualTo(200);
+        assertThat(http.asRole(Role.SALES_MANAGER, manager, MockMvcRequestBuilders.get("/api/v1/orders" + ofOne))
+                .andReturn().getResponse().getStatus()).as("orders as SALES_MANAGER").isEqualTo(200);
+        assertThat(http.asRole(Role.ACCOUNTANT, accountant, MockMvcRequestBuilders.get("/api/v1/customers/"
+                + victimCustomer)).andReturn().getResponse().getStatus()).as("a customer as ACCOUNTANT").isEqualTo(200);
+        assertThat(roles.resolve(List.of(Role.SALES_MANAGER.authority())).permissions())
+                .contains(PermissionCode.parse("sales-quotes:VIEW_PAGE"), PermissionCode.parse("sales-orders:VIEW_PAGE"))
+                .doesNotContain(PermissionCode.parse("sales-quotes:CREATE"), PermissionCode.parse("sales-quotes:UPDATE"),
+                        PermissionCode.parse("sales-orders:CREATE"), PermissionCode.parse("sales-orders:UPDATE"));
+        assertThat(roles.resolve(List.of(Role.ACCOUNTANT.authority())).permissions())
+                .contains(PermissionCode.parse("customer-customers:VIEW_PAGE"))
+                .doesNotContain(PermissionCode.parse("customer-customers:UPDATE"),
+                        PermissionCode.parse("customer-customers:CREATE"));
     }
 
     /**

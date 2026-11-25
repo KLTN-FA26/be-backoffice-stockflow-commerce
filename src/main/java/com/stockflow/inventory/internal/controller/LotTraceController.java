@@ -11,6 +11,7 @@ import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.inventory.internal.controller.dto.LotTraceResponse;
 import com.stockflow.inventory.internal.domain.LotTrace;
 import com.stockflow.inventory.internal.service.LotTraces;
+import com.stockflow.warehouse.api.WarehouseView;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -22,7 +23,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
 import java.util.Optional;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 /**
  * The lot traceability report (SCRUM-153, WBS 3.6.2.3): supplier and goods receipt, then every ledger line, then
@@ -37,9 +40,11 @@ import java.util.UUID;
 class LotTraceController {
 
     private final LotTraces traces;
+    private final ResponseLabels labels;
 
-    LotTraceController(LotTraces traces) {
+    LotTraceController(LotTraces traces, ResponseLabels labels) {
         this.traces = traces;
+        this.labels = labels;
     }
 
     @GetMapping
@@ -53,8 +58,11 @@ class LotTraceController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(traces.lots(new LotTraces.Query(sku, lotNumber, warehouseId, from, to, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size)).map(LotTraceController::toResponse));
+        PageResponse<LotTrace.Summary> lots = traces.lots(new LotTraces.Query(sku, lotNumber, warehouseId, from, to,
+                page, size == null ? Pages.DEFAULT_PAGE_SIZE : size));
+        Map<UUID, WarehouseView> warehouses = labels.warehouses(lots.items().stream()
+                .map(LotTrace.Summary::receivingWarehouseId));
+        return ApiResponse.ok(lots.map(lot -> toResponse(lot, warehouses)));
     }
 
     @GetMapping("/{lotId}")
@@ -64,7 +72,8 @@ class LotTraceController {
                                                @RequestParam(required = false) UUID warehouseId,
                                                @AuthenticatedUser Optional<CurrentUser> user) {
         LotTrace trace = traces.trace(lotId, warehouseId, BlindCount.visibilityFor(user));
-        return ApiResponse.ok(new LotTraceResponse(toResponse(trace.lot()),
+        return ApiResponse.ok(new LotTraceResponse(toResponse(trace.lot(),
+                        labels.warehouses(Stream.of(trace.lot().receivingWarehouseId()))),
                 trace.balances().stream().map(b -> new LotTraceResponse.Balance(b.locationCode(), b.status(),
                         b.onHand(), b.held(), b.hiddenDuringCount())).toList(),
                 trace.holds().stream().map(h -> new LotTraceResponse.Hold(h.reservationId(), h.orderId(),
@@ -86,17 +95,20 @@ class LotTraceController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @AuthenticatedUser Optional<CurrentUser> user) {
-        return ApiResponse.ok(traces.movements(lotId, warehouseId, from, to, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size, BlindCount.visibilityFor(user))
-                .map(m -> new LotTraceResponse.Movement(m.movementId(),
+        var lines = traces.movements(lotId, warehouseId, from, to, page,
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size, BlindCount.visibilityFor(user));
+        Map<UUID, String> names = labels.names(lines.items().stream().map(LotTrace.Movement::actorId));
+        return ApiResponse.ok(lines.map(m -> new LotTraceResponse.Movement(m.movementId(),
                 m.type(), m.fromLocation(), m.toLocation(), m.quantity(), m.fromStatus(), m.toStatus(),
                 m.referenceType(), m.referenceId(), m.orderId(), m.orderNumber(), m.actorId(), m.occurredAt(),
-                m.reason())));
+                m.reason(), ResponseLabels.name(names, m.actorId()))));
     }
 
-    private static LotTraceResponse.Lot toResponse(LotTrace.Summary l) {
+    private static LotTraceResponse.Lot toResponse(LotTrace.Summary l, Map<UUID, WarehouseView> warehouses) {
         return new LotTraceResponse.Lot(l.lotId(), l.sku(), l.lotNumber(), l.receivedAt(), l.origin(),
                 l.receivingWarehouseId(), l.receivedQuantity(), l.onHand(),
-                l.available(), l.held(), l.productionOrderId(), l.productionOrderCode());
+                l.available(), l.held(), l.productionOrderId(), l.productionOrderCode(),
+                ResponseLabels.code(warehouses, l.receivingWarehouseId()),
+                ResponseLabels.warehouseName(warehouses, l.receivingWarehouseId()));
     }
 }

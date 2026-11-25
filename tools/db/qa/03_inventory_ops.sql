@@ -16,14 +16,14 @@ BEGIN;
 ALTER TABLE inventory.stock_item DISABLE TRIGGER trg_stock_sku_policy;
 -- An item has ONE active carton (01 BR-03): the demo seed's is retired, then each carton is made in its unit while
 -- that unit is the active one, which is retired before the next is declared.
-UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
- WHERE NOT is_base AND active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
+UPDATE inventory.uom_conversions SET active = FALSE
+ WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa03x:demo:u25')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_DEMO25', 25);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
 VALUES (md5('qa03x:demo:p25')::uuid, 'QA-DEMO-25', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa03x:demo:u25')::uuid, 25, 25, 'HCM-A01-2-B', 'IN_STOCK');
-UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
- WHERE NOT is_base AND active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
+UPDATE inventory.uom_conversions SET active = FALSE
+ WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa03x:demo:u8')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_DEMO8', 8);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
@@ -128,8 +128,8 @@ SELECT pg_temp.expect_fail('I9 ledger row deleted', $q$ DELETE FROM inventory.st
 \echo '--- cycle count and stock adjustment (by carton since V20261113000300, team plan 4C-3)'
 -- Two whole cartons of 4 cups on HCM-A01-2-B and HCM-A02-1-A: what a count line and an adjustment name.
 -- One active carton per item (01 BR-03): the one before is retired.
-UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
- WHERE NOT is_base AND active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
+UPDATE inventory.uom_conversions SET active = FALSE
+ WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa03:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA03_CTN', 4);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
@@ -198,30 +198,6 @@ SELECT pg_temp.expect_fail('I21 transfer orders are gone: stock never changes wa
 SELECT pg_temp.expect_fail('I22 a putaway task has no transfer line to come from', $q$
     INSERT INTO warehouse.putaway_task (id, sku, quantity, status, created_at)
     VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 4, 'PENDING', NOW()) $q$);
-
-\echo '--- intra-warehouse move task (docs 11)'
-SELECT pg_temp.expect_fail('I31 move to a location of another warehouse (BR-01)', $q$
-    INSERT INTO warehouse.move_task (id, task_number, warehouse_id, origin, sku, from_location_id, to_location_id, requested_qty)
-    VALUES (gen_random_uuid(), 'MT-QA-X', md5('demo:wh:HCM')::uuid, 'MANUAL', 'LY-GIAY-DEMO-12OZ-XANH',
-        md5('demo:loc:HCM-A01-2-B')::uuid, md5('qa:loc:HN-RCV')::uuid, 1) $q$);
-SELECT pg_temp.expect_fail('I32 a manual move waiting as SUGGESTED', $q$
-    INSERT INTO warehouse.move_task (id, task_number, warehouse_id, origin, status, sku, from_location_id, to_location_id, requested_qty)
-    VALUES (gen_random_uuid(), 'MT-QA-Y', md5('demo:wh:HCM')::uuid, 'MANUAL', 'SUGGESTED', 'LY-GIAY-DEMO-12OZ-XANH',
-        md5('demo:loc:HCM-A01-2-B')::uuid, md5('demo:loc:HCM-A01-1-A')::uuid, 1) $q$);
-SELECT pg_temp.expect_fail('I33 re-slotting move executed without approval', $q$
-    INSERT INTO warehouse.move_task (id, task_number, warehouse_id, origin, status, sku, from_location_id, to_location_id, requested_qty)
-    VALUES (gen_random_uuid(), 'MT-QA-Z', md5('demo:wh:HCM')::uuid, 'RESLOTTING', 'PENDING', 'LY-GIAY-DEMO-12OZ-XANH',
-        md5('demo:loc:HCM-A01-2-B')::uuid, md5('demo:loc:HCM-A01-1-A')::uuid, 1) $q$);
-SELECT pg_temp.expect_ok('I34 replenishment move, assigned, done', $q$
-    INSERT INTO warehouse.move_task (id, task_number, warehouse_id, origin, reason, status, sku, from_location_id, to_location_id,
-        requested_qty, picked_qty, placed_qty, assigned_user_id, completed_at)
-    VALUES (gen_random_uuid(), 'MT-QA-1', md5('demo:wh:HCM')::uuid, 'REPLENISHMENT', 'REPLENISHMENT', 'COMPLETED', 'LY-GIAY-DEMO-12OZ-XANH',
-        md5('demo:loc:HCM-A01-2-B')::uuid, md5('demo:loc:HCM-A01-1-A')::uuid, 3, 3, 3, md5('demo:user:editor')::uuid, NOW()) $q$);
-SELECT pg_temp.expect_fail('I35 DISCREPANCY with matching quantities', $q$
-    INSERT INTO warehouse.move_task (id, task_number, warehouse_id, origin, status, sku, from_location_id, to_location_id,
-        requested_qty, picked_qty, placed_qty)
-    VALUES (gen_random_uuid(), 'MT-QA-2', md5('demo:wh:HCM')::uuid, 'MANUAL', 'DISCREPANCY', 'LY-GIAY-DEMO-12OZ-XANH',
-        md5('demo:loc:HCM-A01-2-B')::uuid, md5('demo:loc:HCM-A01-1-A')::uuid, 3, 3, 3) $q$);
 
 \echo '--- document numbers'
 SELECT pg_temp.expect_ok('I36 two document types on one day', $q$

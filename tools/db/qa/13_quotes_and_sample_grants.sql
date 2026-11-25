@@ -107,9 +107,9 @@ INSERT INTO product.variants (id, product_id, sku, name, status, is_default, att
 SELECT md5('qa9:c:own')::uuid, md5('qa9:c:product')::uuid, 'QA-QC-OWN', 'QA ly in logo', 'ACTIVE', FALSE,
        'OWNED-SKU:QA-QC-OWN', 1, 0, NOW(), c.id, md5('qa9:c:snap')::uuid, md5('qa9:c:blank')::uuid
   FROM customer.customer c ORDER BY c.id LIMIT 1;
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, active,
-                                       version, created_at, default_shipping)
-SELECT md5('qa9:c:carton')::uuid, i.id, 'CARTON', 50, FALSE, TRUE, 0, NOW(), TRUE
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active,
+                                       version, created_at)
+SELECT md5('qa9:c:carton')::uuid, i.id, 'CARTON', 50, TRUE, 0, NOW()
   FROM inventory.inventory_items i WHERE i.sku = 'QA-QC-OWN';
 INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, valid_until)
 SELECT md5('qa9:c:quote')::uuid, 'QT-QA-3', gen_random_uuid(), c.id, 'DRAFT', NOW() + interval '7 days'
@@ -158,7 +158,7 @@ SELECT pg_temp.expect_fail('QT26 a quote mixing a carton line and a line on a bl
     INSERT INTO ordering.quote_line (id, quote_id, line_no, blank_sku, design_snapshot_id, quantity)
     VALUES (gen_random_uuid(), md5('qa9:c:quote')::uuid, 9, 'LY-GIAY-DEMO-12OZ', md5('qa9:snap')::uuid, 500) $q$);
 SELECT pg_temp.expect_ok('QT27 the carton unit retired, then an order line copying it from the accepted quote line', $q$
-    UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
+    UPDATE inventory.uom_conversions SET active = FALSE
      WHERE id = md5('qa9:c:carton')::uuid;
     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, uom_conversion_id, cartons,
                                      units_per_carton)

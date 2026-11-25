@@ -3,13 +3,19 @@ package com.stockflow.fulfillment.internal.service;
 import com.stockflow.fulfillment.api.ShipmentCartons;
 import com.stockflow.fulfillment.api.ShippedCarton;
 import com.stockflow.fulfillment.api.ShippedCartons;
+import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
+import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShippedCartonQueries;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * {@link ShipmentCartons}: the cartons a shipment, or an order's deliveries, carried - for a return receipt to check
@@ -20,9 +26,11 @@ import java.util.UUID;
 public class ShipmentCartonsService implements ShipmentCartons {
 
     private final ShippedCartonQueries queries;
+    private final ShipmentJpaRepository shipments;
 
-    public ShipmentCartonsService(ShippedCartonQueries queries) {
+    public ShipmentCartonsService(ShippedCartonQueries queries, ShipmentJpaRepository shipments) {
         this.queries = queries;
+        this.shipments = shipments;
     }
 
     @Override
@@ -34,6 +42,14 @@ public class ShipmentCartonsService implements ShipmentCartons {
     @Override
     public List<ShippedCarton> deliveredToOrder(UUID orderId) {
         return cartons(queries.cartonsOn(orderId, queries.deliveredShipmentsOf(orderId)));
+    }
+
+    @Override
+    public Map<UUID, String> codesOf(Collection<UUID> shipmentIds) {
+        List<UUID> ids = shipmentIds == null ? List.of()
+                : shipmentIds.stream().filter(Objects::nonNull).distinct().toList();
+        return ids.isEmpty() ? Map.of() : shipments.findByIdIn(ids).stream()
+                .collect(Collectors.toMap(ShipmentJpaEntity::getId, ShipmentJpaEntity::getCode));
     }
 
     private static List<ShippedCarton> cartons(List<ShippedCartonQueries.Row> rows) {

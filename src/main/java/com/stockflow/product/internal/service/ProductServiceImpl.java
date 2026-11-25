@@ -393,7 +393,8 @@ class ProductServiceImpl implements ProductService {
                 rows.getContent().stream().map(ProductChangeLogRepository.Entry::actorId).toList());
         return Pages.toResponse(rows.map(row -> new ProductChange(row.type().name(), row.type().subject().name(),
                 row.subjectId(), row.fromStatus(), row.toStatus(), row.reason(), row.changedFields(), row.actorId(),
-                row.actorId() == null ? "system" : names.getOrDefault(row.actorId(), "unknown"), row.occurredAt())));
+                row.actorId() == null ? "system" : names.getOrDefault(row.actorId(), "unknown"), row.occurredAt(),
+                row.subjectSku(), row.subjectLabel())));
     }
 
     /**

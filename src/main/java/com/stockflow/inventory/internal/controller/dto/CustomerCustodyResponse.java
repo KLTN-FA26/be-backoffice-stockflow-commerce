@@ -25,6 +25,7 @@ public record CustomerCustodyResponse(
                 + "DESTROY_ON_BEHALF; null until they did - the warehouse then waits") String choice,
         @Schema(description = "When the warehouse manager handed it back or destroyed it") Instant endedAt,
         UUID endedBy,
-        @Schema(description = "The record of the hand-over or the destruction") String note
+        @Schema(description = "The record of the hand-over or the destruction") String note,
+        @Schema(description = "Display name of endedBy; null until it ended", nullable = true) String endedByName
 ) {
 }

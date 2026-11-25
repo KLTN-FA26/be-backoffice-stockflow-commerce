@@ -2,6 +2,7 @@ package com.stockflow.order.internal.service;
 
 import com.stockflow.design.spi.RequestQuotes;
 import com.stockflow.order.api.QuotesFromRequests.Scope;
+import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.repository.QuoteSearch;
 import java.util.Collection;
 import java.util.HashMap;
@@ -46,7 +47,8 @@ class RequestQuotesAdapter implements RequestQuotes {
                 .forEach(id -> askedBy.put(QuoteFromRequestService.quoteRequestId(scope, id), id));
         Map<UUID, Answer> answers = new HashMap<>();
         quotes.byRequestIds(askedBy.keySet()).forEach(found -> answers.put(askedBy.get(found.requestId()),
-                new Answer(found.quoteId(), found.quoteNumber(), found.sentAt() != null)));
+                new Answer(found.quoteId(), found.quoteNumber(), found.sentAt() != null,
+                        found.sentAt() == null && QuoteStatus.CANCELLED.name().equals(found.status()))));
         return answers;
     }
 }

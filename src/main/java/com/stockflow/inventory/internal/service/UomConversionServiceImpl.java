@@ -25,17 +25,14 @@ import java.util.stream.Collectors;
 
 /**
  * See {@link UomConversionService}. Writes take the SKU's advisory lock (the one logistics and policy
- * edits take), so two people marking different default shipping units are serialised and
- * the {@code uk_uom_conversions_default_shipping} index never surfaces as a 500. Marking a default shipping unit
- * unmarks the previous one in the same transaction rather than answering 409: the user's intent ("this is the
- * carton") is unambiguous.
+ * edits take), so two people declaring or re-activating a carton of the same SKU are serialised and asked about in turn
+ * (below) rather than racing to the unique index.
  *
  * <p>BR-10 ("hệ số quy đổi đã phát sinh giao dịch không được sửa"): stock packages and goods receipt lines
  * record the unit they were made or counted in, and none of
  * them copies the factor (V20261020000400), so a unit one of them uses keeps its factor and its code. The
  * database refuses such a change (V20261020000600); asking first turns that into
- * {@code UOM_CONVERSION_IN_USE} rather than a generic 409. Its size, weight and default shipping
- * mark stay editable, and retiring it is the way out BR-10 names: retire this one, then declare the new one.</p>
+ * {@code UOM_CONVERSION_IN_USE} rather than a generic 409. Its size and weight stay editable, and retiring it is the way out BR-10 names: retire this one, then declare the new one.</p>
  *
  * <p>01 BR-03: a SKU has one active packing unit, its carton ({@code uk_uom_conversions_one_carton},
  * V20261214000400). Declaring or re-activating a second is asked about first, under the SKU lock, so the index never
@@ -95,10 +92,8 @@ class UomConversionServiceImpl implements UomConversionService {
         UUID itemId = itemId(sku);
         if (conversions.unitTaken(itemId, draft.unitOfMeasure(), null)) throw duplicate(sku, draft);
         if (draft.active()) requireNoOtherActiveCarton(sku, itemId, null);
-        String actor = actor();
         UUID id = Identifiers.newId();
-        if (draft.defaultShipping()) conversions.clearDefaultShipping(itemId, id, actor);
-        conversions.insert(id, itemId, draft, actor);
+        conversions.insert(id, itemId, draft, actor());
         return conversion(sku, id);
     }
 
@@ -118,9 +113,7 @@ class UomConversionServiceImpl implements UomConversionService {
         if (resized(current, draft)) {
             stranding.requireUnitResizable(id, draft.lengthCm(), draft.widthCm(), draft.heightCm());
         }
-        String actor = actor();
-        if (draft.defaultShipping() && !current.defaultShipping()) conversions.clearDefaultShipping(itemId, id, actor);
-        if (!conversions.update(id, expectedVersion, draft, actor)) {
+        if (!conversions.update(id, expectedVersion, draft, actor())) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         }
         return conversion(sku, id);

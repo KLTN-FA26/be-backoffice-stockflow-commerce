@@ -32,17 +32,19 @@ class WarehouseOccupancyImpl implements WarehouseOccupancy {
 
     private final WarehouseOccupancyQuery query;
     private final InventoryPolicyRepository policies;
-    private final PutawayService putaway;
+    private final BinSuggestionInputs inputs;
 
-    WarehouseOccupancyImpl(WarehouseOccupancyQuery query, InventoryPolicyRepository policies, PutawayService putaway) {
+    WarehouseOccupancyImpl(WarehouseOccupancyQuery query, InventoryPolicyRepository policies,
+                           BinSuggestionInputs inputs) {
         this.query = query;
         this.policies = policies;
-        this.putaway = putaway;
+        this.inputs = inputs;
     }
 
     /**
-     * What stands, what trips hold - the space putaway itself counts as taken ({@link PutawayService#heldByTrips}, 05
-     * BR-16; a hold in an area is left out, an area has no volume) - and the open counts, by location.
+     * What stands, what trips hold - the space putaway and the move suggestions count as taken
+     * ({@link BinSuggestionInputs#heldByTrips}, 05 BR-16; a hold in an area is left out, an area has no volume) - and
+     * the open counts, by location.
      */
     @Override
     public Map<String, LocationLoad> loadsIn(java.util.UUID warehouseId, String warehousePrefix) {
@@ -56,7 +58,7 @@ class WarehouseOccupancyImpl implements WarehouseOccupancy {
             load.occupiedM3 = at.volumeM3();
             load.occupiedKg = at.weightKg();
         }
-        for (PutawayService.Reserved held : putaway.heldByTrips(warehouseId, null)) {
+        for (BinSuggestionInputs.Reserved held : inputs.heldByTrips(warehouseId, null)) {
             Builder load = loads.computeIfAbsent(held.locationCode(), Builder::new);
             load.heldM3 = load.heldM3.add(held.volumeM3() == null ? BigDecimal.ZERO : held.volumeM3());
             load.heldKg = load.heldKg.add(held.weightKg() == null ? BigDecimal.ZERO : held.weightKg());

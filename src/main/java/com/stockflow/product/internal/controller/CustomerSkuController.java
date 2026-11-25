@@ -17,8 +17,14 @@ import java.util.UUID;
 
 /**
  * A customer's own SKUs for the back office (kltn-docs 12 §4.6 step 18): what a Sales Staff member looks up to put a
- * customer's printed goods on a quote. Read with {@code product-variants:READ}, as every other variant is; the SKUs are
- * issued only by a design's approval, never by hand. Handlers are public so the permission proxy advises them.
+ * customer's printed goods on a quote, and the Production Coordinator to draw a production order up. Read with
+ * {@code product-variants:READ}, as every other variant is; the SKUs are issued only by a design's approval, never by
+ * hand. Handlers are public so the permission proxy advises them.
+ *
+ * <p>Deliberately not narrowed to "the Sales owning the customer" (SCRUM-716): 12 BR-03 lets every Sales Staff member,
+ * the Sales Manager and the coordinator look any customer's own SKUs up, and the system has no Sales owning a customer
+ * (kltn-docs 18). The customer never reaches this endpoint (no {@code product-variants:READ}); on the portal they see
+ * only their own SKUs (01 BR-20). Blocking, unblocking and retiring go through {@code ProductVariantController}.</p>
  */
 @RestController
 @RequestMapping("/api/v1/customer-skus")

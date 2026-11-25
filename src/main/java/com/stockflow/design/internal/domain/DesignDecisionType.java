@@ -25,6 +25,10 @@ public enum DesignDecisionType {
     QUOTE_REQUESTED,
     /** The design joined a design project; the notes name it. */
     ADDED_TO_PROJECT,
-    /** The design left its design project; the notes name it. */
+    /**
+     * The design moved out of its design project into another of its owner's (BR-23.4); the notes name the one it
+     * left, and an {@link #ADDED_TO_PROJECT} naming the other follows. Older rows may record a design taken out into
+     * no project, which is no longer offered.
+     */
     REMOVED_FROM_PROJECT
 }

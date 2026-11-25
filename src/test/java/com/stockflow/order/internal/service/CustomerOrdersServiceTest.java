@@ -31,6 +31,7 @@ import static com.stockflow.order.internal.service.OrderFixtures.NOW;
 import static com.stockflow.order.internal.service.OrderFixtures.codeOf;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -49,10 +50,12 @@ class CustomerOrdersServiceTest {
     private final com.stockflow.order.internal.domain.OrderRepository orderRepository =
             mock(com.stockflow.order.internal.domain.OrderRepository.class);
     private final ReturnAllowances allowances = mock(ReturnAllowances.class);
+    private final LineNames lineNames = mock(LineNames.class);
     private final com.stockflow.order.internal.repository.DeliveredAndReturnedUnits deliveredAndReturned =
             mock(com.stockflow.order.internal.repository.DeliveredAndReturnedUnits.class);
     private final CustomerOrdersService service = new CustomerOrdersService(search, orders, creditChecks, requests,
-            orderRepository, allowances, deliveredAndReturned, java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC));
+            orderRepository, allowances, deliveredAndReturned, java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC),
+            lineNames);
 
     private CustomerOrders.Query query(LocalDate from, LocalDate to) {
         return new CustomerOrders.Query(0, 20, List.of(OrderStatus.CONFIRMED), "SO-1", from, to, null);
@@ -181,6 +184,21 @@ class CustomerOrdersServiceTest {
             assertThat(detail.shipments()).isEmpty();
             verify(orderRepository, never()).findById(any());
             verify(allowances, never()).claimable(any(), any());
+        }
+
+        @Test
+        @DisplayName("each line says what its SKU is called, read once for the whole order")
+        void lineNames() {
+            Order order = order(OrderFixtures.released());
+            when(lineNames.of(anyCollection())).thenReturn(Map.of(
+                    "CUP-12OZ", new LineNames.Names("Paper cup", "Cup 12oz"),
+                    "LID-90", new LineNames.Names("Lid", null)));
+
+            CustomerOrders.Detail detail = service.myOrder(order.customerId(), order.id().value());
+
+            assertThat(detail.lines()).extracting(CustomerOrders.Line::productName).containsExactly("Paper cup", "Lid");
+            assertThat(detail.lines()).extracting(CustomerOrders.Line::variantName).containsExactly("Cup 12oz", null);
+            verify(lineNames).of(anyCollection());
         }
 
         @Test

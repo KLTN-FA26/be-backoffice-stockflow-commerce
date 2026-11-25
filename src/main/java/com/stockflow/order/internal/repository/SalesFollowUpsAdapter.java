@@ -59,6 +59,87 @@ class SalesFollowUpsAdapter implements SalesFollowUps {
                 (UUID) r[4], instant(r[5]))).toList();
     }
 
+    /** Who handles an order: the sender of its signed contract, or who recorded it signed. */
+    private static final String SALES_OF_ORDER = """
+            LEFT JOIN LATERAL (SELECT COALESCE(c.sent_by, c.signed_by) AS sales_user_id
+                                 FROM ordering.sales_contract c
+                                WHERE c.order_id = o.id AND c.status = 'SIGNED'
+                                ORDER BY c.signed_at DESC NULLS LAST
+                                LIMIT 1) s ON TRUE""";
+
+    @Override
+    public List<WaitingOrder> heldFor(String reason, int limit) {
+        return held(reason, "", null, limit);
+    }
+
+    @Override
+    public List<WaitingOrder> heldAfterVoidedReceipt(int limit) {
+        // The note is written by OrderServiceImpl.installmentsShort with the receipt's reference in place of %s.
+        return held("PAYMENT", " AND h.note LIKE :note", VOIDED_RECEIPT_HOLD_NOTE.replace("%s", "%"), limit);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<WaitingOrder> held(String reason, String holdFilter, String note, int limit) {
+        var query = entityManager.createNativeQuery("""
+                        SELECT o.id, o.order_number, s.sales_user_id,
+                               COALESCE(h.raised_at, o.contract_signed_at, o.placed_at) AS since
+                          FROM ordering.customer_order o
+                          LEFT JOIN LATERAL (SELECT h.raised_at, h.note FROM ordering.order_hold h
+                                              WHERE h.order_id = o.id AND h.reason = o.hold_reason
+                                                AND h.resolved_at IS NULL
+                                              ORDER BY h.raised_at DESC
+                                              LIMIT 1) h ON TRUE
+                        """ + SALES_OF_ORDER + """
+
+                         WHERE o.status = 'ON_HOLD' AND o.hold_reason = :reason""" + holdFilter + """
+
+                         ORDER BY since DESC, o.id
+                         LIMIT :limit""")
+                .setParameter("reason", reason)
+                .setParameter("limit", limit);
+        if (note != null) {
+            query.setParameter("note", note);
+        }
+        List<Object[]> rows = query.getResultList();
+        return rows.stream().map(SalesFollowUpsAdapter::waiting).toList();
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public List<WaitingOrder> confirmedWithoutWarehouse(int limit) {
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT o.id, o.order_number, s.sales_user_id, o.contract_signed_at
+                          FROM ordering.customer_order o
+                        """ + SALES_OF_ORDER + """
+
+                         WHERE o.status = 'CONFIRMED' AND o.contract_signed_at IS NOT NULL
+                           AND o.shipping_warehouse_id IS NULL
+                         ORDER BY o.contract_signed_at DESC, o.id
+                         LIMIT :limit""")
+                .setParameter("limit", limit)
+                .getResultList();
+        return rows.stream().map(SalesFollowUpsAdapter::waiting).toList();
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public List<UUID> awaitingOnSigning(int limit) {
+        return entityManager.createNativeQuery("""
+                        SELECT o.id
+                          FROM ordering.customer_order o
+                         WHERE o.status = 'PENDING_PAYMENT' AND o.contract_signed_at IS NOT NULL
+                           AND EXISTS (SELECT 1 FROM ordering.sales_contract c
+                                        WHERE c.order_id = o.id AND c.status = 'SIGNED')
+                         ORDER BY o.contract_signed_at, o.id
+                         LIMIT :limit""")
+                .setParameter("limit", limit)
+                .getResultList();
+    }
+
+    private static WaitingOrder waiting(Object[] r) {
+        return new WaitingOrder((UUID) r[0], (String) r[1], (UUID) r[2], instant(r[3]));
+    }
+
     private static Instant instant(Object value) {
         return switch (value) {
             case Instant instant -> instant;

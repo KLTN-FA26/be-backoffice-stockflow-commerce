@@ -19,6 +19,9 @@ public record ReservationRowResponse(
         @Schema(description = "Null once the order no longer waits for payment (the hold is pinned)") Instant expiresAt,
         @Schema(description = "Why it was released: ORDER_CANCELLED, PAYMENT_FAILED, RESERVATION_EXPIRED, MANUAL_OVERRIDE")
         String releaseReason,
-        Instant closedAt
+        Instant closedAt,
+        @Schema(description = "The order's number, snapshotted when the hold was written; null only for a hold "
+                + "written before its order row existed", example = "SO-20261125-0001", nullable = true)
+        String orderNumber
 ) {
 }

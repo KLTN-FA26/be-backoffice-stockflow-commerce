@@ -1,9 +1,13 @@
 package com.stockflow.inventory.internal.controller;
 
+import com.stockflow.inventory.internal.controller.dto.MoveSuggestionResponse;
+import com.stockflow.inventory.internal.controller.dto.PutawaySuggestionResponse;
 import com.stockflow.inventory.internal.controller.dto.StockPackageDetailResponse;
 import com.stockflow.inventory.internal.controller.dto.StockPackageLocationLineResponse;
 import com.stockflow.inventory.internal.controller.dto.StockPackageResponse;
+import com.stockflow.inventory.internal.domain.PutawayRanker;
 import com.stockflow.inventory.internal.domain.StockPackageBalance;
+import com.stockflow.inventory.internal.service.MoveSuggestionService;
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
 import org.mapstruct.ReportingPolicy;
@@ -22,4 +26,9 @@ interface StockPackageWebMapper {
 
     @Mapping(target = "openedOnReturn", expression = "java(carton.openedOnReturn())")
     StockPackageResponse toResponse(StockPackageBalance carton);
+
+    /** The bins a group of cartons may be moved into (issue #412), each in putaway's own shape. */
+    MoveSuggestionResponse toResponse(MoveSuggestionService.MoveSuggestions suggestions);
+
+    PutawaySuggestionResponse toResponse(PutawayRanker.Suggestion suggestion);
 }

@@ -35,6 +35,12 @@ public interface PickJpaRepository extends BaseJpaRepository<PickJpaEntity> {
     java.util.Optional<java.util.UUID> redeliveryCaseOfPack(@org.springframework.data.repository.query.Param("packId")
                                                             java.util.UUID packId);
 
+    /** The warehouse of the task pack {@code packId} belongs to: where its cartons were picked and checked. */
+    @org.springframework.data.jpa.repository.Query("select p.warehouseId from PickJpaEntity p, PackJpaEntity k "
+            + "where k.pickId = p.id and k.id = :packId")
+    java.util.Optional<java.util.UUID> warehouseOfPack(@org.springframework.data.repository.query.Param("packId")
+                                                       java.util.UUID packId);
+
     /** G4-2a: the order numbers of a page of shipments, in one read. */
     java.util.List<PickJpaEntity> findByOrderIdIn(java.util.Collection<java.util.UUID> orderIds);
 }

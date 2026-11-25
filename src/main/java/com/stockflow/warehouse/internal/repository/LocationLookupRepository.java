@@ -35,6 +35,9 @@ public interface LocationLookupRepository {
     /** The warehouse itself, for other modules naming it on a document (a production order's receiving warehouse). */
     Optional<WarehouseHeader> findWarehouseHeader(UUID warehouseId);
 
+    /** The warehouses with these ids, in one query; an unknown id is absent. */
+    java.util.List<WarehouseHeader> findWarehouseHeaders(java.util.Collection<UUID> warehouseIds);
+
     /** Every ACTIVE warehouse, by code (4B-7: those an order may ship from). */
     java.util.List<WarehouseHeader> findActiveWarehouseHeaders();
 

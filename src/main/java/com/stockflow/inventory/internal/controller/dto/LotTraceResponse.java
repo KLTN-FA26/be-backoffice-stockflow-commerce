@@ -35,7 +35,11 @@ public record LotTraceResponse(Lot lot, List<Balance> balances, List<Hold> holds
                       UUID productionOrderId,
                       @Schema(description = "Its code as it read when the first goods arrived: also the lot number",
                               nullable = true)
-                      String productionOrderCode) { }
+                      String productionOrderCode,
+                      @Schema(description = "Code (location prefix) of receivingWarehouseId; null when unknown",
+                              example = "HCM", nullable = true)
+                      String receivingWarehouseCode,
+                      @Schema(nullable = true) String receivingWarehouseName) { }
 
     @Schema(name = "LotBalance")
     public record Balance(String locationCode, String status,
@@ -57,5 +61,8 @@ public record LotTraceResponse(Lot lot, List<Balance> balances, List<Hold> holds
     @Schema(name = "LotMovement", description = "One stock ledger line of the lot")
     public record Movement(UUID movementId, String type, String fromLocation, String toLocation, int quantity,
                            String fromStatus, String toStatus, String referenceType, UUID referenceId, UUID orderId,
-                           String orderNumber, UUID actorId, Instant occurredAt, String reason) { }
+                           String orderNumber, UUID actorId, Instant occurredAt, String reason,
+                           @Schema(description = "Display name of actorId; null for a system line or an unknown user",
+                                   nullable = true)
+                           String actorName) { }
 }

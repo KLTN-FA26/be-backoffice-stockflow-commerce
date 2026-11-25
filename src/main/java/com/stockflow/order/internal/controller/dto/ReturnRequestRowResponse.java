@@ -37,5 +37,13 @@ public record ReturnRequestRowResponse(UUID id, String rmaNumber, UUID orderId, 
                                                + "return is RESOLVED, and never the internal note; null when nothing "
                                                + "was withheld for a reason",
                                                example = "CUSTOMER_DAMAGE")
-                                       String refusalReason) {
+                                       String refusalReason,
+                                       @Schema(description = "The customer's registered name, from one lookup for the "
+                                               + "page, so the back-office list needs no customer call per row; null "
+                                               + "on the customer's own list (it is theirs) and when the customer "
+                                               + "record is gone")
+                                       String customerName,
+                                       @Schema(description = "The code the customer is known by; set where "
+                                               + "customerName is", example = "0312345678")
+                                       String customerCode) {
 }

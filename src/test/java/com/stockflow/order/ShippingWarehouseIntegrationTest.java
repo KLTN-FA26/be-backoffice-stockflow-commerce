@@ -21,7 +21,6 @@ import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderLine;
-import com.stockflow.order.internal.domain.OrderNumber;
 import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.service.OrderReleases;
 import com.stockflow.order.internal.service.SalesContracts;
@@ -222,13 +221,17 @@ class ShippingWarehouseIntegrationTest {
         });
     }
 
-    /** A DRAFT order of 20 cartons of 50 at 2,000 a piece with 10% VAT - as a converted quote leaves it. */
+    /**
+     * A DRAFT order of 20 cartons of 50 at 2,000 a piece with 10% VAT - as a converted quote leaves it. Its number comes
+     * from the order sequence, as a real order's does: a random one, from a range other classes draw from too, collided
+     * with another order of the same day (order numbers are unique) once the whole suite shared one database.
+     */
     private UUID draftOrder() {
         return tx.execute(s -> {
             OrderLine line = Order.line(Identifiers.newId(), new Sku(sku.sku()), CARTONS * PER_CARTON,
                     Money.vnd(2_000), null).withCartons(sku.uomConversionId(), CARTONS, PER_CARTON)
                     .withTax(BigDecimal.TEN);
-            Order order = Order.draft(OrderNumber.of(today, 700_000 + ThreadLocalRandom.current().nextInt(99_999)),
+            Order order = Order.draft(orderRepository.nextOrderNumber(today),
                     customerId, Identifiers.newId(), List.of(line), Instant.now());
             return orderRepository.save(order).id().value();
         });

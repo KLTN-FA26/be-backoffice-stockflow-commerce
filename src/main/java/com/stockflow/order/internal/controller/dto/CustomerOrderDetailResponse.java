@@ -138,7 +138,12 @@ public record CustomerOrderDetailResponse(
                     + "return of this line is already open on this shipment (RETURN_LINE_ALREADY_OPEN), or every unit "
                     + "is claimed. Above 0 is a ceiling, not a promise: a line printed to the customer's design "
                     + "(designSnapshotId set) still comes back only for a named defect")
-            int returnableQuantity) {
+            int returnableQuantity,
+            @Schema(description = "The name of the product the SKU belongs to, as on lines[]: the return form names "
+                    + "what it returns without a lookup; null for a SKU the catalogue does not know")
+            String productName,
+            @Schema(description = "The SKU's own (variant) name, as on lines[]; null for an unknown SKU")
+            String variantName) {
     }
 
     @Schema(name = "CustomerOrderCancellationRequest")
@@ -180,7 +185,12 @@ public record CustomerOrderDetailResponse(
             String designName,
             @Schema(description = "R5-3: a short-lived link showing that design's preview image; null when there is "
                     + "none")
-            String previewUrl) {
+            String previewUrl,
+            @Schema(description = "The name of the product the SKU belongs to: the customer does not know their SKUs "
+                    + "by code. Null for a SKU the catalogue does not know")
+            String productName,
+            @Schema(description = "The SKU's own (variant) name; null for an unknown SKU")
+            String variantName) {
     }
 
     @Schema(name = "CustomerOrderLineProduction")
