@@ -47,7 +47,9 @@ import org.springframework.web.bind.annotation.RestController;
 import java.time.Clock;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 /**
  * Cartons (SCRUM-473): looking one up by its LPN, what a location holds by carton, a list of cartons, and printing
@@ -84,10 +86,12 @@ class StockPackageController {
     private final PutawayService putaway;
     private final Clock clock;
     private final CustomerGoodsCustody custody;
+    private final ResponseLabels responseLabels;
 
     StockPackageController(StockPackageLabels labels, StockPackageLabelPdfRenderer renderer, StockPackageLookup lookup,
                            StockPackageWebMapper mapper, CartonQuarantineService quarantine, PutawayService putaway,
-                           Clock clock, CustomerGoodsCustody custody) {
+                           Clock clock, CustomerGoodsCustody custody, ResponseLabels responseLabels) {
+        this.responseLabels = responseLabels;
         this.custody = custody;
         this.quarantine = quarantine;
         this.putaway = putaway;
@@ -165,7 +169,7 @@ class StockPackageController {
     public ApiResponse<PutawayTaskResponse> releaseFromQuarantine(@PathVariable String lpn,
                                                                   @AuthenticatedUser CurrentUser actor) {
         UUID task = quarantine.release(lpn, actor.userId());
-        return ApiResponse.ok(PutawayController.toResponse(putaway.get(task)));
+        return ApiResponse.ok(PutawayController.toResponse(putaway.get(task), responseLabels));
     }
 
     @GetMapping("/customer-custody")
@@ -181,8 +185,11 @@ class StockPackageController {
             @RequestParam(defaultValue = "false") boolean ended,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(custody.held(returnRequestId, ended, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size).map(StockPackageController::toResponse));
+        PageResponse<ReturnedCartonOwnership.Custody> held = custody.held(returnRequestId, ended, page,
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size);
+        Map<UUID, String> names = responseLabels.names(held.items().stream()
+                .map(ReturnedCartonOwnership.Custody::endedBy));
+        return ApiResponse.ok(held.map(carton -> toResponse(carton, names)));
     }
 
     @PostMapping("/{lpn}/customer-custody/end")
@@ -197,13 +204,15 @@ class StockPackageController {
     public ApiResponse<CustomerCustodyResponse> endCustomerCustody(@PathVariable String lpn,
                                                                    @Valid @RequestBody EndCustodyRequest request,
                                                                    @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(toResponse(custody.end(lpn, request.note(), actor.userId())));
+        ReturnedCartonOwnership.Custody ended = custody.end(lpn, request.note(), actor.userId());
+        return ApiResponse.ok(toResponse(ended, responseLabels.names(Stream.of(ended.endedBy()))));
     }
 
-    private static CustomerCustodyResponse toResponse(ReturnedCartonOwnership.Custody held) {
+    private static CustomerCustodyResponse toResponse(ReturnedCartonOwnership.Custody held,
+                                                      Map<UUID, String> names) {
         return new CustomerCustodyResponse(held.lpn(), held.sku(), held.lotNumber(), held.quantity(),
                 held.locationCode(), held.returnRequestId(), held.ownership().name(), held.heldAt(), held.choice(),
-                held.endedAt(), held.endedBy(), held.note());
+                held.endedAt(), held.endedBy(), held.note(), ResponseLabels.name(names, held.endedBy()));
     }
 
     /**

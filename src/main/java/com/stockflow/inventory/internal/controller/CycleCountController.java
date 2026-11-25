@@ -21,6 +21,7 @@ import com.stockflow.inventory.internal.controller.dto.RecountRequest;
 import com.stockflow.inventory.internal.service.CycleCountSummary;
 import com.stockflow.inventory.internal.service.CycleCountView;
 import com.stockflow.inventory.internal.service.CycleCounts;
+import com.stockflow.warehouse.api.WarehouseView;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -39,7 +40,9 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 /**
  * Cycle counts (WBS 3.6.6, SCRUM-146): planned by a manager or planner ({@code CREATE}), counted on the shelf and
@@ -63,9 +66,11 @@ import java.util.UUID;
 class CycleCountController {
 
     private final CycleCounts counts;
+    private final ResponseLabels labels;
 
-    CycleCountController(CycleCounts counts) {
+    CycleCountController(CycleCounts counts, ResponseLabels labels) {
         this.counts = counts;
+        this.labels = labels;
     }
 
     @GetMapping
@@ -77,8 +82,13 @@ class CycleCountController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(counts.list(status, warehouseId, decides(actor), page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size).map(CycleCountController::toSummary));
+        PageResponse<CycleCountSummary> found = counts.list(status, warehouseId, decides(actor), page,
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size);
+        // One lookup of names and one of warehouses for the whole page, never one per row.
+        Map<UUID, String> names = labels.names(found.items().stream().map(CycleCountSummary::assignedUserId));
+        Map<UUID, WarehouseView> warehouses = labels.warehouses(found.items().stream()
+                .map(CycleCountSummary::warehouseId));
+        return ApiResponse.ok(found.map(count -> toSummary(count, names, warehouses)));
     }
 
     @GetMapping("/{countId}")
@@ -176,14 +186,21 @@ class CycleCountController {
         return actor.can(InventoryResources.CYCLE_COUNTS, Action.APPROVE);
     }
 
-    private static CycleCountSummaryResponse toSummary(CycleCountSummary count) {
+    private static CycleCountSummaryResponse toSummary(CycleCountSummary count, Map<UUID, String> names,
+                                                       Map<UUID, WarehouseView> warehouses) {
         return new CycleCountSummaryResponse(count.id(), count.number(), count.warehouseId(), count.triggerType(),
                 count.status(), count.blind(), count.assignedUserId(), count.plannedDate(), count.startedAt(),
                 count.completedAt(), count.note(), count.createdAt(), count.lineCount(), count.countedCount(),
-                count.varianceCount());
+                count.varianceCount(), ResponseLabels.name(names, count.assignedUserId()),
+                ResponseLabels.code(warehouses, count.warehouseId()),
+                ResponseLabels.warehouseName(warehouses, count.warehouseId()));
     }
 
-    private static CycleCountResponse toResponse(CycleCountView count) {
+    /** The count with the names of its assignee and counters, and its warehouse, each looked up once. */
+    private CycleCountResponse toResponse(CycleCountView count) {
+        Map<UUID, String> names = labels.names(Stream.concat(Stream.of(count.assignedUserId()),
+                count.lines().stream().map(CycleCountView.Line::countedBy)));
+        Map<UUID, WarehouseView> warehouses = labels.warehouses(Stream.of(count.warehouseId()));
         return new CycleCountResponse(count.id(), count.number(), count.warehouseId(), count.triggerType(),
                 count.status(), count.blind(), count.assignedUserId(), count.plannedDate(), count.startedAt(),
                 count.completedAt(), count.note(), count.createdAt(),
@@ -192,6 +209,8 @@ class CycleCountController {
                         line.found(), line.countedBy(), line.countedAt(), line.recountRequired(),
                         line.adjustments().stream().map(adjustment -> new CycleCountResponse.Adjustment(
                                 adjustment.id(), adjustment.number(), adjustment.quantityDelta(), adjustment.status()))
-                                .toList())).toList());
+                                .toList(), ResponseLabels.name(names, line.countedBy()))).toList(),
+                ResponseLabels.name(names, count.assignedUserId()), ResponseLabels.code(warehouses, count.warehouseId()),
+                ResponseLabels.warehouseName(warehouses, count.warehouseId()));
     }
 }

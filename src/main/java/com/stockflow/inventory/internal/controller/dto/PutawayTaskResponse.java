@@ -24,5 +24,9 @@ public record PutawayTaskResponse(UUID id, UUID goodsReceiptId, UUID goodsReceip
                                   @Schema(description = "The task's warehouse, that of where its goods stand")
                                   UUID warehouseId, String lpn, String status, String targetLocationCode,
                                   List<PutawaySuggestionResponse> suggestions,
-                                  List<String> overflowLocationCodes, String source) {
+                                  List<String> overflowLocationCodes, String source,
+                                  @Schema(description = "The warehouse's code (its location prefix)", example = "HCM",
+                                          nullable = true)
+                                  String warehouseCode,
+                                  @Schema(nullable = true) String warehouseName) {
 }
