@@ -254,6 +254,16 @@ class DispatchService implements Dispatching {
             return detail(header, load);
         }
         PackageJpaEntity parcel = parcelScanned(code);
+        // BR-SEC-002: a parcel of a warehouse the caller is not assigned to is answered as unknown, before a refusal
+        // below names its shipment, its status or the load it is on - whether or not it is in a shipment yet, so the
+        // warehouse is its task's, which every parcel has.
+        if (WarehouseScope.restriction().isPresent()) {
+            UUID where = picks.warehouseOfPack(parcel.getPackId()).orElse(null);
+            if (where == null || !WarehouseScope.restriction().map(allowed -> allowed.ids().contains(where))
+                    .orElse(true)) {
+                throw new BusinessException(ErrorCode.PACKAGE_NOT_FOUND, "No package labelled " + code);
+            }
+        }
         DispatchLoad.ShipmentFacts shipment = null;
         if (parcel.getShipmentId() != null) {
             ShipmentJpaEntity row = shipments.findById(parcel.getShipmentId()).orElseThrow();

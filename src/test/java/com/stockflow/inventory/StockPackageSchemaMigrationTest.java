@@ -54,8 +54,8 @@ class StockPackageSchemaMigrationTest {
     /** A packing unit of LY-GIAY-DEMO-12OZ-XANH, factor 10. */
     private static String unit(Connection db, String name) throws SQLException {
         // 01 BR-03: the item has one active carton, so the earlier tests' units are retired (their cartons stay).
-        update(db, "UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE WHERE "
-                + "inventory_item_id = " + BLUE_CUP + " AND NOT is_base AND active");
+        update(db, "UPDATE inventory.uom_conversions SET active = FALSE WHERE "
+                + "inventory_item_id = " + BLUE_CUP + " AND active");
         return unit(db, name, true);
     }
 

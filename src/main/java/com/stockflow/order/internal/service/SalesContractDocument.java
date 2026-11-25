@@ -22,6 +22,7 @@ import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderAddressSnapshot;
 import com.stockflow.order.internal.domain.OrderFee;
 import com.stockflow.order.internal.domain.OrderLine;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -49,6 +50,11 @@ import java.util.StringJoiner;
  * plan. A clause whose fact is absent is left out and the ones after it are renumbered, so the paper never prints a
  * blank or skips a number.</p>
  *
+ * <p>What the paper says is what the system does (WF-02 decision 8, 2026-11-25): the complaint period printed is the
+ * one returns and completion apply, the configured default when the contract has none of its own; the cancellation
+ * point prints the refund the order's cancellation pays (kltn-docs 17 BR-11); the credit condition prints only when
+ * the plan has a payment after delivery, the one part a refused credit limit cancels a signed contract over.</p>
+ *
  * <p>Every word is the Vietnamese bundle's - the contract is a Vietnamese document - and the layout is the kit's
  * ({@link BusinessDocument}), in black alone: a contract carries no brand colour. What it shows comes from the
  * contract and its order; nothing is looked up here.</p>
@@ -71,10 +77,20 @@ class SalesContractDocument {
 
     private final DocumentFonts fonts;
     private final ContractProperties terms;
+    private final int defaultReturnWindowDays;
 
-    SalesContractDocument(DocumentFonts fonts, ContractProperties terms) {
+    /**
+     * @param defaultReturnWindowDays the complaint period of a contract that has none of its own, the same
+     *                                {@code stockflow.order.return-window-days} returns and completion apply
+     */
+    SalesContractDocument(DocumentFonts fonts, ContractProperties terms,
+                          @Value("${stockflow.order.return-window-days:7}") int defaultReturnWindowDays) {
+        if (defaultReturnWindowDays < 1) {
+            throw new IllegalArgumentException("stockflow.order.return-window-days must be at least 1");
+        }
         this.fonts = fonts;
         this.terms = terms;
+        this.defaultReturnWindowDays = defaultReturnWindowDays;
     }
 
     byte[] render(Facts facts) {
@@ -241,7 +257,10 @@ class SalesContractDocument {
         clauses.point("delivery.risk");
     }
 
-    /** Clause 5: the instalments as a table, the account they are paid into, the currency. */
+    /**
+     * Clause 5: the instalments as a table, the account they are paid into, the currency, what a cancellation refunds,
+     * and - when part of the price is paid after delivery - the credit condition that part stands on.
+     */
     private void payment(Clauses clauses, Facts facts) {
         ResourceBundle t = clauses.t;
         SalesContracts.ContractView c = facts.contract();
@@ -278,17 +297,24 @@ class SalesContractDocument {
             clauses.point("payment.transfer");
         }
         clauses.point("payment.currency");
+        // Decision 1: money paid before the goods is a prepayment, refunded in full until the run is printed.
+        clauses.point("payment.cancel");
+        if (c.paymentPlan().stream().anyMatch(i -> "AFTER_DELIVERY".equals(i.milestone()))) {
+            // Decision 7 (Bộ luật Dân sự Điều 120): a refused credit limit cancels a signed contract only because the
+            // contract says it does.
+            clauses.point("payment.credit");
+        }
     }
 
-    /** Clause 7: the complaint period agreed (else the statute's), what happens to faulty goods, the warranty. */
+    /**
+     * Clause 7: the complaint period - the contract's own, else the configured one returns apply to it - what happens
+     * to faulty goods, the warranty.
+     */
     private void claims(Clauses clauses, SalesContracts.ContractView c) {
         clauses.title("claims");
-        if (c.returnWindowDays() != null) {
-            // Điều 318: the period to complain about a delivery is the contract's, so the contract says it.
-            clauses.point("claims.window", c.returnWindowDays());
-        } else {
-            clauses.point("claims.statute");
-        }
+        // Luật Thương mại Điều 318: the period to complain about a delivery is the parties' to agree, so the contract
+        // prints the number of days the system will hold it to.
+        clauses.point("claims.window", c.returnWindowDays() != null ? c.returnWindowDays() : defaultReturnWindowDays);
         clauses.point("claims.faulty");
         if (terms.warrantyMonths() > 0) {
             clauses.point("claims.warranty", terms.warrantyMonths());

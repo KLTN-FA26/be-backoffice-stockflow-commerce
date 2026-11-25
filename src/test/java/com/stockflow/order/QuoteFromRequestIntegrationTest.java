@@ -228,6 +228,34 @@ class QuoteFromRequestIntegrationTest {
                 .isEqualTo(projectQuote.path("id").asText());
     }
 
+    @Test
+    @DisplayName("LC-3: the request's draft cancelled before it was sent -> drawing again is 409 DESIGN_QUOTE_REQUEST_CLOSED "
+            + "with the way out, and the request reads CLOSED_BY_STAFF; a sent quote still reads QUOTED")
+    void aDraftCancelledUnsentClosesTheRequest() throws Exception {
+        UUID design = CustomerSkuRows.designOf(jdbc, CustomerSkuRows.issueApproved(jdbc, tx, entityManager, customer,
+                50));
+        UUID request = designRequest(design, "OPEN");
+        JsonNode drawn = data(draw("design-quote-requests", request, Role.SALES_STAFF, sales)
+                .andExpect(status().isCreated()));
+        String quoteNumber = drawn.path("quoteNumber").asText();
+        http.asRole(Role.SALES_STAFF, sales, post("/api/v1/quotes/" + drawn.path("id").asText() + "/cancellation")
+                .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                .content("{\"version\":" + drawn.path("version").asLong() + ",\"reason\":\"Khach thoi mua\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("CANCELLED"));
+
+        draw("design-quote-requests", request, Role.SALES_STAFF, sales).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DESIGN_QUOTE_REQUEST_CLOSED"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString(quoteNumber)));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.quote WHERE customer_id = ?", Long.class,
+                customer)).as("nothing new drawn up").isEqualTo(1L);
+
+        JsonNode rows = data(http.asRole(Role.SALES_STAFF, sales, get("/api/v1/design-quote-requests")
+                .param("customerId", customer.toString()).param("size", "50"))
+                .andExpect(status().isOk())).path("items");
+        assertThat(row(rows, request).path("closedOutcome").asText()).isEqualTo("CLOSED_BY_STAFF");
+        assertThat(row(rows, request).has("quoteId")).isFalse();
+    }
+
     // ---- helpers
 
     private static JsonNode row(JsonNode rows, UUID id) {

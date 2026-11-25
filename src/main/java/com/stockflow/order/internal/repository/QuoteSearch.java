@@ -62,8 +62,11 @@ public interface QuoteSearch {
     /** The quote an order was converted from; empty for an order no quote became. */
     java.util.Optional<UUID> quoteConvertedInto(UUID orderId);
 
-    /** A quote by the request id it was created under; {@code sentAt} is when it was first sent, null before. */
-    record ByRequest(UUID requestId, UUID quoteId, String quoteNumber, Instant sentAt) {
+    /**
+     * A quote by the request id it was created under; {@code sentAt} is when it was first sent, null before;
+     * {@code status} its {@code QuoteStatus} name.
+     */
+    record ByRequest(UUID requestId, UUID quoteId, String quoteNumber, Instant sentAt, String status) {
     }
 
     /** The quotes created under any of {@code requestIds}, one statement ({@code uk} on request_id: one each). */

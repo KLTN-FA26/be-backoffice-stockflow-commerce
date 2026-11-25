@@ -419,7 +419,10 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         List<PackageJpaEntity> taken = new ArrayList<>();
         for (UUID id : wanted) {
             ShipmentJpaEntity s = rows.get(id);
-            if (s == null) {
+            // BR-SEC-002: a shipment of a warehouse the caller is not assigned to is answered as unknown, before its
+            // code or status is named by a refusal below.
+            if (s == null || !WarehouseScope.restriction()
+                    .map(allowed -> allowed.ids().contains(s.getWarehouseId())).orElse(true)) {
                 throw new BusinessException(ErrorCode.SHIPMENT_NOT_FOUND, "No shipment " + id);
             }
             if (s.getStatus() != ShipmentStatus.READY_TO_DISPATCH) {

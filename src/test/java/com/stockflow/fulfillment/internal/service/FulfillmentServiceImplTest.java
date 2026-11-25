@@ -428,6 +428,7 @@ class FulfillmentServiceImplTest {
     void anOrderAwaitingStockIsNotPickedToDispatchWithoutPartialShipment() {
         var order = orderIn(OrderStatus.AWAITING_STOCK, null);
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
+        when(orders.shippingWarehouseId(order.orderId())).thenReturn(Optional.of(HCM));
         when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
 
         var thrown = refusal(() -> asScoped(managerOf(HCM), () -> service.createTask(order.orderId(),
@@ -447,6 +448,7 @@ class FulfillmentServiceImplTest {
         UUID batch = UUID.randomUUID();
         var order = orderIn(OrderStatus.AWAITING_STOCK, null);
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
+        when(orders.shippingWarehouseId(order.orderId())).thenReturn(Optional.of(HCM));
         when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
         assignable(HCM, picker);
         when(prePicking.prePick(eq(order.orderId()), any())).thenReturn(
@@ -464,6 +466,23 @@ class FulfillmentServiceImplTest {
         verify(picks).saveAndFlush(saved.capture());
         assertThat(saved.getValue().getDeliveryBatchId()).isEqualTo(batch);
         verify(orders, never()).startPicking(any(), any());
+    }
+
+    @Test
+    @org.junit.jupiter.api.DisplayName("BR-SEC-002: an order AWAITING_STOCK shipping from another warehouse is refused on "
+            + "scope before its stock is allocated for a pre-pick, and before its status is named")
+    void anOrderOfAnotherWarehouseIsRefusedBeforeItsPrePick() {
+        var order = orderIn(OrderStatus.AWAITING_STOCK, null);
+        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
+        when(orders.shippingWarehouseId(order.orderId())).thenReturn(Optional.of(UUID.randomUUID()));
+        when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
+
+        var thrown = refusal(() -> asScoped(managerOf(HCM), () -> service.createTask(order.orderId(),
+                UUID.randomUUID(), com.stockflow.fulfillment.api.PickDestination.STAGING, null, managerOf(HCM))));
+
+        assertThat(thrown.errorCode()).isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
+        verify(prePicking, never()).prePick(any(), any());
+        verify(picks, never()).saveAndFlush(any());
     }
 
     @Test

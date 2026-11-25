@@ -40,8 +40,8 @@ END $$;
 -- Fixtures: a carton unit of 4 cups; a free carton on a bin (FREE), one held for an order (HELD), and one already in
 -- quarantine at HCM-QC01 (QRN).
 -- 01 BR-03: an item has ONE active carton. The demo seed's own is retired, so the fixture's unit below is the one.
-UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
- WHERE NOT is_base AND active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
+UPDATE inventory.uom_conversions SET active = FALSE
+ WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa51:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA51_CTN', 4);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,

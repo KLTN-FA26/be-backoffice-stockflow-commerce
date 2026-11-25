@@ -193,7 +193,12 @@ public interface SalesContracts {
      */
     PlanSuggestion suggestPaymentPlan(UUID orderId);
 
-    /** Sent to the customer (14 §4.3 step 13); the answer carries the credit warning, if any. */
+    /**
+     * Sent to the customer (14 §4.3 step 13); the answer carries the credit warning, if any.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CUSTOMER_NOT_ACTIVE} (409) when the customer is no
+     *         longer active (Q-9): a contract already sent is still signed, a new one is not sent
+     */
     ContractView send(CurrentUser user, UUID orderId, long version);
 
     /** Where the browser uploads the signed file (FileCategory.DOCUMENT); the contract is sent. */

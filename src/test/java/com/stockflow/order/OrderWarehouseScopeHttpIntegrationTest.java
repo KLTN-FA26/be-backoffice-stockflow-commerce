@@ -19,6 +19,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
@@ -31,7 +32,11 @@ import java.util.UUID;
 import static org.hamcrest.Matchers.everyItem;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -62,6 +67,7 @@ class OrderWarehouseScopeHttpIntegrationTest {
     private UUID sales;
     private UUID other;
     private UUID orderId;
+    private String orderNumber;
 
     @BeforeEach
     void setUp() {
@@ -81,7 +87,9 @@ class OrderWarehouseScopeHttpIntegrationTest {
         UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
         CustomerSkuRows.Issued sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 2);
         CustomerSkuRows.stock(jdbc, tx, sku.sku(), 4);
-        orderId = orders.confirmed(customer, ConfirmedOrders.Line.cartons(sku, 2, 6_000)).orderId();
+        ConfirmedOrders.Confirmed confirmed = orders.confirmed(customer, ConfirmedOrders.Line.cartons(sku, 2, 6_000));
+        orderId = confirmed.orderId();
+        orderNumber = confirmed.orderNumber();
         orders.ship(orderId, DemoData.WAREHOUSE_HCM);
     }
 
@@ -117,5 +125,48 @@ class OrderWarehouseScopeHttpIntegrationTest {
                 .andExpect(jsonPath("$.data.warehouses[*].warehouseId").value(hasItem(other.toString())));
         mvc.asRole(Role.WAREHOUSE_MANAGER, otherManager, get(path("/shipping-warehouse/options")))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("a manager of another warehouse releasing the order to their own warehouse gets 404, before the "
+            + "release names the order; the manager of its shipping warehouse releases it")
+    void releaseIsRefusedAsUnknownToAnotherWarehouse() throws Exception {
+        mvc.asRole(Role.WAREHOUSE_MANAGER, otherManager, post(path("/release"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"warehouseId\":\"" + other + "\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("NOT_FOUND"))
+                .andExpect(content().string(not(containsString(orderNumber))));
+        mvc.asRole(Role.WAREHOUSE_MANAGER, hcmManager, post(path("/release"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"warehouseId\":\"" + DemoData.WAREHOUSE_HCM + "\"}"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("a manager of another warehouse opening a pick task for the order is refused on scope, before the "
+            + "order's status is named; its own manager is told the order is not released yet")
+    void pickTaskIsRefusedOnScopeFirst() throws Exception {
+        mvc.asRole(Role.WAREHOUSE_MANAGER, otherManager, post("/api/v1/fulfillment/tasks")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"orderId\":\"" + orderId + "\",\"assignedUserId\":\"" + otherManager + "\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"))
+                .andExpect(content().string(not(containsString("CONFIRMED"))));
+        mvc.asRole(Role.WAREHOUSE_MANAGER, hcmManager, post("/api/v1/fulfillment/tasks")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"orderId\":\"" + orderId + "\",\"assignedUserId\":\"" + hcmManager + "\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PICK_TASK_STATE_CONFLICT"));
+    }
+
+    @Test
+    @DisplayName("a manager of another warehouse estimating the order's load is refused on scope, without its number")
+    void loadEstimateIsRefusedToAnotherWarehouse() throws Exception {
+        mvc.asRole(Role.WAREHOUSE_MANAGER, otherManager, post("/api/v1/fulfillment/load-estimates")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"sources\":[{\"type\":\"ORDER\",\"id\":\"" + orderId + "\"}]}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"))
+                .andExpect(content().string(not(containsString(orderNumber))));
     }
 }

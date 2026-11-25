@@ -319,13 +319,13 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
         }
         @SuppressWarnings("unchecked")
         List<Object[]> rows = entityManager.createNativeQuery("""
-                        SELECT request_id, id, quote_number, sent_at FROM ordering.quote
+                        SELECT request_id, id, quote_number, sent_at, status::text FROM ordering.quote
                          WHERE request_id IN (:requests)""")
                 .setParameter("requests", List.copyOf(requestIds))
                 .getResultList();
         // sent_at is cleared by nothing: a quote reopened for a revision keeps it (Quote#revisingSentQuote).
         return rows.stream().map(r -> new ByRequest((UUID) r[0], (UUID) r[1], (String) r[2],
-                r[3] == null ? null : toInstant(r[3]))).toList();
+                r[3] == null ? null : toInstant(r[3]), (String) r[4])).toList();
     }
 
     private static Instant toInstant(Object value) {
