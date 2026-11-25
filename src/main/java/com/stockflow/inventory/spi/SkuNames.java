@@ -17,4 +17,16 @@ public interface SkuNames {
      * @return each of {@code skus} the catalogue knows, mapped to its name; an unknown SKU is absent
      */
     Map<String, String> namesOf(Collection<String> skus);
+
+    /**
+     * What each SKU is called, both ways a screen shows it (#454, the carton list): the product it is a variant of and
+     * the variant itself ({@link #namesOf}'s name). Runs in the caller's transaction; one question for a whole page.
+     *
+     * @return each of {@code skus} the catalogue knows; an unknown SKU is absent
+     */
+    Map<String, ItemNames> itemNamesOf(Collection<String> skus);
+
+    /** A SKU's product name and variant name. */
+    record ItemNames(String productName, String variantName) {
+    }
 }

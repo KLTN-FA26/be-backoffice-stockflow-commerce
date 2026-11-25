@@ -13,11 +13,14 @@ import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.sql.Array;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -32,6 +35,11 @@ import java.util.UUID;
 @Repository
 class StockPackageSearchAdapter implements StockPackageSearch {
 
+    /**
+     * The view's columns, then what the list shows of each carton without opening it (#454), each a subquery on the
+     * carton's own rows: still one statement for a page, whatever its size. A carton is one stock row
+     * (V20261113000300), so {@code stock_statuses} holds one status, but it is read as the rows say.
+     */
     private static final String CARTON_COLUMNS = """
             b.stock_package_id, b.lpn, b.sku, b.unit_of_measure, b.nominal_qty, b.received_qty, b.location_code,
             b.status, b.lot_number, b.on_hand, b.reserved, b.goods_receipt_line_id,
@@ -41,14 +49,37 @@ class StockPackageSearchAdapter implements StockPackageSearch {
             (SELECT p.return_ownership FROM inventory.stock_package p WHERE p.id = b.stock_package_id)
                 AS return_ownership,
             (SELECT p.return_request_id FROM inventory.stock_package p WHERE p.id = b.stock_package_id)
-                AS return_request_id""";
+                AS return_request_id,
+            ARRAY(SELECT DISTINCT s.status FROM inventory.stock_item s
+                   WHERE s.stock_package_id = b.stock_package_id AND s.on_hand > 0 ORDER BY s.status)
+                AS stock_statuses,
+            (SELECT min(s.received_at) FROM inventory.stock_item s
+              WHERE s.stock_package_id = b.stock_package_id AND s.on_hand > 0) AS received_at,
+            CASE
+                WHEN EXISTS (SELECT 1 FROM inventory.stock_movement m
+                              WHERE m.to_stock_package_id = b.stock_package_id AND m.reference_type = 'GOODS_RECEIPT')
+                    THEN 'RETURN'
+                WHEN b.goods_receipt_line_id IS NOT NULL THEN 'GOODS_RECEIPT'
+                WHEN EXISTS (SELECT 1 FROM inventory.stock_movement m
+                              WHERE m.to_stock_package_id = b.stock_package_id
+                                AND m.reference_type = 'PRODUCTION_ORDER')
+                    THEN 'PRODUCTION'
+                ELSE 'IN_WAREHOUSE'
+            END AS source,
+            (SELECT c.id FROM inventory.cycle_count_line l JOIN inventory.cycle_count c ON c.id = l.cycle_count_id
+              WHERE l.stock_package_id = b.stock_package_id AND c.status IN ('PLANNED', 'IN_PROGRESS')
+              ORDER BY c.created_at, c.id LIMIT 1) AS open_count_id,
+            (SELECT c.count_number FROM inventory.cycle_count_line l JOIN inventory.cycle_count c
+                 ON c.id = l.cycle_count_id
+              WHERE l.stock_package_id = b.stock_package_id AND c.status IN ('PLANNED', 'IN_PROGRESS')
+              ORDER BY c.created_at, c.id LIMIT 1) AS open_count_number""";
 
     /** The view, one row per carton (V20261113000300); nothing expires since team plan 5-1, so nothing else is read. */
     private static final String CARTONS = "inventory.stock_package_balance b";
 
     /** The column of each of {@link #SORTABLE}; checked when the class loads, so a gap fails startup, not a request. */
     private static final Map<String, String> SORT_COLUMNS =
-            Map.of("lpn", "b.lpn", "locationCode", "b.location_code", "sku", "b.sku");
+            Map.of("lpn", "b.lpn", "locationCode", "b.location_code", "sku", "b.sku", "receivedAt", "received_at");
 
     static {
         if (!SORT_COLUMNS.keySet().equals(Set.copyOf(SORTABLE))) {
@@ -62,7 +93,7 @@ class StockPackageSearchAdapter implements StockPackageSearch {
      * them; the view's unit join is left out too, its key being NOT NULL with a foreign key.
      */
     private static final String COUNTED = """
-            (SELECT p.status, p.location_code, i.sku
+            (SELECT p.id AS stock_package_id, p.lpn, p.status, p.location_code, i.sku
                FROM inventory.stock_package p
                JOIN inventory.inventory_items i ON i.id = p.inventory_item_id) b""";
 
@@ -144,6 +175,26 @@ class StockPackageSearchAdapter implements StockPackageSearch {
             conditions.add(WarehouseScope.locationsInSql("b.location_code", criteria.warehousePrefixes(), "warehouse",
                     params));
         }
+        if (criteria.warehousePrefix() != null) {
+            conditions.add(WarehouseScope.locationsInSql("b.location_code", List.of(criteria.warehousePrefix()),
+                    "oneWarehouse", params));
+        }
+        if (criteria.lotNumber() != null) {
+            // The rows, not the view's lot column: the count runs over cartons alone (COUNTED).
+            conditions.add("EXISTS (SELECT 1 FROM inventory.stock_item s WHERE s.stock_package_id = b.stock_package_id"
+                    + " AND s.lot_number = :lot)");
+            params.addValue("lot", criteria.lotNumber());
+        }
+        if (criteria.lpnPart() != null) {
+            conditions.add("b.lpn LIKE :lpnPart ESCAPE '\\'");
+            params.addValue("lpnPart", "%" + criteria.lpnPart().replace("\\", "\\\\").replace("%", "\\%")
+                    .replace("_", "\\_") + "%");
+        }
+        if (criteria.stockStatuses() != null && !criteria.stockStatuses().isEmpty()) {
+            conditions.add("EXISTS (SELECT 1 FROM inventory.stock_item s WHERE s.stock_package_id = b.stock_package_id"
+                    + " AND s.on_hand > 0 AND s.status IN (:stockStatuses))");
+            params.addValue("stockStatuses", criteria.stockStatuses().stream().map(StockStatus::name).toList());
+        }
         return String.join(" AND ", conditions);
     }
 
@@ -160,13 +211,47 @@ class StockPackageSearchAdapter implements StockPackageSearch {
         return String.join(", ", orders);
     }
 
+    @Override
+    public Map<UUID, List<StockPackageBalance.Hold>> holdsOf(Collection<UUID> stockPackageIds) {
+        if (stockPackageIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, List<StockPackageBalance.Hold>> holds = new HashMap<>();
+        jdbc.query("""
+                        SELECT s.stock_package_id, r.order_id, r.order_number, sum(r.quantity) AS quantity
+                          FROM inventory.stock_reservation r
+                          JOIN inventory.stock_item s ON s.id = r.stock_item_id
+                         WHERE s.stock_package_id IN (:ids) AND r.status = 'HELD'
+                         GROUP BY s.stock_package_id, r.order_id, r.order_number
+                         ORDER BY r.order_number NULLS LAST, r.order_id""",
+                new MapSqlParameterSource("ids", List.copyOf(stockPackageIds)),
+                rs -> {
+                    holds.computeIfAbsent(rs.getObject("stock_package_id", UUID.class), k -> new ArrayList<>())
+                            .add(new StockPackageBalance.Hold(rs.getObject("order_id", UUID.class),
+                                    rs.getString("order_number"), rs.getInt("quantity")));
+                });
+        return holds;
+    }
+
     private static StockPackageBalance cartonRow(ResultSet rs, int rowNum) throws SQLException {
-        return new StockPackageBalance(rs.getObject("stock_package_id", UUID.class), rs.getString("lpn"), rs.getString("sku"),
-                rs.getString("unit_of_measure"), rs.getInt("nominal_qty"), rs.getObject("received_qty", Integer.class),
-                rs.getString("location_code"), StockPackageStatus.valueOf(rs.getString("status")),
-                rs.getString("lot_number"), rs.getInt("on_hand"), rs.getInt("reserved"), rs.getObject("goods_receipt_line_id", UUID.class),
-                instant(rs, "closed_at"), instant(rs, "return_opened_at"), rs.getString("return_ownership"),
-                rs.getObject("return_request_id", UUID.class), null);
+        List<StockStatus> stockStatuses = new ArrayList<>();
+        Array statuses = rs.getArray("stock_statuses");
+        if (statuses != null) {
+            for (Object status : (Object[]) statuses.getArray()) {
+                stockStatuses.add(StockStatus.valueOf((String) status));
+            }
+        }
+        UUID openCount = rs.getObject("open_count_id", UUID.class);
+        return new StockPackageBalance(rs.getObject("stock_package_id", UUID.class), rs.getString("lpn"),
+                rs.getString("sku"), rs.getString("unit_of_measure"), rs.getInt("nominal_qty"),
+                rs.getObject("received_qty", Integer.class), rs.getString("location_code"),
+                StockPackageStatus.valueOf(rs.getString("status")), rs.getString("lot_number"), rs.getInt("on_hand"),
+                rs.getInt("reserved"), rs.getObject("goods_receipt_line_id", UUID.class), instant(rs, "closed_at"),
+                instant(rs, "return_opened_at"), rs.getString("return_ownership"),
+                rs.getObject("return_request_id", UUID.class), stockStatuses, instant(rs, "received_at"),
+                StockPackageBalance.Source.valueOf(rs.getString("source")),
+                openCount == null ? null : new StockPackageBalance.OpenTask(StockPackageBalance.TaskType.CYCLE_COUNT,
+                        openCount, rs.getString("open_count_number")));
     }
 
     private static Instant instant(ResultSet rs, String column) throws SQLException {

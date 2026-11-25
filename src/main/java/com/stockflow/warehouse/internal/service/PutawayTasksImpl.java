@@ -66,6 +66,17 @@ class PutawayTasksImpl implements PutawayTasks {
 
     @Override
     @Transactional(readOnly = true)
+    public java.util.Map<UUID, PutawayTaskView> openTasksOf(java.util.Collection<UUID> stockPackageIds) {
+        java.util.Map<UUID, PutawayTaskView> open = new java.util.HashMap<>();
+        for (var task : tasks.findOpenByStockPackages(java.util.List.copyOf(new java.util.HashSet<>(stockPackageIds)))) {
+            PutawayTaskView view = toView(task);
+            open.putIfAbsent(view.stockPackageId(), view);
+        }
+        return open;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public List<PutawayTaskView> tasksOfReceipt(UUID goodsReceiptId) {
         return tasks.findByReceipt(goodsReceiptId).stream().map(PutawayTasksImpl::toView).toList();
     }

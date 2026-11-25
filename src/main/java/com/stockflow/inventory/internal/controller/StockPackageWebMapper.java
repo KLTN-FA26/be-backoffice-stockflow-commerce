@@ -27,6 +27,10 @@ interface StockPackageWebMapper {
     @Mapping(target = "openedOnReturn", expression = "java(carton.openedOnReturn())")
     StockPackageResponse toResponse(StockPackageBalance carton);
 
+    StockPackageResponse.Hold toResponse(StockPackageBalance.Hold hold);
+
+    StockPackageResponse.OpenTask toResponse(StockPackageBalance.OpenTask task);
+
     /** The bins a group of cartons may be moved into (issue #412), each in putaway's own shape. */
     MoveSuggestionResponse toResponse(MoveSuggestionService.MoveSuggestions suggestions);
 
