@@ -74,7 +74,7 @@ public final class DesignProjectRules {
         }
     }
 
-    /** A design waiting for review neither leaves its project nor moves to another (BR-17). */
+    /** A design waiting for review does not move to another project: its round is its project's (BR-17, BR-23.4). */
     public static void requireNotPending(DesignStatus status) {
         if (status == DesignStatus.PENDING_REVIEW) {
             throw new BusinessException(ErrorCode.DESIGN_PENDING_IN_PROJECT,

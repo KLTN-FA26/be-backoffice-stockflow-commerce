@@ -239,14 +239,6 @@ class DesignProjectController {
         return ApiResponse.ok(toResponse(projects.addDesign(id, actor(user), request.designId())));
     }
 
-    @DeleteMapping("/design-projects/{id}/designs/{designId}")
-    @Operation(summary = "Remove a design from the project; never one waiting for review")
-    @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
-    public ApiResponse<DesignProjectResponse> removeDesign(@PathVariable UUID id, @PathVariable UUID designId,
-                                                           @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(toResponse(projects.removeDesign(id, actor(user), designId)));
-    }
-
     @GetMapping("/design-projects/{id}/history")
     @Operation(summary = "The project's history, the newest first")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)

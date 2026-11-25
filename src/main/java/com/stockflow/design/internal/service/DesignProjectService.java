@@ -47,9 +47,9 @@ import org.springframework.transaction.annotation.Transactional;
  * holding designs of that customer - at most {@value DesignProjectRules#MAX_DESIGNS}, archived ones not counted. Every
  * new design is written into a project (BR-23.2, BR-23.3): one started in it, or a revision or a clone the caller
  * puts in it or that follows its source there. An existing design joins when its owner adds it, from no project or
- * moved from another open project of theirs (BR-23.4); it leaves when its owner removes it. A design waiting for
- * review, or named by an open quote request of its project, stays where it is. Joining, moving or leaving changes
- * nothing else about the design.
+ * moved from another open project of theirs. It never leaves for no project: a design is taken out of one only by
+ * moving it into another (BR-23.4). A design waiting for review, or named by an open quote request of its
+ * project, stays where it is. Joining or moving changes nothing else about the design.
  *
  * <p>Only the owner sees a project (BR-17); the coordinator and the sales staff see its name alone, on a review round
  * and on a project quote request. Every write takes the project's row lock first, then a design's: the order a batch
@@ -260,21 +260,6 @@ public class DesignProjectService {
                     "An open quote request of the design's project names it; it stays there until that is answered",
                     List.of(), details);
         }
-    }
-
-    /** Removes a design from the project (§4.9 step 28): never one waiting for review (BR-17). */
-    @Auditable(action = AuditAction.UPDATE, resourceType = "design-project", resourceId = "#id")
-    public ProjectView removeDesign(UUID id, UUID actor, UUID designId) {
-        DesignProjectJpaEntity project = lockActive(id, actor);
-        DesignDraftJpaEntity draft = lockOwnDesign(designId, actor, project);
-        if (!id.equals(draft.getProjectId())) {
-            throw new BusinessException(ErrorCode.NOT_FOUND);
-        }
-        DesignProjectRules.requireNotPending(draft.getStatus());
-        draft.leaveProject();
-        drafts.saveAndFlush(draft);
-        decide(draft, actor, DesignDecisionType.REMOVED_FROM_PROJECT, "Project " + id);
-        return view(project);
     }
 
     /** The project's history, the newest first, to its owner. */

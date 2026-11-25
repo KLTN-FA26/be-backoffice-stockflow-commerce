@@ -1070,7 +1070,7 @@ public enum ErrorCode {
      * between its owner's open projects (BR-23.4). Kept for the clients that know it.
      */
     DESIGN_IN_ANOTHER_PROJECT("This design belongs to another project", 409),
-    /** A design waiting for review neither leaves its project nor moves to another (kltn-docs 12 BR-17, BR-23.4). */
+    /** A design waiting for review does not move to another project (kltn-docs 12 BR-17, BR-23.4). */
     DESIGN_PENDING_IN_PROJECT("A design waiting for review stays in its project", 409),
     /**
      * A design an open quote request of its project names stays in that project until the sales staff answer the

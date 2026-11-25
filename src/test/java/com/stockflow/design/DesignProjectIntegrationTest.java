@@ -524,7 +524,7 @@ class DesignProjectIntegrationTest {
     }
 
     @Test
-    void designsJoinAndLeaveTheProjectOfTheirOwnCustomerAndTheProjectClosesOnceNoneWaits() throws Exception {
+    void designsJoinTheProjectOfTheirOwnCustomerNeverLeaveForNoneAndTheProjectClosesOnceNoneWaits() throws Exception {
         String inside = draft(project, middle());
         String alone = draft(null, middle());
         mvc.perform(get("/api/v1/designs/" + inside)).andExpect(jsonPath("$.data.projectId").value(project));
@@ -538,17 +538,21 @@ class DesignProjectIntegrationTest {
                 .content("{\"designId\":\"" + alone + "\"}")).andExpect(status().isOk());
         assertThat(decisionsOf(alone)).isEqualTo(written).doesNotContain("REMOVED_FROM_PROJECT");
 
-        // Waiting for review, a design neither leaves nor lets the project close.
+        // T7 (BR-23.4): a design is never taken out of its project into none - there is no such endpoint any more.
+        for (String design : List.of(inside, alone)) {
+            mvc.perform(delete("/api/v1/design-projects/" + project + "/designs/" + design))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isIn(404, 405));
+            assertThat(projectOf(design)).isEqualTo(project);
+        }
+        assertThat(decisionsOf(alone)).doesNotContain("REMOVED_FROM_PROJECT");
+
+        // Waiting for review, a design does not let the project close.
         mvc.perform(post("/api/v1/designs/" + inside + "/technical-review-requests")
                 .contentType(MediaType.APPLICATION_JSON).content("{\"version\":" + version(inside) + "}"))
                 .andExpect(status().isOk());
-        mvc.perform(delete("/api/v1/design-projects/" + project + "/designs/" + inside))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("DESIGN_PENDING_IN_PROJECT"));
         mvc.perform(post("/api/v1/design-projects/" + project + "/archive").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"version\":" + projectVersion() + "}")).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("DESIGN_PROJECT_HAS_PENDING"));
-        mvc.perform(delete("/api/v1/design-projects/" + project + "/designs/" + alone)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.designs.length()").value(1));
 
         as(manager, REVIEWER);
         decide(inside, false, "Sửa màu").andExpect(status().isOk());
