@@ -12,14 +12,17 @@ import java.util.UUID;
  *
  * @param pickupPoints the full list; empty removes them all
  */
-public record CarrierPickupPointsRequest(@NotNull @Size(max = 200) List<@Valid @NotNull Point> pickupPoints) {
+public record CarrierPickupPointsRequest(@NotNull @Size(max = 200) List<@Valid @NotNull PickupPoint> pickupPoints) {
 
     /**
+     * Named {@code PickupPoint}, not {@code Point}: springdoc names a schema by the simple class name, and this one
+     * overwrote the putaway trip's map point (issue #445).
+     *
      * @param provinceCode our province code (as an order's address carries it): picks the service code, bounds the
      *                     drop-offs
      * @param address      the warehouse as the carrier reads it: "[số nhà] [đường], [phường], [quận], [thành phố]"
      */
-    public record Point(@NotNull UUID warehouseId, @NotNull @Size(max = 20) String provinceCode,
+    public record PickupPoint(@NotNull UUID warehouseId, @NotNull @Size(max = 20) String provinceCode,
                         @NotNull @Size(max = 500) String address, @Size(max = 120) String contactName,
                         @Size(max = 32) String contactPhone) {
     }

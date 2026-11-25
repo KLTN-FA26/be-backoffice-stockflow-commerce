@@ -43,8 +43,8 @@ END $$;
 -- Packing units: a carton of 10 blue cups, a carton of 5 red cups, and a case of 4 blue cups nobody uses. An item has ONE
 -- active carton (01 BR-03): the demo seed's own are retired, the two cartons below are the active ones, and the case is
 -- declared retired - a retired unit is declared beside the active one freely.
-UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
- WHERE NOT is_base AND active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items
+UPDATE inventory.uom_conversions SET active = FALSE
+ WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items
                                                          WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH', 'LY-GIAY-DEMO-12OZ-DO'));
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg, active)
 VALUES (md5('qa:unit:XANH-CARTON')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_CARTON', 10, 60, 40, 50, 12, TRUE),
@@ -121,7 +121,7 @@ SELECT pg_temp.expect_ok('K18 not found by a count (LOST, emptied), then found a
 SELECT pg_temp.expect_fail('K19 created already CONSUMED (skipping the lifecycle)', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status, closed_at)
     VALUES (gen_random_uuid(), 'QA-LPN-19', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, 10, 'HCM-A01-1-A', 'CONSUMED', NOW()) $q$);
-SELECT pg_temp.expect_fail('K20 a base unit row to make a carton in: there is none any more (ck_uom_conversions_no_base, QA 45)', $q$
+SELECT pg_temp.expect_fail('K20 a base unit row to make a carton in: there is none any more, nor the column that flagged one (V20261226000300, QA 46)', $q$
     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base)
     SELECT gen_random_uuid(), id, 'QA15BASE', 1, TRUE
       FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH' $q$);
@@ -253,7 +253,7 @@ SELECT pg_temp.expect_fail('K35 a stock package in a retired unit its receipt li
     VALUES (gen_random_uuid(), 'QA-LPN-35', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-OLD')::uuid, 10, 'HCM-RCV01', md5('qa:pk:grl')::uuid) $q$);
 SELECT pg_temp.expect_ok('K36 cartons received in the old unit before it was retired are still packed in it', $q$
     -- The real sequence (BR-03, BR-10): the active carton is retired before the old one is active again.
-    UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE WHERE id = md5('qa:unit:XANH-CARTON')::uuid;
+    UPDATE inventory.uom_conversions SET active = FALSE WHERE id = md5('qa:unit:XANH-CARTON')::uuid;
     UPDATE inventory.uom_conversions SET active = TRUE WHERE id = md5('qa:unit:XANH-OLD')::uuid;
     UPDATE procurement.goods_receipt_lines SET uom_conversion_id = md5('qa:unit:XANH-OLD')::uuid WHERE id = md5('qa:pk:grl')::uuid;
     UPDATE inventory.uom_conversions SET active = FALSE WHERE id = md5('qa:unit:XANH-OLD')::uuid;

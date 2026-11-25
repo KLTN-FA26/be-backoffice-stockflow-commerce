@@ -56,19 +56,24 @@ public class GoodsReceiptPhotoService {
     /** How long a link to a photo works: opened right away by the screen that asked for it. */
     private static final Duration LINK_LIFETIME = Duration.ofMinutes(5);
 
-    /** One photo as a receipt lists it; {@code thumbnailUrl} is absent where the storage signs no browser links. */
+    /**
+     * One photo as a receipt lists it; {@code thumbnailUrl} is absent where the storage signs no browser links.
+     * {@code takenByName}: the display name of {@code takenBy}; null if unknown.
+     */
     public record PhotoView(UUID id, UUID receiptId, UUID receiptLineId, GoodsReceiptPhotoStage stage,
                             String fileName, String contentType, long sizeBytes, UUID takenBy, Instant takenAt,
-                            String thumbnailUrl) {
+                            String thumbnailUrl, String takenByName) {
     }
 
     private final GoodsReceiptPhotoJpaRepository photos;
     private final FileTransfers files;
     private final StagedUploads staged;
     private final TransactionOperations tx;
+    private final com.stockflow.identity.api.IdentityService identities;
 
     public GoodsReceiptPhotoService(GoodsReceiptPhotoJpaRepository photos, FileTransfers files, StagedUploads staged,
-                                    TransactionOperations tx) {
+                                    TransactionOperations tx, com.stockflow.identity.api.IdentityService identities) {
+        this.identities = identities;
         this.photos = photos;
         this.files = files;
         this.staged = staged;
@@ -110,7 +115,7 @@ public class GoodsReceiptPhotoService {
                 return photos.findByStorageKey(k)
                         .filter(found -> found.getReceiptId().equals(receiptId)
                                 && Objects.equals(found.getReceiptLineId(), receiptLineId) && found.getStage() == stage)
-                        .map(this::view);
+                        .map(p -> view(p, nameOf(p.getTakenBy())));
             }));
             if (earlier.isPresent()) {
                 return earlier.get();
@@ -126,7 +131,7 @@ public class GoodsReceiptPhotoService {
                         receiptLineId, stage, stored.key(), stored.originalName(), stored.contentType(),
                         stored.sizeBytes(), file.sha256(), by));
                 prepared.adopt();
-                return view(saved);
+                return view(saved, nameOf(saved.getTakenBy()));
             });
         }
     }
@@ -135,7 +140,10 @@ public class GoodsReceiptPhotoService {
     @Transactional(readOnly = true)
     public List<PhotoView> list(UUID receiptId) {
         requireReceipt(receiptId, false);
-        return photos.findByReceiptIdOrderByIdAsc(receiptId).stream().map(this::view).toList();
+        List<GoodsReceiptPhotoJpaEntity> kept = photos.findByReceiptIdOrderByIdAsc(receiptId);
+        java.util.Map<UUID, String> names = identities.displayNames(kept.stream()
+                .map(GoodsReceiptPhotoJpaEntity::getTakenBy).filter(java.util.Objects::nonNull).distinct().toList());
+        return kept.stream().map(p -> view(p, p.getTakenBy() == null ? null : names.get(p.getTakenBy()))).toList();
     }
 
     /**
@@ -196,9 +204,13 @@ public class GoodsReceiptPhotoService {
         return GoodsReceiptStatus.valueOf(facts.getStatus());
     }
 
-    private PhotoView view(GoodsReceiptPhotoJpaEntity p) {
+    private String nameOf(UUID userId) {
+        return userId == null ? null : identities.displayNames(List.of(userId)).get(userId);
+    }
+
+    private PhotoView view(GoodsReceiptPhotoJpaEntity p, String takenByName) {
         return new PhotoView(p.getId(), p.getReceiptId(), p.getReceiptLineId(), p.getStage(), p.getOriginalName(),
                 p.getContentType(), p.getSizeBytes(), p.getTakenBy(), p.getTakenAt(),
-                files.evidenceThumbnailLink(p.getStorageKey()).map(DownloadLink::url).orElse(null));
+                files.evidenceThumbnailLink(p.getStorageKey()).map(DownloadLink::url).orElse(null), takenByName);
     }
 }

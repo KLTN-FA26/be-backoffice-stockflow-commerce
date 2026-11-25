@@ -73,6 +73,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class SalesRollupIntegrationTest {
 
     private static final Duration ASYNC = Duration.ofSeconds(15);
+    /** Incomplete for longer than this, a rollup publication failed rather than waits (see awaitRollupsIdle). */
+    private static final Duration STUCK = Duration.ofMinutes(2);
     private static final String REPORTS = "/api/v1/reports";
 
     @Autowired MockMvc mvc;
@@ -100,8 +102,16 @@ class SalesRollupIntegrationTest {
     void ownSku() {
         confirmedOrders = new ConfirmedOrders(context);
         cup = CustomerSkuRows.issue(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, 50).sku();
+        // Every test reads a baseline first: rollup events still in flight - another class's of the same context, which
+        // cleans up without waiting - would land between it and the assertions.
+        awaitRollupsIdle();
     }
 
+    /**
+     * Cancels what the test left placed, then waits for the rollups to take those cancellations in: they arrive after
+     * commit, asynchronously, and a next test reading its baseline before they land would count an order that is about
+     * to leave the day (replayedEventsAreIgnored saw before + 1 - 1).
+     */
     @AfterEach
     void putTheStockBack() {
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> placed.forEach(id -> {
@@ -110,6 +120,7 @@ class SalesRollupIntegrationTest {
             }
         }));
         placed.clear();
+        awaitRollupsIdle();
     }
 
     // ---- helpers -----------------------------------------------------------------------------------------------
@@ -152,11 +163,16 @@ class SalesRollupIntegrationTest {
         Await.until("OrderCancelled applied", ASYNC, () -> applied(order.orderId(), "CANCELLED"));
     }
 
-    /** No rollup event is waiting or running: everything published so far has been handled. */
+    /**
+     * No rollup event is waiting or running: everything published lately has been handled. A publication left incomplete
+     * for longer than {@link #STUCK} is not in flight but failed - the test profile does not republish it - and waiting
+     * for it would time out every test of the class for an event none of them published.
+     */
     private void awaitRollupsIdle() {
         Await.until("rollup events handled", ASYNC, () -> jdbc.queryForObject("""
                 SELECT count(*) FROM event_publication
-                WHERE completion_date IS NULL AND listener_id LIKE '%SalesRollupListener%'""", Integer.class) == 0);
+                WHERE completion_date IS NULL AND listener_id LIKE '%SalesRollupListener%'
+                  AND publication_date > now() - ?::interval""", Integer.class, STUCK.toSeconds() + " seconds") == 0);
     }
 
     /**

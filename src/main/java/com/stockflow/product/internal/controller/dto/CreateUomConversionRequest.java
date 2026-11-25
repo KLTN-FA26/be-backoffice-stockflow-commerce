@@ -22,10 +22,6 @@ public record CreateUomConversionRequest(
         @Positive(message = "weightKg must be positive") BigDecimal weightKg,
         @Positive(message = "lengthCm must be positive") BigDecimal lengthCm,
         @Positive(message = "widthCm must be positive") BigDecimal widthCm,
-        @Positive(message = "heightCm must be positive") BigDecimal heightCm,
-
-        @Schema(description = "Make it the default shipping unit of the item, the carton load planning estimates "
-                + "with: unmarks the previous one in the same transaction; false when absent; not on a retired unit")
-        Boolean defaultShipping
+        @Positive(message = "heightCm must be positive") BigDecimal heightCm
 ) {
 }

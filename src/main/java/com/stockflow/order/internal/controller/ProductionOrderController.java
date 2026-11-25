@@ -14,6 +14,7 @@ import com.stockflow.order.internal.domain.ProductionOrder;
 import com.stockflow.order.internal.domain.ProductionOrderKind;
 import com.stockflow.order.internal.domain.ProductionOrderRepository;
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
+import com.stockflow.order.internal.service.ProductionOrderLabels;
 import com.stockflow.order.internal.service.ProductionOrderService;
 import com.stockflow.order.internal.service.WarehouseCapacityService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -157,10 +158,17 @@ class ProductionOrderController {
 
     /** One change of status. */
     @Schema(name = "ProductionOrderHistoryEntry")
-    record HistoryResponse(ProductionOrderStatus from, ProductionOrderStatus to, String reason, UUID by, Instant at) {
+    record HistoryResponse(ProductionOrderStatus from, ProductionOrderStatus to, String reason, UUID by, Instant at,
+                           @Schema(description = "Who made the change: full name, else username; null when by is null "
+                                   + "(the system) or unknown")
+                           String byName) {
     }
 
-    /** A production order; {@code history} on the detail only. */
+    /**
+     * A production order; {@code history} on the detail only. Every id of another row carries its label beside it
+     * ({@code salesOrderNumber}, {@code customerName}, {@code producerName}, {@code receivingWarehouseName},
+     * {@code xxxByName}), read once for the whole answer by {@link ProductionOrderLabels}.
+     */
     @Schema(name = "ProductionOrder")
     record ProductionOrderResponse(UUID id, String code, UUID salesOrderId, UUID deliveryBatchId, UUID customerId,
                                    UUID producerId, UUID receivingWarehouseId, LocalDate needByDate,
@@ -194,10 +202,39 @@ class ProductionOrderController {
                                            + "order still brings fits it - judged without its own cartons. A warning, "
                                            + "never a refusal; null when its warehouse is gone")
                                    WarehouseCapacityService.ProductionOrderCapacity capacity,
-                                   List<LineResponse> lines, List<HistoryResponse> history, long version) {
+                                   List<LineResponse> lines, List<HistoryResponse> history, long version,
+                                   @Schema(example = "SO-20261108-000007", description = "The sales order's number")
+                                   String salesOrderNumber,
+                                   @Schema(description = "The customer's registered name; null when the customer "
+                                           + "record is gone")
+                                   String customerName,
+                                   @Schema(description = "The code the customer is known by; set where customerName is")
+                                   String customerCode,
+                                   @Schema(description = "The producer's name")
+                                   String producerName,
+                                   @Schema(example = "HCM", description = "The code (prefix) of the receiving "
+                                           + "warehouse")
+                                   String receivingWarehouseCode,
+                                   @Schema(description = "The receiving warehouse's name")
+                                   String receivingWarehouseName,
+                                   @Schema(description = "Who drew it up; null when unknown")
+                                   String drawnUpByName,
+                                   @Schema(description = "Who approved it (orders of before 2026-11-20 only); null "
+                                           + "when approvedBy is null or unknown")
+                                   String approvedByName,
+                                   @Schema(description = "Who sent it; null when sentBy is null or unknown")
+                                   String sentByName) {
 
         static ProductionOrderResponse of(ProductionOrder p, List<ProductionOrderRepository.HistoryEntry> history,
                                           WarehouseCapacityService.ProductionOrderCapacity capacity) {
+            return of(p, history, capacity, ProductionOrderLabels.Labels.NONE);
+        }
+
+        static ProductionOrderResponse of(ProductionOrder p, List<ProductionOrderRepository.HistoryEntry> history,
+                                          WarehouseCapacityService.ProductionOrderCapacity capacity,
+                                          ProductionOrderLabels.Labels labels) {
+            com.stockflow.customer.api.CustomerLabel customer = labels.customer(p.customerId());
+            com.stockflow.warehouse.api.WarehouseView warehouse = labels.warehouse(p.receivingWarehouseId());
             return new ProductionOrderResponse(p.id(), p.code(), p.salesOrderId(), p.deliveryBatchId(),
                     p.customerId(), p.producerId(), p.receivingWarehouseId(), p.needByDate(), p.status(),
                     p.sampleApprovalRequired(), p.sampleRequiredByDefault(), p.sampleWaiverReason(),
@@ -211,22 +248,31 @@ class ProductionOrderController {
                             l.unitsPerCarton(), l.totalUnits(), l.designSnapshotId(), l.printFileChecksum(),
                             l.packingRequirements(), l.receivedCartons())).toList(),
                     history == null ? null : history.stream().map(h -> new HistoryResponse(h.from(), h.to(),
-                            h.reason(), h.by(), h.at())).toList(),
-                    p.version());
+                            h.reason(), h.by(), h.at(), labels.person(h.by()))).toList(),
+                    p.version(), labels.orderNumber(p.salesOrderId()), customer == null ? null : customer.name(),
+                    customer == null ? null : customer.code(), labels.producer(p.producerId()),
+                    warehouse == null ? null : warehouse.prefix(), warehouse == null ? null : warehouse.name(),
+                    labels.person(p.drawnUpBy()), labels.person(p.approvedBy()), labels.person(p.sentBy()));
         }
     }
 
     private final ProductionOrderService productionOrders;
     private final WarehouseCapacityService capacity;
+    private final ProductionOrderLabels labels;
 
-    ProductionOrderController(ProductionOrderService productionOrders, WarehouseCapacityService capacity) {
+    ProductionOrderController(ProductionOrderService productionOrders, WarehouseCapacityService capacity,
+                              ProductionOrderLabels labels) {
         this.productionOrders = productionOrders;
         this.capacity = capacity;
+        this.labels = labels;
     }
 
-    /** A production order as answered, with its warehouse's capacity read after the change committed (BR-25). */
+    /**
+     * A production order as answered, with its warehouse's capacity read after the change committed (BR-25), and the
+     * labels of what it refers to.
+     */
     private ProductionOrderResponse respond(ProductionOrder p, List<ProductionOrderRepository.HistoryEntry> history) {
-        return ProductionOrderResponse.of(p, history, capacity.ofProductionOrder(p));
+        return ProductionOrderResponse.of(p, history, capacity.ofProductionOrder(p), labels.of(List.of(p), history));
     }
 
     @GetMapping
@@ -248,7 +294,9 @@ class ProductionOrderController {
         // One board per warehouse on the page, not one per production order.
         Map<UUID, WarehouseCapacityService.ProductionOrderCapacity> capacities = capacity.ofProductionOrders(
                 found.items());
-        return ApiResponse.ok(found.map(p -> ProductionOrderResponse.of(p, null, capacities.get(p.id()))));
+        // And one read per kind of label for the page.
+        ProductionOrderLabels.Labels names = labels.of(found.items(), null);
+        return ApiResponse.ok(found.map(p -> ProductionOrderResponse.of(p, null, capacities.get(p.id()), names)));
     }
 
     @GetMapping("/{id}")

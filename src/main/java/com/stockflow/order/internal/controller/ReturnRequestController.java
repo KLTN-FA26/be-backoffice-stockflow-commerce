@@ -29,6 +29,7 @@ import com.stockflow.order.internal.controller.dto.ReturnView;
 import com.stockflow.order.internal.domain.ReturnEvidence;
 import com.stockflow.order.internal.domain.ReturnRequest;
 import com.stockflow.order.internal.domain.ReturnStatus;
+import com.stockflow.order.internal.service.LineNames;
 import com.stockflow.order.internal.service.ReturnCustodyNotes;
 import com.stockflow.order.internal.service.ReturnRequestQueries;
 import com.stockflow.order.internal.service.ReturnRequestService;
@@ -81,9 +82,17 @@ class ReturnRequestController {
     private final ReturnRequestQueries queries;
     private final CustomerService customers;
     private final ReturnCustodyNotes custodyNotes;
+    private final LineNames lineNames;
+    private final com.stockflow.identity.api.IdentityService identities;
+    private final com.stockflow.warehouse.api.WarehouseService warehouses;
 
     ReturnRequestController(ReturnRequestService returns, ReturnRequestQueries queries, CustomerService customers,
-                            ReturnCustodyNotes custodyNotes) {
+                            ReturnCustodyNotes custodyNotes, LineNames lineNames,
+                            com.stockflow.identity.api.IdentityService identities,
+                            com.stockflow.warehouse.api.WarehouseService warehouses) {
+        this.lineNames = lineNames;
+        this.identities = identities;
+        this.warehouses = warehouses;
         this.returns = returns;
         this.queries = queries;
         this.customers = customers;
@@ -235,8 +244,13 @@ class ReturnRequestController {
             @PathVariable UUID evidenceId, @Valid @RequestBody ReturnRequests.EndCustodyNote body,
             @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(ReturnWebMapper.toOutcome(custodyNotes.end(returnId, evidenceId, body.note(),
-                user.userId())));
+        var outcome = custodyNotes.end(returnId, evidenceId, body.note(), user.userId());
+        java.util.Set<UUID> people = new java.util.HashSet<>();
+        people.add(outcome.chosenBy());
+        people.add(outcome.endedBy());
+        people.remove(null);
+        return ApiResponse.ok(ReturnWebMapper.toOutcome(outcome,
+                new ReturnWebMapper.Names(identities.displayNames(people), null)));
     }
 
     @GetMapping("/returns/custody-notes")
@@ -254,8 +268,19 @@ class ReturnRequestController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(custodyNotes.kept(returnRequestId, ended, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size).map(CustodyNoteResponse::of));
+        var found = custodyNotes.kept(returnRequestId, ended, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size);
+        // The names of the page in one lookup each: its people, its customers, its warehouses.
+        var people = identities.displayNames(found.items().stream()
+                .flatMap(r -> java.util.stream.Stream.of(r.keptBy(), r.chosenBy(), r.endedBy()))
+                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet()));
+        var labels = customers.labels(found.items().stream().map(com.stockflow.order.internal.domain.CustodyNoteRow::customerId)
+                .filter(java.util.Objects::nonNull).distinct().toList());
+        var sites = warehouses.findWarehouses(found.items().stream()
+                .map(com.stockflow.order.internal.domain.CustodyNoteRow::warehouseId)
+                .filter(java.util.Objects::nonNull).distinct().toList());
+        return ApiResponse.ok(found.map(r -> CustodyNoteResponse.of(r, people,
+                r.customerId() == null ? null : labels.get(r.customerId()),
+                r.warehouseId() == null ? null : sites.get(r.warehouseId()))));
     }
 
     private static ReturnEvidence.Custody custody(String sku, String lpn, int quantity, String note) {
@@ -316,8 +341,7 @@ class ReturnRequestController {
         ScopeGuards.requireBackOffice(user);
         ReturnRequest recorded = returns.recordCustodyChoice(returnId, body.choice(), body.note(), body.version(),
                 user.userId());
-        return ApiResponse.ok(ReturnWebMapper.toResponse(recorded, List.of(), key -> null,
-                queries.custodyCartons(returnId)));
+        return ApiResponse.ok(staff(recorded, List.of(), key -> null, queries.custodyCartons(returnId)));
     }
 
     @PostMapping("/returns/{returnId}/cancellation")
@@ -340,9 +364,23 @@ class ReturnRequestController {
     }
 
     /** The caller's own view: staff see every step and note, a customer only what is theirs to see. */
-    private static ReturnView view(ReturnRequest request, boolean backOffice) {
-        return backOffice ? ReturnWebMapper.toResponse(request, List.of())
-                : ReturnWebMapper.toCustomerResponse(request, List.of());
+    private ReturnView view(ReturnRequest request, boolean backOffice) {
+        return backOffice ? staff(request, List.of(), key -> null, null)
+                : ReturnWebMapper.toCustomerResponse(request, List.of(), key -> null, namesOf(request));
+    }
+
+    /** What each line's SKU is called, read once for the return (the customer's copy names its lines). */
+    private java.util.Map<String, LineNames.Names> namesOf(ReturnRequest request) {
+        return lineNames.of(request.lines().stream().map(com.stockflow.order.internal.domain.ReturnLine::sku).toList());
+    }
+
+    /** The staff view with the names of its people and its customer, two lookups for the answer. */
+    private ReturnRequestResponse staff(ReturnRequest request,
+                                        List<com.stockflow.order.internal.domain.ReturnTransition> history,
+                                        java.util.function.Function<String, String> thumbnails,
+                                        List<com.stockflow.inventory.api.HeldCarton> cartons) {
+        return ReturnWebMapper.toResponse(request, history, thumbnails, cartons,
+                ReturnWebMapper.namesOf(request, history, identities, customers));
     }
 
     @GetMapping("/returns/me")
@@ -365,7 +403,8 @@ class ReturnRequestController {
     public ApiResponse<CustomerReturnResponse> myReturn(@PathVariable UUID returnId,
                                                         @AuthenticatedUser CurrentUser user) {
         ReturnRequestQueries.Detail detail = queries.detail(returnId, ownCustomerId(user));
-        return ApiResponse.ok(ReturnWebMapper.toCustomerResponse(detail.request(), detail.history(), queries::thumbnail));
+        return ApiResponse.ok(ReturnWebMapper.toCustomerResponse(detail.request(), detail.history(), queries::thumbnail,
+                namesOf(detail.request())));
     }
 
     // ---- the back office -----------------------------------------------------------------------------------------------
@@ -386,8 +425,13 @@ class ReturnRequestController {
             @RequestParam(required = false) String sort) {
         // A customer holds sales-rmas:READ for their own returns; this list is everyone's.
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(queries.list(statuses, customerId, orderId, search, vatAdjustment, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort).map(ReturnWebMapper::toRow));
+        var found = queries.list(statuses, customerId, orderId, search, vatAdjustment, page,
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort);
+        // One lookup for the customers of the whole page - not one per row.
+        var labels = customers.labels(found.items().stream().map(ReturnRequestQueries.Item::customerId)
+                .filter(java.util.Objects::nonNull).distinct().toList());
+        return ApiResponse.ok(found.map(item -> ReturnWebMapper.toRow(item,
+                item.customerId() == null ? null : labels.get(item.customerId()))));
     }
 
     @GetMapping("/returns/{returnId}")
@@ -396,8 +440,7 @@ class ReturnRequestController {
     public ApiResponse<ReturnRequestResponse> one(@PathVariable UUID returnId, @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         ReturnRequestQueries.Detail detail = queries.detail(returnId, null);
-        return ApiResponse.ok(ReturnWebMapper.toResponse(detail.request(), detail.history(), queries::thumbnail,
-                detail.custodyCartons()));
+        return ApiResponse.ok(staff(detail.request(), detail.history(), queries::thumbnail, detail.custodyCartons()));
     }
 
     @PostMapping("/returns/{returnId}/approval")
@@ -407,8 +450,8 @@ class ReturnRequestController {
     public ApiResponse<ReturnRequestResponse> approve(@PathVariable UUID returnId,
                                                       @Valid @RequestBody(required = false) ReturnRequests.Approve request,
                                                       @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(ReturnWebMapper.toResponse(returns.approve(returnId, ReturnWebMapper.toCommand(request),
-                user.userId()), List.of()));
+        return ApiResponse.ok(staff(returns.approve(returnId, ReturnWebMapper.toCommand(request), user.userId()),
+                List.of(), key -> null, null));
     }
 
     @PostMapping("/returns/{returnId}/rejection")
@@ -417,8 +460,8 @@ class ReturnRequestController {
     public ApiResponse<ReturnRequestResponse> reject(@PathVariable UUID returnId,
                                                      @Valid @RequestBody ReturnRequests.Reason request,
                                                      @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(ReturnWebMapper.toResponse(returns.reject(returnId, request.reason(), request.version(),
-                user.userId()), List.of()));
+        return ApiResponse.ok(staff(returns.reject(returnId, request.reason(), request.version(), user.userId()),
+                List.of(), key -> null, null));
     }
 
     // ---- who the caller is -----------------------------------------------------------------------------------------------

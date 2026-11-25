@@ -21,6 +21,7 @@ import com.stockflow.order.internal.domain.OrderAddressSnapshot;
 import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.CancellationRequest;
 import com.stockflow.order.internal.domain.CancellationRequestRepository;
+import com.stockflow.order.internal.domain.SalesFollowUps;
 import java.math.BigDecimal;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
 import com.stockflow.common.api.PageResponse;
@@ -360,7 +361,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
 
     /**
      * Cancels a loaded, locked order: releases its holds, records the reason and publishes
-     * {@code OrderCancelled}, all in this transaction. Shared by every cancellation path, including
+     * {@code OrderCancelled} - and {@code SalesContractStatusChanged} when it takes an unsigned contract with it - all in
+     * this transaction. Shared by every cancellation path, including
      * an approved request ({@code CancellationRequestService}).
      */
     Order cancelLoaded(Order order, CancelOrderCommand command) {
@@ -378,10 +380,15 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 .ifPresent(contract -> {
                     // Someone cancels an order that has a contract: Sales, accounting or the customer's approved
                     // request - never the system on its own, which would have no one to name on the contract.
-                    contract.cancel(cancelledWith(command.reasonCode()), clock.instant(),
+                    contract.cancel(cancelledWith(command.reasonCode()), now,
                             java.util.Objects.requireNonNull(command.cancelledBy(),
                                     "an order with a contract is cancelled by someone"));
                     contracts.save(contract);
+                    // LC-1: told like a cancellation of the contract alone, so the chat's contract card the customer
+                    // holds reads "cancelled" and offers no download. Only a DRAFT or SENT contract gets here.
+                    events.publish(new com.stockflow.contracts.SalesContractStatusChanged(contract.id(),
+                            contract.contractNumber(), order.id().value(), order.orderNumber().value(),
+                            order.customerId(), contract.status().name(), command.cancelledBy(), now));
                 });
 
         if (wasHoldingStock) {
@@ -557,7 +564,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             return;
         }
         java.time.Instant when = at == null ? clock.instant() : at;
-        String note = "Payment receipt %s voided: the installment on signing is short".formatted(reference);
+        String note = SalesFollowUps.VOIDED_RECEIPT_HOLD_NOTE.formatted(reference);
         order.putOnHold(com.stockflow.order.api.HoldReason.PAYMENT, note, by, when);
         holds.save(new OrderHoldJpaEntity(Identifiers.newId(), orderId,
                 com.stockflow.order.api.HoldReason.PAYMENT.name(), when, note, by));

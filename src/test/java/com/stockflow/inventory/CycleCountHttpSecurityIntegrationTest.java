@@ -186,6 +186,7 @@ class CycleCountHttpSecurityIntegrationTest {
                 .andExpect(jsonPath(row + ".lineCount").value(org.hamcrest.Matchers.contains(1)))
                 .andExpect(jsonPath(row + ".countedCount").value(org.hamcrest.Matchers.contains(1)))
                 .andExpect(jsonPath(row + ".varianceCount").doesNotExist())
+                .andExpect(jsonPath(row + ".warehouseCode").value(org.hamcrest.Matchers.contains("HCM")))
                 .andExpect(jsonPath(row + ".note").doesNotExist())
                 .andExpect(jsonPath(row + ".lines").doesNotExist());
         mvc.asRole(Role.WAREHOUSE_MANAGER, manager, get(list))
@@ -300,6 +301,11 @@ class CycleCountHttpSecurityIntegrationTest {
                 .andExpect(jsonPath("$.data.status").value("IN_PROGRESS"))
                 .andExpect(jsonPath("$.data.lines[0].found").value(false))
                 .andExpect(jsonPath("$.data.lines[0].countedBy").value(clerk.toString()))
+                // Names and the warehouse beside the ids: the account has no full name, so its username
+                .andExpect(jsonPath("$.data.lines[0].countedByName").value("test-" + clerk))
+                .andExpect(jsonPath("$.data.assignedUserName").value("test-" + clerk))
+                .andExpect(jsonPath("$.data.warehouseCode").value("HCM"))
+                .andExpect(jsonPath("$.data.warehouseName").isNotEmpty())
                 .andExpect(jsonPath("$.data.lines[0].booked").doesNotExist());
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, post(BASE + "/" + count.id() + "/submission"))
                 .andExpect(status().isOk())
@@ -311,6 +317,13 @@ class CycleCountHttpSecurityIntegrationTest {
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, post("/api/v1/inventory/adjustments/" + variance(count) + "/approval"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+        // The variance names who asked for it and who counted it - here the same clerk
+        UUID decider = staff("WAREHOUSE_MANAGER", WAREHOUSE_HCM);
+        mvc.asRole(Role.WAREHOUSE_MANAGER, decider, get("/api/v1/inventory/adjustments/" + variance(count)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.countedBy").value(clerk.toString()))
+                .andExpect(jsonPath("$.data.countedByName").value("test-" + clerk))
+                .andExpect(jsonPath("$.data.decidedByName").doesNotExist());
     }
 
     @Test

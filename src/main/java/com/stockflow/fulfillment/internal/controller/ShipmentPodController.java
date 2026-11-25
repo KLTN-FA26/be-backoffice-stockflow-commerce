@@ -107,6 +107,6 @@ class ShipmentPodController {
 
     private static PodFileResponse toResponse(ShipmentPodFiles.PodFile f) {
         return new PodFileResponse(f.id(), f.shipmentId(), f.fileName(), f.contentType(), f.sizeBytes(),
-                f.uploadedBy(), f.uploadedAt());
+                f.uploadedBy(), f.uploadedAt(), f.uploadedByName());
     }
 }

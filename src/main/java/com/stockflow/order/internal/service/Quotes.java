@@ -136,13 +136,31 @@ public interface Quotes {
      *                          product module did not answer for
      * @param designName        R5-3: the name of the design the customer's SKU was made to; null for a SKU with none
      * @param previewUrl        R5-3: a short-lived link showing that design's preview; null when there is none
+     * @param productName       the name of the product the SKU belongs to, so a reader tells lines apart without
+     *                          knowing SKU codes; null for a SKU the product module does not know
+     * @param variantName       the name of the SKU itself (its variant); null for an unknown SKU
      */
     record LineView(UUID id, int lineNo, String measure, String sku, Integer cartons, Integer unitsPerCarton,
                     int units, UUID designSnapshotId, String printSpec, boolean priced, Integer moq, List<Tier> tiers,
                     BigDecimal proposedUnitPrice, BigDecimal proposedLineTotal, Integer acceptedCartons,
                     Integer acceptedUnits, BigDecimal acceptedUnitPrice, BigDecimal acceptedLineTotal,
                     String taxClass, BigDecimal taxRate, BigDecimal proposedTax, BigDecimal acceptedTax,
-                    com.stockflow.product.api.Purchasability purchasability, String designName, String previewUrl) {
+                    com.stockflow.product.api.Purchasability purchasability, String designName, String previewUrl,
+                    String productName, String variantName) {
+
+        /** Without the product and variant names. */
+        public LineView(UUID id, int lineNo, String measure, String sku, Integer cartons, Integer unitsPerCarton,
+                        int units, UUID designSnapshotId, String printSpec, boolean priced, Integer moq,
+                        List<Tier> tiers, BigDecimal proposedUnitPrice, BigDecimal proposedLineTotal,
+                        Integer acceptedCartons, Integer acceptedUnits, BigDecimal acceptedUnitPrice,
+                        BigDecimal acceptedLineTotal, String taxClass, BigDecimal taxRate, BigDecimal proposedTax,
+                        BigDecimal acceptedTax, com.stockflow.product.api.Purchasability purchasability,
+                        String designName, String previewUrl) {
+            this(id, lineNo, measure, sku, cartons, unitsPerCarton, units, designSnapshotId, printSpec, priced, moq,
+                    tiers, proposedUnitPrice, proposedLineTotal, acceptedCartons, acceptedUnits, acceptedUnitPrice,
+                    acceptedLineTotal, taxClass, taxRate, proposedTax, acceptedTax, purchasability, designName,
+                    previewUrl, null, null);
+        }
 
         /** Without the design shown beside the SKU. */
         public LineView(UUID id, int lineNo, String measure, String sku, Integer cartons, Integer unitsPerCarton,
@@ -153,7 +171,8 @@ public interface Quotes {
                         BigDecimal acceptedTax, com.stockflow.product.api.Purchasability purchasability) {
             this(id, lineNo, measure, sku, cartons, unitsPerCarton, units, designSnapshotId, printSpec, priced, moq,
                     tiers, proposedUnitPrice, proposedLineTotal, acceptedCartons, acceptedUnits, acceptedUnitPrice,
-                    acceptedLineTotal, taxClass, taxRate, proposedTax, acceptedTax, purchasability, null, null);
+                    acceptedLineTotal, taxClass, taxRate, proposedTax, acceptedTax, purchasability, null, null,
+                    null, null);
         }
     }
 
@@ -177,6 +196,11 @@ public interface Quotes {
      * @param proposedTotal the total with tax at the proposed cartons ({@code proposed.total()}); null while a part of
      *                      it is not known
      * @param acceptedTotal the total with tax accepted; null until accepted
+     * @param customerName  the customer's name, so a page names whose quote it is without a customer lookup
+     * @param customerCode  the customer's code
+     * @param sentByName    the display name of {@code sentBy}, for the back office; null on the customer's copy, which
+     *                      names no account (as {@link Transition#changedByName})
+     * @param respondedByName the display name of {@code respondedBy}, for the back office; null on the customer's copy
      */
     record QuoteView(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
                      Instant validUntil, String terms,
@@ -186,7 +210,22 @@ public interface Quotes {
                      Instant sentAt, UUID sentBy, Instant respondedAt,
                      UUID respondedBy, String customerFeedback, String cancellationReason,
                      ConvertedOrder convertedOrder, Instant convertedAt, List<Transition> history,
-                     Instant createdAt, String createdBy, long version) {
+                     Instant createdAt, String createdBy, long version, String customerName, String customerCode,
+                     String sentByName, String respondedByName) {
+
+        /** Without the names beside the ids: a view drawn for a paper, or a test. */
+        public QuoteView(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
+                         Instant validUntil, String terms, java.time.LocalDate requestedDeliveryDate, boolean legacy,
+                         List<LineView> lines, List<FeeView> fees, boolean priced, Totals proposed, Totals accepted,
+                         BigDecimal proposedTotal, BigDecimal acceptedTotal, Instant sentAt, UUID sentBy,
+                         Instant respondedAt, UUID respondedBy, String customerFeedback, String cancellationReason,
+                         ConvertedOrder convertedOrder, Instant convertedAt, List<Transition> history,
+                         Instant createdAt, String createdBy, long version) {
+            this(id, quoteNumber, customerId, status, revision, validUntil, terms, requestedDeliveryDate, legacy, lines,
+                    fees, priced, proposed, accepted, proposedTotal, acceptedTotal, sentAt, sentBy, respondedAt,
+                    respondedBy, customerFeedback, cancellationReason, convertedOrder, convertedAt, history, createdAt,
+                    createdBy, version, null, null, null, null);
+        }
     }
 
     /**
@@ -196,15 +235,28 @@ public interface Quotes {
      *                      accepted total once accepted, else the proposed one; null while a part is not priced
      * @param lineCount     lines on that offer
      * @param firstItemName the design name of its first line, else that line's SKU; null for an offer with no line
+     * @param customerName  the customer's name, read for the whole page at once (the list named no customer, and a
+     *                      screen looked each one up per row)
+     * @param customerCode  the customer's code
+     * @param convertedOrderNumber the number of the order {@code convertedOrderId} names; null when there is none, and
+     *                      on the customer's copy while that order is a DRAFT (17 §5.2, as the quote's own view)
      */
     record Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
                Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt, long version,
-               BigDecimal total, Integer lineCount, String firstItemName) {
+               BigDecimal total, Integer lineCount, String firstItemName, String customerName, String customerCode,
+               String convertedOrderNumber) {
+
+        public Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
+                   Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt, long version,
+                   BigDecimal total, Integer lineCount, String firstItemName) {
+            this(id, quoteNumber, customerId, status, revision, validUntil, sentAt, convertedOrderId, createdAt,
+                    version, total, lineCount, firstItemName, null, null, null);
+        }
 
         public Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
                    Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt, long version) {
             this(id, quoteNumber, customerId, status, revision, validUntil, sentAt, convertedOrderId, createdAt,
-                    version, null, null, null);
+                    version, null, null, null, null, null, null);
         }
     }
 

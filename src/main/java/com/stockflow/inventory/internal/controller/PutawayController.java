@@ -14,6 +14,7 @@ import com.stockflow.inventory.internal.controller.dto.PutawaySuggestionResponse
 import com.stockflow.inventory.internal.controller.dto.PutawayTaskResponse;
 import com.stockflow.inventory.internal.service.PutawayService;
 import com.stockflow.inventory.internal.service.PutawayService.TaskView;
+import com.stockflow.warehouse.api.WarehouseView;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,7 +26,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 /**
  * Putaway tasks (SCRUM-92): what is waiting to go from the receiving area into bins, and where it could go. The
@@ -45,9 +48,11 @@ import java.util.UUID;
 class PutawayController {
 
     private final PutawayService putaway;
+    private final ResponseLabels labels;
 
-    PutawayController(PutawayService putaway) {
+    PutawayController(PutawayService putaway, ResponseLabels labels) {
         this.putaway = putaway;
+        this.labels = labels;
     }
 
     @GetMapping
@@ -61,15 +66,17 @@ class PutawayController {
             @RequestParam(required = false) String status,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(putaway.list(warehouseId, receiptId, status, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size).map(PutawayController::toResponse));
+        PageResponse<TaskView> tasks = putaway.list(warehouseId, receiptId, status, page,
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size);
+        Map<UUID, WarehouseView> warehouses = labels.warehouses(tasks.items().stream().map(TaskView::warehouseId));
+        return ApiResponse.ok(tasks.map(task -> toResponse(task, warehouses)));
     }
 
     @GetMapping("/{taskId}")
     @Operation(summary = "One putaway task: what is left, where it stands and up to 10 ranked bins")
     @RequiresPermission(resource = InventoryResources.PUTAWAY_TASKS, action = Action.READ, scope = DataScope.WAREHOUSE)
     public ApiResponse<PutawayTaskResponse> get(@PathVariable UUID taskId) {
-        return ApiResponse.ok(toResponse(putaway.get(taskId)));
+        return ApiResponse.ok(toResponse(putaway.get(taskId), labels));
     }
 
     @PostMapping("/{taskId}/confirmations")
@@ -84,15 +91,21 @@ class PutawayController {
                                                     @Valid @RequestBody PutawayConfirmationRequest request,
                                                     @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(toResponse(putaway.confirm(taskId, request.locationCode(), request.lpn(),
-                actor.userId())));
+                actor.userId()), labels));
     }
 
     /** Package-private: a quarantine release answers the task it opened in the same shape. */
-    static PutawayTaskResponse toResponse(TaskView task) {
+    static PutawayTaskResponse toResponse(TaskView task, ResponseLabels labels) {
+        return toResponse(task, labels.warehouses(Stream.of(task.warehouseId())));
+    }
+
+    private static PutawayTaskResponse toResponse(TaskView task, Map<UUID, WarehouseView> warehouses) {
         return new PutawayTaskResponse(task.id(), task.goodsReceiptId(), task.goodsReceiptLineId(), task.sku(),
                 task.lotNumber(), task.quantity(), task.left(), task.sourceLocationCode(), task.warehouseId(),
                 task.lpn(), task.status(), task.targetLocationCode(), task.suggestions().stream()
                 .map(s -> new PutawaySuggestionResponse(s.locationCode(), s.reason().name(), s.freeVolumeM3(),
-                        s.freeWeightKg())).toList(), task.overflowLocationCodes(), task.source().name());
+                        s.freeWeightKg())).toList(), task.overflowLocationCodes(), task.source().name(),
+                ResponseLabels.code(warehouses, task.warehouseId()),
+                ResponseLabels.warehouseName(warehouses, task.warehouseId()));
     }
 }

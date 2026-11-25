@@ -7,6 +7,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
+import com.stockflow.common.security.PermissionCode;
 import com.stockflow.common.security.Role;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.IncomingFiles;
@@ -103,8 +104,9 @@ class Wf02ChatToConfirmedIntegrationTest {
 
     private final CurrentUser portal = new CurrentUser(CUSTOMER_ACCOUNT, "demo.khachhang", Set.of(Role.CUSTOMER),
             Set.of(), DataScope.ALL, Set.of(), Set.of());
-    private final CurrentUser sales = new CurrentUser(SALES, "demo.sales", Set.of(Role.SALES_STAFF), Set.of(),
-            DataScope.ALL, Set.of(), Set.of());
+    // CREATE_QUOTE on the card draws a quote, which needs sales-quotes:CREATE (WF-02 AUTH-2), as Sales Staff hold it.
+    private final CurrentUser sales = new CurrentUser(SALES, "demo.sales", Set.of(Role.SALES_STAFF),
+            Set.of(PermissionCode.parse("sales-quotes:CREATE")), DataScope.ALL, Set.of(), Set.of());
 
     @Test
     @DisplayName("DS-02a in demo order on the seed: request on the approved design -> QUOTE_REQUEST card -> CREATE_QUOTE "

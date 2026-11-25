@@ -513,6 +513,12 @@ class CustomizationTemplateIntegrationTest {
                 .andExpect(jsonPath("$.data.templates[0].sku").value(sku))
                 .andExpect(jsonPath("$.data.templates[0].code").value("CUP12-BODY"))
                 .andExpect(jsonPath("$.data.templates[0].printAreas[0].shape.type").value("annular-sector"));
+        // The studio names a design by the product's published title, the product page's own title.
+        String title = jdbc.queryForObject("SELECT published_title FROM catalog.product_listing WHERE product_id = ?",
+                String.class, productId);
+        assertThat(title).isNotBlank();
+        mvc.perform(get("/api/v1/catalog/products/" + slug + "/customization"))
+                .andExpect(jsonPath("$.data.productTitle").value(title));
 
         mvc.perform(get("/api/v1/catalog/products/no-such-product-" + UUID.randomUUID() + "/customization"))
                 .andExpect(status().isNotFound());

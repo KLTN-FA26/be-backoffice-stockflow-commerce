@@ -57,6 +57,23 @@ class CustomerController {
     }
 
     /**
+     * The signed-in customer's own delivery addresses, the same answer as {@code GET /{customerId}/addresses} for their
+     * own id: the customer resolved from the sign-in, never from the request, so the storefront need not read
+     * {@code /me} first only to learn its id. Read with {@code customer-addresses:READ}, the grant the storefront
+     * already reads its addresses with; 404 {@code CUSTOMER_NOT_FOUND} for an account with no customer record.
+     */
+    @GetMapping("/me/addresses")
+    @io.swagger.v3.oas.annotations.Operation(summary = "The signed-in customer's own delivery addresses")
+    @RequiresPermission(resource = CustomerResources.ADDRESSES, action = Action.READ)
+    public ApiResponse<List<com.stockflow.customer.internal.controller.dto.CustomerAddressResponse>> myAddresses(
+            @AuthenticatedUser CurrentUser user) {
+        var own = customers.findByUserId(user.userId())
+                .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND));
+        return ApiResponse.ok(customers.listAddresses(own.customerId(), user.userId(), false).stream()
+                .map(CustomerWebMapper::toResponse).toList());
+    }
+
+    /**
      * R5-10: the signed-in customer's own legal profile, read-only - the customer resolved from the sign-in, never from
      * the request, so no one reads another customer's. Read with {@code customers:READ}, the grant that already reads
      * their own record at {@code /me}; the profile's own grant ({@code customer-legal-profiles}) stays the back office's.

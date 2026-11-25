@@ -28,12 +28,15 @@ public interface DesignDraftJpaRepository extends BaseJpaRepository<DesignDraftJ
     Optional<DesignDraftJpaEntity> lockById(@Param("id") UUID id);
 
     /**
-     * Whether a quote request on the design is open: what lets the sales staff read it (plan D7). Asked by a read only
-     * when that decides - a reader holding the right to read quote requests, of a design that is neither theirs nor
-     * waiting for them as a reviewer.
+     * Whether a quote request on the design is open - its own, or a line of its project's open request: what lets the
+     * sales staff read it (plan D7; 12 BR-25, where a project request names a design returned for changes too). Asked
+     * by a read only when that decides - a reader holding the right to read quote requests, of a design that is neither
+     * theirs nor waiting for them as a reviewer.
      */
-    @Query("select count(r) > 0 from DesignQuoteRequestJpaEntity r where r.draftId = :id "
-            + "and r.status = com.stockflow.design.internal.domain.QuoteRequestStatus.OPEN")
+    @Query(value = "SELECT EXISTS (SELECT 1 FROM design.design_quote_request r WHERE r.draft_id = :id "
+            + "AND r.status = 'OPEN') OR EXISTS (SELECT 1 FROM design.design_project_quote_request_line l "
+            + "JOIN design.design_project_quote_request p ON p.id = l.request_id WHERE l.draft_id = :id "
+            + "AND p.status = 'OPEN')", nativeQuery = true)
     boolean hasOpenQuoteRequest(@Param("id") UUID id);
 
     /**

@@ -31,6 +31,25 @@ public interface DesignProjectQuoteRequestJpaRepository extends BaseJpaRepositor
     @Query("select r from DesignProjectQuoteRequestJpaEntity r where r.id = :id")
     Optional<DesignProjectQuoteRequestJpaEntity> lockById(@Param("id") UUID id);
 
+    /**
+     * The open request whose lines name the design, if any: at most one, since a design is in one project and a project
+     * has one open request. Read before the request is locked, and checked again under the lock.
+     */
+    @Query(value = "select r.* from design.design_project_quote_request r "
+            + "join design.design_project_quote_request_line l on l.request_id = r.id "
+            + "where l.draft_id = :designId and r.status = 'OPEN'", nativeQuery = true)
+    Optional<DesignProjectQuoteRequestJpaEntity> findOpenContaining(@Param("designId") UUID designId);
+
+    /**
+     * The designs of the request not approved yet, read from the database as committed now - not from the entities this
+     * transaction holds - so that, of two approvals of a request's last two designs queued on its lock, the second sees
+     * the first's and only it finds none left (12 BR-25: Sales are told once).
+     */
+    @Query(value = "select l.draft_id from design.design_project_quote_request_line l "
+            + "join design.design_draft d on d.id = l.draft_id "
+            + "where l.request_id = :requestId and d.status <> 'APPROVED' order by l.draft_id", nativeQuery = true)
+    List<UUID> unapprovedDesigns(@Param("requestId") UUID requestId);
+
     /** A project's quote requests, the newest first. */
     List<DesignProjectQuoteRequestJpaEntity> findByProjectIdOrderByCreatedAtDescIdDesc(UUID projectId);
 

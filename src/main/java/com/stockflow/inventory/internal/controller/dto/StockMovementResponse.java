@@ -22,6 +22,16 @@ public record StockMovementResponse(UUID movementId, String type, String sku, St
                                     @io.swagger.v3.oas.annotations.media.Schema(description = "On an ADJUSTMENT line "
                                             + "of a cycle count's variance: who counted the line", nullable = true)
                                     UUID countedBy,
+                                    @io.swagger.v3.oas.annotations.media.Schema(description = "Display name of "
+                                            + "actorId, so the ledger need not read the user list; null for a "
+                                            + "system line or an unknown user", nullable = true)
+                                    String actorName,
+                                    @io.swagger.v3.oas.annotations.media.Schema(description = "Display name of "
+                                            + "requestedBy; null whenever requestedBy is", nullable = true)
+                                    String requestedByName,
+                                    @io.swagger.v3.oas.annotations.media.Schema(description = "Display name of "
+                                            + "countedBy; null whenever countedBy is", nullable = true)
+                                    String countedByName,
                                     @io.swagger.v3.oas.annotations.media.Schema(description = "The carton (LPN) the "
                                             + "units left; null for a side with no carton", nullable = true)
                                     String fromLpn,

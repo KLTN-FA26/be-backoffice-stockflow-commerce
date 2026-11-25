@@ -14,8 +14,10 @@ public interface RequestQuotes {
     /**
      * @param sent whether the quote was ever sent to the customer: before that it is Sales' working copy, which the
      *             customer cannot open
+     * @param withdrawn the quote was cancelled before it was ever sent: Sales closed the request without answering it
+     *                  (LC-3)
      */
-    record Answer(UUID quoteId, String quoteNumber, boolean sent) {
+    record Answer(UUID quoteId, String quoteNumber, boolean sent, boolean withdrawn) {
     }
 
     /** The quote drawn from each of {@code requestIds} (requests on one design), by request id; none is absent. */

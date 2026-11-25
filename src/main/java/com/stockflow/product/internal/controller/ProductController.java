@@ -79,11 +79,14 @@ class ProductController {
     private final ProductService productService;
     private final ProductDuplicateService duplicates;
     private final ProductWebMapper mapper;
+    private final ProductResponses responses;
 
-    ProductController(ProductService productService, ProductDuplicateService duplicates, ProductWebMapper mapper) {
+    ProductController(ProductService productService, ProductDuplicateService duplicates, ProductWebMapper mapper,
+                      ProductResponses responses) {
         this.productService = productService;
         this.duplicates = duplicates;
         this.mapper = mapper;
+        this.responses = responses;
     }
 
     /**
@@ -103,7 +106,7 @@ class ProductController {
                     product.productId(), lookupFailed);
             possible = null;
         }
-        return mapper.toDetail(product, possible);
+        return responses.toDetail(product, possible);
     }
 
     @GetMapping
@@ -119,7 +122,7 @@ class ProductController {
             @RequestParam(required = false) String sort) {
         var query = new ListProductsQuery(
                 page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, search, status, categoryId, brandId, sort);
-        return ApiResponse.ok(productService.list(query).map(mapper::toResponse));
+        return ApiResponse.ok(responses.toResponses(productService.list(query)));
     }
 
     @GetMapping("/{productId}")
@@ -171,7 +174,7 @@ class ProductController {
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.UPDATE)
     public ApiResponse<ProductResponse> submit(@PathVariable UUID productId,
                                                @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(mapper.toResponse(productService.submit(productId, user.userId())));
+        return ApiResponse.ok(responses.toResponse(productService.submit(productId, user.userId())));
     }
 
     @PostMapping("/{productId}/approval")
@@ -180,7 +183,7 @@ class ProductController {
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.APPROVE)
     public ApiResponse<ProductResponse> approve(@PathVariable UUID productId,
                                                 @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(mapper.toResponse(productService.approve(productId, user.userId())));
+        return ApiResponse.ok(responses.toResponse(productService.approve(productId, user.userId())));
     }
 
     @PostMapping("/{productId}/rejection")
@@ -189,7 +192,7 @@ class ProductController {
     public ApiResponse<ProductResponse> reject(@PathVariable UUID productId,
                                                @AuthenticatedUser CurrentUser user,
                                                @Valid @RequestBody RejectProductRequest request) {
-        return ApiResponse.ok(mapper.toResponse(
+        return ApiResponse.ok(responses.toResponse(
                 productService.reject(productId, user.userId(), request.reason())));
     }
 

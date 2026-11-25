@@ -18,7 +18,11 @@ import java.util.UUID;
  * approval show them without a snapshot read per design, which only the owner may make. {@code unitsPerCarton} (R5-13)
  * is how many pieces one carton of it holds - the customer's SKU's carton once approved, the variant's it is drawn on
  * before (the SKU is issued with that carton spec) - so a quote request can say "1 carton = N pieces"; null while the
- * SKU has no single carton unit, or the design is on no variant.
+ * SKU has no single carton unit, or the design is on no variant. {@code projectName} and {@code projectStatus}
+ * ({@code ACTIVE}, {@code ARCHIVED}) name the design project it is in, read for the whole page, so the studio does not
+ * read every project to label its designs; null when it is in none. {@code reviewedByName} is who {@code reviewedBy} is
+ * (full name, else username), so a returned or approved design says who decided it; null before a decision, or when
+ * the account is gone.
  */
 public record DesignDraftResponse(UUID id, UUID customerId, UUID productId, UUID ownerUserId, String name,
                                   String spec, String status, UUID currentArtifactId, UUID reviewedBy,
@@ -26,5 +30,6 @@ public record DesignDraftResponse(UUID id, UUID customerId, UUID productId, UUID
                                   String sku, String templateCode, Instant reviewRequestedAt, Instant reviewedAt,
                                   Instant updatedAt, UUID previewArtifactId, UUID projectId, String previewUrl,
                                   String variantName, String productName, String customerSku,
-                                  String customerName, Integer unitsPerCarton) {
+                                  String customerName, Integer unitsPerCarton, String projectName,
+                                  String projectStatus, String reviewedByName) {
 }

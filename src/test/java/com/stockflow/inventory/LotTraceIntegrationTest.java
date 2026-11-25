@@ -211,9 +211,12 @@ class LotTraceIntegrationTest {
         mvc.perform(get("/api/v1/inventory/lots").param("sku", sku).param("lotNumber", goods.productionCode()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items.length()").value(1))
-                .andExpect(jsonPath("$.data.items[0].productionOrderCode").value(goods.productionCode()));
+                .andExpect(jsonPath("$.data.items[0].productionOrderCode").value(goods.productionCode()))
+                .andExpect(jsonPath("$.data.items[0].receivingWarehouseCode").value("HCM"));
         mvc.perform(get("/api/v1/inventory/lots/{id}", lot))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.lot.receivingWarehouseCode").value("HCM"))
+                .andExpect(jsonPath("$.data.lot.receivingWarehouseName").isNotEmpty())
                 .andExpect(jsonPath("$.data.orders[0].orderId").value(order.toString()));
         mvc.perform(get("/api/v1/inventory/lots/{id}/movements", lot).param("size", "2"))
                 .andExpect(status().isOk())

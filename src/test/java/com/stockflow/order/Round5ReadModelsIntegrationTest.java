@@ -158,6 +158,11 @@ class Round5ReadModelsIntegrationTest {
         Quotes.QuoteView sent = quotes.send(sales, drafted.id(), priced.version());
 
         JsonNode detail = data(http.asRole(Role.SALES_STAFF, salesUser, get("/api/v1/quotes/" + sent.id())));
+        // Whose quote it is, who sent it, and what its SKU is called: names, not ids.
+        assertThat(detail.path("customerName").asText()).isEqualTo(customerName);
+        assertThat(detail.path("sentByName").asText()).isEqualTo("test-" + salesUser);
+        assertThat(detail.path("lines").get(0).path("productName").asText()).isEqualTo(productName());
+        assertThat(detail.path("lines").get(0).path("variantName").asText()).isEqualTo("Ly in logo khach");
         BigDecimal proposed = detail.path("proposedTotal").decimalValue();
         assertThat(proposed).as("3 cartons of 10 at 3,000 and a plate fee, with VAT").isPositive();
         JsonNode line = detail.path("lines").get(0);
@@ -175,11 +180,21 @@ class Round5ReadModelsIntegrationTest {
             assertThat(row.path("total").decimalValue()).isEqualByComparingTo(proposed);
             assertThat(row.path("lineCount").asInt()).isEqualTo(1);
             assertThat(row.path("firstItemName").asText()).isEqualTo("Ly R5");
+            assertThat(row.path("customerName").asText()).isEqualTo(customerName);
+            assertThat(row.has("convertedOrderNumber")).as("not converted: none").isFalse();
         }
 
         // The customer's copy names no account behind a step.
         JsonNode seen = data(http.asCustomer(portalUser, get("/api/v1/quotes/" + sent.id())));
         assertThat(seen.path("history")).allSatisfy(step -> assertThat(step.has("changedByName")).isFalse());
+        assertThat(seen.has("sentByName")).as("nor who sent the quote").isFalse();
+        assertThat(seen.path("customerName").asText()).isEqualTo(customerName);
+        assertThat(seen.path("lines").get(0).path("productName").asText()).isEqualTo(productName());
+    }
+
+    /** The name of the product the issued SKU belongs to, as the catalogue stores it. */
+    private String productName() {
+        return jdbc.queryForObject("SELECT name FROM product.products WHERE id = ?", String.class, issued.productId());
     }
 
     @Test
@@ -193,6 +208,7 @@ class Round5ReadModelsIntegrationTest {
         JsonNode quoteRow = data(http.asRole(Role.SALES_STAFF, salesUser, get("/api/v1/quotes")
                 .param("customerId", customerId.toString()))).path("items").get(0);
         assertThat(quoteRow.path("status").asText()).isEqualTo("CONVERTED");
+        assertThat(quoteRow.path("convertedOrderNumber").asText()).isNotBlank();
         assertThat(quoteRow.path("total").decimalValue()).as("the accepted total once accepted")
                 .isEqualByComparingTo(accepted.acceptedTotal());
 
@@ -226,11 +242,18 @@ class Round5ReadModelsIntegrationTest {
         JsonNode batchLine = contract.path("deliverySchedule").get(0).path("lines").get(0);
         assertThat(batchLine.path("designName").asText()).isEqualTo("Ly R5");
         assertThat(batchLine.path("unitsPerCarton").asInt()).isEqualTo(10);
+        assertThat(batchLine.path("productName").asText()).isEqualTo(productName());
+        assertThat(batchLine.path("variantName").asText()).isEqualTo("Ly in logo khach");
+        JsonNode myContract = data(http.asCustomer(portalUser, get("/api/v1/orders/me/" + orderId + "/contract")));
+        assertThat(myContract.path("deliverySchedule").get(0).path("lines").get(0).path("productName").asText())
+                .isEqualTo(productName());
 
         // The customer's order page reads the same, and pays by the code the chat's transfer card draws.
         JsonNode mine = data(http.asCustomer(portalUser, get("/api/v1/orders/me/" + orderId)));
         assertThat(mine.path("sourceQuoteNumber").asText()).isEqualTo(accepted.quoteNumber());
         assertThat(mine.path("lines").get(0).path("designName").asText()).isEqualTo("Ly R5");
+        assertThat(mine.path("lines").get(0).path("productName").asText()).isEqualTo(productName());
+        assertThat(mine.path("lines").get(0).path("variantName").asText()).isEqualTo("Ly in logo khach");
         JsonNode transfer = data(http.asCustomer(portalUser, get("/api/v1/installments/me/" + installment
                 + "/transfer-instructions")));
         assertThat(transfer.path("vietQr").asText()).isEqualTo(VietQr.payload("970000",
@@ -267,6 +290,9 @@ class Round5ReadModelsIntegrationTest {
         assertThat(row.path("paidTotal").decimalValue()).as("paid in full on signing").isEqualByComparingTo(total);
         assertThat(row.path("orderStatus").asText()).isEqualTo("CONFIRMED");
         assertThat(row.path("printingStarted").asBoolean(true)).isFalse();
+        // Who asked is named (the customer's own portal account); nobody decided yet.
+        assertThat(row.path("requestedByName").asText()).isEqualTo("test-" + portalUser);
+        assertThat(row.path("decidedByName").isMissingNode() || row.path("decidedByName").isNull()).isTrue();
     }
 
     @Test
@@ -301,5 +327,24 @@ class Round5ReadModelsIntegrationTest {
         assertThat(skus.get(0).path("unitsPerCarton").asInt()).isEqualTo(10);
         assertThat(skus.get(0).path("taxClass").asText()).isEqualTo("STANDARD");
         assertThat(skus.get(0).path("taxRate").decimalValue()).isEqualByComparingTo(standard);
+    }
+
+    @Test
+    @DisplayName("SCRUM-716 (12 BR-03): any Sales Staff member and the coordinator look the SKUs up; the customer cannot")
+    void customerSkusAreLookedUpByEverySalesAndTheCoordinator() throws Exception {
+        StaffFixtures people = new StaffFixtures(jdbc, tx, entityManager);
+        UUID otherSales = people.staff("SALES_STAFF");
+        UUID coordinator = people.staff("PRODUCTION_COORDINATOR");
+
+        JsonNode bySales = data(http.asRole(Role.SALES_STAFF, otherSales, get("/api/v1/customer-skus")
+                .param("customerId", customerId.toString())));
+        assertThat(bySales).extracting(sku -> sku.path("sku").asText()).containsExactly(issued.sku());
+
+        JsonNode byCoordinator = data(http.asRole(Role.PRODUCTION_COORDINATOR, coordinator,
+                get("/api/v1/customer-skus").param("customerId", customerId.toString())));
+        assertThat(byCoordinator).extracting(sku -> sku.path("sku").asText()).containsExactly(issued.sku());
+
+        http.asCustomer(portalUser, get("/api/v1/customer-skus").param("customerId", customerId.toString()))
+                .andExpect(status().isForbidden());
     }
 }

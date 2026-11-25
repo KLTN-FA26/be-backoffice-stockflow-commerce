@@ -10,7 +10,7 @@ import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.repository.BinOccupancyQuery;
 import com.stockflow.inventory.internal.repository.BinOccupancyQuery.CartonLoad;
-import com.stockflow.inventory.internal.service.PutawayService.Reserved;
+import com.stockflow.inventory.internal.service.BinSuggestionInputs.Reserved;
 import com.stockflow.warehouse.api.PutawayTaskView;
 import com.stockflow.warehouse.api.PutawayTasks;
 import com.stockflow.warehouse.api.PutawayTripView;
@@ -63,10 +63,12 @@ public class PutawayTripService {
     private final WarehouseService warehouses;
     private final StockPackageRepository stockPackages;
     private final BinOccupancyQuery occupancy;
+    private final BinSuggestionInputs inputs;
 
     public PutawayTripService(PutawayTrips trips, PutawayTasks tasks, PutawayService putaway,
                               WarehouseService warehouses, StockPackageRepository stockPackages,
-                              BinOccupancyQuery occupancy) {
+                              BinOccupancyQuery occupancy, BinSuggestionInputs inputs) {
+        this.inputs = inputs;
         this.trips = trips;
         this.tasks = tasks;
         this.putaway = putaway;
@@ -209,7 +211,7 @@ public class PutawayTripService {
                     .add(task);
         }
         // Every hold in the warehouse is another trip's: this one is still LOADING and holds nothing yet.
-        List<Reserved> reserved = new ArrayList<>(putaway.heldByTrips(warehouseId, null));
+        List<Reserved> reserved = new ArrayList<>(inputs.heldByTrips(warehouseId, null));
         Map<String, UUID> binIds = warehouses.putawayCandidates(warehouseId).stream()
                 .collect(Collectors.toMap(c -> c.locationCode(), c -> c.locationId(), (a, b) -> a));
         UUID overflow = overflowArea(warehouseId);
@@ -278,7 +280,7 @@ public class PutawayTripService {
         Map<String, UUID> binIds = warehouses.putawayCandidates(trip.warehouseId()).stream()
                 .collect(Collectors.toMap(c -> c.locationCode(), c -> c.locationId(), (a, b) -> a));
         UUID next = putaway.suggest(trip.warehouseId(), task, putaway.lotOfTask(task),
-                        putaway.heldByTrips(trip.warehouseId(), task.id())).stream()
+                        inputs.heldByTrips(trip.warehouseId(), task.id())).stream()
                 .map(PutawayRanker.Suggestion::locationCode)
                 .filter(code -> !code.equals(currentCode))
                 .findFirst().map(binIds::get)
@@ -311,9 +313,17 @@ public class PutawayTripService {
         return trip;
     }
 
+    /**
+     * The scanned carton. One standing in a warehouse the caller is not assigned to is answered as not found (BR-SEC-002,
+     * as {@code CycleCountCountingService.addLine} does): what comes next - whether it waits for putaway, whether it is
+     * on a cart - is not the caller's to learn of another warehouse's carton.
+     */
     private StockPackage carton(String lpn) {
         String normal = StockPackageView.normalLpn(lpn);
         return (normal == null ? Optional.<StockPackage>empty() : stockPackages.findByLpn(normal))
+                .filter(found -> WarehouseScope.restriction()
+                        .map(allowed -> allowed.prefixes().contains(WarehouseScope.prefixOf(found.location().code())))
+                        .orElse(true))
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No carton " + lpn));
     }
 

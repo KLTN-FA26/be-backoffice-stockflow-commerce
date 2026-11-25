@@ -42,13 +42,22 @@ interface ProductWebMapper {
 
     /** {@code status} is {@code ProductStatus} on the summary, {@code String} on the wire — MapStruct
      *  generates the {@code .name()} conversion automatically since the field name matches. The possible
-     *  duplicates are not looked for here: a list row would cost a query per product. */
+     *  duplicates are not looked for here: a list row would cost a query per product. The people's names and
+     *  {@code canApprove} are worked out by {@link ProductResponses}, once per response or page. */
     @Mapping(target = "possibleDuplicates", ignore = true)
-    ProductResponse toResponse(ProductSummary summary);
+    @Mapping(target = "submittedByName", source = "submittedByName")
+    @Mapping(target = "approvedByName", source = "approvedByName")
+    @Mapping(target = "canApprove", source = "canApprove")
+    ProductResponse toResponse(ProductSummary summary, String submittedByName, String approvedByName,
+                               boolean canApprove);
 
     /** One product as create, update and detail answer it: with the products it may duplicate (SCRUM-88). */
     @Mapping(target = "possibleDuplicates", source = "possibleDuplicates")
-    ProductResponse toDetail(ProductSummary summary, List<ProductSummary> possibleDuplicates);
+    @Mapping(target = "submittedByName", source = "submittedByName")
+    @Mapping(target = "approvedByName", source = "approvedByName")
+    @Mapping(target = "canApprove", source = "canApprove")
+    ProductResponse toDetail(ProductSummary summary, List<ProductSummary> possibleDuplicates, String submittedByName,
+                             String approvedByName, boolean canApprove);
 
     ProductMatchResponse toMatch(ProductSummary summary);
 
@@ -72,11 +81,12 @@ interface ProductWebMapper {
         };
     }
 
+    /** The product comes already mapped, with its people's names, from {@link ProductResponses}. */
     @Mapping(target = "product", source = "product")
-    @Mapping(target = "warnings", source = "warnings")
-    @Mapping(target = "openReferences", source = "references.references")
-    @Mapping(target = "openReferencesTruncated", source = "references.truncated")
-    ProductDiscontinuationResponse toResponse(ProductDiscontinuation discontinuation);
+    @Mapping(target = "warnings", source = "discontinuation.warnings")
+    @Mapping(target = "openReferences", source = "discontinuation.references.references")
+    @Mapping(target = "openReferencesTruncated", source = "discontinuation.references.truncated")
+    ProductDiscontinuationResponse toResponse(ProductDiscontinuation discontinuation, ProductResponse product);
 
     OpenReferencesResponse toResponse(OpenReferences references);
 

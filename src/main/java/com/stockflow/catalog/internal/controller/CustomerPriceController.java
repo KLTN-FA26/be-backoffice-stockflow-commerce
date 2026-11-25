@@ -9,6 +9,8 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.customer.api.CustomerLabel;
+import com.stockflow.customer.api.CustomerService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -41,23 +43,26 @@ class CustomerPriceController {
     static final String RESOURCE = "catalog-customer-prices";
 
     private final CustomerPriceService prices;
+    private final CustomerService customers;
 
-    CustomerPriceController(CustomerPriceService prices) {
+    CustomerPriceController(CustomerPriceService prices, CustomerService customers) {
         this.prices = prices;
+        this.customers = customers;
     }
 
     @GetMapping
     @RequiresPermission(resource = RESOURCE, action = Action.READ)
     public ApiResponse<List<CustomerPriceResponse>> list(@RequestParam UUID customerId,
                                                          @RequestParam(name = "sku", required = false) List<String> skus) {
+        CustomerLabel customer = labelOf(customerId);
         return ApiResponse.ok(prices.list(customerId, skus == null ? List.of() : skus).stream()
-                .map(CustomerPriceController::toResponse).toList());
+                .map(price -> toResponse(price, customer)).toList());
     }
 
     @GetMapping("/{customerId}/{sku}")
     @RequiresPermission(resource = RESOURCE, action = Action.READ)
     public ApiResponse<CustomerPriceResponse> get(@PathVariable UUID customerId, @PathVariable String sku) {
-        return ApiResponse.ok(toResponse(prices.get(customerId, sku)));
+        return ApiResponse.ok(toResponse(prices.get(customerId, sku), labelOf(customerId)));
     }
 
     @PostMapping("/{customerId}/{sku}")
@@ -65,7 +70,8 @@ class CustomerPriceController {
     @RequiresPermission(resource = RESOURCE, action = Action.CREATE)
     public ApiResponse<CustomerPriceResponse> create(@PathVariable UUID customerId, @PathVariable String sku,
                                                      @Valid @RequestBody CustomerPriceRequest request) {
-        return ApiResponse.ok(toResponse(prices.create(customerId, sku, tiers(request), request.note())));
+        return ApiResponse.ok(toResponse(prices.create(customerId, sku, tiers(request), request.note()),
+                labelOf(customerId)));
     }
 
     @PutMapping("/{customerId}/{sku}")
@@ -76,7 +82,7 @@ class CustomerPriceController {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "version is required to replace a price");
         }
         return ApiResponse.ok(toResponse(prices.replace(customerId, sku, tiers(request), request.note(),
-                request.version())));
+                request.version()), labelOf(customerId)));
     }
 
     @DeleteMapping("/{customerId}/{sku}")
@@ -92,9 +98,18 @@ class CustomerPriceController {
                 .map(t -> new CustomerPriceService.TierInput(t.minQuantity(), t.unitPrice())).toList();
     }
 
-    private static CustomerPriceResponse toResponse(CustomerPriceService.PriceView price) {
+    /**
+     * The customer's name and code, asked once per response: every price of a response is of the one customer the
+     * path or the {@code customerId} parameter names. Null when the customer is unknown.
+     */
+    private CustomerLabel labelOf(UUID customerId) {
+        return customers.labels(List.of(customerId)).get(customerId);
+    }
+
+    private static CustomerPriceResponse toResponse(CustomerPriceService.PriceView price, CustomerLabel customer) {
         return new CustomerPriceResponse(price.customerId(), price.sku(), price.measure(), price.moq(),
                 price.tiers().stream().map(t -> new CustomerPriceResponse.Tier(t.minQuantity(), t.unitPrice())).toList(),
-                price.note(), price.version());
+                price.note(), price.version(), customer == null ? null : customer.name(),
+                customer == null ? null : customer.code());
     }
 }

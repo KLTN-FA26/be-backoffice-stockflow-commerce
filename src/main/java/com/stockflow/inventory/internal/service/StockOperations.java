@@ -131,6 +131,15 @@ public interface StockOperations {
                       String fromLocation, String toLocation, int quantity, String status,
                       String toStatus, String referenceType, UUID referenceId, String reason, UUID actorId,
                       java.time.Instant occurredAt, UUID requestedBy, UUID countedBy, String fromLpn, String toLpn) {
+
+        /** A line naming no carton on either side. */
+        public LedgerLine(UUID movementId, StockMovement.MovementType type, String sku, String lotNumber,
+                          String fromLocation, String toLocation, int quantity, String status, String toStatus,
+                          String referenceType, UUID referenceId, String reason, UUID actorId,
+                          java.time.Instant occurredAt, UUID requestedBy, UUID countedBy) {
+            this(movementId, type, sku, lotNumber, fromLocation, toLocation, quantity, status, toStatus, referenceType,
+                    referenceId, reason, actorId, occurredAt, requestedBy, countedBy, null, null);
+        }
     }
 
     default PageResponse<LedgerLine> ledger(String sku, String location, StockMovement.MovementType type,

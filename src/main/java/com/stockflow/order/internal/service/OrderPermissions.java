@@ -8,6 +8,9 @@ package com.stockflow.order.internal.service;
  */
 public final class OrderPermissions {
 
+    /** Quotes: drawing one up from a quote request, on the inbox or the chat card, is creating one (AUTH-2). */
+    public static final String QUOTES = "sales-quotes";
+
     private OrderPermissions() {
     }
 }

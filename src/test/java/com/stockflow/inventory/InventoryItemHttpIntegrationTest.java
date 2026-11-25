@@ -109,9 +109,9 @@ class InventoryItemHttpIntegrationTest {
     void packagingPreviewResolvesTheItemsCarton() throws Exception {
         UUID id = item("HTTP-K-" + suffix, null);
         tx.executeWithoutResult(s -> jdbc.update("""
-                insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                    weight_kg, length_cm, width_cm, height_cm, active, default_shipping)
-                values (gen_random_uuid(), ?, 'CARTON', 2, false, 0.7, 12, 9, 7, true, true)""", id));
+                insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
+                    weight_kg, length_cm, width_cm, height_cm, active)
+                values (gen_random_uuid(), ?, 'CARTON', 2, 0.7, 12, 9, 7, true)""", id));
         mvc.perform(get(BASE + "/" + id + "/packaging-preview").param("quantity", "4"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("RESOLVED"))

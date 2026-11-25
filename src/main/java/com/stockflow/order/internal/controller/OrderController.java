@@ -82,6 +82,7 @@ class OrderController {
     private final com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility;
     private final com.stockflow.order.internal.service.OrderSources sources;
     private final com.stockflow.order.internal.service.OrderSettlementService settlements;
+    private final com.stockflow.warehouse.api.WarehouseService warehouses;
 
     OrderController(OrderService orderService, CustomerService customerService,
                     CustomerOrders customerOrders,
@@ -90,7 +91,9 @@ class OrderController {
                     com.stockflow.order.internal.service.ShippingAddressChanges addressChanges,
                     com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility,
                     com.stockflow.order.internal.service.OrderSources sources,
-                    com.stockflow.order.internal.service.OrderSettlementService settlements) {
+                    com.stockflow.order.internal.service.OrderSettlementService settlements,
+                    com.stockflow.warehouse.api.WarehouseService warehouses) {
+        this.warehouses = warehouses;
         this.sources = sources;
         this.settlements = settlements;
         this.addressChanges = addressChanges;
@@ -119,9 +122,9 @@ class OrderController {
                 .filter(order -> ownCustomerId != null || warehouseVisibility.visible(orderId, user))
                 .map(order -> ownCustomerId == null
                         // Staff read the customer's name on the order; a customer reads their own order as before.
-                        ? withSettlement(OrderWebMapper.toResponse(order, true, OrderWebMapper.labelOf(
+                        ? withWarehouse(withSettlement(OrderWebMapper.toResponse(order, true, OrderWebMapper.labelOf(
                                 customerService.labels(java.util.List.of(order.customerId())), order.customerId()),
-                                extras(order)))
+                                extras(order))))
                         : OrderWebMapper.toResponse(order, false, null, extras(order)))
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(
@@ -258,8 +261,11 @@ class OrderController {
                         com.stockflow.order.internal.service.OrderWarehouseVisibility.limitOf(user)));
         // One query for the names of the whole page - not one per row.
         var labels = customerService.labels(found.items().stream().map(OrderSummary::customerId).toList());
-        return ApiResponse.ok(found.map(order -> OrderWebMapper.toResponse(order,
-                OrderWebMapper.labelOf(labels, order.customerId()))));
+        // And one for their warehouses.
+        var sites = warehouses.findWarehouses(found.items().stream().map(OrderSummary::warehouseId)
+                .filter(java.util.Objects::nonNull).distinct().toList());
+        return ApiResponse.ok(found.map(order -> OrderWebMapper.withWarehouse(OrderWebMapper.toResponse(order,
+                OrderWebMapper.labelOf(labels, order.customerId())), sites)));
     }
 
     @GetMapping("/{orderId}/history")
@@ -400,6 +406,12 @@ class OrderController {
         return customerService.findByUserId(user.userId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND))
                 .customerId();
+    }
+
+    /** The staff detail names the warehouse it was released from (null until released). */
+    private OrderResponse withWarehouse(OrderResponse response) {
+        return response.warehouseId() == null ? response : OrderWebMapper.withWarehouse(response,
+                warehouses.findWarehouses(java.util.List.of(response.warehouseId())));
     }
 
     /** F-1 (BE-34): the order's detail for staff carries when it was refunded and what it still waits for. */

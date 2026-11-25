@@ -232,7 +232,7 @@ class DesignStudioEndToEndTest {
         var config = printConfigs.byId(UUID.fromString(template.get("templateId").asText())).orElseThrow();
         surface = PrintSurface.of(config.model(), config.printAreas().get(0));
         units.add(new Sku(sku), new UomConversionDraft("CARTON", 50, new BigDecimal("4.2"), new BigDecimal("60"),
-                new BigDecimal("40"), new BigDecimal("35"), true, true));
+                new BigDecimal("40"), new BigDecimal("35"), true));
 
         // The customer starts a design.
         String taxCode = Long.toString(java.util.concurrent.ThreadLocalRandom.current().nextLong(1_000_000_000L,
@@ -244,9 +244,13 @@ class DesignStudioEndToEndTest {
             return user;
         });
         as(owner, Set.of());
+        // Every design is started in one of its customer's projects (BR-23.2).
+        String startedIn = data(mvc.perform(post("/api/v1/design-projects").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"Quán A\"}")).andExpect(status().isCreated())).get("id").asText();
         design = data(mvc.perform(post("/api/v1/designs/mine").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"productId\":\"" + productId + "\",\"sku\":\"" + sku
-                        + "\",\"templateCode\":\"CUP12-BODY\",\"name\":\"Ly quán A\"}"))
+                        + "\",\"templateCode\":\"CUP12-BODY\",\"name\":\"Ly quán A\",\"projectId\":\"" + startedIn
+                        + "\"}"))
                 .andExpect(status().isCreated())).get("id").asText();
 
         // An image through the backend, and one straight to the store with a signed PUT.

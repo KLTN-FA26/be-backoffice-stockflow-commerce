@@ -27,7 +27,15 @@ public record PutawayTripResponse(UUID id, UUID warehouseId, UUID operatorId, St
                                   @Schema(description = "The origin's point on the map (m); equals stops[0].path[0]")
                                   BigDecimal originX,
                                   BigDecimal originY, Instant startedAt, Instant lastActivityAt,
-                                  Instant closedAt, UUID closedBy, List<Carton> cartons, List<Stop> stops) {
+                                  Instant closedAt, UUID closedBy, List<Carton> cartons, List<Stop> stops,
+                                  @Schema(description = "Display name of operatorId", nullable = true)
+                                  String operatorName,
+                                  @Schema(description = "Display name of closedBy; null while open", nullable = true)
+                                  String closedByName,
+                                  @Schema(description = "The warehouse's code (its location prefix)", example = "HCM",
+                                          nullable = true)
+                                  String warehouseCode,
+                                  @Schema(nullable = true) String warehouseName) {
 
     /**
      * @param status               {@code ON_CART}, {@code PLACED} or {@code RETURNED}
@@ -51,10 +59,13 @@ public record PutawayTripResponse(UUID id, UUID warehouseId, UUID operatorId, St
                        @Schema(description = "Walking polyline to this stop in map units (m), both ends included;"
                                + " null when none can be drawn - fall back to the straight segment",
                                nullable = true)
-                       List<Point> path) {
+                       List<MapPoint> path) {
     }
 
-    /** A point of the warehouse map, in metres. */
-    public record Point(BigDecimal x, BigDecimal y) {
+    /**
+     * A point of the warehouse map, in metres. Not {@code Point}: springdoc names a schema by the simple class name,
+     * and the carrier pickup point would overwrite it (issue #445).
+     */
+    public record MapPoint(BigDecimal x, BigDecimal y) {
     }
 }

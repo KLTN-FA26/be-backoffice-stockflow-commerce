@@ -21,6 +21,10 @@ import java.util.UUID;
  * @param changedFields the fields an edit changed
  * @param actorId       the user, or null when the system acted
  * @param actorName     the name to show for {@code actorId}; {@code "system"} when there is none
+ * @param subjectSku    the SKU the entry is about: the variant's, or for an image the SKU of its variant; null for
+ *                      the product itself and for a subject deleted since
+ * @param subjectLabel  what the subject is called: the variant's name, or the image's file name (its URL when it was
+ *                      carried over as one); null when {@code subjectSku} is, and for an image deleted since
  */
 public record ProductChange(
         String changeType,
@@ -32,7 +36,9 @@ public record ProductChange(
         List<String> changedFields,
         UUID actorId,
         String actorName,
-        Instant occurredAt
+        Instant occurredAt,
+        String subjectSku,
+        String subjectLabel
 ) {
     public ProductChange {
         changedFields = changedFields == null ? List.of() : List.copyOf(changedFields);

@@ -29,6 +29,7 @@ import com.stockflow.warehouse.api.BinSize;
 import com.stockflow.warehouse.api.PutawayCandidate;
 import com.stockflow.warehouse.api.PutawayTaskView;
 import com.stockflow.warehouse.api.PutawayTasks;
+import com.stockflow.warehouse.api.PutawayTrips;
 import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.StorageLocationView.Kind;
 import com.stockflow.warehouse.api.WarehouseService;
@@ -40,11 +41,13 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.context.ApplicationEventPublisher;
 
 import java.math.BigDecimal;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import static com.stockflow.inventory.internal.service.InventoryFixtures.NOW;
 import static com.stockflow.inventory.internal.service.InventoryFixtures.codeOf;
@@ -91,9 +94,10 @@ class PutawayServiceConfirmTest {
     private final BinOccupancyQuery occupancy = mock(BinOccupancyQuery.class);
     private final StockOperations operations = mock(StockOperations.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
+    private final PutawayTrips trips = mock(PutawayTrips.class);
     private final PutawayService service = new PutawayService(tasks, warehouses, stockPackages, ledger, occupancy,
-            operations, events, mock(StockItemRepository.class),
-            mock(com.stockflow.warehouse.api.PutawayTrips.class));
+            operations, events, mock(StockItemRepository.class), trips,
+            new BinSuggestionInputs(warehouses, trips, occupancy));
 
     private final UUID binId = UUID.randomUUID();
     private final StockPackageId carton = new StockPackageId(UUID.randomUUID());
@@ -141,8 +145,19 @@ class PutawayServiceConfirmTest {
                 .thenReturn(Optional.of(new PutawayCandidate(binId, BIN, size, maxWeight)));
     }
 
+    /** What the bins hold, for the single-bin check and, as the group read, for the suggestions. */
     private void occupied(Map<String, Occupancy> occupancyByBin) {
         when(occupancy.occupancyOf(anyCollection(), anyString(), any(), any())).thenReturn(occupancyByBin);
+        when(occupancy.contentsOf(anyCollection(), any(), anyCollection())).thenAnswer(call -> {
+            Set<BinOccupancyQuery.SkuLot> group = call.getArgument(1);
+            Map<String, BinOccupancyQuery.BinContents> contents = new HashMap<>();
+            occupancyByBin.forEach((code, o) -> contents.put(code, new BinOccupancyQuery.BinContents(o.units(),
+                    o.volumeM3(), o.weightKg(),
+                    o.holdsSku() ? group.stream().map(BinOccupancyQuery.SkuLot::sku)
+                            .collect(Collectors.toSet()) : Set.of(),
+                    o.holdsLot() ? group : Set.of())));
+            return contents;
+        });
     }
 
     private static CurrentUser clerkOf(String prefix) {

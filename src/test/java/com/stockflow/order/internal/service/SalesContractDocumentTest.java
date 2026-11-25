@@ -33,14 +33,26 @@ class SalesContractDocumentTest {
 
     private static final ContractProperties TERMS = new ContractProperties(2, 5, 6, 8);
 
-    private final SalesContractDocument document = new SalesContractDocument(new DocumentFonts(), TERMS);
+    private final SalesContractDocument document = new SalesContractDocument(new DocumentFonts(), TERMS, 7);
 
     private static SalesContractDocument.Facts facts() {
         return facts(new BigDecimal("2750000"), "DRAFT", true, 14, SalesDocumentSamples.LONG_BUYER);
     }
 
+    private static final List<SalesContracts.InstallmentView> PAID_BEFORE = List.of(
+            new SalesContracts.InstallmentView(1, "Đặt cọc khi ký hợp đồng", "ON_SIGNING",
+                    new BigDecimal("30"), new BigDecimal("825000"), 3, null),
+            new SalesContracts.InstallmentView(2, "Thanh toán trước khi giao", "BEFORE_DELIVERY", null,
+                    new BigDecimal("1925000"), null, 1));
+
     private static SalesContractDocument.Facts facts(BigDecimal total, String status, boolean issued,
                                                      Integer returnWindowDays, SalesContracts.Party buyer) {
+        return facts(total, status, issued, returnWindowDays, buyer, PAID_BEFORE);
+    }
+
+    private static SalesContractDocument.Facts facts(BigDecimal total, String status, boolean issued,
+                                                     Integer returnWindowDays, SalesContracts.Party buyer,
+                                                     List<SalesContracts.InstallmentView> plan) {
         OrderLine cups = Order.line(UUID.randomUUID(), new Sku("LY12-ACME-01"), 1000, Money.vnd(2_000), null)
                 .withCartons(UUID.randomUUID(), 20, 50).withTax(BigDecimal.TEN);
         Order order = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 9), 1), UUID.randomUUID(), UUID.randomUUID(),
@@ -53,11 +65,7 @@ class SalesContractDocumentTest {
                 List.of(new SalesContracts.BatchView(1, LocalDate.of(2026, 12, 1), LocalDate.of(2026, 12, 3),
                         new BigDecimal("2200000"), List.of(new SalesContracts.BatchLineView(cups.id(), "LY12-ACME-01",
                         20, 1000)))),
-                List.of(new SalesContracts.InstallmentView(1, "Đặt cọc khi ký hợp đồng", "ON_SIGNING",
-                                new BigDecimal("30"), new BigDecimal("825000"), 3, null),
-                        new SalesContracts.InstallmentView(2, "Thanh toán trước khi giao", "BEFORE_DELIVERY", null,
-                                new BigDecimal("1925000"), null, 1)),
-                null, null, null, null, null, null, null, null, null, null, 0, null, returnWindowDays);
+                plan, null, null, null, null, null, null, null, null, null, null, 0, null, returnWindowDays);
         return new SalesContractDocument.Facts(view, order, LocalDate.of(2026, 11, 9),
                 SalesDocumentSamples.letterhead(), SalesDocumentSamples.NAMES, issued);
     }
@@ -128,20 +136,46 @@ class SalesContractDocumentTest {
     }
 
     @Test
-    @DisplayName("a clause whose fact is absent is left out and the rest renumbered: no agreed complaint period reads "
-            + "the statute's, no tolerance and no warranty configured print none")
+    @DisplayName("a clause whose fact is absent is left out and the rest renumbered: no agreed complaint period prints "
+            + "the configured one returns apply, no tolerance and no warranty configured print none")
     void clausesFollowTheFacts() throws IOException {
-        String statute = SalesDocumentSamples.text(document.render(facts(new BigDecimal("2750000"), "SENT", true,
+        // MIG-2: a contract without its own period is held to the configured one, so that is the number printed.
+        String unset = SalesDocumentSamples.text(document.render(facts(new BigDecimal("2750000"), "SENT", true,
                 null, SalesDocumentSamples.BUYER)));
-        assertThat(statute).contains("Điều 318 Luật Thương mại", "ba tháng kể từ ngày giao hàng")
-                .doesNotContain("trong thời hạn 14 ngày");
+        assertThat(unset).contains("trong thời hạn 7 ngày kể từ ngày giao đợt đó")
+                .doesNotContain("trong thời hạn 14 ngày", "Điều 318 Luật Thương mại", "ba tháng");
 
-        SalesContractDocument plain = new SalesContractDocument(new DocumentFonts(), new ContractProperties(2, 0, 0, 0));
+        SalesContractDocument plain = new SalesContractDocument(new DocumentFonts(), new ContractProperties(2, 0, 0, 0),
+                7);
         String text = SalesDocumentSamples.text(plain.render(facts()));
         assertThat(text).doesNotContain("±", "bảo hành chất lượng in", "chịu phạt")
                 // 2.3 is now the colour point, not a gap where the tolerance was; clause 9 starts at damages.
                 .containsSubsequence("2.2.", "2.3. Màu sắc in theo mẫu in đã duyệt", "2.4.", "ĐIỀU 3.")
                 .containsSubsequence("ĐIỀU 9.", "9.1. Ngoài tiền phạt", "9.2.", "ĐIỀU 10.");
+    }
+
+    @Test
+    @DisplayName("the paper says what the system does: a cancellation refunds in full until the run is printed, the "
+            + "tax difference is settled by the invoice, and only a plan paid partly after delivery prints the credit "
+            + "condition a refused limit cancels the contract on")
+    void paymentTermsFollowTheSystem() throws IOException {
+        String paidBefore = SalesDocumentSamples.text(document.render(facts()));
+        assertThat(paidBefore)
+                .containsSubsequence("ĐIỀU 5. THANH TOÁN", "khoản thanh toán trước, không phải tiền đặt cọc",
+                        "hoàn lại toàn bộ số tiền đã nhận, không tính phí", "chỉ được huỷ khi Bên A đồng ý",
+                        "không vượt quá giá trị Hợp đồng", "ĐIỀU 6.")
+                .contains("phần chênh lệch tiền thuế được thanh toán thêm hoặc hoàn lại theo hóa đơn")
+                .doesNotContain("hạn mức công nợ");
+
+        String onCredit = SalesDocumentSamples.text(document.render(facts(new BigDecimal("2750000"), "SENT", true, 14,
+                SalesDocumentSamples.BUYER, List.of(
+                        new SalesContracts.InstallmentView(1, "Thanh toán khi ký", "ON_SIGNING", new BigDecimal("30"),
+                                new BigDecimal("825000"), 3, null),
+                        new SalesContracts.InstallmentView(2, "Thanh toán sau giao", "AFTER_DELIVERY", null,
+                                new BigDecimal("1925000"), 30, 1)))));
+        assertThat(onCredit).containsSubsequence("ĐIỀU 5. THANH TOÁN", "khoản thanh toán trước",
+                "Phần thanh toán sau giao hàng có hiệu lực khi Bên A xác nhận hạn mức công nợ của Bên B",
+                "Hợp đồng bị huỷ bỏ và Bên A hoàn lại toàn bộ số tiền đã nhận", "ĐIỀU 6.");
     }
 
     @Test

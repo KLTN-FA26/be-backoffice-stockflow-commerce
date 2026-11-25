@@ -147,5 +147,9 @@ class PutBackQueueIntegrationTest {
         assertThat(page.totalElements()).isEqualTo(2);
         assertThat(page.items()).hasSize(1);
         assertThat(page.items().getFirst().overflowLocationCodes()).as("no carton of stock: nowhere to offer").isEmpty();
+        // The row names its task by number (drawn by tg_pick_task_number for a row written without one) and its warehouse.
+        assertThat(page.items().getFirst().taskNumber()).matches("PK-\\d{8}-\\d{4,}");
+        assertThat(page.items().getFirst().warehouseName()).isEqualTo("Put-back queue");
+        assertThat(page.items().getFirst().warehouseCode()).startsWith("Q");
     }
 }

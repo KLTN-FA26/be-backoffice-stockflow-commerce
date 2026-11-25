@@ -12,7 +12,8 @@ class CartonCheckWebMapper {
     CartonCheckQueueRowResponse toResponse(CartonChecks.QueueRow row) {
         return new CartonCheckQueueRowResponse(row.taskId(), row.orderId(), row.orderNumber(), row.warehouseId(),
                 row.status(), row.pickedAt(), row.pickerName(), row.startedBy(), row.startedByName(), row.startedAt(),
-                row.cartonCount(), row.checkedCount(), row.labeledCount(), row.shipmentCount());
+                row.cartonCount(), row.checkedCount(), row.labeledCount(), row.shipmentCount(), row.taskNumber(),
+                row.warehouseCode(), row.warehouseName());
     }
 
     CartonCheckSessionResponse toResponse(CartonChecks.Session session) {

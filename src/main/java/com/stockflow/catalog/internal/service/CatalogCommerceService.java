@@ -115,9 +115,9 @@ public class CatalogCommerceService {
 
     /**
      * A variant (quy cách) on the product page: what a customer looks at and designs on - no price, no stock indicator
-     * (kltn-docs 13 BR-04, BR-11).
+     * (kltn-docs 13 BR-04, BR-11). {@code name} is the variant's name, as a list card's {@link CardSku} carries it.
      */
-    public record Variant(String sku) {}
+    public record Variant(String sku, String name) {}
 
     public record PublicView(
             UUID productId,
@@ -147,7 +147,7 @@ public class CatalogCommerceService {
         var product = products.read(listing.productId());
         if (product.status() != ProductStatus.PUBLISHED)
             throw new BusinessException(ErrorCode.NOT_FOUND);
-        var variants = product.skus().stream().map(s -> new Variant(s.sku())).toList();
+        var variants = product.skus().stream().map(s -> new Variant(s.sku(), s.name())).toList();
         return new PublicView(
                 listing.productId(),
                 listing.slug(),

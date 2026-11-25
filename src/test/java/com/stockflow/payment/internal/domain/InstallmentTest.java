@@ -76,6 +76,28 @@ class InstallmentTest {
     }
 
     @Test
+    @DisplayName("a fee item that takes no money is refused by its kind, not as \"installment 21\"")
+    void aFeeItemIsRefusedByItsKind() {
+        Installment plan = of(InstallmentMilestone.ON_SIGNING, 1_000, 0);
+        Installment fee = Installment.openFee(plan, Installment.FIRST_FEE_SEQ, "Cancellation fee",
+                BigDecimal.valueOf(500), AT, DAY);
+        fee.pay(BigDecimal.valueOf(500), AT);
+
+        BusinessException refused = (BusinessException) org.assertj.core.api.Assertions.catchThrowable(
+                () -> fee.pay(BigDecimal.ONE, AT));
+        assertThat(refused.errorCode()).isEqualTo(ErrorCode.INSTALLMENT_NOT_PAYABLE);
+        assertThat(refused.messageKey()).isEqualTo("refusal.payment.feeNotPayable");
+        assertThat(refused.messageArguments()).containsExactly(InstallmentMilestone.CANCELLATION_FEE,
+                "HD-20261109-000001-1", InstallmentStatus.PAID);
+
+        Installment paid = of(InstallmentMilestone.ON_SIGNING, 1_000, 0);
+        paid.pay(BigDecimal.valueOf(1_000), AT);
+        assertThat(paid.notPayable().messageKey()).isEqualTo("refusal.payment.notPayable");
+        assertThat(paid.notPayable().messageArguments()).containsExactly(2, "HD-20261109-000001-1",
+                InstallmentStatus.PAID);
+    }
+
+    @Test
     @DisplayName("no line pays more than it still owes (BR-05: nothing left over)")
     void neverMoreThanOwed() {
         Installment installment = of(InstallmentMilestone.ON_SIGNING, 1_000, 0);

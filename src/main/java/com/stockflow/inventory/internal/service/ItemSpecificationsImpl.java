@@ -17,7 +17,7 @@ import java.util.UUID;
 /**
  * A customer's own SKU inherits its variant's carton spec, logistics and stock policy (kltn-docs 01 §4.8, B20) through
  * the same writes a person makes on the item screens - logistics, policy, one packing unit at a time - so every rule
- * those writes check (the SKU lock, a positive factor, one default shipping unit) holds for the copy too.
+ * those writes check (the SKU lock, a positive factor, one active carton) holds for the copy too.
  */
 @Service
 @Transactional
@@ -46,8 +46,7 @@ class ItemSpecificationsImpl implements ItemSpecifications {
                 continue;
             }
             units.add(target, new UomConversionDraft(unit.unitOfMeasure(), unit.factor(), unit.weightKg(),
-                    unit.lengthCm(), unit.widthCm(), unit.heightCm(), true,
-                    unit.defaultShipping()));
+                    unit.lengthCm(), unit.widthCm(), unit.heightCm(), true));
         }
     }
 

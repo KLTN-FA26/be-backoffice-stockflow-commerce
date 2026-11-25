@@ -55,11 +55,11 @@ order by pc.is_primary desc, pc.id limit 1
                         id);
         var skus =
                 jdbc.query(
-                        "select id,sku from product.variants where product_id=? and status='ACTIVE'"
+                        "select id,sku,name from product.variants where product_id=? and status='ACTIVE'"
                                 + " and owner_customer_id is null order by id",
                         (r, n) ->
                                 new PublicationProduct.PublicationSku(
-                                        r.getObject(1, UUID.class), r.getString(2)),
+                                        r.getObject(1, UUID.class), r.getString(2), r.getString(3)),
                         id);
         return new PublicationProduct(
                 id,
