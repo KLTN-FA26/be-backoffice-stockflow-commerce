@@ -160,8 +160,8 @@ public final class CartonRows {
             String lpn = "T-" + id.toString().replace("-", "").substring(0, 20).toUpperCase(java.util.Locale.ROOT);
             jdbc.update("""
                     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
-                                                         received_qty, location_code, status)
-                    SELECT ?, ?, inventory_item_id, id, factor, factor, ?, 'IN_STOCK'
+                                                         counted_at, location_code, status)
+                    SELECT ?, ?, inventory_item_id, id, factor, NOW(), ?, 'IN_STOCK'
                       FROM inventory.uom_conversions WHERE id = ?""", id, lpn, location, unit);
             UUID row = Identifiers.newId();
             jdbc.update("""

@@ -244,7 +244,7 @@ public class BinOccupancyQuery {
                 select p.id, i.sku,
                        (select min(s.lot_number) from inventory.stock_item s
                          where s.stock_package_id = p.id and s.on_hand > 0) as lot_number,
-                       coalesce(p.received_qty, p.nominal_qty) as units,
+                       p.nominal_qty as units,
                        coalesce(u.length_cm * u.width_cm * u.height_cm / 1000000, 0) as volume_m3,
                        coalesce(u.weight_kg, 0) as weight_kg
                 from inventory.stock_package p

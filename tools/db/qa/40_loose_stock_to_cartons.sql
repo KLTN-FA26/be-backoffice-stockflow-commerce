@@ -62,7 +62,7 @@ SELECT pg_temp.expect_true('LC1 no unit in stock lies outside a carton',
 SELECT pg_temp.expect_true('LC2 every carton in stock is one whole carton of its standard count, of one lot (BR-18)',
     NOT EXISTS (SELECT 1 FROM inventory.stock_package p
                  WHERE p.status = 'IN_STOCK'
-                   AND (p.received_qty <> p.nominal_qty
+                   AND (p.counted_at IS NULL
                         OR (SELECT count(*) FROM inventory.stock_item s
                              WHERE s.stock_package_id = p.id AND s.on_hand > 0) <> 1
                         OR (SELECT min(s.on_hand) FROM inventory.stock_item s
@@ -153,8 +153,8 @@ UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa40:u')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_QA40', 2);
-INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
-VALUES (md5('qa40:p')::uuid, 'QA-QA40-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa40:u')::uuid, 2, 2, 'HCM-A01-1-A', 'IN_STOCK');
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status)
+VALUES (md5('qa40:p')::uuid, 'QA-QA40-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa40:u')::uuid, 2, NOW(), 'HCM-A01-1-A', 'IN_STOCK');
 SELECT pg_temp.expect_ok('LC14 a lot on stock of the demo cup', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,
                                       received_at, stock_package_id)
@@ -168,8 +168,8 @@ UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-DO'));
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 SELECT md5('qa40:uo')::uuid, i.id, 'QA_QA40O', 2 FROM inventory.inventory_items i WHERE i.sku = 'LY-GIAY-DEMO-12OZ-DO';
-INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
-SELECT md5('qa40:po')::uuid, 'QA-QA40-DO', i.id, md5('qa40:uo')::uuid, 2, 2, 'HCM-A01-1-A', 'IN_STOCK'
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status)
+SELECT md5('qa40:po')::uuid, 'QA-QA40-DO', i.id, md5('qa40:uo')::uuid, 2, NOW(), 'HCM-A01-1-A', 'IN_STOCK'
   FROM inventory.inventory_items i WHERE i.sku = 'LY-GIAY-DEMO-12OZ-DO';
 SELECT pg_temp.expect_fail('LC16 stock of any SKU (the red cup, in a carton) with no lot: every SKU is lot-tracked since 5-5 (QA 70)', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at, stock_package_id)
@@ -189,7 +189,7 @@ SELECT pg_temp.expect_fail_by('LC18 a demo carton holds more than its standard c
     UPDATE inventory.stock_item SET on_hand = on_hand + 1
      WHERE stock_package_id = (SELECT id FROM inventory.stock_package WHERE created_by = 'V20261206000100'
                                 ORDER BY lpn LIMIT 1) $q$);
-SELECT pg_temp.expect_fail_by('LC19 a demo carton emptied but still in stock', 'was counted in at 1000 but holds 0', $q$
+SELECT pg_temp.expect_fail_by('LC19 a demo carton emptied but still in stock', 'is a carton of 1000 but holds 0', $q$
     UPDATE inventory.stock_item SET on_hand = 0
      WHERE stock_package_id = (SELECT id FROM inventory.stock_package WHERE created_by = 'V20261206000100'
                                 ORDER BY lpn LIMIT 1) $q$);

@@ -112,7 +112,7 @@ class PutawayServiceConfirmTest {
     }
 
     private StockPackage cartonAt(String locationCode) {
-        return new StockPackage(carton, LPN, UUID.randomUUID(), UUID.randomUUID(), CARTON_UNITS, CARTON_UNITS,
+        return new StockPackage(carton, LPN, UUID.randomUUID(), UUID.randomUUID(), CARTON_UNITS, NOW,
                 new LocationId(locationCode), StockPackageStatus.IN_STOCK, LINE, null, 0L);
     }
 

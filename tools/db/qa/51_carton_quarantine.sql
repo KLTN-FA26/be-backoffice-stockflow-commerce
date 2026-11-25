@@ -44,13 +44,13 @@ UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa51:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA51_CTN', 4);
-INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
                                      location_code, status)
-VALUES (md5('qa51:free')::uuid, 'QA51-LPN-F', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa51:unit')::uuid, 4, 4,
+VALUES (md5('qa51:free')::uuid, 'QA51-LPN-F', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa51:unit')::uuid, 4, NOW(),
         'HCM-A01-1-A', 'IN_STOCK'),
-       (md5('qa51:held')::uuid, 'QA51-LPN-H', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa51:unit')::uuid, 4, 4,
+       (md5('qa51:held')::uuid, 'QA51-LPN-H', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa51:unit')::uuid, 4, NOW(),
         'HCM-A01-1-A', 'IN_STOCK'),
-       (md5('qa51:qrn')::uuid, 'QA51-LPN-Q', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa51:unit')::uuid, 4, 4,
+       (md5('qa51:qrn')::uuid, 'QA51-LPN-Q', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa51:unit')::uuid, 4, NOW(),
         'HCM-QC01', 'IN_STOCK');
 INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,
                                   received_at, stock_package_id)

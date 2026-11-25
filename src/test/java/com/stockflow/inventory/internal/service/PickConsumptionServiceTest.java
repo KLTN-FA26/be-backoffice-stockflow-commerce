@@ -361,8 +361,8 @@ class PickConsumptionServiceTest {
                     holdStatus == ReservationStatus.HELD ? null : NOW.minusSeconds(60));
             StockPackageId id = new StockPackageId(UUID.randomUUID());
             boolean consumed = holdStatus == ReservationStatus.CONSUMED;
-            StockPackage carton = new StockPackage(id, LPN, UUID.randomUUID(), UUID.randomUUID(), received, received,
-                    bin, consumed ? StockPackageStatus.CONSUMED : StockPackageStatus.IN_STOCK, null,
+            StockPackage carton = new StockPackage(id, LPN, UUID.randomUUID(), UUID.randomUUID(), received,
+                    NOW.minusSeconds(7200), bin, consumed ? StockPackageStatus.CONSUMED : StockPackageStatus.IN_STOCK, null,
                     consumed ? NOW.minusSeconds(60) : null, 0L);
             StockItem row = new StockItem(StockItemId.newId(), CUP, bin, "LOT-1",
                     consumed ? Quantity.ZERO : Quantity.of(received), rowStatus, List.of(reservation), 0L,
@@ -728,7 +728,8 @@ class PickConsumptionServiceTest {
                     UUID.randomUUID(), Quantity.of(held), NOW.minusSeconds(3600), null, status, null,
                     status == ReservationStatus.HELD ? null : NOW.minusSeconds(60));
             StockPackageId id = new StockPackageId(UUID.randomUUID());
-            StockPackage carton = new StockPackage(id, LPN, UUID.randomUUID(), UUID.randomUUID(), count, count, bin,
+            StockPackage carton = new StockPackage(id, LPN, UUID.randomUUID(), UUID.randomUUID(), count,
+                    NOW.minusSeconds(7200), bin,
                     StockPackageStatus.IN_STOCK, null, null, 0L);
             StockItem row = new StockItem(StockItemId.newId(), CUP, bin, "LOT-1",
                     Quantity.of(count), rowStatus, List.of(reservation), 0L, NOW.minusSeconds(86_400), null, id);
@@ -1097,7 +1098,8 @@ class PickConsumptionServiceTest {
             Reservation reservation = new Reservation(ReservationId.of(hold), UUID.randomUUID(), UUID.randomUUID(),
                     UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
             StockPackageId id = new StockPackageId(UUID.randomUUID());
-            StockPackage carton = new StockPackage(id, lpn, UUID.randomUUID(), UUID.randomUUID(), 2, 2, bin,
+            StockPackage carton = new StockPackage(id, lpn, UUID.randomUUID(), UUID.randomUUID(), 2,
+                    NOW.minusSeconds(7200), bin,
                     StockPackageStatus.IN_STOCK, null, null, 0L);
             cartonsById.put(id, carton);
             StockItem row = new StockItem(StockItemId.newId(), new Sku(sku), bin, "LOT-1",

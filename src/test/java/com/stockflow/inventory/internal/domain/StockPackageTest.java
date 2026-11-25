@@ -12,9 +12,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * The life of a carton, as V20261020000100 and V20261111000200 state it a second time (checks and the transition
- * trigger): counted at its standard count only, never opened, and back in stock whole from CONSUMED (team plan 4C-2); a LOST carton found
- * again, or a CONSUMED one restocked, needs its standard count (team plan 4C-3 dropped the unopened flag).
+ * The life of a carton, as V20261020000100, V20261111000200 and V20261230000300 state it a second time (checks and
+ * the transition trigger): counted in while it is received - a moment, not a figure, since it stands for its standard
+ * count (ADR-0011) - never opened, and back in stock whole from CONSUMED or LOST (team plan 4C-2, 4C-3).
  */
 class StockPackageTest {
 
@@ -28,7 +28,7 @@ class StockPackageTest {
 
     private static StockPackage inStock() {
         StockPackage carton = labelled();
-        carton.count();
+        carton.count(NOW);
         carton.putInStock();
         return carton;
     }
@@ -44,28 +44,24 @@ class StockPackageTest {
         StockPackage carton = labelled();
         assertThat(carton.status()).isEqualTo(StockPackageStatus.RECEIVING);
         assertThat(carton.nominalQty()).isEqualTo(1000);
-        assertThat(carton.receivedQty()).isNull();
+        assertThat(carton.countedAt()).isNull();
+        assertThat(carton.counted()).isFalse();
     }
 
     @Test
-    @DisplayName("counted while receiving at the standard count the system assigns (03 BR-13), then fixed in stock")
+    @DisplayName("counted while receiving - the moment, a recount moving it (03 BR-13) - then fixed in stock")
     void countedThenFixed() {
         StockPackage carton = labelled();
         refused(carton::putInStock);
-        carton.count();
-        carton.count();
+        carton.count(NOW);
+        assertThat(carton.countedAt()).isEqualTo(NOW);
+        carton.count(NOW.plusSeconds(60));
         carton.putInStock();
         assertThat(carton.status()).isEqualTo(StockPackageStatus.IN_STOCK);
-        assertThat(carton.receivedQty()).isEqualTo(1000);
-        refused(carton::count);
-    }
-
-    @Test
-    @DisplayName("a draft counted at another figure is never rehydrated (ck_stock_package_standard_count says so too)")
-    void aNonStandardDraftIsNotRehydrated() {
-        assertThatThrownBy(() -> new StockPackage(new StockPackageId(UUID.randomUUID()), "LPN-20261021-000002",
-                UUID.randomUUID(), UUID.randomUUID(), 1000, 980, RECEIVING, StockPackageStatus.RECEIVING,
-                UUID.randomUUID(), null, 3)).isInstanceOf(IllegalStateException.class);
+        assertThat(carton.countedAt()).isEqualTo(NOW.plusSeconds(60));
+        assertThat(carton.counted()).isTrue();
+        refused(() -> carton.count(NOW.plusSeconds(120)));
+        assertThat(carton.countedAt()).as("fixed once in stock").isEqualTo(NOW.plusSeconds(60));
     }
 
     @Test
@@ -102,7 +98,7 @@ class StockPackageTest {
         assertThat(carton.status()).isEqualTo(StockPackageStatus.IN_STOCK);
         assertThat(carton.closedAt()).isNull();
         assertThat(carton.location()).isEqualTo(bin);
-        assertThat(carton.receivedQty()).isEqualTo(1000);
+        assertThat(carton.countedAt()).as("the count it was received with stands").isEqualTo(NOW);
         refused(() -> carton.restock(bin));
         refused(() -> labelled().restock(bin));
         StockPackage lost = inStock();
@@ -132,26 +128,13 @@ class StockPackageTest {
     }
 
     @Test
-    @DisplayName("found again or restocked only at the standard count: a carton counted in off-standard (history) stays out")
-    void backIntoStockOnlyWhole() {
-        StockPackage lost = new StockPackage(new StockPackageId(UUID.randomUUID()), "LPN-20261021-000003",
-                UUID.randomUUID(), UUID.randomUUID(), 1000, 980, new LocationId("HCM-A01-1-A"),
-                StockPackageStatus.LOST, UUID.randomUUID(), NOW, 1);
-        refused(lost::found);
-        StockPackage consumed = new StockPackage(new StockPackageId(UUID.randomUUID()), "LPN-20261021-000004",
-                UUID.randomUUID(), UUID.randomUUID(), 1000, 980, new LocationId("HCM-A01-1-A"),
-                StockPackageStatus.CONSUMED, UUID.randomUUID(), NOW, 1);
-        refused(() -> consumed.restock(new LocationId("HCM-A01-1-B")));
-    }
-
-    @Test
     @DisplayName("a LOST carton found again is a whole carton in stock: the allocatable one (4C-2 review)")
     void foundAgainIsInStockWhole() {
         StockPackage carton = inStock();
         carton.lose(NOW);
         carton.found();
         assertThat(carton.status()).isEqualTo(StockPackageStatus.IN_STOCK);
-        assertThat(carton.receivedQty()).isEqualTo(carton.nominalQty());
+        assertThat(carton.counted()).isTrue();
         carton.consume(NOW);
         assertThat(carton.status()).isEqualTo(StockPackageStatus.CONSUMED);
     }
@@ -169,11 +152,11 @@ class StockPackageTest {
         assertThatThrownBy(() -> new StockPackage(id, "LPN-1", item, unit, 5, null, RECEIVING,
                 StockPackageStatus.IN_STOCK, null, null, 0)).as("in stock, never counted")
                 .isInstanceOf(IllegalStateException.class);
-        assertThatThrownBy(() -> new StockPackage(id, "LPN-1", item, unit, 5, 5, RECEIVING,
+        assertThatThrownBy(() -> new StockPackage(id, "LPN-1", item, unit, 5, NOW, RECEIVING,
                 StockPackageStatus.CONSUMED, null, null, 0)).as("closed without closed_at")
                 .isInstanceOf(IllegalStateException.class);
-        assertThatThrownBy(() -> new StockPackage(id, "LPN-1", item, unit, 5, 4, RECEIVING,
-                StockPackageStatus.IN_STOCK, null, null, 0)).as("in stock off its standard count")
+        assertThatThrownBy(() -> new StockPackage(id, "LPN-1", item, unit, 5, null, RECEIVING,
+                StockPackageStatus.LOST, null, NOW, 0)).as("lost, never counted")
                 .isInstanceOf(IllegalStateException.class);
     }
 }

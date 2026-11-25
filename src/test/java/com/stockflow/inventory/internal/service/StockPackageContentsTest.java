@@ -47,14 +47,14 @@ class StockPackageContentsTest {
     private final StockPackageContents contents = new StockPackageContents(stockPackages, stockItems, locations,
             mock(com.stockflow.inventory.internal.domain.ReturnedCartonOwnership.class));
 
-    private static StockPackage carton(StockPackageId id, int counted) {
-        return new StockPackage(id, "LPN-0001", UUID.randomUUID(), UUID.randomUUID(), 24, counted,
+    private static StockPackage carton(StockPackageId id, int units) {
+        return new StockPackage(id, "LPN-0001", UUID.randomUUID(), UUID.randomUUID(), units, NOW,
                 new LocationId("HCM-A01-1-A"), StockPackageStatus.IN_STOCK, UUID.randomUUID(), null, 0L);
     }
 
-    private static StockPackage cartonWith(StockPackageId id, StockPackageStatus status, int counted) {
+    private static StockPackage cartonWith(StockPackageId id, StockPackageStatus status, int units) {
         Instant closed = status.isClosed() ? NOW : null;
-        return new StockPackage(id, "LPN-0001", UUID.randomUUID(), UUID.randomUUID(), 24, counted,
+        return new StockPackage(id, "LPN-0001", UUID.randomUUID(), UUID.randomUUID(), units, NOW,
                 new LocationId("HCM-A01-1-A"), status, UUID.randomUUID(), closed, 0L);
     }
 
@@ -346,17 +346,6 @@ class StockPackageContentsTest {
             assertThat(emptied.status()).isEqualTo(StockStatus.QUARANTINE);
             assertThat(emptied.onHand().value()).isEqualTo(24);
             assertThat(emptied.available().value()).as("not sellable until released").isZero();
-        }
-
-        @Test
-        @DisplayName("a LOST carton counted in at another figure than its standard (history) is not found again")
-        void offStandardLostCartonStaysLost() {
-            StockPackage lost = new StockPackage(id, "LPN-0001", UUID.randomUUID(), UUID.randomUUID(), 24, 20,
-                    new LocationId("HCM-A01-1-A"), StockPackageStatus.LOST, UUID.randomUUID(), NOW, 0L);
-            rowsOf(lost, row(id, 0));
-
-            assertThat(codeOf(() -> contents.adjust(id, AdjustmentDirection.RESTOCK, false, NOW)))
-                    .isEqualTo(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION);
         }
 
         @Test

@@ -146,7 +146,7 @@ public final class ShippedCartons {
             jdbc.execute("SET LOCAL session_replication_role = replica");
             String number = jdbc.queryForObject("SELECT order_number FROM ordering.customer_order WHERE id = ?",
                     String.class, orderId);
-            int held = jdbc.queryForObject("SELECT received_qty FROM inventory.stock_package WHERE lpn = ?",
+            int held = jdbc.queryForObject("SELECT nominal_qty FROM inventory.stock_package WHERE lpn = ?",
                     Integer.class, lpn);
             jdbc.update("""
                     INSERT INTO fulfillment.pick (id, order_id, order_number, warehouse_id, status, created_at)

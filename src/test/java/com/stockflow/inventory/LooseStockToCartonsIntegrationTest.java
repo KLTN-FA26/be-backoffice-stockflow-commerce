@@ -141,7 +141,7 @@ class LooseStockToCartonsIntegrationTest {
             // 20 §5.5 / BR-18: IN_STOCK, sealed, holding exactly the standard count it was counted in at.
             assertThat(carton.path("unitOfMeasure").asText()).as(lpn).isEqualTo("THUNG");
             assertThat(carton.path("nominalQty").asInt()).as(lpn).isEqualTo(perCarton);
-            assertThat(carton.path("receivedQty").asInt()).as(lpn).isEqualTo(perCarton);
+            assertThat(carton.hasNonNull("countedAt")).as(lpn + " was counted in").isTrue();
             assertThat(carton.path("onHand").asInt()).as(lpn).isEqualTo(perCarton);
             assertThat(carton.path("reserved").asInt()).as(lpn).isZero();
             assertThat(carton.path("status").asText()).as(lpn).isEqualTo("IN_STOCK");

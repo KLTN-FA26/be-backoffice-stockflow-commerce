@@ -655,8 +655,7 @@ class StockOperationsServiceImpl implements StockOperations {
         List<StockPackage> packed = lockCartonsOf(command.receiptLineId()).stream()
                 .filter(carton -> carton.status() == StockPackageStatus.RECEIVING)
                 .toList();
-        packed.forEach(StockPackage::requireStandardCount);
-        int inCartons = packed.stream().mapToInt(carton -> Objects.requireNonNullElse(carton.receivedQty(), 0)).sum();
+        int inCartons = packed.stream().filter(StockPackage::counted).mapToInt(StockPackage::nominalQty).sum();
         // The invariant stated twice: procurement refuses such a count first (design 3, rule 5).
         if (inCartons > command.quantity()) {
             throw new BusinessException(ErrorCode.RECEIPT_PACKAGES_EXCEED_LINE,
@@ -686,8 +685,8 @@ class StockOperationsServiceImpl implements StockOperations {
 
         StockMove first = null;
         for (StockPackage carton : packed) {
-            carton.putInStock();   // refuses a carton never counted, or not at its standard count, before its row
-            int counted = carton.receivedQty();
+            carton.putInStock();   // refuses a carton never counted, before its row
+            int counted = carton.nominalQty();
             stockItems.save(StockItem.receiveInboundInto(carton.id(), command.sku(), location, lot,
                     Quantity.of(counted), command.receivedAt(), lotId));
             stockPackages.save(carton);
@@ -745,7 +744,7 @@ class StockOperationsServiceImpl implements StockOperations {
                 throw new BusinessException(ErrorCode.RECEIPT_LINE_HAS_PACKAGES,
                         "%s was labelled in another unit; leave it out to void it".formatted(carton.lpn()));
             }
-            carton.count();
+            carton.count(now);
             if (!carton.location().equals(location)) {
                 carton.moveTo(location);
             }
@@ -759,7 +758,7 @@ class StockOperationsServiceImpl implements StockOperations {
             for (int i = 0; i < plan.newCartons(); i++) {
                 StockPackage carton = StockPackage.receiving(new StockPackageId(Identifiers.newId()), lpns.get(i),
                         itemId, unit.id(), unit.factor(), location, command.receiptLineId());
-                carton.count();
+                carton.count(now);
                 live.add(stockPackages.save(carton));
             }
         }
@@ -768,7 +767,7 @@ class StockOperationsServiceImpl implements StockOperations {
                 plan.recounts().size(), plan.newCartons(), plan.voided().size());
         return live.stream()
                 .sorted(Comparator.comparing(StockPackage::lpn))
-                .map(carton -> view(carton, unit, carton.receivedQty()))
+                .map(carton -> view(carton, unit, countedUnits(carton)))
                 .toList();
     }
 
@@ -797,7 +796,7 @@ class StockOperationsServiceImpl implements StockOperations {
         return found.stream().collect(Collectors.groupingBy(StockPackage::goodsReceiptLineId, LinkedHashMap::new,
                 Collectors.mapping(carton -> view(carton, unitsById.get(carton.uomConversionId()),
                                 carton.status() == StockPackageStatus.RECEIVING
-                                        ? carton.receivedQty() : onHand.getOrDefault(carton.id(), 0)),
+                                        ? countedUnits(carton) : onHand.getOrDefault(carton.id(), 0)),
                         Collectors.toList())));
     }
 
@@ -821,7 +820,12 @@ class StockOperationsServiceImpl implements StockOperations {
     private static StockPackageView view(StockPackage carton, UomConversion unit, Integer quantity) {
         return new StockPackageView(carton.id().value(), carton.lpn(), carton.goodsReceiptLineId(),
                 unit == null ? null : unit.sku(), carton.uomConversionId(), unit == null ? null : unit.unitOfMeasure(),
-                carton.nominalQty(), quantity, carton.receivedQty(), carton.location().code(), carton.status().name());
+                carton.nominalQty(), quantity, carton.countedAt(), carton.location().code(), carton.status().name());
+    }
+
+    /** What a carton still being received holds: its standard count once counted, nothing known before (null). */
+    private static Integer countedUnits(StockPackage carton) {
+        return carton.counted() ? carton.nominalQty() : null;
     }
 
     private void requireUsable(LocationId location) {

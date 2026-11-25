@@ -286,7 +286,7 @@ class SeedTestDataLoadTest {
                 .as("one row per carton").isZero();
         assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package p JOIN inventory.stock_item s ON "
                 + "s.stock_package_id = p.id WHERE p.created_by = 'seed' AND NOT CASE p.status WHEN 'IN_STOCK' THEN "
-                + "s.on_hand = p.received_qty AND p.received_qty = p.nominal_qty ELSE s.on_hand = 0 END"))
+                + "s.on_hand = p.nominal_qty AND p.counted_at IS NOT NULL ELSE s.on_hand = 0 END"))
                 .as("a carton holds its standard count or, consumed, nothing").isZero();
         assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package p JOIN inventory.stock_item s ON "
                 + "s.stock_package_id = p.id WHERE p.created_by = 'seed' AND s.on_hand <> COALESCE((SELECT "

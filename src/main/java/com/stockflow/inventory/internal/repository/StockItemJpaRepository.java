@@ -77,7 +77,7 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
                 s.id, s.locationCode, s.lotNumber, s.status, s.onHand, s.reserved, s.receivedAt,
                 s.stockPackageId,
                 case when p.status = com.stockflow.inventory.internal.domain.StockPackageStatus.IN_STOCK
-                     and s.reserved = 0 and s.onHand = p.receivedQty then true else false end)
+                     and s.reserved = 0 and s.onHand = p.nominalQty then true else false end)
             from StockItemJpaEntity s
             left join StockPackageJpaEntity p on p.id = s.stockPackageId
             where s.sku = :sku
@@ -101,7 +101,7 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
               and s.status = com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE
               and s.reserved = 0 and s.onHand > 0
               and p.status = com.stockflow.inventory.internal.domain.StockPackageStatus.IN_STOCK
-              and s.onHand = p.receivedQty
+              and s.onHand = p.nominalQty
             """)
     List<AllocatableRow> findAllocatable(@Param("skus") Collection<String> skus);
 
@@ -167,7 +167,7 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
             select new com.stockflow.inventory.internal.domain.HoldDetail(r.id, s.sku, s.locationCode, s.lotNumber,
                    r.quantity, r.status, r.expiresAt, p.lpn,
                    case when p.status = com.stockflow.inventory.internal.domain.StockPackageStatus.IN_STOCK
-                        and r.quantity = s.onHand and s.onHand = p.receivedQty
+                        and r.quantity = s.onHand and s.onHand = p.nominalQty
                         then true else false end)
             from ReservationJpaEntity r join r.stockItem s
             left join StockPackageJpaEntity p on p.id = s.stockPackageId

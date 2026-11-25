@@ -235,7 +235,9 @@ Goods come back printed, in cartons, and are received against the production ord
 standard count, in the production order's lot, never more than the line orders on all its live receipts (03 BR-02), so
 nothing waits for approval. Cartons are labelled while a DRAFT receipt is counted (`replaceLines` →
 `InventoryService.countReceivingPackages`, which reconciles the line's RECEIVING cartons through the pure
-`ReceivingPackagePlan`: new → LPN, listed → recount, missing → VOID); `confirm` is one transaction that makes the
+`ReceivingPackagePlan`: new → LPN, listed → recount, missing → VOID). A count is a moment, not a figure:
+`stock_package.counted_at` (NULL while a carton is only labelled; ADR-0011 step 3a, V20261230000300), and the units a
+carton stands for are its `nominal_qty`, nowhere else. `confirm` is one transaction that makes the
 cartons INBOUND stock, advances the production order and sends events after commit. There is no QC step (03 BR-07)
 and no purchase order any more. Lock order, everywhere:
 

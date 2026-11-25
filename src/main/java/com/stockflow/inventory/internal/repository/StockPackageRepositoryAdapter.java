@@ -100,13 +100,13 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
     public StockPackage save(StockPackage stockPackage) {
         StockPackageJpaEntity entity = jpa.findById(stockPackage.id().value())
                 .map(existing -> {
-                    existing.apply(stockPackage.receivedQty(), stockPackage.location().code(), stockPackage.status(),
+                    existing.apply(stockPackage.countedAt(), stockPackage.location().code(), stockPackage.status(),
                             stockPackage.closedAt());
                     return existing;
                 })
                 .orElseGet(() -> new StockPackageJpaEntity(stockPackage.id().value(), stockPackage.lpn(),
                         stockPackage.inventoryItemId(), stockPackage.uomConversionId(), stockPackage.nominalQty(),
-                        stockPackage.receivedQty(), stockPackage.location().code(), stockPackage.status(),
+                        stockPackage.countedAt(), stockPackage.location().code(), stockPackage.status(),
                         stockPackage.goodsReceiptLineId(), stockPackage.closedAt()));
         return toDomain(jpa.save(entity));
     }
@@ -262,7 +262,7 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
 
     private static StockPackage toDomain(StockPackageJpaEntity entity) {
         return new StockPackage(new StockPackageId(entity.getId()), entity.getLpn(), entity.getInventoryItemId(),
-                entity.getUomConversionId(), entity.getNominalQty(), entity.getReceivedQty(),
+                entity.getUomConversionId(), entity.getNominalQty(), entity.getCountedAt(),
                 new LocationId(entity.getLocationCode()), entity.getStatus(),
                 entity.getGoodsReceiptLineId(), entity.getClosedAt(), entity.getVersion());
     }

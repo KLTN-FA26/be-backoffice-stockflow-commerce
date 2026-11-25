@@ -185,9 +185,9 @@ class StockPackageContents {
                 .orElseThrow(() -> new IllegalStateException("No stock package " + id.value()));
         StockItem row = stockItems.findByIdForUpdate(rowId).orElseThrow(() ->
                 new IllegalStateException("Stock row %s of %s vanished".formatted(rowId.value(), carton.lpn())));
-        if (carton.receivedQty() == null || units != carton.receivedQty() || !row.onHand().isZero()) {
+        if (!carton.counted() || units != carton.nominalQty() || !row.onHand().isZero()) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("%s comes back into stock whole, %s "
-                    + "unit(s); not %d").formatted(carton.lpn(), carton.receivedQty(), units), List.of(),
+                    + "unit(s); not %d").formatted(carton.lpn(), carton.nominalQty(), units), List.of(),
                     Map.of("lpn", carton.lpn()));
         }
         carton.restock(to);
@@ -227,14 +227,14 @@ class StockPackageContents {
         }
         List<com.stockflow.inventory.internal.domain.StockItemId> rowIds = stockItems.findIdsInStockPackage(id);
         StockItem row = rowIds.size() != 1 ? null : stockItems.findByIdForUpdate(rowIds.get(0)).orElse(null);
-        if (row == null || carton.receivedQty() == null || !row.onHand().isZero() || !row.reserved().isZero()) {
+        if (row == null || !carton.counted() || !row.onHand().isZero() || !row.reserved().isZero()) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("%s cannot come back whole: it is not "
-                    + "one empty row of %s unit(s)").formatted(carton.lpn(), carton.receivedQty()), List.of(),
+                    + "one empty row of %s unit(s)").formatted(carton.lpn(), carton.nominalQty()), List.of(),
                     Map.of("lpn", carton.lpn()));
         }
         carton.restock(to);
         row.followPackageTo(to);
-        row.receiveReturnInPackage(com.stockflow.inventory.internal.domain.Quantity.of(carton.receivedQty()));
+        row.receiveReturnInPackage(com.stockflow.inventory.internal.domain.Quantity.of(carton.nominalQty()));
         // The carton first, as in restock: it stands at its new place before the ledger line names it there.
         stockPackages.save(carton);
         stockItems.saveMerged(row);
@@ -280,10 +280,10 @@ class StockPackageContents {
         }
         List<com.stockflow.inventory.internal.domain.StockItemId> rowIds = stockItems.findIdsInStockPackage(id);
         StockItem row = rowIds.size() != 1 ? null : stockItems.findByIdForUpdate(rowIds.get(0)).orElse(null);
-        if (row == null || carton.receivedQty() == null || row.onHand().value() != carton.receivedQty()
+        if (row == null || !carton.counted() || row.onHand().value() != carton.nominalQty()
                 || !row.reserved().isZero() || row.status() != StockStatus.QUARANTINE) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("%s cannot leave whole: it is not one "
-                    + "row of %s unit(s) in quarantine").formatted(carton.lpn(), carton.receivedQty()), List.of(),
+                    + "row of %s unit(s) in quarantine").formatted(carton.lpn(), carton.nominalQty()), List.of(),
                     Map.of("lpn", carton.lpn()));
         }
         int units = row.onHand().value();

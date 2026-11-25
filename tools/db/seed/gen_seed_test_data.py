@@ -1082,7 +1082,7 @@ class ProductionOrder:
             for _ in range(n):
                 pkg = dict(id=uid(f"pkg:{rl}:{len(cartons)}"), lpn=lpn(when.date()), line=rl, ln=ln, pl=pl)
                 ins("inventory.stock_package", when, id=pkg["id"], lpn=pkg["lpn"], inventory_item_id=item,
-                    uom_conversion_id=ln["s"]["unit"], nominal_qty=ln["per"], received_qty=ln["per"],
+                    uom_conversion_id=ln["s"]["unit"], nominal_qty=ln["per"], counted_at=when,
                     location_code=rcv, status="RECEIVING", goods_receipt_line_id=rl)
                 cartons.append(pkg)
             pl["received"] += n

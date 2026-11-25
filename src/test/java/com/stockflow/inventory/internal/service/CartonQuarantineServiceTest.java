@@ -77,8 +77,8 @@ class CartonQuarantineServiceTest {
 
     @BeforeEach
     void setUp() {
-        StockPackage carton = new StockPackage(cartonId, LPN, UUID.randomUUID(), UUID.randomUUID(), 10, 10,
-                new LocationId(DOCK), StockPackageStatus.IN_STOCK, LINE, null, 0L);
+        StockPackage carton = new StockPackage(cartonId, LPN, UUID.randomUUID(), UUID.randomUUID(), 10,
+                Instant.parse("2026-11-01T00:00:00Z"), new LocationId(DOCK), StockPackageStatus.IN_STOCK, LINE, null, 0L);
         when(stockPackages.findByLpns(List.of(LPN))).thenReturn(List.of(carton));
         StockItemId row = StockItemId.newId();
         when(stockItems.findIdsInStockPackage(cartonId)).thenReturn(List.of(row));
@@ -86,7 +86,8 @@ class CartonQuarantineServiceTest {
                 new LocationId(DOCK), "LOT-1", Quantity.of(10), StockStatus.INBOUND, List.of(), 0L,
                 Instant.parse("2026-11-01T00:00:00Z"), UUID.randomUUID(), cartonId)));
         when(operations.quarantine(anyString(), anyString(), anyString(), any())).thenReturn(new StockPackageView(
-                cartonId.value(), LPN, LINE, "CUP-12OZ", UUID.randomUUID(), "CARTON", 10, 10, 10, AREA, "IN_STOCK"));
+                cartonId.value(), LPN, LINE, "CUP-12OZ", UUID.randomUUID(), "CARTON", 10, 10,
+                Instant.parse("2026-11-01T00:00:00Z"), AREA, "IN_STOCK"));
         when(warehouses.findLocation(AREA)).thenReturn(Optional.of(new StorageLocationView(areaId,
                 StorageLocationView.Kind.AREA, UUID.randomUUID(), AREA,
                 StorageLocationView.Status.ACTIVE, StorageLocationView.Status.ACTIVE, true)));

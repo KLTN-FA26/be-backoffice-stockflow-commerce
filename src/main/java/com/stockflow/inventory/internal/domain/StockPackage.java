@@ -17,17 +17,18 @@ import java.util.regex.Pattern;
  * nothing is taken out of part of it. So there is no "opened" state at all (team plan 4C-3 dropped the column):
  * taking its contents ends it ({@link #consume}), a carton that comes back whole - put back after its order was
  * cancelled, or returned by a customer - is in stock again ({@link #restock}), and a LOST one found again is in stock
- * again whole ({@link #found}). Back in stock only at its standard count: one counted in at another figure before
- * the rule (history) stays out ({@code ck_stock_package_standard_count}).</p>
+ * again whole ({@link #found}).</p>
  *
  * <p><b>It holds no quantity of its own.</b> What is left in it is the stock rows that point at it
  * ({@link StockItem#stockPackageId()}), the sum of their {@code on_hand}; two copies of one number would
- * drift. {@code nominalQty} is the packing unit's factor when it was made and {@code receivedQty} what was
- * counted into it at receipt, fixed once it is in stock.</p>
+ * drift. {@code nominalQty} is the packing unit's factor when it was made, and the only place that says how many
+ * units the carton stands for (ADR-0011). {@code countedAt} is when it was counted in at receiving, null while it is
+ * only labelled: a count is a fact, not a figure, because a carton of another count is not listed at all (kltn-docs
+ * 03 BR-13). Fixed once it is in stock.</p>
  *
- * <p>Every rule below is stated a second time by V20261020000100, V20261111000200 and V20261113000300 (checks and
- * the transition trigger), so a path that bypassed this class is still refused - at commit, as a 500, where this
- * class refuses first with an error code.</p>
+ * <p>Every rule below is stated a second time by V20261020000100, V20261111000200, V20261113000300 and
+ * V20261230000300 (checks and the transition trigger), so a path that bypassed this class is still refused - at
+ * commit, as a 500, where this class refuses first with an error code.</p>
  */
 public final class StockPackage {
 
@@ -40,20 +41,20 @@ public final class StockPackage {
     private final int nominalQty;
     private final UUID goodsReceiptLineId;
     private final long version;
-    private Integer receivedQty;
+    private Instant countedAt;
     private LocationId location;
     private StockPackageStatus status;
     private Instant closedAt;
 
     public StockPackage(StockPackageId id, String lpn, UUID inventoryItemId, UUID uomConversionId, int nominalQty,
-                        Integer receivedQty, LocationId location, StockPackageStatus status,
+                        Instant countedAt, LocationId location, StockPackageStatus status,
                         UUID goodsReceiptLineId, Instant closedAt, long version) {
         this.id = Objects.requireNonNull(id, "id");
         this.lpn = Objects.requireNonNull(lpn, "lpn");
         this.inventoryItemId = Objects.requireNonNull(inventoryItemId, "inventoryItemId");
         this.uomConversionId = Objects.requireNonNull(uomConversionId, "uomConversionId");
         this.nominalQty = nominalQty;
-        this.receivedQty = receivedQty;
+        this.countedAt = countedAt;
         this.location = Objects.requireNonNull(location, "location");
         this.status = Objects.requireNonNull(status, "status");
         this.goodsReceiptLineId = goodsReceiptLineId;
@@ -73,39 +74,23 @@ public final class StockPackage {
     // ------------------------------------------------------------------ behaviour
 
     /**
-     * Counted (again) while still being received: it holds the standard count, {@link #nominalQty}, which the system
-     * assigns rather than anyone typing a number (kltn-docs 03 BR-13: a carton of another count is not listed at all).
-     * Fixed once in stock ({@code tg_stock_package_transition}).
+     * Counted (again) while still being received: seen on the line, at {@code now}. Nobody types a number - it
+     * stands for its standard count, {@link #nominalQty} (kltn-docs 03 BR-13: a carton of another count is not listed
+     * at all) - so the count is only the moment; a recount of the draft moves it to the later one. Fixed once in stock
+     * ({@code tg_stock_package_transition}).
      */
-    public void count() {
+    public void count(Instant now) {
         requireStatus(StockPackageStatus.RECEIVING, "be recounted");
-        receivedQty = nominalQty;
+        countedAt = Objects.requireNonNull(now, "now");
     }
 
-    /**
-     * RECEIVING → IN_STOCK: its receipt was posted. It must have been counted at the standard count: a draft counted
-     * before whole cartons were the rule may still carry another figure, and is recounted first.
-     */
+    /** RECEIVING → IN_STOCK: its receipt was posted. It must have been counted in. */
     public void putInStock() {
         requireStatus(StockPackageStatus.RECEIVING, "go into stock");
-        if (receivedQty == null) {
+        if (countedAt == null) {
             throw transition("%s has not been counted".formatted(lpn));
         }
-        requireStandardCount();
         status = StockPackageStatus.IN_STOCK;
-    }
-
-    /**
-     * Refuses a carton counted at another figure than its standard count (kltn-docs 03 BR-13), naming it: asked
-     * first by a receipt, so a draft counted under the old rules is reported as that carton, not as a line whose
-     * cartons fall short. A carton not yet counted passes; {@link #putInStock} refuses it.
-     */
-    public void requireStandardCount() {
-        if (receivedQty != null && receivedQty != nominalQty) {
-            throw new BusinessException(ErrorCode.RECEIPT_PACKAGE_NOT_STANDARD,
-                    "%s was counted at %d; a carton holds %d - count the line again".formatted(lpn, receivedQty,
-                            nominalQty));
-        }
     }
 
     /** RECEIVING → VOID: its receipt was cancelled before posting. */
@@ -127,12 +112,10 @@ public final class StockPackage {
      * its order was cancelled, or received again on a return. It keeps its LPN; its row must hold its count again in
      * the same transaction (V20261020000200 checks at commit).
      *
-     * @throws BusinessException {@code INVALID_STOCK_PACKAGE_TRANSITION} unless CONSUMED, or for a carton counted in
-     *         at another figure than its standard count before that was the rule
+     * @throws BusinessException {@code INVALID_STOCK_PACKAGE_TRANSITION} unless CONSUMED
      */
     public void restock(LocationId location) {
         requireStatus(StockPackageStatus.CONSUMED, "come back into stock");
-        requireWhole("come back into stock");
         this.location = Objects.requireNonNull(location, "location");
         status = StockPackageStatus.IN_STOCK;
         closedAt = null;
@@ -149,22 +132,12 @@ public final class StockPackage {
      * LOST → IN_STOCK: found again, whole (kltn-docs 20 §4.6 step 7, BR-18: the very carton, its standard count, its
      * lot). An approved restock does it; its row is filled again in the same transaction.
      *
-     * @throws BusinessException {@code INVALID_STOCK_PACKAGE_TRANSITION} unless LOST, or for a carton counted in at
-     *         another figure than its standard count before that was the rule
+     * @throws BusinessException {@code INVALID_STOCK_PACKAGE_TRANSITION} unless LOST
      */
     public void found() {
         requireStatus(StockPackageStatus.LOST, "be found");
-        requireWhole("be found");
         status = StockPackageStatus.IN_STOCK;
         closedAt = null;
-    }
-
-    /** A carton goes back into stock at its standard count only ({@code ck_stock_package_standard_count}). */
-    private void requireWhole(String action) {
-        if (receivedQty == null || receivedQty != nominalQty) {
-            throw transition("%s was counted in at %s, not its standard %d, and cannot %s".formatted(lpn, receivedQty,
-                    nominalQty, action));
-        }
     }
 
     /** Moved whole; its stock rows move with it in the same transaction ({@code check_stock_package_contents}). */
@@ -184,19 +157,11 @@ public final class StockPackage {
         if (nominalQty <= 0) {
             throw new IllegalStateException("Stock package %s: nominal quantity %d".formatted(lpn, nominalQty));
         }
-        if (receivedQty != null && receivedQty < 0) {
-            throw new IllegalStateException("Stock package %s: received %d".formatted(lpn, receivedQty));
-        }
-        if (receivedQty == null && status != StockPackageStatus.RECEIVING && status != StockPackageStatus.VOID) {
+        if (countedAt == null && status != StockPackageStatus.RECEIVING && status != StockPackageStatus.VOID) {
             throw new IllegalStateException("Stock package %s is %s but was never counted".formatted(lpn, status));
         }
         if (status.isClosed() != (closedAt != null)) {
             throw new IllegalStateException("Stock package %s is %s with closed_at %s".formatted(lpn, status, closedAt));
-        }
-        if ((status == StockPackageStatus.RECEIVING || status == StockPackageStatus.IN_STOCK)
-                && receivedQty != null && receivedQty != nominalQty) {
-            throw new IllegalStateException("Stock package %s is %s at %d, not its standard %d".formatted(lpn, status,
-                    receivedQty, nominalQty));
         }
     }
 
@@ -217,7 +182,10 @@ public final class StockPackage {
     public UUID inventoryItemId() { return inventoryItemId; }
     public UUID uomConversionId() { return uomConversionId; }
     public int nominalQty() { return nominalQty; }
-    public Integer receivedQty() { return receivedQty; }
+    /** When it was counted in at receiving; null while it is only labelled. */
+    public Instant countedAt() { return countedAt; }
+    /** Whether it has been counted in: it then stands for {@link #nominalQty} units. */
+    public boolean counted() { return countedAt != null; }
     public LocationId location() { return location; }
     public StockPackageStatus status() { return status; }
     public UUID goodsReceiptLineId() { return goodsReceiptLineId; }

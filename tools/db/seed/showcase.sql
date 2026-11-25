@@ -1346,9 +1346,10 @@ SELECT pg_temp.sid('receipt-goods-line:' || l.key || ':' || l.ln), pg_temp.sid('
        pg_temp.staff(o.kho)::text, l.unit_id, l.po_line_id
   FROM h_line l JOIN h_received o ON o.key = l.key JOIN inventory.inventory_items i ON i.sku = l.sku;
 
-INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
                                      location_code, status, goods_receipt_line_id, version, created_at, created_by)
-SELECT c.package_id, c.lpn, i.id, pg_temp.sid('unit:' || c.sku), c.upc, c.upc, o.wh || '-RCV01', 'RECEIVING',
+SELECT c.package_id, c.lpn, i.id, pg_temp.sid('unit:' || c.sku), c.upc, pg_temp.at(o.r, '08:30'),
+       o.wh || '-RCV01', 'RECEIVING',
        pg_temp.sid('receipt-goods-line:' || c.key || ':' || c.ln), 0, pg_temp.at(o.r, '08:30'),
        pg_temp.staff(o.kho)::text
   FROM h_carton c JOIN h_received o ON o.key = c.key JOIN inventory.inventory_items i ON i.sku = c.sku;
@@ -6458,9 +6459,9 @@ WITH lines AS (
      GROUP BY x.return_request_id, x.sku
 ), cartons AS (
     SELECT p.id, p.return_request_id, i.sku,
-           COALESCE(sum(COALESCE(p.received_qty, 0)) OVER (PARTITION BY p.return_request_id, i.sku ORDER BY p.lpn
+           COALESCE(sum(CASE WHEN p.counted_at IS NULL THEN 0 ELSE p.nominal_qty END) OVER (PARTITION BY p.return_request_id, i.sku ORDER BY p.lpn
                         ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS before,
-           sum(COALESCE(p.received_qty, 0)) OVER (PARTITION BY p.return_request_id, i.sku) AS sealed
+           sum(CASE WHEN p.counted_at IS NULL THEN 0 ELSE p.nominal_qty END) OVER (PARTITION BY p.return_request_id, i.sku) AS sealed
       FROM inventory.stock_package p
       JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
      WHERE p.return_ownership = 'PENDING'

@@ -93,13 +93,13 @@ UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa52:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA52_CTN', 4);
-INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
                                      location_code, status, closed_at)
-VALUES (md5('qa52:c1')::uuid, 'QA52-LPN-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa52:unit')::uuid, 4, 4,
+VALUES (md5('qa52:c1')::uuid, 'QA52-LPN-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa52:unit')::uuid, 4, NOW(),
         'HCM-A01-1-A', 'CONSUMED', NOW()),
-       (md5('qa52:c2')::uuid, 'QA52-LPN-2', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa52:unit')::uuid, 4, 4,
+       (md5('qa52:c2')::uuid, 'QA52-LPN-2', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa52:unit')::uuid, 4, NOW(),
         'HCM-A01-1-A', 'CONSUMED', NOW()),
-       (md5('qa52:c3')::uuid, 'QA52-LPN-3', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa52:unit')::uuid, 4, 4,
+       (md5('qa52:c3')::uuid, 'QA52-LPN-3', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa52:unit')::uuid, 4, NOW(),
         'HCM-A01-1-A', 'CONSUMED', NOW());
 -- Written with triggers off, so the lot is named here: lot_id is NOT NULL since V20261113000300 (4C-3).
 INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)

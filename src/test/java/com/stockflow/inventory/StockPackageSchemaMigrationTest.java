@@ -71,8 +71,8 @@ class StockPackageSchemaMigrationTest {
         String id = "md5('it:pk:" + name + "')::uuid";
         transaction(db,
                 "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,"
-                        + " received_qty, location_code, status) VALUES (" + id + ", 'IT-" + name + "', "
-                        + BLUE_CUP + ", " + unit + ", 10, 10, '" + location + "', 'IN_STOCK')",
+                        + " counted_at, location_code, status) VALUES (" + id + ", 'IT-" + name + "', "
+                        + BLUE_CUP + ", " + unit + ", 10, NOW(), '" + location + "', 'IN_STOCK')",
                 "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status,"
                         + " created_at, received_at, stock_package_id) VALUES (md5('it:pk:" + name
                         + ":row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', '" + location + "', 'UNTRACED', 10, 0, 'AVAILABLE',"
@@ -237,30 +237,30 @@ class StockPackageSchemaMigrationTest {
     }
 
     @Test
-    void aCartonInStockIsCountedAtItsStandardAndHoldsExactlyThatAndReadsAsOneRow() throws Exception {
+    void aCartonInStockIsCountedAndHoldsExactlyItsStandardCountAndReadsAsOneRow() throws Exception {
         try (Connection db = connect()) {
             String unit = unit(db, "FULL");
             String pkg = "md5('it:pk:FULL')::uuid";
             String carton = "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id,"
-                    + " nominal_qty, received_qty, location_code, status) VALUES (" + pkg + ", 'IT-FULL', "
-                    + BLUE_CUP + ", " + unit + ", 10, %d, 'HCM-A01-1-A', 'IN_STOCK')";
+                    + " nominal_qty, counted_at, location_code, status) VALUES (" + pkg + ", 'IT-FULL', "
+                    + BLUE_CUP + ", " + unit + ", 10, %s, 'HCM-A01-1-A', 'IN_STOCK')";
             String row = "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved,"
                     + " status, created_at, received_at, stock_package_id) VALUES (md5('it:pk:FULL:row')::uuid,"
                     + " 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'UNTRACED', %d, 0, 'AVAILABLE', NOW(),"
                     + " NOW() - interval '1 day', " + pkg + ")";
 
-            refused(db, "a carton in stock counted in at 6 of a standard 10 (ck_stock_package_standard_count)",
-                    carton.formatted(6));
+            refused(db, "a carton in stock that was never counted in (ck_stock_package_counted)",
+                    carton.formatted("NULL"));
             SQLException partial = catchThrowableOfType(SQLException.class,
-                    () -> transaction(db, carton.formatted(10), row.formatted(7)));
-            assertThat((Throwable) partial).as("a carton in stock holding 7 of the 10 it was counted at")
+                    () -> transaction(db, carton.formatted("NOW()"), row.formatted(7)));
+            assertThat((Throwable) partial).as("a carton in stock holding 7 of the 10 it stands for")
                     .hasMessageContaining("a carton in stock is whole");
             SQLException overfilled = catchThrowableOfType(SQLException.class,
-                    () -> transaction(db, carton.formatted(10), row.formatted(11)));
+                    () -> transaction(db, carton.formatted("NOW()"), row.formatted(11)));
             assertThat((Throwable) overfilled).as("a carton in stock holding 11").hasMessageContaining("holds 11");
 
-            transaction(db, carton.formatted(10), row.formatted(10));
-            assertThat(text(db, "SELECT lpn || ':' || sku || ':' || unit_of_measure || ':' || received_qty || ':'"
+            transaction(db, carton.formatted("NOW()"), row.formatted(10));
+            assertThat(text(db, "SELECT lpn || ':' || sku || ':' || unit_of_measure || ':' || nominal_qty || ':'"
                     + " || on_hand || ':' || reserved || ':' || available || ':' || status || ':' || lot_number"
                     + " FROM inventory.stock_package_balance WHERE stock_package_id = " + pkg))
                     .isEqualTo("IT-FULL:LY-GIAY-DEMO-12OZ-XANH:FULL:10:10:0:10:IN_STOCK:UNTRACED");

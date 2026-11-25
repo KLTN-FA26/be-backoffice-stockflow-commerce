@@ -53,8 +53,8 @@ class StockMovementShapeSchemaTest {
     private static void carton(Connection db) throws SQLException {
         db.setAutoCommit(false);   // the carton and its row are checked together, at commit
         update(db, "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,"
-                + " received_qty, location_code, status) SELECT ?, 'IT-SHAPE-1', u.inventory_item_id, u.id, u.factor,"
-                + " u.factor, ?, 'IN_STOCK' FROM inventory.uom_conversions u JOIN inventory.inventory_items i"
+                + " counted_at, location_code, status) SELECT ?, 'IT-SHAPE-1', u.inventory_item_id, u.id, u.factor,"
+                + " NOW(), ?, 'IN_STOCK' FROM inventory.uom_conversions u JOIN inventory.inventory_items i"
                 + " ON i.id = u.inventory_item_id WHERE i.sku = ? AND u.active", CARTON, BIN, SKU);
         update(db, "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status,"
                 + " created_at, received_at, stock_package_id) SELECT gen_random_uuid(), ?, ?, 'UNTRACED', p.nominal_qty,"

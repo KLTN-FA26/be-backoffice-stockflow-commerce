@@ -59,9 +59,9 @@ INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, 
                                  production_order_code)
 SELECT md5('qa97:lot')::uuid, sku, code, NOW(), 'PRODUCTION_ORDER', po, code FROM base b
  WHERE NOT EXISTS (SELECT 1 FROM inventory.stock_lot l WHERE l.production_order_id = b.po AND l.sku = b.sku);
-INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
                                      location_code, status, closed_at)
-SELECT md5('qa97:carton')::uuid, 'QA97-LPN-1', i.id, i.id, b.units_per_carton, b.units_per_carton, 'HCM-QUA01',
+SELECT md5('qa97:carton')::uuid, 'QA97-LPN-1', i.id, i.id, b.units_per_carton, NOW(), 'HCM-QUA01',
        'CONSUMED', NOW()
   FROM base b JOIN inventory.inventory_items i ON i.sku = b.sku;
 INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, lot_number, direction,

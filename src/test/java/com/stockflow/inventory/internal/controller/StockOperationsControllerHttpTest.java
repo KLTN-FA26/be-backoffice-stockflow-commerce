@@ -69,7 +69,7 @@ class StockOperationsControllerHttpTest {
     void cartonsAreMovedByLpnToOneDestination() throws Exception {
         UUID requestId = UUID.randomUUID();
         when(operations.moveStockPackages(any())).thenReturn(List.of(new StockPackageView(UUID.randomUUID(),
-                "LPN-20261109-000001", null, "CUP_PET", UUID.randomUUID(), "CARTON", 50, 50, 50, "HCM-A01-1-A",
+                "LPN-20261109-000001", null, "CUP_PET", UUID.randomUUID(), "CARTON", 50, 50, java.time.Instant.parse("2026-11-09T02:00:00Z"), "HCM-A01-1-A",
                 "IN_STOCK")));
 
         mvc.perform(post("/api/v1/inventory/movements").contentType("application/json").content("""

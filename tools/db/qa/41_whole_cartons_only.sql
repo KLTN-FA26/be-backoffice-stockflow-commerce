@@ -61,9 +61,9 @@ UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa41:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA41_CTN', 4);
-INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
                                      location_code, status)
-VALUES (md5('qa41:pk')::uuid, 'QA41-LPN-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa41:unit')::uuid, 4, 4,
+VALUES (md5('qa41:pk')::uuid, 'QA41-LPN-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa41:unit')::uuid, 4, NOW(),
         'HCM-A01-1-A', 'IN_STOCK');
 INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,
                                   received_at, stock_package_id)
@@ -86,14 +86,16 @@ SELECT pg_temp.expect_true('WC1 a carton in stock is never opened: the flag is g
                    AND table_name = 'stock_package' AND column_name = 'unopened'));
 SELECT pg_temp.expect_fail('WC2 part of a carton in stock is taken (3 of 4 left)', $q$
     UPDATE inventory.stock_item SET on_hand = 3 WHERE id = md5('qa41:pk:row')::uuid $q$);
-SELECT pg_temp.expect_fail('WC3 a carton counted at another figure than its standard count (03 BR-13)', $q$
-    UPDATE inventory.stock_package SET received_qty = 3 WHERE id = md5('qa41:rcv')::uuid $q$);
-SELECT pg_temp.expect_ok('WC4 a carton counted at its standard count', $q$
-    UPDATE inventory.stock_package SET received_qty = 4 WHERE id = md5('qa41:rcv')::uuid $q$);
-SELECT pg_temp.expect_fail('WC5 a draft counted at another figure before 4C-2 goes into stock unchanged', $q$
-    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
+SELECT pg_temp.expect_true('WC3 a carton cannot be counted at another figure than its standard count (03 BR-13): '
+    'there is no figure to write, a count is the moment counted_at (V20261230000300)',
+    NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
+                   AND table_name = 'stock_package' AND column_name = 'received_qty'));
+SELECT pg_temp.expect_ok('WC4 a carton counted in: it stands for its standard count', $q$
+    UPDATE inventory.stock_package SET counted_at = NOW() WHERE id = md5('qa41:rcv')::uuid $q$);
+SELECT pg_temp.expect_fail('WC5 a counted draft goes into stock holding another figure than its standard count', $q$
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
                                          location_code)
-    VALUES (md5('qa41:old')::uuid, 'QA41-LPN-3', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa41:unit')::uuid, 4, 3,
+    VALUES (md5('qa41:old')::uuid, 'QA41-LPN-3', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa41:unit')::uuid, 4, NOW(),
             'HCM-RCV01');
     UPDATE inventory.stock_package SET status = 'IN_STOCK' WHERE id = md5('qa41:old')::uuid;
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,

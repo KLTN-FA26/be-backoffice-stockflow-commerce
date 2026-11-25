@@ -60,7 +60,7 @@ class StockPackageLabelsTest {
 
     private static StockPackage carton(String lpn, String location, StockPackageStatus status) {
         Instant closedAt = status.isClosed() ? NOW : null;
-        Integer counted = status == StockPackageStatus.RECEIVING ? null : 24;
+        Instant counted = status == StockPackageStatus.RECEIVING ? null : NOW;
         return new StockPackage(new StockPackageId(UUID.randomUUID()), lpn, UUID.randomUUID(), CARTON_UNIT, 24, counted,
                 new LocationId(location), status, RECEIPT_LINE, closedAt, 0L);
     }
@@ -94,8 +94,8 @@ class StockPackageLabelsTest {
         List<StockPackageLabel> sheet = labels.sheetFor(RECEIPT_LINE, null);
 
         assertThat(sheet).extracting(StockPackageLabel::lpn).containsExactly("LPN-0001", "LPN-0002");
-        assertThat(sheet.get(0).receivedQty()).isNull();
-        assertThat(sheet.get(1).receivedQty()).isEqualTo(24);
+        assertThat(sheet.get(0).counted()).isFalse();
+        assertThat(sheet.get(1).counted()).isTrue();
         assertThat(sheet.get(1).nominalQty()).isEqualTo(24);
         assertThat(sheet.get(1).unit()).isEqualTo("CARTON");
         assertThat(sheet.get(1).sku()).isEqualTo("CUP-12OZ");
@@ -234,7 +234,8 @@ class StockPackageLabelsTest {
         List<StockPackageLabel> sheet = labels.sheetFor(null, List.of("LPN-0004", "LPN-0008"));
 
         assertThat(sheet).extracting(StockPackageLabel::lpn).containsExactly("LPN-0004", "LPN-0008");
-        assertThat(sheet.get(0).receivedQty()).isEqualTo(24);
+        assertThat(sheet.get(0).counted()).isTrue();
+        assertThat(sheet.get(0).nominalQty()).isEqualTo(24);
     }
 
     @Test

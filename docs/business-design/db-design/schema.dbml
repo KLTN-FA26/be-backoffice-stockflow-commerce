@@ -1654,7 +1654,6 @@ Table inventory.stock_package [headercolor: #3E7C4A] {
   inventory_item_id     uuid [not null]
   uom_conversion_id     uuid [not null]
   nominal_qty           int [not null]
-  received_qty          int
   location_code         varchar(64) [not null]
   status                inventory.stock_package_status [not null, default: 'RECEIVING']
   goods_receipt_line_id uuid
@@ -1672,6 +1671,7 @@ Table inventory.stock_package [headercolor: #3E7C4A] {
   custody_ended_at      timestamptz
   custody_ended_by      uuid
   custody_note          varchar(500)
+  counted_at            timestamptz
 }
 
 Table inventory.stock_reservation [headercolor: #3E7C4A] {

@@ -181,7 +181,7 @@ public class CartonReturnService implements CartonReturns {
                             Map.of("lpn", lpn));
                 }
                 received.add(new ReturnedCarton(seen.id().value(), lpn, skuByLpn.get(lpn), lotOf(seen),
-                        seen.receivedQty() == null ? 0 : seen.receivedQty(), "CONSUMED", locked.location().code(),
+                        seen.counted() ? seen.nominalQty() : 0, "CONSUMED", locked.location().code(),
                         command.receivedAt()));
                 log.info("Return receipt {}: carton {} came back opened: not put into stock, destroyed",
                         command.receiptId(), lpn);
@@ -306,7 +306,7 @@ public class CartonReturnService implements CartonReturns {
     private static ReturnedCarton view(StockPackage carton, String sku, String lot, java.time.Instant openedAt,
                                        String owned) {
         return new ReturnedCarton(carton.id().value(), carton.lpn(), sku, lot,
-                carton.receivedQty() == null ? 0 : carton.receivedQty(), carton.status().name(),
+                carton.counted() ? carton.nominalQty() : 0, carton.status().name(),
                 carton.location().code(), openedAt, owned);
     }
 }

@@ -12,7 +12,8 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * JPA mapping of {@code inventory.stock_package} (V20261020000100). <b>Not</b> the domain model. What
+ * JPA mapping of {@code inventory.stock_package} (V20261020000100; {@code counted_at} since V20261230000300).
+ * <b>Not</b> the domain model. What
  * identifies a carton - its LPN, item, unit, nominal quantity and receipt line - is not updatable, as
  * {@code tg_stock_package_immutable} says.
  */
@@ -32,8 +33,8 @@ public class StockPackageJpaEntity extends BaseEntity {
     @Column(name = "nominal_qty", nullable = false, updatable = false)
     private int nominalQty;
 
-    @Column(name = "received_qty")
-    private Integer receivedQty;
+    @Column(name = "counted_at")
+    private Instant countedAt;
 
     @Column(name = "location_code", nullable = false, length = 64)
     private String locationCode;
@@ -53,7 +54,7 @@ public class StockPackageJpaEntity extends BaseEntity {
     }
 
     public StockPackageJpaEntity(UUID id, String lpn, UUID inventoryItemId, UUID uomConversionId, int nominalQty,
-                                 Integer receivedQty, String locationCode, StockPackageStatus status,
+                                 Instant countedAt, String locationCode, StockPackageStatus status,
                                  UUID goodsReceiptLineId, Instant closedAt) {
         super(id);
         this.lpn = lpn;
@@ -61,11 +62,11 @@ public class StockPackageJpaEntity extends BaseEntity {
         this.uomConversionId = uomConversionId;
         this.nominalQty = nominalQty;
         this.goodsReceiptLineId = goodsReceiptLineId;
-        apply(receivedQty, locationCode, status, closedAt);
+        apply(countedAt, locationCode, status, closedAt);
     }
 
-    public void apply(Integer receivedQty, String locationCode, StockPackageStatus status, Instant closedAt) {
-        this.receivedQty = receivedQty;
+    public void apply(Instant countedAt, String locationCode, StockPackageStatus status, Instant closedAt) {
+        this.countedAt = countedAt;
         this.locationCode = locationCode;
         this.status = status;
         this.closedAt = closedAt;
@@ -75,7 +76,7 @@ public class StockPackageJpaEntity extends BaseEntity {
     public UUID getInventoryItemId() { return inventoryItemId; }
     public UUID getUomConversionId() { return uomConversionId; }
     public int getNominalQty() { return nominalQty; }
-    public Integer getReceivedQty() { return receivedQty; }
+    public Instant getCountedAt() { return countedAt; }
     public String getLocationCode() { return locationCode; }
     public StockPackageStatus getStatus() { return status; }
     public UUID getGoodsReceiptLineId() { return goodsReceiptLineId; }

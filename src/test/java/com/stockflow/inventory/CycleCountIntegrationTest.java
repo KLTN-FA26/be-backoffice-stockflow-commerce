@@ -130,8 +130,8 @@ class CycleCountIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
-                        received_qty, location_code, status) values (?, ?, ?, ?, ?, ?, ?, 'IN_STOCK')""",
-                    id, lpn(name), item, cartonUnit, CARTON_FACTOR, CARTON_FACTOR, location);
+                        counted_at, location_code, status) values (?, ?, ?, ?, ?, now(), ?, 'IN_STOCK')""",
+                    id, lpn(name), item, cartonUnit, CARTON_FACTOR, location);
             jdbc.update("""
                     insert into inventory.stock_item (id, sku, location_code, lot_number, received_at,
                         on_hand, reserved, status, version, created_at, stock_package_id)

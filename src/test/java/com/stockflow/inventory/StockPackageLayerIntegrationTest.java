@@ -95,7 +95,7 @@ class StockPackageLayerIntegrationTest {
         UUID id = Identifiers.newId();
         jdbc.update("""
                 insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
-                    received_qty, location_code, status) values (?, ?, ?, ?, 5, 5, ?, 'IN_STOCK')""",
+                    counted_at, location_code, status) values (?, ?, ?, ?, 5, now(), ?, 'IN_STOCK')""",
                 id, "LPN-" + sku + "-" + name, item, carton, location);
         jdbc.update("""
                 insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved,
@@ -147,17 +147,18 @@ class StockPackageLayerIntegrationTest {
         tx.executeWithoutResult(s -> {
             StockPackage receiving = stockPackages.findByLpn("LPN-" + sku + "-R").orElseThrow();
             assertThat(receiving.status()).isEqualTo(StockPackageStatus.RECEIVING);
-            receiving.count();
+            receiving.count(Instant.parse("2026-11-20T03:00:00Z"));
             stockPackages.save(receiving);
         });
         tx.executeWithoutResult(s -> {
             StockPackage counted = stockPackages.findAllByIdForUpdate(List.of(new StockPackageId(labelled))).getFirst();
-            assertThat(counted.receivedQty()).as("the standard count, assigned").isEqualTo(5);
+            assertThat(counted.countedAt()).as("when it was counted, kept").isEqualTo(Instant.parse("2026-11-20T03:00:00Z"));
+            assertThat(counted.nominalQty()).as("what it stands for").isEqualTo(5);
             counted.cancel(Instant.now());
             stockPackages.save(counted);
         });
-        assertThat(jdbc.queryForMap("select status, received_qty, closed_at is not null as closed"
+        assertThat(jdbc.queryForMap("select status, counted_at is not null as counted, closed_at is not null as closed"
                 + " from inventory.stock_package where id = ?", labelled))
-                .containsEntry("status", "VOID").containsEntry("received_qty", 5).containsEntry("closed", true);
+                .containsEntry("status", "VOID").containsEntry("counted", true).containsEntry("closed", true);
     }
 }

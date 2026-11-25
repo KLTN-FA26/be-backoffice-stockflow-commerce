@@ -62,8 +62,8 @@ UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH', 'LY-GIAY-DEMO-12OZ-DO'));
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 SELECT md5('qa70:u:' || i.sku)::uuid, i.id, 'QA_QA70', 5 FROM inventory.inventory_items i WHERE i.sku IN ('LY-GIAY-DEMO-12OZ-XANH', 'LY-GIAY-DEMO-12OZ-DO');
-INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
-SELECT md5('qa70:p:' || i.sku)::uuid, 'QA-QA70-' || replace(i.sku, 'LY-GIAY-DEMO-12OZ-', ''), i.id, md5('qa70:u:' || i.sku)::uuid, 5, 5, 'HCM-A01-1-A', 'IN_STOCK'
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status)
+SELECT md5('qa70:p:' || i.sku)::uuid, 'QA-QA70-' || replace(i.sku, 'LY-GIAY-DEMO-12OZ-', ''), i.id, md5('qa70:u:' || i.sku)::uuid, 5, NOW(), 'HCM-A01-1-A', 'IN_STOCK'
   FROM inventory.inventory_items i WHERE i.sku IN ('LY-GIAY-DEMO-12OZ-XANH', 'LY-GIAY-DEMO-12OZ-DO');
 SELECT pg_temp.expect_ok('FP6 live stock with its lot, of either SKU', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)

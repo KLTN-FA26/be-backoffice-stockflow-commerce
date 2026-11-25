@@ -31,7 +31,7 @@ class ReturnedCartonOwnershipAdapter implements ReturnedCartonOwnership {
     private static final String CUSTODY_COLUMNS = """
             p.id, p.lpn, i.sku, (SELECT s.lot_number FROM inventory.stock_item s WHERE s.stock_package_id = p.id
                                   ORDER BY s.id LIMIT 1) AS lot_number,
-            COALESCE(p.received_qty, 0) AS quantity, p.location_code, p.return_request_id, p.return_ownership,
+            CASE WHEN p.counted_at IS NULL THEN 0 ELSE p.nominal_qty END AS quantity, p.location_code, p.return_request_id, p.return_ownership,
             p.custody_held_at, p.custody_choice, p.custody_ended_at, p.custody_ended_by, p.custody_note""";
 
     private final NamedParameterJdbcTemplate jdbc;
@@ -99,7 +99,7 @@ class ReturnedCartonOwnershipAdapter implements ReturnedCartonOwnership {
     public List<Waiting> waitingFor(UUID returnRequestId) {
         entityManager.flush();
         return jdbc.query("""
-                SELECT p.id, p.lpn, i.sku, COALESCE(p.received_qty, 0) AS quantity
+                SELECT p.id, p.lpn, i.sku, CASE WHEN p.counted_at IS NULL THEN 0 ELSE p.nominal_qty END AS quantity
                   FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
                  WHERE p.return_request_id = :request AND p.return_ownership = 'PENDING'
                  ORDER BY p.lpn""", new MapSqlParameterSource("request", returnRequestId),

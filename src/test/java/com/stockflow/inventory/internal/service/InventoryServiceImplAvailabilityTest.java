@@ -355,7 +355,7 @@ class InventoryServiceImplAvailabilityTest {
 
         private StockPackage carton(StockPackageStatus status, UUID line) {
             Instant closed = status.isClosed() ? NOW : null;
-            Integer counted = status == StockPackageStatus.RECEIVING ? null : 24;
+            Instant counted = status == StockPackageStatus.RECEIVING ? null : NOW;
             return new StockPackage(new StockPackageId(UUID.randomUUID()), "LPN-" + UUID.randomUUID().toString()
                     .substring(0, 8).toUpperCase(), UUID.randomUUID(), UUID.randomUUID(), 24, counted,
                     new LocationId("HCM-RCV01"), status, line, closed, 0L);

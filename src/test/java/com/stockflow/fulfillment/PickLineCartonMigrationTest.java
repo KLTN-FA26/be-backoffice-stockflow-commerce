@@ -85,7 +85,7 @@ class PickLineCartonMigrationTest {
             UUID id = Identifiers.newId();
             jdbc.update("""
                     insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
-                        received_qty, location_code, status) values (?, ?, ?, ?, 10, 10, ?, 'IN_STOCK')""",
+                        counted_at, location_code, status) values (?, ?, ?, ?, 10, now(), ?, 'IN_STOCK')""",
                     id, lpn, item, unit, SHELF);
             stockRow(10, id);
         });

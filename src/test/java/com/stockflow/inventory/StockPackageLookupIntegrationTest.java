@@ -109,7 +109,7 @@ class StockPackageLookupIntegrationTest {
         assertThat(detail.sku()).isEqualTo(sku);
         assertThat(detail.unitOfMeasure()).isEqualTo("CARTON");
         assertThat(detail.nominalQty()).isEqualTo(1000);
-        assertThat(detail.receivedQty()).isEqualTo(1000);
+        assertThat(detail.countedAt()).as("counted in when it was labelled").isNotNull();
         assertThat(detail.onHand()).isEqualTo(1000);
         assertThat(detail.reserved()).isZero();
         assertThat(detail.status()).isEqualTo(StockPackageStatus.IN_STOCK);
@@ -129,7 +129,8 @@ class StockPackageLookupIntegrationTest {
         StockPackageBalance.Detail found = lookup.byLpn(lpns.get(1));
 
         assertThat(found.carton().status()).isEqualTo(StockPackageStatus.RECEIVING);
-        assertThat(found.carton().receivedQty()).isEqualTo(1000);
+        assertThat(found.carton().countedAt()).as("counted, not yet in stock").isNotNull();
+        assertThat(found.carton().nominalQty()).isEqualTo(1000);
         assertThat(found.carton().onHand()).isZero();
         assertThat(found.carton().lotNumber()).isNull();
         assertThat(found.contents()).isEmpty();

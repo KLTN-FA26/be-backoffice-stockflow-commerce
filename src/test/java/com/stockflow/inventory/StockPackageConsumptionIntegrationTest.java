@@ -77,7 +77,7 @@ class StockPackageConsumptionIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
-                        received_qty, location_code, status) values (?, ?, ?, ?, 5, 5, ?, 'IN_STOCK')""",
+                        counted_at, location_code, status) values (?, ?, ?, ?, 5, now(), ?, 'IN_STOCK')""",
                     id, "LPN-" + sku + "-" + name, item, carton, SHELF);
             jdbc.update("""
                     insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved, status,

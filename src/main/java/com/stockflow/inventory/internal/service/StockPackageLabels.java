@@ -100,7 +100,7 @@ public class StockPackageLabels {
         return cartons.stream().sorted(Comparator.comparing(StockPackage::lpn)).map(carton -> {
             UomConversion unit = unitsById.get(carton.uomConversionId());
             return new StockPackageLabel(carton.lpn(), unit.sku(), namesBySku.get(unit.sku()), lots.get(carton.id()),
-                    carton.receivedQty(), carton.nominalQty(), unit.unitOfMeasure());
+                    carton.counted(), carton.nominalQty(), unit.unitOfMeasure());
         }).toList();
     }
 

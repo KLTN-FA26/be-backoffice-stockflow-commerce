@@ -1,5 +1,6 @@
 package com.stockflow.inventory.api;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -12,9 +13,10 @@ import java.util.UUID;
  * @param quantity        what is in it now: what was counted into it while it is RECEIVING (null until counted);
  *                        once in stock, what is left in it - the sum of its stock rows, since a carton holds no
  *                        quantity of its own
- * @param receivedQty     what was counted into it ({@code received_qty}, null until counted); it does not change once
- *                        the carton is in stock, so a receipt's loose part is its line less this, whatever left the
- *                        carton since
+ * @param countedAt       when it was counted in at receiving ({@code counted_at}, null until counted). A counted
+ *                        carton stands for {@code nominalQty} units and that does not change once it is in stock, so
+ *                        a receipt's loose part is its line less the {@code nominalQty} of its counted cartons,
+ *                        whatever left them since
  * @param status          RECEIVING, IN_STOCK, CONSUMED or LOST ({@code inventory.stock_package.status}); a carton in
  *                        stock is whole, never opened (team plan 4C-3 dropped the flag that said so)
  */
@@ -27,10 +29,15 @@ public record StockPackageView(
         String unitOfMeasure,
         int nominalQty,
         Integer quantity,
-        Integer receivedQty,
+        Instant countedAt,
         String locationCode,
         String status
 ) {
+
+    /** The units counted into it at receiving: its standard count once counted, none before. */
+    public int countedUnits() {
+        return countedAt == null ? 0 : nominalQty;
+    }
 
     /**
      * The form an LPN is stored and matched in: trimmed and upper-cased, as it is printed - a scanner or a person

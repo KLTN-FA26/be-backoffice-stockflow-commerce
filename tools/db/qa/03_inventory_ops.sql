@@ -20,14 +20,14 @@ UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa03x:demo:u25')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_DEMO25', 25);
-INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
-VALUES (md5('qa03x:demo:p25')::uuid, 'QA-DEMO-25', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa03x:demo:u25')::uuid, 25, 25, 'HCM-A01-2-B', 'IN_STOCK');
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status)
+VALUES (md5('qa03x:demo:p25')::uuid, 'QA-DEMO-25', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa03x:demo:u25')::uuid, 25, NOW(), 'HCM-A01-2-B', 'IN_STOCK');
 UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa03x:demo:u8')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_DEMO8', 8);
-INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
-VALUES (md5('qa03x:demo:p8')::uuid, 'QA-DEMO-8', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa03x:demo:u8')::uuid, 8, 8, 'HCM-A02-1-A', 'IN_STOCK');
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status)
+VALUES (md5('qa03x:demo:p8')::uuid, 'QA-DEMO-8', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa03x:demo:u8')::uuid, 8, NOW(), 'HCM-A02-1-A', 'IN_STOCK');
 UPDATE inventory.stock_item SET on_hand = 25, lot_number = 'QA-LOT', lot_id = NULL, stock_package_id = md5('qa03x:demo:p25')::uuid
  WHERE id = md5('demo:cups:empty-stock:LY-GIAY-DEMO-12OZ-XANH:HCM-A01-2-B')::uuid;
 UPDATE inventory.stock_item SET on_hand = 8, lot_number = 'QA-LOT', lot_id = NULL, stock_package_id = md5('qa03x:demo:p8')::uuid
@@ -149,11 +149,11 @@ UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa03:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA03_CTN', 4);
-INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
                                      location_code, status)
-VALUES (md5('qa03:pk1')::uuid, 'QA03-LPN-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa03:unit')::uuid, 4, 4,
+VALUES (md5('qa03:pk1')::uuid, 'QA03-LPN-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa03:unit')::uuid, 4, NOW(),
         'HCM-A01-2-B', 'IN_STOCK'),
-       (md5('qa03:pk2')::uuid, 'QA03-LPN-2', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa03:unit')::uuid, 4, 4,
+       (md5('qa03:pk2')::uuid, 'QA03-LPN-2', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa03:unit')::uuid, 4, NOW(),
         'HCM-A02-1-A', 'IN_STOCK');
 INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,
                                   received_at, stock_package_id)
