@@ -1106,8 +1106,12 @@ class DesignProjectIntegrationTest {
     }
 
     private static String quoteOver(String date, Object... designAndCartons) {
+        if (designAndCartons.length % 2 != 0) {
+            throw new IllegalArgumentException("quoteOver takes design and cartons pairs, got "
+                    + designAndCartons.length + " values");
+        }
         StringBuilder lines = new StringBuilder();
-        for (int i = 0; i < designAndCartons.length; i += 2) {
+        for (int i = 0; i + 1 < designAndCartons.length; i += 2) {
             lines.append(i == 0 ? "" : ",").append("{\"designId\":")
                     .append(designAndCartons[i] == null ? "null" : "\"" + designAndCartons[i] + "\"")
                     .append(",\"cartons\":").append(designAndCartons[i + 1]).append('}');
