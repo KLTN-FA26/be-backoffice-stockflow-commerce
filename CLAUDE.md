@@ -28,7 +28,7 @@ What each layer of checking covers, and what it does not:
 
 | Check | Covers | Does not cover |
 |---|---|---|
-| `tools/verify.py` — **run it first** | package↔path, module boundaries, `allowedDependencies`, unused imports, `@Scheduled` without `@SchedulerLock`, non-public proxied methods, Flyway version collisions, entity↔migration, `@NamedInterface` | anything needing a running context |
+| `tools/verify.py` — **run it first** | package↔path, module boundaries, `allowedDependencies`, unused imports, `@Scheduled` without `@SchedulerLock`, non-public proxied methods, Flyway version collisions and order, entity↔migration, `@NamedInterface` | anything needing a running context |
 | `ModularityTest`, `ArchitectureTest`, `PermissionMatrixTest`, `MessageBundleTest` | module boundaries, layering and base-layer traps, the permission matrix, en/vi error bundles | behaviour |
 | unit + integration tests | domain rules, Spring wiring, JPA mapping, SQL, locking | what nobody wrote a test for |
 | `tools/db/qa/*.sql` (`RepositorySqlQaTest` in CI, `tools/db/qa/run.sh <db>` by hand) | adversarial SQL against a freshly migrated database with the demo seed: every CHECK / trigger refuses what it should; plus the orphan check | application code |

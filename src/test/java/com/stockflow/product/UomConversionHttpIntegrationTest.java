@@ -79,7 +79,7 @@ class UomConversionHttpIntegrationTest {
     }
 
     /**
-     * There is no default shipping mark (V20261226000300): the SKU ships in its one active carton. The response keeps
+     * There is no default shipping mark (V20261229000100): the SKU ships in its one active carton. The response keeps
      * {@code defaultShipping} for old clients, true on the active carton.
      */
     @Test

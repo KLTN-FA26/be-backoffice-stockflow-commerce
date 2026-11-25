@@ -37,7 +37,7 @@ BEGIN
 END $$;
 
 \echo '--- no base unit row, and nothing that made one'
-SELECT pg_temp.expect_true('BU1 no row of uom_conversions is a base unit: the flag itself is gone (V20261226000300, QA 46)',
+SELECT pg_temp.expect_true('BU1 no row of uom_conversions is a base unit: the flag itself is gone (V20261229000100, QA 46)',
     NOT EXISTS (SELECT 1 FROM information_schema.columns
                  WHERE table_schema = 'inventory' AND table_name = 'uom_conversions' AND column_name = 'is_base'));
 SELECT pg_temp.expect_true('BU2 the triggers that made and renamed the base row are gone, with their functions',
@@ -54,10 +54,10 @@ SELECT pg_temp.expect_true('BU5 ... its unit EACH on the item, nothing in uom_co
     (SELECT i.unit_of_measure = 'EACH'
             AND NOT EXISTS (SELECT 1 FROM inventory.uom_conversions u WHERE u.inventory_item_id = i.id)
        FROM inventory.inventory_items i WHERE i.sku = 'QA45-ITEM'));
-SELECT pg_temp.expect_fail('BU6 a base unit row written by an old script (no is_base column since V20261226000300)', $q$
+SELECT pg_temp.expect_fail('BU6 a base unit row written by an old script (no is_base column since V20261229000100)', $q$
     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base)
     SELECT gen_random_uuid(), id, 'QA45BASE', 1, TRUE FROM inventory.inventory_items WHERE sku = 'QA45-ITEM' $q$);
-SELECT pg_temp.expect_fail('BU7 a carton turned into a base unit (no is_base column since V20261226000300)', $q$
+SELECT pg_temp.expect_fail('BU7 a carton turned into a base unit (no is_base column since V20261229000100)', $q$
     UPDATE inventory.uom_conversions SET is_base = TRUE
      WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items
                                             WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);

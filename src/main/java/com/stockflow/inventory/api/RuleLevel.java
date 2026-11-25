@@ -8,7 +8,7 @@ package com.stockflow.inventory.api;
 public enum RuleLevel {
     /**
      * The item's one active carton (01 BR-03). The name is kept from the default shipping mark it replaced
-     * (V20261226000300): clients read it.
+     * (V20261229000100): clients read it.
      */
     DEFAULT_SHIPPING_UNIT,
     /**

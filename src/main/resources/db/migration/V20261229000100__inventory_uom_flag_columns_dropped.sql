@@ -1,3 +1,6 @@
+-- Renamed from V20261226000300 before it ever ran on the VPS: it merged after V20261227000100 had been deployed, and
+-- Flyway does not run an older version out of order, so every deploy since failed validation. Nothing below changed.
+
 -- inventory.uom_conversions holds an item's carton specifications and nothing else (V20261226000200), and an item has
 -- one active carton (kltn-docs 01 BR-03, uk_uom_conversions_one_carton). Two flags of the time when an item had several
 -- units are left with nothing to say:
