@@ -164,7 +164,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
             orders.startPicking(orderId, actor.userId());
         }
         var now = clock.instant();
-        var pick = new PickJpaEntity(Identifiers.newId(), null, orderId, order.orderNumber(), warehouseId,
+        var pick = new PickJpaEntity(Identifiers.newId(), orderId, order.orderNumber(), warehouseId,
                 PickStatus.PENDING, to, stagingArea)
                 .forDeliveryBatch(redelivery.isPresent() ? redelivery.get().deliveryBatchId()
                         : batch.map(com.stockflow.order.api.ReleasedBatch::batchId).orElse(null))
@@ -193,7 +193,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
         WarehouseScope.requireWarehouse(warehouseId);
         requireWarehouseAssignee(assignedUserId, warehouseId);
         String stagingArea = stagingAreaFor(warehouseId, to, stagingLocationCode);
-        var pick = new PickJpaEntity(Identifiers.newId(), null, order.orderId(), order.orderNumber(), warehouseId,
+        var pick = new PickJpaEntity(Identifiers.newId(), order.orderId(), order.orderNumber(), warehouseId,
                 PickStatus.PENDING, to, stagingArea).forDeliveryBatch(prePick.deliveryBatchId());
         pick.assign(assignedUserId, clock.instant());
         picks.saveAndFlush(pick);      // the pick row first: its lines' trigger and foreign key look for it
