@@ -101,6 +101,7 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
                 .and(criteria.occurredBefore() == null ? null : (root, query, cb) ->
                         cb.lessThan(root.get("occurredAt"), criteria.occurredBefore()))
                 .and(inWarehouse(criteria.warehousePrefix()))
+                .and(carton(criteria.stockPackageId()))
                 .and(UnderCountSpecs.unless(criteria.hideCountedSlots(), UnderCountSpecs.movementsOutsideCountedSlots()))
                 .and(com.stockflow.common.security.WarehouseScope.locationsIn("fromLocationCode", "toLocationCode"));
         return jpa.findAll(spec, pageable).map(StockMovementLogAdapter::toDomain);
@@ -112,6 +113,15 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
         }
         return (root, query, cb) -> cb.or(
                 cb.equal(root.get("fromLocationCode"), code), cb.equal(root.get("toLocationCode"), code));
+    }
+
+    /** Lines that took units out of the carton or put units into it: its history. */
+    private static Specification<StockMovementJpaEntity> carton(UUID stockPackageId) {
+        if (stockPackageId == null) {
+            return null;
+        }
+        return (root, query, cb) -> cb.or(cb.equal(root.get("fromStockPackageId"), stockPackageId),
+                cb.equal(root.get("toStockPackageId"), stockPackageId));
     }
 
     /**

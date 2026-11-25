@@ -20,15 +20,23 @@ public interface StockLedgerSearch {
      * @param occurredBefore lines before this instant; null for no upper bound - the stock summary drills down to the
      *                 lines of its period (2026-11-14 plan, BE2-C)
      * @param warehousePrefix lines with either side in this warehouse (its location-code prefix); null for any
+     * @param stockPackageId lines with this carton on either side ({@code from_stock_package_id} or
+     *                 {@code to_stock_package_id}, each indexed); null for any
      */
     record Criteria(String sku, String location, StockMovement.MovementType type, boolean hideCountedSlots,
-                    java.time.Instant occurredFrom, java.time.Instant occurredBefore, String warehousePrefix) {
+                    java.time.Instant occurredFrom, java.time.Instant occurredBefore, String warehousePrefix,
+                    java.util.UUID stockPackageId) {
+        public Criteria(String sku, String location, StockMovement.MovementType type, boolean hideCountedSlots,
+                        java.time.Instant occurredFrom, java.time.Instant occurredBefore, String warehousePrefix) {
+            this(sku, location, type, hideCountedSlots, occurredFrom, occurredBefore, warehousePrefix, null);
+        }
+
         public Criteria(String sku, String location, StockMovement.MovementType type) {
             this(sku, location, type, false);
         }
 
         public Criteria(String sku, String location, StockMovement.MovementType type, boolean hideCountedSlots) {
-            this(sku, location, type, hideCountedSlots, null, null, null);
+            this(sku, location, type, hideCountedSlots, null, null, null, null);
         }
     }
 

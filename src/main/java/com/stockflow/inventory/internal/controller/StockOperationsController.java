@@ -94,13 +94,17 @@ class StockOperationsController {
      * The stock history (the card of a SKU, "thẻ kho"). {@code from} / {@code to} / {@code warehouseId} are the stock
      * summary's own filters (2026-11-14 plan, BE2-C), so a row of that report opens on the ledger lines of its SKU,
      * warehouse and days: those it summed, and the moves inside the warehouse (putaway, carton moves), which it
-     * counted as zero.
+     * counted as zero. {@code lpn} is the carton's own history (kltn-docs 20 §4.1: the carton is a lookup key; 11: stock
+     * moves by whole carton), for the carton detail screen.
      */
     @GetMapping("/movements")
     @Operation(summary = "Stock history, newest first; location matches either side of a line",
             description = "from / to are ISO dates, business days in Asia/Ho_Chi_Minh, both inclusive; warehouseId "
                     + "keeps the lines with either side in that warehouse. 400 VALIDATION_FAILED when from is after "
-                    + "to; 404 WAREHOUSE_NOT_FOUND; 403 for a warehouse not the caller's.")
+                    + "to; 404 WAREHOUSE_NOT_FOUND; 403 for a warehouse not the caller's. lpn (any case) keeps the "
+                    + "lines that took units out of that carton or put units into it - its history; an LPN that is no "
+                    + "carton gives an empty page, a carton in a warehouse not the caller's is 403 OUT_OF_DATA_SCOPE. "
+                    + "Each line names its cartons as fromLpn / toLpn.")
     @RequiresPermission(resource = InventoryResources.STOCK_MOVEMENTS, action = Action.READ)
     public ApiResponse<PageResponse<StockMovementResponse>> movements(
             @RequestParam(required = false) String sku,
@@ -109,11 +113,12 @@ class StockOperationsController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
             @RequestParam(required = false) UUID warehouseId,
+            @RequestParam(required = false) String lpn,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @AuthenticatedUser Optional<CurrentUser> user) {
         return ApiResponse.ok(operations.ledger(new StockOperations.LedgerFilter(sku, location, type, from, to,
-                        warehouseId), page, size == null ? Pages.DEFAULT_PAGE_SIZE : size,
+                        warehouseId, lpn), page, size == null ? Pages.DEFAULT_PAGE_SIZE : size,
                 BlindCount.visibilityFor(user)).map(mapper::toResponse));
     }
 
