@@ -64,14 +64,15 @@ public class OrderWarehouseVisibility {
 
     /**
      * {@link #requireVisible} for a release: the order is of one of the caller's warehouses, or goods of it came back to
-     * one of them (a delivery failure case there: the redelivery is released from the warehouse the goods came back to,
-     * WF-05 fix plan, section 2). Asked before the release reads the order at all: its refusals name the order, its
+     * one of them and wait to be released from there (a delivery failure case there awaiting release: the redelivery is
+     * released from the warehouse the goods came back to, WF-05 fix plan, section 2). A case already released, closed
+     * or cancelled opens nothing: that warehouse has no more to release for the order. Asked before the release reads the order at all: its refusals name the order, its
      * return receipt, its batches and its SKUs with their held cartons, none of which an out-of-scope caller may learn.
      */
     public void requireReleasable(UUID orderId, CurrentUser user) {
         Set<UUID> limit = limitOf(user);
         if (limit == null || search.inWarehouses(orderId, limit) || deliveryFailures.ofOrder(orderId).stream()
-                .anyMatch(failure -> limit.contains(failure.warehouseId()))) {
+                .anyMatch(failure -> failure.awaitingRelease() && limit.contains(failure.warehouseId()))) {
             return;
         }
         throw new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId);
