@@ -29,6 +29,8 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import com.stockflow.identity.api.IdentityService;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -44,9 +46,13 @@ import java.util.UUID;
 @Transactional
 public class LoadWaybillFiles {
 
-    /** A file as a load lists it; the bytes come from {@link #downloadLink}. */
+    /**
+     * A file as a load lists it; the bytes come from {@link #downloadLink}.
+     *
+     * @param uploadedByName the display name of {@code uploadedBy}; null if unknown
+     */
     public record WaybillFile(UUID id, UUID loadId, String fileName, String contentType, long sizeBytes,
-                              UUID uploadedBy, Instant uploadedAt) {
+                              UUID uploadedBy, Instant uploadedAt, String uploadedByName) {
     }
 
     private final DispatchLoadJpaRepository loads;
@@ -55,9 +61,12 @@ public class LoadWaybillFiles {
     private final StagedUploads staged;
     private final TransactionOperations tx;
     private final Clock clock;
+    private final IdentityService identities;
 
     public LoadWaybillFiles(DispatchLoadJpaRepository loads, LoadWaybillFileJpaRepository files,
-                            FileTransfers transfers, StagedUploads staged, TransactionOperations tx, Clock clock) {
+                            FileTransfers transfers, StagedUploads staged, TransactionOperations tx, Clock clock,
+                            IdentityService identities) {
+        this.identities = identities;
         this.loads = loads;
         this.files = files;
         this.transfers = transfers;
@@ -94,7 +103,7 @@ public class LoadWaybillFiles {
             Optional<String> key = staged.keyOf(FileCategory.DOCUMENT, by, uploaded.uploadIds().get(0));
             Optional<WaybillFile> earlier = key.flatMap(k -> tx.execute(status -> {
                 requireLoad(loadId);
-                return files.findByStorageKeyAndLoadId(k, loadId).map(LoadWaybillFiles::view);
+                return files.findByStorageKeyAndLoadId(k, loadId).map(f -> view(f, nameOf(f.getUploadedBy())));
             }));
             if (earlier.isPresent()) {
                 return earlier.get();
@@ -109,7 +118,7 @@ public class LoadWaybillFiles {
                         loadId, stored.key(), stored.originalName(), stored.contentType(), stored.sizeBytes(), by,
                         clock.instant()));
                 prepared.adopt();
-                return view(saved);
+                return view(saved, nameOf(by));
             });
         }
     }
@@ -117,7 +126,11 @@ public class LoadWaybillFiles {
     @Transactional(readOnly = true)
     public List<WaybillFile> list(UUID loadId) {
         requireLoad(loadId);
-        return files.findByLoadIdOrderByUploadedAtAscIdAsc(loadId).stream().map(LoadWaybillFiles::view).toList();
+        List<LoadWaybillFileJpaEntity> kept = files.findByLoadIdOrderByUploadedAtAscIdAsc(loadId);
+        Map<UUID, String> names = identities.displayNames(kept.stream().map(LoadWaybillFileJpaEntity::getUploadedBy)
+                .filter(java.util.Objects::nonNull).distinct().toList());
+        return kept.stream().map(f -> view(f, f.getUploadedBy() == null ? null : names.get(f.getUploadedBy())))
+                .toList();
     }
 
     /** A link saving the file under its name; audited, as a carrier's document leaves the system. */
@@ -151,8 +164,12 @@ public class LoadWaybillFiles {
         }
     }
 
-    private static WaybillFile view(LoadWaybillFileJpaEntity f) {
+    private String nameOf(UUID userId) {
+        return userId == null ? null : identities.displayNames(List.of(userId)).get(userId);
+    }
+
+    private static WaybillFile view(LoadWaybillFileJpaEntity f, String uploadedByName) {
         return new WaybillFile(f.getId(), f.getLoadId(), f.getFileName(), f.getContentType(), f.getSizeBytes(),
-                f.getUploadedBy(), f.getUploadedAt());
+                f.getUploadedBy(), f.getUploadedAt(), uploadedByName);
     }
 }

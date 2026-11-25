@@ -66,6 +66,14 @@ public class EInvoiceQueryService {
                 queries.count(filter));
     }
 
+    /**
+     * The invoice, or empty: for naming one an invoice points at (the original of an adjustment), where a missing one
+     * is no reason to refuse the read.
+     */
+    public java.util.Optional<EInvoice.Snapshot> find(UUID id) {
+        return invoices.findById(id).map(EInvoice::snapshot);
+    }
+
     /** @throws BusinessException {@code EINVOICE_NOT_FOUND} */
     public EInvoice.Snapshot get(UUID id) {
         return invoices.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_FOUND)).snapshot();

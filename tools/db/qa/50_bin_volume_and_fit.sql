@@ -44,8 +44,8 @@ END $$;
 -- carton turned on the horizontal fits), both on a level 0.45 m clear.
 -- An item has ONE active carton (01 BR-03): the demo seed's own are retired, the two measured units are the active ones, and
 -- the unmeasured unit is declared retired (BV15 makes it the active one for the length of its check).
-UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE
- WHERE NOT is_base AND active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items
+UPDATE inventory.uom_conversions SET active = FALSE
+ WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items
                                                          WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH', 'LY-GIAY-DEMO-12OZ-DO'));
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, active)
 VALUES (md5('qa50:unit:xanh')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA50_CTN', 1000, 60, 50, 40, TRUE),
@@ -122,7 +122,7 @@ SELECT pg_temp.expect_ok('BV14 any carton goes into an area: size is not checked
     VALUES (gen_random_uuid(), 'QA50-A', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-DO'), md5('qa50:unit:do')::uuid, 500,
             'HCM-RCV01') $q$);
 SELECT pg_temp.expect_ok('BV15 a carton nobody measured is not judged (a carton unit with no size)', $q$
-    UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE WHERE id = md5('qa50:unit:xanh')::uuid;
+    UPDATE inventory.uom_conversions SET active = FALSE WHERE id = md5('qa50:unit:xanh')::uuid;
     UPDATE inventory.uom_conversions SET active = TRUE WHERE id = md5('qa50:unit:unmeasured')::uuid;
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
     VALUES (gen_random_uuid(), 'QA50-U', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),

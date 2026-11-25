@@ -77,6 +77,7 @@ class WaybillImportService implements WaybillImports {
 
     private static final Logger log = LoggerFactory.getLogger(WaybillImportService.class);
 
+    private final com.stockflow.identity.api.IdentityService identities;
     private final DispatchLoadJpaRepository loads;
     private final DispatchLoadStore store;
     private final CarrierJpaRepository carriers;
@@ -96,7 +97,9 @@ class WaybillImportService implements WaybillImports {
                          WaybillImportJpaRepository imports, WaybillImportRowJpaRepository importRows,
                          LoadWaybillFileJpaRepository waybillFiles, Waybills waybills, FileTransfers transfers,
                          StagedUploads staged, Messages messages, WarehouseService warehouses,
-                         TransactionOperations tx, Clock clock) {
+                         TransactionOperations tx, Clock clock,
+                         com.stockflow.identity.api.IdentityService identities) {
+        this.identities = identities;
         this.loads = loads;
         this.store = store;
         this.carriers = carriers;
@@ -283,8 +286,11 @@ class WaybillImportService implements WaybillImports {
         var found = restriction.isEmpty()
                 ? imports.findAll(Pages.of(page, size, Sort.by(Sort.Direction.DESC, "uploadedAt", "id")))
                 : imports.visibleTo(actor.userId(), nonEmpty(restriction.get().ids()), Pages.of(page, size));
+        Map<UUID, String> names = identities.displayNames(found.getContent().stream()
+                .map(WaybillImportJpaEntity::getUploadedBy).filter(Objects::nonNull).distinct().toList());
         return Pages.toResponse(found, i -> new ImportRow(i.getId(), i.getFileName(), i.getUploadedBy(),
-                i.getUploadedAt(), i.getRowsTotal(), i.getRowsApplied(), i.getRowsRejected()));
+                i.getUploadedAt(), i.getRowsTotal(), i.getRowsApplied(), i.getRowsRejected(),
+                i.getUploadedBy() == null ? null : names.get(i.getUploadedBy())));
     }
 
     @Override
@@ -378,9 +384,10 @@ class WaybillImportService implements WaybillImports {
                 v.problem() == null ? null : v.problem().name(), v.holder());
     }
 
-    private static ImportView view(WaybillImportJpaEntity i, List<Line> lines) {
+    private ImportView view(WaybillImportJpaEntity i, List<Line> lines) {
         return new ImportView(i.getId(), i.getFileName(), i.getUploadedBy(), i.getUploadedAt(), i.getRowsTotal(),
-                i.getRowsApplied(), i.getRowsRejected(), lines);
+                i.getRowsApplied(), i.getRowsRejected(), lines, i.getUploadedBy() == null ? null
+                        : identities.displayNames(List.of(i.getUploadedBy())).get(i.getUploadedBy()));
     }
 
     private static boolean visible(Optional<AssignedWarehouses> restriction, UUID warehouseId) {

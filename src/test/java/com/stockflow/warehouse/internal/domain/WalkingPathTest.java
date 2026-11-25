@@ -16,8 +16,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * open doors, never through a wall or a closed door, and the ends exactly where they were asked for.
  *
  * <p>Every path a test gets is also checked by {@link #walkable}: no segment enters an obstacle (but the one an end
- * stands inside), checked by sampling rather than by the class's own predicate, and none touches a wall or a closed
- * door.</p>
+ * stands inside), checked by sampling rather than by the class's own predicate, none touches a wall or a closed door,
+ * and away from its two ends the path keeps {@link WalkingPath#CLEARANCE} from every obstacle (issue #446).</p>
  */
 class WalkingPathTest {
 
@@ -52,10 +52,15 @@ class WalkingPathTest {
         return path;
     }
 
-    /** No segment enters an obstacle other than one an end of the path is inside; none touches a blocking line. */
+    /**
+     * No segment enters an obstacle other than one an end of the path is inside; none touches a blocking line; and
+     * every point of the path more than the clearance from both ends - past the link to the stand-off - keeps the
+     * clearance from those obstacles (to a millimetre, the corners are rounded to three decimals).
+     */
     static void walkable(WalkingPath map, List<Point> path) {
         double[] first = xy(path.get(0));
         double[] last = xy(path.get(path.size() - 1));
+        double nearEnd = WalkingPath.CLEARANCE + 0.01;
         for (int k = 0; k + 1 < path.size(); k++) {
             double[] a = xy(path.get(k));
             double[] b = xy(path.get(k + 1));
@@ -72,6 +77,14 @@ class WalkingPathTest {
                     assertThat(x > box.minX() + 1e-6 && x < box.maxX() - 1e-6
                             && y > box.minY() + 1e-6 && y < box.maxY() - 1e-6)
                             .as("segment %s -> %s enters %s", path.get(k), path.get(k + 1), box).isFalse();
+                    boolean link = Math.hypot(x - first[0], y - first[1]) <= nearEnd
+                            || Math.hypot(x - last[0], y - last[1]) <= nearEnd;
+                    if (!link) {
+                        assertThat(distance(box, x, y))
+                                .as("segment %s -> %s at (%.3f, %.3f) keeps clear of %s", path.get(k),
+                                        path.get(k + 1), x, y, box)
+                                .isGreaterThanOrEqualTo(WalkingPath.CLEARANCE - 1e-3);
+                    }
                 }
             }
             for (WalkingPath.Line wall : map.lines()) {
@@ -79,6 +92,12 @@ class WalkingPathTest {
                         .as("segment %s -> %s touches %s", path.get(k), path.get(k + 1), wall).isFalse();
             }
         }
+    }
+
+    private static double distance(WalkingPath.Box box, double x, double y) {
+        double dx = Math.max(0, Math.max(box.minX() - x, x - box.maxX()));
+        double dy = Math.max(0, Math.max(box.minY() - y, y - box.maxY()));
+        return Math.hypot(dx, dy);
     }
 
     private static double[] xy(Point point) {
@@ -137,16 +156,53 @@ class WalkingPathTest {
     }
 
     @Test
-    @DisplayName("an aisle of 0.7 m the grid does not line up with is still walked through")
+    @DisplayName("an aisle of 1 m the grid does not line up with is walked down its middle; one of 0.7 m is no way")
     void aNarrowAisleOffTheGrid() {
-        // Two blocks leave only x 14.8..15.5 open between y 5 and 25: the only way from bottom left to top right.
-        WalkingPath map = map("30", "30", List.of(box("0", "5", "14.8", "20", 0), box("15.5", "5", "14.5", "20", 0)));
+        // Two blocks leave only x 14.8..15.8 open between y 5 and 25: the only way from bottom left to top right.
+        WalkingPath map = map("30", "30", List.of(box("0", "5", "14.8", "20", 0), box("15.8", "5", "14.2", "20", 0)));
+        WalkingPath tooNarrow = map("30", "30",
+                List.of(box("0", "5", "14.8", "20", 0), box("15.5", "5", "14.5", "20", 0)));
 
         List<Point> path = walk(map, p("5", "2"), p("25", "28"));
 
         assertThat(path).hasSizeGreaterThan(2);
         assertThat(crossingAt(path.stream().map(q -> new Point(q.y(), q.x())).toList(), 15))
-                .as("where the path crosses y = 15").isBetween(14.8, 15.5);
+                .as("where the path crosses y = 15").isBetween(15.2 - 1e-3, 15.4 + 1e-3);
+        assertThat(tooNarrow.between(p("5", "2"), p("25", "28"))).isEmpty();
+    }
+
+    @Test
+    @DisplayName("the 0.2 m between two shelves of a run is no way through: the path goes round the end of the run")
+    void theGapBetweenTwoShelvesOfARun() {
+        // The BDG layout in small (issue #446): two 10 m shelves 0.2 m apart in each of three rows, 3.6 m aisles.
+        List<Footprint> shelves = new ArrayList<>();
+        for (int row = 0; row < 3; row++) {
+            String y = String.valueOf(5 + row * 4.8);
+            shelves.add(box("3", y, "10", "1.2", 0));
+            shelves.add(box("13.2", y, "10", "1.2", 0));
+        }
+        WalkingPath map = map("30", "20", shelves);
+
+        List<Point> path = walk(map, p("13.1", "2"), p("13.1", "18"));
+
+        for (double y : List.of(5.6, 10.4, 15.2)) {
+            double x = crossingAt(path.stream().map(q -> new Point(q.y(), q.x())).toList(), y);
+            assertThat(x).as("where the path crosses row y = %s", y).satisfiesAnyOf(
+                    across -> assertThat(across).isLessThanOrEqualTo(3 - WalkingPath.CLEARANCE + 1e-3),
+                    across -> assertThat(across).isGreaterThanOrEqualTo(23.2 + WalkingPath.CLEARANCE - 1e-3));
+        }
+    }
+
+    @Test
+    @DisplayName("from one stand point to the next on the same face: out to the clearance, along the aisle, back in")
+    void standPointsStepBackFromTheFace() {
+        // The shelf runs x 5..15 at y 9..10; both stand points are on its north face.
+        WalkingPath map = map("20", "20", List.of(box("5", "9", "10", "1", 0)));
+
+        assertThat(walk(map, p("7", "10"), p("12", "10")))
+                .containsExactly(p("7", "10"), p("7.000", "10.400"), p("12.000", "10.400"), p("12", "10"));
+        assertThat(walk(map, p("7", "9"), p("7", "4")))
+                .as("from the south face, straight out").containsExactly(p("7", "9"), p("7.000", "8.600"), p("7", "4"));
     }
 
     @Test

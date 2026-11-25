@@ -56,8 +56,12 @@ public class CatalogCustomizationService {
         this.files = files;
     }
 
-    /** A published product's templates, by variant position. */
-    public record Customization(UUID productId, ProductKind kind, List<Template> templates) {
+    /**
+     * A published product's templates, by variant position. {@code productTitle} is the listing's published title,
+     * the {@code title} the product page and the list card show, so the studio names a design without reading the
+     * product page.
+     */
+    public record Customization(UUID productId, ProductKind kind, List<Template> templates, String productTitle) {
     }
 
     /**
@@ -86,7 +90,7 @@ public class CatalogCustomizationService {
                         unitsBySku.getOrDefault(config.sku(), List.of()).stream()
                                 .anyMatch(UomConversion::cartonCandidate),
                         modelUrl(config.model3d())))
-                .toList());
+                .toList(), listing.publishedTitle());
     }
 
     private String modelUrl(TemplateModel3d model3d) {

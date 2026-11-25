@@ -45,11 +45,11 @@ import java.util.UUID;
 class ProductLifecycleController {
 
     private final ProductService productService;
-    private final ProductWebMapper mapper;
+    private final ProductResponses responses;
 
-    ProductLifecycleController(ProductService productService, ProductWebMapper mapper) {
+    ProductLifecycleController(ProductService productService, ProductResponses responses) {
         this.productService = productService;
-        this.mapper = mapper;
+        this.responses = responses;
     }
 
     /**
@@ -63,7 +63,7 @@ class ProductLifecycleController {
     @RequiresPermission(resource = ProductResources.LIFECYCLE, action = Action.APPROVE)
     public ApiResponse<ProductDiscontinuationResponse> discontinue(@PathVariable UUID productId,
                                                                    @Valid @RequestBody DiscontinueProductRequest request) {
-        return ApiResponse.ok(mapper.toResponse(
+        return ApiResponse.ok(responses.toResponse(
                 productService.discontinue(productId, request.reason(), request.version())));
     }
 
@@ -72,7 +72,7 @@ class ProductLifecycleController {
     @RequiresPermission(resource = ProductResources.LIFECYCLE, action = Action.APPROVE)
     public ApiResponse<ProductResponse> suspend(@PathVariable UUID productId,
                                                 @Valid @RequestBody SuspendProductRequest request) {
-        return ApiResponse.ok(mapper.toResponse(
+        return ApiResponse.ok(responses.toResponse(
                 productService.suspend(productId, request.reason(), request.version())));
     }
 
@@ -81,6 +81,6 @@ class ProductLifecycleController {
     @RequiresPermission(resource = ProductResources.LIFECYCLE, action = Action.APPROVE)
     public ApiResponse<ProductResponse> resume(@PathVariable UUID productId,
                                                @Valid @RequestBody ResumeProductRequest request) {
-        return ApiResponse.ok(mapper.toResponse(productService.resume(productId, request.version())));
+        return ApiResponse.ok(responses.toResponse(productService.resume(productId, request.version())));
     }
 }

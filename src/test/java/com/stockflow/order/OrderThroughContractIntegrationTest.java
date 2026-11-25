@@ -18,7 +18,6 @@ import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderLine;
-import com.stockflow.order.internal.domain.OrderNumber;
 import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.service.CreditHoldService;
 import com.stockflow.order.internal.service.CustomerOrders;
@@ -121,12 +120,15 @@ class OrderThroughContractIntegrationTest {
                 accountant));
     }
 
-    /** A DRAFT order of 20 cartons of 50 at 2,000 a piece with 10% VAT: 2,200,000 with tax - as a converted quote. */
+    /**
+     * A DRAFT order of 20 cartons of 50 at 2,000 a piece with 10% VAT: 2,200,000 with tax - as a converted quote. Numbered
+     * by the order sequence, which never hands a number out twice, not drawn at random from a range other classes share.
+     */
     private UUID draftOrder() {
         return tx.execute(s -> {
             OrderLine line = Order.line(Identifiers.newId(), new Sku(sku.sku()), 1000, Money.vnd(2_000), null)
                     .withCartons(sku.uomConversionId(), 20, 50).withTax(BigDecimal.TEN);
-            Order order = Order.draft(OrderNumber.of(today, 900_000 + ThreadLocalRandom.current().nextInt(49_999)),
+            Order order = Order.draft(orderRepository.nextOrderNumber(today),
                     customerId, Identifiers.newId(), List.of(line), Instant.now());
             return orderRepository.save(order).id().value();
         });

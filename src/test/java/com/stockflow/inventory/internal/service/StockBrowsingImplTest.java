@@ -57,7 +57,8 @@ class StockBrowsingImplTest {
 
     private static StockBrowseSearch.ReservationRow reservationAt(String location) {
         return new StockBrowseSearch.ReservationRow(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "CUP-12OZ",
-                location, "L1", 12, ReservationStatus.HELD, NOW, NOW.plusSeconds(1800), null, null);
+                location, "L1", 12, ReservationStatus.HELD, NOW, NOW.plusSeconds(1800), null, null,
+                "SO-20261125-0001");
     }
 
     private static StockBrowseSearch.StockRow stock(StockStatus status, int onHand, int reserved) {
@@ -115,6 +116,7 @@ class StockBrowsingImplTest {
                 assertThat(view.locationCode()).isEqualTo("HCM-A01-1-A");
                 assertThat(view.quantity()).isEqualTo(12);
                 assertThat(view.status()).isEqualTo(ReservationStatus.HELD);
+                assertThat(view.orderNumber()).isEqualTo("SO-20261125-0001");
             });
         }
 

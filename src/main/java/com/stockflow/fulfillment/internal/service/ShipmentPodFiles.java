@@ -30,6 +30,8 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import com.stockflow.identity.api.IdentityService;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -44,10 +46,14 @@ import java.util.UUID;
 @Transactional
 public class ShipmentPodFiles {
 
-    /** A file as a shipment lists it; the bytes come from {@link #downloadLink}. */
-    /** @param uploadedBy who uploaded it; null for one the carrier's webhook sent */
+    /**
+     * A file as a shipment lists it; the bytes come from {@link #downloadLink}.
+     *
+     * @param uploadedBy     who uploaded it; null for one the carrier's webhook sent
+     * @param uploadedByName the display name of {@code uploadedBy}; null with it, or if unknown
+     */
     public record PodFile(UUID id, UUID shipmentId, String fileName, String contentType, long sizeBytes,
-                          UUID uploadedBy, Instant uploadedAt) {
+                          UUID uploadedBy, Instant uploadedAt, String uploadedByName) {
     }
 
     private final ShipmentJpaRepository shipments;
@@ -56,9 +62,12 @@ public class ShipmentPodFiles {
     private final StagedUploads staged;
     private final TransactionOperations tx;
     private final Clock clock;
+    private final IdentityService identities;
 
     public ShipmentPodFiles(ShipmentJpaRepository shipments, ShipmentPodFileJpaRepository files,
-                            FileTransfers transfers, StagedUploads staged, TransactionOperations tx, Clock clock) {
+                            FileTransfers transfers, StagedUploads staged, TransactionOperations tx, Clock clock,
+                            IdentityService identities) {
+        this.identities = identities;
         this.shipments = shipments;
         this.files = files;
         this.transfers = transfers;
@@ -95,7 +104,7 @@ public class ShipmentPodFiles {
             Optional<String> key = staged.keyOf(FileCategory.DOCUMENT, by, uploaded.uploadIds().get(0));
             Optional<PodFile> earlier = key.flatMap(k -> tx.execute(status -> {
                 requireShipment(shipmentId);
-                return files.findByStorageKeyAndShipmentId(k, shipmentId).map(ShipmentPodFiles::view);
+                return files.findByStorageKeyAndShipmentId(k, shipmentId).map(f -> view(f, nameOf(f.getUploadedBy())));
             }));
             if (earlier.isPresent()) {
                 return earlier.get();
@@ -111,7 +120,7 @@ public class ShipmentPodFiles {
                         shipmentId, stored.key(), stored.originalName(), stored.contentType(), stored.sizeBytes(), by,
                         clock.instant()));
                 prepared.adopt();
-                return view(saved);
+                return view(saved, nameOf(by));
             });
         }
     }
@@ -163,7 +172,10 @@ public class ShipmentPodFiles {
     @Transactional(readOnly = true)
     public List<PodFile> list(UUID shipmentId) {
         requireShipment(shipmentId);
-        return files.findByShipmentIdOrderByUploadedAtAscIdAsc(shipmentId).stream().map(ShipmentPodFiles::view)
+        List<ShipmentPodFileJpaEntity> kept = files.findByShipmentIdOrderByUploadedAtAscIdAsc(shipmentId);
+        Map<UUID, String> names = identities.displayNames(kept.stream().map(ShipmentPodFileJpaEntity::getUploadedBy)
+                .filter(java.util.Objects::nonNull).distinct().toList());
+        return kept.stream().map(f -> view(f, f.getUploadedBy() == null ? null : names.get(f.getUploadedBy())))
                 .toList();
     }
 
@@ -194,8 +206,12 @@ public class ShipmentPodFiles {
         }
     }
 
-    private static PodFile view(ShipmentPodFileJpaEntity f) {
+    private String nameOf(UUID userId) {
+        return userId == null ? null : identities.displayNames(List.of(userId)).get(userId);
+    }
+
+    private static PodFile view(ShipmentPodFileJpaEntity f, String uploadedByName) {
         return new PodFile(f.getId(), f.getShipmentId(), f.getFileName(), f.getContentType(), f.getSizeBytes(),
-                f.getUploadedBy(), f.getUploadedAt());
+                f.getUploadedBy(), f.getUploadedAt(), uploadedByName);
     }
 }

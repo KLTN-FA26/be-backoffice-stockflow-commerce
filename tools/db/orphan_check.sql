@@ -75,9 +75,7 @@ WITH checks(reference, orphans) AS (
     ('payment.installment.contract_number -> ordering.sales_contract.contract_number',
         (SELECT count(*) FROM payment.installment c WHERE c.contract_number IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.sales_contract p WHERE p.contract_number = c.contract_number))),
     ('payment.order_settlement.contract_number -> ordering.sales_contract.contract_number',
-        (SELECT count(*) FROM payment.order_settlement c WHERE c.contract_number IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.sales_contract p WHERE p.contract_number = c.contract_number))),
-    ('notification.delivery_log.template_code -> notification.template.code',
-        (SELECT count(*) FROM notification.delivery_log c WHERE c.template_code IS NOT NULL AND NOT EXISTS (SELECT 1 FROM notification.template p WHERE p.code = c.template_code)))
+        (SELECT count(*) FROM payment.order_settlement c WHERE c.contract_number IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.sales_contract p WHERE p.contract_number = c.contract_number)))
 )
 SELECT 'values' AS section, reference, orphans, CASE WHEN orphans = 0 THEN 'ok' ELSE 'FIX' END AS status
 FROM checks
@@ -120,7 +118,7 @@ WITH reviewed(col, why) AS (
     ('inventory.stock_lot.production_order_code', 'counted in section 1'),
     ('payment.installment.contract_number', 'counted in section 1'),
     ('payment.order_settlement.contract_number', 'counted in section 1'),
-    ('notification.delivery_log.template_code', 'counted in section 1'),
+    ('notification.delivery_log.template_code', 'a plain code naming the e-mail the application composed: there is no template table (V20261228000100)'),
     ('chat.message.client_message_id', 'the sending client''s own id of the message: idempotency key of a retried send'),
     ('fulfillment.carrier_booking.carrier_order_id', 'the carrier''s own id'),
     ('fulfillment.dispatch_load.request_id', 'idempotency key'),
@@ -136,6 +134,7 @@ WITH reviewed(col, why) AS (
     ('notification.delivery_log.provider_message_id', 'the provider''s own id'),
     ('notification.user_notification.source_id', 'polymorphic: the source type names the table'),
     ('ordering.customer_order.order_number', 'the order''s own number'),
+    ('fulfillment.pick.task_number', 'the pick task''s own number (V20261228000200)'),
     ('ordering.customer_order.request_id', 'idempotency key'),
     ('ordering.delay_alert.subject_id', 'redundant copy of production_order_id / delivery_batch_id, kept consistent by ck_delay_alert_subject'),
     ('ordering.quote.request_id', 'idempotency key'),
@@ -191,8 +190,7 @@ WITH reviewed(col, why) AS (
     ('ordering.production_order_receipt.receipt_number', 'the row''s own business number'),
     ('ordering.quote.quote_number', 'the row''s own business number'),
     ('ordering.return_request.rma_number', 'the row''s own business number'),
-    ('ordering.sales_contract.contract_number', 'the row''s own business number'),
-    ('warehouse.move_task.task_number', 'the row''s own business number')
+    ('ordering.sales_contract.contract_number', 'the row''s own business number')
 ), reviewed_pattern(pat, why) AS (
     VALUES
     ('%reason_code', 'enumeration code, checked by a CHECK'),    ('%province_code', 'address code'),    ('%ward_code', 'address code'),    ('%postal_code', 'address code'),    ('%country_code', 'address code'),    ('carrier_city_code', 'the carrier''s city code'),    ('%tax_code', 'tax identifier of a party'),    ('lot_number', 'copy of the lot, which the row reaches by a keyed lot id or the lot table itself'),    ('%waybill_no', 'the carrier''s waybill number, free text'),    ('tracking_number', 'the carrier''s tracking number'),    ('scanned_code', 'what a scanner read, kept verbatim'),    ('scanned_location_code', 'what a scanner read, kept verbatim'),    ('label_code', 'the carton''s own label'),    ('vehicle_code', 'snapshot of the vehicle type''s code'),    ('service_code', 'the carrier''s own service vocabulary')

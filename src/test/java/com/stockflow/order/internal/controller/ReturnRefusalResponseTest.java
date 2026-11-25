@@ -161,4 +161,20 @@ class ReturnRefusalResponseTest {
         assertThat(command.refusalNote()).isEqualTo("Không phát hiện lỗi in");
         assertThat(command.note()).isEqualTo("internal");
     }
+
+    @Test
+    @DisplayName("the customer's copy names each line's SKU by its product and itself; an unknown SKU has no names")
+    void customerLinesAreNamed() {
+        ReturnRequest request = refusalProposed();
+
+        CustomerReturnResponse named = ReturnWebMapper.toCustomerResponse(request, List.of(), key -> null,
+                Map.of("CUP-12OZ", new com.stockflow.order.internal.service.LineNames.Names("Paper cup", "Cup 12oz")));
+        assertThat(named.lines()).singleElement().satisfies(line -> {
+            assertThat(line.productName()).isEqualTo("Paper cup");
+            assertThat(line.variantName()).isEqualTo("Cup 12oz");
+        });
+
+        assertThat(ReturnWebMapper.toCustomerResponse(request, List.of()).lines()).singleElement()
+                .satisfies(line -> assertThat(line.productName()).isNull());
+    }
 }

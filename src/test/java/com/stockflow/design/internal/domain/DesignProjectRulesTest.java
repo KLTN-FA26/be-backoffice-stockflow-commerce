@@ -33,11 +33,15 @@ class DesignProjectRulesTest {
     }
 
     @Test
-    void aDesignJoinsOneProjectAndAWaitingOneStaysWhereItIs() {
+    void aDesignJoinsOrMovesAndAWaitingOneStaysWhereItIs() {
         assertThatCode(() -> DesignProjectRules.requireJoinable(DesignStatus.PENDING_REVIEW, null))
                 .doesNotThrowAnyException();
-        refused(() -> DesignProjectRules.requireJoinable(DesignStatus.DRAFT, UUID.randomUUID()),
-                ErrorCode.DESIGN_IN_ANOTHER_PROJECT);
+        assertThatCode(() -> DesignProjectRules.requireJoinable(DesignStatus.DRAFT, UUID.randomUUID()))
+                .doesNotThrowAnyException();
+        assertThatCode(() -> DesignProjectRules.requireJoinable(DesignStatus.APPROVED, UUID.randomUUID()))
+                .doesNotThrowAnyException();
+        refused(() -> DesignProjectRules.requireJoinable(DesignStatus.PENDING_REVIEW, UUID.randomUUID()),
+                ErrorCode.DESIGN_PENDING_IN_PROJECT);
         refused(() -> DesignProjectRules.requireJoinable(DesignStatus.ARCHIVED, null), ErrorCode.NOT_FOUND);
         refused(() -> DesignProjectRules.requireNotPending(DesignStatus.PENDING_REVIEW),
                 ErrorCode.DESIGN_PENDING_IN_PROJECT);

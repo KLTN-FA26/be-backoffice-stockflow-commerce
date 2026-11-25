@@ -29,12 +29,16 @@ public interface WaybillImports {
     /** A file checked and not applied. */
     record Preview(int rowsTotal, int rowsApplicable, int rowsRejected, List<Line> lines) { }
 
-    /** A file imported, with its lines (only those the caller may see on another's import). */
+    /**
+     * A file imported, with its lines (only those the caller may see on another's import). {@code uploadedByName}: the
+     * display name of {@code uploadedBy}; null if unknown.
+     */
     record ImportView(UUID id, String fileName, UUID uploadedBy, Instant uploadedAt, int rowsTotal, int rowsApplied,
-                      int rowsRejected, List<Line> lines) { }
+                      int rowsRejected, List<Line> lines, String uploadedByName) { }
 
+    /** {@code uploadedByName}: the display name of {@code uploadedBy}; null if unknown. */
     record ImportRow(UUID id, String fileName, UUID uploadedBy, Instant uploadedAt, int rowsTotal, int rowsApplied,
-                     int rowsRejected) { }
+                     int rowsRejected, String uploadedByName) { }
 
     /** A warehouse an import may be made for. */
     record WarehouseOption(UUID warehouseId, String code, String name) { }

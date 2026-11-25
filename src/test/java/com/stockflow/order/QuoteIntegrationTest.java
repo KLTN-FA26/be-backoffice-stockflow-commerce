@@ -706,13 +706,13 @@ class QuoteIntegrationTest {
         Quotes.QuoteView accepted = quotes.accept(portal, sent.id(), new Quotes.Acceptance(
                 quotes.get(portal, sent.id()).version(), Map.of()));
         tx.executeWithoutResult(s -> {
-            jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE "
+            jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE "
                     + "WHERE unit_of_measure = 'CARTON' AND inventory_item_id = (SELECT id FROM inventory.inventory_items "
                     + "WHERE sku = ?)", sku);
             jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        active, version, created_at, default_shipping)
-                    SELECT ?, i.id, 'CARTON20', 20, FALSE, TRUE, 0, NOW(), TRUE FROM inventory.inventory_items i
+                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
+                        active, version, created_at)
+                    SELECT ?, i.id, 'CARTON20', 20, TRUE, 0, NOW() FROM inventory.inventory_items i
                      WHERE i.sku = ?""", Identifiers.newId(), sku);
         });
 

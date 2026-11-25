@@ -217,10 +217,29 @@ class FulfillmentTaskContextIntegrationTest {
                 .andExpect(jsonPath("$.data.assignedUserId").value(pickerHcm.toString()))
                 .andExpect(jsonPath("$.data.assignedUserName").value("test-" + pickerHcm))
                 .andExpect(jsonPath("$.data.pickStatus").value("PENDING"))
-                .andExpect(jsonPath("$.data.lines").doesNotExist());
+                .andExpect(jsonPath("$.data.lines").doesNotExist())
+                .andExpect(jsonPath("$.data.taskNumber").value(org.hamcrest.Matchers.matchesPattern(
+                        "PK-\\d{8}-\\d{4,}")));
 
         assertThat(jdbc.queryForObject("SELECT order_number FROM fulfillment.pick WHERE order_id = ?", String.class,
                 order.orderId())).isEqualTo(order.orderNumber());
+        // The task's human number and its warehouse by code and name, on the detail and on the list.
+        UUID taskId = jdbc.queryForObject("SELECT id FROM fulfillment.pick WHERE order_id = ?", UUID.class,
+                order.orderId());
+        String taskNumber = jdbc.queryForObject("SELECT task_number FROM fulfillment.pick WHERE id = ?", String.class,
+                taskId);
+        var warehouse = jdbc.queryForMap("SELECT prefix, name FROM warehouse.warehouse WHERE id = ?", HCM);
+        call(get("/api/v1/fulfillment/tasks/" + taskId).header("Authorization", oc))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.taskNumber").value(taskNumber))
+                .andExpect(jsonPath("$.data.warehouseCode").value(warehouse.get("prefix")))
+                .andExpect(jsonPath("$.data.warehouseName").value(warehouse.get("name")));
+        call(get("/api/v1/fulfillment/tasks").param("warehouseId", HCM.toString()).param("size", "100")
+                .header("Authorization", oc))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.taskId == '" + taskId + "')].taskNumber").value(taskNumber))
+                .andExpect(jsonPath("$.data.items[?(@.taskId == '" + taskId + "')].warehouseName")
+                        .value(warehouse.get("name")));
         assertThat(jdbc.queryForObject("SELECT warehouse_id FROM fulfillment.pick WHERE order_id = ?", UUID.class,
                 order.orderId())).isEqualTo(HCM);
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PICKING);

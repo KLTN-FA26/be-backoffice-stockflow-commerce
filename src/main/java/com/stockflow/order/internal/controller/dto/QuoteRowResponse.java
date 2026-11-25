@@ -11,9 +11,15 @@ import java.util.UUID;
  *                      the proposed one; null while a part of the offer is not priced
  * @param lineCount     R5-2: lines on the offer shown
  * @param firstItemName R5-2: the design name of the first line, else its SKU; null for an offer with no line
+ * @param customerName  whose quote it is, read for the whole page at once so a list needs no customer lookup per row;
+ *                      null for an unknown customer
+ * @param customerCode  that customer's code
+ * @param convertedOrderNumber the number of the order {@code convertedOrderId} names; null when there is none, and on
+ *                      the customer's copy while that order is still a DRAFT (its contract not yet sent, 17 §5.2)
  */
 public record QuoteRowResponse(UUID id, String quoteNumber, UUID customerId, String status, int revision,
                                Instant validUntil, Instant sentAt, UUID convertedOrderId,
                                Instant createdAt, long version, BigDecimal total, Integer lineCount,
-                               String firstItemName) {
+                               String firstItemName, String customerName, String customerCode,
+                               String convertedOrderNumber) {
 }

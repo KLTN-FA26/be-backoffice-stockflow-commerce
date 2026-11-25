@@ -200,4 +200,38 @@ class SettlementReadinessTest {
         when(candidates.completionHeld(id)).thenReturn(true);
         assertThat(at(NOW.plus(Duration.ofDays(1))).view(order).completionHoldable()).isFalse();
     }
+
+    @Test
+    @DisplayName("BE #423 / audit 25/11 N-1: a shipment brought back whose issued invoice the system could not reduce "
+            + "is named among the facts - information only, never a blocker; a reduced one (or one with its reduction "
+            + "drawn up, which `invoiced` leaves out) is not")
+    void anUnreducedInvoiceOfAFailedDeliveryIsNamed() {
+        Order order = wholeReturn();
+        java.util.List<UUID> shipments = order.shipments().stream().map(shipment -> shipment.id()).toList();
+        UUID unreduced = shipments.getFirst();
+        when(invoices.invoiced(any())).thenAnswer(call -> {
+            java.util.Collection<UUID> asked = call.getArgument(0);
+            return asked != null && asked.contains(unreduced) ? Set.of(unreduced) : Set.of();
+        });
+
+        SettlementReadiness.View view = at(NOW.plus(Duration.ofDays(5))).view(order);
+
+        assertThat(view.failedDeliveryUnreducedShipmentIds()).containsExactly(unreduced);
+        assertThat(view.blockers()).as("a decrease never keeps the order open (Q-16)").isEmpty();
+        assertThat(view.uninvoicedShipmentIds()).as("asked only of delivered shipments").isEmpty();
+
+        org.mockito.Mockito.doReturn(Set.of()).when(invoices).invoiced(any());
+        assertThat(at(NOW.plus(Duration.ofDays(5))).view(order).failedDeliveryUnreducedShipmentIds())
+                .as("reduced, or its reduction drawn up").isEmpty();
+    }
+
+    @Test
+    @DisplayName("BE #423: a delivered order names no failed delivery, whatever its invoices")
+    void aDeliveredOrderNamesNoFailedDelivery() {
+        Order order = OrderFixtures.delivered(NOW);
+        org.mockito.Mockito.doAnswer(call -> Set.copyOf(call.<java.util.Collection<UUID>>getArgument(0)))
+                .when(invoices).invoiced(any());
+
+        assertThat(at(NOW.plus(Duration.ofDays(1))).view(order).failedDeliveryUnreducedShipmentIds()).isEmpty();
+    }
 }

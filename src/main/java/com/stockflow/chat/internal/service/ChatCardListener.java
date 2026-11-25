@@ -66,6 +66,11 @@ class ChatCardListener {
     }
 
     @ApplicationModuleListener
+    public void on(com.stockflow.contracts.DesignProjectQuoteRequestReady event) {
+        cards.projectQuoteRequestChanged(event.requestId());
+    }
+
+    @ApplicationModuleListener
     public void on(QuoteStatusChanged event) {
         cards.quoteChanged(event);
     }

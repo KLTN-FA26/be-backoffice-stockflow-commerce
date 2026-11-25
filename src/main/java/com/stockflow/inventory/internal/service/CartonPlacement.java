@@ -130,6 +130,14 @@ class CartonPlacement {
 
     /** The usable OVERFLOW areas of a warehouse, by location code. */
     List<String> overflowAreas(UUID warehouseId) {
+        return overflowAreas(warehouses, warehouseId);
+    }
+
+    /**
+     * The one reading of "where may a carton no bin takes go" (05 BR-13), shared with {@link BinSuggestionInputs} so a
+     * put-back and a putaway or a move cannot name different areas.
+     */
+    static List<String> overflowAreas(WarehouseService warehouses, UUID warehouseId) {
         return warehouses.areasOf(warehouseId, StorageLocationView.AreaType.OVERFLOW).stream()
                 .filter(StorageLocationView::usable).map(StorageLocationView::locationCode).toList();
     }

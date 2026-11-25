@@ -65,11 +65,13 @@ class CustomerOrdersService implements CustomerOrders {
     private final ReturnAllowances returnAllowances;
     private final DeliveredAndReturnedUnits deliveredAndReturned;
     private final Clock clock;
+    private final LineNames lineNames;
 
     CustomerOrdersService(OrderSearchRepository search, OrderService orders, CreditChecks creditChecks,
                           com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests,
                           OrderRepository orderRepository, ReturnAllowances returnAllowances,
-                          DeliveredAndReturnedUnits deliveredAndReturned, Clock clock) {
+                          DeliveredAndReturnedUnits deliveredAndReturned, Clock clock, LineNames lineNames) {
+        this.lineNames = lineNames;
         this.cancellationRequests = cancellationRequests;
         this.orderRepository = orderRepository;
         this.returnAllowances = returnAllowances;
@@ -125,11 +127,18 @@ class CustomerOrdersService implements CustomerOrders {
                 // 17 §5.2: a DRAFT order - its contract still being drawn up - is not the customer's to see.
                 .filter(order -> order.status() != OrderStatus.DRAFT)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
+        // What each SKU is called, for the whole order at once: the customer does not know their SKUs by code.
+        Map<String, LineNames.Names> names = lineNames.of(summary.lines().stream()
+                .map(OrderSummary.LineSummary::sku).toList());
         List<Line> lines = summary.lines().stream()
-                .map(line -> new Line(line.lineId(), line.sku(), line.quantity(), line.unitPrice().amount(),
-                        line.lineTotal().amount(), line.designSnapshotId(), production(line, summary.status()),
-                        line.cartons(), line.unitsPerCarton(), line.taxRate(),
-                        line.taxAmount() == null ? null : line.taxAmount().amount()))
+                .map(line -> {
+                    LineNames.Names named = LineNames.of(names, line.sku());
+                    return new Line(line.lineId(), line.sku(), line.quantity(), line.unitPrice().amount(),
+                            line.lineTotal().amount(), line.designSnapshotId(), production(line, summary.status()),
+                            line.cartons(), line.unitsPerCarton(), line.taxRate(),
+                            line.taxAmount() == null ? null : line.taxAmount().amount(), named.productName(),
+                            named.variantName());
+                })
                 .toList();
         Optional<CreditChecks.Check> latestCheck = summary.status() == OrderStatus.ON_HOLD
                 ? creditChecks.latest(orderId)

@@ -87,6 +87,8 @@ public class EInvoiceDrafts {
     }
 
     /** kltn-docs 18 BR-01, {@code ck_einvoice_buyer_tax_code}: 10 digits, 10-3 for a dependent unit, or 12 for a household. */
+    /** The code a dry run of {@link #plan} draws its reduction under ({@link #deliveryFailureReducible}): never saved. */
+    private static final String DRY_RUN_CODE = "DRY-RUN";
     private static final Pattern TAX_CODE = Pattern.compile("\\d{10}(-\\d{3})?|\\d{12}");
     private static final Pattern EMAIL = Pattern.compile("[^@\\s]+@[^@\\s]+\\.[^@\\s]+");
 
@@ -912,6 +914,32 @@ public class EInvoiceDrafts {
     }
 
     /**
+     * Whether "Lập bản giảm do giao thất bại" ({@link #reduceForFailedDelivery}) would draw a reduction of the invoice now
+     * - BE #423: the back office showed the command only on an invoice marked {@code deliveryFailedAt}, which is written
+     * only while an invoice is at the provider, so an original issued before its delivery was corrected to a failure,
+     * which the system could not reduce ({@code DELIVERY_FAILED_NOT_REVERSED}), had no way to the command. Decided by the
+     * command's own checks and {@link #plan}, read without locks and without writing or taking a code: true means the
+     * command answers 200 unless something changes meanwhile (it checks everything again under its locks), false that
+     * it would answer 409 - a replacement (Q-9), a correction still at the provider, or nothing the system can reduce
+     * (then only the provider's portal can, {@code externalReductionAllowed}).
+     */
+    @Transactional(readOnly = true)
+    public boolean deliveryFailureReducible(EInvoice.Snapshot standing) {
+        if (standing.status() != EInvoiceStatus.ISSUED || standing.type() != EInvoiceType.ORIGINAL
+                || standing.shipmentId() == null || standing.reversedAt() != null) {
+            return false;
+        }
+        if (shipments.find(standing.orderId(), standing.shipmentId()).isPresent()) {
+            return false;
+        }
+        Optional<EInvoice> inForce = invoices.findLiveOriginalOfShipment(standing.shipmentId());
+        if (inForce.isEmpty() || !inForce.get().id().equals(standing.id())) {
+            return false;
+        }
+        return plan(inForce.get(), clock.instant(), () -> DRY_RUN_CODE).reversal() != null;
+    }
+
+    /**
      * Whether the shipment is delivered as it stands now, for a failure being acted on (second review, finding 1). The
      * event saying its delivery was corrected to a failure is handled after commit and may be handled late - retried,
      * or replayed at a restart - after the failure was itself corrected back to delivered. Acting on it then would void
@@ -1458,18 +1486,48 @@ public class EInvoiceDrafts {
      * </ul>
      */
     private Reversal reverse(EInvoice inForce) {
+        Instant now = clock.instant();
+        LocalDate today = BusinessCalendar.date(now);
+        Plan plan = plan(inForce, now, () -> invoices.nextCode(today));
+        if (plan.reversal() == null) {
+            if (plan.refusal() != null) {
+                log.warn("E-invoice {} of a failed delivery is not reduced by the system: {}",
+                        LogSafe.text(inForce.code()), plan.refusal());
+            }
+            return new Reversal(null, plan.notReversed());
+        }
+        for (EInvoice correction : plan.unissued()) {
+            voidUnissued(invoices.findByIdForUpdate(correction.id()).orElseThrow());
+        }
+        EInvoice.Snapshot drawn = invoices.save(plan.reversal()).snapshot();
+        // After the reduction is written: tg_einvoice_guard lets an invoice be reversed only while one names it.
+        invoices.markReversed(inForce.id(), now);
+        return new Reversal(drawn, null);
+    }
+
+    /**
+     * What {@link #reverse} would do to the invoice, decided and written nowhere: the reduction it would draw up and the
+     * unissued corrections it would void first, or why it draws none ({@code notReversed}; both null when there is
+     * nothing to reduce). The one decision for the system's reduction, the accountant's command and the flag the back
+     * office shows that command by ({@link #deliveryFailureReducible}), so the button and the server cannot disagree
+     * (BE #423).
+     *
+     * @param code the reduction's code, asked only once everything else allows it - the dry run passes a placeholder,
+     *             so reading the flag never takes a number from the sequence
+     */
+    private Plan plan(EInvoice inForce, Instant now, java.util.function.Supplier<String> code) {
         if (inForce.status() != EInvoiceStatus.ISSUED || inForce.type() == EInvoiceType.ADJUSTMENT
                 || inForce.reversedAt() != null) {
-            return Reversal.NOTHING;
+            return Plan.NOTHING;
         }
         if (inForce.type() == EInvoiceType.REPLACEMENT) {
-            return new Reversal(null, EInvoiceNeedsAttention.Cause.REPLACEMENT_NOT_REDUCIBLE);
+            return Plan.refused(EInvoiceNeedsAttention.Cause.REPLACEMENT_NOT_REDUCIBLE);
         }
         List<EInvoice> unissued = invoices.findUnissuedCorrectionsOf(inForce.id());
         for (EInvoice correction : unissued) {
             if (correction.status() == EInvoiceStatus.SUBMITTING
                     || !inForce.id().equals(correction.originalEInvoiceId())) {
-                return new Reversal(null, EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_NOT_REVERSED);
+                return Plan.refused(EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_NOT_REVERSED);
             }
         }
         List<EInvoiceLine> issuedLines = invoices.issuedAdjustmentLinesOf(inForce.id());
@@ -1478,29 +1536,31 @@ public class EInvoiceDrafts {
         // What corrects it once the unissued corrections are voided: only the issued adjustments.
         EInvoice.Corrections afterVoiding = new EInvoice.Corrections(!issuedLines.isEmpty() || inForce.adjusted(),
                 false, issuedTotal);
-        Instant now = clock.instant();
         LocalDate today = BusinessCalendar.date(now);
         ResourceBundle t = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
         String shipmentCode = inForce.snapshot().shipmentCode();
         String reason = t.getString("einvoice.correction.deliveryFailed").formatted(inForce.code(),
                 shipmentCode == null ? "-" : shipmentCode);
-        EInvoice reversal;
         try {
             // Decided before anything is voided: a reduction that cannot be drawn up leaves every draft as it was.
-            reversal = EInvoice.drawUpDeliveryReversal(Identifiers.newId(), invoices.nextCode(today), inForce,
+            EInvoice reversal = EInvoice.drawUpDeliveryReversal(Identifiers.newId(), code.get(), inForce,
                     reason.substring(0, Math.min(500, reason.length())), today, afterVoiding, issuedLines);
+            return new Plan(reversal, List.copyOf(unissued), null, null);
         } catch (BusinessException notReducible) {
-            log.warn("E-invoice {} of a failed delivery is not reduced by the system: {}",
-                    LogSafe.text(inForce.code()), notReducible.errorCode());
-            return new Reversal(null, EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_NOT_REVERSED);
+            return new Plan(null, List.of(), EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_NOT_REVERSED,
+                    notReducible.errorCode());
         }
-        for (EInvoice correction : unissued) {
-            voidUnissued(invoices.findByIdForUpdate(correction.id()).orElseThrow());
+    }
+
+    /** {@link #plan}'s answer: a reduction and the drafts to void first, or the cause none is drawn up. */
+    private record Plan(EInvoice reversal, List<EInvoice> unissued, EInvoiceNeedsAttention.Cause notReversed,
+                        ErrorCode refusal) {
+
+        static final Plan NOTHING = new Plan(null, List.of(), null, null);
+
+        static Plan refused(EInvoiceNeedsAttention.Cause cause) {
+            return new Plan(null, List.of(), cause, null);
         }
-        EInvoice.Snapshot drawn = invoices.save(reversal).snapshot();
-        // After the reduction is written: tg_einvoice_guard lets an invoice be reversed only while one names it.
-        invoices.markReversed(inForce.id(), now);
-        return new Reversal(drawn, null);
     }
 
     /**

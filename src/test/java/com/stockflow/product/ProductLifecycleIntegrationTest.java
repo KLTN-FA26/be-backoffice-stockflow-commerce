@@ -204,7 +204,29 @@ class ProductLifecycleIntegrationTest {
         send("PUT", editor(), "/api/v1/products/" + id, update).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.brandId").value(tax.brandId().toString()));
         send("POST", editor(), "/api/v1/products/" + id + "/submission", null).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"));
+                .andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"))
+                .andExpect(jsonPath("$.data.submittedByName").value("test-" + editorUser))
+                .andExpect(jsonPath("$.data.canApprove").value(false));
+
+        // The detail names the people and the category; only someone other than the submitter may approve it, or
+        // a holder of product-lifecycle:APPROVE.
+        JsonNode pending = product(id);
+        assertThat(pending.path("categoryName").asText()).isEqualTo("Category " + suffix);
+        assertThat(pending.path("submittedByName").asText()).isEqualTo("test-" + editorUser);
+        assertThat(pending.path("approvedByName").isMissingNode()).isTrue();
+        assertThat(pending.path("canApprove").asBoolean()).isFalse();
+        send("GET", approver(), "/api/v1/products/" + id, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.canApprove").value(true));
+        // The list row carries the same, from one lookup per page.
+        send("GET", approver(), "/api/v1/products?q=BRD-" + suffix, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].productId").value(id.toString()))
+                .andExpect(jsonPath("$.data.items[0].categoryName").value("Category " + suffix))
+                .andExpect(jsonPath("$.data.items[0].submittedByName").value("test-" + editorUser))
+                .andExpect(jsonPath("$.data.items[0].canApprove").value(true));
+
+        send("POST", approver(), "/api/v1/products/" + id + "/approval", null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.approvedByName").value("test-" + approverUser))
+                .andExpect(jsonPath("$.data.canApprove").value(false));
     }
 
     @Test

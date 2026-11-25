@@ -105,7 +105,10 @@ public class DocumentCards {
         });
     }
 
-    /** A customer asked one quote over several approved designs of a project: one card of several lines. */
+    /**
+     * A customer asked one quote over several designs of a project - approved, waiting for review or returned (12
+     * BR-25): one card of several lines, "approved x/y".
+     */
     public void projectQuoteRequested(UUID requestId) {
         quoteRequests.projectRequest(requestId).ifPresent(request -> {
             ContextRef project = new ContextRef(ContextKind.DESIGN_PROJECT, request.projectId());
@@ -125,6 +128,14 @@ public class DocumentCards {
 
     /** Sales closed a project's quote request: its card closes, as a single design's does. */
     public void projectQuoteRequestClosed(UUID requestId) {
+        projectQuoteRequestChanged(requestId);
+    }
+
+    /**
+     * A project's quote request moved without being asked again - a design on it decided or submitted again, every
+     * design on it approved, the request closed: its card shows it as it is now.
+     */
+    public void projectQuoteRequestChanged(UUID requestId) {
         quoteRequests.projectRequest(requestId).ifPresent(request -> card(
                 new ContextRef(ContextKind.DESIGN_PROJECT, request.projectId()), CardKind.QUOTE_REQUEST, "requestId",
                 requestId).ifPresent(card -> refreshProjectCard(card, request)));
@@ -150,12 +161,19 @@ public class DocumentCards {
         payload.putPOJO("desiredDeliveryDate", request.desiredDeliveryDate());
         payload.putPOJO("requestedAt", request.requestedAt());
         payload.set("lines", json.valueToTree(request.lines()));
+        // "Approved x/y": Sales quote it once every line is approved (12 BR-25.2).
+        payload.put("approvedCount", request.approvedCount());
+        payload.put("lineCount", request.lines().size());
+        if (request.closeReason() != null) {
+            payload.put("closeReason", request.closeReason());
+        }
         return payload;
     }
 
     /**
      * A design moved (decided, submitted again) or its request closed: its quote request cards show it as it is now -
-     * approved with its SKU, back to draft with the reason, or closed (B40: the card follows the design).
+     * approved with its SKU, back to draft with the reason, or closed (B40: the card follows the design) - and so does
+     * the card of its project's open request (12 BR-25).
      */
     public void designChanged(UUID designId) {
         ContextRef design = new ContextRef(ContextKind.DESIGN, designId);
@@ -171,6 +189,7 @@ public class DocumentCards {
                 cards.update(card.id(), state, payload, Actor.system(), null, null);
             });
         }
+        quoteRequests.openProjectRequestOf(designId).ifPresent(this::projectQuoteRequestChanged);
     }
 
     public void designQuoteRequestClosed(DesignQuoteRequestClosed event) {

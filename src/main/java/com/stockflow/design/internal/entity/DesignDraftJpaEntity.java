@@ -105,7 +105,6 @@ public class DesignDraftJpaEntity extends BaseEntity {
     public void joinProject(UUID project) { projectId = project; }
 
     /** Leaves its project; never while it waits for review (tg_design_draft_project_while_pending). */
-    public void leaveProject() { projectId = null; }
 
     public void rename(String nextName) { name = nextName; }
 

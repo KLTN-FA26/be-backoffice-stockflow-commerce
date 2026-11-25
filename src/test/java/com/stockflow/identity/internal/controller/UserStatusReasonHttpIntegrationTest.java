@@ -4,6 +4,7 @@ import com.stockflow.common.security.Role;
 import com.stockflow.identity.api.CreateStaffUserCommand;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.TestTokens;
 import jakarta.persistence.EntityManager;
@@ -102,6 +103,27 @@ class UserStatusReasonHttpIntegrationTest {
                 .andExpect(jsonPath("$.data.items[1].action").value("LOCK"))
                 .andExpect(jsonPath("$.data.items[1].reason").value("Nghi ngờ lộ mật khẩu"))
                 .andExpect(jsonPath("$.data.items[1].actorUsername").isNotEmpty());
+    }
+
+    /** The user list and detail name each warehouse, so the screen needs no warehouse list (A9). */
+    @Test
+    void theListAndTheDetailNameTheAccountsWarehouses() throws Exception {
+        String username = "wh." + UUID.randomUUID().toString().substring(0, 8);
+        UUID bound = identity.createStaffUser(new CreateStaffUserCommand(username, username + "@example.com",
+                "Warehouse bound", null, List.of("WAREHOUSE_STAFF"), List.of(DemoData.WAREHOUSE_HCM))).user().userId();
+
+        mvc.perform(get("/api/v1/identity/users/" + bound).header("Authorization", admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.warehouseIds[0]").value(DemoData.WAREHOUSE_HCM.toString()))
+                .andExpect(jsonPath("$.data.warehouses.length()").value(1))
+                .andExpect(jsonPath("$.data.warehouses[0].warehouseId").value(DemoData.WAREHOUSE_HCM.toString()))
+                .andExpect(jsonPath("$.data.warehouses[0].code").value("HCM"))
+                .andExpect(jsonPath("$.data.warehouses[0].name").isNotEmpty());
+        mvc.perform(get("/api/v1/identity/users").param("q", username).header("Authorization", admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].warehouses[0].code").value("HCM"));
+        mvc.perform(get("/api/v1/identity/users/" + target).header("Authorization", admin))
+                .andExpect(jsonPath("$.data.warehouses.length()").value(0));
     }
 
     @Test

@@ -111,7 +111,7 @@ class DesignSubmissionIntegrationTest {
         surface = PrintSurface.of(config.model(), config.printAreas().get(0));
         // The carton a customer orders in (B25): without it the design cannot be submitted.
         units.add(new Sku(sku), new UomConversionDraft("CARTON", 50, new BigDecimal("4.2"), new BigDecimal("60"),
-                new BigDecimal("40"), new BigDecimal("35"), true, true));
+                new BigDecimal("40"), new BigDecimal("35"), true));
         owner = tx.execute(s -> {
             UUID user = ReferenceRows.user(entityManager);
             UUID customer = ReferenceRows.customer(entityManager);
@@ -119,9 +119,13 @@ class DesignSubmissionIntegrationTest {
             return user;
         });
         as(owner);
+        // Every design is started in one of its customer's projects (BR-23.2).
+        String startedIn = data(mvc.perform(post("/api/v1/design-projects").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"Quán A\"}")).andExpect(status().isCreated())).get("id").asText();
         design = data(mvc.perform(post("/api/v1/designs/mine").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"productId\":\"" + productId + "\",\"sku\":\"" + sku
-                        + "\",\"templateCode\":\"CUP12-BODY\",\"name\":\"Ly quán A\"}"))
+                        + "\",\"templateCode\":\"CUP12-BODY\",\"name\":\"Ly quán A\",\"projectId\":\"" + startedIn
+                        + "\"}"))
                 .andExpect(status().isCreated())).get("id").asText();
     }
 
@@ -281,8 +285,7 @@ class DesignSubmissionIntegrationTest {
                 .andExpect(jsonPath("$.data.hasCartonSpec").value(true));
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE product.variants SET status = 'BLOCKED' WHERE sku = ?", sku);
-            jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE WHERE NOT is_base "
-                    + "AND inventory_item_id = "
+            jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE WHERE inventory_item_id = "
                     + "(SELECT id FROM inventory.inventory_items WHERE sku = ?)", sku);
         });
 
@@ -303,7 +306,8 @@ class DesignSubmissionIntegrationTest {
         as(stranger);
         submit(version).andExpect(status().isNotFound());
         as(owner);
-        assertThat(decisions()).containsExactly("CREATED");
+        // Nothing past what starting it in its project wrote (BR-23.2).
+        assertThat(decisions()).containsExactly("ADDED_TO_PROJECT", "CREATED");
     }
 
     /** Review of 2F-5: a template edited in place after the files were drawn on it leaves them outdated. */

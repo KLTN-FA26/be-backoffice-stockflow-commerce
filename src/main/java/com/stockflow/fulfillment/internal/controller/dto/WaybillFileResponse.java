@@ -3,9 +3,13 @@ package com.stockflow.fulfillment.internal.controller.dto;
 import java.time.Instant;
 import java.util.UUID;
 
-/** A carrier's waybill document kept with a load (kltn-docs 09 §4.4, BR-28); the bytes come from its download link. */
+/**
+ * A carrier's waybill document kept with a load (kltn-docs 09 §4.4, BR-28); the bytes come from its download link.
+ *
+ * @param uploadedByName the display name of {@code uploadedBy}; null if unknown
+ */
 public record WaybillFileResponse(UUID fileId, UUID loadId, String fileName, String contentType, long sizeBytes,
-                                  UUID uploadedBy, Instant uploadedAt) {
+                                  UUID uploadedBy, Instant uploadedAt, String uploadedByName) {
 
     /** Step two of a file uploaded straight to storage: the upload id the slot gave. */
     public record Uploaded(@jakarta.validation.constraints.NotNull UUID uploadId) {

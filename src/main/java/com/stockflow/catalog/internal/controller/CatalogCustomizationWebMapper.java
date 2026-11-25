@@ -16,7 +16,8 @@ class CatalogCustomizationWebMapper {
 
     CatalogCustomizationResponse toResponse(CatalogCustomizationService.Customization customization) {
         return new CatalogCustomizationResponse(customization.productId(), customization.kind().name(),
-                customization.templates().stream().map(CatalogCustomizationWebMapper::toTemplate).toList());
+                customization.templates().stream().map(CatalogCustomizationWebMapper::toTemplate).toList(),
+                customization.productTitle());
     }
 
     private static CatalogCustomizationResponse.Template toTemplate(CatalogCustomizationService.Template template) {

@@ -385,14 +385,18 @@ class PickListService implements PickLists {
                 .collect(Collectors.groupingBy(row -> tasks.get(row.getPickId()).getWarehouseId(),
                         Collectors.mapping(PickLineJpaEntity::getLpn, Collectors.toSet())))
                 .forEach((warehouse, lpns) -> overflow.put(warehouse, consumption.overflowAreasFor(warehouse, lpns)));
+        Map<UUID, com.stockflow.warehouse.api.WarehouseView> warehouseById = warehouses.findWarehouses(
+                tasks.values().stream().map(PickJpaEntity::getWarehouseId).collect(Collectors.toSet()));
         return Pages.toResponse(found, row -> {
             PickJpaEntity task = tasks.get(row.getPickId());
+            var warehouse = warehouseById.get(task.getWarehouseId());
             // A staged carton stands in the staging area, not at the bin it was picked from (4C-5).
             return new PutBackRow(row.getPickId(), task.getOrderNumber(), task.getWarehouseId(), row.getId(),
                     row.getSku(), row.getLotNumber(), row.getLpn(), row.getPickedQty(),
                     row.getStatus() == PickLineStatus.STAGED ? row.getStagedLocationCode() : row.getLocationCode(),
                     row.getPickedAt(), damaged.contains(row.getId()),
-                    overflow.getOrDefault(task.getWarehouseId(), Map.of()).get(row.getLpn()));
+                    overflow.getOrDefault(task.getWarehouseId(), Map.of()).get(row.getLpn()), task.getTaskNumber(),
+                    warehouse == null ? null : warehouse.prefix(), warehouse == null ? null : warehouse.name());
         });
     }
 

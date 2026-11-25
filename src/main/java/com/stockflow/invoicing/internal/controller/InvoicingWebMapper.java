@@ -40,6 +40,8 @@ final class InvoicingWebMapper {
      * @param earlierPending       the code of an earlier-dated invoice still to be issued under the series this draft
      *                             would take - a warning, not a refusal; null when there is none or it was not asked
      * @param errorNoticeSupported whether its provider sends a Mẫu 04/SS-HĐĐT notice (F-11)
+     * @param deliveryFailureReductionAllowed whether the accountant's reduction for a failed delivery would be drawn now
+     *                             (BE #423, {@code EInvoiceDrafts#deliveryFailureReducible})
      */
     static EInvoiceResponse toResponse(EInvoice.Snapshot s, Instant now, String earlierPending,
                                        boolean errorNoticeSupported,
@@ -48,6 +50,24 @@ final class InvoicingWebMapper {
                                                .ExternalReductionOptions external,
                                        com.stockflow.invoicing.internal.domain.EInvoiceRepository
                                                .TransactionWatch watch) {
+        return toResponse(s, now, earlierPending, errorNoticeSupported, withdrawal, external, watch, null, null, false);
+    }
+
+    /**
+     * @param original      the invoice {@code s} adjusts or replaces; null on an original or when it is not read
+     * @param returnRmaNumber the RMA number of the return {@code s} names; null for none
+     * @param deliveryFailureReductionAllowed whether the accountant's reduction for a failed delivery would be drawn now
+     *                        (BE #423, {@code EInvoiceDrafts#deliveryFailureReducible}); false where it is not read
+     */
+    static EInvoiceResponse toResponse(EInvoice.Snapshot s, Instant now, String earlierPending,
+                                       boolean errorNoticeSupported,
+                                       com.stockflow.invoicing.internal.service.WithdrawalRule.Decision withdrawal,
+                                       com.stockflow.invoicing.internal.service.EInvoiceIssuance
+                                               .ExternalReductionOptions external,
+                                       com.stockflow.invoicing.internal.domain.EInvoiceRepository
+                                               .TransactionWatch watch,
+                                       EInvoice.Snapshot original, String returnRmaNumber,
+                                       boolean deliveryFailureReductionAllowed) {
         List<String> bases = new java.util.ArrayList<>();
         if (external.deliveryFailed()) {
             bases.add("DELIVERY_FAILED");
@@ -90,7 +110,10 @@ final class InvoicingWebMapper {
                         option.returnRequestId(), option.rmaNumber())).toList(),
                 watch == null ? null : watch.watchUntil(), watch == null ? null : watch.foundAt(),
                 external.errors().stream().map(option -> new EInvoiceResponse.ExternalReductionError(
-                        option.voidedAdjustmentId(), option.code(), option.reason(), option.grandTotal())).toList());
+                        option.voidedAdjustmentId(), option.code(), option.reason(), option.grandTotal())).toList(),
+                original == null ? null : original.code(), original == null ? null : original.symbol(),
+                original == null ? null : original.invoiceNumber(), returnRmaNumber,
+                deliveryFailureReductionAllowed);
     }
 
     static EInvoiceListItemResponse toResponse(EInvoiceQueries.Listing row, Instant now) {
@@ -139,11 +162,14 @@ final class InvoicingWebMapper {
                 notice.createdAt(), notice.respondedAt(), ErrorNotice.FORM_NAME);
     }
 
-    static EInvoiceErrorNoticeResponse toResponse(ErrorNotice.Snapshot notice) {
+    /** @param names who recorded each notice, by user id, read once for the list */
+    static EInvoiceErrorNoticeResponse toResponse(ErrorNotice.Snapshot notice,
+                                                  java.util.Map<java.util.UUID, String> names) {
         return new EInvoiceErrorNoticeResponse(notice.id(), notice.einvoiceId(), notice.formCode(),
                 notice.subject().name(), notice.reason(), notice.correctBuyerName(), notice.correctBuyerAddress(),
                 notice.status().name(), notice.sentAt(), notice.responseCode(), notice.responseMessage(),
-                notice.respondedAt(), notice.recordedBy(), notice.createdAt(), ErrorNotice.FORM_NAME);
+                notice.respondedAt(), notice.recordedBy(), notice.createdAt(), ErrorNotice.FORM_NAME,
+                notice.recordedBy() == null ? null : names.get(notice.recordedBy()));
     }
 
     static EInvoiceSettingsResponse toResponse(EInvoiceSettingsService.Settings settings) {

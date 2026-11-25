@@ -61,8 +61,21 @@ public record CustomerReturnResponse(
                 allowableValues = {"SEND_BACK", "DESTROY_ON_BEHALF"})
         String custodyChoice) implements ReturnView {
 
+    /**
+     * @param productName the name of the product the SKU belongs to - the customer does not know their SKUs by code;
+     *                    null for a SKU the catalogue does not know
+     * @param variantName the SKU's own (variant) name; null for an unknown SKU
+     */
     public record Line(UUID id, UUID orderLineId, String sku, int requestedQuantity, Integer approvedQuantity,
-                       Integer receivedQuantity, int refundQuantity, BigDecimal refundAmount) {
+                       Integer receivedQuantity, int refundQuantity, BigDecimal refundAmount, String productName,
+                       String variantName) {
+
+        /** Without the SKU's names. */
+        public Line(UUID id, UUID orderLineId, String sku, int requestedQuantity, Integer approvedQuantity,
+                    Integer receivedQuantity, int refundQuantity, BigDecimal refundAmount) {
+            this(id, orderLineId, sku, requestedQuantity, approvedQuantity, receivedQuantity, refundQuantity,
+                    refundAmount, null, null);
+        }
     }
 
     public record Discrepancy(String kind, String sku, int quantity) {

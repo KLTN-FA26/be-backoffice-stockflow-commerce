@@ -247,9 +247,7 @@ public final class Installment {
             throw new IllegalArgumentException("A receipt line pays money");
         }
         if (!status.takesMoney()) {
-            throw new BusinessException(ErrorCode.INSTALLMENT_NOT_PAYABLE, "Installment %d of contract %s is %s"
-                    .formatted(seq, contractNumber, status))
-                    .localized("refusal.payment.notPayable", seq, contractNumber, status);
+            throw notPayable();
         }
         if (money.compareTo(outstanding()) > 0) {
             throw new BusinessException(ErrorCode.PAYMENT_RECEIPT_EXCEEDS_OUTSTANDING,
@@ -289,6 +287,22 @@ public final class Installment {
         } else {
             this.status = reachedAt != null ? InstallmentStatus.DUE : InstallmentStatus.NOT_DUE;
         }
+    }
+
+    /**
+     * {@code INSTALLMENT_NOT_PAYABLE}: it is paid or cancelled. A fee item is named by its kind ("the cancellation fee"),
+     * not by its number: its seq starts at {@link #FIRST_FEE_SEQ}, and "installment 21" means nothing to the customer
+     * reading it (WF-02 r6, owner question 12). The status and the kind go in as enums, read as their labels.
+     */
+    public BusinessException notPayable() {
+        if (isFeeItem()) {
+            return new BusinessException(ErrorCode.INSTALLMENT_NOT_PAYABLE, "The %s of contract %s is %s"
+                    .formatted(milestone, contractNumber, status))
+                    .localized("refusal.payment.feeNotPayable", milestone, contractNumber, status);
+        }
+        return new BusinessException(ErrorCode.INSTALLMENT_NOT_PAYABLE, "Installment %d of contract %s is %s"
+                .formatted(seq, contractNumber, status))
+                .localized("refusal.payment.notPayable", seq, contractNumber, status);
     }
 
     /**

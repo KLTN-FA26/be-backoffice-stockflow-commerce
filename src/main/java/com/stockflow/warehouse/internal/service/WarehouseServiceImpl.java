@@ -98,6 +98,17 @@ class WarehouseServiceImpl implements WarehouseService {
     }
 
     @Override
+    public java.util.Map<UUID, WarehouseView> findWarehouses(java.util.Collection<UUID> warehouseIds) {
+        java.util.Set<UUID> ids = warehouseIds == null ? java.util.Set.of()
+                : warehouseIds.stream().filter(java.util.Objects::nonNull)
+                        .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        java.util.Map<UUID, WarehouseView> found = new java.util.HashMap<>();
+        locations.findWarehouseHeaders(ids).forEach(w -> found.put(w.id(), new WarehouseView(w.id(), w.prefix(),
+                w.name(), w.address(), w.status() == WarehouseStatus.ACTIVE)));
+        return java.util.Map.copyOf(found);
+    }
+
+    @Override
     public java.util.List<WarehouseView> activeWarehouses() {
         return locations.findActiveWarehouseHeaders().stream().map(w -> new WarehouseView(w.id(), w.prefix(), w.name(),
                 w.address(), true)).toList();

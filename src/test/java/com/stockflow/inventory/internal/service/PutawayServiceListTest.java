@@ -56,7 +56,7 @@ class PutawayServiceListTest {
     private final PutawayService service = new PutawayService(tasks, warehouses, stockPackages, ledger,
             mock(BinOccupancyQuery.class), mock(StockOperations.class),
             mock(ApplicationEventPublisher.class), mock(StockItemRepository.class),
-            mock(com.stockflow.warehouse.api.PutawayTrips.class));
+            mock(com.stockflow.warehouse.api.PutawayTrips.class), mock(BinSuggestionInputs.class));
 
     private final UUID warehouse = UUID.randomUUID();
 

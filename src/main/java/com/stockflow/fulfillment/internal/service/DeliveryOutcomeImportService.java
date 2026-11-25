@@ -61,6 +61,7 @@ class DeliveryOutcomeImportService implements DeliveryOutcomeImports {
     private static final Logger log = LoggerFactory.getLogger(DeliveryOutcomeImportService.class);
     private static final Sort NEWEST_FIRST = Sort.by(Sort.Direction.DESC, "uploadedAt", "id");
 
+    private final com.stockflow.identity.api.IdentityService identities;
     private final DispatchLoadJpaRepository loads;
     private final ShipmentJpaRepository shipments;
     private final CarrierJpaRepository carriers;
@@ -75,7 +76,9 @@ class DeliveryOutcomeImportService implements DeliveryOutcomeImports {
     DeliveryOutcomeImportService(DispatchLoadJpaRepository loads, ShipmentJpaRepository shipments,
                                  CarrierJpaRepository carriers, DeliveryOutcomeImportJpaRepository imports,
                                  DeliveryOutcomeImportRowJpaRepository importRows, CarrierEvents events,
-                                 Messages messages, TransactionOperations tx, Clock clock) {
+                                 Messages messages, TransactionOperations tx, Clock clock,
+                                 com.stockflow.identity.api.IdentityService identities) {
+        this.identities = identities;
         this.loads = loads;
         this.shipments = shipments;
         this.carriers = carriers;
@@ -159,8 +162,12 @@ class DeliveryOutcomeImportService implements DeliveryOutcomeImports {
     public PageResponse<ImportRow> list(int page, int size, CurrentUser actor) {
         var found = WarehouseScope.restriction().isEmpty() ? imports.findAll(Pages.of(page, size, NEWEST_FIRST))
                 : imports.findByUploadedBy(actor.userId(), Pages.of(page, size, NEWEST_FIRST));
+        Map<UUID, String> names = identities.displayNames(found.getContent().stream()
+                .map(DeliveryOutcomeImportJpaEntity::getUploadedBy).filter(java.util.Objects::nonNull).distinct()
+                .toList());
         return Pages.toResponse(found, i -> new ImportRow(i.getId(), i.getFileName(), i.getUploadedBy(),
-                i.getUploadedAt(), i.getRowsTotal(), i.getRowsAccepted(), i.getRowsRejected()));
+                i.getUploadedAt(), i.getRowsTotal(), i.getRowsAccepted(), i.getRowsRejected(),
+                i.getUploadedBy() == null ? null : names.get(i.getUploadedBy())));
     }
 
     @Override
@@ -240,9 +247,10 @@ class DeliveryOutcomeImportService implements DeliveryOutcomeImports {
                 outcome == null ? null : outcome.note());
     }
 
-    private static ImportView view(DeliveryOutcomeImportJpaEntity i, List<Line> lines) {
+    private ImportView view(DeliveryOutcomeImportJpaEntity i, List<Line> lines) {
         int applied = (int) lines.stream().filter(l -> CarrierEventResult.APPLIED.name().equals(l.result())).count();
         return new ImportView(i.getId(), i.getFileName(), i.getUploadedBy(), i.getUploadedAt(), i.getRowsTotal(),
-                i.getRowsAccepted(), i.getRowsRejected(), applied, lines);
+                i.getRowsAccepted(), i.getRowsRejected(), applied, lines, i.getUploadedBy() == null ? null
+                        : identities.displayNames(List.of(i.getUploadedBy())).get(i.getUploadedBy()));
     }
 }

@@ -16,6 +16,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -62,8 +63,8 @@ class DesignWorkflowController {
     public ApiResponse<PageResponse<DesignDecisionResponse>> history(@PathVariable UUID id,
             @AuthenticatedUser CurrentUser user, @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(Pages.toResponse(service.history(id, actor(user), readRights(user), pageOf(page, size))
-                .map(mapper::toResponse)));
+        return ApiResponse.ok(Pages.toResponse(mapper.decisions(service.history(id, actor(user), readRights(user),
+                pageOf(page, size)))));
     }
 
     @GetMapping("/{id}/snapshot")
@@ -72,10 +73,19 @@ class DesignWorkflowController {
         return ApiResponse.ok(mapper.toResponse(service.snapshot(id, actor(user))));
     }
 
+    /**
+     * A revision of an approved design (§4.7), written into the project the optional body names ({@code {projectId}})
+     * or else the source's own (BR-23.3). The body is optional so a client that sends none keeps working.
+     */
     @PostMapping("/{id}/revisions")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
-    public ApiResponse<DesignDraftResponse> fork(@PathVariable UUID id, @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(mapper.toResponse(service.fork(id, actor(user))));
+    public ApiResponse<DesignDraftResponse> fork(@PathVariable UUID id,
+            @RequestBody(required = false) RevisionRequest body, @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(mapper.toResponse(service.fork(id, actor(user), body == null ? null : body.projectId())));
+    }
+
+    /** The project to write a revision into; absent, the source's own. */
+    record RevisionRequest(UUID projectId) {
     }
 
     static UUID actor(CurrentUser user) { return user == null ? null : user.userId(); }

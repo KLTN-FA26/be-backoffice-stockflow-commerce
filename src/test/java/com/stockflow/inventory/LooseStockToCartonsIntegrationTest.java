@@ -362,7 +362,7 @@ class LooseStockToCartonsIntegrationTest {
         jdbc.query("""
                 SELECT i.sku, u.factor FROM inventory.uom_conversions u
                   JOIN inventory.inventory_items i ON i.id = u.inventory_item_id
-                 WHERE i.sku IN (?, ?) AND u.active AND NOT u.is_base""",
+                 WHERE i.sku IN (?, ?) AND u.active""",
                 rs -> {
                     assertThat(factors.put(rs.getString("sku"), rs.getInt("factor")))
                             .as("one carton unit per SKU (01 BR-03)").isNull();
