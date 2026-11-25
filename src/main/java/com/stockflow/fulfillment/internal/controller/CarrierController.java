@@ -73,7 +73,7 @@ class CarrierController {
     @GetMapping("/{carrierId}/pickup-points")
     @Operation(summary = "Where an API_BOOKING carrier picks up at each warehouse")
     @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.READ)
-    public ApiResponse<List<CarrierPickupPointsRequest.Point>> pickupPoints(@PathVariable UUID carrierId) {
+    public ApiResponse<List<CarrierPickupPointsRequest.PickupPoint>> pickupPoints(@PathVariable UUID carrierId) {
         return ApiResponse.ok(pickupPoints.list(carrierId).stream().map(CarrierController::toPoint).toList());
     }
 
@@ -82,7 +82,7 @@ class CarrierController {
             + "reads it, the contact, the province); 409 CARRIER_NOT_API_BOOKING")
     @RequiresPermission(resource = FulfillmentResources.CARRIERS, action = Action.UPDATE)
     @Auditable(action = AuditAction.UPDATE, resourceType = "carrier", resourceId = "#carrierId")
-    public ApiResponse<List<CarrierPickupPointsRequest.Point>> replacePickupPoints(@PathVariable UUID carrierId,
+    public ApiResponse<List<CarrierPickupPointsRequest.PickupPoint>> replacePickupPoints(@PathVariable UUID carrierId,
             @Valid @RequestBody CarrierPickupPointsRequest request) {
         return ApiResponse.ok(pickupPoints.replace(carrierId, request.pickupPoints().stream()
                         .map(p -> new com.stockflow.fulfillment.internal.service.CarrierPickupPoints.PickupPoint(
@@ -91,9 +91,9 @@ class CarrierController {
                 .stream().map(CarrierController::toPoint).toList());
     }
 
-    private static CarrierPickupPointsRequest.Point toPoint(
+    private static CarrierPickupPointsRequest.PickupPoint toPoint(
             com.stockflow.fulfillment.internal.service.CarrierPickupPoints.PickupPoint p) {
-        return new CarrierPickupPointsRequest.Point(p.warehouseId(), p.provinceCode(), p.address(), p.contactName(),
+        return new CarrierPickupPointsRequest.PickupPoint(p.warehouseId(), p.provinceCode(), p.address(), p.contactName(),
                 p.contactPhone());
     }
 
