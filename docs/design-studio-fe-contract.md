@@ -216,7 +216,7 @@ allowedFontCodes?, model, printAreas, hasCartonSpec, model3d?}`. Filter `templat
 | `GET /api/v1/design-projects/{id}` | | The project with `designs` side by side (archived ones excluded) and `assetCount` |
 | `PUT /api/v1/design-projects/{id}` | `{version, name, description?}` | Open projects only |
 | `POST /api/v1/design-projects/{id}/archive` | `{version}` | 409 `DESIGN_PROJECT_HAS_PENDING` while a design waits for review |
-| `POST /api/v1/design-projects/{id}/designs` | `{designId}` | 409 `DESIGN_IN_ANOTHER_PROJECT`, `DESIGN_PROJECT_FULL` (20) |
+| `POST /api/v1/design-projects/{id}/designs` | `{designId}` | Adds a design in no project, or moves one from another of the caller's open projects (BR-23.4); its history gets `REMOVED_FROM_PROJECT` (old project) then `ADDED_TO_PROJECT` (this one). 404 for a design not the caller's, archived, or of another customer; 409 `DESIGN_PROJECT_ARCHIVED` (this project closed, or the design's project closed: then `details.projectId` names it), `DESIGN_PENDING_IN_PROJECT` (waiting for review), `DESIGN_IN_OPEN_QUOTE_REQUEST` (an open quote request of its project names it; `details.projectId`), `DESIGN_PROJECT_FULL` (20), `CONFLICT` (moved meanwhile: retry) |
 | `DELETE /api/v1/design-projects/{id}/designs/{designId}` | | 409 `DESIGN_PENDING_IN_PROJECT` while it waits for review |
 | `GET /api/v1/design-projects/{id}/history` | `?page&size` | The project's history (§7) |
 | `POST /api/v1/design-projects/{id}/assets` | multipart `file`; header `Idempotency-Key` optional | The library: as a design's images; at most 30 files (409 `DESIGN_PROJECT_LIBRARY_FULL`). With a key, a retry of an upload that succeeded returns the same file and takes no second place; the same key with another file is 422 `IDEMPOTENCY_KEY_REUSED` |
@@ -429,7 +429,7 @@ This list is the whole set today. A new or renamed `rule` is announced to the fr
 - `DESIGN_DRAFT_LIMIT_REACHED`, `DESIGN_NOT_DRAFT`, `DESIGN_NOT_APPROVED`;
 - `DESIGN_FILES_OUTDATED` (`details.roles`), `DESIGN_PRINT_FILE_INVALID`, `DESIGN_ASSET_LIMIT_REACHED`;
 - `DESIGN_PROJECT_ARCHIVED`, `DESIGN_PROJECT_FULL`, `DESIGN_PROJECT_LIBRARY_FULL`, `DESIGN_PROJECT_HAS_PENDING`;
-- `DESIGN_IN_ANOTHER_PROJECT`, `DESIGN_PENDING_IN_PROJECT`, `DESIGN_CLONE_TARGET_INVALID`;
+- `DESIGN_PENDING_IN_PROJECT`, `DESIGN_IN_OPEN_QUOTE_REQUEST`, `DESIGN_CLONE_TARGET_INVALID` (`DESIGN_IN_ANOTHER_PROJECT` is no longer sent: a design moves);
 - `CUSTOMER_NOT_ACTIVE`, `CUSTOMER_SKU_SOURCE_UNAVAILABLE`, `CONFLICT` (stale version);
 - in a batch, `NOT_FOUND`, `CONFLICT` and `DESIGN_NOT_DRAFT` carry `details.designIds` and `details.designs`.
 

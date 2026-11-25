@@ -13,6 +13,7 @@ import com.stockflow.contracts.DesignBatchSubmittedForReview;
 import com.stockflow.contracts.DesignProjectQuoteRequested;
 import com.stockflow.contracts.DesignSubmittedForReview;
 import com.stockflow.design.internal.domain.PrintSurface;
+import com.stockflow.design.internal.service.DesignProjectService;
 import com.stockflow.inventory.api.UomConversionDraft;
 import com.stockflow.inventory.api.UomConversionService;
 import com.stockflow.product.api.CreateProductCommand;
@@ -33,6 +34,11 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import javax.imageio.ImageIO;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
@@ -89,6 +95,7 @@ class DesignProjectIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired ObjectMapper json;
     @Autowired RecordedEvents.Recorder recorded;
+    @Autowired DesignProjectService projectService;
     @MockitoBean UploadInspection inspection;
     @MockitoBean CurrentUserProvider users;
 
@@ -288,6 +295,17 @@ class DesignProjectIntegrationTest {
                         + "\"schemaVersion\":1,\"templateCode\":\"CUP16-BODY\",\"sku\":\"" + target + "\",\"surfaces\":"
                         + "{\"BODY\":{\"background\":{\"kind\":\"none\"},\"elements\":[]}}}"
                         + (projectJson == null ? "" : ",\"projectId\":" + projectJson) + "}"));
+    }
+
+    /** The owner adds {@code design} to {@code inProject}: from no project, or moved from another of theirs. */
+    private ResultActions move(String design, String inProject) throws Exception {
+        return mvc.perform(post("/api/v1/design-projects/" + inProject + "/designs")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"designId\":\"" + design + "\"}"));
+    }
+
+    private List<String> decisionsOf(String design) {
+        return jdbc.queryForList("SELECT decision FROM design.design_decision WHERE draft_id = ?::uuid "
+                + "ORDER BY created_at, id", String.class, design);
     }
 
     private long designsOfTheCustomer() {
@@ -513,16 +531,11 @@ class DesignProjectIntegrationTest {
         mvc.perform(post("/api/v1/design-projects/" + project + "/designs").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"designId\":\"" + alone + "\"}")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.designs.length()").value(2));
-        // Adding it again changes nothing; another project cannot take it.
+        // Adding it again changes nothing (moving it to another project: see aDesignMovesBetweenItsOwnersOpenProjects).
+        List<String> written = decisionsOf(alone);
         mvc.perform(post("/api/v1/design-projects/" + project + "/designs").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"designId\":\"" + alone + "\"}")).andExpect(status().isOk());
-        String other = data(mvc.perform(post("/api/v1/design-projects").contentType(MediaType.APPLICATION_JSON)
-                .content("{\"name\":\"Khác\"}")).andExpect(status().isCreated())).get("id").asText();
-        mvc.perform(post("/api/v1/design-projects/" + other + "/designs").contentType(MediaType.APPLICATION_JSON)
-                .content("{\"designId\":\"" + alone + "\"}")).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("DESIGN_IN_ANOTHER_PROJECT"));
-        assertThat(jdbc.queryForList("SELECT decision FROM design.design_decision WHERE draft_id = ?::uuid",
-                String.class, alone)).contains("ADDED_TO_PROJECT");
+        assertThat(decisionsOf(alone)).isEqualTo(written).doesNotContain("REMOVED_FROM_PROJECT");
 
         // Waiting for review, a design neither leaves nor lets the project close.
         mvc.perform(post("/api/v1/designs/" + inside + "/technical-review-requests")
@@ -553,6 +566,125 @@ class DesignProjectIntegrationTest {
         // Nobody else sees it.
         as(tx.execute(s -> ReferenceRows.user(entityManager)), Set.of());
         mvc.perform(get("/api/v1/design-projects/" + project)).andExpect(status().isNotFound());
+    }
+
+    /**
+     * BR-23.4 (T8): a design moves from one of its owner's open projects to another - a draft as well as an approved
+     * one - and its history says both steps: out of the one, then into the other.
+     */
+    @Test
+    void aDesignMovesBetweenItsOwnersOpenProjects() throws Exception {
+        String other = newProject("Quán B");
+        String drafted = draft(project, middle());
+        String approved = approvedByStaff(project);
+        for (String design : List.of(drafted, approved)) {
+            move(design, other).andExpect(status().isOk());
+            assertThat(projectOf(design)).isEqualTo(other);
+            mvc.perform(get("/api/v1/designs/" + design + "/history")).andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.items[0].decision").value("ADDED_TO_PROJECT"))
+                    .andExpect(jsonPath("$.data.items[0].notes").value("Project " + other))
+                    .andExpect(jsonPath("$.data.items[1].decision").value("REMOVED_FROM_PROJECT"))
+                    .andExpect(jsonPath("$.data.items[1].notes").value("Project " + project));
+        }
+        mvc.perform(get("/api/v1/design-projects/" + project)).andExpect(jsonPath("$.data.designs.length()").value(0));
+        mvc.perform(get("/api/v1/design-projects/" + other)).andExpect(jsonPath("$.data.designs.length()").value(2));
+        // Asked again where it already is, nothing changes; moved back, it is the first project's again.
+        move(drafted, other).andExpect(status().isOk());
+        move(drafted, project).andExpect(status().isOk());
+        assertThat(projectOf(drafted)).isEqualTo(project);
+        assertThat(decisionsOf(drafted)).containsSubsequence("ADDED_TO_PROJECT", "CREATED", "REMOVED_FROM_PROJECT",
+                "ADDED_TO_PROJECT", "REMOVED_FROM_PROJECT", "ADDED_TO_PROJECT").hasSize(6);
+
+        // A full project takes no more; the design stays where it was.
+        fill(other);
+        move(drafted, other).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DESIGN_PROJECT_FULL"));
+        assertThat(projectOf(drafted)).isEqualTo(project);
+
+        // Not the caller's, archived, or of another customer: to the caller none of them exists.
+        String strangers = draft(project, middle());
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE design.design_draft SET owner_user_id = ? WHERE id = ?::uuid",
+                ReferenceRows.user(entityManager), strangers));
+        String archived = draft(project, middle());
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE design.design_draft SET status = 'ARCHIVED', archived_at = "
+                + "NOW() WHERE id = ?::uuid", archived));
+        // A design is in a project of its own customer only (the table's key says so): another customer's is in none.
+        String anotherCustomers = draft(project, middle());
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE design.design_draft SET project_id = NULL, customer_id = ? "
+                + "WHERE id = ?::uuid", ReferenceRows.customer(entityManager), anotherCustomers));
+        String third = newProject("Quán C");
+        for (String design : List.of(strangers, archived, anotherCustomers)) {
+            move(design, third).andExpect(status().isNotFound());
+            assertThat(projectOf(design)).isEqualTo(design.equals(anotherCustomers) ? null : project);
+        }
+        mvc.perform(get("/api/v1/design-projects/" + third)).andExpect(jsonPath("$.data.designs.length()").value(0));
+    }
+
+    /**
+     * BR-23.4 (T9, T8b): a design waiting for review stays in its project, and a closed project keeps its designs; each
+     * refusal leaves the design where it was and writes nothing.
+     */
+    @Test
+    void aDesignStaysInItsProjectWhileItWaitsForReviewOrOnceTheProjectIsClosed() throws Exception {
+        String other = newProject("Quán B");
+        String design = draft(project, middle());
+        mvc.perform(post("/api/v1/designs/" + design + "/technical-review-requests")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":" + version(design) + "}"))
+                .andExpect(status().isOk());
+        move(design, other).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DESIGN_PENDING_IN_PROJECT"));
+        assertThat(projectOf(design)).isEqualTo(project);
+
+        as(manager, REVIEWER);
+        decide(design, false, "Sửa màu").andExpect(status().isOk());
+        as(owner, Set.of());
+        mvc.perform(post("/api/v1/design-projects/" + project + "/archive").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"version\":" + projectVersion() + "}")).andExpect(status().isOk());
+        move(design, other).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DESIGN_PROJECT_ARCHIVED"))
+                .andExpect(jsonPath("$.details.projectId").value(project));
+        assertThat(projectOf(design)).isEqualTo(project);
+        assertThat(decisionsOf(design)).doesNotContain("REMOVED_FROM_PROJECT");
+        mvc.perform(get("/api/v1/design-projects/" + other)).andExpect(jsonPath("$.data.designs.length()").value(0));
+    }
+
+    /**
+     * BR-23.4 (T10): two moves in opposite directions at once - A to B and B to A - both finish, round after round:
+     * each locks both projects in the same order before its design, so neither waits on the other in a cycle.
+     */
+    @Test
+    void movesInOppositeDirectionsAtOnceBothFinish() throws Exception {
+        String other = newProject("Quán B");
+        UUID a = UUID.fromString(project);
+        UUID b = UUID.fromString(other);
+        UUID one = UUID.fromString(data(start(project, null).andExpect(status().isCreated())).get("id").asText());
+        UUID two = UUID.fromString(data(start(other, null).andExpect(status().isCreated())).get("id").asText());
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            for (int round = 0; round < 6; round++) {
+                // Even rounds move one A->B and two B->A; odd rounds move them back.
+                UUID oneTo = round % 2 == 0 ? b : a;
+                UUID twoTo = round % 2 == 0 ? a : b;
+                CountDownLatch go = new CountDownLatch(1);
+                Future<?> first = pool.submit(() -> {
+                    go.await();
+                    return projectService.addDesign(oneTo, owner, one);
+                });
+                Future<?> second = pool.submit(() -> {
+                    go.await();
+                    return projectService.addDesign(twoTo, owner, two);
+                });
+                go.countDown();
+                first.get(30, TimeUnit.SECONDS);
+                second.get(30, TimeUnit.SECONDS);
+                assertThat(projectOf(one.toString())).isEqualTo(oneTo.toString());
+                assertThat(projectOf(two.toString())).isEqualTo(twoTo.toString());
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(decisionsOf(one.toString()).stream().filter("REMOVED_FROM_PROJECT"::equals)).hasSize(6);
+        assertThat(decisionsOf(two.toString()).stream().filter("ADDED_TO_PROJECT"::equals)).hasSize(7);
     }
 
     /**
@@ -895,6 +1027,16 @@ class DesignProjectIntegrationTest {
                         org.hamcrest.Matchers.is("CLOSED"))));
         mvc.perform(get("/api/v1/design-project-quote-requests").param("status", "PENDING"))
                 .andExpect(status().isBadRequest());
+
+        // BR-23.4, point A: a design an open quote request of its project names stays in that project until the
+        // sales staff answer it.
+        as(owner, Set.of());
+        String elsewhere = newProject("Quán C");
+        move(cup, elsewhere).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DESIGN_IN_OPEN_QUOTE_REQUEST"))
+                .andExpect(jsonPath("$.details.projectId").value(project));
+        assertThat(projectOf(cup)).isEqualTo(project);
+        assertThat(decisionsOf(cup)).doesNotContain("REMOVED_FROM_PROJECT");
 
         // BR-23.3 (T3): a revision of an approved design is written into the source's open project.
         as(owner, Set.of());

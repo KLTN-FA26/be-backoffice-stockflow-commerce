@@ -209,7 +209,8 @@ class DesignProjectController {
     }
 
     @PostMapping("/design-projects/{id}/designs")
-    @Operation(summary = "Add one of the caller's designs to the project")
+    @Operation(summary = "Add one of the caller's designs to the project, from no project or moved from another of "
+            + "the caller's open projects; never one waiting for review or named by an open quote request")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
     public ApiResponse<DesignProjectResponse> addDesign(@PathVariable UUID id, @Valid @RequestBody DesignRef request,
                                                         @AuthenticatedUser CurrentUser user) {

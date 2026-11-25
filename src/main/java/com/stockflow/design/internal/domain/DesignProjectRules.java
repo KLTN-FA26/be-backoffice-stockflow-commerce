@@ -61,15 +61,16 @@ public final class DesignProjectRules {
     }
 
     /**
-     * Whether a design may join a project (BR-17): not archived, and in no project yet. A design already in this very
-     * project is the caller's to treat as done.
+     * Whether a design may join a project (BR-17, BR-23.4): not archived; and, when it is in another project now, not
+     * waiting for review, since it then moves out of that one. A design waiting for review in no project may join:
+     * no round of a project holds it. A design already in this very project is the caller's to treat as done.
      */
     public static void requireJoinable(DesignStatus status, UUID currentProject) {
         if (status == DesignStatus.ARCHIVED) {
             throw new BusinessException(ErrorCode.NOT_FOUND);
         }
         if (currentProject != null) {
-            throw new BusinessException(ErrorCode.DESIGN_IN_ANOTHER_PROJECT, "This design belongs to another project");
+            requireNotPending(status);
         }
     }
 

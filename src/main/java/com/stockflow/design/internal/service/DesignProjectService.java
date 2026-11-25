@@ -24,12 +24,14 @@ import com.stockflow.design.internal.repository.DesignDraftJpaRepository;
 import com.stockflow.design.internal.repository.DesignProjectAssetJpaRepository;
 import com.stockflow.design.internal.repository.DesignProjectEventJpaRepository;
 import com.stockflow.design.internal.repository.DesignProjectJpaRepository;
+import com.stockflow.design.internal.repository.DesignProjectQuoteRequestLineJpaRepository;
 import jakarta.persistence.EntityManager;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -42,8 +44,10 @@ import org.springframework.transaction.annotation.Transactional;
  * A customer's design projects (kltn-docs 12 §4.9, §5.4; BR-17, BR-22; B42): created, renamed and closed by their owner,
  * holding designs of that customer - at most {@value DesignProjectRules#MAX_DESIGNS}, archived ones not counted. Every
  * new design is written into a project (BR-23.2, BR-23.3): one started in it, or a revision or a clone the caller
- * puts in it or that follows its source there. An existing design joins when its owner adds it; it leaves when its
- * owner removes it, never while it waits for review. Joining or leaving changes nothing else about the design.
+ * puts in it or that follows its source there. An existing design joins when its owner adds it, from no project or
+ * moved from another open project of theirs (BR-23.4); it leaves when its owner removes it. A design waiting for
+ * review, or named by an open quote request of its project, stays where it is. Joining, moving or leaving changes
+ * nothing else about the design.
  *
  * <p>Only the owner sees a project (BR-17); the coordinator and the sales staff see its name alone, on a review round
  * and on a project quote request. Every write takes the project's row lock first, then a design's: the order a batch
@@ -60,6 +64,7 @@ public class DesignProjectService {
     private final DesignProjectAssetJpaRepository assets;
     private final DesignProjectEventJpaRepository history;
     private final DesignDecisionJpaRepository decisions;
+    private final DesignProjectQuoteRequestLineJpaRepository quoteRequestLines;
     private final CustomerService customers;
     private final DraftViews views;
     private final EntityManager entityManager;
@@ -67,13 +72,15 @@ public class DesignProjectService {
 
     public DesignProjectService(DesignProjectJpaRepository projects, DesignDraftJpaRepository drafts,
                                 DesignProjectAssetJpaRepository assets, DesignProjectEventJpaRepository history,
-                                DesignDecisionJpaRepository decisions, CustomerService customers, DraftViews views,
-                                EntityManager entityManager, Clock clock) {
+                                DesignDecisionJpaRepository decisions,
+                                DesignProjectQuoteRequestLineJpaRepository quoteRequestLines, CustomerService customers,
+                                DraftViews views, EntityManager entityManager, Clock clock) {
         this.projects = projects;
         this.drafts = drafts;
         this.assets = assets;
         this.history = history;
         this.decisions = decisions;
+        this.quoteRequestLines = quoteRequestLines;
         this.customers = customers;
         this.views = views;
         this.entityManager = entityManager;
@@ -156,19 +163,71 @@ public class DesignProjectService {
     }
 
     /**
-     * Adds one of the owner's designs (§4.9 step 28, BR-17): not archived, in no other project, of the project's
-     * customer. Adding a design already in it changes nothing.
+     * Adds one of the owner's designs, not archived, of the project's customer (§4.9 step 28, BR-17, BR-23.4): one in
+     * no project, or one moved here from another of the owner's projects. Adding a design already in it changes
+     * nothing.
+     *
+     * <p>A move takes the design out of work its project has under way, so the source must be open (a closed project
+     * keeps its designs as they were when it closed, BR-22), the design must not wait for review (its round is the
+     * source's) and no open quote request of the source may name it (the sales staff answer that request over the
+     * designs it names). Both projects are locked in ascending id order, so two moves in opposite directions cannot
+     * deadlock, and the design after them; the source's lock also orders the move against a quote request asked over
+     * that project, which takes the same lock first. The design's history records both steps, in the order they
+     * happen: {@code REMOVED_FROM_PROJECT} naming the source, then {@code ADDED_TO_PROJECT} naming this project.</p>
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "design-project", resourceId = "#id")
     public ProjectView addDesign(UUID id, UUID actor, UUID designId) {
-        DesignProjectJpaEntity project = lockActive(id, actor);
+        authenticated(actor);
+        UUID from = drafts.projectIdOf(designId);
+        DesignProjectJpaEntity project;
+        DesignProjectJpaEntity source = null;
+        if (from == null || from.equals(id)) {
+            project = lock(id, actor);
+        } else if (id.compareTo(from) < 0) {
+            project = lock(id, actor);
+            source = lock(from, actor);
+        } else {
+            source = lock(from, actor);
+            project = lock(id, actor);
+        }
+        DesignProjectRules.requireActive(project.getStatus());
         DesignDraftJpaEntity draft = lockOwnDesign(designId, actor, project);
-        if (id.equals(draft.getProjectId())) {
+        if (!Objects.equals(from, draft.getProjectId())) {
+            // Read before the locks: the design changed project since, and the project now holding it is not locked.
+            throw new BusinessException(ErrorCode.CONFLICT, "The design moved to another project meanwhile; try again");
+        }
+        if (id.equals(from)) {
             return view(project);
         }
-        DesignProjectRules.requireJoinable(draft.getStatus(), draft.getProjectId());
-        join(project, draft, actor);
+        DesignProjectRules.requireJoinable(draft.getStatus(), from);
+        if (source != null) {
+            requireMovableOutOf(source, designId);
+        }
+        DesignProjectRules.requireRoomForDesign(drafts.countInProject(id));
+        draft.joinProject(id);
+        drafts.saveAndFlush(draft);
+        if (source != null) {
+            decide(draft, actor, DesignDecisionType.REMOVED_FROM_PROJECT, "Project " + from);
+        }
+        decide(draft, actor, DesignDecisionType.ADDED_TO_PROJECT, "Project " + id);
         return view(project);
+    }
+
+    /**
+     * The project a design moves out of (BR-23.4): open, and asking no quote over the design (FE request 2026-11-25,
+     * point A). Each refusal names the source in {@code details.projectId}.
+     */
+    private void requireMovableOutOf(DesignProjectJpaEntity source, UUID designId) {
+        Map<String, Object> details = Map.of("projectId", source.getId());
+        if (source.getStatus() != ProjectStatus.ACTIVE) {
+            throw new BusinessException(ErrorCode.DESIGN_PROJECT_ARCHIVED,
+                    "The design's project is closed; its designs stay in it", List.of(), details);
+        }
+        if (quoteRequestLines.inOpenRequest(designId)) {
+            throw new BusinessException(ErrorCode.DESIGN_IN_OPEN_QUOTE_REQUEST,
+                    "An open quote request of the design's project names it; it stays there until that is answered",
+                    List.of(), details);
+        }
     }
 
     /** Removes a design from the project (§4.9 step 28): never one waiting for review (BR-17). */
@@ -346,13 +405,6 @@ public class DesignProjectService {
             throw new BusinessException(ErrorCode.NOT_FOUND);
         }
         return draft;
-    }
-
-    private void join(DesignProjectJpaEntity project, DesignDraftJpaEntity draft, UUID actor) {
-        DesignProjectRules.requireRoomForDesign(drafts.countInProject(project.getId()));
-        draft.joinProject(project.getId());
-        drafts.saveAndFlush(draft);
-        decide(draft, actor, DesignDecisionType.ADDED_TO_PROJECT, "Project " + project.getId());
     }
 
     private ProjectView view(DesignProjectJpaEntity p) {
