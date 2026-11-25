@@ -17,6 +17,12 @@ import java.util.UUID;
  * @param proposedTotal {@code proposed.total}, the total with tax
  * @param version       to send back with the next change
  * @param acceptedTotal VND, once accepted
+ * @param customerName  whose quote it is, so the page needs no customer lookup; null for an unknown customer
+ * @param customerCode  that customer's code
+ * @param sentByName    who sent the quote, by name; null on the customer's copy, which names no account of the shop (as
+ *                      {@link Transition#changedByName}), and before it is sent
+ * @param respondedByName who answered it (accepted or asked for changes), by name; null on the customer's copy, and
+ *                      before an answer
  */
 public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String status, int revision,
                             Instant validUntil, String terms,
@@ -27,7 +33,8 @@ public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String
                             UUID sentBy,
                             Instant respondedAt, UUID respondedBy, String customerFeedback, String cancellationReason,
                             Order convertedOrder, Instant convertedAt, List<Transition> history, Instant createdAt,
-                            String createdBy, long version) {
+                            String createdBy, long version, String customerName, String customerCode,
+                            String sentByName, String respondedByName) {
 
     /**
      * A line: cartons of the customer's own SKU, priced per piece (kltn-docs 14 BR-08). Ordered by the carton, shown
@@ -43,13 +50,17 @@ public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String
      *                         {@code PURCHASABLE}; null on a legacy line
      * @param designName       R5-3: the name of the design the customer's SKU was made to; null when it has none
      * @param previewUrl       R5-3: a short-lived link showing the design's preview; null when there is none
+     * @param productName      the name of the product the SKU belongs to, so a line reads as more than a code; null
+     *                         for a SKU the product module does not know
+     * @param variantName      the SKU's own (variant) name; null for an unknown SKU
      */
     public record Line(UUID id, int lineNo, String measure, String sku, Integer cartons, Integer unitsPerCarton,
                        int units, UUID designSnapshotId, String printSpec, boolean priced, Integer moq,
                        List<Tier> tiers, BigDecimal proposedUnitPrice, BigDecimal proposedLineTotal,
                        Integer acceptedCartons, Integer acceptedUnits, BigDecimal acceptedUnitPrice,
                        BigDecimal acceptedLineTotal, String taxClass, BigDecimal taxRate, BigDecimal proposedTax,
-                       BigDecimal acceptedTax, String purchasability, String designName, String previewUrl) {
+                       BigDecimal acceptedTax, String purchasability, String designName, String previewUrl,
+                       String productName, String variantName) {
     }
 
     /** A fee line with its VAT (14 BR-17, BR-20, BR-21); {@code amount} null for a plate fee not priced yet. */

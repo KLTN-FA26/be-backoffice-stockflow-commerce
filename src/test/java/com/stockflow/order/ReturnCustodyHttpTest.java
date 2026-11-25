@@ -191,7 +191,13 @@ class ReturnCustodyHttpTest {
         mvc.asRole(Role.WAREHOUSE_MANAGER, hcmManager, get(list)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[0].evidenceId").value(note))
                 .andExpect(jsonPath("$.data.items[0].rmaNumber").value(request.rmaNumber()))
-                .andExpect(jsonPath("$.data.items[0].choice").doesNotExist());
+                .andExpect(jsonPath("$.data.items[0].choice").doesNotExist())
+                // A13/A12: who kept the goods, whose they are and where, named beside the ids.
+                .andExpect(jsonPath("$.data.items[0].keptByName").isNotEmpty())
+                .andExpect(jsonPath("$.data.items[0].customerName").isNotEmpty())
+                .andExpect(jsonPath("$.data.items[0].warehouseCode").isNotEmpty())
+                .andExpect(jsonPath("$.data.items[0].warehouseName").isNotEmpty())
+                .andExpect(jsonPath("$.data.items[0].chosenByName").doesNotExist());
         mvc.asRole(Role.WAREHOUSE_MANAGER, otherManager, get(list)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(0));
 

@@ -114,6 +114,7 @@ class QuoteService implements Quotes {
     private final com.stockflow.order.internal.domain.SkuProductionHistory production;
     private final com.stockflow.design.api.SkuDesigns skuDesigns;
     private final com.stockflow.identity.api.IdentityService identities;
+    private final LineNames lineNames;
 
     QuoteService(QuoteRepository quotes, QuoteSearch search, CustomerService customers,
                  UomConversionService units, QuotedOrders quotedOrders, OrderService orders, ObjectMapper json,
@@ -122,7 +123,8 @@ class QuoteService implements Quotes {
                  com.stockflow.order.internal.domain.TaxRates taxRates,
                  com.stockflow.order.internal.domain.SkuProductionHistory production,
                  com.stockflow.design.api.SkuDesigns skuDesigns,
-                 com.stockflow.identity.api.IdentityService identities) {
+                 com.stockflow.identity.api.IdentityService identities, LineNames lineNames) {
+        this.lineNames = lineNames;
         this.skuDesigns = skuDesigns;
         this.identities = identities;
         this.customerSkus = customerSkus;
@@ -188,15 +190,32 @@ class QuoteService implements Quotes {
                 page.getContent().stream().filter(r -> r.status() == QuoteStatus.DRAFT && r.sentAt() != null)
                         .map(QuoteSearch.Row::id).toList());
         Map<UUID, RowSummary> summaries = summaries(page.getContent(), own.isPresent());
+        // Whose each row is and the order it became, for the whole page in two statements: the list named neither, and
+        // a screen looked each customer up per row.
+        Map<UUID, com.stockflow.customer.api.CustomerLabel> labels = page.getContent().isEmpty() ? Map.of()
+                : customers.labels(page.getContent().stream().map(QuoteSearch.Row::customerId)
+                        .filter(Objects::nonNull).distinct().toList());
+        List<UUID> orderIds = page.getContent().stream().map(QuoteSearch.Row::convertedOrderId)
+                .filter(Objects::nonNull).distinct().toList();
+        Map<UUID, QuoteSearch.ConvertedOrderRef> converted = orderIds.isEmpty() ? Map.of()
+                : search.convertedOrders(orderIds);
         return Pages.toResponse(page.map(r -> {
             boolean revising = own.isPresent() && r.status() == QuoteStatus.DRAFT && r.sentAt() != null;
             QuoteStatus status = revising ? QuoteStatus.CHANGES_REQUESTED
                     : r.status() == QuoteStatus.SENT && !now.isBefore(r.validUntil()) ? QuoteStatus.EXPIRED : r.status();
             RowSummary summary = summaries.get(r.id());
+            com.stockflow.customer.api.CustomerLabel label = r.customerId() == null ? null : labels.get(r.customerId());
+            QuoteSearch.ConvertedOrderRef order = r.convertedOrderId() == null ? null
+                    : converted.get(r.convertedOrderId());
+            // 17 §5.2: the customer meets the order once its contract is sent, not while it is drafted - as view().
+            String orderNumber = order == null
+                    || own.isPresent() && com.stockflow.order.api.OrderStatus.DRAFT.name().equals(order.status())
+                    ? null : order.orderNumber();
             return new Row(r.id(), r.quoteNumber(), r.customerId(), status, revising ? r.revision() - 1 : r.revision(),
                     revising ? lastSentValidUntil.getOrDefault(r.id(), r.validUntil()) : r.validUntil(), r.sentAt(),
                     r.convertedOrderId(), r.createdAt(), r.version(), summary == null ? null : summary.total(),
-                    summary == null ? null : summary.lineCount(), summary == null ? null : summary.firstItemName());
+                    summary == null ? null : summary.lineCount(), summary == null ? null : summary.firstItemName(),
+                    label == null ? null : label.name(), label == null ? null : label.code(), orderNumber);
         }));
     }
 
@@ -897,8 +916,11 @@ class QuoteService implements Quotes {
         QuoteSearch.Row row = search.findRow(quote.id()).orElseThrow();
         // The full history stays in `rows`: what the customer is shown of a revising quote is read from it below.
         List<QuoteSearch.Transition> rows = search.history(quote.id());
-        // R5-8: who made each step, by name, for the back office; the customer's copy names no account.
-        List<UUID> actors = forCustomer ? List.of() : rows.stream().map(QuoteSearch.Transition::changedBy)
+        // R5-8: who made each step - and who sent the quote and who answered it - by name, for the back office; the
+        // customer's copy names no account. One read for every name the view shows.
+        List<UUID> actors = forCustomer ? List.of() : java.util.stream.Stream.concat(
+                        rows.stream().map(QuoteSearch.Transition::changedBy),
+                        java.util.stream.Stream.of(quote.sentBy(), quote.respondedBy()))
                 .filter(Objects::nonNull).distinct().toList();
         Map<UUID, String> names = actors.isEmpty() ? Map.of() : identities.displayNames(actors);
         List<Transition> history = rows.stream()
@@ -934,10 +956,14 @@ class QuoteService implements Quotes {
         // R5-3: the design each customer SKU was made to, for the whole quote at once.
         Map<String, com.stockflow.design.api.SkuDesign> designs = skus.isEmpty() ? Map.of()
                 : skuDesigns.ofSkus(skus.stream().distinct().toList());
+        // What each SKU is called - its product and itself - for the whole quote at once; a legacy line's blank too.
+        Map<String, LineNames.Names> skuNames = lineNames.of(offer.lines().stream().map(line -> line.sku().code())
+                .toList());
         List<LineView> lines = new ArrayList<>();
         for (QuoteLine line : offer.lines()) {
             LineMoney money = money(offer, line, untaxed);
             com.stockflow.design.api.SkuDesign design = line.legacy() ? null : designs.get(line.sku().code());
+            LineNames.Names named = LineNames.of(skuNames, line.sku().code());
             lines.add(new LineView(line.id(), line.lineNo(), line.measure().name(), line.sku().code(),
                     line.legacy() ? null : line.quantity(), line.legacy() ? null : line.unitsPerCarton(), line.units(),
                     line.designSnapshotId(), line.printSpec(), line.priced(), line.priced() ? line.moq() : null,
@@ -948,7 +974,8 @@ class QuoteService implements Quotes {
                     amount(money.acceptedNet()), line.taxClass(), line.taxRate(), amount(money.proposedTax()),
                     amount(money.acceptedTax()),
                     line.legacy() ? null : verdicts.get(line.sku().code().strip().toUpperCase(java.util.Locale.ROOT)),
-                    design == null ? null : design.name(), design == null ? null : design.previewUrl()));
+                    design == null ? null : design.name(), design == null ? null : design.previewUrl(),
+                    named.productName(), named.variantName()));
         }
         List<FeeView> fees = new ArrayList<>();
         for (com.stockflow.order.internal.domain.QuoteFee fee : offer.fees()) {
@@ -956,6 +983,8 @@ class QuoteService implements Quotes {
                     fee.taxClass(), fee.taxRate(), amount(fee.tax())));
         }
         OfferTotals totals = totals(quote, offer);
+        com.stockflow.customer.api.CustomerLabel label = quote.customerId() == null ? null
+                : customers.labels(List.of(quote.customerId())).get(quote.customerId());
         Totals proposedView = totals.proposed();
         Totals acceptedView = totals.accepted();
         ConvertedOrder converted = quote.convertedOrderId() == null ? null : orders.findById(quote.convertedOrderId())
@@ -970,7 +999,9 @@ class QuoteService implements Quotes {
                 acceptedView == null ? null : acceptedView.total(),
                 quote.sentAt(), quote.sentBy(), shownRespondedAt, shownRespondedBy, shownFeedback,
                 quote.cancellationReason(), converted, quote.convertedAt(), history, row.createdAt(), row.createdBy(),
-                row.version());
+                row.version(), label == null ? null : label.name(), label == null ? null : label.code(),
+                forCustomer || quote.sentBy() == null ? null : names.get(quote.sentBy()),
+                forCustomer || shownRespondedBy == null ? null : names.get(shownRespondedBy));
     }
 
     /** The offer a reader is shown of a quote, at which revision, and whether it is a revision being written. */

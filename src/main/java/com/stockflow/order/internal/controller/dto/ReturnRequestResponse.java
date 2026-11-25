@@ -10,6 +10,10 @@ import java.util.UUID;
 /**
  * One return as the back office sees it (SCRUM-243; team plan 4D-3): every step, who took it and why, the photos,
  * what came back on the return receipt, the refund, and the status history. Grouped by step so a screen shows each when it has happened.
+ *
+ * <p>Every person id carries its display name beside it ({@code xxxName}), and the customer its name and code, resolved
+ * in one lookup per answer: the screen showed who did each step only as a UUID, or needed identity and customer
+ * permissions to name them. The customer's own copy ({@link CustomerReturnResponse}) carries no actor at all.</p>
  */
 @Schema(name = "ReturnRequest")
 public record ReturnRequestResponse(
@@ -71,7 +75,20 @@ public record ReturnRequestResponse(
         @Schema(description = "The cartons of the return held for the customer or whose custody ended (WF-05 Q-4), by "
                 + "LPN: what custodyChoice is about. Filled on GET /returns/{id} and on the custody-choice answer; null "
                 + "in other answers (not read), empty when none is held")
-        List<HeldCarton> custodyCartons) implements ReturnView {
+        List<HeldCarton> custodyCartons,
+        @Schema(description = "The customer's registered name, so the return reads whose it is without a customer "
+                + "lookup (or customer permission); null when the customer record is gone")
+        String customerName,
+        @Schema(description = "The code the customer is known by (tax code, or KH + 8 characters of the id); set where "
+                + "customerName is", example = "0312345678")
+        String customerCode,
+        @Schema(description = "Who opened the return (the customer's own account, or Sales for them): full name, else "
+                + "username; null when requestedBy is null or unknown")
+        String requestedByName,
+        @Schema(description = "Who withdrew it; null when cancelledBy is null or unknown")
+        String cancelledByName,
+        @Schema(description = "Who recorded the customer's custody choice; null when custodyChoiceBy is null or unknown")
+        String custodyChoiceByName) implements ReturnView {
 
     /**
      * A carton of the return held for the customer (WF-05 Q-4): {@code ownership} CUSTOMER_HELD while it waits,
@@ -86,7 +103,9 @@ public record ReturnRequestResponse(
 
     /** Sales' decision; {@code returnDeadline}: the goods must arrive by then, or the return expires. */
     public record Review(UUID decidedBy, Instant decidedAt, String note, String rejectionReason, Boolean returnRequired,
-                         Instant returnDeadline) {
+                         Instant returnDeadline,
+                         @Schema(description = "Who decided it; null when decidedBy is null or unknown")
+                         String decidedByName) {
     }
 
     /**
@@ -96,12 +115,17 @@ public record ReturnRequestResponse(
      * them in several (WF-05 TH-3).
      */
     public record Receipt(UUID receivedBy, Instant receivedAt, String locationCode, UUID goodsReceiptId,
-                          List<Parcel> parcels) {
+                          List<Parcel> parcels,
+                          @Schema(description = "Who confirmed the latest return receipt; null when receivedBy is null "
+                                  + "or unknown")
+                          String receivedByName) {
     }
 
     /** One return receipt that brought goods of the return: its place among them (1 for the first), when and where. */
     public record Parcel(int parcel, UUID goodsReceiptId, String receiptNumber, String locationCode, UUID receivedBy,
-                         Instant receivedAt) {
+                         Instant receivedAt,
+                         @Schema(description = "Who confirmed that receipt; null when receivedBy is null or unknown")
+                         String receivedByName) {
     }
 
     /**
@@ -112,7 +136,11 @@ public record ReturnRequestResponse(
      */
     public record Resolution(@Schema(example = "REFUND") String moneyMode, BigDecimal settlementAmount, UUID proposedBy,
                              Instant proposedAt, String note, UUID settledBy, Instant settledAt, BigDecimal offsetAmount,
-                             BigDecimal refundedAmount, boolean vatAdjustmentRequired) {
+                             BigDecimal refundedAmount, boolean vatAdjustmentRequired,
+                             @Schema(description = "Who proposed the refund; null when proposedBy is null or unknown")
+                             String proposedByName,
+                             @Schema(description = "Who approved it; null when settledBy is null or unknown")
+                             String settledByName) {
     }
 
     /**
@@ -131,7 +159,9 @@ public record ReturnRequestResponse(
     public record Evidence(UUID id, @Schema(example = "CLAIM", description = "CLAIM, or CUSTODY: goods kept for the "
                            + "customer that the return does not take (WF-05 Q-11)") String stage, String originalName,
                            String contentType, long sizeBytes, UUID uploadedBy, Instant uploadedAt,
-                           String thumbnailUrl, Custody custody) {
+                           String thumbnailUrl, Custody custody,
+                           @Schema(description = "Who uploaded the photo; null when uploadedBy is null or unknown")
+                           String uploadedByName) {
     }
 
     /**
@@ -155,13 +185,20 @@ public record ReturnRequestResponse(
             String takenByRmaNumber, UUID chosenBy, Instant chosenAt,
             @Schema(description = "When the goods left as chosen; null while they are kept") Instant endedAt,
             UUID endedBy,
-            @Schema(description = "The record of the ending: hand-over note, destruction record, receipt") String endedNote) {
+            @Schema(description = "The record of the ending: hand-over note, destruction record, receipt") String endedNote,
+            @Schema(description = "Who recorded the choice; null when chosenBy is null or unknown") String chosenByName,
+            @Schema(description = "Who carried it out; null when endedBy is null or unknown") String endedByName) {
     }
 
     public record Discrepancy(UUID id, UUID lineId, @Schema(example = "SHORT") String kind, String sku, int quantity,
-                              String note, UUID recordedBy, Instant recordedAt) {
+                              String note, UUID recordedBy, Instant recordedAt,
+                              @Schema(description = "Who recorded it; null when recordedBy is null or unknown")
+                              String recordedByName) {
     }
 
-    public record HistoryEntry(String from, String to, String reason, UUID actorId, Instant occurredAt) {
+    public record HistoryEntry(String from, String to, String reason, UUID actorId, Instant occurredAt,
+                               @Schema(description = "Who made the step; null when actorId is null (the system) or "
+                                       + "unknown")
+                               String actorName) {
     }
 }

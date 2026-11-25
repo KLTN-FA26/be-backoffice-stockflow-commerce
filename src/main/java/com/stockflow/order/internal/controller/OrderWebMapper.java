@@ -150,6 +150,16 @@ final class OrderWebMapper {
                 extras.sourceQuoteId(), extras.sourceQuoteNumber()).withVersion(internal ? summary.version() : null);
     }
 
+    /**
+     * The responses naming their warehouse, from {@code warehouses} (one batch lookup for the answer); a response
+     * without a warehouse, or whose warehouse is unknown, keeps nulls.
+     */
+    static OrderResponse withWarehouse(OrderResponse response,
+                                       java.util.Map<java.util.UUID, com.stockflow.warehouse.api.WarehouseView> warehouses) {
+        var site = response.warehouseId() == null ? null : warehouses.get(response.warehouseId());
+        return site == null ? response : response.withWarehouse(site.prefix(), site.name());
+    }
+
     /** An address as the order answers it; null for none. */
     static OrderResponse.Address toAddress(OrderSummary.AddressSummary address) {
         return toResponse(address);

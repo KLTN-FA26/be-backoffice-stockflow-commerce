@@ -287,6 +287,21 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
     }
 
     @Override
+    public Map<UUID, ConvertedOrderRef> convertedOrders(java.util.Collection<UUID> orderIds) {
+        if (orderIds == null || orderIds.isEmpty()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT id, order_number, status FROM ordering.customer_order WHERE id IN (:orders)""")
+                .setParameter("orders", List.copyOf(new java.util.HashSet<>(orderIds)))
+                .getResultList();
+        Map<UUID, ConvertedOrderRef> orders = new java.util.HashMap<>();
+        rows.forEach(r -> orders.put((UUID) r[0], new ConvertedOrderRef((UUID) r[0], (String) r[1], (String) r[2])));
+        return orders;
+    }
+
+    @Override
     public Optional<UUID> quoteConvertedInto(UUID orderId) {
         @SuppressWarnings("unchecked")
         List<UUID> ids = entityManager.createNativeQuery("""

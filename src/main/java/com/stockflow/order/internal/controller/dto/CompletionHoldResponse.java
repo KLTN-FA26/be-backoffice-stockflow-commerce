@@ -19,6 +19,10 @@ public record CompletionHoldResponse(
         UUID heldBy,
         Instant releasedAt,
         UUID releasedBy,
-        String releaseNote
+        String releaseNote,
+        @Schema(description = "Who paused it: full name, else username; null when unknown")
+        String heldByName,
+        @Schema(description = "Who released it; null while the hold is open and when unknown")
+        String releasedByName
 ) {
 }
