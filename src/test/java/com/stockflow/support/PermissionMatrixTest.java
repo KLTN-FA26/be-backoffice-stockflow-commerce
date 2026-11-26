@@ -138,6 +138,8 @@ class PermissionMatrixTest {
                     "public: Resend's delivery reports; the Svix signature is the authorisation (permitAll for POST, SCRUM-352)"),
             Map.entry("POST /api/v1/fulfillment/carrier-webhooks/{carrierCode}",
                     "public: carriers' webhooks; the carrier's configured header or HMAC signature is the authorisation (permitAll for POST, 3-5)"),
+            Map.entry("POST /api/v1/bank-transactions/webhooks/{provider}",
+                    "public: the bank feed's webhook (SePay); its HMAC signature or API key is the authorisation (permitAll for POST, credit plan part C)"),
             Map.entry("GET /api/v1/public/products/{productId}/gallery", "public: published product images (permitAll)"),
             Map.entry("GET /api/v1/production-order-files/{id}/slip",
                     "public: a producer's link to its production order slip; the HMAC-signed, time-limited link is the "

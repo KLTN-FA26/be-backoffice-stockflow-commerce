@@ -19,6 +19,8 @@ final class PaymentResources {
      * decision. Named for what is asked for, the customer's credit, though payment keeps them.
      */
     static final String CREDIT_REQUESTS = "customer-credit-requests";
+    /** Part C (credit plan 2026-11-26): the transfers the bank feed reported, and the Accountant's queue of them. */
+    static final String BANK_TRANSACTIONS = "payment-bank-transactions";
 
     private PaymentResources() {
     }
