@@ -207,6 +207,13 @@ handover's check) is a direct call through `payment :: api`.
 Spring Modulith's **event publication registry** replaces the transactional outbox: an event a listener failed to
 process stays in `event_publication` and is retried (migration `V20260901000400`).
 
+**Receipts from the bank (SePay, credit plan part C; `docs/bank-feed-sepay.md`).** `BankTransactionService` keeps every
+incoming transfer SePay's webhook reports (`payment.bank_transaction`, once per SePay id and bank reference), then, in
+short transactions like `CarrierEventService`, records a receipt through `PaymentReceiptService.record` when the content
+names exactly one payable installment for no more than it owes; anything else waits for the Accountant (`NEEDS_REVIEW`).
+Lock order: the transfer's row, then what `record` takes. The receipt's recorder is the DISABLED system user
+`BankFeedUser`; a nightly catch-up reads SePay's API v2 for what the webhook missed.
+
 ### Holding an order's stock — what still justifies the single transaction
 
 When Sales chooses the shipping warehouse, `ShippingWarehouseService.choose` holds the order's stock there, one

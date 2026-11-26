@@ -14,6 +14,8 @@ final class PaymentResources {
     static final String RECEIPTS = "payment-receipts";
     /** 4B-9: what cancellations and closures left to refund, and the accountant's records of the refunds made. */
     static final String REFUNDS = "payment-refunds";
+    /** Part C (credit plan 2026-11-26): the transfers the bank feed reported, and the Accountant's queue of them. */
+    static final String BANK_TRANSACTIONS = "payment-bank-transactions";
 
     private PaymentResources() {
     }

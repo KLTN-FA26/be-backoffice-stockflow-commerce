@@ -674,6 +674,12 @@ public enum ErrorCode {
     /** 4B-6, 15 BR-13: the void leaves a confirmed order short of its installment on signing; the accountant agrees to hold it. */
     PAYMENT_RECEIPT_VOID_NEEDS_HOLD("Voiding this receipt leaves a confirmed order unpaid: confirm putting it on hold",
             409),
+    /** Credit plan 2026-11-26 part C: no transfer the bank feed reported with that id. */
+    BANK_TRANSACTION_NOT_FOUND("Bank transfer not found", 404),
+    /** Part C: only a transfer waiting for review is assigned or ignored; it was applied or ignored already. */
+    BANK_TRANSACTION_NOT_OPEN("This bank transfer was already dealt with", 409),
+    /** Part C, 15 BR-05: the installments a transfer is assigned to are paid no more than the transfer brought. */
+    BANK_TRANSACTION_OVER_ASSIGNED("The installments are assigned more than this transfer brought", 409),
     /** 4B-9, 15 BR-14: a refund recorded is never more than what the order still has to refund. */
     REFUND_EXCEEDS_REFUNDABLE("This refund is more than the order still has to refund", 409),
     /** 4B-9: no refund record with that id. */
