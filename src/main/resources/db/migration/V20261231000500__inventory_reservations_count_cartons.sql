@@ -33,10 +33,11 @@
 --   a HELD row on a stock row that has no carton, or whose quantity is not its carton's nominal_qty;
 --   a HELD SKU-level hold whose count cannot be resolved, or whose quantity is not a whole number of such cartons.
 -- History (a closed row: ALLOCATED, CONSUMED, RELEASED, EXPIRED) keeps nothing anybody acts on, so it is converted
--- by rule instead: a closed row on a carton is that carton (1 x nominal_qty) whatever part of it the old row held; a
--- closed row on a row without a carton, and a closed SKU-level hold with no count to resolve, is one "carton" of its
--- own quantity; a closed SKU-level hold that is not a whole number of cartons is ROUNDED UP to the next whole carton
--- (at least 1). No database built from the baseline has any of these.
+-- by rule instead, and keeps its units exactly (cartons * units_per_carton = the old quantity), so nothing read back
+-- from it says more was held than ever was: a closed row whose quantity is a whole number of its resolved count
+-- (on a carton: exactly that carton) is those cartons; any other - part of a carton, a row without a carton, a hold
+-- with no count to resolve or not a whole number of cartons - is one "carton" of its own quantity. No database built
+-- from the baseline has any of these.
 --
 -- Deadlines. V20261117000300 closed every live hold that carried one and nothing has set expires_at since; a hand-kept
 -- database that still has one is closed here the same way (EXPIRED when past, else RELEASED, the units given back to
@@ -145,18 +146,20 @@ UPDATE inventory.stock_item s
 ALTER TABLE inventory.stock_reservation DISABLE TRIGGER USER;
 
 -- Every row, once. On a stock row: one carton of its carton's count. A SKU-level hold: the count resolved above, and
--- as many cartons as its quantity is of it. History that fits neither (the header says which) is one carton of its own
--- quantity, or rounded up to whole cartons. A live hold with a deadline is closed: EXPIRED when past, else RELEASED.
+-- as many cartons as its quantity is of it (the checks above hold every live row to that). History that fits neither
+-- (the header says which) is one carton of its own quantity, so its units stay what they were. A live hold with a
+-- deadline is closed: EXPIRED when past, else RELEASED.
 UPDATE inventory.stock_reservation r
-   SET units_per_carton = coalesce(c.units_per_carton, r.quantity),
-       cartons = CASE WHEN r.stock_item_id IS NOT NULL THEN 1
-                      ELSE GREATEST(1, (r.quantity + coalesce(c.units_per_carton, r.quantity) - 1)
-                                       / coalesce(c.units_per_carton, r.quantity)) END,
+   SET units_per_carton = k.units_per_carton,
+       cartons = r.quantity / k.units_per_carton,
        status = CASE WHEN NOT c.lapsing THEN r.status WHEN r.expires_at <= now() THEN 'EXPIRED' ELSE 'RELEASED' END,
        release_reason = CASE WHEN NOT c.lapsing THEN r.release_reason
                              WHEN r.expires_at <= now() THEN 'RESERVATION_EXPIRED' ELSE 'MANUAL_OVERRIDE' END,
        closed_at = CASE WHEN c.lapsing THEN now() ELSE r.closed_at END
   FROM reservation_in_cartons c
+  JOIN LATERAL (SELECT CASE WHEN c.units_per_carton IS NOT NULL AND c.quantity % c.units_per_carton = 0
+                             AND (c.stock_item_id IS NULL OR c.quantity = c.units_per_carton)
+                            THEN c.units_per_carton ELSE c.quantity END AS units_per_carton) k ON TRUE
  WHERE c.id = r.id;
 
 ALTER TABLE inventory.stock_reservation ENABLE TRIGGER USER;

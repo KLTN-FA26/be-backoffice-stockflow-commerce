@@ -102,8 +102,8 @@ its own:
      held are covered by free AVAILABLE cartons of that count, over the system and at the hold's warehouse - no
      longer units against units. The migration takes a hold's count from its order line, else from the cartons its
      allocations took, else from the SKU's active packing unit; it refuses to run over a live hold that is not whole
-     cartons of a known count, or a live row on a carton that holds part of it, and converts history by rule (a
-     closed hold that is not whole cartons is rounded up). `stock_item` and `stock_item_id` are untouched (step 3d).
+     cartons of a known count, or a live row on a carton that holds part of it, and converts history by rule, its units kept
+     (a closed hold that is not whole cartons of its count is one carton of its own quantity). `stock_item` and `stock_item_id` are untouched (step 3d).
      In the code a `SkuReservation` stores `cartons` and `unitsPerCarton` and derives `quantity()`; a `Reservation`
      (the allocation) is one carton; `StockAllocator.plan` gives N cartons of the hold's count, FIFO, and the rule
      "a carton larger than what is still needed is skipped" is gone with the unit count it served: cartons of

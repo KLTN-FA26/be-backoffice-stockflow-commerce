@@ -21,8 +21,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       a whole number of cartons, and one whose carton count nobody can tell each stop the migration, by name.</li>
  *   <li><b>Where the count comes from.</b> A row on a stock row is its carton; a SKU-level hold takes the count of its
  *       order line, else of the cartons its allocations took, else of the SKU's active packing unit.</li>
- *   <li><b>History is converted by rule.</b> A closed hold that is not whole cartons is rounded up; one with no count to
- *       resolve is one carton of its own quantity; a closed row on a carton is that carton.</li>
+ *   <li><b>History is converted by rule, its units kept.</b> A closed row that is whole cartons of its count is those
+ *       cartons; any other (part of a carton, not whole cartons, no count to resolve) is one carton of its own
+ *       quantity, so nothing read back says more was held than ever was.</li>
  *   <li><b>Deadlines.</b> A live hold that still carried one is closed the way V20261117000300 closed them, its units
  *       given back to the stock row, before the column goes.</li>
  *   <li><b>From then on.</b> The two columns, their CHECKs and their index are gone, the new columns are required, an
@@ -98,20 +99,20 @@ class ReservationsCountCartonsMigrationUpgradeTest {
 
                 // ---- every row is cartons of one count
                 assertThat(shape(db, ALLOCATION)).as("an allocation is its carton").isEqualTo("CONSUMED:1x1000");
-                assertThat(shape(db, CLOSED_PART_OF_A_CARTON)).as("history on a carton is that carton, by rule")
-                        .isEqualTo("RELEASED:1x1000");
+                assertThat(shape(db, CLOSED_PART_OF_A_CARTON)).as("history on part of a carton keeps its units: one 'carton' of 400")
+                        .isEqualTo("RELEASED:1x400");
                 assertThat(shape(db, HOLD_OF_ITS_LINE)).as("the count of the order line it is held for")
                         .isEqualTo("HELD:3x1000");
                 assertThat(shape(db, ALLOCATED_HOLD)).as("no line keeps an ALLOCATED hold: the count of the cartons "
                         + "its allocations took").isEqualTo("ALLOCATED:2x1000");
                 assertThat(shape(db, HOLD_OF_THE_PACKING_UNIT)).as("no line, no allocation: the SKU's active packing "
                         + "unit").isEqualTo("HELD:3x500");
-                assertThat(shape(db, CLOSED_NOT_WHOLE)).as("history that is not whole cartons is rounded up")
-                        .isEqualTo("RELEASED:3x1000");
+                assertThat(shape(db, CLOSED_NOT_WHOLE)).as("history that is not whole cartons keeps its units, never rounded up")
+                        .isEqualTo("RELEASED:1x2500");
                 assertThat(shape(db, CLOSED_UNKNOWN_COUNT)).as("history of no known count: one carton of its quantity")
                         .isEqualTo("RELEASED:1x70");
-                assertThat(shape(db, LIVE_NOT_WHOLE)).as("released by hand before the run: history, rounded up")
-                        .isEqualTo("RELEASED:3x1000");
+                assertThat(shape(db, LIVE_NOT_WHOLE)).as("released by hand before the run: history, its units kept")
+                        .isEqualTo("RELEASED:1x2500");
 
                 // ---- a live hold that carried a deadline is closed as V20261117000300 closed them
                 assertThat(RawSql.text(db, "SELECT status || ':' || release_reason FROM inventory.stock_reservation "
