@@ -40,8 +40,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @org.springframework.test.context.TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
 class OrderReleaseIntegrationTest {
 
-    /** A print line names the cup's blank with the customer's design: the legacy shape of a print line (QD-16). */
-    private static final String CUP = DemoData.BLANK_CUP;
+    /**
+     * A print line carries the customer's design snapshot: the legacy shape of a print line (QD-16). It once named the
+     * cup's blank; since V20270105000100 an order line names a customer's SKU only (fk_order_line_customer_sku).
+     */
+    private static final String CUP = DemoData.SKU_STOCKED;
 
     @Autowired OrderReleases releases;
     @Autowired JdbcTemplate jdbc;

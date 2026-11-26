@@ -434,7 +434,7 @@ class AwaitingStockIntegrationTest {
     }
 
     @Test
-    @DisplayName("QD-16: a legacy print line - a blank with a design snapshot - is still not released")
+    @DisplayName("QD-16: a legacy print line - a line carrying a design snapshot - is still not released")
     void legacyPrintLineStillRefused() {
         UUID hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
         UUID draft = Identifiers.newId();
@@ -459,7 +459,9 @@ class AwaitingStockIntegrationTest {
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, design_snapshot_id,
                                                      design_checksum) VALUES (?, ?, ?, 10, 2000, 'VND', ?, ?)""",
-                    Identifiers.newId(), order, DemoData.BLANK_CUP, snapshot, "a".repeat(64));
+                    // A blank cannot be ordered since V20270105000100 (fk_order_line_customer_sku): the legacy shape
+                    // that is left is a line of the customer's own SKU carrying the snapshot.
+                    Identifiers.newId(), order, DemoData.SKU_STOCKED, snapshot, "a".repeat(64));
         });
 
         assertThatThrownBy(() -> releases.release(order, hcm, coordinator))

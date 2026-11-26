@@ -231,15 +231,16 @@ class ProductVariantOptionsIntegrationTest {
     }
 
     @Test
-    void aRenameOfAReferencedSkuIsARefusedTransition() {
+    void aDraftDefaultIsRenamedFreelyNowThatNoDocumentNamesAVariant() {
         UUID product = productWithAxes();
-        // A lot of the SKU is a document that names it (inventory.item_in_use); the price rules that served here are
-        // not read by the guard any more, so a document the guard does read stands in for them.
-        jdbc.update("insert into inventory.stock_lot(id, sku, lot_number, received_at, origin_type, created_at) "
-                + "values (?, ?, 'L-REF', now(), 'UNTRACED', now())", UUID.randomUUID(), newCode);
+        // Until V20270105000100 a lot or a movement of the variant's own item could name the code and refuse the
+        // rename. A variant has no item now, and no customer's SKU is drawn on a DRAFT one, so nothing names it.
 
-        assertThat(errorOf(() -> variants.add(product, new NewVariant("CUP-RENAMED", null, List.of(cap12, clear), null))))
-                .isEqualTo(ErrorCode.INVALID_VARIANT_TRANSITION);
+        VariantView renamed = variants.add(product, new NewVariant("CUP-RENAMED", null, List.of(cap12, clear), null));
+
+        assertThat(renamed.sku()).isEqualTo("CUP-RENAMED");
+        assertThat(jdbc.queryForObject("select count(*) from product.variants where sku = ?", Long.class, newCode))
+                .as("the old code is free").isZero();
     }
 
     @Test
@@ -565,9 +566,8 @@ class ProductVariantOptionsIntegrationTest {
 
         assertThat(defaultOf(product).sku()).isEqualTo(code);
         assertThat(generated.created()).extracting(VariantView::sku).containsExactly(code + "-16OZ");
-        var itemIds = inventory.itemIdsOf(List.of(code, code + "-16OZ"));
-        assertThat(items.get(itemIds.get(code)).sku()).isEqualTo(code);
-        assertThat(items.get(itemIds.get(code + "-16OZ")).sku()).isEqualTo(code + "-16OZ");
+        assertThat(inventory.itemIdsOf(List.of(code, code + "-16OZ"))).as("a variant has no item (V20270105000100)")
+                .isEmpty();
     }
 
     @Test

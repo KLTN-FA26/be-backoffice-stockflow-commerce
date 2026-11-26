@@ -148,10 +148,12 @@ class ProductPimIntegrationTest {
     }
 
     @Test
-    @DisplayName("logistics are per SKU, on the inventory item, with optimistic versioning")
+    @DisplayName("logistics are per SKU, on the inventory item of a customer's SKU an order named, with optimistic versioning")
     void logisticsLiveOnTheInventoryItem() {
-        var created = create(null, null);
-        String sku = variants.list(created.productId(), 0, 1).items().getFirst().sku();
+        // Only a customer's SKU has an item, opened by the order that first names it (V20270105000100); issue() leaves
+        // one ordered before.
+        String sku = com.stockflow.support.CustomerSkuRows.issue(jdbc, tx, entityManager,
+                com.stockflow.support.DemoData.CUSTOMER_ID, 10).sku();
         UUID itemId = inventory.itemIdsOf(List.of(sku)).get(sku);
         var before = items.get(itemId);
         assertThat(before.logistics().unitOfMeasure()).isEqualTo("EACH");
