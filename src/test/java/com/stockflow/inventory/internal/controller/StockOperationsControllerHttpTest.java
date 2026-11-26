@@ -8,6 +8,7 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
+import com.stockflow.inventory.api.StockAdjustmentDirection;
 import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
@@ -68,7 +69,7 @@ class StockOperationsControllerHttpTest {
     void cartonsAreMovedByLpnToOneDestination() throws Exception {
         UUID requestId = UUID.randomUUID();
         when(operations.moveStockPackages(any())).thenReturn(List.of(new StockPackageView(UUID.randomUUID(),
-                "LPN-20261109-000001", null, "CUP_PET", UUID.randomUUID(), "CARTON", 50, 50, 50, "HCM-A01-1-A",
+                "LPN-20261109-000001", null, "CUP_PET", UUID.randomUUID(), "CARTON", 50, 50, java.time.Instant.parse("2026-11-09T02:00:00Z"), "HCM-A01-1-A",
                 "IN_STOCK")));
 
         mvc.perform(post("/api/v1/inventory/movements").contentType("application/json").content("""
@@ -101,8 +102,8 @@ class StockOperationsControllerHttpTest {
     }
 
     private StockAdjustmentSummary summary(UUID carton) {
-        return new StockAdjustmentSummary(UUID.randomUUID(), "ADJ-20261113-0001", "HCM-A01-1-A", "CUP_PET", "L1", -50,
-                StockAdjustmentReason.DAMAGED, "Crushed", StockAdjustmentStatus.PENDING_APPROVAL, clerk,
+        return new StockAdjustmentSummary(UUID.randomUUID(), "ADJ-20261113-0001", "HCM-A01-1-A", "CUP_PET", "L1",
+                StockAdjustmentDirection.WRITE_OFF, StockAdjustmentReason.DAMAGED, "Crushed", StockAdjustmentStatus.PENDING_APPROVAL, clerk,
                 java.time.Instant.now(), null, null, null, null, null, 0L, carton, null);
     }
 
@@ -115,7 +116,8 @@ class StockOperationsControllerHttpTest {
                         {"lpn":"lpn-20261113-000001","direction":"WRITE_OFF","reason":"DAMAGED","note":"Crushed"}"""))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.stockPackageId").value(carton.toString()))
-                .andExpect(jsonPath("$.data.quantityDelta").value(-50))
+                .andExpect(jsonPath("$.data.direction").value("WRITE_OFF"))
+                .andExpect(jsonPath("$.data.quantityDelta").doesNotExist())
                 .andExpect(jsonPath("$.data.requestedByName").value("Nguyen Van Kho"))
                 .andExpect(jsonPath("$.data.decidedByName").doesNotExist());
 
@@ -135,10 +137,12 @@ class StockOperationsControllerHttpTest {
         when(identities.displayNames(any())).thenReturn(Map.of(clerk, "Nguyen Van Kho", approver, "Tran Thi Duyet"));
         StockOperations.LedgerLine adjustment = new StockOperations.LedgerLine(UUID.randomUUID(),
                 StockMovement.MovementType.ADJUSTMENT, "CUP_PET", "L1", "HCM-A01-1-A", null, -50, "AVAILABLE", null,
-                "ADJUSTMENT", UUID.randomUUID(), "DAMAGED", approver, java.time.Instant.now(), clerk, null);
+                "ADJUSTMENT", UUID.randomUUID(), "DAMAGED", approver, java.time.Instant.now(), clerk, null,
+                "LPN-261126-000001");
         StockOperations.LedgerLine system = new StockOperations.LedgerLine(UUID.randomUUID(),
                 StockMovement.MovementType.MOVE, "CUP_PET", "L1", "HCM-STG", "HCM-A01-1-A", 50, "AVAILABLE",
-                null, "PUTAWAY_TASK", UUID.randomUUID(), null, null, java.time.Instant.now(), null, null);
+                null, "PUTAWAY_TASK", UUID.randomUUID(), null, null, java.time.Instant.now(), null, null,
+                "LPN-261126-000002");
         when(operations.ledger(any(), anyInt(), anyInt(), any()))
                 .thenReturn(PageResponse.of(List.of(adjustment, system), 0, 20, 2));
 

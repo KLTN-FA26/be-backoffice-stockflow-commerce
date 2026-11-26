@@ -1,16 +1,10 @@
 package com.stockflow.inventory;
 
-import com.stockflow.common.domain.Sku;
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.InventoryService;
 
-import com.stockflow.inventory.api.RequestAdjustmentCommand;
-import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.inventory.consumption.PutBackCommand;
-import com.stockflow.inventory.internal.service.StockOperations;
 import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.Holds;
@@ -36,24 +30,24 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * V20261017000450 against a real PostgreSQL: units of one FIFO receipt layer may be put back into a row of the
- * same receipt - picked goods put back after a cancellation - keeping the receipt time, lot and total; replenishing an
- * existing FIFO layer is still refused, and so is a receipt dated more than a minute ahead of the database clock. Stock
- * is whole cartons only (V20261117000100, review M-5): units found loose are refused, not posted into a new layer. Orders are given whole cartons (team plan
- * 4C-2) and a cancelled order's carton goes back whole (4C-4): its own emptied row takes its count again - the very
- * same-receipt raise the trigger allows - at the bin it left or at another, without ever merging into another carton's
- * row.
+ * A picked carton put back after its order was cancelled, against a real PostgreSQL (team plan 4C-4; kltn-docs 07
+ * BR-05, 20 §4.6): it comes back whole - the very carton, CONSUMED to IN_STOCK, AVAILABLE, at the bin it is put on -
+ * and keeps its lot and its FIFO date, so first in, first out never loses the age of stock (ADR-0011: the lot and the
+ * receipt date are written when the carton goes into stock and never after). Once per pick line. And a carton is
+ * never received in the future ({@code tg_stock_package_lot}).
+ *
+ * <p>Took the place of {@code SameReceiptMergeIntegrationTest}: the same put-backs, when a carton coming home meant
+ * raising its emptied stock row under a marker the FIFO trigger had to be shown. There is no row to raise any more.</p>
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
-class SameReceiptMergeIntegrationTest {
+class CartonPutBackIntegrationTest {
 
     private static final String SHELF = "HCM-A01-1-B";
     private static final String OTHER_BIN = "HCM-A02-2-A";
     private static final Instant RECEIVED = Instant.parse("2026-01-02T00:00:00Z");
 
     @Autowired InventoryService inventory;
-    @Autowired StockOperations operations;
     @Autowired PickConsumption pickConsumption;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
@@ -83,53 +77,24 @@ class SameReceiptMergeIntegrationTest {
                 count, lot, RECEIVED, "AVAILABLE"));
     }
 
-    /** The loose rows: none holds anything since V20261117000100; a carton goes back into its own row. */
-    private List<Map<String, Object>> layers() {
-        return jdbc.queryForList("""
-                select location_code, lot_number, received_at, on_hand, reserved, status from inventory.stock_item
-                 where sku = ? and stock_package_id is null order by location_code""", sku);
-    }
-
     /** The carton a hold is in, by its LPN: what a put-back is scanned by. */
     private String lpnOf(UUID hold) {
         return jdbc.queryForObject("""
-                select p.lpn from inventory.stock_package p join inventory.stock_item i on i.stock_package_id = p.id
-                  join inventory.stock_reservation r on r.stock_item_id = i.id where r.id = ?""", String.class, hold);
+                select p.lpn from inventory.stock_package p
+                  join inventory.stock_reservation r on r.stock_package_id = p.id where r.id = ?""", String.class, hold);
     }
 
-    /** Each carton of the SKU with its status, bin and its rows' on_hand, in LPN order. */
+    /** Each carton of the SKU: where it is, as what, whether an order holds it, its lot and its FIFO date; in LPN order. */
     private List<Map<String, Object>> cartonRows() {
         return jdbc.queryForList("""
-                select p.lpn, p.status as carton_status, p.location_code as carton_location,
-                       i.location_code, i.on_hand, i.reserved, i.status,
-                       i.lot_number, i.received_at
-                  from inventory.stock_package p join inventory.stock_item i on i.stock_package_id = p.id
+                select p.lpn, p.status as carton_status, p.location_code as carton_location, p.stock_status,
+                       (select count(*) from inventory.stock_reservation r
+                         where r.stock_package_id = p.id and r.status = 'HELD') as live_holds,
+                       l.lot_number, p.received_at
+                  from inventory.stock_package p
+                  join inventory.inventory_items i on i.id = p.inventory_item_id
+                  join inventory.stock_lot l on l.id = p.lot_id
                  where i.sku = ? order by p.lpn""", sku);
-    }
-
-    /**
-     * Was {@code foundOnFifoOpensANewLayer}: a FOUND posted its units into a new loose layer beside the counted one.
-     * Units in no carton no longer exist (V20261117000100, review M-5), so a FOUND of loose units is refused when asked
-     * ({@code STOCK_NOT_IN_CARTON}); a carton found is restocked by counting it. The trigger is unchanged: raising the
-     * carton's FIFO row in place is still refused.
-     */
-    @Test
-    @DisplayName("a FOUND of loose units is refused (whole cartons only); raising a carton's FIFO row is still refused")
-    void foundOfLooseUnitsIsRefused() {
-        cartons(1, 10);
-
-        assertThatThrownBy(() -> tx.execute(s -> operations.requestAdjustment(new RequestAdjustmentCommand(SHELF,
-                new Sku(sku), lot, 2, StockAdjustmentReason.FOUND, "found two", clerk))))
-                .isInstanceOf(BusinessException.class)
-                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.STOCK_NOT_IN_CARTON);
-
-        assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update("""
-                update inventory.stock_item set on_hand = on_hand + 2 where sku = ? and received_at = ?""",
-                sku, java.sql.Timestamp.from(RECEIVED))))
-                .as("the database still refuses replenishing an existing FIFO layer")
-                .hasMessageContaining("FIFO replenishment requires a new receipt layer");
-        assertThat(jdbc.queryForList("select on_hand from inventory.stock_item where sku = ?", Integer.class, sku))
-                .containsExactly(10);
     }
 
     private UUID confirmedOrder() {
@@ -154,17 +119,9 @@ class SameReceiptMergeIntegrationTest {
         return reservations.stream().map(holdOf::get).toList();
     }
 
-    /** "location:status:on_hand" of each carton of the SKU's receipt, by location. */
-    private List<String> cartonsOfTheReceipt() {
-        return jdbc.queryForList("""
-                select p.location_code || ':' || p.status || ':' || s.on_hand
-                  from inventory.stock_package p join inventory.stock_item s on s.stock_package_id = p.id
-                 where s.sku = ? order by p.location_code, p.lpn""", String.class, sku);
-    }
-
     @Test
     @DisplayName("picked FIFO cartons put back go home whole, onto the bin they left, once per line")
-    void putBackMerges() {
+    void putBackGoesHomeWholeOncePerLine() {
         cartons(2, 3);
         UUID order = confirmedOrder();
         List<UUID> holds = tx.execute(s -> {
@@ -179,11 +136,10 @@ class SameReceiptMergeIntegrationTest {
             UUID line = lines.get(i);
             tx.executeWithoutResult(s -> pickConsumption.consumeForPick(hold, line, clerk));
         }
-        assertThat(cartonRows()).extracting(row -> row.get("carton_status") + ":" + row.get("on_hand"))
-                .containsExactly("CONSUMED:0", "CONSUMED:0");
+        assertThat(cartonRows()).extracting(row -> row.get("carton_status") + ":" + row.get("stock_status"))
+                .as("picked: out of stock, with no stock status").containsExactly("CONSUMED:null", "CONSUMED:null");
 
-        // The order was cancelled after picking: a FIFO row is never raised, except by its own carton coming home
-        // (V20261017000450 refused the same-receipt raise before the fix: 409).
+        // The order was cancelled after picking: each carton comes home, the very carton it was.
         tx.executeWithoutResult(s -> pickConsumption.putBack(
                 new PutBackCommand(lines.get(0), holds.get(0), lpns.get(0), SHELF, clerk)));
         tx.executeWithoutResult(s -> pickConsumption.putBack(
@@ -194,25 +150,24 @@ class SameReceiptMergeIntegrationTest {
 
         assertThat(cartonRows()).hasSize(2).allSatisfy(row -> {
             assertThat(row).containsEntry("carton_status", "IN_STOCK")
-                    .containsEntry("on_hand", 3).containsEntry("reserved", 0).containsEntry("status", "AVAILABLE")
+                    .containsEntry("stock_status", "AVAILABLE").containsEntry("live_holds", 0L)
                     .containsEntry("lot_number", lot);
             assertThat(((java.sql.Timestamp) row.get("received_at")).toInstant()).as("the receipt's age is kept")
                     .isEqualTo(RECEIVED);
-            assertThat(row.get("location_code")).as("its row is where it is").isEqualTo(row.get("carton_location"));
         });
         Map<String, String> binOf = new java.util.HashMap<>();
         cartonRows().forEach(row -> binOf.put((String) row.get("lpn"), (String) row.get("carton_location")));
         assertThat(binOf).containsEntry(lpns.get(0), SHELF).containsEntry(lpns.get(1), SHELF);
-        assertThat(layers()).as("no row outside a carton is made or raised").isEmpty();
+        assertThat(cartonRows()).as("the two cartons that left, no third").hasSize(2);
         assertThat(jdbc.queryForObject("""
                 select count(*) from inventory.stock_movement
                  where movement_type = 'PUT_BACK' and reference_type = 'PICK_LINE' and reference_id in (?, ?)
-                   and to_stock_package_id is not null""",
+                   and stock_package_id is not null""",
                 Integer.class, lines.get(0), lines.get(1))).as("one per line, naming its carton").isEqualTo(2);
     }
 
     @Test
-    @DisplayName("put back onto a bin holding another carton of the same receipt: two cartons side by side, each its own row")
+    @DisplayName("put back onto a bin holding another carton of the same receipt: two cartons side by side, each itself")
     void putBackLeavesOtherCartonsAlone() {
         cartons(1, 5);
         UUID order = confirmedOrder();
@@ -230,32 +185,26 @@ class SameReceiptMergeIntegrationTest {
             UUID unit = CartonRows.unitOf(jdbc, sku, 5);
             jdbc.update("""
                     insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
-                        received_qty, location_code, status) values (?, ?, ?, ?, 5, 5, ?, 'IN_STOCK')""",
-                    carton, "LPN-" + sku, item, unit, SHELF);
-            jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved,
-                        status, version, created_at, stock_package_id) values (?, ?, ?, ?, ?, 5, 0, 'AVAILABLE', 0, now(), ?)""",
-                    Identifiers.newId(), sku, SHELF, lot, java.sql.Timestamp.from(RECEIVED), carton);
+                        counted_at, location_code, status, stock_status, lot_id, received_at)
+                    values (?, ?, ?, ?, 5, now(), ?, 'IN_STOCK', 'AVAILABLE', ?, ?)""",
+                    carton, "LPN-" + sku, item, unit, SHELF, CartonRows.lot(jdbc, sku, lot, RECEIVED),
+                    java.sql.Timestamp.from(RECEIVED));
         });
 
         tx.executeWithoutResult(s -> pickConsumption.putBack(
                 new PutBackCommand(line, hold, picked, SHELF, clerk)));
 
         assertThat(jdbc.queryForList("""
-                select i.on_hand, i.stock_package_id from inventory.stock_item i
-                 where i.sku = ? and i.location_code = ? and i.stock_package_id is not null
-                 order by i.stock_package_id""", sku, SHELF))
-                .as("no loose row, no merge: one row per carton, each holding its own five")
-                .hasSize(2).allSatisfy(row -> {
-                    assertThat(row.get("on_hand")).isEqualTo(5);
-                    assertThat(row.get("stock_package_id")).isNotNull();
-                });
+                select p.nominal_qty from inventory.stock_package p
+                  join inventory.inventory_items i on i.id = p.inventory_item_id
+                 where i.sku = ? and p.location_code = ? and p.status = 'IN_STOCK' order by p.id""", Integer.class,
+                sku, SHELF)).as("nothing merges: two cartons in stock, each its own five").containsExactly(5, 5);
         assertThat(cartonRows()).extracting(row -> row.get("carton_status") + ":" + row.get("carton_location"))
                 .containsExactly("IN_STOCK:" + SHELF, "IN_STOCK:" + SHELF);
     }
 
     @Test
-    @DisplayName("put back onto ANOTHER bin: the carton and its row follow it there whole")
+    @DisplayName("put back onto ANOTHER bin: the carton goes there whole")
     void putBackOntoAnotherBin() {
         cartons(1, 3);
         UUID order = confirmedOrder();
@@ -271,19 +220,20 @@ class SameReceiptMergeIntegrationTest {
 
         assertThat(cartonRows()).singleElement().satisfies(row -> assertThat(row)
                 .containsEntry("carton_status", "IN_STOCK").containsEntry("carton_location", OTHER_BIN)
-                .containsEntry("location_code", OTHER_BIN).containsEntry("on_hand", 3));
+                .containsEntry("stock_status", "AVAILABLE").containsEntry("lot_number", lot));
     }
 
     @Test
     @DisplayName("a receipt dated an hour ahead is still refused; the clock skew between application and database is not")
     void receiptTime() {
-        // A carton just received (stock is whole cartons only, V20261117000100).
+        // A carton just received.
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> CartonRows.carton(jdbc, sku, "HCM-RCV01", 2, lot + "-L",
                 Instant.now().plusSeconds(3600), "INBOUND")))
-                .hasMessageContaining("Invalid receipt date");
+                .hasMessageContaining("invalid receipt date");
         tx.executeWithoutResult(s -> CartonRows.carton(jdbc, sku, "HCM-RCV01", 2, lot + "-S",
                 Instant.now().plusSeconds(2), "INBOUND"));
-        assertThat(jdbc.queryForObject("select count(*) from inventory.stock_item where sku = ? and lot_number = ?",
-                Integer.class, sku, lot + "-S")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                select count(*) from inventory.stock_package p join inventory.stock_lot l on l.id = p.lot_id
+                 where l.sku = ? and l.lot_number = ?""", Integer.class, sku, lot + "-S")).isEqualTo(1);
     }
 }

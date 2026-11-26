@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Unit tests for the approval workflow (SCRUM-57/WBS 3.1.1.3), same style as {@code StockItemTest}:
+ * Unit tests for the approval workflow (SCRUM-57/WBS 3.1.1.3), same style as {@code StockPackageTest}:
  * no Spring, no database, the aggregate's own guarantees only.
  */
 class ProductTest {

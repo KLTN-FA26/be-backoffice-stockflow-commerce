@@ -8,7 +8,7 @@ import org.springframework.modulith.docs.Documenter;
  * <b>The test that makes the modules real.</b>
  *
  * <p>Without it, {@code inventory.internal} is a naming convention and nothing stops a developer
- * in a hurry from importing {@code StockItem} straight into {@code OrderServiceImpl}. The compiler
+ * in a hurry from importing {@code StockPackage} straight into {@code OrderServiceImpl}. The compiler
  * will not object — it is all one jar. This test will, in the pull request, with a message naming
  * both classes.</p>
  *

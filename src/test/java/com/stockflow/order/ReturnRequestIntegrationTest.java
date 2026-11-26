@@ -353,8 +353,8 @@ class ReturnRequestIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.return_request_discrepancy WHERE "
                 + "return_request_id = ?", Integer.class, request.id())).isZero();
         assertThat(d.shipped().lpns().subList(0, 3)).allSatisfy(lpn -> assertThat(jdbc.queryForObject(
-                "SELECT s.status FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id "
-                        + "WHERE p.lpn = ?", String.class, lpn)).isEqualTo("QUARANTINE"));
+                "SELECT p.stock_status FROM inventory.stock_package p WHERE p.lpn = ?", String.class, lpn))
+                .isEqualTo("QUARANTINE"));
 
         ReturnRequest proposed = returns.proposeRefund(request.id(), new ReturnRequestService.ProposeRefundCommand(null,
                 "three cartons", null), sales.userId());

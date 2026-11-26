@@ -50,7 +50,7 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
     }
 
     /**
-     * Takes the row lock <i>before</i> loading, as {@code StockItemRepositoryAdapter} does. Loading first and
+     * Takes the row lock <i>before</i> loading, as {@code StockPackageRepositoryAdapter} does. Loading first and
      * locking with {@code refresh(PESSIMISTIC_WRITE)} fails under contention: the waiting caller holds the
      * version it read before the winner committed, and Hibernate's versioned lock refuses it with an
      * optimistic-lock error instead of letting it see the winner's result — two concurrent conversions

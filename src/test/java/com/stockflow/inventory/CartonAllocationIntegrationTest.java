@@ -108,7 +108,8 @@ class CartonAllocationIntegrationTest {
     }
 
     private int heldUnits() {
-        return jdbc.queryForObject("select coalesce(sum(reserved), 0) from inventory.stock_item where sku = ?",
+        return jdbc.queryForObject("select coalesce(sum(cartons * units_per_carton), 0) from"
+                + " inventory.stock_reservation where sku = ? and stock_package_id is not null and status = 'HELD'",
                 Integer.class, sku);
     }
 
@@ -128,7 +129,7 @@ class CartonAllocationIntegrationTest {
 
     private int handMoves(String lpn) {
         return jdbc.queryForObject("""
-                select count(*) from inventory.stock_movement m join inventory.stock_package p on p.id = m.to_stock_package_id
+                select count(*) from inventory.stock_movement m join inventory.stock_package p on p.id = m.stock_package_id
                  where p.lpn = ? and m.movement_type = 'MOVE' and m.reference_type = 'MOVE_TASK'""", Integer.class, lpn);
     }
 
@@ -142,8 +143,9 @@ class CartonAllocationIntegrationTest {
         assertThat(release(reserved(20))).extracting(CartonAllocationIntegrationTest::describe)
                 .containsExactlyInAnyOrder(first + ":10:whole", second + ":10:whole");
         assertThat(jdbc.queryForObject("""
-                select i.reserved from inventory.stock_item i join inventory.stock_package p on p.id = i.stock_package_id
-                 where p.lpn = ?""", Integer.class, latest)).isZero();
+                select count(*) from inventory.stock_reservation r join inventory.stock_package p
+                    on p.id = r.stock_package_id
+                 where p.lpn = ? and r.status = 'HELD'""", Integer.class, latest)).isZero();
     }
 
     @Test
@@ -169,7 +171,7 @@ class CartonAllocationIntegrationTest {
 
     @Test
     @DisplayName("available to promise counts only cartons a release could allocate: not a carton off a pickable"
-            + " bin (loose units no longer exist: ck_stock_item_whole_cartons)")
+            + " bin (there are no loose units: the carton is the stock)")
     void onlyAllocatableStockIsPromised() {
         carton(2);
         tx.executeWithoutResult(s ->
@@ -178,7 +180,9 @@ class CartonAllocationIntegrationTest {
         assertThat(inventory.availableToPromise(new Sku(sku))).isEqualTo(10);
         UUID order = confirmedOrder();
         assertThat(tx.execute(s -> Holds.attempt(inventory, order, sku, "HCM", 20)).cartonsHeld())
-                .as("20 asked, 10 promised: nothing held").isZero();
+                .as("20 asked, 10 promised: the carton a release could allocate is held, the one in receiving is not")
+                .isEqualTo(1);
+        assertThat(inventory.availableToPromise(new Sku(sku))).isZero();
     }
 
     @Test
@@ -241,7 +245,7 @@ class CartonAllocationIntegrationTest {
         assertThat(locationOf(held)).isEqualTo(SHELF);
         assertThat(jdbc.queryForObject("""
                 select count(*) from inventory.stock_movement m
-                  join inventory.stock_package p on p.id in (m.from_stock_package_id, m.to_stock_package_id)
+                  join inventory.stock_package p on p.id = m.stock_package_id
                  where p.lpn in (?, ?) and m.movement_type = 'MOVE'""", Integer.class, free, held)).isZero();
 
         moveByHand(List.of(free), OTHER_BIN);

@@ -136,13 +136,12 @@ class StockPackageLookupHttpTest {
                 .andExpect(status().isForbidden());
         read(Role.WAREHOUSE_STAFF, outsider, "?location=" + RECEIVING).andExpect(status().isForbidden());
 
-        // Lost as an approved count leaves a carton: its rows emptied, then LOST. Its status is not told either.
+        // Lost as an approved count leaves a carton: LOST, out of stock, with no stock status. Its status is not told
+        // either.
         // In tx: the pool runs with auto-commit off, so a bare jdbc write is rolled back when its connection returns.
         String lost = lpns.get(1);
         tx.executeWithoutResult(s -> {
-            jdbc.update("update inventory.stock_item set on_hand = 0, reserved = 0 where stock_package_id ="
-                    + " (select id from inventory.stock_package where lpn = ?)", lost);
-            jdbc.update("update inventory.stock_package set status = 'LOST', closed_at = NOW()"
+            jdbc.update("update inventory.stock_package set status = 'LOST', stock_status = NULL, closed_at = NOW()"
                     + " where lpn = ?", lost);
         });
         read(Role.WAREHOUSE_STAFF, outsider, "/" + lost).andExpect(status().isForbidden());

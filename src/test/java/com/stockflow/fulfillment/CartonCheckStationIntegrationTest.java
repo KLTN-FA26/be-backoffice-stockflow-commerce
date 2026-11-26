@@ -658,8 +658,8 @@ class CartonCheckStationIntegrationTest {
                 .andExpect(jsonPath("$.data.putBackLocationCode").value(QUARANTINE_AREA));
         assertThat(jdbc.queryForMap("SELECT location_code, status FROM inventory.stock_package WHERE lpn = ?", damaged))
                 .containsEntry("location_code", QUARANTINE_AREA).containsEntry("status", "IN_STOCK");
-        assertThat(jdbc.queryForMap("SELECT s.location_code, s.status, s.on_hand FROM inventory.stock_item s JOIN "
-                + "inventory.stock_package p ON p.id = s.stock_package_id WHERE p.lpn = ?", damaged))
+        assertThat(jdbc.queryForMap("SELECT p.location_code, p.stock_status AS status, p.nominal_qty AS on_hand FROM "
+                + "inventory.stock_package p WHERE p.lpn = ? AND p.status = 'IN_STOCK'", damaged))
                 .containsEntry("location_code", QUARANTINE_AREA).containsEntry("status", "QUARANTINE")
                 .containsEntry("on_hand", 1);
         assertThat(jdbc.queryForList("SELECT to_status FROM inventory.stock_movement WHERE movement_type = 'PUT_BACK' "
@@ -669,8 +669,8 @@ class CartonCheckStationIntegrationTest {
                 .andExpect(status().isOk());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_movement WHERE movement_type = 'PUT_BACK' "
                 + "AND reference_id = ?::uuid", Long.class, lineId)).isOne();
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_item s JOIN inventory.stock_package p ON "
-                + "p.id = s.stock_package_id WHERE p.lpn = ? AND s.status = 'AVAILABLE'", Long.class, damaged))
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_package p "
+                + "WHERE p.lpn = ? AND p.stock_status = 'AVAILABLE'", Long.class, damaged))
                 .as("never AVAILABLE, not even for an instant").isZero();
     }
 
@@ -742,8 +742,8 @@ class CartonCheckStationIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("PUT_BACK_LOCATION_INVALID"));
         asPacker(body(post(url(task, "/pick-lines/" + lineId + "/put-back")), "{\"locationCode\":\"" + bin
                 + "\",\"lpn\":\"" + mine.get(0) + "\"}")).andExpect(status().isOk());
-        assertThat(jdbc.queryForMap("SELECT s.status, s.location_code FROM inventory.stock_item s JOIN "
-                + "inventory.stock_package p ON p.id = s.stock_package_id WHERE p.lpn = ?", mine.get(0)))
+        assertThat(jdbc.queryForMap("SELECT p.stock_status AS status, p.location_code FROM "
+                + "inventory.stock_package p WHERE p.lpn = ?", mine.get(0)))
                 .containsEntry("status", "AVAILABLE").containsEntry("location_code", bin);
         // The session of a cancelled order is not worked.
         start(packer, "WAREHOUSE_STAFF", task).andExpect(status().isConflict());

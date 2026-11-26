@@ -60,15 +60,15 @@ import java.util.stream.Collectors;
  * (SCRUM-267, 274, 275; team plan 4C-4).
  *
  * <p><b>Lock order.</b> Every write locks the pick task first ({@code PickJpaRepository.lockById},
- * {@code SELECT … FOR UPDATE}) and only then reaches inventory, which locks the stock row. No path takes
- * them the other way round: cancelling an order locks stock rows in the order's transaction and touches
+ * {@code SELECT … FOR UPDATE}) and only then reaches inventory, which locks the carton. No path takes
+ * them the other way round: cancelling an order locks cartons in the order's transaction and touches
  * the pick only afterwards, in the listener's own transaction. Two confirmations of one line are
  * therefore serialised on the pick, and the second sees the line PICKED. A write that also changes the order
- * (a short report, a reallocation) locks it after the pick and before any stock row, because a cancellation
- * locks the order first and the stock rows second.</p>
+ * (a short report, a reallocation) locks it after the pick and before any carton, because a cancellation
+ * locks the order first and the cartons second.</p>
  *
- * <p><b>One transaction.</b> The line turning PICKED, the hold turning CONSUMED, {@code on_hand}
- * falling, the {@code PICK} ledger row and {@code StockDeducted} commit together or not at all — which
+ * <p><b>One transaction.</b> The line turning PICKED, the hold turning CONSUMED, the carton
+ * leaving stock, the {@code PICK} ledger row and {@code StockDeducted} commit together or not at all — which
  * is the reason consumption is in-process rather than an HTTP call (decision G4 §6 #7). The same holds for a
  * STAGING task (team plan 4C-5): the line turning STAGED and its carton moving to the staging area commit together,
  * and so do the lines turning PICKED and their cartons being deducted when the task moves to dispatch.</p>
@@ -190,7 +190,7 @@ class PickListService implements PickLists {
     /**
      * The STAGED task moves to dispatch (07 §4.3 step 8): every STAGED line turns PICKED and its carton is deducted
      * where it stands. The caller holds the pick's lock and, after it, the order's; inventory locks the SKUs, the
-     * cartons and the rows - pick, order, stock rows, as everywhere. The task itself moves after this.
+     * cartons - pick, order, cartons, as everywhere. The task itself moves after this.
      */
     void moveStagedLinesToDispatch(PickJpaEntity pick, UUID actorId) {
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
@@ -318,7 +318,7 @@ class PickListService implements PickLists {
             consumption.stage(new StageCommand(line.id(), requireHold(line, "staged"), line.lpn(),
                     line.stagedLocationCode(), actor.userId()));
         } else {
-            // The pick is locked; inventory now locks the stock row (pick -> stock_item, never the reverse).
+            // The pick is locked; inventory now locks the carton (pick -> stock_package, never the reverse).
             consumption.consumeForPick(requireHold(line, "confirmed"), line.id(), actor.userId());
             line.recordConsumed(now);
         }
@@ -542,8 +542,8 @@ class PickListService implements PickLists {
                     "Only a SHORT line, or one whose carton was removed at the check station, is reallocated; it is "
                             + shortLine.status());
         }
-        // Pick, then order, then stock rows. A cancellation locks the order before the stock rows it releases; taking
-        // the order only at the end (replaceHold) would wait on it while holding those rows.
+        // Pick, then order, then cartons. A cancellation locks the order before the cartons it releases; taking
+        // the order only at the end (replaceHold) would wait on it while holding those cartons.
         orders.lockedStatus(pick.getOrderId());
         List<StockReservation> allocated = inventory.reallocate(new ReallocateStockCommand(pick.getOrderId(),
                 shortLine.reservationId(), UUID.nameUUIDFromBytes(("reallocate:" + lineId)
@@ -595,7 +595,7 @@ class PickListService implements PickLists {
             }
             return;
         }
-        // The pick before the order (and no stock row): a confirmation or a short report of the same task waits here.
+        // The pick before the order (and no carton): a confirmation or a short report of the same task waits here.
         PickJpaEntity pick = lockPick(live.get().getPickId());
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
         PickList list = toList(pick, stored);
@@ -619,7 +619,7 @@ class PickListService implements PickLists {
      * and they become lines of the same task through the top-up ({@link #planLines}, 07 §4.3 step 7) - a PICKED task
      * goes back to PICKING, and the check session takes the replacement when it is picked. The removed line stays as it
      * is: its carton goes to quarantine through the put-back queue. An order held {@code INVENTORY} resumes once no line
-     * is SHORT and no removed carton lacks a replacement. Locks: the pick, the order, then the stock rows.
+     * is SHORT and no removed carton lacks a replacement. Locks: the pick, the order, then the cartons.
      */
     private List<PickLineView> replaceRemoved(PickJpaEntity pick, PickLine removed, CurrentUser actor) {
         requireOpenForMore(pick);
@@ -834,7 +834,7 @@ class PickListService implements PickLists {
     /**
      * X-SHORT step 02: ON_HOLD with reason INVENTORY (kltn-docs 17 edge "short pick"). An order already ON_HOLD - a
      * second short line, or held for another reason by the warehouse manager - is stopped already and stays as it is: a
-     * hold is not stacked on a hold. Locks the order, so the caller keeps the order pick, order, stock rows.
+     * hold is not stacked on a hold. Locks the order, so the caller keeps the order pick, order, cartons.
      */
     private void holdForInventory(UUID orderId, UUID by, String note) {
         orders.lockedStatus(orderId);

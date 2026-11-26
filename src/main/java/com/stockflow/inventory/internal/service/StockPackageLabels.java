@@ -100,7 +100,7 @@ public class StockPackageLabels {
         return cartons.stream().sorted(Comparator.comparing(StockPackage::lpn)).map(carton -> {
             UomConversion unit = unitsById.get(carton.uomConversionId());
             return new StockPackageLabel(carton.lpn(), unit.sku(), namesBySku.get(unit.sku()), lots.get(carton.id()),
-                    carton.receivedQty(), carton.nominalQty(), unit.unitOfMeasure());
+                    carton.counted(), carton.nominalQty(), unit.unitOfMeasure());
         }).toList();
     }
 
@@ -110,12 +110,13 @@ public class StockPackageLabels {
     }
 
     /**
-     * Each carton's lot: its stock row's, else - a carton still being counted has no row - its receipt line's. A
-     * returned carton's row is in its own lot, which is why the row comes first.
+     * Each carton's lot: its own, else - a carton still being counted has none yet - its receipt line's. A carton
+     * keeps the lot it went into stock with, which is why its own comes first.
      */
     private Map<StockPackageId, String> lotsOf(List<StockPackage> cartons) {
-        Map<StockPackageId, String> lots = new HashMap<>(stockPackages.lotsOf(cartons.stream()
-                .map(StockPackage::id).toList()));
+        Map<StockPackageId, String> lots = new HashMap<>();
+        cartons.stream().filter(carton -> carton.lotNumber() != null)
+                .forEach(carton -> lots.put(carton.id(), carton.lotNumber()));
         List<StockPackage> withoutRow = cartons.stream()
                 .filter(carton -> !lots.containsKey(carton.id()) && carton.goodsReceiptLineId() != null).toList();
         ReceiptLineLots receiving = withoutRow.isEmpty() ? null : receiptLots.getIfAvailable();
