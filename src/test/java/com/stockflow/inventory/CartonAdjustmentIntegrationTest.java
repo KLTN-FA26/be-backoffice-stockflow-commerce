@@ -108,8 +108,14 @@ class CartonAdjustmentIntegrationTest {
     private Map<String, Object> state(CartonRows.Carton carton) {
         return jdbc.queryForMap("""
                 select p.status, p.closed_at is not null as closed,
-                       (select coalesce(sum(s.on_hand), 0) from inventory.stock_item s where s.stock_package_id = p.id) as held
+                       (case when p.status = 'IN_STOCK' then p.nominal_qty else 0 end)::bigint as held
                   from inventory.stock_package p where p.id = ?""", carton.id());
+    }
+
+    /** How many live (HELD) allocations name the carton: 1 when an order holds it, else 0. */
+    private int liveAllocations(UUID carton) {
+        return jdbc.queryForObject("select count(*) from inventory.stock_reservation where stock_package_id = ?"
+                + " and status = 'HELD'", Integer.class, carton);
     }
 
     private int atp() {
@@ -132,7 +138,7 @@ class CartonAdjustmentIntegrationTest {
         return order;
     }
 
-    /** One carton reserved and allocated to a customer's order; the row ids the hold sits on. */
+    /** One carton reserved and allocated to a customer's order; the cartons the hold sits on. */
     private List<UUID> holdOneCarton() {
         UUID order = confirmedOrder();
         UUID hold = tx.execute(s -> {
@@ -141,7 +147,7 @@ class CartonAdjustmentIntegrationTest {
                     .filter(allocation -> allocation.reservationId().equals(id)).findFirst().orElseThrow()
                     .holdIds().getFirst();
         });
-        return List.of(jdbc.queryForObject("select stock_item_id from inventory.stock_reservation where id = ?",
+        return List.of(jdbc.queryForObject("select stock_package_id from inventory.stock_reservation where id = ?",
                 UUID.class, hold));
     }
 
@@ -157,7 +163,8 @@ class CartonAdjustmentIntegrationTest {
 
         assertThat(asked.status()).isEqualTo(StockAdjustmentStatus.PENDING_APPROVAL);
         assertThat(asked.stockPackageId()).isEqualTo(box.id());
-        assertThat(asked.quantityDelta()).as("the carton's standard count, never typed").isEqualTo(-CARTON);
+        assertThat(asked.direction()).as("a direction, never a number of units")
+                .isEqualTo(com.stockflow.inventory.api.StockAdjustmentDirection.WRITE_OFF);
         assertThat(asked.reason()).isEqualTo(StockAdjustmentReason.DAMAGED);
         assertThat(asked.locationCode()).isEqualTo(BIN);
         assertThat(asked.lotNumber()).isEqualTo("L1");
@@ -173,11 +180,12 @@ class CartonAdjustmentIntegrationTest {
         assertThat(state(box)).containsEntry("status", "CONSUMED").containsEntry("closed", true)
                 .containsEntry("held", 0L);
         assertThat(jdbc.queryForList("""
-                select quantity, from_stock_package_id, from_location_code from inventory.stock_movement
-                 where reference_type = 'STOCK_ADJUSTMENT' and reference_id = ?""", asked.adjustmentId()))
+                select p.nominal_qty as quantity, m.stock_package_id, m.from_location_code
+                  from inventory.stock_movement m join inventory.stock_package p on p.id = m.stock_package_id
+                 where m.reference_type = 'STOCK_ADJUSTMENT' and m.reference_id = ?""", asked.adjustmentId()))
                 .singleElement().satisfies(row -> {
                     assertThat(row.get("quantity")).isEqualTo(CARTON);
-                    assertThat(row.get("from_stock_package_id")).isEqualTo(box.id());
+                    assertThat(row.get("stock_package_id")).isEqualTo(box.id());
                     assertThat(row.get("from_location_code")).isEqualTo(BIN);
                 });
     }
@@ -242,15 +250,16 @@ class CartonAdjustmentIntegrationTest {
         assertThat(atp()).isZero();
 
         StockAdjustmentSummary found = ask(box, AdjustmentDirection.RESTOCK, StockAdjustmentReason.FOUND, null);
-        assertThat(found.quantityDelta()).isEqualTo(CARTON);
+        assertThat(found.direction()).isEqualTo(com.stockflow.inventory.api.StockAdjustmentDirection.RESTOCK);
         operations.approve(found.adjustmentId(), manager);
 
         assertThat(state(box)).containsEntry("status", "IN_STOCK").containsEntry("closed", false)
                 .containsEntry("held", (long) CARTON);
-        assertThat(jdbc.queryForObject("select count(*) from inventory.stock_item where sku = ?", Integer.class, sku))
-                .isEqualTo(1);
-        assertThat(jdbc.queryForObject("select lot_number from inventory.stock_item where id = ?", String.class,
-                box.stockItemId())).isEqualTo("L1");
+        assertThat(jdbc.queryForObject("select count(*) from inventory.stock_package p join inventory.inventory_items"
+                + " i on i.id = p.inventory_item_id where i.sku = ?", Integer.class, sku))
+                .as("the very carton, no second one").isEqualTo(1);
+        assertThat(jdbc.queryForObject("select l.lot_number from inventory.stock_package p join inventory.stock_lot l"
+                + " on l.id = p.lot_id where p.id = ?", String.class, box.id())).isEqualTo("L1");
         assertThat(atp()).as("found again, it is allocatable again (4C-2 review)").isEqualTo(CARTON);
     }
 
@@ -279,15 +288,14 @@ class CartonAdjustmentIntegrationTest {
     void aHeldCartonIsRefused() {
         CartonRows.Carton box = carton(BIN);
         UUID row = holdOneCarton().getFirst();
-        assertThat(row).isEqualTo(box.stockItemId());
+        assertThat(row).isEqualTo(box.id());
 
         assertThat(code(askFails(box, AdjustmentDirection.WRITE_OFF, StockAdjustmentReason.DAMAGED, null)))
                 .isEqualTo(ErrorCode.STOCK_PACKAGE_HELD);
 
         assertThat(adjustmentCount(box)).isZero();
         assertThat(state(box)).containsEntry("status", "IN_STOCK").containsEntry("held", (long) CARTON);
-        assertThat(jdbc.queryForObject("select reserved from inventory.stock_item where id = ?", Integer.class, row))
-                .isEqualTo(CARTON);
+        assertThat(liveAllocations(row)).as("the hold still names the carton").isEqualTo(1);
     }
 
     @Test
@@ -368,9 +376,8 @@ class CartonAdjustmentIntegrationTest {
 
         List<UUID> rows = holdOneCarton();
 
-        assertThat(rows).containsExactly(b.stockItemId());
-        assertThat(jdbc.queryForObject("select reserved from inventory.stock_item where id = ?", Integer.class,
-                a.stockItemId())).isZero();
+        assertThat(rows).containsExactly(b.id());
+        assertThat(liveAllocations(a.id())).isZero();
     }
 
     @Test
@@ -406,8 +413,8 @@ class CartonAdjustmentIntegrationTest {
     // ------------------------------------------------------------------ L4: what status a carton found comes back as
 
     private String rowStatus(CartonRows.Carton carton) {
-        return jdbc.queryForObject("select status from inventory.stock_item where id = ?", String.class,
-                carton.stockItemId());
+        return jdbc.queryForObject("select stock_status from inventory.stock_package where id = ?", String.class,
+                carton.id());
     }
 
     private void loseAndFind(CartonRows.Carton box) {

@@ -117,7 +117,6 @@ class CatalogSearchIntegrationTest {
                 jdbc.update("delete from catalog.product_listing where product_id=?", id);
                 jdbc.update("delete from product.media where variant_id in (select id from product.variants where product_id=?)", id);
                 // Stock a test gave one of its SKUs (CustomerSkuRows.stock) goes before the item: no ledger line names it.
-                jdbc.update("delete from inventory.stock_item where sku in (select sku from product.variants where product_id=?)", id);
                 jdbc.update("delete from inventory.stock_package where inventory_item_id in (select i.id from inventory.inventory_items i"
                         + " join product.variants v on v.sku = i.sku where v.product_id=?)", id);
                 jdbc.update("delete from inventory.stock_lot where sku in (select sku from product.variants where product_id=?)", id);

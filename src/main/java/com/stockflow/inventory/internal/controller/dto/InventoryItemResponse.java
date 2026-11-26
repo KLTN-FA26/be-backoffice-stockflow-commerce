@@ -16,7 +16,7 @@ public record InventoryItemResponse(UUID id, String sku, long version, Logistics
 
     /**
      * Whether a carton may be turned is no longer here: it is the catalogue variant's ({@code rotatable} on the
-     * variant, owner decision Q9, V20261231000200), like the carton itself.
+     * variant, owner decision Q9, V20261231000800), like the carton itself.
      */
     public record Logistics(String unitOfMeasure, String barcode) {
     }

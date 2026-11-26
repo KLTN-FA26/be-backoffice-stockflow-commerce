@@ -156,9 +156,8 @@ class PlaceDeactivationIntegrationTest {
 
         String other = "HCM-A01-1-B";
         CartonRows.Carton picked = CartonRows.stock(jdbc, sku, other, 1, 10, "LOT-1", Instant.now()).getFirst();
-        jdbc.update("update inventory.stock_item set on_hand = 0 where id = ?", picked.stockItemId());
-        jdbc.update("update inventory.stock_package set status = 'CONSUMED', closed_at = now() where id = ?",
-                picked.id());
+        jdbc.update("update inventory.stock_package set status = 'CONSUMED', stock_status = null, closed_at = now() "
+                + "where id = ?", picked.id());
 
         binStatus(other, 1, LocationStatus.INACTIVE);
         assertThat(locationStatus(other)).isEqualTo("INACTIVE");

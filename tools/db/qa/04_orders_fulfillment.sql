@@ -31,9 +31,12 @@ END $$;
 
 \echo '--- checkout: reservation written BEFORE the order row (OrderServiceImpl.placeOrder order)'
 SELECT pg_temp.expect_ok('O1 reserve first, save the order after, same transaction (deferred keys)', $q$
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at, expires_at, status)
-    VALUES (md5('qa:res:1')::uuid, md5('demo:cups:empty-stock:LY-GIAY-DEMO-12OZ-XANH:HCM-A01-2-B')::uuid, md5('qa:order:1')::uuid, gen_random_uuid(), gen_random_uuid(),
-            2, NOW(), NOW() + INTERVAL '15 minutes', 'HELD');
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
+    SELECT md5('qa:res:1')::uuid, p.id, md5('qa:order:1')::uuid, gen_random_uuid(), gen_random_uuid(), 1, p.nominal_qty, NOW(), 'HELD'
+      FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+     WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' AND p.stock_status = 'AVAILABLE'
+       AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation a WHERE a.stock_package_id = p.id AND a.status = 'HELD')
+     ORDER BY p.lpn LIMIT 1;
     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at)
     VALUES (md5('qa:order:1')::uuid, 'SO-QA-1', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'PENDING_PAYMENT',
             20000000, 'VND', NOW(), NOW());
@@ -41,9 +44,12 @@ SELECT pg_temp.expect_ok('O1 reserve first, save the order after, same transacti
     VALUES (md5('qa:ol:1')::uuid, md5('qa:order:1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 2000, 10000, 'VND');
     INSERT INTO ordering.order_line_reservation (order_line_id, reservation_id) VALUES (md5('qa:ol:1')::uuid, md5('qa:res:1')::uuid) $q$);
 SELECT pg_temp.expect_fail('O2 a reservation whose order is never saved (fails at commit)', $q$
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at, expires_at, status)
-    VALUES (gen_random_uuid(), md5('demo:cups:empty-stock:LY-GIAY-DEMO-12OZ-XANH:HCM-A01-2-B')::uuid, gen_random_uuid(), gen_random_uuid(), gen_random_uuid(),
-            1, NOW(), NOW() + INTERVAL '15 minutes', 'HELD') $q$);
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
+    SELECT gen_random_uuid(), p.id, gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 1, p.nominal_qty, NOW(), 'HELD'
+      FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+     WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' AND p.stock_status = 'AVAILABLE'
+       AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation a WHERE a.stock_package_id = p.id AND a.status = 'HELD')
+     ORDER BY p.lpn LIMIT 1 $q$);
 SELECT pg_temp.expect_fail('O3 an order for a customer that does not exist', $q$
     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at)
     VALUES (gen_random_uuid(), 'SO-QA-X', gen_random_uuid(), gen_random_uuid(), 'PENDING_PAYMENT', 0, 'VND', NOW(), NOW()) $q$);
@@ -63,19 +69,21 @@ SELECT pg_temp.expect_fail('O6 pick line for a line of another order', $q$
 SELECT pg_temp.expect_fail('O7 pick line with another sku than its order line', $q$
     INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, sku, location_code, allocated_qty)
     VALUES (gen_random_uuid(), md5('qa:pick:1')::uuid, md5('qa:ol:1')::uuid, 'LY-GIAY-DEMO-12OZ-DO', 'HCM-B01-1-A', 1) $q$);
--- Since V20261113000400 a pick line is one carton, named by its LPN (07 BR-04, BR-10): it is allocated from a carton's
--- row, and the checkout reservation of O1 (on an emptied loose row of the demo) is not a line's hold any more.
+-- Since V20261113000400 a pick line is one carton, named by its LPN (07 BR-04, BR-10), and its hold names that carton
+-- (V20261231000600). The hold of O1 took one free carton; this one takes the next (a carton has one live allocation).
 SELECT pg_temp.expect_ok('O8 pick line for a carton allocated from a bin, against its own hold', $q$
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at, expires_at, status)
-    SELECT md5('qa:res:3')::uuid, s.id, md5('qa:order:1')::uuid, gen_random_uuid(), gen_random_uuid(), s.on_hand, NOW(), NULL,
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
+    SELECT md5('qa:res:3')::uuid, p.id, md5('qa:order:1')::uuid, gen_random_uuid(), gen_random_uuid(), 1, p.nominal_qty, NOW(),
            'HELD'
-      FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
-     WHERE s.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND s.location_code = 'HCM-A01-2-B' AND p.status = 'IN_STOCK' ORDER BY p.lpn LIMIT 1;
+      FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+     WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' AND p.stock_status = 'AVAILABLE'
+       AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation a WHERE a.stock_package_id = p.id AND a.status = 'HELD')
+     ORDER BY p.lpn LIMIT 1;
     INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, allocated_qty, lpn, whole_carton)
-    SELECT md5('qa:pl:1')::uuid, md5('qa:pick:1')::uuid, md5('qa:ol:1')::uuid, md5('qa:res:3')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', r.quantity, p.lpn,
+    SELECT md5('qa:pl:1')::uuid, md5('qa:pick:1')::uuid, md5('qa:ol:1')::uuid, md5('qa:res:3')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', r.cartons * r.units_per_carton, p.lpn,
            TRUE
-      FROM inventory.stock_reservation r JOIN inventory.stock_item s ON s.id = r.stock_item_id
-      JOIN inventory.stock_package p ON p.id = s.stock_package_id WHERE r.id = md5('qa:res:3')::uuid $q$);
+      FROM inventory.stock_reservation r
+      JOIN inventory.stock_package p ON p.id = r.stock_package_id WHERE r.id = md5('qa:res:3')::uuid $q$);
 SELECT pg_temp.expect_fail('O9 picking more than allocated (BR-04)', $q$
     UPDATE fulfillment.pick_line SET picked_qty = allocated_qty + 1 WHERE id = md5('qa:pl:1')::uuid $q$);
 SELECT pg_temp.expect_fail('O10 PICKED with nothing picked: a carton is taken whole', $q$

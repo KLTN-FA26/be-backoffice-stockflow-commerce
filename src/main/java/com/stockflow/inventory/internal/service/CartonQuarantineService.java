@@ -7,8 +7,6 @@ import com.stockflow.contracts.PutawayCompleted;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.internal.domain.ReturnedCartonOwnership;
 import com.stockflow.inventory.internal.domain.StockAdjustmentRepository;
-import com.stockflow.inventory.internal.domain.StockItem;
-import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
@@ -56,8 +54,8 @@ import java.util.UUID;
  * {@code PutawayService#confirm}). Nothing moves and nothing is written to the ledger here. Releasing a carton that
  * already has its release task answers that task again.</p>
  *
- * <p>Lock order: the carton's putaway task (as a putaway confirmation takes it first), then the SKU advisory lock, the
- * carton, its rows. A write-off's approval takes the SKU lock before it asks for an open task, so a release and an
+ * <p>Lock order: the carton's putaway task (as a putaway confirmation takes it first), then the SKU advisory lock,
+ * then the carton. A write-off's approval takes the SKU lock before it asks for an open task, so a release and an
  * approval of one carton are decided one after the other.</p>
  */
 @Service
@@ -67,7 +65,6 @@ public class CartonQuarantineService {
 
     private final StockOperations operations;
     private final StockPackageRepository stockPackages;
-    private final StockItemRepository stockItems;
     private final StockAdjustmentRepository adjustments;
     private final InventoryPolicyRepository policies;
     private final PutawayTasks tasks;
@@ -76,14 +73,13 @@ public class CartonQuarantineService {
     private final ReturnedCartonOwnership ownership;
 
     public CartonQuarantineService(StockOperations operations, StockPackageRepository stockPackages,
-                                   StockItemRepository stockItems, StockAdjustmentRepository adjustments,
+                                   StockAdjustmentRepository adjustments,
                                    InventoryPolicyRepository policies,
                                    PutawayTasks tasks, WarehouseService warehouses, ApplicationEventPublisher events,
                                    ReturnedCartonOwnership ownership) {
         this.ownership = ownership;
         this.operations = operations;
         this.stockPackages = stockPackages;
-        this.stockItems = stockItems;
         this.adjustments = adjustments;
         this.policies = policies;
         this.tasks = tasks;
@@ -138,18 +134,15 @@ public class CartonQuarantineService {
     @Transactional
     public UUID release(String lpn, UUID actorId) {
         StockPackage seen = find(lpn);
-        // The carton's SKU is its own item's: its carton row is shared by every SKU of the variant (Q1).
-        String sku = policies.findSku(seen.inventoryItemId()).orElseThrow(() ->
-                new IllegalStateException("Stock package %s is of no known item".formatted(seen.lpn())));
-        policies.lock(sku);
+        // A carton's SKU is its own item's: its carton row is its variant's, shared by every SKU of the variant (Q1).
+        policies.lock(seen.sku().code());
         StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(seen.id())).stream().findFirst()
                 .orElseThrow(() -> new IllegalStateException("Stock package %s vanished".formatted(seen.lpn())));
         if (carton.status() != StockPackageStatus.IN_STOCK) {
             throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
                     "%s is %s; only a carton in stock is released".formatted(carton.lpn(), carton.status()));
         }
-        List<StockItem> live = rows(carton).stream().filter(row -> row.onHand().value() > 0).toList();
-        if (live.isEmpty() || live.stream().anyMatch(row -> row.status() != StockStatus.QUARANTINE)) {
+        if (carton.stockStatus() != StockStatus.QUARANTINE) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_QUARANTINED,
                     "%s is not in quarantine; only a quarantined carton is released".formatted(carton.lpn()),
                     List.of(), Map.of("lpn", carton.lpn()));
@@ -175,8 +168,8 @@ public class CartonQuarantineService {
                     "A write-off of %s awaits approval; it is released once that is rejected or withdrawn"
                             .formatted(carton.lpn()), List.of(), Map.of("lpn", carton.lpn()));
         }
-        int onHand = live.stream().mapToInt(row -> row.onHand().value()).sum();
-        PutawayTaskView task = tasks.open(NewPutawayTask.quarantineRelease(sku, onHand, carton.id().value()));
+        PutawayTaskView task = tasks.open(NewPutawayTask.quarantineRelease(carton.sku().code(), carton.nominalQty(),
+                carton.id().value()));
         if (task.source() != PutawaySource.QUARANTINE_RELEASE) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_DECISION_PENDING,
                     "%s still has its receipt's putaway task %s open".formatted(carton.lpn(), task.id()),
@@ -194,14 +187,12 @@ public class CartonQuarantineService {
         return carton;
     }
 
-    private List<StockItem> rows(StockPackage carton) {
-        return stockItems.findIdsInStockPackage(carton.id()).stream().map(stockItems::findById)
-                .flatMap(Optional::stream).toList();
-    }
-
-    /** Read without a lock: a task is only ever opened, never removed, so a stale answer only refuses too early. */
+    /**
+     * Read again from the table, after the wait for the task's lock: a putaway finished meanwhile has made the carton
+     * AVAILABLE, and the copy read before the wait would still say INBOUND. Without a lock: a task is only ever
+     * opened, never removed, so a stale answer only refuses too early.
+     */
     private boolean holdsInbound(StockPackage carton) {
-        return carton.status() == StockPackageStatus.IN_STOCK && rows(carton).stream()
-                .anyMatch(row -> row.onHand().value() > 0 && row.status() == StockStatus.INBOUND);
+        return stockPackages.stockStatusOf(carton.id()).filter(status -> status == StockStatus.INBOUND).isPresent();
     }
 }

@@ -146,7 +146,7 @@ class InventoryItemsIntegrationTest {
     @Test
     void unitChangeWhileStockIsHeldIs409() {
         var f = fixture();
-        // A carton of five in stock (stock is whole cartons only, ck_stock_item_whole_cartons).
+        // A carton of five in stock: the carton is the stock (ADR-0011).
         tx.executeWithoutResult(s -> CartonRows.carton(jdbc, f.sku(), "HCM-A01-1-A", 5, null, Instant.now(),
                 "AVAILABLE"));
         var before = items.get(f.itemId());
@@ -155,7 +155,6 @@ class InventoryItemsIntegrationTest {
                     .isEqualTo(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
         } finally {
             tx.executeWithoutResult(s -> {
-                jdbc.update("delete from inventory.stock_item where sku = ?", f.sku());
                 jdbc.update("delete from inventory.stock_package where inventory_item_id = ?", f.itemId());
             });
         }

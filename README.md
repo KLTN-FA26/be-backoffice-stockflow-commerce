@@ -113,9 +113,9 @@ com.stockflow.inventory/               <- the module: one business capability
 └── internal/                          <- invisible to other modules
     ├── controller/   InventoryController, request/response DTOs      (the controller layer)
     ├── service/      InventoryServiceImpl, listeners, schedulers     (the service layer)
-    ├── repository/   StockItemJpaRepository, adapters, mappers       (the repository layer)
-    ├── entity/       StockItemJpaEntity, ReservationJpaEntity        (the entity layer)
-    └── domain/       StockItem, Quantity, StockAllocator             (plain Java. No Spring, no JPA.)
+    ├── repository/   StockPackageJpaRepository, adapters, mappers     (the repository layer)
+    ├── entity/       StockPackageJpaEntity, ReservationJpaEntity      (the entity layer)
+    └── domain/       StockPackage, Quantity, StockAllocator           (plain Java. No Spring, no JPA.)
 ```
 
 `api` and `internal` are the two halves of every module. `api` is a **named interface**: Spring
@@ -125,7 +125,7 @@ module is spelled `"inventory :: api"` rather than `"inventory"`.
 
 What goes in `api` is decided mechanically, not by taste: **the service interface, plus exactly the
 types that appear in its method signatures, plus what those drag in.** For `inventory` that is five
-files and no others. `StockItem` is the module's most important class and it is *not* there,
+files and no others. `StockPackage` is the module's most important class and it is *not* there,
 because it appears in no signature.
 
 If you are used to `controller/` `service/` `repository/` `entity/` at the top level, this is the
@@ -140,7 +140,7 @@ disagree. `ArchitectureTest` enforces the layering *within* a module on top of t
 that imports an entity does not compile past the test suite.
 
 `domain/` is the layer that has no equivalent in the classic layout, and it is where the business
-rules live: pure objects with no framework on them, so `StockItemTest` runs in milliseconds with no
+rules live: pure objects with no framework on them, so `StockPackageTest` runs in milliseconds with no
 database and no Spring context.
 
 ### What `common` already provides
@@ -209,7 +209,7 @@ Dependencies point inwards: `controller → service → domain`, and `repository
 ```java
 // order/internal/service/OrderServiceImpl.java
 import com.stockflow.inventory.api.InventoryService;             // ✅ the published port
-import com.stockflow.inventory.internal.domain.StockItem;        // ❌ ModularityTest fails the build
+import com.stockflow.inventory.internal.domain.StockPackage;     // ❌ ModularityTest fails the build
 ```
 
 The compiler allows both — it is all one jar. The build does not.
@@ -263,7 +263,7 @@ left a window in which an order existed with no stock behind it.
 | `ModularityTest` | module boundaries, declared dependencies, absence of cycles — **the most important file here** |
 | `ArchitectureTest` | layering inside a module, plus the traps in the shared base: a soft-deletable entity without `@SQLRestriction`, a scoped entity behind an unscoped repository, a cache named by string literal, a random UUID used as a primary key, a `@Scheduled` job without `@SchedulerLock`, a proxied method that is not public |
 | `BaseLayerRegressionTest` | the base-layer defects found in review — entity equality under a lazy proxy, `isNew()` with an application-assigned id, `OWN` scope with no user id, a nested permission guard clearing its caller's scope |
-| `StockItemTest`, `OrderTest`, `StockAllocatorTest` | business rules, as plain unit tests with no container — milliseconds, because the domain has no framework on it |
+| `StockPackageTest`, `OrderTest`, `StockAllocatorTest` | business rules, as plain unit tests with no container — milliseconds, because the domain has no framework on it |
 | `ShippingWarehouseIntegrationTest` | an order and its stock holds commit together, against a real Postgres |
 | `RepositorySqlQaTest` | every adversarial script in `tools/db/qa/` and the orphan check, on a freshly migrated database with the demo seed |
 | `InventoryModuleTest` | inventory boots **alone**, with the other thirteen modules absent |
@@ -362,8 +362,8 @@ schema of its own: the JPA event registry maps it to an unqualified name, and mo
 
 Invariants are stated **twice** on purpose — once in the aggregate, once as a `CHECK`. The domain
 produces the good error message; the database is what a bad migration or a manual `UPDATE` cannot
-talk its way past. `reserved <= on_hand` is the anti-overselling rule, and it is enforced in both
-places.
+talk its way past. "One live allocation per carton" is the anti-overselling rule, and it is enforced in both
+places: `StockPackage.allocate` and `uk_stock_reservation_live_carton`.
 
 ---
 

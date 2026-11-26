@@ -27,7 +27,7 @@ import java.util.UUID;
 @Repository
 class WarehouseRepositoryAdapter implements WarehouseRepository, WarehouseSearchRepository {
 
-    /** See {@code StockItemRepositoryAdapter.LOCK_TIMEOUT} for what this does and does not bound. */
+    /** See {@code StockPackageRepositoryAdapter.LOCK_TIMEOUT} for what this does and does not bound. */
     private static final Map<String, Object> LOCK_TIMEOUT = Map.of("jakarta.persistence.lock.timeout", 3000);
 
     private final WarehouseJpaRepository jpa;
@@ -46,7 +46,7 @@ class WarehouseRepositoryAdapter implements WarehouseRepository, WarehouseSearch
     /**
      * Load, then {@code refresh} under {@code PESSIMISTIC_WRITE}: a locking query would return the
      * instance already in the persistence context unchanged, and the lock would guard stale state
-     * (the reasoning is spelled out on {@code StockItemRepositoryAdapter.findByIdForUpdate}).
+     * (the reasoning is spelled out on {@code StockPackageRepositoryAdapter.findAllByIdForUpdate}).
      */
     @Override
     public Optional<Warehouse> findByIdForUpdate(UUID id) {

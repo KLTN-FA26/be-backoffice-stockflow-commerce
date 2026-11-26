@@ -11,7 +11,7 @@ import java.util.UUID;
 
 /**
  * Spring Data over the SKU reservations in {@code inventory.stock_reservation}: every query is restricted to
- * {@code stockItem is null}, so a hold on a stock item — which only its {@code StockItem} may change — is never
+ * {@code stockPackage is null}, so an allocation — which only its {@code StockPackage} may change — is never
  * returned here. Package-private; the module uses {@code SkuReservationRepository}.
  */
 interface SkuReservationJpaRepository extends JpaRepository<ReservationJpaEntity, UUID> {
@@ -21,12 +21,12 @@ interface SkuReservationJpaRepository extends JpaRepository<ReservationJpaEntity
         Long getQuantity();
     }
 
-    @Query("select count(r) > 0 from ReservationJpaEntity r where r.id = :id and r.stockItem is null")
+    @Query("select count(r) > 0 from ReservationJpaEntity r where r.id = :id and r.stockPackage is null")
     boolean existsSoft(@Param("id") UUID id);
 
     @Query("""
             select r from ReservationJpaEntity r
-            where r.stockItem is null and r.rootRequestId = :rootRequestId
+            where r.stockPackage is null and r.rootRequestId = :rootRequestId
               and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
             order by r.sku, r.id
             """)
@@ -34,15 +34,15 @@ interface SkuReservationJpaRepository extends JpaRepository<ReservationJpaEntity
 
     @Query("""
             select r from ReservationJpaEntity r
-            where r.stockItem is null and r.orderId = :orderId
+            where r.stockPackage is null and r.orderId = :orderId
               and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
             order by r.sku, r.id
             """)
     List<ReservationJpaEntity> findHeldForOrder(@Param("orderId") UUID orderId);
 
     @Query("""
-            select r.sku as sku, sum(r.quantity) as quantity from ReservationJpaEntity r
-            where r.stockItem is null and r.sku in :skus
+            select r.sku as sku, sum(r.cartons * r.unitsPerCarton) as quantity from ReservationJpaEntity r
+            where r.stockPackage is null and r.sku in :skus
               and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
             group by r.sku
             """)
@@ -50,12 +50,12 @@ interface SkuReservationJpaRepository extends JpaRepository<ReservationJpaEntity
 
     @Query("""
             select r from ReservationJpaEntity r
-            where r.stockItem is null and r.sku = :sku and r.warehouseCode = :warehouseCode
+            where r.stockPackage is null and r.sku = :sku and r.warehouseCode = :warehouseCode
               and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
             order by r.reservedAt, r.id
             """)
     List<ReservationJpaEntity> findHeldAt(@Param("sku") String sku, @Param("warehouseCode") String warehouseCode);
 
-    @Query("select r from ReservationJpaEntity r where r.stockItem is null and r.id in :ids")
+    @Query("select r from ReservationJpaEntity r where r.stockPackage is null and r.id in :ids")
     List<ReservationJpaEntity> findSoft(@Param("ids") Collection<UUID> ids);
 }

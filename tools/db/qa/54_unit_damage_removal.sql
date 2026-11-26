@@ -63,24 +63,22 @@ END $$;
 -- against them.
 -- ---------------------------------------------------------------------------------------------
 CREATE TEMP TABLE qa54_carton AS
-SELECT row_number() OVER (ORDER BY p.lpn) AS n, s.id AS row_id, p.id AS package_id, p.lpn, s.on_hand AS units
-  FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
- WHERE s.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND s.location_code = 'HCM-A01-2-B' AND p.status = 'IN_STOCK'
-   AND s.on_hand = p.nominal_qty AND s.reserved = 0
+SELECT row_number() OVER (ORDER BY p.lpn) AS n, p.id AS package_id, p.lpn, p.nominal_qty AS units
+  FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+ WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' AND p.stock_status = 'AVAILABLE'
+   AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation a WHERE a.stock_package_id = p.id AND a.status = 'HELD')
  ORDER BY p.lpn LIMIT 2;
 -- 01 BR-03: an item has ONE active carton. The demo seed's own is retired, so the fixture's unit below is the one.
 UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND variant_id IN (SELECT variant_id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
 INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor)
 VALUES (md5('qa54:unit')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA54_CTN', 3);
-INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
-                                     location_code, status)
-VALUES (md5('qa54:pk3')::uuid, 'QA54-LPN-3', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa54:unit')::uuid, 3, 3,
-        'HCM-A01-2-B', 'IN_STOCK');
-INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at,
-                                  stock_package_id)
-VALUES (md5('qa54:pk3:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'UNTRACED', 3, 0, 'AVAILABLE', NOW(),
-        NOW() - interval '1 day', md5('qa54:pk3')::uuid);
+INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)
+VALUES (md5('qa54:lot')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', NOW() - interval '1 day', 'UNTRACED', NOW());
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
+                                     location_code, status, stock_status, lot_id, received_at)
+VALUES (md5('qa54:pk3')::uuid, 'QA54-LPN-3', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa54:unit')::uuid, 3, NOW(),
+        'HCM-A01-2-B', 'IN_STOCK', 'AVAILABLE', md5('qa54:lot')::uuid, NOW() - interval '1 day');
 
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
                                      created_at, warehouse_id)
@@ -90,15 +88,15 @@ INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, curren
 VALUES (md5('qa54:ol')::uuid, md5('qa54:o')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 2008, 100, 'VND');
 INSERT INTO fulfillment.pick (id, order_id, order_number, warehouse_id, status, created_at)
 VALUES (md5('qa54:pick')::uuid, md5('qa54:o')::uuid, 'SO-QA54', md5('demo:wh:HCM')::uuid, 'PICKING', NOW());
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at,
-                                         expires_at, status)
-SELECT md5('qa54:res:' || n)::uuid, row_id, md5('qa54:o')::uuid, gen_random_uuid(), gen_random_uuid(), units, NOW(), NULL,
+INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                         reserved_at, status)
+SELECT md5('qa54:res:' || n)::uuid, package_id, md5('qa54:o')::uuid, gen_random_uuid(), gen_random_uuid(), 1, units, NOW(),
        'HELD'
   FROM qa54_carton;
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at,
-                                         expires_at, status)
-VALUES (md5('qa54:res:3')::uuid, md5('qa54:pk3:row')::uuid, md5('qa54:o')::uuid, gen_random_uuid(), gen_random_uuid(), 3, NOW(),
-        NULL, 'HELD');
+INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                         reserved_at, status)
+VALUES (md5('qa54:res:3')::uuid, md5('qa54:pk3')::uuid, md5('qa54:o')::uuid, gen_random_uuid(), gen_random_uuid(), 1, 3, NOW(),
+        'HELD');
 
 \echo '--- a damaged carton is a SHORT line with its reason, or no line at all (07 §4.4 step 9, BR-04)'
 SELECT pg_temp.expect_fail_by('DM1 a line that names no carton: the unit damage report that stood for one is gone',

@@ -57,7 +57,7 @@ public interface GoodsReceipts {
     /**
      * {@code quantityForPutaway}: what the line puts away, every unit it received. {@code unitOfMeasure}: the packing
      * unit of the line's cartons, null for a historical line counted loose. {@code looseQuantity}: what was counted
-     * into no carton, {@code quantity} less what the cartons were counted at ({@code receivedQty}) - none on a
+     * into no carton, {@code quantity} less the standard count of each carton counted in ({@code countedAt}) - none on a
      * production line. {@code packages}: the line's cartons, voided ones left out, by LPN - the client prints their
      * labels from these. {@code units}: the carton the line is received in - the one its order line was signed in
      * (Q7, Q10), even retired - so the counting screen can offer it without the product permission the unit
@@ -91,13 +91,17 @@ public interface GoodsReceipts {
 
     /**
      * One carton of a line. {@code quantity}: what is in it now - what was counted into it while RECEIVING, what is
-     * left in it once in stock. {@code receivedQty}: what was counted into it, which the receipt's
-     * {@code looseQuantity} is reckoned from and which never changes once the carton is in stock. {@code nominalQty}:
-     * what its unit holds. {@code status}: RECEIVING, IN_STOCK, CONSUMED or LOST. {@code locationCode}: where it
+     * left in it once in stock. {@code countedAt}: when it was counted in, null until then; a counted carton stands
+     * for {@code nominalQty}, which the receipt's {@code looseQuantity} is reckoned from and which never changes once
+     * the carton is in stock. {@code nominalQty}: what its unit holds. {@code status}: RECEIVING, IN_STOCK, CONSUMED or LOST. {@code locationCode}: where it
      * stands now, so a carton moved since it was received is found there.
      */
-    record PackageView(UUID id, String lpn, int quantity, int receivedQty, int nominalQty, String status,
+    record PackageView(UUID id, String lpn, int quantity, Instant countedAt, int nominalQty, String status,
                        String locationCode) {
+
+        int countedUnits() {
+            return countedAt == null ? 0 : nominalQty;
+        }
     }
 
     /**

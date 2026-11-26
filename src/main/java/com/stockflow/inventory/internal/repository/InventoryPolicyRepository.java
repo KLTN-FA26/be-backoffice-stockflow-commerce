@@ -63,7 +63,7 @@ public class InventoryPolicyRepository {
 
     /**
      * One inventory item, its logistics and the version, as they stood together, and the catalogue variant whose
-     * carton it is packed in ({@code variant_id}, V20261231000100).
+     * carton it is packed in ({@code variant_id}, V20261231000700).
      */
     public record ItemRow(java.util.UUID id, String sku, long version, ItemLogistics logistics, UUID variantId) {
     }
@@ -185,10 +185,13 @@ public class InventoryPolicyRepository {
         return specs;
     }
 
-    /** Whether any stock of the SKU is held anywhere, in any status. */
+    /** Whether any carton of the SKU is in stock anywhere, in any stock status. */
     public boolean holdsStock(String sku) {
         return Boolean.TRUE.equals(jdbc.queryForObject(
-                "select exists(select 1 from inventory.stock_item where sku = ? and (on_hand > 0 or reserved > 0))",
+                """
+                select exists(select 1 from inventory.stock_package p
+                                join inventory.inventory_items i on i.id = p.inventory_item_id
+                               where i.sku = ? and p.status = 'IN_STOCK')""",
                 Boolean.class, sku));
     }
 
@@ -209,22 +212,5 @@ public class InventoryPolicyRepository {
                     join inventory.uom_conversions c on c.variant_id = i.variant_id
                     where i.sku = ? and c.unit_of_measure = ?)
                 """, Boolean.class, sku, unitOfMeasure));
-    }
-
-    /**
-     * The SKU of each of these items, in one read. A stock package's SKU is its own item's, never its carton's: a
-     * carton is its catalogue variant's and every SKU of the variant shares it (owner decision Q1, V20261231000100).
-     */
-    public java.util.Map<UUID, String> skusOfItems(Collection<UUID> itemIds) {
-        if (itemIds.isEmpty()) {
-            return java.util.Map.of();
-        }
-        java.util.Map<UUID, String> skus = new java.util.HashMap<>();
-        jdbc.query("select id, sku from inventory.inventory_items where id = any (?)",
-                ps -> ps.setArray(1, ps.getConnection().createArrayOf("uuid", itemIds.stream().distinct().toArray())),
-                rs -> {
-                    skus.put(rs.getObject("id", UUID.class), rs.getString("sku"));
-                });
-        return skus;
     }
 }

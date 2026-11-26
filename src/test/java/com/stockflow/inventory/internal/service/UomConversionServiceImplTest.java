@@ -37,7 +37,7 @@ class UomConversionServiceImplTest {
 
     private static final Sku SKU = new Sku("CUP-12OZ");
     private static final UUID ITEM = UUID.randomUUID();
-    /** The catalogue variant whose cartons these are (owner decision Q1, V20261231000100). */
+    /** The catalogue variant whose cartons these are (owner decision Q1, V20261231000700). */
     private static final UUID VARIANT = UUID.randomUUID();
     private static final UUID CARTON_ID = UUID.randomUUID();
 

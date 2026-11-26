@@ -44,7 +44,7 @@ SELECT pg_temp.expect_true('IM1 none of the ten measure columns is left on inven
                    AND column_name IN ('weight_kg', 'length_cm', 'width_cm', 'height_cm', 'package_weight_kg',
                                        'package_length_cm', 'package_width_cm', 'package_height_cm', 'package_count',
                                        'pack_size')));
-SELECT pg_temp.expect_true('IM2 unit_of_measure and barcode stay; rotatable moved to the variant (V20261231000200)',
+SELECT pg_temp.expect_true('IM2 unit_of_measure and barcode stay; rotatable moved to the variant (V20261231000800)',
     (SELECT count(*) FROM information_schema.columns
       WHERE table_schema = 'inventory' AND table_name = 'inventory_items'
         AND column_name IN ('unit_of_measure', 'barcode', 'rotatable')) = 2

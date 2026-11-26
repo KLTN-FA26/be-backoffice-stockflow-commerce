@@ -9,7 +9,7 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Read side of the lot trace (SCRUM-153): plain SQL over {@code stock_lot}, {@code stock_item},
+ * Read side of the lot trace (SCRUM-153): plain SQL over {@code stock_lot}, {@code stock_package},
  * {@code stock_reservation} and {@code stock_movement}, all in this module's schema.
  *
  * <p>{@code warehouses} are warehouse prefixes — the first part of every location code — and narrow every figure

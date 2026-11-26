@@ -194,10 +194,10 @@ class WarehouseCapacityIntegrationTest extends ProductionOrderDispatchFixtures {
         tx.executeWithoutResult(s -> {
             UUID request = Identifiers.newId();
             jdbc.update("""
-                    INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, quantity,
-                        reserved_at, status, sku, warehouse_code)
-                    VALUES (?, ?, ?, ?, ?, NOW(), 'HELD', ?, ?)""", Identifiers.newId(), first, request, request,
-                    2 * PER_CARTON, sku.sku(), w.code());
+                    INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, cartons,
+                        units_per_carton, reserved_at, status, sku, warehouse_code)
+                    VALUES (?, ?, ?, ?, 2, ?, NOW(), 'HELD', ?, ?)""", Identifiers.newId(), first, request, request,
+                    PER_CARTON, sku.sku(), w.code());
         });
 
         Board board = board(w);

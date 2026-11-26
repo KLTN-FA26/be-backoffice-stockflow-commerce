@@ -15,7 +15,6 @@ import com.stockflow.inventory.internal.domain.PutawayRanker;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Need;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Occupancy;
 import com.stockflow.inventory.internal.domain.StockMovement;
-import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovementLog;
 import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageId;
@@ -66,7 +65,7 @@ import static org.mockito.Mockito.when;
  * kltn-docs 05 (putaway) BR-03/BR-04/BR-08/BR-09/BR-13, team plan 4C-2 and 5-4: a task is one carton, confirmed by
  * scanning its LPN and put away whole into a bin that passes the hard rules (bin, same warehouse, usable, the carton
  * fits it dimension by dimension, free volume and load), whatever was suggested - or into an OVERFLOW area of the
- * warehouse when no bin takes it. Loose tasks are history: one can still be read, never confirmed.
+ * warehouse when no bin takes it.
  *
  * <p>The carton is 40 x 30 x 30 cm (0.036 m³), weighs 0.5 kg full and may be turned on the horizontal. The bin is
  * 1 m wide, 0.5 m long and 0.4 m clear: 0.2 m³.</p>
@@ -96,7 +95,7 @@ class PutawayServiceConfirmTest {
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final PutawayTrips trips = mock(PutawayTrips.class);
     private final PutawayService service = new PutawayService(tasks, warehouses, stockPackages, ledger, occupancy,
-            operations, events, mock(StockItemRepository.class), trips,
+            operations, events, trips,
             new BinSuggestionInputs(warehouses, trips, occupancy));
 
     private final UUID binId = UUID.randomUUID();
@@ -106,14 +105,11 @@ class PutawayServiceConfirmTest {
         return new PutawayTaskView(UUID.randomUUID(), RECEIPT, LINE, SKU, CARTON_UNITS, carton.value(), null, status);
     }
 
-    /** A task opened before receipts put every unit into a carton: no carton, and its target if it got that far. */
-    private static PutawayTaskView looseTask(String status, UUID target) {
-        return new PutawayTaskView(UUID.randomUUID(), RECEIPT, LINE, SKU, 100, null, target, status);
-    }
-
     private StockPackage cartonAt(String locationCode) {
-        return new StockPackage(carton, LPN, UUID.randomUUID(), UUID.randomUUID(), CARTON_UNITS, CARTON_UNITS,
-                new LocationId(locationCode), StockPackageStatus.IN_STOCK, LINE, null, 0L);
+        // Received on the task's receipt line and still to be put away: INBOUND, in the receipt's lot.
+        return new StockPackage(carton, LPN, new Sku(SKU), UUID.randomUUID(), UUID.randomUUID(), CARTON_UNITS, NOW,
+                new LocationId(locationCode), StockPackageStatus.IN_STOCK, StockStatus.INBOUND, LOT, "L1", NOW, LINE,
+                null, List.of(), 0L);
     }
 
     private static StorageLocationView location(UUID id, Kind kind, UUID warehouse, String code, boolean usable) {
@@ -168,13 +164,10 @@ class PutawayServiceConfirmTest {
     @BeforeEach
     void aReceivedCartonWaitsInTheReceivingArea() {
         StockMovement received = new StockMovement(UUID.randomUUID(), StockMovement.MovementType.RECEIPT, new Sku(SKU),
-                "L1", null, new LocationId(RCV), CARTON_UNITS, StockStatus.INBOUND,
-                StockMovement.ReferenceType.GOODS_RECEIPT_LINE, LINE, null, null, NOW).ofLot(LOT);
+                "L1", null, new LocationId(RCV), StockStatus.INBOUND,
+                StockMovement.ReferenceType.GOODS_RECEIPT_LINE, LINE, null, null, NOW, carton).ofLot(LOT);
         when(ledger.findByReference(any(), any(), eq(LINE))).thenReturn(Optional.of(received));
-        when(ledger.findLooseByReferences(any(), any(), anyCollection())).thenReturn(Map.of(LINE, received));
-        when(ledger.findLooseByReference(any(), any(), eq(LINE))).thenReturn(Optional.of(received));
         when(stockPackages.findAllById(anyCollection())).thenReturn(List.of(cartonAt(RCV)));
-        when(stockPackages.onHandOf(anyCollection())).thenReturn(Map.of(carton, CARTON_UNITS));
         when(occupancy.needsOf(anyCollection())).thenReturn(Map.of(carton.value(), CARTON));
         when(warehouses.findLocation(RCV)).thenReturn(Optional.of(location(UUID.randomUUID(), Kind.AREA, WAREHOUSE,
                 RCV, true)));
@@ -317,37 +310,6 @@ class PutawayServiceConfirmTest {
             WithCurrentUser.run(clerkOf("HN"), () ->
                     assertThat(codeOf(() -> service.confirm(done.id(), BIN, LPN, CLERK)))
                             .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE));
-        }
-    }
-
-    /**
-     * Loose tasks were opened before receipts put every unit into a carton and closed before the stock was boxed
-     * (V20261111000110). One left PENDING would have no carton to scan and no loose stock to move, so it is refused
-     * instead of being put away by a quantity.
-     */
-    @Nested
-    @DisplayName("a historical loose task")
-    class HistoricalLooseTask {
-
-        @Test
-        @DisplayName("is refused with VALIDATION_FAILED, and nothing moves")
-        void refused() {
-            PutawayTaskView task = stubbed(looseTask("PENDING", null));
-
-            assertThat(codeOf(() -> service.confirm(task.id(), BIN, LPN, CLERK)))
-                    .isEqualTo(ErrorCode.VALIDATION_FAILED);
-            nothingMoved();
-            verify(occupancy, never()).lockBin(anyString());
-        }
-
-        @Test
-        @DisplayName("one already done is still PUTAWAY_TASK_DONE: the status is said before the task's shape")
-        void doneIsSaidFirst() {
-            PutawayTaskView task = stubbed(looseTask("DONE", binId));
-
-            assertThat(codeOf(() -> service.confirm(task.id(), BIN, null, CLERK)))
-                    .isEqualTo(ErrorCode.PUTAWAY_TASK_DONE);
-            nothingMoved();
         }
     }
 
@@ -657,7 +619,7 @@ class PutawayServiceConfirmTest {
             assertThat(view.sourceLocationCode()).isEqualTo(RCV);
             assertThat(view.lpn()).isEqualTo(LPN);
             assertThat(view.lotNumber()).isEqualTo("L1");
-            verify(ledger, never()).sumQuantityByReference(anyCollection(), any(), any());
+            verify(ledger, never()).countByReference(anyCollection(), any(), any());
         }
 
         @Test

@@ -111,81 +111,43 @@ class CycleCountIntegrationTest {
 
     // ------------------------------------------------------------------ fixtures
 
-    /**
-     * A row in no carton: the history's shape, which no count plans any more - emptied, the only kind the table keeps
-     * since V20261117000100 (ck_stock_item_whole_cartons).
-     */
-    private UUID loose(String location) {
-        UUID id = Identifiers.newId();
-        tx.executeWithoutResult(s -> jdbc.update("""
-                insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand,
-                    reserved, status, version, created_at) values (?, ?, ?, ?, ?, 0, 0, 'AVAILABLE', 0, now())""",
-                id, sku, location, lot, Timestamp.from(EARLY)));
-        return id;
-    }
-
-    /** A whole carton of the SKU's standard count at {@code location}, IN_STOCK, with its one row holding all of it. */
+    /** A whole carton of the SKU's standard count at {@code location}: IN_STOCK, AVAILABLE, of the test's lot. */
     private UUID carton(String location, String name) {
         UUID id = Identifiers.newId();
-        tx.executeWithoutResult(s -> {
-            jdbc.update("""
-                    insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
-                        received_qty, location_code, status) values (?, ?, ?, ?, ?, ?, ?, 'IN_STOCK')""",
-                    id, lpn(name), item, cartonUnit, CARTON_FACTOR, CARTON_FACTOR, location);
-            jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, lot_number, received_at,
-                        on_hand, reserved, status, version, created_at, stock_package_id)
-                    values (?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now(), ?)""",
-                    Identifiers.newId(), sku, location, lot, Timestamp.from(EARLY), CARTON_FACTOR, id);
-        });
+        tx.executeWithoutResult(s -> jdbc.update("""
+                insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
+                    counted_at, location_code, status, stock_status, lot_id, received_at)
+                values (?, ?, ?, ?, ?, now(), ?, 'IN_STOCK', 'AVAILABLE', ?, ?)""",
+                id, lpn(name), item, cartonUnit, CARTON_FACTOR, location,
+                com.stockflow.support.CartonRows.lot(jdbc, sku, lot, EARLY), Timestamp.from(EARLY)));
         return id;
     }
 
-    /**
-     * The carton and its rows moved whole to another bin, in one transaction as the commit-time carton check requires
-     * (as {@code StockPackageSchemaMigrationTest} moves one).
-     */
+    /** The carton moved whole to another bin (as {@code StockPackageSchemaMigrationTest} moves one). */
     private void moveWhole(UUID carton, String location) {
-        tx.executeWithoutResult(s -> {
-            jdbc.update("update inventory.stock_package set location_code = ? where id = ?", location, carton);
-            jdbc.update("update inventory.stock_item set location_code = ? where stock_package_id = ?", location,
-                    carton);
-        });
+        tx.executeWithoutResult(s ->
+                jdbc.update("update inventory.stock_package set location_code = ? where id = ?", location, carton));
     }
 
-    /** The carton emptied as a last pick would leave it, in one transaction for the commit-time carton check. */
+    /** The carton out of stock as a pick leaves it: CONSUMED, with no stock status. */
     private void consumeWhole(UUID carton) {
-        tx.executeWithoutResult(s -> {
-            jdbc.update("update inventory.stock_item set on_hand = 0 where stock_package_id = ?", carton);
-            jdbc.update("update inventory.stock_package set status = 'CONSUMED', closed_at = now() where id = ?",
-                    carton);
-        });
+        tx.executeWithoutResult(s -> jdbc.update("update inventory.stock_package set status = 'CONSUMED',"
+                + " stock_status = null, closed_at = now() where id = ?", carton));
     }
 
     /** The carton gone missing, as an approved count shortage leaves it. */
     private void loseWhole(UUID carton) {
-        tx.executeWithoutResult(s -> {
-            jdbc.update("update inventory.stock_item set on_hand = 0 where stock_package_id = ?", carton);
-            jdbc.update("update inventory.stock_package set status = 'LOST', closed_at = now() where id = ?", carton);
-        });
+        tx.executeWithoutResult(s -> jdbc.update("update inventory.stock_package set status = 'LOST',"
+                + " stock_status = null, closed_at = now() where id = ?", carton));
     }
 
     /**
-     * A LOST carton found again, whole, on the row it was emptied from. The row is raised in place, as the application
-     * restocks a carton's own row (StockPackageContents via StockItemRepository.saveMerged): naming the row in
-     * {@code stockflow.same_receipt_merge} for that statement, or the FIFO trigger refuses the raise.
+     * A LOST carton found again, whole, as the application restocks it ({@code StockPackage.found}): in stock and
+     * AVAILABLE again, with the lot and the FIFO date it always had.
      */
     private void findWhole(UUID carton) {
-        tx.executeWithoutResult(s -> {
-            jdbc.update("update inventory.stock_package set status = 'IN_STOCK', closed_at = null where id = ?",
-                    carton);
-            UUID row = jdbc.queryForObject("select id from inventory.stock_item where stock_package_id = ?",
-                    UUID.class, carton);
-            jdbc.queryForObject("select set_config('stockflow.same_receipt_merge', ?, true)", String.class,
-                    row.toString());
-            jdbc.update("update inventory.stock_item set on_hand = ? where id = ?", CARTON_FACTOR, row);
-            jdbc.queryForObject("select set_config('stockflow.same_receipt_merge', '', true)", String.class);
-        });
+        tx.executeWithoutResult(s -> jdbc.update("update inventory.stock_package set status = 'IN_STOCK',"
+                + " stock_status = 'AVAILABLE', closed_at = null where id = ?", carton));
     }
 
     private String lpn(String name) {
@@ -213,7 +175,7 @@ class CycleCountIntegrationTest {
         return tx.execute(s -> {
             LocalDate day = BusinessCalendar.date(Instant.now());
             return repository.save(CycleCount.shortPick(repository.nextNumber(day), WAREHOUSE_HCM,
-                    cartonSlot(carton, location), CARTON_FACTOR, "Short pick: found 1", day));
+                    cartonSlot(carton, location), true, "Short pick: found 1", day));
         });
     }
 
@@ -260,14 +222,14 @@ class CycleCountIntegrationTest {
 
     private List<Map<String, Object>> adjustments() {
         return jdbc.queryForList("""
-                select id, location_code, quantity_delta, status, reason_code, cycle_count_line_id, stock_package_id,
+                select id, location_code, direction, status, reason_code, cycle_count_line_id, stock_package_id,
                        requested_by
-                  from inventory.stock_adjustment where sku = ? order by created_at, quantity_delta""", sku);
+                  from inventory.stock_adjustment where sku = ? order by created_at, direction desc""", sku);
     }
 
     private int onHand(UUID carton) {
-        return jdbc.queryForObject("select coalesce(sum(on_hand), 0) from inventory.stock_item"
-                + " where stock_package_id = ?", Integer.class, carton);
+        return jdbc.queryForObject("select case when status = 'IN_STOCK' then nominal_qty else 0 end"
+                + " from inventory.stock_package where id = ?", Integer.class, carton);
     }
 
     private String status(UUID carton) {
@@ -299,9 +261,8 @@ class CycleCountIntegrationTest {
     // ------------------------------------------------------------------ planning (SCRUM-162)
 
     @Test
-    @DisplayName("a shelf plan has one line per carton in stock under that shelf, MANUAL; a loose row is not counted")
+    @DisplayName("a shelf plan has one line per carton in stock under that shelf, MANUAL")
     void planByShelfGeneratesOneLinePerCarton() {
-        loose(BIN);
         UUID inBin = carton(BIN, "A");
         UUID inBin2 = carton(BIN2, "B");
         carton(A02_BIN, "C");
@@ -317,7 +278,7 @@ class CycleCountIntegrationTest {
         assertThat(count.blind()).isTrue();
         assertThat(count.warehouseId()).isEqualTo(WAREHOUSE_HCM);
         assertThat(planned.skipped()).isEmpty();
-        assertThat(count.lines()).as("a loose row, a consumed carton and shelf A02 are not counted")
+        assertThat(count.lines()).as("a consumed carton and shelf A02 are not counted")
                 .extracting(CycleCountView.Line::locationCode, CycleCountView.Line::sku,
                         CycleCountView.Line::lotNumber, CycleCountView.Line::stockPackageId)
                 .containsExactlyInAnyOrder(tuple(BIN, sku, lot, inBin), tuple(BIN2, sku, lot, inBin2));
@@ -332,8 +293,8 @@ class CycleCountIntegrationTest {
         assertThat(cartonLine(books, inBin).found()).isNull();
         assertThat(cartonLine(books, inBin).lpn()).isEqualTo(lpn("A"));
         assertThat(books.note()).isEqualTo("Fixture count");
-        assertThat(jdbc.queryForList("select expected_qty from inventory.cycle_count_line where cycle_count_id = ?",
-                Integer.class, count.id())).as("the book of a carton is one whole carton").containsOnly(CARTON_FACTOR);
+        assertThat(jdbc.queryForList("select booked from inventory.cycle_count_line where cycle_count_id = ?",
+                Boolean.class, count.id())).as("the book of a carton is the carton, present").containsOnly(true);
     }
 
     @Test
@@ -388,8 +349,7 @@ class CycleCountIntegrationTest {
     @Test
     @DisplayName("a scope with no carton is CYCLE_COUNT_EMPTY_SCOPE, one above the cap CYCLE_COUNT_TOO_LARGE (BR-12)")
     void planRefusesEmptyAndTooLarge() {
-        loose(BIN);
-        assertThat(code(catchThrowable(this::planShelfA01))).as("a loose row alone is no scope")
+        assertThat(code(catchThrowable(this::planShelfA01))).as("no carton in stock is no scope")
                 .isEqualTo(ErrorCode.CYCLE_COUNT_EMPTY_SCOPE);
         assertThat(code(catchThrowable(() -> plan(List.of(), List.of(), List.of(), List.of()))))
                 .as("no criterion at all").isEqualTo(ErrorCode.VALIDATION_FAILED);
@@ -480,7 +440,7 @@ class CycleCountIntegrationTest {
         assertThat(submitted.lines()).as("blind: the counter does not see the variance")
                 .allSatisfy(line -> assertThat(line.adjustments()).isEmpty());
         assertThat(adjustments()).singleElement().satisfies(a -> assertThat(a)
-                .containsEntry("quantity_delta", -CARTON_FACTOR).containsEntry("status", "PENDING_APPROVAL")
+                .containsEntry("direction", "WRITE_OFF").containsEntry("status", "PENDING_APPROVAL")
                 .containsEntry("reason_code", "COUNT_VARIANCE").containsEntry("stock_package_id", gone)
                 .containsEntry("cycle_count_line_id", cartonLine(planned, gone).id())
                 .containsEntry("requested_by", counter));
@@ -488,10 +448,10 @@ class CycleCountIntegrationTest {
         assertThat(cartonLine(books, gone).found()).isFalse();
         assertThat(cartonLine(books, gone).booked()).isTrue();
         assertThat(cartonLine(books, gone).adjustments()).singleElement()
-                .satisfies(a -> assertThat(a.quantityDelta()).isEqualTo(-CARTON_FACTOR));
+                .satisfies(a -> assertThat(a.direction()).isEqualTo(com.stockflow.inventory.internal.domain.AdjustmentDirection.WRITE_OFF));
         assertThat(cartonLine(books, kept).adjustments()).isEmpty();
-        assertThat(jdbc.queryForList("select counted_qty from inventory.cycle_count_line where id = ?", Integer.class,
-                cartonLine(books, gone).id())).as("units are recorded internally, still whole").containsExactly(0);
+        assertThat(jdbc.queryForList("select found from inventory.cycle_count_line where id = ?", Boolean.class,
+                cartonLine(books, gone).id())).as("the line records an answer, not units").containsExactly(false);
 
         operations.approve((UUID) adjustments().get(0).get("id"), manager);
 
@@ -514,8 +474,8 @@ class CycleCountIntegrationTest {
 
         cycleCounts.submit(planned.id(), counter, false);
 
-        assertThat(adjustments()).extracting(m -> m.get("stock_package_id"), m -> m.get("quantity_delta"))
-                .containsExactlyInAnyOrder(tuple(a, -CARTON_FACTOR), tuple(b, -CARTON_FACTOR));
+        assertThat(adjustments()).extracting(m -> m.get("stock_package_id"), m -> m.get("direction"))
+                .containsExactlyInAnyOrder(tuple(a, "WRITE_OFF"), tuple(b, "WRITE_OFF"));
     }
 
     @Test
@@ -569,7 +529,7 @@ class CycleCountIntegrationTest {
         assertThat(books.lines().get(0).found()).isTrue();
         cycleCounts.submit(second.id(), counter, false);
         assertThat(adjustments()).singleElement().satisfies(a -> assertThat(a)
-                .containsEntry("quantity_delta", CARTON_FACTOR).containsEntry("stock_package_id", lostBefore));
+                .containsEntry("direction", "RESTOCK").containsEntry("stock_package_id", lostBefore));
     }
 
     @Test
@@ -587,7 +547,7 @@ class CycleCountIntegrationTest {
 
         assertThat(adjustments()).singleElement().satisfies(a -> assertThat(a)
                 .containsEntry("location_code", BIN2).containsEntry("stock_package_id", box)
-                .containsEntry("quantity_delta", -CARTON_FACTOR).containsEntry("cycle_count_line_id", line));
+                .containsEntry("direction", "WRITE_OFF").containsEntry("cycle_count_line_id", line));
         assertThat(cartonLine(cycleCounts.get(planned.id(), true), box).locationCode()).isEqualTo(BIN2);
     }
 
@@ -732,8 +692,8 @@ class CycleCountIntegrationTest {
         assertThat(cartonLine(books, box).booked()).as("a LOST carton is not in the books").isFalse();
         cycleCounts.submit(second.id(), counter, false);
         List<Map<String, Object>> found = adjustments().stream()
-                .filter(a -> box.equals(a.get("stock_package_id")) && ((Integer) a.get("quantity_delta")) > 0).toList();
-        assertThat(found).singleElement().satisfies(a -> assertThat(a).containsEntry("quantity_delta", CARTON_FACTOR));
+                .filter(a -> box.equals(a.get("stock_package_id")) && "RESTOCK".equals(a.get("direction"))).toList();
+        assertThat(found).singleElement().satisfies(a -> assertThat(a).containsEntry("direction", "RESTOCK"));
         operations.approve((UUID) found.get(0).get("id"), manager);
 
         assertThat(status(box)).isEqualTo("IN_STOCK");
@@ -841,13 +801,11 @@ class CycleCountIntegrationTest {
     void shortPickFreezesOnlyThatCarton() {
         carton(BIN, "A");
         UUID box = carton(BIN, "B");
-        UUID boxRow = jdbc.queryForObject("select id from inventory.stock_item where stock_package_id = ?", UUID.class,
-                box);
 
         shortPick(box, BIN);
 
         assertThat(frozen()).singleElement().satisfies(f -> {
-            assertThat(f.stockItemId()).isEqualTo(boxRow);
+            assertThat(f.stockPackageId()).isEqualTo(box);
             assertThat(f.free()).isEqualTo(CARTON_FACTOR);
         });
         assertThat(atp()).as("the other carton stays sellable").isEqualTo(CARTON_FACTOR);
@@ -1115,7 +1073,8 @@ class CycleCountIntegrationTest {
                 com.stockflow.inventory.api.StockAdjustmentReason.DAMAGED);
 
         Throwable refused = catchThrowable(() -> operations.requestCountVariance(UUID.randomUUID(),
-                cartonSlot(x, BIN), -CARTON_FACTOR, counter, "CC-1"));
+                cartonSlot(x, BIN), com.stockflow.inventory.internal.domain.AdjustmentDirection.WRITE_OFF, counter,
+                "CC-1"));
 
         assertThat(code(refused)).isEqualTo(ErrorCode.STOCK_PACKAGE_ADJUSTMENT_PENDING);
         assertThat(adjustments()).hasSize(1);

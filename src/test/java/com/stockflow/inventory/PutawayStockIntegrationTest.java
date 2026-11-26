@@ -70,11 +70,9 @@ class PutawayStockIntegrationTest {
     }
 
     @Test
-    @DisplayName("a carton put away as AVAILABLE stays one whole carton: same row, now AVAILABLE at the bin")
+    @DisplayName("a carton put away as AVAILABLE stays one whole carton: the same carton, now AVAILABLE at the bin")
     void cartonPutAwayAsAvailableStaysWhole() {
         UUID cartonId = jdbc.queryForObject("select id from inventory.stock_package where lpn = ?", UUID.class, lpn);
-        UUID row = jdbc.queryForObject("select id from inventory.stock_item where stock_package_id = ?", UUID.class,
-                cartonId);
 
         inventory.reclassifyStockPackages(new ReclassifyStockPackagesCommand(lpn, BIN, StockDisposition.AVAILABLE,
                 MoveReference.PUTAWAY_TASK, Identifiers.newId(), clerk, null));
@@ -82,8 +80,8 @@ class PutawayStockIntegrationTest {
         assertThat(jdbc.queryForObject("select location_code || ':' || status"
                 + " from inventory.stock_package where lpn = ?", String.class, lpn))
                 .isEqualTo(BIN + ":IN_STOCK");
-        assertThat(jdbc.queryForObject("select id || ':' || location_code || ':' || status || ':' || on_hand"
-                + " from inventory.stock_item where stock_package_id = ?", String.class, cartonId))
-                .isEqualTo(row + ":" + BIN + ":AVAILABLE:1000");
+        assertThat(jdbc.queryForObject("select location_code || ':' || stock_status || ':' || nominal_qty"
+                + " from inventory.stock_package where id = ?", String.class, cartonId))
+                .isEqualTo(BIN + ":AVAILABLE:1000");
     }
 }

@@ -9,8 +9,9 @@ import java.util.List;
  * 2026-11-14 plan, BE2-C) - what the reporting module lays out as the stock summary ("xuất–nhập–tồn").
  *
  * <p>Every change of stock writes one {@code inventory.stock_movement} line (20 BR-16), naming the location the pieces
- * left and the one they reached. A warehouse is the prefix of its location codes (06 BR-13), so a line changes a
- * warehouse W by {@code quantity × ([to in W] − [from in W])}: a receipt or a return is +q, a pick −q, an adjustment
+ * left and the one they reached. A line is one whole carton, counted here for its standard count of units
+ * ({@code stock_package.nominal_qty}; the ledger keeps no quantity, ADR-0011). A warehouse is the prefix of its
+ * location codes (06 BR-13), so a line changes a warehouse W by {@code units × ([to in W] − [from in W])}: a receipt or a return is +q, a pick −q, an adjustment
  * ±q, and a move inside W - putaway, a carton move, a status change, a pick to the staging area - is zero without
  * being listed. Opening is the sum of that before the period, closing the sum up to its end; there is no stored
  * balance to drift from the ledger.</p>

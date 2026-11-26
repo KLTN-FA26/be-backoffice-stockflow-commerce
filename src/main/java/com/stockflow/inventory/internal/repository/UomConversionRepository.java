@@ -16,7 +16,7 @@ import java.util.UUID;
 
 /**
  * {@code inventory.uom_conversions}: the cartons of a catalogue variant, one active (kltn-docs 01 BR-03), keyed by
- * variant since V20261231000100 (owner decision Q1). A SKU's cartons are its variant's, read through
+ * variant since V20261231000700 (owner decision Q1). A SKU's cartons are its variant's, read through
  * {@code inventory_items.variant_id}: asked for a customer's SKU they come back under that SKU, so a caller keyed by
  * SKU needs nothing else. Since V20261215000100 the item has no size or weight of its own: only the carton is measured.
  */

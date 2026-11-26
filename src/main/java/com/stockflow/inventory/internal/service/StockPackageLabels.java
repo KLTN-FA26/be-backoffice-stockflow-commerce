@@ -9,7 +9,6 @@ import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
-import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.repository.UomConversionRepository;
 import com.stockflow.inventory.spi.PickedNotHandedOver;
 import com.stockflow.inventory.spi.ReceiptLineLots;
@@ -55,8 +54,6 @@ public class StockPackageLabels {
 
     private final StockPackageRepository stockPackages;
     private final UomConversionRepository units;
-    /** The SKU each carton's own item is: a carton row is shared by every SKU of its variant (owner decision Q1). */
-    private final InventoryPolicyRepository items;
     /** Fulfillment's answer to which consumed cartons are picked and not handed over yet; absent in a module test. */
     private final ObjectProvider<PickedNotHandedOver> picked;
     /** Product's answer to what each SKU is called; absent in a module test. */
@@ -65,12 +62,10 @@ public class StockPackageLabels {
     private final ObjectProvider<ReceiptLineLots> receiptLots;
 
     public StockPackageLabels(StockPackageRepository stockPackages, UomConversionRepository units,
-                              InventoryPolicyRepository items,
                               ObjectProvider<PickedNotHandedOver> picked, ObjectProvider<SkuNames> names,
                               ObjectProvider<ReceiptLineLots> receiptLots) {
         this.stockPackages = stockPackages;
         this.units = units;
-        this.items = items;
         this.picked = picked;
         this.names = names;
         this.receiptLots = receiptLots;
@@ -100,17 +95,14 @@ public class StockPackageLabels {
         Map<UUID, UomConversion> unitsById = units.findAll(cartons.stream().map(StockPackage::uomConversionId)
                         .distinct().toList()).stream()
                 .collect(Collectors.toMap(UomConversion::id, Function.identity()));
-        // The label names the carton's own SKU - a customer's SKU, printed to their design - never its carton row's,
-        // which every SKU of the variant shares (owner decision Q1).
-        Map<UUID, String> skuByItem = items.skusOfItems(cartons.stream().map(StockPackage::inventoryItemId)
-                .distinct().toList());
-        Map<String, String> namesBySku = namesOf(skuByItem.values());
+        // A carton's SKU is its own item's: its carton row is its variant's, shared by every SKU of the variant (Q1).
+        Map<String, String> namesBySku = namesOf(cartons.stream().map(carton -> carton.sku().code()).toList());
         Map<StockPackageId, String> lots = lotsOf(cartons);
         return cartons.stream().sorted(Comparator.comparing(StockPackage::lpn)).map(carton -> {
             UomConversion unit = unitsById.get(carton.uomConversionId());
-            String sku = skuByItem.get(carton.inventoryItemId());
+            String sku = carton.sku().code();
             return new StockPackageLabel(carton.lpn(), sku, namesBySku.get(sku), lots.get(carton.id()),
-                    carton.receivedQty(), carton.nominalQty(), unit.unitOfMeasure());
+                    carton.counted(), carton.nominalQty(), unit.unitOfMeasure());
         }).toList();
     }
 
@@ -120,12 +112,13 @@ public class StockPackageLabels {
     }
 
     /**
-     * Each carton's lot: its stock row's, else - a carton still being counted has no row - its receipt line's. A
-     * returned carton's row is in its own lot, which is why the row comes first.
+     * Each carton's lot: its own, else - a carton still being counted has none yet - its receipt line's. A carton
+     * keeps the lot it went into stock with, which is why its own comes first.
      */
     private Map<StockPackageId, String> lotsOf(List<StockPackage> cartons) {
-        Map<StockPackageId, String> lots = new HashMap<>(stockPackages.lotsOf(cartons.stream()
-                .map(StockPackage::id).toList()));
+        Map<StockPackageId, String> lots = new HashMap<>();
+        cartons.stream().filter(carton -> carton.lotNumber() != null)
+                .forEach(carton -> lots.put(carton.id(), carton.lotNumber()));
         List<StockPackage> withoutRow = cartons.stream()
                 .filter(carton -> !lots.containsKey(carton.id()) && carton.goodsReceiptLineId() != null).toList();
         ReceiptLineLots receiving = withoutRow.isEmpty() ? null : receiptLots.getIfAvailable();

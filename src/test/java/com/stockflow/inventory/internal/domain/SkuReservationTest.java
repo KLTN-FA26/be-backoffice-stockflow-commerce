@@ -8,7 +8,6 @@ import com.stockflow.contracts.StockReserved;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -17,23 +16,28 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * SCRUM-152 / 4B-7: the soft, SKU-level hold an order of a contract takes at its shipping warehouse, and the allocation
- * it turns into at release. The checkout reservation with a payment deadline is gone (V20261117000300).
+ * it turns into at release. The checkout reservation with a payment deadline is gone (V20261117000300), and a hold
+ * counts cartons of one count (ADR-0011, V20261231000500): its units are derived.
  */
 class SkuReservationTest {
 
     private static final Sku SKU = new Sku("LY-GIAY-DEMO-12OZ-XANH");
     private static final Instant NOW = Instant.parse("2026-10-17T03:00:00Z");
 
-    private static SkuReservation hold(int quantity, int available) {
-        return SkuReservation.holdAt("HCM", SKU, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(quantity), available,
-                NOW);
+    /** Cartons of 5, the count of {@link #stock}'s carton. */
+    private static final int PER_CARTON = 5;
+
+    /** A hold of {@code cartons} cartons of 5, {@code availableCartons} such cartons being left to promise. */
+    private static SkuReservation hold(int cartons, int availableCartons) {
+        return SkuReservation.holdAt("HCM", SKU, UUID.randomUUID(), UUID.randomUUID(), cartons, PER_CARTON,
+                availableCartons, NOW);
     }
 
-    /** A carton's row: only a carton's row takes an allocation (kltn-docs 20 BR-14). */
-    private static StockItem stock(int onHand) {
-        return new StockItem(StockItemId.newId(), SKU, new LocationId("HCM-A01-1-A"), "LOT-1", Quantity.of(onHand),
-                StockStatus.AVAILABLE, java.util.List.of(), 0L, NOW, UUID.randomUUID(),
-                new StockPackageId(UUID.randomUUID()));
+    /** A free AVAILABLE carton of {@code units}: what takes an allocation (kltn-docs 20 BR-14). */
+    private static StockPackage stock(int units) {
+        return new StockPackage(new StockPackageId(UUID.randomUUID()), "LPN-SKU-RES-1", SKU, UUID.randomUUID(),
+                UUID.randomUUID(), units, NOW, new LocationId("HCM-A01-1-A"), StockPackageStatus.IN_STOCK,
+                StockStatus.AVAILABLE, UUID.randomUUID(), "LOT-1", NOW, null, null, java.util.List.of(), 0L);
     }
 
     @Test
@@ -41,13 +45,33 @@ class SkuReservationTest {
     void holdsWithinAtp() {
         SkuReservation reservation = hold(3, 3);
         assertThat(reservation.status()).isEqualTo(ReservationStatus.HELD);
+        assertThat(reservation.cartons()).isEqualTo(3);
+        assertThat(reservation.unitsPerCarton()).isEqualTo(PER_CARTON);
+        assertThat(reservation.quantity()).as("units are derived: cartons times their count").isEqualTo(Quantity.of(15));
         assertThat(reservation.pullDomainEvents()).singleElement()
                 .satisfies(e -> assertThat(((StockEvent) e).payload()).isInstanceOfSatisfying(StockReserved.class,
-                        reserved -> assertThat(reserved.locationCode()).isNull()));
-        assertThatThrownBy(() -> hold(4, 3)).isInstanceOfSatisfying(InsufficientStockException.class,
-                refused -> assertThat(refused.available()).isEqualTo(3));
+                        reserved -> {
+                            assertThat(reserved.locationCode()).isNull();
+                            assertThat(reserved.quantity()).as("the event still speaks units").isEqualTo(15);
+                        }));
+        assertThatThrownBy(() -> hold(4, 3)).isInstanceOfSatisfying(InsufficientStockException.class, refused -> {
+            assertThat(refused.requested()).as("a shortage speaks units").isEqualTo(20);
+            assertThat(refused.available()).isEqualTo(15);
+        });
         assertThatThrownBy(() -> hold(1, -2)).isInstanceOfSatisfying(InsufficientStockException.class,
                 refused -> assertThat(refused.available()).isZero());
+    }
+
+    @Test
+    @DisplayName("ADR-0011: a hold is at least one carton of at least one unit, and knows what a whole carton of it is")
+    void countsCartons() {
+        assertThatThrownBy(() -> hold(0, 3)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> SkuReservation.holdAt("HCM", SKU, UUID.randomUUID(), UUID.randomUUID(), 1, 0, 3, NOW))
+                .isInstanceOf(IllegalArgumentException.class);
+        SkuReservation reservation = hold(3, 3);
+        assertThat(reservation.isWholeCartons(10)).isTrue();
+        assertThat(reservation.isWholeCartons(0)).isTrue();
+        assertThat(reservation.isWholeCartons(7)).as("7 units is not a number of cartons of 5").isFalse();
     }
 
     @Test
@@ -63,11 +87,12 @@ class SkuReservationTest {
 
         assertThat(kept.id()).isNotEqualTo(reservation.id());
         assertThat(kept.status()).isEqualTo(ReservationStatus.HELD);
-        assertThat(kept.quantity()).isEqualTo(Quantity.of(8));
+        assertThat(kept.cartons()).isEqualTo(8);
+        assertThat(kept.unitsPerCarton()).as("cartons of the same count as the hold it replaces").isEqualTo(PER_CARTON);
+        assertThat(kept.quantity()).isEqualTo(Quantity.of(40));
         assertThat(kept.orderId()).isEqualTo(reservation.orderId());
         assertThat(kept.warehouseCode()).isEqualTo("HCM");
         assertThat(kept.requestId()).isEqualTo(request);
-        assertThat(kept.expiresAt()).isNull();
         assertThatThrownBy(() -> reservation.keeping(10, UUID.randomUUID(), NOW))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> reservation.keeping(0, UUID.randomUUID(), NOW))
@@ -78,14 +103,14 @@ class SkuReservationTest {
     @DisplayName("4B-7 (20 §5.6, BR-17): held at a warehouse for an order of a contract, with no deadline")
     void heldAtAWarehouse() {
         SkuReservation reservation = SkuReservation.holdAt("HCM", SKU, UUID.randomUUID(), UUID.randomUUID(),
-                Quantity.of(100), 150, NOW);
+                100, 1000, 150, NOW);
         assertThat(reservation.warehouseCode()).isEqualTo("HCM");
-        assertThat(reservation.expiresAt()).as("no deadline: it lasts until release or cancellation").isNull();
-        assertThat(reservation.isExpiredAt(NOW.plus(Duration.ofDays(365)))).isFalse();
-        assertThat(reservation.status()).isEqualTo(ReservationStatus.HELD);
+        assertThat(reservation.status()).as("no deadline: it lasts until release or cancellation")
+                .isEqualTo(ReservationStatus.HELD);
+        assertThat(reservation.quantity()).isEqualTo(Quantity.of(100_000));
         assertThatThrownBy(() -> SkuReservation.holdAt("HCM", SKU, UUID.randomUUID(), UUID.randomUUID(),
-                Quantity.of(100), 99, NOW)).isInstanceOfSatisfying(InsufficientStockException.class,
-                refused -> assertThat(refused.available()).isEqualTo(99));
+                100, 1000, 99, NOW)).isInstanceOfSatisfying(InsufficientStockException.class,
+                refused -> assertThat(refused.available()).isEqualTo(99_000));
     }
 
     @Test
@@ -105,38 +130,42 @@ class SkuReservationTest {
     }
 
     @Test
-    @DisplayName("a HELD hold of before V20261117000300 still reads as expired past its deadline; a hold of now never")
-    void legacyDeadline() {
-        SkuReservation legacy = new SkuReservation(ReservationId.newId(), SKU, UUID.randomUUID(), UUID.randomUUID(),
-                UUID.randomUUID(), Quantity.of(2), NOW, NOW.plus(Duration.ofMinutes(30)), ReservationStatus.HELD, null,
-                null);
-        assertThat(legacy.isExpiredAt(NOW.plus(Duration.ofMinutes(30)))).isTrue();
-        assertThat(legacy.isExpiredAt(NOW)).isFalse();
-        assertThat(hold(2, 10).isExpiredAt(NOW.plus(Duration.ofDays(365)))).isFalse();
-    }
-
-    @Test
-    @DisplayName("allocation: a pinned hold on the stock item pointing back at the reservation, which closes ALLOCATED")
+    @DisplayName("allocation: one whole carton pointing back at the reservation, which closes ALLOCATED")
     void allocation() {
         SkuReservation reservation = hold(4, 10);
-        StockItem item = stock(5);
+        StockPackage item = stock(5);
         UUID request = UUID.randomUUID();
 
-        Reservation allocation = item.allocate(reservation, request, Quantity.of(4), NOW);
+        Reservation allocation = item.allocate(reservation, request, NOW);
         reservation.markAllocated(NOW);
 
         assertThat(allocation.allocatedFrom()).isEqualTo(reservation.id().value());
         assertThat(allocation.orderId()).isEqualTo(reservation.orderId());
-        assertThat(allocation.isPinned()).isTrue();
-        assertThat(item.reserved()).isEqualTo(Quantity.of(4));
-        assertThat(item.allocate(reservation, request, Quantity.of(4), NOW)).as("replayed").isSameAs(allocation);
+        assertThat(allocation.unitsPerCarton()).isEqualTo(PER_CARTON);
+        assertThat(item.unitsHeld()).as("the carton is taken whole").isEqualTo(5);
+        assertThat(item.allocate(reservation, request, NOW)).as("replayed").isSameAs(allocation);
         assertThat(reservation.status()).isEqualTo(ReservationStatus.ALLOCATED);
-        assertThat(reservation.expiresAt()).isNull();
-        assertThatThrownBy(() -> item.allocate(hold(2, 10), UUID.randomUUID(), Quantity.of(2), NOW))
-                .isInstanceOf(InsufficientStockException.class);
+        assertThatThrownBy(() -> item.allocate(hold(2, 10), UUID.randomUUID(), NOW))
+                .as("a carton another order holds is not free").isInstanceOf(InsufficientStockException.class);
         assertThatThrownBy(() -> stock(5).allocate(SkuReservation.holdAt("HCM", new Sku("OTHER"), UUID.randomUUID(),
-                UUID.randomUUID(), Quantity.of(1), 1, NOW), UUID.randomUUID(), Quantity.of(1), NOW))
+                UUID.randomUUID(), 1, PER_CARTON, 1, NOW), UUID.randomUUID(), NOW))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("ADR-0011: a hold of cartons of 5 does not take a carton of another count, larger or smaller")
+    void allocationWantsACartonOfTheHoldsCount() {
+        SkuReservation reservation = hold(1, 10);
+
+        assertThatThrownBy(() -> stock(10).allocate(reservation, UUID.randomUUID(), NOW))
+                .as("a carton of 10 is not broken for a hold of cartons of 5")
+                .isInstanceOfSatisfying(InsufficientStockException.class, refused -> {
+                    assertThat(refused.requested()).isEqualTo(5);
+                    assertThat(refused.available()).isZero();
+                });
+        assertThatThrownBy(() -> stock(3).allocate(reservation, UUID.randomUUID(), NOW))
+                .isInstanceOf(InsufficientStockException.class);
+        assertThat(stock(5).allocate(reservation, UUID.randomUUID(), NOW).quantity()).isEqualTo(Quantity.of(5));
     }
 
     @Test
@@ -149,16 +178,16 @@ class SkuReservationTest {
         var newReceipt = carton(bin, null, "2025-06-01T00:00:00Z");
 
         var plan = StockAllocator.plan("LY-GIAY-DEMO-12OZ-XANH", java.util.List.of(newReceipt, late, oldReceipt, early),
-                Quantity.of(20));
+                4, 5);
 
-        assertThat(plan.lines()).extracting(StockAllocator.AllocationLine::stockItemId).containsExactly(
-                early.stockItemId(), oldReceipt.stockItemId(), newReceipt.stockItemId(), late.stockItemId());
+        assertThat(plan.lines()).extracting(StockAllocator.AllocationLine::stockPackageId).containsExactly(
+                early.stockPackageId(), oldReceipt.stockPackageId(), newReceipt.stockPackageId(), late.stockPackageId());
         assertThat(plan.isShort()).isFalse();
     }
 
     /** A sealed carton of 5. */
     private static StockAllocator.Candidate carton(LocationId bin, String lot, String received) {
-        return new StockAllocator.Candidate(StockItemId.newId(), bin, lot, StockStatus.AVAILABLE,
-                Quantity.of(5), Instant.parse(received), java.util.UUID.randomUUID(), true);
+        return new StockAllocator.Candidate(new StockPackageId(java.util.UUID.randomUUID()), bin, lot,
+                StockStatus.AVAILABLE, 5, Instant.parse(received));
     }
 }

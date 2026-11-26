@@ -25,7 +25,7 @@ import java.util.stream.Collectors;
 
 /**
  * See {@link UomConversionService}. A carton is its catalogue variant's and every SKU of the variant - its customers'
- * SKUs included - is packed in it (owner decision Q1, V20261231000100). Writes therefore take the advisory lock of every
+ * SKUs included - is packed in it (owner decision Q1, V20261231000700). Writes therefore take the advisory lock of every
  * SKU of the variant, sorted (the lock logistics edits and every carton move of a SKU take): two people declaring or
  * re-activating a carton are serialised and asked about in turn (below) rather than racing to the unique index, and a
  * new size is judged against the bins while no carton of any of those SKUs moves (06 BR-23).

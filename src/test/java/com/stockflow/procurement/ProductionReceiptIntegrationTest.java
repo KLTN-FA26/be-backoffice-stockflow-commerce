@@ -232,7 +232,7 @@ class ProductionReceiptIntegrationTest {
 
     /**
      * A customer SKU as the design approval leaves it, made to a design the customer really confirmed, packed in its
-     * catalogue variant's CARTON of 50 (owner decision Q1, V20261231000100: the carton is the variant's, the customer's
+     * catalogue variant's CARTON of 50 (owner decision Q1, V20261231000700: the carton is the variant's, the customer's
      * SKU has none of its own).
      */
     private IssuedSku issueSku() throws Exception {
@@ -721,11 +721,10 @@ class ProductionReceiptIntegrationTest {
         assertThat(registration(receipt.id())).isEqualTo("CONFIRMED");
         // INBOUND in its cartons at the receiving area, nothing loose (BR-04, BR-12).
         assertThat(jdbc.queryForList("""
-                SELECT si.on_hand FROM inventory.stock_item si
-                 WHERE si.sku = ? AND si.status = 'INBOUND' AND si.location_code = ? AND si.stock_package_id IS NOT NULL""",
+                SELECT p.nominal_qty FROM inventory.stock_package p
+                 WHERE p.inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = ?)
+                   AND p.status = 'IN_STOCK' AND p.stock_status = 'INBOUND' AND p.location_code = ?""",
                 Integer.class, sku.sku(), a.receiving())).hasSize(5).containsOnly(PER_CARTON);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_item WHERE sku = ? "
-                + "AND stock_package_id IS NULL", Long.class, sku.sku())).isZero();
         assertThat(jdbc.queryForList("SELECT DISTINCT status FROM inventory.stock_package WHERE "
                 + "goods_receipt_line_id = ? AND status <> 'VOID'", String.class, confirmed.lines().getFirst().id()))
                 .containsExactly("IN_STOCK");
@@ -737,9 +736,11 @@ class ProductionReceiptIntegrationTest {
                 .doesNotContainKey("goods_receipt_id")   // dropped with the GOODS_RECEIPT origin (V20261214000200)
                 .doesNotContainKey("purchase_order_id")   // dropped with purchasing (V20261117000200)
                 .containsEntry("warehouse_id", a.id());
-        assertThat(jdbc.queryForList("SELECT DISTINCT lot_id FROM inventory.stock_item WHERE sku = ?", UUID.class,
+        assertThat(jdbc.queryForList("SELECT DISTINCT lot_id FROM inventory.stock_package WHERE status = 'IN_STOCK' "
+                + "AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = ?)", UUID.class,
                 sku.sku())).containsExactly((UUID) lot.get("id"));
-        assertThat(jdbc.queryForList("SELECT DISTINCT lot_number FROM inventory.stock_item WHERE sku = ?",
+        assertThat(jdbc.queryForList("SELECT DISTINCT l.lot_number FROM inventory.stock_package p JOIN "
+                + "inventory.stock_lot l ON l.id = p.lot_id WHERE p.status = 'IN_STOCK' AND l.sku = ?",
                 String.class, sku.sku())).containsExactly(production.code());
 
         // BR-15: still SENT, so in production first - when the goods came - then partly received.
@@ -769,8 +770,9 @@ class ProductionReceiptIntegrationTest {
         assertThat(replayed.lines()).singleElement().extracting(ReceivableProductionOrder.Line::receivedCartons)
                 .isEqualTo(5);
         assertThat(history(production.id())).hasSize(4);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_item WHERE sku = ?", Long.class,
-                sku.sku())).isEqualTo(5);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_package WHERE status = 'IN_STOCK' AND "
+                + "inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = ?)", Long.class,
+                sku.sku())).as("a replay puts no carton into stock twice").isEqualTo(5);
 
         // A second receipt brings the other 7: the same lot, and the production order is received.
         ReceiptView rest = start(after);
@@ -778,9 +780,11 @@ class ProductionReceiptIntegrationTest {
         assertThat(receipts.confirm(rest.id(), clerk).productionOrderStatus()).isEqualTo("RECEIVED");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_lot WHERE sku = ?", Long.class,
                 sku.sku())).as("one lot across receipts (BR-03)").isEqualTo(1);
-        assertThat(jdbc.queryForList("SELECT DISTINCT lot_id FROM inventory.stock_item WHERE sku = ?", UUID.class,
+        assertThat(jdbc.queryForList("SELECT DISTINCT lot_id FROM inventory.stock_package WHERE status = 'IN_STOCK' "
+                + "AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = ?)", UUID.class,
                 sku.sku())).containsExactly((UUID) lot.get("id"));
-        assertThat(jdbc.queryForObject("SELECT sum(on_hand) FROM inventory.stock_item WHERE sku = ?", Long.class,
+        assertThat(jdbc.queryForObject("SELECT sum(nominal_qty) FROM inventory.stock_package WHERE status = 'IN_STOCK' "
+                + "AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = ?)", Long.class,
                 sku.sku())).isEqualTo(12L * PER_CARTON);
         ProductionOrder received = reread(production.id());
         assertThat(received.status()).isEqualTo(ProductionOrderStatus.RECEIVED);
@@ -858,8 +862,9 @@ class ProductionReceiptIntegrationTest {
         Await.until("the receipt to close", Duration.ofSeconds(20), () -> status(receipt.id()).equals("CLOSED"));
         Await.until("the order to hold the cartons put away", Duration.ofSeconds(30),
                 () -> shippingWarehouses.coverage(orderId).lines().getFirst().heldCartons() == 3);
-        assertThat(jdbc.queryForObject("SELECT sum(on_hand) FROM inventory.stock_item WHERE sku = ? "
-                + "AND status = 'AVAILABLE' AND location_code = ?", Long.class, sku.sku(), a.bin()))
+        assertThat(jdbc.queryForObject("SELECT sum(nominal_qty) FROM inventory.stock_package WHERE inventory_item_id = "
+                + "(SELECT id FROM inventory.inventory_items WHERE sku = ?) AND stock_status = 'AVAILABLE' "
+                + "AND location_code = ?", Long.class, sku.sku(), a.bin()))
                 .isEqualTo(3L * PER_CARTON);
         assertThat(reread(production.id()).status()).isEqualTo(ProductionOrderStatus.PARTIALLY_RECEIVED);
     }

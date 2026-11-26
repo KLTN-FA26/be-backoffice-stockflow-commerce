@@ -3,7 +3,7 @@ package com.stockflow.inventory.internal.domain;
 import java.util.UUID;
 
 /**
- * Identifier of a single {@link Reservation} held inside a {@link StockItem}.
+ * Identifier of a single {@link Reservation} held on a {@link StockPackage}.
  *
  * <p>This id is the one internal value that does leave the module, as the {@code reservationId}
  * field of {@code StockReservation} and {@code HoldStockResult} — {@code order} stores it and hands it back to

@@ -9,10 +9,10 @@ public interface StockMovementLog {
     void append(StockMovement movement);
 
     /**
-     * The cartons a document moved whole, and where to: the carton named on the arriving side of its MOVE lines, each
-     * once, in no particular order; empty when it moved none. How a person's repeated carton move is recognised
-     * (kltn-docs 11 BR-07): the request id is the reference, and the cartons and the place say whether the repeat is
-     * the same request.
+     * The cartons a document moved whole, and where to: the carton each of its MOVE lines names, each once, in no
+     * particular order; empty when it moved none. How a person's repeated carton move is recognised (kltn-docs 11
+     * BR-07): the request id is the reference, and the cartons and the place say whether the repeat is the same
+     * request.
      */
     java.util.List<MovedCarton> cartonsMovedBy(StockMovement.ReferenceType referenceType, UUID referenceId);
 
@@ -38,28 +38,9 @@ public interface StockMovementLog {
                                                      StockMovement.ReferenceType referenceType, UUID referenceId);
 
     /**
-     * {@link #findByReference}, among the lines that name no carton on either side: how a retried loose move is
-     * recognised. A document can move a carton whole and loose units under one reference (SCRUM-473: a receipt line's
-     * cartons and its loose remainder); a lookup that also saw the carton's lines would take them for the loose
-     * move's first attempt and skip it, so whichever ran first would decide whether the loose units moved at all.
+     * Cartons a document's ledger lines of these types name, 0 when it has none: a line is one carton. Several types
+     * in one query, because a putaway writes a move, or an in-place status change, under one reference.
      */
-    Optional<StockMovement> findLooseByReference(StockMovement.MovementType type,
-                                                 StockMovement.ReferenceType referenceType, UUID referenceId);
-
-    /**
-     * {@link #findLooseByReference} for many documents at once: for each reference id that has a loose line, its
-     * first (lowest id); one query. A reference with none is absent.
-     */
-    java.util.Map<UUID, StockMovement> findLooseByReferences(StockMovement.MovementType type,
-                                                             StockMovement.ReferenceType referenceType,
-                                                             java.util.Collection<UUID> referenceIds);
-
-    /**
-     * Units a document's ledger lines of these types add up to, 0 when it has none: how much of a putaway task has
-     * been put away, counting every part, loose or in a carton. Several types in one query, because a putaway writes
-     * both moves and in-place status changes under one reference. A document booked in several steps - a return line
-     * whose goods came back in more than one parcel - recognises a retried step by the total it already reached.
-     */
-    int sumQuantityByReference(java.util.Collection<StockMovement.MovementType> types,
-                               StockMovement.ReferenceType referenceType, UUID referenceId);
+    int countByReference(java.util.Collection<StockMovement.MovementType> types,
+                         StockMovement.ReferenceType referenceType, UUID referenceId);
 }

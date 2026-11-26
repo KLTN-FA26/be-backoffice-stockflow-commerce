@@ -319,12 +319,12 @@ SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;
 -- Inventory's holds of both orders, written past inventory's own triggers: what they promise is not checked here.
 SET session_replication_role = replica;
-INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, quantity, reserved_at, status, sku,
-                                         warehouse_code)
-VALUES (md5('qa29:res-own')::uuid, md5('qa29:order')::uuid, gen_random_uuid(), gen_random_uuid(), 50, NOW(), 'HELD',
+INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                         reserved_at, status, sku, warehouse_code)
+VALUES (md5('qa29:res-own')::uuid, md5('qa29:order')::uuid, gen_random_uuid(), gen_random_uuid(), 1, 50, NOW(), 'HELD',
         'QA-DB-OWN', 'HCM'),
-       (md5('qa29:res-other')::uuid, md5('qa29:order2')::uuid, gen_random_uuid(), gen_random_uuid(), 50, NOW(), 'HELD',
-        'QA-DB-OWN', 'HCM');
+       (md5('qa29:res-other')::uuid, md5('qa29:order2')::uuid, gen_random_uuid(), gen_random_uuid(), 1, 50, NOW(),
+        'HELD', 'QA-DB-OWN', 'HCM');
 SET session_replication_role = DEFAULT;
 SELECT pg_temp.expect_fail('BR27 a hold for a line its batch does not carry (another order''s line)', $q$
     INSERT INTO ordering.delivery_batch_hold (reservation_id, delivery_batch_id, order_id, order_line_id)

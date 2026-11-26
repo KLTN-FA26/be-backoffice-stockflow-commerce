@@ -6,7 +6,7 @@ import java.util.UUID;
 /**
  * One carton of a catalogue variant (docs 01 §3, BR-03): how many pieces it holds ({@code factor}, BR-09) and its own
  * size and weight. Every SKU of the variant - its customers' SKUs included - is packed in it (owner decision Q1,
- * V20261231000100). The pieces are counted in the item's own unit ({@code inventory_items.unit_of_measure}); that unit
+ * V20261231000700). The pieces are counted in the item's own unit ({@code inventory_items.unit_of_measure}); that unit
  * has no row of its own since V20261226000200.
  *
  * <p>{@code sku}: the SKU the carton was asked for (a customer's SKU asked for gets its variant's cartons under its own

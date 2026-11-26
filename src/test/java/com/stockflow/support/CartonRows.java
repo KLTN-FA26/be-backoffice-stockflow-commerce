@@ -10,24 +10,25 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Stock as the warehouse keeps it since team plan 4C-2: whole, sealed LPN cartons of the SKU's one carton unit, one
- * stock row each (kltn-docs 20 BR-14, BR-18), always with a lot (BR-22: a missing lot is 'UNTRACED', team plan 4C-3).
+ * Stock as the warehouse keeps it: whole, sealed LPN cartons of the SKU's one carton unit (kltn-docs 20 BR-14,
+ * BR-18), each one row of {@code inventory.stock_package} that is the stock itself (ADR-0011, V20261231000600: there
+ * is no stock row beside it), always with a lot (BR-22: a missing lot is 'UNTRACED', team plan 4C-3).
  * Written as rows, for a test whose subject is not receiving: the way
  * a receipt makes them is {@code ReceivingPackagesIntegrationTest}'s. The SKU's inventory item must exist.
  *
- * <p>A carton is its catalogue variant's (owner decision Q1, V20261231000100): every helper finds or makes the carton
+ * <p>A carton is its catalogue variant's (owner decision Q1, V20261231000700): every helper finds or makes the carton
  * on the variant of the SKU's item ({@code inventory_items.variant_id}), so a customer's SKU and its variant share it,
  * and a carton made "for" a customer's SKU is its variant's.</p>
  */
 public final class CartonRows {
 
-    /** One carton in stock and the stock row inside it. */
-    public record Carton(UUID id, String lpn, UUID stockItemId) {
+    /** One carton in stock. */
+    public record Carton(UUID id, String lpn) {
     }
 
     /**
      * The lot of a carton a test gives none: every unit has one since team plan 5-5 (kltn-docs 01 BR-17), and the
-     * database refuses live stock without it ({@code inventory.enforce_sku_policy}). It is the lot 4C-1 gave the demo
+     * database refuses a carton in stock without it ({@code ck_stock_package_lot}). It is the lot 4C-1 gave the demo
      * stock that had none, so a test's cartons and the demo's are one lot, as the lot-less stock of both once was.
      */
     public static final String DEFAULT_LOT = "UNTRACED";
@@ -36,15 +37,13 @@ public final class CartonRows {
     }
 
     /**
-     * Moves every carton standing at a location whose code starts with {@code codePrefix} to {@code to}, rows and all,
+     * Moves every carton standing at a location whose code starts with {@code codePrefix} to {@code to},
      * by SQL - what a warehouse manager does before taking a place off the layout (kltn-docs 06 BR-04), for a test whose
      * subject is the layout rather than the move. {@code to} should be an area: no bin-fit check applies there.
      *
      * @return how many cartons moved
      */
     public static int moveOut(JdbcTemplate jdbc, String codePrefix, String to) {
-        jdbc.update("UPDATE inventory.stock_item SET location_code = ? WHERE location_code LIKE ? || '%'"
-                + " AND stock_package_id IS NOT NULL", to, codePrefix);
         return jdbc.update("UPDATE inventory.stock_package SET location_code = ? WHERE location_code LIKE ? || '%'",
                 to, codePrefix);
     }
@@ -67,9 +66,8 @@ public final class CartonRows {
     /**
      * The SKU's carton unit of exactly {@code factor} units (code {@code CTN<factor>}), made the SKU's ONE active carton
      * (01 BR-03): made the first time, made active again when it was retired, and the SKU's other active carton is
-     * retired either way (its cartons stay, as history). For a test that needs cartons of several sizes of one SKU
-     * - stock that was loose rows of any size before {@code ck_stock_item_whole_cartons} (V20261117000100) - which
-     * therefore takes the sizes in turn: a carton made earlier stays, in a unit that is no longer the active one.
+     * retired either way (its cartons stay, as history). For a test that needs cartons of several sizes of one SKU,
+     * which therefore takes the sizes in turn: a carton made earlier stays, in a unit that is no longer the active one.
      * {@link #unit} takes whichever carton unit the SKU has active.
      */
     public static UUID unitOf(JdbcTemplate jdbc, String sku, int factor) {
@@ -173,8 +171,7 @@ public final class CartonRows {
 
     /**
      * One carton of exactly {@code units} units of the SKU at {@code location} (its {@link #unitOf} unit), in
-     * {@code status}; a null {@code lotNumber} is {@link #DEFAULT_LOT}. Call inside a transaction: the carton and its
-     * row are checked together at commit.
+     * stock status {@code status}; a null {@code lotNumber} is {@link #DEFAULT_LOT}.
      */
     public static Carton carton(JdbcTemplate jdbc, String sku, String location, int units, String lotNumber,
                                 Instant receivedAt, String status) {
@@ -191,35 +188,55 @@ public final class CartonRows {
         return stock(jdbc, sku, location, count, factor, lotNumber, receivedAt, "AVAILABLE");
     }
 
-    /** The same, with the stock status of the rows. */
+    /** The same, with the stock status of the cartons. */
     public static List<Carton> stock(JdbcTemplate jdbc, String sku, String location, int count, int factor,
                                      String lotNumber, Instant receivedAt, String status) {
         return stockOfUnit(jdbc, sku, unit(jdbc, sku, factor), location, count, lotNumber, receivedAt, status);
     }
 
-    /** {@code count} cartons of exactly this carton unit of the SKU, however many carton units the SKU has. */
+    /**
+     * {@code count} cartons of exactly this carton unit of the SKU, however many carton units the SKU has: IN_STOCK
+     * in stock status {@code status}, of the lot {@link #lot} finds or opens. A null {@code receivedAt} is a carton
+     * whose receipt time is not known (it sorts last in FIFO).
+     */
     public static List<Carton> stockOfUnit(JdbcTemplate jdbc, String sku, UUID unit, String location, int count,
                                            String lotNumber, Instant receivedAt, String status) {
-        int perCarton = jdbc.queryForObject("SELECT factor FROM inventory.uom_conversions WHERE id = ?", Integer.class,
-                unit);
+        UUID lot = lot(jdbc, sku, lotNumber == null ? DEFAULT_LOT : lotNumber, receivedAt);
         List<Carton> made = new ArrayList<>();
         for (int i = 0; i < count; i++) {
             UUID id = Identifiers.newId();
             String lpn = "T-" + id.toString().replace("-", "").substring(0, 20).toUpperCase(java.util.Locale.ROOT);
             jdbc.update("""
                     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
-                                                         received_qty, location_code, status)
-                    SELECT ?, ?, i.id, u.id, u.factor, u.factor, ?, 'IN_STOCK'
+                                                         counted_at, location_code, status, stock_status, lot_id,
+                                                         received_at)
+                    SELECT ?, ?, i.id, u.id, u.factor, NOW(), ?, 'IN_STOCK', ?, ?, ?
                       FROM inventory.uom_conversions u JOIN inventory.inventory_items i ON i.variant_id = u.variant_id
-                     WHERE u.id = ? AND i.sku = ?""", id, lpn, location, unit, sku);
-            UUID row = Identifiers.newId();
-            jdbc.update("""
-                    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved,
-                                                      status, version, created_at, received_at, stock_package_id)
-                    VALUES (?, ?, ?, ?, ?, 0, ?, 0, NOW(), ?, ?)""",
-                    row, sku, location, lotNumber == null ? DEFAULT_LOT : lotNumber, perCarton, status, Timestamp.from(receivedAt), id);
-            made.add(new Carton(id, lpn, row));
+                     WHERE u.id = ? AND i.sku = ?""", id, lpn, location, status, lot,
+                    receivedAt == null ? null : Timestamp.from(receivedAt), unit, sku);
+            made.add(new Carton(id, lpn));
         }
         return made;
+    }
+
+    /**
+     * The lot of {@code sku} with this number and receipt time: the oldest there is, else a new UNTRACED one - what
+     * the application does for a receipt with no origin ({@code StockLots.openUntraced}). A carton names its lot by
+     * id; the lot number is the lot's.
+     */
+    public static UUID lot(JdbcTemplate jdbc, String sku, String lotNumber, Instant receivedAt) {
+        Timestamp at = receivedAt == null ? null : Timestamp.from(receivedAt);
+        List<UUID> found = jdbc.queryForList("""
+                SELECT id FROM inventory.stock_lot
+                 WHERE sku = ? AND lot_number = ? AND received_at IS NOT DISTINCT FROM ?::timestamptz
+                 ORDER BY created_at, id LIMIT 1""", UUID.class, sku, lotNumber, at);
+        if (!found.isEmpty()) {
+            return found.getFirst();
+        }
+        UUID id = Identifiers.newId();
+        jdbc.update("""
+                INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)
+                VALUES (?, ?, ?, ?, 'UNTRACED', NOW())""", id, sku, lotNumber, at);
+        return id;
     }
 }

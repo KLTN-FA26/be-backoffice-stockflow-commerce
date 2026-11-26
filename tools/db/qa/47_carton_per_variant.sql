@@ -1,6 +1,6 @@
 -- =============================================================================
--- Adversarial checks: the carton belongs to the catalogue variant (V20261231000100, owner decision Q1 of 2026-11-26)
--- and whether it may be turned is the variant's too (V20261231000200, Q9). A customer's SKU is packed in its source
+-- Adversarial checks: the carton belongs to the catalogue variant (V20261231000700, owner decision Q1 of 2026-11-26)
+-- and whether it may be turned is the variant's too (V20261231000800, Q9). A customer's SKU is packed in its source
 -- variant's carton: it has none of its own, every check that compared a carton's item with a line's or a package's item
 -- now compares variants, and a retired carton still takes the goods of the order line signed in it (Q10). Needs the
 -- demo seed (the demo cup LY-GIAY-DEMO-12OZ and its customers' SKUs -XANH, 1,000 a carton, and -DO, 500 a carton before

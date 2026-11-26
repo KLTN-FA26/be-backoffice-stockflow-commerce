@@ -13,7 +13,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * V20261231000100 and V20261231000200 on the real upgrade path (owner decisions Q1 and Q9 of 2026-11-26): the carton
+ * V20261231000700 and V20261231000800 on the real upgrade path (owner decisions Q1 and Q9 of 2026-11-26): the carton
  * and whether it may be turned are the catalogue variant's. Before them, every customer's SKU carried a copy of its
  * variant's carton on its own inventory item. After them:
  *
@@ -27,9 +27,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class CartonPerVariantMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261230000200";
-    private static final String CARTONS = "20261231000100";
-    private static final String ROTATABLE = "20261231000200";
+    private static final String BEFORE = "20261231000600";
+    private static final String CARTONS = "20261231000700";
+    private static final String ROTATABLE = "20261231000800";
 
     private static final UUID CUP = UUID.randomUUID();
     private static final UUID CUP_A = UUID.randomUUID();
