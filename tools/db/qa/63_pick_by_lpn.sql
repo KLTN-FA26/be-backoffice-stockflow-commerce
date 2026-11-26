@@ -72,8 +72,8 @@ SELECT row_number() OVER (ORDER BY p.lpn) AS n, s.id AS row_id, p.id AS package_
    AND s.on_hand = p.nominal_qty AND s.reserved = 0
  ORDER BY p.lpn LIMIT 8;
 
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at, expires_at, status)
-SELECT md5('qa63:res:' || n)::uuid, row_id, md5('qa63:order')::uuid, gen_random_uuid(), gen_random_uuid(), units, NOW(), NULL,
+INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
+SELECT md5('qa63:res:' || n)::uuid, row_id, md5('qa63:order')::uuid, gen_random_uuid(), gen_random_uuid(), 1, units, NOW(),
        'HELD'
   FROM qa63_carton WHERE n <= 6;
 
@@ -186,9 +186,9 @@ SELECT pg_temp.expect_ok('LG3 a put-back from nowhere that a damage report cause
 \echo '--- the carton comes back whole: CONSUMED to IN_STOCK, sealed, its row refilled (20 §4.6; 4C-2)'
 -- Carton 8: picked (its hold consumed, the row emptied, the carton CONSUMED), then put back onto another bin.
 SELECT pg_temp.expect_ok('CB1 a carton picked whole: hold consumed, row emptied, carton CONSUMED', $q$
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at, expires_at, status)
-    SELECT md5('qa63:res:8')::uuid, c.row_id, md5('qa63:order')::uuid, gen_random_uuid(), gen_random_uuid(), c.units, NOW(),
-           NULL, 'HELD'
+    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
+    SELECT md5('qa63:res:8')::uuid, c.row_id, md5('qa63:order')::uuid, gen_random_uuid(), gen_random_uuid(), 1, c.units, NOW(),
+           'HELD'
       FROM qa63_carton c WHERE c.n = 8;
     UPDATE inventory.stock_reservation SET status = 'CONSUMED', closed_at = NOW() WHERE id = md5('qa63:res:8')::uuid;
     UPDATE inventory.stock_item SET on_hand = 0, reserved = 0 WHERE id = (SELECT row_id FROM qa63_carton WHERE n = 8);

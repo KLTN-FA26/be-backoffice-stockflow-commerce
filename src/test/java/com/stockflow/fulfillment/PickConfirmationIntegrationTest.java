@@ -626,7 +626,7 @@ class PickConfirmationIntegrationTest {
     @Test
     @DisplayName("a hold released under the line: 409 RESERVATION_NOT_ACTIVE and nothing written")
     void holdNoLongerActive() throws Exception {
-        // An allocation never expires (X-RESV, ck_stock_reservation_allocation): only a release can close it.
+        // An allocation never expires (X-RESV; no hold has a deadline, V20261230000500): only a release can close it.
         for (String how : List.of("RELEASED")) {
             OrderSummary order = confirmedOrder(stocked(1));
             UUID task = startedTask(order);
@@ -642,7 +642,7 @@ class PickConfirmationIntegrationTest {
                 tx.executeWithoutResult(s -> {
                     jdbc.update("""
                             UPDATE inventory.stock_reservation SET status = 'EXPIRED', release_reason = 'RESERVATION_EXPIRED',
-                                   expires_at = NOW() - INTERVAL '1 minute', closed_at = NOW() WHERE id = ?""", hold);
+                                   closed_at = NOW() WHERE id = ?""", hold);
                     jdbc.update("""
                             UPDATE inventory.stock_item SET reserved = reserved - 1
                              WHERE id = (SELECT stock_item_id FROM inventory.stock_reservation WHERE id = ?)""", hold);

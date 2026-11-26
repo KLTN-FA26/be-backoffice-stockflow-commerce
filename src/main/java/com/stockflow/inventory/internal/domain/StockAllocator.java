@@ -2,7 +2,6 @@ package com.stockflow.inventory.internal.domain;
 
 
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
@@ -19,17 +18,20 @@ import java.util.UUID;
  * <p><b>Whole cartons only (kltn-docs 07 BR-03, 20 §5.6; team plan 4C-2).</b> An order line is given whole LPN
  * cartons of the SKU, never part of one: a carton is not opened, and a picker takes it by its LPN. So only a
  * candidate that is its carton's entire, sealed content with nothing of it held ({@link Candidate#wholeCarton}) is
- * drawn on; loose units and a carton another order already holds part of are left alone. Every carton of a SKU holds
- * the SKU's standard count (01 BR-11, 03 BR-13), so N cartons in any order are the line's quantity.</p>
+ * drawn on; loose units and a carton another order already holds part of are left alone.</p>
+ *
+ * <p><b>Cartons of the hold's count only (ADR-0011, owner decision 2026-11-27).</b> A hold says which cartons it wants
+ * by their count - the {@code units_per_carton} its order line was quoted in - and the plan is N cartons of exactly
+ * that count. A carton of another count is not a candidate at all, larger or smaller: an order quoted in cartons of
+ * 1000 takes cartons of 1000 only, even while cartons of 500 of the same SKU stand free. (Until V20261230000500 the
+ * plan counted units and took any carton that still fitted in what was needed, skipping a larger one.)</p>
  *
  * <p><b>FIFO, k &lt; N.</b> Cartons go received first, first out, for every SKU (kltn-docs 01 BR-17, 07 BR-03.3): cups
  * and packaging have no expiry, so there is no earliest-expiry order to prefer and no expired carton to skip, and the
- * removal order is not configurable (team plan 5-1). The plan takes them while each fits in what is still needed.
- * When the warehouse has only k of the N cartons, the plan lists those k and reports the rest short
- * ({@link Plan#shortUnits}); it holds nothing itself. No caller holds k &lt; N yet: a release and a reallocation both
- * refuse or drop a short plan until the order can wait for the rest ({@code AWAITING_STOCK}, team plan 4A-6, which
- * sends the shortfall to a Production Order, 07 BR-03.4). A carton larger than what is still needed is never broken to
- * fill the gap: it is skipped, and the gap stays short.</p>
+ * removal order is not configurable (team plan 5-1). When the warehouse has only k of the N cartons, the plan lists
+ * those k and reports the rest short ({@link Plan#shortCartons}); it holds nothing itself. No caller holds k &lt; N
+ * yet: a release and a reallocation both refuse or drop a short plan until the order can wait for the rest
+ * ({@code AWAITING_STOCK}, team plan 4A-6, which sends the shortfall to a Production Order, 07 BR-03.4).</p>
  *
  * <p><b>It plans over {@link Candidate} projections, not over loaded aggregates.</b> That is a
  * correctness requirement, not a performance one. If the planner read whole {@code StockItem}
@@ -53,7 +55,8 @@ public final class StockAllocator {
      *                       the lock is taken, which is why {@link StockItem#reserve} checks again
      * @param stockPackageId the carton the row is in; null for loose stock
      * @param wholeCarton    the row is its carton's entire, sealed content and nothing of it is held: taking it takes
-     *                       the carton as it stands. Only such a row is ever planned
+     *                       the carton as it stands, and {@code available} is then the carton's count. Only such a row
+     *                       is ever planned
      */
     public record Candidate(
             StockItemId stockItemId,
@@ -94,54 +97,60 @@ public final class StockAllocator {
                 .thenComparing(c -> c.stockItemId().value());
     }
 
-    /**
-     * Whole cartons for {@code required} units, FIFO. Never throws for a shortage: a plan of k &lt; N cartons says so
-     * in {@link Plan#shortUnits}.
-     */
-    public static Plan plan(String sku, List<Candidate> candidates, Quantity required) {
-        List<Candidate> cartons = candidates.stream()
-                .filter(Candidate::wholeCarton)
-                .filter(c -> c.status().isReservable())
-                .filter(c -> !c.available().isZero())
-                .toList();
-        List<AllocationLine> lines = new ArrayList<>();
-        int outstanding = required.value();
-        for (Candidate carton : cartons.stream().sorted(comparator()).toList()) {
-            if (outstanding == 0) {
-                break;
-            }
-            if (carton.available().value() <= outstanding) {
-                lines.add(new AllocationLine(carton, carton.available()));
-                outstanding -= carton.available().value();
-            }
-        }
-        return new Plan(sku, required.value(), lines);
+    /** Whether {@code candidate} is a whole free carton of {@code unitsPerCarton}: the only stock a hold of that count takes. */
+    public static boolean isCartonOf(Candidate candidate, int unitsPerCarton) {
+        return candidate.wholeCarton() && candidate.status().isReservable()
+                && candidate.available().value() == unitsPerCarton;
     }
 
     /**
-     * The cartons chosen for a line, in pick order, and what they leave short.
-     *
-     * @param required units the line needs
+     * {@code cartons} whole cartons of {@code unitsPerCarton}, FIFO. Never throws for a shortage: a plan of k &lt; N
+     * cartons says so in {@link Plan#shortCartons}.
      */
-    public record Plan(String sku, int required, List<AllocationLine> lines) {
+    public static Plan plan(String sku, List<Candidate> candidates, int cartons, int unitsPerCarton) {
+        if (cartons < 1 || unitsPerCarton < 1) {
+            throw new IllegalArgumentException("A plan is for at least one carton of at least one unit, not %d of %d"
+                    .formatted(cartons, unitsPerCarton));
+        }
+        List<AllocationLine> lines = candidates.stream()
+                .filter(c -> isCartonOf(c, unitsPerCarton))
+                .sorted(comparator())
+                .limit(cartons)
+                .map(AllocationLine::new)
+                .toList();
+        return new Plan(sku, cartons, unitsPerCarton, lines);
+    }
+
+    /**
+     * The cartons chosen for a hold, in pick order, and what they leave short.
+     *
+     * @param cartons        cartons the hold needs
+     * @param unitsPerCarton the count of every one of them
+     */
+    public record Plan(String sku, int cartons, int unitsPerCarton, List<AllocationLine> lines) {
 
         public Plan {
             Objects.requireNonNull(sku, "sku");
             lines = List.copyOf(lines);
         }
 
-        /** Units the chosen cartons hold. */
-        public int planned() {
-            return lines.stream().mapToInt(line -> line.quantity().value()).sum();
+        /** Units the hold needs, for a message: the module's shortages speak units. */
+        public int required() {
+            return cartons * unitsPerCarton;
         }
 
-        /** Units no whole carton covers: N − k cartons' worth (07 BR-03.4). */
-        public int shortUnits() {
-            return required - planned();
+        /** Units the chosen cartons hold. */
+        public int planned() {
+            return lines.size() * unitsPerCarton;
+        }
+
+        /** Cartons of the count the warehouse does not have: N − k (07 BR-03.4). */
+        public int shortCartons() {
+            return cartons - lines.size();
         }
 
         public boolean isShort() {
-            return shortUnits() > 0;
+            return shortCartons() > 0;
         }
 
         /**
@@ -151,20 +160,25 @@ public final class StockAllocator {
          */
         public List<AllocationLine> complete() {
             if (isShort()) {
-                throw new InsufficientStockException(sku, required, planned());
+                throw new InsufficientStockException(sku, required(), planned());
             }
             return lines;
         }
     }
 
-    /** Take this whole carton, {@code quantity} being everything it holds. */
-    public record AllocationLine(Candidate candidate, Quantity quantity) {
+    /** Take this whole carton. */
+    public record AllocationLine(Candidate candidate) {
 
         public AllocationLine {
             Objects.requireNonNull(candidate, "candidate");
-            if (quantity == null || quantity.isZero()) {
-                throw new IllegalArgumentException("An allocation line of zero units is meaningless");
+            if (!candidate.wholeCarton()) {
+                throw new IllegalArgumentException("Only a whole free carton is allocated");
             }
+        }
+
+        /** Everything the carton holds: its count. */
+        public Quantity quantity() {
+            return candidate.available();
         }
 
         public StockItemId stockItemId() {

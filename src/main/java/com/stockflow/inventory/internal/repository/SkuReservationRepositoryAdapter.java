@@ -1,7 +1,6 @@
 package com.stockflow.inventory.internal.repository;
 
 import com.stockflow.common.domain.Sku;
-import com.stockflow.inventory.internal.domain.Quantity;
 import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.SkuReservation;
 import com.stockflow.inventory.internal.domain.SkuReservationRepository;
@@ -99,16 +98,23 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
 
     @Override
     public Map<String, Long> heldBySkuAt(String sku) {
+        Map<String, Long> held = new HashMap<>();
+        heldCartonsOf(sku).stream().filter(row -> row.warehouseCode() != null)
+                .forEach(row -> held.merge(row.warehouseCode(), row.units(), Long::sum));
+        return held;
+    }
+
+    @Override
+    public List<HeldCartons> heldCartonsOf(String sku) {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = entityManager.createNativeQuery("""
-                        select warehouse_code, coalesce(sum(quantity), 0) from inventory.stock_reservation
-                         where sku = :sku and stock_item_id is null and status = 'HELD' and warehouse_code is not null
-                         group by warehouse_code
+                        select warehouse_code, units_per_carton, sum(cartons) from inventory.stock_reservation
+                         where sku = :sku and stock_item_id is null and status = 'HELD'
+                         group by warehouse_code, units_per_carton
                         """)
                 .setParameter("sku", sku).getResultList();
-        Map<String, Long> held = new HashMap<>();
-        rows.forEach(row -> held.put((String) row[0], ((Number) row[1]).longValue()));
-        return held;
+        return rows.stream().map(row -> new HeldCartons((String) row[0], ((Number) row[1]).intValue(),
+                ((Number) row[2]).longValue())).toList();
     }
 
     @Override
@@ -125,13 +131,12 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
             if (managed.getStockItemOrNull() != null) {
                 throw new IllegalStateException("Reservation %s is on a stock item".formatted(reservation.id()));
             }
-            managed.apply(reservation.expiresAt(), reservation.status(), reservation.releaseReason(),
-                    reservation.closedAt());
+            managed.apply(reservation.status(), reservation.releaseReason(), reservation.closedAt());
             return toDomain(jpa.save(managed));
         }
         return toDomain(jpa.save(new ReservationJpaEntity(reservation.id().value(), reservation.sku().code(),
                 reservation.orderId(), reservation.rootRequestId(), reservation.requestId(),
-                reservation.quantity().value(), reservation.reservedAt(), reservation.expiresAt(),
+                reservation.cartons(), reservation.unitsPerCarton(), reservation.reservedAt(),
                 reservation.status(), reservation.releaseReason(), reservation.closedAt(), null)
                 .heldAt(reservation.warehouseCode())));
     }
@@ -159,7 +164,7 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
 
     static SkuReservation toDomain(ReservationJpaEntity e) {
         return new SkuReservation(new ReservationId(e.getId()), new Sku(e.getSku()), e.getOrderId(),
-                e.getRootRequestId(), e.getRequestId(), Quantity.of(e.getQuantity()), e.getReservedAt(),
-                e.getExpiresAt(), e.getStatus(), e.getReleaseReason(), e.getClosedAt(), e.getWarehouseCode());
+                e.getRootRequestId(), e.getRequestId(), e.getCartons(), e.getUnitsPerCarton(), e.getReservedAt(),
+                e.getStatus(), e.getReleaseReason(), e.getClosedAt(), e.getWarehouseCode());
     }
 }

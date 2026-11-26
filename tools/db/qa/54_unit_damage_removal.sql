@@ -90,15 +90,15 @@ INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, curren
 VALUES (md5('qa54:ol')::uuid, md5('qa54:o')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 2008, 100, 'VND');
 INSERT INTO fulfillment.pick (id, order_id, order_number, warehouse_id, status, created_at)
 VALUES (md5('qa54:pick')::uuid, md5('qa54:o')::uuid, 'SO-QA54', md5('demo:wh:HCM')::uuid, 'PICKING', NOW());
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at,
-                                         expires_at, status)
-SELECT md5('qa54:res:' || n)::uuid, row_id, md5('qa54:o')::uuid, gen_random_uuid(), gen_random_uuid(), units, NOW(), NULL,
+INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                         reserved_at, status)
+SELECT md5('qa54:res:' || n)::uuid, row_id, md5('qa54:o')::uuid, gen_random_uuid(), gen_random_uuid(), 1, units, NOW(),
        'HELD'
   FROM qa54_carton;
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at,
-                                         expires_at, status)
-VALUES (md5('qa54:res:3')::uuid, md5('qa54:pk3:row')::uuid, md5('qa54:o')::uuid, gen_random_uuid(), gen_random_uuid(), 3, NOW(),
-        NULL, 'HELD');
+INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                         reserved_at, status)
+VALUES (md5('qa54:res:3')::uuid, md5('qa54:pk3:row')::uuid, md5('qa54:o')::uuid, gen_random_uuid(), gen_random_uuid(), 1, 3, NOW(),
+        'HELD');
 
 \echo '--- a damaged carton is a SHORT line with its reason, or no line at all (07 §4.4 step 9, BR-04)'
 SELECT pg_temp.expect_fail_by('DM1 a line that names no carton: the unit damage report that stood for one is gone',

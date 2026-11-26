@@ -101,7 +101,7 @@ public class WarehouseOccupancyQuery {
     public Map<String, Long> skuHoldUnits(String warehousePrefix) {
         Map<String, Long> units = new LinkedHashMap<>();
         jdbc.query("""
-                select r.sku, sum(r.quantity) as units
+                select r.sku, sum(r.cartons * r.units_per_carton) as units
                   from inventory.stock_reservation r
                  where r.status = 'HELD' and r.stock_item_id is null and r.warehouse_code = ?
                  group by r.sku""",

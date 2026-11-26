@@ -85,8 +85,8 @@ SELECT pg_temp.expect_true('ST3 no area is PACKING any more',
     NOT EXISTS (SELECT 1 FROM warehouse.area WHERE type = 'PACKING'));
 
 -- Holds on the first six cartons, as an allocation leaves them (a hold takes the whole carton: all its units).
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at, expires_at, status)
-SELECT md5('qa64:res:' || n)::uuid, row_id, md5('qa64:order')::uuid, gen_random_uuid(), gen_random_uuid(), units, NOW(), NULL,
+INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
+SELECT md5('qa64:res:' || n)::uuid, row_id, md5('qa64:order')::uuid, gen_random_uuid(), gen_random_uuid(), 1, units, NOW(),
        'HELD'
   FROM qa64_carton WHERE n <= 6;
 

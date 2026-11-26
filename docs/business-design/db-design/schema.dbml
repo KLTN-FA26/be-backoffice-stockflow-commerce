@@ -1679,9 +1679,7 @@ Table inventory.stock_reservation [headercolor: #3E7C4A] {
   order_id          uuid [not null]
   root_request_id   uuid [not null]
   request_id        uuid [not null, unique]
-  quantity          int [not null]
   reserved_at       timestamptz [not null]
-  expires_at        timestamptz
   status            inventory.stock_reservation_status [not null]
   release_reason    varchar(32)
   closed_at         timestamptz
@@ -1689,6 +1687,8 @@ Table inventory.stock_reservation [headercolor: #3E7C4A] {
   allocated_from_id uuid
   order_number      varchar(32)
   warehouse_code    varchar(64)
+  cartons           int [not null]
+  units_per_carton  int [not null]
 }
 
 Table inventory.uom_conversions [headercolor: #3E7C4A] {

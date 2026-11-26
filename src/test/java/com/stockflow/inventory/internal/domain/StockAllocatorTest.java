@@ -11,8 +11,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Whole cartons, FIFO, k &lt; N (kltn-docs 07 BR-03, 20 §5.6; team plan 4C-2) are business rules, so they get
- * business-rule tests. The planner works on {@link StockAllocator.Candidate} projections, which also makes it trivial
+ * Whole cartons of the hold's count, FIFO, k &lt; N (kltn-docs 07 BR-03, 20 §5.6; team plan 4C-2; ADR-0011) are
+ * business rules, so they get business-rule tests. The planner works on {@link StockAllocator.Candidate} projections, which also makes it trivial
  * to test: a candidate is a handful of values, with no aggregate to build and no database to reach.
  */
 class StockAllocatorTest {
@@ -26,8 +26,9 @@ class StockAllocatorTest {
         return new StockAllocator.Candidate(StockItemId.newId(), new LocationId(location), "LOT-" + location, StockStatus.AVAILABLE, Quantity.of(units), received, UUID.randomUUID(), true);
     }
 
-    private static StockAllocator.Plan plan(List<StockAllocator.Candidate> pool, int units) {
-        return StockAllocator.plan("CUP-PET-500", pool, Quantity.of(units));
+    /** {@code cartons} cartons of {@code unitsPerCarton}, as a hold asks for them. */
+    private static StockAllocator.Plan plan(List<StockAllocator.Candidate> pool, int cartons, int unitsPerCarton) {
+        return StockAllocator.plan("CUP-PET-500", pool, cartons, unitsPerCarton);
     }
 
     @Test
@@ -37,7 +38,7 @@ class StockAllocatorTest {
         var first = carton("HCM-B-02", DAY_1, 1000);
         var second = carton("HCM-A-02", DAY_2, 1000);
 
-        StockAllocator.Plan plan = plan(List.of(third, first, second), 2000);
+        StockAllocator.Plan plan = plan(List.of(third, first, second), 2, 1000);
 
         assertThat(plan.isShort()).isFalse();
         assertThat(plan.lines()).extracting(StockAllocator.AllocationLine::stockItemId)
@@ -51,12 +52,12 @@ class StockAllocatorTest {
         var one = carton("HCM-A-01", DAY_1, 1000);
         var two = carton("HCM-A-02", DAY_2, 1000);
 
-        StockAllocator.Plan plan = plan(List.of(two, one), 3000);
+        StockAllocator.Plan plan = plan(List.of(two, one), 3, 1000);
 
         assertThat(plan.lines()).extracting(StockAllocator.AllocationLine::stockItemId)
                 .containsExactly(one.stockItemId(), two.stockItemId());
         assertThat(plan.planned()).isEqualTo(2000);
-        assertThat(plan.shortUnits()).isEqualTo(1000);
+        assertThat(plan.shortCartons()).isEqualTo(1);
         assertThat(plan.isShort()).isTrue();
         assertThatThrownBy(plan::complete).isInstanceOfSatisfying(InsufficientStockException.class, e -> {
             assertThat(e.requested()).isEqualTo(3000);
@@ -71,22 +72,45 @@ class StockAllocatorTest {
         var partOfACarton = new StockAllocator.Candidate(StockItemId.newId(), new LocationId("HCM-A-02"), "L", StockStatus.AVAILABLE, Quantity.of(400), DAY_1, UUID.randomUUID(), false);
         var whole = carton("HCM-A-03", DAY_3, 1000);
 
-        StockAllocator.Plan plan = plan(List.of(loose, partOfACarton, whole), 2000);
+        StockAllocator.Plan plan = plan(List.of(loose, partOfACarton, whole), 2, 1000);
 
         assertThat(plan.lines()).extracting(StockAllocator.AllocationLine::stockItemId)
                 .containsExactly(whole.stockItemId());
-        assertThat(plan.shortUnits()).isEqualTo(1000);
+        assertThat(plan.shortCartons()).isEqualTo(1);
+        // Nor a row that merely holds the right number of units without being a whole carton.
+        var rightUnitsNoCarton = new StockAllocator.Candidate(StockItemId.newId(), new LocationId("HCM-A-04"), "L", StockStatus.AVAILABLE, Quantity.of(1000), DAY_1, UUID.randomUUID(), false);
+        assertThat(plan(List.of(rightUnitsNoCarton), 1, 1000).lines()).isEmpty();
     }
 
     @Test
-    @DisplayName("a carton is never broken: one larger than what is still needed is skipped, and the gap stays short")
-    void noCartonIsBroken() {
+    @DisplayName("ADR-0011: a hold is served by cartons of its count only - a carton of another count is no candidate")
+    void cartonsOfAnotherCountAreNotCandidates() {
         var big = carton("HCM-A-01", DAY_1, 1000);
+        var smallOlder = carton("HCM-A-02", DAY_1, 500);
+        var smallNewer = carton("HCM-A-03", DAY_2, 500);
+        List<StockAllocator.Candidate> pool = List.of(big, smallNewer, smallOlder);
 
-        StockAllocator.Plan plan = plan(List.of(big), 500);
+        // Cartons of 500: the older carton of 1000 is not taken ahead of them, and is not broken for them.
+        assertThat(plan(pool, 2, 500).lines()).extracting(StockAllocator.AllocationLine::stockItemId)
+                .containsExactly(smallOlder.stockItemId(), smallNewer.stockItemId());
+        assertThat(plan(List.of(big), 1, 500).lines()).as("a larger carton is never broken to fill the gap").isEmpty();
 
-        assertThat(plan.lines()).isEmpty();
-        assertThat(plan.shortUnits()).isEqualTo(500);
+        // Cartons of 1000: two cartons of 500 hold the same units and still do not make one up.
+        StockAllocator.Plan thousands = plan(pool, 2, 1000);
+        assertThat(thousands.lines()).extracting(StockAllocator.AllocationLine::stockItemId)
+                .containsExactly(big.stockItemId());
+        assertThat(thousands.shortCartons()).isEqualTo(1);
+        assertThat(thousands.planned()).isEqualTo(1000);
+        assertThat(thousands.required()).isEqualTo(2000);
+        assertThat(plan(List.of(smallOlder, smallNewer), 1, 1000).lines())
+                .as("smaller cartons are not added up into a larger one").isEmpty();
+    }
+
+    @Test
+    @DisplayName("a plan is for at least one carton of at least one unit")
+    void aPlanIsForCartons() {
+        assertThatThrownBy(() -> plan(List.of(), 0, 1000)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> plan(List.of(), 1, 0)).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -96,7 +120,7 @@ class StockAllocatorTest {
         var empty = new StockAllocator.Candidate(StockItemId.newId(), new LocationId("HCM-A-02"), "L", StockStatus.AVAILABLE, Quantity.of(0), DAY_1, UUID.randomUUID(), true);
         var good = carton("HCM-A-03", DAY_2, 10);
 
-        StockAllocator.Plan plan = plan(List.of(quarantined, empty, good), 20);
+        StockAllocator.Plan plan = plan(List.of(quarantined, empty, good), 2, 10);
 
         assertThat(plan.lines()).extracting(StockAllocator.AllocationLine::stockItemId)
                 .containsExactly(good.stockItemId());
@@ -108,7 +132,7 @@ class StockAllocatorTest {
         var older = carton("HCM-A-02", DAY_1, 10);
         var newer = carton("HCM-A-01", DAY_3, 10);
 
-        StockAllocator.Plan plan = StockAllocator.plan("INK", List.of(newer, older), Quantity.of(10));
+        StockAllocator.Plan plan = StockAllocator.plan("INK", List.of(newer, older), 1, 10);
 
         assertThat(plan.lines()).extracting(StockAllocator.AllocationLine::stockItemId)
                 .containsExactly(older.stockItemId());
@@ -120,9 +144,9 @@ class StockAllocatorTest {
         var undated = carton("HCM-A-01", null, 10);
         var dated = carton("HCM-Z-01", DAY_3, 10);
 
-        assertThat(plan(List.of(undated, dated), 10).lines()).extracting(StockAllocator.AllocationLine::stockItemId)
+        assertThat(plan(List.of(undated, dated), 1, 10).lines()).extracting(StockAllocator.AllocationLine::stockItemId)
                 .containsExactly(dated.stockItemId());
-        assertThat(plan(List.of(undated, dated), 20).lines()).extracting(StockAllocator.AllocationLine::stockItemId)
+        assertThat(plan(List.of(undated, dated), 2, 10).lines()).extracting(StockAllocator.AllocationLine::stockItemId)
                 .containsExactly(dated.stockItemId(), undated.stockItemId());
     }
 
@@ -132,9 +156,9 @@ class StockAllocatorTest {
         var b = carton("HCM-B-01", DAY_1, 10);
         var a = carton("HCM-A-01", DAY_1, 10);
 
-        assertThat(plan(List.of(b, a), 10).lines()).extracting(StockAllocator.AllocationLine::stockItemId)
+        assertThat(plan(List.of(b, a), 1, 10).lines()).extracting(StockAllocator.AllocationLine::stockItemId)
                 .containsExactly(a.stockItemId());
-        assertThat(plan(List.of(a, b), 10).lines()).extracting(StockAllocator.AllocationLine::stockItemId)
+        assertThat(plan(List.of(a, b), 1, 10).lines()).extracting(StockAllocator.AllocationLine::stockItemId)
                 .containsExactly(a.stockItemId());
     }
 

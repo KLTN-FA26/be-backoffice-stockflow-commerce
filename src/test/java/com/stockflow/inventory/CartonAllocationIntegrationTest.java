@@ -178,7 +178,9 @@ class CartonAllocationIntegrationTest {
         assertThat(inventory.availableToPromise(new Sku(sku))).isEqualTo(10);
         UUID order = confirmedOrder();
         assertThat(tx.execute(s -> Holds.attempt(inventory, order, sku, "HCM", 20)).cartonsHeld())
-                .as("20 asked, 10 promised: nothing held").isZero();
+                .as("20 asked, 10 promised: the carton a release could allocate is held, the one in receiving is not")
+                .isEqualTo(1);
+        assertThat(inventory.availableToPromise(new Sku(sku))).isZero();
     }
 
     @Test

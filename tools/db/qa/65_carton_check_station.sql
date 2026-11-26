@@ -84,10 +84,10 @@ SELECT row_number() OVER (ORDER BY p.lpn) AS n, s.id AS row_id, p.id AS package_
  ORDER BY p.lpn LIMIT 9;
 
 -- Cartons 1-6 are order A's, 7-8 order B's; carton 9 is nobody's.
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at, expires_at, status)
+INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
 SELECT md5('qa65:res:' || n)::uuid, row_id,
        CASE WHEN n <= 6 THEN md5('qa65:order:A')::uuid ELSE md5('qa65:order:B')::uuid END,
-       gen_random_uuid(), gen_random_uuid(), units, NOW(), NULL, 'HELD'
+       gen_random_uuid(), gen_random_uuid(), 1, units, NOW(), 'HELD'
   FROM qa65_carton WHERE n <= 8;
 INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no, allocated_qty,
                                    picked_qty, status, lpn, whole_carton, picked_by, picked_at, consumed_at)

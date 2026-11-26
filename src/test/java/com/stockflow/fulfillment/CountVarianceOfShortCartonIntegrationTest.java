@@ -229,7 +229,7 @@ class CountVarianceOfShortCartonIntegrationTest {
 
     private List<Map<String, Object>> liveHolds(UUID order) {
         return jdbc.queryForList("""
-                SELECT r.id, r.quantity, s.stock_package_id FROM inventory.stock_reservation r
+                SELECT r.id, r.cartons * r.units_per_carton AS quantity, s.stock_package_id FROM inventory.stock_reservation r
                   JOIN inventory.stock_item s ON s.id = r.stock_item_id
                  WHERE r.order_id = ? AND r.status = 'HELD'""", order);
     }
@@ -664,7 +664,7 @@ class CountVarianceOfShortCartonIntegrationTest {
     /** Units the order holds by SKU (before its release) still live. */
     private int heldBySku(UUID order) {
         return jdbc.queryForObject("""
-                SELECT COALESCE(SUM(quantity), 0) FROM inventory.stock_reservation
+                SELECT COALESCE(SUM(cartons * units_per_carton), 0) FROM inventory.stock_reservation
                  WHERE order_id = ? AND stock_item_id IS NULL AND status = 'HELD'""", Integer.class, order);
     }
 

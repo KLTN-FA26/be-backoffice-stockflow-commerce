@@ -77,7 +77,7 @@ class LotTraceSearchAdapter implements LotTraceSearch {
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("lotId", lotId);
         String sql = """
                 SELECT r.id, r.order_id, r.order_number, r.allocated_from_id, si.location_code,
-                       r.quantity,
+                       r.cartons * r.units_per_carton AS quantity,
                        r.status, r.reserved_at, r.closed_at
                   FROM inventory.stock_reservation r
                   JOIN inventory.stock_item si ON si.id = r.stock_item_id

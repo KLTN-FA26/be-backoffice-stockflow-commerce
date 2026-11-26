@@ -334,18 +334,19 @@ class InventoryServiceImplAvailabilityTest {
         @Test
         @DisplayName("each row shows on hand, reserved and available separately")
         void rowFigures() {
-            // A carton's row, allocated in part for an order: only a carton's row takes a hold (20 BR-14).
+            // A carton's row, allocated to an order - whole, as every allocation is (ADR-0011): only a carton's row
+            // takes a hold (20 BR-14).
             StockItem bin = new StockItem(StockItemId.newId(), CUP, new LocationId("HCM-A01-1-A"), "L1",
                     Quantity.of(50), StockStatus.AVAILABLE, List.of(), 0L, NOW, UUID.randomUUID(),
                     new StockPackageId(UUID.randomUUID()));
-            bin.allocate(ORDER, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(12), NOW);
+            bin.allocate(ORDER, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), 50, NOW);
             when(repository.findAvailableBySku(CUP)).thenReturn(List.of(bin));
 
             StockAvailability row = service.availabilityOf(CUP).get(0);
 
             assertThat(row.onHand()).isEqualTo(50);
-            assertThat(row.reserved()).isEqualTo(12);
-            assertThat(row.available()).isEqualTo(38);
+            assertThat(row.reserved()).isEqualTo(50);
+            assertThat(row.available()).isZero();
         }
     }
 

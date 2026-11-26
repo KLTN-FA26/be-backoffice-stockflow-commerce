@@ -57,7 +57,7 @@ class StockBrowsingImplTest {
 
     private static StockBrowseSearch.ReservationRow reservationAt(String location) {
         return new StockBrowseSearch.ReservationRow(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "CUP-12OZ",
-                location, "L1", 12, ReservationStatus.HELD, NOW, NOW.plusSeconds(1800), null, null,
+                location, "L1", 12, ReservationStatus.HELD, NOW, null, null,
                 "SO-20261125-0001");
     }
 

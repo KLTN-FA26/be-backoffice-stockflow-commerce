@@ -196,7 +196,14 @@ When Sales chooses the shipping warehouse, `ShippingWarehouseService.choose` hol
 
 `holdAtWarehouse` is a **plain Java call inside this transaction**: if the order fails to persist, the hold rolls
 back with it. Holds are SKU-level (`SkuReservation`, no bin) and have **no deadline**; a shortage is not refused, it
-is shown per delivery batch and topped up when goods are put away (`topUpWaiting`). A hold of a delivery-scheduled
+is shown per delivery batch and topped up when goods are put away (`topUpWaiting`). **A hold counts cartons, of one
+count** (ADR-0011 step 3c, V20261230000500): `stock_reservation.cartons` and `units_per_carton` (the order line's
+`units_per_carton`, carried in by `HoldStockCommand`), no `quantity`. It is promised, covered and later allocated from
+cartons whose `stock_package.nominal_qty` is that count only - a free carton of another count is not a candidate, so
+units-ATP of a SKU with cartons of two counts can be above what one line may hold. `check_sku_reservation_covered`
+says the same per (SKU, count), over the system and at the hold's warehouse. Other modules still read units
+(`HoldView.quantity`, `OrderHold`, `SkuHoldCover`, `availableToPromise*`, the events): derived, cartons times count;
+a unit-taking entry point (`shrinkHold`) refuses a figure that is not a whole number of the hold's cartons. A hold of a delivery-scheduled
 order is recorded per batch (`DeliveryBatchRecords`), so a batch is released with exactly its own holds.
 `reservationIds()` returns every id: a line held from several cartons has several holds, and keeping only the first
 would strand the rest. Deterministic request ids make a retry converge on the same holds.
@@ -204,13 +211,15 @@ would strand the rest. Deterministic request ids make a retry converge on the sa
 `OrderReleaseService.release` (or task creation) then allocates: SKU locks (sorted) → the order's holds `FOR UPDATE` →
 `StockAllocator.plan` over projections → each stock row locked once, in id order (`findByIdForUpdate` refreshes, or the
 pessimistic lock would be decorative) → `StockItem.allocate`; the order line swaps its hold ids for the allocation ids.
-The plan gives **whole sealed LPN cartons only**, FIFO by real `received_at` for every SKU — there is no expiry, no
-FEFO, no loose or opened stock (kltn-docs 01 BR-17, 07 BR-03; team plan 5-1, 4C-2). A carton larger than what is
-still needed is skipped, never broken. Allocations are `stock_reservation` rows with `allocated_from_id`; a pick line
-consumes exactly one. A delivery-scheduled order is released one batch at a time (17 BR-29).
+The plan gives **whole sealed LPN cartons only**, N of them **of the hold's count**, FIFO by real `received_at`
+(undated last) for every SKU — there is no expiry, no FEFO, no loose or opened stock (kltn-docs 01 BR-17, 07 BR-03;
+team plan 5-1, 4C-2). A carton of another count is never taken, larger or smaller, and smaller ones are not added up
+(until step 3c the plan counted units and skipped a carton larger than what was still needed). Allocations are
+`stock_reservation` rows with `allocated_from_id`, each **one carton** (`ck_stock_reservation_one_carton`) carrying
+its carton's count (`tg_stock_reservation_whole_carton`); a pick line consumes exactly one. A delivery-scheduled order is released one batch at a time (17 BR-29).
 
 There are no expiring reservations and no sweeper: the manual reservation endpoint, `InventoryService.reserve` and
-`ReservationSweeper` with its TTL are removed (V20261117000300 closes leftover expiring holds and drops `inventory-reservations:CREATE`). Stock is held
+`ReservationSweeper` with its TTL are removed (V20261117000300 closes leftover expiring holds and drops `inventory-reservations:CREATE`; `expires_at` itself went with V20261230000500). Stock is held
 only for a signed contract's order and allocated at release. The whole-carton rule is stated twice, in the aggregate
 and as `ck_stock_item_whole_cartons` on `inventory.stock_item` (V20261117000100; stock is never loose, domain error `STOCK_NOT_IN_CARTON`).
 

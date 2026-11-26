@@ -8,8 +8,8 @@ import java.util.UUID;
  * (SCRUM-267). Fulfillment turns each live hold of an order's stock lines into one pick line: the
  * picker walks to {@code locationCode} and takes {@code quantity} of {@code lotNumber}.
  *
- * @param expiresAt  null once pinned: the hold no longer waits for payment. The hold's deadline, not the goods':
- *                   cups and packaging have no expiry date (kltn-docs 01 BR-17)
+ * @param expiresAt  always null: no hold carries a deadline (V20261117000300; the column went with V20261230000500).
+ *                   Kept because other modules build this record by position
  * @param lpn          the carton the held units are in (SCRUM-473), null for loose stock or a SKU reservation: the
  *                     picker scans it, since the hold is deducted from that carton and no other
  * @param wholeCarton  the hold is its carton's whole, sealed content: the picker takes the carton as it stands

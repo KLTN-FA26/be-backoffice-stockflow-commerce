@@ -77,8 +77,10 @@ class StockBrowseSearchAdapter implements StockBrowseSearch {
     private static jakarta.persistence.criteria.CompoundSelection<ReservationRow> row(
             CriteriaBuilder cb, Root<ReservationJpaEntity> root, Join<ReservationJpaEntity, StockItemJpaEntity> stock) {
         return cb.construct(ReservationRow.class, root.get("id"), root.get("orderId"), stock.get("id"),
-                root.get("sku"), stock.get("locationCode"), stock.get("lotNumber"), root.get("quantity"),
-                root.get("status"), root.get("reservedAt"), root.get("expiresAt"), root.get("releaseReason"),
+                root.get("sku"), stock.get("locationCode"), stock.get("lotNumber"),
+                // The row keeps cartons and their count; the screen reads units (ADR-0011).
+                cb.prod(root.<Integer>get("cartons"), root.<Integer>get("unitsPerCarton")),
+                root.get("status"), root.get("reservedAt"), root.get("releaseReason"),
                 root.get("closedAt"), root.get("orderNumber"));
     }
 

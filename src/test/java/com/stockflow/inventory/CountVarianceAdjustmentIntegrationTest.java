@@ -333,7 +333,7 @@ class CountVarianceAdjustmentIntegrationTest {
     void otherAdjustmentOfAHeldCartonIsStillRefused() {
         UUID box = carton("I");
         UUID hold = hold(confirmedOrder());
-        String holdBefore = jdbc.queryForObject("select status || ':' || quantity from inventory.stock_reservation"
+        String holdBefore = jdbc.queryForObject("select status || ':' || cartons || 'x' || units_per_carton from inventory.stock_reservation"
                 + " where id = ?", String.class, hold);
         // Asking to write a held carton off is refused at once, and a held carton cannot be asked for once pending:
         // the request is written as a row, as one asked before the hold would have left it.
@@ -350,7 +350,7 @@ class CountVarianceAdjustmentIntegrationTest {
         assertThat(codeOf(refused)).isEqualTo(ErrorCode.STOCK_PACKAGE_HELD);
         assertThat(cartonState(box)).containsEntry("status", "IN_STOCK").containsEntry("held", (long) CARTON_FACTOR);
         assertThat(adjustmentLedger()).isEmpty();
-        assertThat(jdbc.queryForObject("select status || ':' || quantity from inventory.stock_reservation where id = ?",
+        assertThat(jdbc.queryForObject("select status || ':' || cartons || 'x' || units_per_carton from inventory.stock_reservation where id = ?",
                 String.class, hold)).isEqualTo(holdBefore);
     }
 

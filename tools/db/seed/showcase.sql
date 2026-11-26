@@ -1472,10 +1472,10 @@ SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;
 
 -- Put away, the goods top up the order waiting for them (17 §4.2 step 5): a hold of each line's SKU, its batch's.
-INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, quantity, reserved_at, status, sku,
-                                         warehouse_code)
+INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                         reserved_at, status, sku, warehouse_code)
 SELECT pg_temp.sid('hold:' || l.key || ':' || l.ln), o.id, pg_temp.sid('hold-request:' || l.key || ':' || l.ln),
-       pg_temp.sid('hold-request:' || l.key || ':' || l.ln), l.received * l.upc, pg_temp.at(o.r, '12:00'), 'HELD', l.sku,
+       pg_temp.sid('hold-request:' || l.key || ':' || l.ln), l.received, l.upc, pg_temp.at(o.r, '12:00'), 'HELD', l.sku,
        o.wh
   FROM h_line l JOIN h_received o ON o.key = l.key;
 
@@ -1506,10 +1506,10 @@ UPDATE inventory.stock_reservation r
    SET status = 'ALLOCATED', closed_at = pg_temp.at(o.d + 3, '09:00')
   FROM h_line l JOIN h_released o ON o.key = l.key WHERE r.id = pg_temp.sid('hold:' || l.key || ':' || l.ln);
 
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity,
-                                         reserved_at, status, sku, allocated_from_id)
+INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons,
+                                         units_per_carton, reserved_at, status, sku, allocated_from_id)
 SELECT c.allocation_id, c.stock_item_id, o.id, pg_temp.sid('hold:' || c.key || ':' || c.ln),
-       pg_temp.sid('allocation-request:' || c.key || ':' || c.n), c.upc, pg_temp.at(o.d + 3, '09:00'), 'HELD', c.sku,
+       pg_temp.sid('allocation-request:' || c.key || ':' || c.n), 1, c.upc, pg_temp.at(o.d + 3, '09:00'), 'HELD', c.sku,
        pg_temp.sid('hold:' || c.key || ':' || c.ln)
   FROM h_carton c JOIN h_released o ON o.key = c.key;
 
@@ -4075,9 +4075,10 @@ SET CONSTRAINTS ALL DEFERRED;
 -- a smaller one in its place, added to the line and to the batch it was held for. The order stays where it is, one
 -- carton short of its batch again.
 CREATE TEMP TABLE x_iop_shrink ON COMMIT DROP AS
-SELECT r.id AS old_id, r.order_id, r.sku, r.warehouse_code, r.quantity - p.upc AS keep, h.delivery_batch_id,
-       h.order_line_id, pg_temp.sid('iop:hold-kept:' || r.id) AS kept_id,
-       pg_temp.iop_uuid3('shrink:' || r.id || ':' || (r.quantity - p.upc)) AS request_id,
+SELECT r.id AS old_id, r.order_id, r.sku, r.warehouse_code, r.cartons - 1 AS keep, r.units_per_carton,
+       h.delivery_batch_id, h.order_line_id, pg_temp.sid('iop:hold-kept:' || r.id) AS kept_id,
+       -- shrinkHold names its request after the units kept, as it did before a hold counted cartons
+       pg_temp.iop_uuid3('shrink:' || r.id || ':' || ((r.cartons - 1) * r.units_per_carton)) AS request_id,
        pg_temp.at(1, '16:00') + interval '3 seconds' AS at
   FROM inventory.stock_reservation r JOIN ordering.delivery_batch_hold h ON h.reservation_id = r.id
   JOIN x_iop_post p ON p.sku = r.sku
@@ -4087,9 +4088,10 @@ UPDATE inventory.stock_reservation r
    SET status = 'RELEASED', release_reason = 'SHORT_PICKED', closed_at = x.at
   FROM x_iop_shrink x WHERE r.id = x.old_id;
 
-INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, quantity, reserved_at, status, sku,
-                                         warehouse_code)
-SELECT kept_id, order_id, request_id, request_id, keep, at, 'HELD', sku, warehouse_code FROM x_iop_shrink;
+INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                         reserved_at, status, sku, warehouse_code)
+SELECT kept_id, order_id, request_id, request_id, keep, units_per_carton, at, 'HELD', sku, warehouse_code
+  FROM x_iop_shrink;
 
 INSERT INTO ordering.order_line_reservation (order_line_id, reservation_id)
 SELECT order_line_id, kept_id FROM x_iop_shrink;

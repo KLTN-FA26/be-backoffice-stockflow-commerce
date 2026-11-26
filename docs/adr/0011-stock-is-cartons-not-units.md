@@ -1,6 +1,6 @@
 # ADR-0011 — Stock is recorded as cartons, not as units
 
-* **Status:** Accepted — being carried out in steps; steps 1, 2, 3a and 3b are done (see *Steps*). Amends kltn-docs 01 BR-09 and
+* **Status:** Accepted — being carried out in steps; steps 1, 2, 3a, 3b and 3c are done (see *Steps*). Amends kltn-docs 01 BR-09 and
   20 §1 ("base units are kept internally"), which must be reworded in the kltn-docs repository.
 * **Date:** 2026-11-26
 * **Deciders:** repository owner (Phương)
@@ -93,6 +93,30 @@ its own:
      No HTTP contract change: a ledger line (`GET /inventory/movements`) and a lot trace movement still answer
      `quantity`, now the carton's `nominal_qty`. `inventory :: api` `StockMove` loses `quantity` (nothing outside
      `inventory` read it).
+   * **3c, the reservation** - done, `V20261230000500`: `stock_reservation.cartons` and `units_per_carton` replace
+     `quantity`, and `expires_at` goes with `ck_stock_reservation_quantity`, `ck_stock_reservation_allocation`,
+     `ck_stock_reservation_expired_had_deadline` and `ix_stock_reservation_expiry` (no hold has carried a deadline
+     since V20261117000300). A SKU-level hold is N cartons of the count its order line was quoted in; an allocation
+     is one carton (`ck_stock_reservation_one_carton`) of its carton's `nominal_qty`
+     (`check_allocation_whole_carton`, rewritten). `check_sku_reservation_covered` is per (SKU, count): the cartons
+     held are covered by free AVAILABLE cartons of that count, over the system and at the hold's warehouse - no
+     longer units against units. The migration takes a hold's count from its order line, else from the cartons its
+     allocations took, else from the SKU's active packing unit; it refuses to run over a live hold that is not whole
+     cartons of a known count, or a live row on a carton that holds part of it, and converts history by rule (a
+     closed hold that is not whole cartons is rounded up). `stock_item` and `stock_item_id` are untouched (step 3d).
+     In the code a `SkuReservation` stores `cartons` and `unitsPerCarton` and derives `quantity()`; a `Reservation`
+     (the allocation) is one carton; `StockAllocator.plan` gives N cartons of the hold's count, FIFO, and the rule
+     "a carton larger than what is still needed is skipped" is gone with the unit count it served: cartons of
+     another count are not candidates at all. `holdAtWarehouse` promises a line only cartons of its count.
+     Contract: `inventory :: api`, `inventory :: consumption` and the events keep their shape and keep answering
+     units, derived; `HoldView.expiresAt` stays in the record and is always null; `shrinkHold(keepUnits)` refuses
+     (`VALIDATION_FAILED`) a figure that is not a whole number of the hold's cartons. HTTP: a hold in
+     `GET /inventory/reservations` loses `expiresAt` (it was always null); `quantity` stays, in units.
+     Known limit, until the order module counts cartons too: with cartons of two counts of one SKU in a warehouse,
+     the unit figures (`availableToPromise*`, `SkuHoldCover`) cannot say which count is free or short - a line is
+     then held for fewer cartons than the units suggest, and `ShippingWarehouseService.giveUpUncovered` may cut a hold
+     of a covered count before it reaches the short one. A line with no `units_per_carton` (the legacy redelivery
+     path counts it one piece a carton) is held only from cartons of 1.
 
 ## Decisions for the rest of step 3 (owner, 2026-11-27)
 

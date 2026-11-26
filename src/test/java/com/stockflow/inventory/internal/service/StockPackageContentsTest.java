@@ -225,7 +225,7 @@ class StockPackageContentsTest {
         void writeDownCannotCutIntoHolds() {
             StockPackage carton = carton(id, 24);
             StockItem held = row(id, 24);
-            held.allocate(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(24), NOW);
+            held.allocate(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), 24, NOW);
             rowsOf(carton, held);
 
             assertThat(codeOf(() -> contents.adjust(id, AdjustmentDirection.WRITE_OFF, false, NOW)))
@@ -243,7 +243,7 @@ class StockPackageContentsTest {
             StockPackage carton = carton(id, 24);
             StockItem held = row(id, 24);
             var hold = held.allocate(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
-                    Quantity.of(24), NOW);
+                    24, NOW);
             rowsOf(carton, held);
             held.pullDomainEvents();
             UUID approver = UUID.randomUUID();
@@ -270,7 +270,7 @@ class StockPackageContentsTest {
             StockPackage carton = carton(id, 24);
             StockItem held = row(id, 24);
             var hold = held.allocate(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
-                    Quantity.of(24), NOW);
+                    24, NOW);
             rowsOf(carton, held);
 
             assertThat(codeOf(() -> contents.adjust(id, AdjustmentDirection.WRITE_OFF, true, null, NOW)))

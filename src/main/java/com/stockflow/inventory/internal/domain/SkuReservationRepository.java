@@ -37,8 +37,27 @@ public interface SkuReservationRepository {
     /** WF4-COUNT-EDGE: the live SKU reservations of {@code sku} held at {@code warehouseCode}, oldest first. Not locked. */
     List<SkuReservation> findHeldAt(String sku, String warehouseCode);
 
-    /** 4B-7: the live SKU reservations of {@code sku} held at a warehouse, by warehouse code (20 BR-17). */
+    /** 4B-7: the units of the live SKU reservations of {@code sku} held at a warehouse, by warehouse code (20 BR-17). */
     Map<String, Long> heldBySkuAt(String sku);
+
+    /**
+     * The live SKU reservations of {@code sku} in cartons, per warehouse and count (ADR-0011): a hold is covered and
+     * served only by cartons of its count, so what is still to promise is worked out count by count.
+     */
+    List<HeldCartons> heldCartonsOf(String sku);
+
+    /**
+     * @param warehouseCode  the warehouse the holds are at; null for holds of before 4B-7, promised against the whole
+     *                       system
+     * @param unitsPerCarton the count of the cartons held
+     * @param cartons        how many of them
+     */
+    record HeldCartons(String warehouseCode, int unitsPerCarton, long cartons) {
+
+        public long units() {
+            return cartons * unitsPerCarton;
+        }
+    }
 
     /** These reservations, in any status; an unknown id is absent. */
     List<SkuReservation> findAll(Collection<UUID> reservationIds);

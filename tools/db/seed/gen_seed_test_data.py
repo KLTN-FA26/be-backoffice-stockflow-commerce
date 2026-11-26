@@ -849,9 +849,10 @@ class Order:
                 if qty <= 0:
                     continue
                 rid = uid(f"hold:{self.key}:{b['seq']}:{ln['id']}:{len(ln['holds'])}")
+                # A hold counts cartons of the line's count (ADR-0011, V20261230000500); its units are derived.
                 ins("inventory.stock_reservation", id=rid, stock_item_id=None, order_id=self.id, root_request_id=rid,
-                    request_id=rid, quantity=qty, reserved_at=when, expires_at=None, status="HELD", sku=ln["sku"],
-                    warehouse_code=self.p)
+                    request_id=rid, cartons=qty // ln["per"], units_per_carton=ln["per"], reserved_at=when,
+                    status="HELD", sku=ln["sku"], warehouse_code=self.p)
                 ins("ordering.order_line_reservation", order_line_id=ln["id"], reservation_id=rid)
                 ins("ordering.delivery_batch_hold", when, reservation_id=rid, delivery_batch_id=b["id"],
                     order_id=self.id, order_line_id=ln["id"])
@@ -874,15 +875,15 @@ class Order:
             for h in [h for h in ln["holds"] if h["batch"] == seq and h["status"] == "HELD"]:
                 rows = sorted((r for r in STOCK.values() if r["sku"] == ln["sku"] and r["wh"] == self.p
                                and r["status"] == "AVAILABLE" and r["reserved"] == 0 and not r["staged"]
-                               and r["on_hand"] > 0), key=lambda r: (r["received"], r["lpn"]))
+                               and r["on_hand"] == ln["per"]), key=lambda r: (r["received"], r["lpn"]))
                 need = h["qty"]
                 for r in rows:
                     if need <= 0:
                         break
                     aid = uid(f"alloc:{h['id']}:{r['id']}")
                     ins("inventory.stock_reservation", id=aid, stock_item_id=r["id"], order_id=self.id,
-                        root_request_id=h["id"], request_id=aid, quantity=r["on_hand"], reserved_at=when,
-                        expires_at=None, status="HELD", sku=ln["sku"], allocated_from_id=h["id"])
+                        root_request_id=h["id"], request_id=aid, cartons=1, units_per_carton=r["on_hand"],
+                        reserved_at=when, status="HELD", sku=ln["sku"], allocated_from_id=h["id"])
                     upd("inventory.stock_item", r["id"], reserved=r["on_hand"])
                     r["reserved"] = r["on_hand"]
                     need -= r["on_hand"]

@@ -76,8 +76,9 @@ INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, 
                                      placed_at, version, created_at)
 SELECT md5('qa41:order')::uuid, 'SO-QA-41', c.id, gen_random_uuid(), 'PENDING_PAYMENT', 1000, 'VND', NOW(), 0, NOW()
   FROM customer.customer c ORDER BY c.id LIMIT 1;
-INSERT INTO inventory.stock_reservation (id, sku, order_id, root_request_id, request_id, quantity, reserved_at, status)
-VALUES (md5('qa41:soft')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa41:order')::uuid, md5('qa41:soft')::uuid, gen_random_uuid(), 4,
+INSERT INTO inventory.stock_reservation (id, sku, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                         reserved_at, status)
+VALUES (md5('qa41:soft')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa41:order')::uuid, md5('qa41:soft')::uuid, gen_random_uuid(), 1, 4,
         NOW(), 'HELD');
 
 \echo '--- the carton lifecycle (20 §5.5): never opened in stock, counted at its standard count only'
@@ -177,9 +178,9 @@ SELECT pg_temp.expect_ok('WC17 a carton moved by hand, its line naming it', $q$
 SELECT pg_temp.expect_ok('WC18 the carton allocated whole to the order (07 BR-03)', $q$
     UPDATE inventory.stock_item SET reserved = 4 WHERE id = md5('qa41:pk:row')::uuid;
     INSERT INTO inventory.stock_reservation (id, stock_item_id, sku, order_id, allocated_from_id, root_request_id,
-        request_id, quantity, reserved_at, status)
+        request_id, cartons, units_per_carton, reserved_at, status)
     VALUES (md5('qa41:alloc')::uuid, md5('qa41:pk:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa41:order')::uuid,
-            md5('qa41:soft')::uuid, md5('qa41:soft')::uuid, gen_random_uuid(), 4, NOW(), 'HELD');
+            md5('qa41:soft')::uuid, md5('qa41:soft')::uuid, gen_random_uuid(), 1, 4, NOW(), 'HELD');
     UPDATE inventory.stock_reservation SET status = 'ALLOCATED', closed_at = NOW() WHERE id = md5('qa41:soft')::uuid $q$);
 SELECT pg_temp.expect_fail_by('WC19 the held carton moved by hand', 'it is not moved by hand', $q$
     UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-B' WHERE id = md5('qa41:pk')::uuid;
@@ -187,17 +188,30 @@ SELECT pg_temp.expect_fail_by('WC19 the held carton moved by hand', 'it is not m
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, reference_type, reference_id, stock_package_id, occurred_at)
     VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-1-A', 'HCM-A01-1-B', 'MOVE_TASK',
             gen_random_uuid(), md5('qa41:pk')::uuid, NOW()) $q$);
-SELECT pg_temp.expect_fail('WC20 the allocation cut to part of its carton', $q$
+-- An allocation is its carton (ADR-0011, V20261230000500): one carton, of the carton's own count.
+SELECT pg_temp.expect_fail_by('WC20 the allocation cut to part of its carton', 'an allocation is its carton', $q$
     UPDATE inventory.stock_item SET reserved = 3 WHERE id = md5('qa41:pk:row')::uuid;
-    UPDATE inventory.stock_reservation SET quantity = 3 WHERE id = md5('qa41:alloc')::uuid $q$);
-SELECT pg_temp.expect_fail('WC21 an allocation of part of a carton', $q$
+    UPDATE inventory.stock_reservation SET units_per_carton = 3 WHERE id = md5('qa41:alloc')::uuid $q$);
+SELECT pg_temp.expect_fail_by('WC20b the allocation made two cartons', 'ck_stock_reservation_one_carton', $q$
+    UPDATE inventory.stock_reservation SET cartons = 2 WHERE id = md5('qa41:alloc')::uuid $q$);
+SELECT pg_temp.expect_fail_by('WC20c the allocation said to be of a carton of another count (1,000, as the demo''s are)',
+    'an allocation is its carton', $q$
+    UPDATE inventory.stock_reservation SET units_per_carton = 1000 WHERE id = md5('qa41:alloc')::uuid $q$);
+SELECT pg_temp.expect_fail_by('WC21 an allocation of part of a carton', 'an allocation is its carton', $q$
     UPDATE inventory.stock_reservation SET status = 'RELEASED', release_reason = 'MANUAL_OVERRIDE', closed_at = NOW()
      WHERE id = md5('qa41:alloc')::uuid;
     UPDATE inventory.stock_item SET reserved = 2 WHERE id = md5('qa41:pk:row')::uuid;
     INSERT INTO inventory.stock_reservation (id, stock_item_id, sku, order_id, allocated_from_id, root_request_id,
-        request_id, quantity, reserved_at, status)
+        request_id, cartons, units_per_carton, reserved_at, status)
     VALUES (gen_random_uuid(), md5('qa41:pk:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa41:order')::uuid,
-            md5('qa41:soft')::uuid, md5('qa41:soft')::uuid, gen_random_uuid(), 2, NOW(), 'HELD') $q$);
+            md5('qa41:soft')::uuid, md5('qa41:soft')::uuid, gen_random_uuid(), 1, 2, NOW(), 'HELD') $q$);
+SELECT pg_temp.expect_fail_by('WC21b an allocation of two cartons on one carton''s row', 'ck_stock_reservation_one_carton', $q$
+    UPDATE inventory.stock_reservation SET status = 'RELEASED', release_reason = 'MANUAL_OVERRIDE', closed_at = NOW()
+     WHERE id = md5('qa41:alloc')::uuid;
+    INSERT INTO inventory.stock_reservation (id, stock_item_id, sku, order_id, allocated_from_id, root_request_id,
+        request_id, cartons, units_per_carton, reserved_at, status)
+    VALUES (gen_random_uuid(), md5('qa41:pk:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa41:order')::uuid,
+            md5('qa41:soft')::uuid, md5('qa41:soft')::uuid, gen_random_uuid(), 2, 4, NOW(), 'HELD') $q$);
 SELECT pg_temp.expect_ok('WC22 the held carton picked: the allocation consumed, the carton CONSUMED whole', $q$
     UPDATE inventory.stock_reservation SET status = 'CONSUMED', closed_at = NOW() WHERE id = md5('qa41:alloc')::uuid;
     UPDATE inventory.stock_item SET on_hand = 0, reserved = 0 WHERE id = md5('qa41:pk:row')::uuid;

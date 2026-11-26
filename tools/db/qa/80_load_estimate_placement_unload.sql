@@ -64,8 +64,8 @@ SELECT row_number() OVER (ORDER BY p.lpn) AS n, s.id AS row_id, p.id AS package_
    AND s.on_hand = p.nominal_qty AND s.reserved = 0
  ORDER BY p.lpn LIMIT 2;
 SELECT pg_temp.expect_true('F0 the demo seed has two cup cartons to build on', (SELECT count(*) FROM qa80_carton) = 2);
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at, expires_at, status)
-SELECT md5('qa80:res:' || n)::uuid, row_id, md5('qa80:order')::uuid, gen_random_uuid(), gen_random_uuid(), units, NOW(), NULL,
+INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
+SELECT md5('qa80:res:' || n)::uuid, row_id, md5('qa80:order')::uuid, gen_random_uuid(), gen_random_uuid(), 1, units, NOW(),
        'HELD'
   FROM qa80_carton;
 INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no, allocated_qty,

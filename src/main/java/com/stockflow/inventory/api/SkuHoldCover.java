@@ -9,9 +9,14 @@ import java.util.UUID;
  * the whole free cartons there that could still cover them. A count's shortage may leave the holds uncovered; the order
  * module then gives up the difference.
  *
+ * <p>A hold counts cartons of one count and is covered only by cartons of that count (ADR-0011): the cover is worked
+ * out count by count and answered here in units, which is what the order module does its arithmetic in.</p>
+ *
  * @param coverableUnits the units of whole cartons nothing holds, on pickable, usable locations of the warehouse - the
  *                       cartons a release there could allocate, counting those a pending count keeps out of allocation
- *                       for now (20 BR-11): a carton still in doubt is not yet a shortage
+ *                       for now (20 BR-11): a carton still in doubt is not yet a shortage. When holds of some count
+ *                       are short of cartons of that count, only the units that do cover a hold: free cartons of
+ *                       another count cover nothing of it, so {@link #uncoveredUnits} is exactly what is short
  * @param holds          the live SKU reservations of the SKU held at the warehouse, oldest first
  */
 public record SkuHoldCover(String sku, String warehouseCode, int coverableUnits, List<Hold> holds) {

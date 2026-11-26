@@ -36,18 +36,20 @@ class StockMoveAndAdjustTest {
     class Moving {
 
         @Test
-        @DisplayName("moves only the unreserved units; a hold stays where it was taken")
+        @DisplayName("moves only the unreserved units; a carton held for an order stays where it was taken")
         void reservedUnitsDoNotMove() {
+            StockItem free = available(10);
+            assertThat(free.movable()).isEqualTo(Quantity.of(10));
+
+            // An allocation is the whole carton (ADR-0011), so nothing of a held carton is left to move.
             StockItem item = available(10);
-            item.allocate(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(4), NOW);
+            item.allocate(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), 10, NOW);
 
-            assertThat(item.movable()).isEqualTo(Quantity.of(6));
-            assertThatThrownBy(() -> item.moveOut(Quantity.of(7)))
+            assertThat(item.movable()).isEqualTo(Quantity.ZERO);
+            assertThatThrownBy(() -> item.moveOut(Quantity.of(1)))
                     .isInstanceOf(InsufficientStockException.class);
-
-            item.moveOut(Quantity.of(6));
-            assertThat(item.onHand()).isEqualTo(Quantity.of(4));
-            assertThat(item.reserved()).isEqualTo(Quantity.of(4));
+            assertThat(item.onHand()).isEqualTo(Quantity.of(10));
+            assertThat(item.reserved()).isEqualTo(Quantity.of(10));
         }
 
         @Test

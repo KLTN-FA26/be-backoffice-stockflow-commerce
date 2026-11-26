@@ -24,8 +24,7 @@ import java.util.UUID;
  * which is its own aggregate and saved through {@code SkuReservationRepositoryAdapter}.
  *
  * <p>The indexes are not decoration; each one exists for a query that runs constantly:
- * {@code order_id} for cancellation and release. {@code expires_at} is kept for the rows of before
- * V20261117000300, which released every hold that had one; nothing sets it any more.
+ * {@code order_id} for cancellation and release.
  * The unique constraint on {@code request_id} is the last line of defence for idempotency: the
  * aggregate checks in memory, and the database refuses even if two threads slip past that check
  * simultaneously.</p>
@@ -38,8 +37,7 @@ import java.util.UUID;
                 name = "uk_stock_reservation_request", columnNames = "request_id"),
         indexes = {
                 @Index(name = "ix_stock_reservation_order", columnList = "order_id"),
-                @Index(name = "ix_stock_reservation_root_request", columnList = "root_request_id"),
-                @Index(name = "ix_stock_reservation_expiry", columnList = "status, expires_at")
+                @Index(name = "ix_stock_reservation_root_request", columnList = "root_request_id")
         })
 public class ReservationJpaEntity {
 
@@ -70,15 +68,20 @@ public class ReservationJpaEntity {
     @Column(name = "request_id", nullable = false, updatable = false)
     private UUID requestId;
 
-    @Column(name = "quantity", nullable = false)
-    private int quantity;
+    /**
+     * How many cartons the row is (ADR-0011, V20261230000500): any number for a SKU reservation, always 1 for a hold
+     * on a stock item ({@code ck_stock_reservation_one_carton}). The row keeps no units: they are
+     * {@code cartons * unitsPerCarton}.
+     */
+    @Column(name = "cartons", nullable = false, updatable = false)
+    private int cartons;
+
+    /** The count of those cartons; a SKU reservation is served only by cartons of this {@code nominal_qty}. */
+    @Column(name = "units_per_carton", nullable = false, updatable = false)
+    private int unitsPerCarton;
 
     @Column(name = "reserved_at", nullable = false, updatable = false)
     private Instant reservedAt;
-
-    /** Null once pinned: the order is no longer waiting for payment (SCRUM-465). */
-    @Column(name = "expires_at")
-    private Instant expiresAt;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
@@ -125,33 +128,35 @@ public class ReservationJpaEntity {
     }
 
     /** A hold, with the SKU it holds and the SKU reservation it was allocated from. */
+    @SuppressWarnings("java:S107")
     public ReservationJpaEntity(UUID id, String sku, UUID orderId, UUID rootRequestId,
-                                UUID requestId, int quantity, Instant reservedAt, Instant expiresAt,
+                                UUID requestId, int cartons, int unitsPerCarton, Instant reservedAt,
                                 ReservationStatus status, ReleaseReason releaseReason, Instant closedAt,
                                 UUID allocatedFrom) {
-        this(id, orderId, rootRequestId, requestId, quantity, reservedAt, expiresAt, status, releaseReason, closedAt);
+        this(id, orderId, rootRequestId, requestId, cartons, unitsPerCarton, reservedAt, status, releaseReason,
+                closedAt);
         this.sku = sku;
         this.allocatedFrom = allocatedFrom;
     }
 
     /** Copies a SKU reservation's changing state onto its managed row. */
-    public void apply(Instant expiresAt, ReservationStatus status, ReleaseReason releaseReason, Instant closedAt) {
-        this.expiresAt = expiresAt;
+    public void apply(ReservationStatus status, ReleaseReason releaseReason, Instant closedAt) {
         this.status = status;
         this.releaseReason = releaseReason;
         this.closedAt = closedAt;
     }
 
-    public ReservationJpaEntity(UUID id, UUID orderId, UUID rootRequestId, UUID requestId, int quantity,
-                         Instant reservedAt, Instant expiresAt, ReservationStatus status,
+    @SuppressWarnings("java:S107")
+    public ReservationJpaEntity(UUID id, UUID orderId, UUID rootRequestId, UUID requestId, int cartons,
+                         int unitsPerCarton, Instant reservedAt, ReservationStatus status,
                          ReleaseReason releaseReason, Instant closedAt) {
         this.id = id;
         this.orderId = orderId;
         this.rootRequestId = rootRequestId;
         this.requestId = requestId;
-        this.quantity = quantity;
+        this.cartons = cartons;
+        this.unitsPerCarton = unitsPerCarton;
         this.reservedAt = reservedAt;
-        this.expiresAt = expiresAt;
         this.status = status;
         this.releaseReason = releaseReason;
         this.closedAt = closedAt;
@@ -165,9 +170,9 @@ public class ReservationJpaEntity {
     public UUID getOrderId() { return orderId; }
     public UUID getRootRequestId() { return rootRequestId; }
     public UUID getRequestId() { return requestId; }
-    public int getQuantity() { return quantity; }
+    public int getCartons() { return cartons; }
+    public int getUnitsPerCarton() { return unitsPerCarton; }
     public Instant getReservedAt() { return reservedAt; }
-    public Instant getExpiresAt() { return expiresAt; }
     public ReservationStatus getStatus() { return status; }
     public ReleaseReason getReleaseReason() { return releaseReason; }
     public Instant getClosedAt() { return closedAt; }

@@ -16,7 +16,6 @@ public record ReservationRowResponse(
         int quantity,
         @Schema(description = "HELD, CONSUMED, RELEASED or EXPIRED") String status,
         Instant reservedAt,
-        @Schema(description = "Null once the order no longer waits for payment (the hold is pinned)") Instant expiresAt,
         @Schema(description = "Why it was released: ORDER_CANCELLED, PAYMENT_FAILED, RESERVATION_EXPIRED, MANUAL_OVERRIDE")
         String releaseReason,
         Instant closedAt,

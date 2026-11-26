@@ -13,14 +13,14 @@ import java.util.UUID;
 
 /**
  * What the back office reads about stock beyond one SKU (SCRUM-462): the holds — which order holds
- * what, where, until when — and every stock row of a warehouse in any status, page by page. A
+ * what and where — and every stock row of a warehouse in any status, page by page. A
  * warehouse-bound caller sees only their own warehouses (BR-SEC-002).
  */
 public interface StockBrowsing {
 
     record Reservation(UUID reservationId, UUID orderId, UUID stockItemId, String sku, String locationCode,
                        String lotNumber, int quantity, ReservationStatus status, Instant reservedAt,
-                       Instant expiresAt, ReleaseReason releaseReason, Instant closedAt, String orderNumber) {
+                       ReleaseReason releaseReason, Instant closedAt, String orderNumber) {
     }
 
     /** @param warehouse a warehouse prefix ({@code HCM}); null for every warehouse the caller may see */

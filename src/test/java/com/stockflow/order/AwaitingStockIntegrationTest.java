@@ -408,7 +408,7 @@ class AwaitingStockIntegrationTest {
                 .isEqualTo(OrderStatus.READY_TO_FULFILL);
         assertThat(history(orderId)).last().satisfies(row -> assertThat(row).startsWith("AWAITING_STOCK>READY_TO_FULFILL"));
         assertThat(jdbc.queryForObject("""
-                SELECT COALESCE(sum(quantity), 0) FROM inventory.stock_reservation
+                SELECT COALESCE(sum(cartons * units_per_carton), 0) FROM inventory.stock_reservation
                  WHERE order_id = ? AND allocated_from_id IS NOT NULL AND status = 'HELD'""", Long.class, orderId))
                 .as("4B-8 (17 BR-29): the release is batch 1's - its 12 cartons allocated on the bin")
                 .isEqualTo(12L * PER_CARTON);

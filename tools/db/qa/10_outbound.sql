@@ -128,10 +128,10 @@ SELECT pg_temp.expect_ok('F4 a pick with both', $q$
 \echo '--- pick lines: picked means deducted, one live line per hold, put back in full (fulfillment.pick_line)'
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
 VALUES (md5('qa:ol:f5')::uuid, md5('qa:order:f1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 2000, 6000, 'VND');
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at,
-                                         expires_at, status, closed_at)
+INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                         reserved_at, status, closed_at)
 SELECT md5('qa:res:f5')::uuid, c.row_id, md5('qa:order:f1')::uuid, gen_random_uuid(),
-        gen_random_uuid(), c.units, NOW(), NULL, 'CONSUMED', NOW() FROM qa10_carton c WHERE c.n = 1;
+        gen_random_uuid(), 1, c.units, NOW(), 'CONSUMED', NOW() FROM qa10_carton c WHERE c.n = 1;
 INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no, allocated_qty,
                                    lpn, whole_carton)
 SELECT md5('qa:pl:f5')::uuid, md5('qa:pick:f1')::uuid, md5('qa:ol:f5')::uuid, md5('qa:res:f5')::uuid, 'LY-GIAY-DEMO-12OZ-XANH',
@@ -206,10 +206,10 @@ SELECT pg_temp.expect_ok('F18 a put-back moved back from a staging location stil
 SELECT pg_temp.expect_ok('F19 a cancelled line frees its hold for a new live line', $q$
     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
     VALUES (md5('qa:ol:f19')::uuid, md5('qa:order:f1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 1000, 6000, 'VND');
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity,
-                                             reserved_at, expires_at, status)
+    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                             reserved_at, status)
     SELECT md5('qa:res:f19')::uuid, c.row_id, md5('qa:order:f1')::uuid,
-           gen_random_uuid(), gen_random_uuid(), c.units, NOW(), NULL, 'HELD' FROM qa10_carton c WHERE c.n = 2;
+           gen_random_uuid(), gen_random_uuid(), 1, c.units, NOW(), 'HELD' FROM qa10_carton c WHERE c.n = 2;
     UPDATE inventory.stock_item SET reserved = reserved + (SELECT units FROM qa10_carton WHERE n = 2)
      WHERE id = (SELECT row_id FROM qa10_carton WHERE n = 2);
     INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, allocated_qty, status,
@@ -222,9 +222,9 @@ SELECT pg_temp.expect_ok('F19 a cancelled line frees its hold for a new live lin
 INSERT INTO fulfillment.pack (id, pick_id, status, created_at)
 VALUES (md5('qa:pack:f1')::uuid, md5('qa:pick:f1')::uuid, 'PENDING', NOW());
 -- One more picked, deducted carton on the pick (carton 4): the shipping carton row below is its.
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at,
-                                         expires_at, status, closed_at)
-SELECT md5('qa:res:f20')::uuid, c.row_id, md5('qa:order:f1')::uuid, gen_random_uuid(), gen_random_uuid(), c.units, NOW(), NULL,
+INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                         reserved_at, status, closed_at)
+SELECT md5('qa:res:f20')::uuid, c.row_id, md5('qa:order:f1')::uuid, gen_random_uuid(), gen_random_uuid(), 1, c.units, NOW(),
        'CONSUMED', NOW() FROM qa10_carton c WHERE c.n = 4;
 INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no, allocated_qty,
                                    picked_qty, status, picked_by, picked_at, consumed_at, lpn, whole_carton)

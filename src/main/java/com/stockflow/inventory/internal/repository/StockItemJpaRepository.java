@@ -120,7 +120,8 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
      * ({@code allocated_from_id} set), a subset of {@code reserved} on the same rows.
      */
     @Query("""
-            select new com.stockflow.inventory.internal.repository.AllocatedRow(s.locationCode, sum(r.quantity))
+            select new com.stockflow.inventory.internal.repository.AllocatedRow(s.locationCode,
+                   sum(r.cartons * r.unitsPerCarton))
             from StockItemJpaEntity s join s.reservations r
             where s.sku = :sku
               and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
@@ -155,7 +156,8 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
     List<UUID> findStockItemIdsEverForRequest(@Param("rootRequestId") UUID rootRequestId);
 
     @Query("""
-            select new com.stockflow.inventory.internal.domain.HeldStock(s.sku, s.locationCode, r.quantity)
+            select new com.stockflow.inventory.internal.domain.HeldStock(s.sku, s.locationCode,
+                   r.cartons * r.unitsPerCarton)
             from ReservationJpaEntity r join r.stockItem s
             where r.orderId = :orderId
               and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
@@ -165,9 +167,9 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
 
     @Query("""
             select new com.stockflow.inventory.internal.domain.HoldDetail(r.id, s.sku, s.locationCode, s.lotNumber,
-                   r.quantity, r.status, r.expiresAt, p.lpn,
+                   r.cartons * r.unitsPerCarton, r.status, p.lpn,
                    case when p.status = com.stockflow.inventory.internal.domain.StockPackageStatus.IN_STOCK
-                        and r.quantity = s.onHand and s.onHand = p.nominalQty
+                        and r.cartons * r.unitsPerCarton = s.onHand and s.onHand = p.nominalQty
                         then true else false end)
             from ReservationJpaEntity r join r.stockItem s
             left join StockPackageJpaEntity p on p.id = s.stockPackageId

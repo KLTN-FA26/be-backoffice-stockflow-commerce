@@ -76,22 +76,36 @@ final class PickableStock {
     }
 
     /**
-     * WF4-COUNT-EDGE (a): the units of whole free cartons of {@code sku} on pickable, usable locations of
-     * {@code warehouseCode} - {@link #allocatableByWarehouse}'s, with the cartons a recount has frozen counted in: a
-     * carton whose count is still pending is in doubt, not missing, and covers a hold until its own variance is decided.
+     * The cartons of {@code unitsPerCarton} of one SKU a release could allocate, per warehouse code (ADR-0011): the
+     * rows of {@link #allocatableByWarehouse} that are a carton of exactly that count, counted. A hold of cartons of
+     * 1000 is promised - and later served - from these only; a free carton of another count is not one of them.
+     * Absent keys mean none.
      */
-    long coverableAt(Sku sku, String warehouseCode) {
+    Map<String, Long> allocatableCartonsByWarehouse(Sku sku, int unitsPerCarton) {
+        return allocatable(List.of(sku.code())).stream().filter(row -> row.units() == unitsPerCarton)
+                .collect(Collectors.groupingBy(
+                        row -> new com.stockflow.inventory.internal.domain.LocationId(row.locationCode()).warehouseCode(),
+                        Collectors.counting()));
+    }
+
+    /**
+     * WF4-COUNT-EDGE (a): the whole free cartons of {@code sku} on pickable, usable locations of {@code warehouseCode},
+     * how many of each count - {@link #allocatableByWarehouse}'s, with the cartons a recount has frozen counted in: a
+     * carton whose count is still pending is in doubt, not missing, and covers a hold until its own variance is decided.
+     * By count because a hold is covered only by cartons of its own (ADR-0011). Absent keys mean none.
+     */
+    Map<Integer, Long> coverableCartonsAt(Sku sku, String warehouseCode) {
         List<StockItemRepository.Allocatable> rows = stockItems.findAllocatable(List.of(sku.code())).stream()
                 .filter(row -> new com.stockflow.inventory.internal.domain.LocationId(row.locationCode()).warehouseCode()
                         .equals(warehouseCode))
                 .toList();
         if (rows.isEmpty()) {
-            return 0;
+            return Map.of();
         }
         Map<String, UUID> pickable = locations.pickable(rows.stream()
                 .map(StockItemRepository.Allocatable::locationCode).distinct().toList());
         return rows.stream().filter(row -> pickable.containsKey(row.locationCode()))
-                .mapToLong(StockItemRepository.Allocatable::units).sum();
+                .collect(Collectors.groupingBy(StockItemRepository.Allocatable::units, Collectors.counting()));
     }
 
     /** The one filter: the rows of whole free cartons, less the frozen ones and those on no pickable location. */

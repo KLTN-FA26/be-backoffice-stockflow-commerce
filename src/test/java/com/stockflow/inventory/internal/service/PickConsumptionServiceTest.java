@@ -140,7 +140,7 @@ class PickConsumptionServiceTest {
     private StockItem looseRowWithHold(LocationId location, int onHand, int held, ReservationStatus status,
                                        UUID reservationId) {
         Reservation hold = new Reservation(ReservationId.of(reservationId), UUID.randomUUID(), UUID.randomUUID(),
-                UUID.randomUUID(), Quantity.of(held), NOW.minusSeconds(3600), null, status, null,
+                UUID.randomUUID(), held, NOW.minusSeconds(3600), status, null,
                 status == ReservationStatus.HELD ? null : NOW.minusSeconds(60));
         StockItem item = new StockItem(StockItemId.newId(), CUP, location, "LOT-1", Quantity.of(onHand),
                 StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400));
@@ -158,7 +158,7 @@ class PickConsumptionServiceTest {
     private StockItem stockWithHold(LocationId location, int onHand, int held, ReservationStatus status,
                                     UUID reservationId) {
         Reservation hold = new Reservation(ReservationId.of(reservationId), UUID.randomUUID(), UUID.randomUUID(),
-                UUID.randomUUID(), Quantity.of(held), NOW.minusSeconds(3600), null, status,
+                UUID.randomUUID(), held, NOW.minusSeconds(3600), status,
                 status == ReservationStatus.RELEASED ? ReleaseReason.ORDER_CANCELLED : null,
                 status == ReservationStatus.HELD ? null : NOW.minusSeconds(60));
         StockPackageId cartonId = new StockPackageId(UUID.randomUUID());
@@ -299,7 +299,7 @@ class PickConsumptionServiceTest {
         void goodsInThePrintShopAreRefused() {
             UUID holdId = UUID.randomUUID();
             Reservation hold = new Reservation(ReservationId.of(holdId), UUID.randomUUID(), UUID.randomUUID(),
-                    UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
+                    UUID.randomUUID(), 2, NOW.minusSeconds(3600), ReservationStatus.HELD, null, null);
             StockItem item = new StockItem(StockItemId.newId(), CUP, new LocationId("HCM-PRD01"), "LOT-1",
                     Quantity.of(2), StockStatus.IN_PRODUCTION, List.of(hold), 0L,
                     NOW.minusSeconds(86_400));
@@ -320,7 +320,7 @@ class PickConsumptionServiceTest {
         void aCartonRowIsRecountedAsACarton() {
             UUID holdId = UUID.randomUUID();
             Reservation hold = new Reservation(ReservationId.of(holdId), UUID.randomUUID(), UUID.randomUUID(),
-                    UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
+                    UUID.randomUUID(), 2, NOW.minusSeconds(3600), ReservationStatus.HELD, null, null);
             var carton = new com.stockflow.inventory.internal.domain.StockPackageId(UUID.randomUUID());
             StockItem item = new StockItem(StockItemId.newId(), CUP, BIN, "LOT-1", Quantity.of(4), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400), carton);
             when(stockItems.findIdByReservationId(ReservationId.of(holdId))).thenReturn(Optional.of(item.id()));
@@ -368,7 +368,7 @@ class PickConsumptionServiceTest {
         private Picked pickedCarton(LocationId bin, int received, int held, ReservationStatus holdStatus, UUID hold,
                                     StockStatus rowStatus) {
             Reservation reservation = new Reservation(ReservationId.of(hold), UUID.randomUUID(), UUID.randomUUID(),
-                    UUID.randomUUID(), Quantity.of(held), NOW.minusSeconds(3600), null, holdStatus, null,
+                    UUID.randomUUID(), held, NOW.minusSeconds(3600), holdStatus, null,
                     holdStatus == ReservationStatus.HELD ? null : NOW.minusSeconds(60));
             StockPackageId id = new StockPackageId(UUID.randomUUID());
             boolean consumed = holdStatus == ReservationStatus.CONSUMED;
@@ -733,7 +733,7 @@ class PickConsumptionServiceTest {
         private Held heldCarton(LocationId bin, int count, int held, ReservationStatus status, StockStatus rowStatus) {
             UUID hold = UUID.randomUUID();
             Reservation reservation = new Reservation(ReservationId.of(hold), UUID.randomUUID(), UUID.randomUUID(),
-                    UUID.randomUUID(), Quantity.of(held), NOW.minusSeconds(3600), null, status, null,
+                    UUID.randomUUID(), held, NOW.minusSeconds(3600), status, null,
                     status == ReservationStatus.HELD ? null : NOW.minusSeconds(60));
             StockPackageId id = new StockPackageId(UUID.randomUUID());
             StockPackage carton = new StockPackage(id, LPN, UUID.randomUUID(), UUID.randomUUID(), count,
@@ -1104,7 +1104,7 @@ class PickConsumptionServiceTest {
             UUID hold = UUID.randomUUID();
             UUID line = UUID.randomUUID();
             Reservation reservation = new Reservation(ReservationId.of(hold), UUID.randomUUID(), UUID.randomUUID(),
-                    UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
+                    UUID.randomUUID(), 2, NOW.minusSeconds(3600), ReservationStatus.HELD, null, null);
             StockPackageId id = new StockPackageId(UUID.randomUUID());
             StockPackage carton = new StockPackage(id, lpn, UUID.randomUUID(), UUID.randomUUID(), 2,
                     NOW.minusSeconds(7200), bin,

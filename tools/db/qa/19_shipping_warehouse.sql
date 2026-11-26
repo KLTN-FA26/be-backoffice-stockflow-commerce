@@ -19,6 +19,22 @@ BEGIN
     RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
 END $$;
 
+CREATE FUNCTION pg_temp.expect_fail_by(label TEXT, rule TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    BEGIN
+        EXECUTE stmt;
+        SET CONSTRAINTS ALL IMMEDIATE;
+        SET CONSTRAINTS ALL DEFERRED;
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM NOT LIKE '%' || rule || '%' THEN
+            RAISE EXCEPTION 'FAIL  %: refused, but not by %: %', label, rule, SQLERRM;
+        END IF;
+        RAISE NOTICE 'ok    %  [%]', label, rule;
+        RETURN;
+    END;
+    RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
+END $$;
+
 CREATE FUNCTION pg_temp.expect_ok(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     EXECUTE stmt;
@@ -66,44 +82,71 @@ SELECT pg_temp.expect_ok('SW3 chosen by Sales for the confirmed order of a contr
 
 \echo '--- its stock held at that warehouse, by SKU (20 §5.6, BR-01, BR-17)'
 SELECT pg_temp.expect_fail('SW4 held at a warehouse that does not exist', $q$
-    INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, quantity, reserved_at, status,
-                                             sku, warehouse_code)
-    VALUES (gen_random_uuid(), md5('qa19:contract')::uuid, gen_random_uuid(), gen_random_uuid(), 10, NOW(), 'HELD',
-            'LY-GIAY-DEMO-12OZ-XANH', 'NOWHERE') $q$);
-SELECT pg_temp.expect_fail('SW5 more held at HCM than it has unheld (33,000 units)', $q$
-    INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, quantity, reserved_at, status,
-                                             sku, warehouse_code)
-    VALUES (gen_random_uuid(), md5('qa19:contract')::uuid, gen_random_uuid(), gen_random_uuid(), 34000, NOW(), 'HELD',
-            'LY-GIAY-DEMO-12OZ-XANH', 'HCM') $q$);
-SELECT pg_temp.expect_ok('SW6 30,000 units held at HCM, with no deadline', $q$
-    INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, quantity, reserved_at, status,
-                                             sku, warehouse_code)
-    VALUES (md5('qa19:hold')::uuid, md5('qa19:contract')::uuid, md5('qa19:req')::uuid, md5('qa19:req')::uuid, 30000,
+    INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                             reserved_at, status, sku, warehouse_code)
+    VALUES (gen_random_uuid(), md5('qa19:contract')::uuid, gen_random_uuid(), gen_random_uuid(), 10, 1000, NOW(),
+            'HELD', 'LY-GIAY-DEMO-12OZ-XANH', 'NOWHERE') $q$);
+-- A hold counts cartons of one count (ADR-0011, V20261230000500): HCM has 33 free cartons of 1,000 of the cup.
+SELECT pg_temp.expect_true('SW5a the demo cup has 33 free cartons of 1,000 at HCM and none of another count',
+    (SELECT count(*) FILTER (WHERE p.nominal_qty = 1000) = 33 AND count(*) FILTER (WHERE p.nominal_qty <> 1000) = 0
+       FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
+      WHERE s.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND s.status = 'AVAILABLE' AND s.on_hand > 0 AND s.reserved = 0
+        AND split_part(s.location_code, '-', 1) = 'HCM'));
+SELECT pg_temp.expect_fail_by('SW5 more held at HCM than its free cartons of that count (34 > 33)',
+    'exceed its free available cartons of that count (33)', $q$
+    INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                             reserved_at, status, sku, warehouse_code)
+    VALUES (gen_random_uuid(), md5('qa19:contract')::uuid, gen_random_uuid(), gen_random_uuid(), 34, 1000, NOW(),
+            'HELD', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM') $q$);
+SELECT pg_temp.expect_fail_by('SW5b a carton of 500 held at HCM: 33,000 units stand free, none in a carton of 500',
+    'carton(s) of 500) exceed its free available cartons of that count', $q$
+    INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                             reserved_at, status, sku, warehouse_code)
+    VALUES (gen_random_uuid(), md5('qa19:contract')::uuid, gen_random_uuid(), gen_random_uuid(), 1, 500, NOW(),
+            'HELD', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM') $q$);
+SELECT pg_temp.expect_fail_by('SW5c a carton of 1,000 held at DNI, where the cup has none: covered system-wide is not covered there',
+    'exceed its free available cartons of that count there', $q$
+    INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                             reserved_at, status, sku, warehouse_code)
+    VALUES (gen_random_uuid(), md5('qa19:contract')::uuid, gen_random_uuid(), gen_random_uuid(), 1, 1000, NOW(),
+            'HELD', 'LY-GIAY-DEMO-12OZ-XANH', 'DNI') $q$);
+SELECT pg_temp.expect_ok('SW6 30 cartons of 1,000 held at HCM, with no deadline', $q$
+    INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                             reserved_at, status, sku, warehouse_code)
+    VALUES (md5('qa19:hold')::uuid, md5('qa19:contract')::uuid, md5('qa19:req')::uuid, md5('qa19:req')::uuid, 30, 1000,
             NOW(), 'HELD', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM') $q$);
-SELECT pg_temp.expect_fail('SW7 another 4,000 held at HCM: 34,000 > 33,000', $q$
-    INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, quantity, reserved_at, status,
-                                             sku, warehouse_code)
-    VALUES (gen_random_uuid(), md5('qa19:contract')::uuid, gen_random_uuid(), gen_random_uuid(), 4000, NOW(), 'HELD',
-            'LY-GIAY-DEMO-12OZ-XANH', 'HCM') $q$);
-SELECT pg_temp.expect_fail('SW8 a checkout''s hold beside it: 34,000 > 33,000 system-wide', $q$
-    INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, quantity, reserved_at,
-                                             expires_at, status, sku)
-    VALUES (gen_random_uuid(), md5('qa19:checkout')::uuid, gen_random_uuid(), gen_random_uuid(), 4000, NOW(),
-            NOW() + INTERVAL '30 minutes', 'HELD', 'LY-GIAY-DEMO-12OZ-XANH') $q$);
+SELECT pg_temp.expect_fail_by('SW7 another 4 cartons held at HCM: 34 > 33',
+    'exceed its free available cartons of that count (33)', $q$
+    INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                             reserved_at, status, sku, warehouse_code)
+    VALUES (gen_random_uuid(), md5('qa19:contract')::uuid, gen_random_uuid(), gen_random_uuid(), 4, 1000, NOW(),
+            'HELD', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM') $q$);
+SELECT pg_temp.expect_fail_by('SW8 a hold at no warehouse beside it: 34 > 33 system-wide',
+    'exceed its free available cartons of that count (33)', $q$
+    INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                             reserved_at, status, sku)
+    VALUES (gen_random_uuid(), md5('qa19:checkout')::uuid, gen_random_uuid(), gen_random_uuid(), 4, 1000, NOW(),
+            'HELD', 'LY-GIAY-DEMO-12OZ-XANH') $q$);
+SELECT pg_temp.expect_fail_by('SW8b the hold grown past the free cartons of its count (update, not insert)',
+    'exceed its free available cartons of that count', $q$
+    UPDATE inventory.stock_reservation SET cartons = 34 WHERE id = md5('qa19:hold')::uuid $q$);
+SELECT pg_temp.expect_fail_by('SW8c the hold turned into cartons of another count (update)',
+    'carton(s) of 500) exceed its free available cartons of that count', $q$
+    UPDATE inventory.stock_reservation SET units_per_carton = 500 WHERE id = md5('qa19:hold')::uuid $q$);
 SELECT pg_temp.expect_fail('SW9 where it is held moved', $q$
     UPDATE inventory.stock_reservation SET warehouse_code = NULL WHERE id = md5('qa19:hold')::uuid $q$);
 SELECT pg_temp.expect_fail('SW10 a hold on a stock item naming a warehouse', $q$
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity,
-                                             reserved_at, status, sku, warehouse_code)
+    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons,
+                                             units_per_carton, reserved_at, status, sku, warehouse_code)
     VALUES (gen_random_uuid(), md5('demo:cups:empty-stock:LY-GIAY-DEMO-12OZ-XANH:HCM-A02-1-A')::uuid, md5('qa19:contract')::uuid, gen_random_uuid(),
-            gen_random_uuid(), 1, NOW(), 'HELD', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM') $q$);
+            gen_random_uuid(), 1, 1, NOW(), 'HELD', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM') $q$);
 -- Stock is whole LPN cartons since 4C-1/4C-2: an allocation is one carton's row (the demo's 25 cartons of 1,000 cups
 -- on HCM-A01-2-B), taken whole.
 SELECT pg_temp.expect_ok('SW11 allocated on a carton of HCM, where it is held (released to HCM)', $q$
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity,
-                                             reserved_at, status, sku, allocated_from_id)
+    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons,
+                                             units_per_carton, reserved_at, status, sku, allocated_from_id)
     SELECT md5('qa19:alloc')::uuid, c.id, md5('qa19:contract')::uuid, gen_random_uuid(),
-           gen_random_uuid(), c.on_hand, NOW(), 'HELD', 'LY-GIAY-DEMO-12OZ-XANH', md5('qa19:hold')::uuid
+           gen_random_uuid(), 1, c.on_hand, NOW(), 'HELD', 'LY-GIAY-DEMO-12OZ-XANH', md5('qa19:hold')::uuid
       FROM (SELECT s.id, s.on_hand FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
              WHERE s.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND s.location_code = 'HCM-A01-2-B' AND p.status = 'IN_STOCK'
                AND s.on_hand = p.nominal_qty AND s.reserved = 0 ORDER BY p.lpn LIMIT 1) c;

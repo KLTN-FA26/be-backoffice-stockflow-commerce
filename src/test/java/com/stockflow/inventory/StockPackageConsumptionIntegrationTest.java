@@ -1,7 +1,5 @@
 package com.stockflow.inventory;
 
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.consumption.PickConsumption;
@@ -28,7 +26,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * SCRUM-473 (#141) against a real PostgreSQL and its commit-time checks (V20261020000200), since team plan 4C-2 with
@@ -122,12 +119,13 @@ class StockPackageConsumptionIntegrationTest {
         UUID box = cartonOnShelf("A");
         UUID order = confirmedOrder();
 
-        // The checkout reservation's own refusal (RESERVATION_NOT_WHOLE_CARTONS) went with it (review C4 D-1); a hold
-        // of part of a carton still never reaches a carton: the release finds no whole carton for it, and nothing
-        // is held (the hold and its allocation are one transaction here).
-        assertThat(((BusinessException) catchThrowable(() -> hold(order, 3))).errorCode())
-                .as("3 of a carton of 5: allocated whole cartons only")
-                .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        // A hold counts cartons of one count (ADR-0011, V20261230000500): 3 units is "a carton of 3", and the SKU has
+        // none, so part of the carton of 5 is never even held - where, before, the hold was taken in units and only
+        // the release refused it (INSUFFICIENT_STOCK: no whole carton for 3).
+        assertThat(tx.execute(s -> Holds.attempt(inventory, order, sku, "HCM", 3)).cartonsHeld())
+                .as("3 of a carton of 5: a carton is held whole, or not at all").isZero();
+        assertThat(jdbc.queryForObject("select count(*) from inventory.stock_reservation where order_id = ?",
+                Integer.class, order)).isZero();
         assertThat(carton(box)).containsEntry("status", "IN_STOCK").containsEntry("held", 5L);
 
         UUID whole = hold(order, 5);

@@ -208,7 +208,7 @@ SELECT pg_temp.expect_true('LC21 the LPN sequence of each day it numbered on is 
 SELECT pg_temp.expect_true('LC22 every live hold on stock is one whole carton, held by nothing else',
     NOT EXISTS (SELECT 1 FROM inventory.stock_reservation h JOIN inventory.stock_item s ON s.id = h.stock_item_id
                  WHERE h.status = 'HELD'
-                   AND (s.stock_package_id IS NULL OR h.quantity <> s.on_hand
+                   AND (s.stock_package_id IS NULL OR h.cartons * h.units_per_carton <> s.on_hand
                         OR EXISTS (SELECT 1 FROM inventory.stock_reservation o
                                     WHERE o.stock_item_id = s.id AND o.status = 'HELD' AND o.id <> h.id))));
 

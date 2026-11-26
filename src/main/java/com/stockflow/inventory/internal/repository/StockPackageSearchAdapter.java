@@ -223,7 +223,8 @@ class StockPackageSearchAdapter implements StockPackageSearch {
         }
         Map<UUID, List<StockPackageBalance.Hold>> holds = new HashMap<>();
         jdbc.query("""
-                        SELECT s.stock_package_id, r.order_id, r.order_number, sum(r.quantity) AS quantity
+                        SELECT s.stock_package_id, r.order_id, r.order_number,
+                               sum(r.cartons * r.units_per_carton) AS quantity
                           FROM inventory.stock_reservation r
                           JOIN inventory.stock_item s ON s.id = r.stock_item_id
                          WHERE s.stock_package_id IN (:ids) AND r.status = 'HELD'

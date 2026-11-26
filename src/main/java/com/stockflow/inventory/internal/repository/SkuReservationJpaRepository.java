@@ -41,7 +41,7 @@ interface SkuReservationJpaRepository extends JpaRepository<ReservationJpaEntity
     List<ReservationJpaEntity> findHeldForOrder(@Param("orderId") UUID orderId);
 
     @Query("""
-            select r.sku as sku, sum(r.quantity) as quantity from ReservationJpaEntity r
+            select r.sku as sku, sum(r.cartons * r.unitsPerCarton) as quantity from ReservationJpaEntity r
             where r.stockItem is null and r.sku in :skus
               and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
             group by r.sku

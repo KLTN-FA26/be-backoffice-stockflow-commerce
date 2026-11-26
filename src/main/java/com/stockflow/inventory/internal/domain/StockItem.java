@@ -433,48 +433,59 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
-     * Allocate part of a SKU reservation to this stock item (F-FUL step 02, BR-STK-006): the order was released to
-     * this warehouse and the planner chose this bin and lot. A hard hold, pinned, that the picker will walk to; the
-     * units stop being the SKU's soft reservation once the caller marks it {@link SkuReservation#markAllocated}.
+     * Give this carton to a SKU reservation (F-FUL step 02, BR-STK-006): the order was released to this warehouse and
+     * the planner chose this carton. A hard hold that the picker will walk to; the carton stops being counted in the
+     * SKU's soft reservation once the caller marks that {@link SkuReservation#markAllocated}.
      * Idempotent on {@code requestId}. Announces {@code StockAllocated}; available-to-promise does not change.
      *
-     * @throws InsufficientStockException when fewer than {@code quantity} units here are free
+     * @throws InsufficientStockException when the carton is no longer free, or is not of the hold's count
      */
-    public Reservation allocate(SkuReservation from, UUID requestId, Quantity quantity, Instant now) {
+    public Reservation allocate(SkuReservation from, UUID requestId, Instant now) {
         if (!from.sku().equals(sku)) {
             throw new IllegalArgumentException("Reservation %s is for %s, not %s".formatted(from.id(), from.sku(), sku));
         }
-        return allocate(from.orderId(), from.id().value(), from.id().value(), requestId, quantity, now);
+        return allocate(from.orderId(), from.id().value(), from.id().value(), requestId, from.unitsPerCarton(), now);
     }
 
     /**
-     * An allocation of {@code orderId}'s units here, made from the SKU reservation {@code allocatedFrom} — at
+     * An allocation of this carton to {@code orderId}, made from the SKU reservation {@code allocatedFrom} — at
      * release, or again after a short pick elsewhere (X-SHORT). {@code rootRequestId} is what a replay of the call
      * that made it looks for.
+     *
+     * <p><b>The whole carton, of the count asked for (ADR-0011).</b> An allocation is one carton: it takes everything
+     * the row holds, so the row must hold a carton of exactly {@code unitsPerCarton} with nothing of it held. A carton
+     * of another count is not a candidate, however many units it holds; the planner never offers one, and this is
+     * the same rule read again under the row's lock ({@code tg_stock_reservation_whole_carton} states it a third
+     * time).</p>
+     *
+     * @throws InsufficientStockException when the row no longer holds a free carton of {@code unitsPerCarton}
      */
     public Reservation allocate(UUID orderId, UUID allocatedFrom, UUID rootRequestId, UUID requestId,
-                                Quantity quantity, Instant now) {
+                                int unitsPerCarton, Instant now) {
         Optional<Reservation> alreadyServed = findByRequestId(requestId);
         if (alreadyServed.isPresent()) {
             return alreadyServed.get();
         }
-        requireHoldable(quantity, now, "order " + orderId);
-        Reservation reservation = Reservation.allocate(orderId, allocatedFrom, rootRequestId, requestId, quantity, now);
+        requireFreeCartonOf(unitsPerCarton, "order " + orderId);
+        Reservation reservation = Reservation.allocate(orderId, allocatedFrom, rootRequestId, requestId,
+                unitsPerCarton, now);
         reservations.add(reservation);
         checkInvariants();
         requireInCartonWhenStocked();
         registerEvent(new StockEvent.Allocated(new com.stockflow.contracts.StockAllocated(orderId,
-                reservation.id().value(), sku.code(), location.code(), lotNumber, quantity.value())));
+                reservation.id().value(), sku.code(), location.code(), lotNumber, unitsPerCarton)));
         return reservation;
     }
 
-    private void requireHoldable(Quantity quantity, Instant now, String holder) {
+    private void requireFreeCartonOf(int unitsPerCarton, String holder) {
         if (!status.isReservable()) {
             throw new IllegalStateException(
                     "Stock in status %s cannot be reserved for %s".formatted(status, holder));
         }
-        if (available().isLessThan(quantity)) {
-            throw new InsufficientStockException(sku.code(), quantity.value(), available().value());
+        // Free: nothing of it held. Whole and of the count: it holds exactly the units one such carton does.
+        if (!reserved().isZero() || onHand.value() != unitsPerCarton) {
+            throw new InsufficientStockException(sku.code(), unitsPerCarton,
+                    onHand.value() == unitsPerCarton ? available().value() : 0);
         }
     }
 
@@ -540,9 +551,8 @@ public final class StockItem extends AggregateRoot {
      *
      * <p>The hold is checked before the stock: a hold that was released, expired or consumed already is
      * {@code RESERVATION_NOT_ACTIVE} whatever happened to the lot since, so a picker is told the real
-     * reason (the order was cancelled) rather than a policy conflict. A HELD hold past a deadline - one of
-     * before V20261117000300, which released them all - counts as given up too. Then the
-     * stock: blocked or expired stock cannot be shipped ({@code INVENTORY_POLICY_STOCK_CONFLICT}, docs 07
+     * reason (the order was cancelled) rather than a policy conflict. Then the
+     * stock: blocked stock cannot be shipped ({@code INVENTORY_POLICY_STOCK_CONFLICT}, docs 07
      * BR-02), which is a short pick for the warehouse to resolve.</p>
      */
     public void consumeReservation(ReservationId reservationId, Instant now) {
@@ -553,10 +563,6 @@ public final class StockItem extends AggregateRoot {
                                         new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
                                                 "Reservation %s does not belong to stock item %s"
                                                         .formatted(reservationId, id)));
-        if (reservation.isExpiredAt(now)) {
-            throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
-                    "Reservation %s passed its deadline at %s".formatted(reservationId, reservation.expiresAt()));
-        }
         if (reservation.status().isTerminal()) {
             throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
                     "Reservation %s is already %s".formatted(reservationId, reservation.status()));
