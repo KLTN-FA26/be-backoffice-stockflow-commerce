@@ -682,6 +682,19 @@ public enum ErrorCode {
     REFUND_RECORD_ALREADY_VOIDED("This refund record is already voided", 409),
     /** 4B-9: one outgoing bank statement line, one live refund record. */
     REFUND_REFERENCE_IN_USE("This bank statement line is already recorded as a refund", 409),
+    /** QĐ-A (2026-11-26): no credit request with that id (for a customer: none of theirs). */
+    CREDIT_REQUEST_NOT_FOUND("Credit request not found", 404),
+    /** QĐ-A: one credit request is open per customer at a time. */
+    CREDIT_REQUEST_ALREADY_OPEN("This customer already has an open credit request", 409),
+    /** QĐ-A: the step does not fit the request's status (an opinion once given, a decision on one not waiting). */
+    CREDIT_REQUEST_INVALID_TRANSITION("This credit request cannot do that in its status", 409),
+    /** QĐ-A, 18 BR-02: whoever decides neither filed the request nor gave Sales' opinion on it. */
+    CREDIT_REQUEST_SELF_DECISION("A credit request is decided by someone other than whoever filed it or gave Sales' "
+            + "opinion", 409),
+    /** QĐ-A, plan §5 question 3: the limit granted is at most the one asked; a higher one is a new request. */
+    CREDIT_REQUEST_ABOVE_REQUESTED("The limit granted cannot be above the limit asked", 409),
+    /** QĐ-A: a credit request is withdrawn by whoever filed it. */
+    CREDIT_REQUEST_NOT_FILER("Only whoever filed this credit request may withdraw it", 403),
     /** PACK-PARTIAL (lead's decision 2026-10-21): the order does not allow a partial shipment; Sales decides. */
     ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED("This order does not allow partial shipments", 409),
     /** PACK-PARTIAL: whether the order may ship in parts can no longer change once everything left or it is closed. */
