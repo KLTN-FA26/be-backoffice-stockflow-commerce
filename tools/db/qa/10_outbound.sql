@@ -12,7 +12,7 @@
 \set ON_ERROR_STOP on
 BEGIN;
 -- The moves below use two cartons of the demo cup LY-GIAY-DEMO-12OZ-XANH made here, of 25 and of 8 cups, in a lot of
--- their own. The carton is the stock (ADR-0011, V20261230000600): each is one row of inventory.stock_package with its
+-- their own. The carton is the stock (ADR-0011, V20261231000600): each is one row of inventory.stock_package with its
 -- stock status, lot and receipt date. The cups' demo cartons stay beside them; no check here reads a SKU's total.
 INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)
 VALUES (md5('qa10x:demo:lot')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'QA-LOT', NULL, 'UNTRACED', NOW()),
@@ -153,7 +153,7 @@ SELECT pg_temp.expect_ok('F12 the deduction of a pick line', $q$
                                           reference_id, occurred_at, stock_package_id)
     VALUES (gen_random_uuid(), 'PICK', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'AVAILABLE', 'PICK_LINE', md5('qa:pl:f5')::uuid,
             NOW(), (SELECT package_id FROM qa10_carton WHERE n = 1)) $q$);
--- Each line names a carton standing at its place (V20261230000200), so the rule its label names is the one that answers.
+-- Each line names a carton standing at its place (V20261231000200), so the rule its label names is the one that answers.
 SELECT pg_temp.expect_fail_by('F13 a second deduction of the same pick line', 'uk_stock_movement_pick_line', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, from_status, reference_type,
                                           reference_id, occurred_at, stock_package_id)

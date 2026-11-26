@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * SCRUM-152 / 4B-7: the soft, SKU-level hold an order of a contract takes at its shipping warehouse, and the allocation
  * it turns into at release. The checkout reservation with a payment deadline is gone (V20261117000300), and a hold
- * counts cartons of one count (ADR-0011, V20261230000500): its units are derived.
+ * counts cartons of one count (ADR-0011, V20261231000500): its units are derived.
  */
 class SkuReservationTest {
 

@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * asked as one whole-carton COUNT_VARIANCE adjustment and posted through the SCRUM-145 four-eyes approval, with the
  * commit-time carton checks (V20261020000200, V20261113000300) live. A carton a count did not find is written off
  * whole and goes LOST; a LOST carton a later count finds is restocked whole on its own row, its lot kept. A
- * variance says which way and no quantity (V20261230000100), so part of a carton cannot even be asked; a carton held
+ * variance says which way and no quantity (V20261231000100), so part of a carton cannot even be asked; a carton held
  * for a customer's order, counted missing, is written off with its hold given up as a short pick (any other
  * adjustment of it is refused).
  */

@@ -9,9 +9,9 @@ import java.util.UUID;
  * <p><b>Why this class exists.</b> The first cut of this model kept {@code reserved} as a single
  * integer beside the stock. That number cannot answer two questions the business asks every
  * day: which order holds this, and how do we release exactly that order's hold. An
- * entity with an owner answers both - and since V20261230000600 it is the only record that a carton is taken: the
+ * entity with an owner answers both - and since V20261231000600 it is the only record that a carton is taken: the
  * counter is gone, so it cannot drift from these rows. (It once carried a deadline too, for an abandoned checkout; no
- * hold has had one since V20261117000300, and the column went with V20261230000500.)</p>
+ * hold has had one since V20261117000300, and the column went with V20261231000500.)</p>
  *
  * <p><b>Entity, not aggregate root.</b> It has an identity that matters ({@link ReservationId})
  * but no independent life: it is created, consumed and released only through its
@@ -39,7 +39,7 @@ public final class Reservation {
     private final UUID rootRequestId;
     private final UUID requestId;
     /**
-     * The count of the one carton this hold is (ADR-0011, V20261230000500): an allocation takes its carton
+     * The count of the one carton this hold is (ADR-0011, V20261231000500): an allocation takes its carton
      * whole and is released whole, so it stores no number of cartons - always one - and no units of its own.
      */
     private final int unitsPerCarton;

@@ -51,7 +51,7 @@ class StockMovementShapeSchemaTest {
 
     /** One whole carton of {@link #SKU} in stock at {@link #BIN}, in the SKU's carton unit. */
     private static void carton(Connection db) throws SQLException {
-        // The carton is the stock (V20261230000600): AVAILABLE, of a lot of its SKU.
+        // The carton is the stock (V20261231000600): AVAILABLE, of a lot of its SKU.
         update(db, "INSERT INTO inventory.stock_lot (id, sku, lot_number, origin_type, created_at) VALUES"
                 + " (md5('it:shape:lot')::uuid, ?, 'UNTRACED', 'UNTRACED', NOW())", SKU);
         update(db, "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,"
@@ -64,7 +64,7 @@ class StockMovementShapeSchemaTest {
     /** Every rule of the shape, each allowed case next to the case it refuses. */
     private static void assertShape(Connection db) throws SQLException {
         // Since 4C-4 a pick line's put-back names the carton it goes back into; every line names its carton
-        // (stock_package_id NOT NULL, V20261230000400), so the shape allows the put-back and the line without one is
+        // (stock_package_id NOT NULL, V20261231000400), so the shape allows the put-back and the line without one is
         // refused.
         update(db, INSERT, "PUT_BACK", SKU, null, BIN, "PICK_LINE", CARTON);
         refusedBy(db, "null value in column \"stock_package_id\"", "a pick line's put-back that names no carton", INSERT,

@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * SCRUM-473 against a real PostgreSQL: the carton through its port, now that the carton is the stock (ADR-0011,
- * V20261230000600) - read back with its SKU, stock status, lot and FIFO date; recounted, voided and locked while it is
+ * V20261231000600) - read back with its SKU, stock status, lot and FIFO date; recounted, voided and locked while it is
  * being received. And an adjustment named by SKU and bin and no carton is refused, leaving the bin's cartons as they
  * are: stock is adjusted by carton only.
  *

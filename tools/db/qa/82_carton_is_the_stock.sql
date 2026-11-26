@@ -1,5 +1,5 @@
 -- =============================================================================
--- Adversarial checks + happy paths: the carton is the stock (V20261230000600, ADR-0011 step 3d). inventory.stock_item,
+-- Adversarial checks + happy paths: the carton is the stock (V20261231000600, ADR-0011 step 3d). inventory.stock_item,
 -- on_hand and reserved are gone; a carton (inventory.stock_package) carries its stock status, lot and FIFO date, and
 -- "is this carton taken" is the one HELD row of inventory.stock_reservation that names it. One section per rule of the
 -- step's invariants table. Needs the demo seed (the blue and the red demo cup, the HCM and DNI warehouses, the staging

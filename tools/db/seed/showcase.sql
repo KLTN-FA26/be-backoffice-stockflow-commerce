@@ -1382,7 +1382,7 @@ UPDATE ordering.production_order p
        last_modified_at = pg_temp.at(o.r, '09:00'), last_modified_by = pg_temp.staff(o.kho)::text
   FROM h_received o WHERE p.id = o.po_id;
 
--- The carton is the stock (ADR-0011, V20261230000600): going into stock it takes its stock status, its lot and its
+-- The carton is the stock (ADR-0011, V20261231000600): going into stock it takes its stock status, its lot and its
 -- receipt date, and there is no stock row beside it.
 UPDATE inventory.stock_package p
    SET status = 'IN_STOCK', stock_status = 'INBOUND', lot_id = pg_temp.sid('lot:' || c.key || ':' || c.ln),
@@ -5649,7 +5649,7 @@ SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;
 
 -- Back into stock as QUARANTINE (the status is named by what brings a carton back: a return receipt), with the lot
--- and the receipt date it had: the same goods, as old as they were (V20261230000600).
+-- and the receipt date it had: the same goods, as old as they were (V20261231000600).
 UPDATE inventory.stock_package p
    SET status = 'IN_STOCK', stock_status = 'QUARANTINE', location_code = c.area, closed_at = NULL,
        version = p.version + 1, last_modified_at = pg_temp.at(1, '17:10'),

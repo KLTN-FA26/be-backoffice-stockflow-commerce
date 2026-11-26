@@ -18,12 +18,12 @@ import java.util.regex.Pattern;
 
 /**
  * <b>The aggregate root of the inventory module:</b> one physical carton with its own LPN (GitHub #125, SCRUM-473) -
- * and the stock itself (ADR-0011, V20261230000600).
+ * and the stock itself (ADR-0011, V20261231000600).
  *
  * <p><b>The carton is the stock.</b> There is no quantity anywhere: a carton in stock stands for {@link #nominalQty}
  * units of its SKU (its packing unit's factor when it was made, the one place that says how many), in
  * {@link #stockStatus}, of lot {@link #lotId}, received at {@link #receivedAt}; out of stock it stands for nothing.
- * Until V20261230000600 a second row ({@code stock_item}) repeated all of that in units and had to be kept equal to
+ * Until V20261231000600 a second row ({@code stock_item}) repeated all of that in units and had to be kept equal to
  * the carton at commit. Whole cartons only (team plan 4C-2; kltn-docs 07 BR-03, 20 §4.6): a carton is received,
  * allocated, picked, counted, written off and restocked whole, so nothing here can take part of one.</p>
  *

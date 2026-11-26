@@ -70,7 +70,7 @@ SELECT pg_temp.expect_fail('O7 pick line with another sku than its order line', 
     INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, sku, location_code, allocated_qty)
     VALUES (gen_random_uuid(), md5('qa:pick:1')::uuid, md5('qa:ol:1')::uuid, 'LY-GIAY-DEMO-12OZ-DO', 'HCM-B01-1-A', 1) $q$);
 -- Since V20261113000400 a pick line is one carton, named by its LPN (07 BR-04, BR-10), and its hold names that carton
--- (V20261230000600). The hold of O1 took one free carton; this one takes the next (a carton has one live allocation).
+-- (V20261231000600). The hold of O1 took one free carton; this one takes the next (a carton has one live allocation).
 SELECT pg_temp.expect_ok('O8 pick line for a carton allocated from a bin, against its own hold', $q$
     INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
     SELECT md5('qa:res:3')::uuid, p.id, md5('qa:order:1')::uuid, gen_random_uuid(), gen_random_uuid(), 1, p.nominal_qty, NOW(),

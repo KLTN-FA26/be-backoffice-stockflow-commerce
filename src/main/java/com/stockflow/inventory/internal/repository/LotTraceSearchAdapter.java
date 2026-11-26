@@ -26,7 +26,7 @@ class LotTraceSearchAdapter implements LotTraceSearch {
 
     /**
      * A carton ({@code si}) a live allocation names: its units are held. There is no counter of held units any more
-     * (ADR-0011, V20261230000600); the allocation is the record.
+     * (ADR-0011, V20261231000600); the allocation is the record.
      */
     private static final String HELD =
             "EXISTS (SELECT 1 FROM inventory.stock_reservation r WHERE r.stock_package_id = si.id AND r.status = 'HELD')";

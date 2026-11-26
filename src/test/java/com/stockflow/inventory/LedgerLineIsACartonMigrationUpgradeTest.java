@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * V20261230000400 on the real upgrade path (ADR-0011, step 3b): ledger lines written while a line carried a quantity
+ * V20261231000400 on the real upgrade path (ADR-0011, step 3b): ledger lines written while a line carried a quantity
  * end as the one carton they name.
  *
  * <ul>
@@ -36,8 +36,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class LedgerLineIsACartonMigrationUpgradeTest {
 
     /** The last migration before the one under test. */
-    private static final String BEFORE = "20261230000300";
-    private static final String MIGRATION = "20261230000400";
+    private static final String BEFORE = "20261231000300";
+    private static final String MIGRATION = "20261231000400";
 
     private static final String CARTON_50 = "00000000-0000-4000-8000-0000000c0041";
     private static final String CARTON_1000 = "00000000-0000-4000-8000-0000000c0042";

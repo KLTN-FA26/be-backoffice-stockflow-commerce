@@ -1,7 +1,7 @@
 -- =============================================================================
 -- Adversarial checks + happy paths: counts and adjustments by carton, a lot on every stock row, one row per carton
 -- (V20261113000300, team plan 4C-3; kltn-docs 20 §4.2, §4.3, BR-04, BR-09, BR-10, BR-11, BR-14, BR-18, BR-22). Since
--- V20261230000100 a count line says booked / found and an adjustment a direction, never units, and both name their
+-- V20261231000100 a count line says booked / found and an adjustment a direction, never units, and both name their
 -- carton: what used to be refused as "part of a carton" cannot be written at all. Needs the demo seed. Rolled back at
 -- the end.
 -- =============================================================================
@@ -77,7 +77,7 @@ VALUES (md5('qa62:count')::uuid, 'CC-QA-62', md5('demo:wh:HCM')::uuid, 'MANUAL',
 
 \echo '--- a lot on every carton that has been in stock (20 BR-22)'
 -- CL1, CL2 and CL4 to CL7 were about the stock row's own lot_number and lot_id (NOT NULL, not blank, never loose): the
--- carton names its lot by id and has no lot number of its own (V20261230000600).
+-- carton names its lot by id and has no lot number of its own (V20261231000600).
 SELECT pg_temp.expect_true('CL1 a carton names its lot: stock_package.lot_id, required once it has been in stock',
     EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_stock_package_lot'
                AND conrelid = 'inventory.stock_package'::regclass AND convalidated)
@@ -96,7 +96,7 @@ SELECT pg_temp.expect_true('CR1 the stock rows and their indexes are gone',
     AND NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'inventory'
                      AND indexname IN ('uk_stock_item_package', 'uk_stock_item_package_layer')));
 
-\echo '--- a carton is counted in, and is in stock, at its standard count only (20 BR-18; counted_at since V20261230000300)'
+\echo '--- a carton is counted in, and is in stock, at its standard count only (20 BR-18; counted_at since V20261231000300)'
 SELECT pg_temp.expect_fail('CS1 a carton made IN_STOCK that was never counted in', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
                                          location_code, status)
@@ -116,7 +116,7 @@ SELECT pg_temp.expect_fail('CS5 an IN_STOCK carton counted again', $q$
     UPDATE inventory.stock_package SET counted_at = counted_at + interval '1 minute' WHERE id = md5('qa62:a')::uuid $q$);
 -- CS6 and CS7 (an IN_STOCK carton holding 3, or 5, of its 4) cannot be written: a carton holds no quantity.
 
-\echo '--- the balance view went with the stock rows; the carton answers for itself (V20261230000600)'
+\echo '--- the balance view went with the stock rows; the carton answers for itself (V20261231000600)'
 SELECT pg_temp.expect_true('CV1 no column unopened in stock_package, and no balance view',
     NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
                    AND table_name = 'stock_package' AND column_name = 'unopened')
@@ -132,7 +132,7 @@ SELECT pg_temp.expect_true('CV5 a carton still RECEIVING has no stock status and
     (SELECT stock_status IS NULL AND lot_id IS NULL AND received_at IS NULL FROM inventory.stock_package
       WHERE id = md5('qa62:s3')::uuid));
 
-\echo '--- a count line names a carton and says booked or not, found or not: no units (20 §4.2 b4, BR-14; V20261230000100)'
+\echo '--- a count line names a carton and says booked or not, found or not: no units (20 §4.2 b4, BR-14; V20261231000100)'
 SELECT pg_temp.expect_true('CC0 the unit figures are gone: booked is a yes/no that is always said, found one that waits for the count',
     NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
                    AND table_name = 'cycle_count_line' AND column_name IN ('expected_qty', 'counted_qty'))
@@ -195,7 +195,7 @@ SELECT pg_temp.expect_true('CC13 the index that told loose lines apart is gone; 
     NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'inventory' AND indexname = 'uk_cycle_count_line_slot')
     AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'inventory' AND indexname = 'uk_cycle_count_line_package'));
 
-\echo '--- an adjustment names a carton and says which way it goes, whole, for a reason of BR-04 (20 §4.3; V20261230000100)'
+\echo '--- an adjustment names a carton and says which way it goes, whole, for a reason of BR-04 (20 §4.3; V20261231000100)'
 SELECT pg_temp.expect_true('CA0 the unit delta is gone: a direction that is always said, of a carton that is always named',
     NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
                    AND table_name = 'stock_adjustment' AND column_name = 'quantity_delta')
@@ -440,7 +440,7 @@ SELECT pg_temp.expect_true('CD9 the two CHECKs and the trigger are in place',
     AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tg_stock_movement_adjustment_people' AND NOT tgisinternal));
 
 \echo '--- what the migration kept'
-SELECT pg_temp.expect_true('CM1 the 500-line cap is asked when a line is added, not when one is counted (V20261230000100)',
+SELECT pg_temp.expect_true('CM1 the 500-line cap is asked when a line is added, not when one is counted (V20261231000100)',
     (SELECT (tgtype & 4) <> 0 AND (tgtype & 16) = 0 FROM pg_trigger
       WHERE tgname = 'tg_cycle_count_line_carton' AND NOT tgisinternal));
 SELECT pg_temp.expect_true('CM2 the new triggers and checks are in place',

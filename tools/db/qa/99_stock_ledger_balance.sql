@@ -2,7 +2,7 @@
 -- The stock ledger balances (kltn-docs 20 BR-16; 2026-11-14 plan, BE2-C and BE4-A): for every warehouse and SKU the
 -- whole ledger summed is the stock on hand. The stock summary report (GET /api/v1/reports/stock-summary) is that ledger
 -- summed, so it is only true while every carton that entered or left stock wrote its line. Stock on hand is the
--- cartons IN_STOCK, each its nominal_qty (ADR-0011, V20261230000600: the carton is the stock). A line changes warehouse W by
+-- cartons IN_STOCK, each its nominal_qty (ADR-0011, V20261231000600: the carton is the stock). A line changes warehouse W by
 --   nominal_qty of its carton * ([to_location in W] - [from_location in W])
 -- where "in W" is the location code's prefix (06 BR-13): a move inside a warehouse counts zero.
 --
@@ -55,8 +55,8 @@ $$;
 \echo '--- the check bites'
 SAVEPOINT breach;
 -- An adjustment line with no stock moved (as if a write-up were posted to the ledger only).
--- It names a carton standing there, as every line does (V20261230000200); the carton itself is not touched. The line
--- counts for the carton's standard count, the ledger keeping no quantity of its own (V20261230000400).
+-- It names a carton standing there, as every line does (V20261231000200); the carton itself is not touched. The line
+-- counts for the carton's standard count, the ledger keeping no quantity of its own (V20261231000400).
 INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, to_location_code, to_status,
                                       reference_type, reference_id, occurred_at, version, created_at, stock_package_id)
 SELECT md5('qa99:ledger-only')::uuid, 'ADJUSTMENT', 'LY-GIAY-DEMO-12OZ-DO', 'LOT-2026-03', 'HCM-B01-1-A', 'AVAILABLE',

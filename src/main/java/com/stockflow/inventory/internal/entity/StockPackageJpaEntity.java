@@ -21,8 +21,8 @@ import java.util.UUID;
 
 /**
  * JPA mapping of {@code inventory.stock_package}: the carton, which is the stock (ADR-0011; V20261020000100,
- * {@code counted_at} since V20261230000300, {@code stock_status}, {@code lot_id}, {@code received_at} and the
- * allocations since V20261230000600). <b>Not</b> the domain model.
+ * {@code counted_at} since V20261231000300, {@code stock_status}, {@code lot_id}, {@code received_at} and the
+ * allocations since V20261231000600). <b>Not</b> the domain model.
  *
  * <p>Keeping this separate from {@code StockPackage} costs a mapper and buys three things: the aggregate stays free of
  * the no-args constructor and mutable field access that JPA demands and that would let anyone bypass its invariants; a

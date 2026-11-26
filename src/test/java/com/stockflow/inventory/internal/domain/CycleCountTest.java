@@ -143,7 +143,7 @@ class CycleCountTest {
 
     @Test
     void aLooseLineCannotEvenBeReadBack() {
-        // cycle_count_line.stock_package_id is NOT NULL since V20261230000100: no stored row is loose
+        // cycle_count_line.stock_package_id is NOT NULL since V20261231000100: no stored row is loose
         CountSlot loose = new CountSlot(new LocationId("HN-A01-1-01"), new Sku("CUP-250"), null, null);
         assertThatThrownBy(() -> new CycleCountLine(UUID.randomUUID(), loose, true, false, counter, T1, false))
                 .isInstanceOf(IllegalArgumentException.class);

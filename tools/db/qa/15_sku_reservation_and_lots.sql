@@ -1,6 +1,6 @@
 -- =============================================================================
 -- Adversarial checks: SKU reservations and allocations (SCRUM-152, V20261023000100), counted in cartons since
--- V20261230000500 (ADR-0011, step 3c), and lot identity, the ledger's lot and order snapshot (SCRUM-142/153,
+-- V20261231000500 (ADR-0011, step 3c), and lot identity, the ledger's lot and order snapshot (SCRUM-142/153,
 -- V20261023000200). Needs the demo seed. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
@@ -62,7 +62,7 @@ INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, 
                                      placed_at, version, created_at)
 SELECT md5('qa15:other')::uuid, 'SO-QA-15B', c.id, gen_random_uuid(), 'PENDING_PAYMENT', 1000, 'VND', NOW(), 0, NOW()
   FROM customer.customer c ORDER BY c.id LIMIT 1;
--- One carton of 2, in a lot of its own (the allocation below takes it: an allocation is its carton, V20261230000600).
+-- One carton of 2, in a lot of its own (the allocation below takes it: an allocation is its carton, V20261231000600).
 -- 01 BR-03: an item has ONE active carton. The demo seed's own is retired, so the fixture's unit below is the one.
 UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
@@ -75,7 +75,7 @@ INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_
 VALUES (md5('qa15:p')::uuid, 'QA-QA15-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa15:u')::uuid, 2, NOW(), 'HCM-B01-2-B', 'IN_STOCK',
         'AVAILABLE', md5('qa15:lot')::uuid, NOW() - interval '3 days');
 
-\echo '--- SKU reservations (V20261023000100), in cartons of one count (V20261230000500, ADR-0011)'
+\echo '--- SKU reservations (V20261023000100), in cartons of one count (V20261231000500, ADR-0011)'
 -- The fixture's carton of 2 stands beside the demo's cartons of 1,000 of the same cup: two counts of one SKU.
 SELECT pg_temp.expect_true('SR0 the cup has one free carton of 2 and many of 1,000',
     (SELECT count(*) FILTER (WHERE p.nominal_qty = 2) = 1 AND count(*) FILTER (WHERE p.nominal_qty = 1000) >= 20
@@ -172,7 +172,7 @@ SELECT pg_temp.expect_true('SR10 the allocation names its order',
 SELECT pg_temp.expect_fail_by('SR10a the allocation''s count changed under it', 'an allocation is its carton', $q$
     UPDATE inventory.stock_reservation SET units_per_carton = 1000 WHERE id = md5('qa15:alloc')::uuid $q$);
 
-\echo '--- the unit columns are gone, and nothing live reads them (V20261230000500)'
+\echo '--- the unit columns are gone, and nothing live reads them (V20261231000500)'
 SELECT pg_temp.expect_true('SR11 stock_reservation keeps no quantity and no deadline',
     NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
                    AND table_name = 'stock_reservation' AND column_name IN ('quantity', 'expires_at')));
@@ -201,7 +201,7 @@ SELECT pg_temp.expect_true('SR16 no view reads the table',
 
 \echo '--- lots (V20261023000200)'
 -- LT1 ("a layer written with a lot number got a lot row") went with tg_stock_item_lot: a carton has no lot number to
--- resolve a lot from, the application names the lot (V20261230000600).
+-- resolve a lot from, the application names the lot (V20261231000600).
 SELECT pg_temp.expect_true('LT2 every carton that has been in stock has a lot',
     NOT EXISTS (SELECT 1 FROM inventory.stock_package WHERE lot_id IS NULL AND status NOT IN ('RECEIVING', 'VOID')));
 SELECT pg_temp.expect_fail('LT3 a carton moved into a lot of another SKU', $q$

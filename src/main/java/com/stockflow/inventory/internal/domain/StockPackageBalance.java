@@ -151,7 +151,7 @@ public record StockPackageBalance(UUID id, String lpn, String sku, String unitOf
     /**
      * What one location holds of one SKU, lot and stock status: cartons and their units - every carton in stock is
      * whole (team plan 4C-3), so there is no opened column. {@code looseUnits} is always 0 since stock is cartons only
-     * (V20261230000600); it stays because the HTTP contract names it.
+     * (V20261231000600); it stays because the HTTP contract names it.
      *
      * @param totalUnits the two unit columns added; any other value is refused
      */

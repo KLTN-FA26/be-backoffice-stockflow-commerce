@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * V20261230000500 on the real upgrade path (ADR-0011, step 3c): reservations written while a row counted units end as
+ * V20261231000500 on the real upgrade path (ADR-0011, step 3c): reservations written while a row counted units end as
  * cartons of one count.
  *
  * <ul>
@@ -37,8 +37,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ReservationsCountCartonsMigrationUpgradeTest {
 
     /** The last migration before the one under test. */
-    private static final String BEFORE = "20261230000400";
-    private static final String MIGRATION = "20261230000500";
+    private static final String BEFORE = "20261231000400";
+    private static final String MIGRATION = "20261231000500";
 
     private static final String SKU = "SKU-UPG-R";
     private static final String SKU_UNIT_ONLY = "SKU-UPG-R2";

@@ -77,7 +77,7 @@ $$;
 
 COMMENT ON FUNCTION inventory.check_cycle_count_line_carton() IS
     'kltn-docs 20 BR-12: a count has at most 500 lines. That a line names a carton and states it present or not found '
-    '(BR-14) is the table itself since V20261230000100: stock_package_id NOT NULL, booked and found booleans.';
+    '(BR-14) is the table itself since V20261231000100: stock_package_id NOT NULL, booked and found booleans.';
 
 CREATE TRIGGER tg_cycle_count_line_carton BEFORE INSERT ON inventory.cycle_count_line
     FOR EACH ROW EXECUTE FUNCTION inventory.check_cycle_count_line_carton();
@@ -125,7 +125,7 @@ $$;
 
 COMMENT ON FUNCTION inventory.check_stock_adjustment_whole_carton() IS
     'kltn-docs 20 §4.3, BR-04: a new adjustment gives one of the six reasons. That it names a carton and takes it whole '
-    '(BR-14) is the table itself since V20261230000100: stock_package_id NOT NULL and a direction, no quantity.';
+    '(BR-14) is the table itself since V20261231000100: stock_package_id NOT NULL and a direction, no quantity.';
 
 CREATE TRIGGER tg_stock_adjustment_package BEFORE INSERT OR UPDATE OF stock_package_id, sku, location_code
     ON inventory.stock_adjustment FOR EACH ROW EXECUTE FUNCTION inventory.check_document_stock_package();

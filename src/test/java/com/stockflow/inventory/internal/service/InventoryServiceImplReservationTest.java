@@ -67,7 +67,7 @@ import static org.mockito.Mockito.when;
  * and with no deadline; releasing the order to that warehouse allocates bins and lots (FIFO); a hold gives way when
  * its order is cancelled or someone releases it by hand. The checkout reservation with a payment deadline, its pin,
  * re-arm and sweeper are gone (V20261117000300). A hold counts cartons of one count and is promised, covered and
- * allocated from cartons of that count only (ADR-0011, V20261230000500).
+ * allocated from cartons of that count only (ADR-0011, V20261231000500).
  */
 class InventoryServiceImplReservationTest {
 

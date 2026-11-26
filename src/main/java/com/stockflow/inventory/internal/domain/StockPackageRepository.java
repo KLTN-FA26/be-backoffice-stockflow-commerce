@@ -46,7 +46,7 @@ public interface StockPackageRepository {
      * {@code FOR UPDATE} would serialise the transactions and still hand the second one a stale carton.</p>
      *
      * <p>The lock order every writer of a carton keeps: the SKU advisory lock, then the cartons, in id order. There is
-     * nothing to lock after a carton any more (the stock rows went with V20261230000600).</p>
+     * nothing to lock after a carton any more (the stock rows went with V20261231000600).</p>
      */
     List<StockPackage> findAllByIdForUpdate(Collection<StockPackageId> ids);
 

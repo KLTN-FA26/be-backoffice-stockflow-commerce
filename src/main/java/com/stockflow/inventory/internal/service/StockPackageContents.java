@@ -24,7 +24,7 @@ import java.util.UUID;
  * ({@link #adjust}), a put-back of a picked carton ({@link #restock}), a return receipt ({@link #returnIntoQuarantine})
  * and its reversal ({@link #reverseReturn}) (SCRUM-473, #141; team plan 4C-2, 4C-3, 4D-2).
  *
- * <p>The carton is the stock (ADR-0011, V20261230000600), so each of these is one change of one aggregate: there is no
+ * <p>The carton is the stock (ADR-0011, V20261231000600), so each of these is one change of one aggregate: there is no
  * stock row to keep true to its carton any more, nothing to settle after a pick ({@code StockPackage
  * #consumeReservation} takes the carton out with its hold), and no commit-time check of the two against each other.
  * What is left here is the lock and the refusal with an error code where the aggregate would only throw.</p>

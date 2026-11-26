@@ -113,7 +113,7 @@ ALTER TABLE inventory.stock_movement
 COMMENT ON COLUMN inventory.stock_movement.stock_package_id IS
     'The carton the line is about: stock is whole sealed cartons, so a line is one carton, and movement_type with '
     'from_location_code / to_location_code says whether it arrived, moved or left (ADR-0011). Required on every line '
-    'written since V20261230000200.';
+    'written since V20261231000200.';
 COMMENT ON CONSTRAINT ck_stock_movement_names_carton ON inventory.stock_movement IS
     'ADR-0011: a ledger line names its carton. It replaces the CHECKs that said so kind by kind (kltn-docs 03 BR-12 a '
     'receipt, 05 BR-08 a putaway, 11 BR-04 a move by hand, 07 §4.5 a put-back). NOT VALID: loose lines before 4C-2 are '

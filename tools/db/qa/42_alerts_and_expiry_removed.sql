@@ -65,13 +65,13 @@ SELECT pg_temp.expect_true('AE6 no publication of an event only the alerts used 
 SELECT pg_temp.expect_true('AE6b no in-app message of a stock alert is left, linking to a page that is gone',
     NOT EXISTS (SELECT 1 FROM notification.user_notification
                  WHERE category = 'INVENTORY_ALERT' OR source_type = 'STOCK_ALERT' OR link LIKE '%/inventory/alerts%'));
-SELECT pg_temp.expect_true('AE7 the carton view is gone with the stock rows it joined (V20261230000600)',
+SELECT pg_temp.expect_true('AE7 the carton view is gone with the stock rows it joined (V20261231000600)',
     to_regclass('inventory.stock_package_balance') IS NULL);
 SELECT pg_temp.expect_fail('AE8 a threshold written to an item', $q$
     UPDATE inventory.inventory_items SET reorder_point = 5 WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH' $q$);
 
 \echo '--- EXPIRED is read only (StockStatus.EXPIRED, AdjustmentReason.EXPIRED)'
--- Two cartons of 3 for the checks below, in quarantine: the carton is the stock (V20261230000600).
+-- Two cartons of 3 for the checks below, in quarantine: the carton is the stock (V20261231000600).
 -- 01 BR-03: an item has ONE active carton. The demo seed's own is retired, so the fixture's unit below is the one.
 UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
@@ -122,7 +122,7 @@ SELECT pg_temp.expect_ok('AE13 ... and may leave EXPIRED', $q$
     UPDATE inventory.stock_package SET stock_status = 'BLOCKED' WHERE id = md5('qa42:p')::uuid $q$);
 SELECT pg_temp.expect_fail_by('AE14 ... but not come back to it', 'cannot become EXPIRED', $q$
     UPDATE inventory.stock_package SET stock_status = 'EXPIRED' WHERE id = md5('qa42:p')::uuid $q$);
--- An adjustment names its carton and a direction (V20261230000100): the carton of this section, at HCM-QC01.
+-- An adjustment names its carton and a direction (V20261231000100): the carton of this section, at HCM-QC01.
 SELECT pg_temp.expect_fail_by('AE15 a new adjustment for EXPIRED stock', 'cannot be for EXPIRED stock', $q$
     INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, stock_package_id)
     VALUES (gen_random_uuid(), 'ADJ-QA42-1', 'HCM-QC01', 'LY-GIAY-DEMO-12OZ-XANH', 'WRITE_OFF', 'EXPIRED', md5('demo:user:editor')::uuid, md5('qa42:p')::uuid) $q$);

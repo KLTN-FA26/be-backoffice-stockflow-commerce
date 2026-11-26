@@ -233,7 +233,7 @@ SELECT pg_temp.expect_ok('U11 the parcel is unloaded', $q$
      WHERE id = md5('qa80:un:1')::uuid $q$);
 SELECT pg_temp.expect_ok('U12 ... and then the load is DISPATCHED', pg_temp.dispatch_sql());
 
-\echo '--- stock is cartons and nothing else (the stock rows and ck_stock_item_whole_cartons went with V20261230000600)'
+\echo '--- stock is cartons and nothing else (the stock rows and ck_stock_item_whole_cartons went with V20261231000600)'
 -- W1 (a live loose row), W2 (a loose row at zero) and W3 (a carton row turned loose) checked ck_stock_item_whole_cartons:
 -- there is no stock row to be loose any more.
 SELECT pg_temp.expect_true('W1 there is no stock row beside a carton: inventory.stock_item is gone',

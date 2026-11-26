@@ -59,7 +59,7 @@ import java.util.stream.Collectors;
  * <p>Every task is one carton, put away whole (kltn-docs 05 BR-08; team plan 4C-2). Where a task's goods stand now
  * (its <i>source</i>) is derived, never stored: the carton's current bin, wherever a hand move has taken it. A task
  * without a carton cannot exist ({@code ck_putaway_task_source}, {@code ck_putaway_task_receipt_carton}), and the
- * ledger lines of loose stock such a task was once located by went with V20261230000400. Scope is checked on the
+ * ledger lines of loose stock such a task was once located by went with V20261231000400. Scope is checked on the
  * source before anything else is said about a task, so a task of another warehouse is 403 and not 404 or a
  * status.</p>
  *

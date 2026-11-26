@@ -8,7 +8,7 @@
 -- line before the period, closing every line up to its end (StockLedgerTotals). It is only true if every change of
 -- on hand wrote its ledger line (kltn-docs 20 BR-16). A ledger line changes warehouse W by
 --   nominal_qty of its carton * ([to_location in W] - [from_location in W])
--- (a ledger line is one whole carton and keeps no quantity of its own, ADR-0011, V20261230000400)
+-- (a ledger line is one whole carton and keeps no quantity of its own, ADR-0011, V20261231000400)
 -- where "in W" is the location code's prefix, the part before the first '-' (06 BR-13), so moves inside a warehouse
 -- count zero; summed over the whole ledger that is what W holds of the SKU now.
 --
@@ -33,7 +33,7 @@ WITH warehouses AS (
                                         upper(split_part(m.from_location_code, '-', 1)))
      GROUP BY w.prefix, m.sku
 ), books AS (
-    -- The stock is the cartons in stock, each its nominal_qty (ADR-0011, V20261230000600: there is no stock_item).
+    -- The stock is the cartons in stock, each its nominal_qty (ADR-0011, V20261231000600: there is no stock_item).
     SELECT upper(split_part(p.location_code, '-', 1)) AS prefix, i.sku, SUM(p.nominal_qty) AS on_hand
       FROM inventory.stock_package p
       JOIN inventory.inventory_items i ON i.id = p.inventory_item_id

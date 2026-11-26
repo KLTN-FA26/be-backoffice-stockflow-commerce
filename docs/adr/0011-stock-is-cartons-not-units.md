@@ -57,12 +57,12 @@ Units stay in `order`, `payment`, `invoicing` and on return receipts.
 The change touches locking, allocation, receiving, picking and returns, so it lands table by table, each step green on
 its own:
 
-1. **Counts and adjustments** - `V20261230000100`: `cycle_count_line.booked` / `found`, `stock_adjustment.direction`,
+1. **Counts and adjustments** - `V20261231000100`: `cycle_count_line.booked` / `found`, `stock_adjustment.direction`,
    both documents name their carton (`stock_package_id NOT NULL`). Kept for now: the `sku`, `lot_number` and
    `location_code` snapshots on both tables, because the lot still lives on `stock_item` until step 3.
    The HTTP contract changes with it: `StockAdjustmentResponse.direction` and `CycleCountLineAdjustment.direction`
    (`WRITE_OFF` | `RESTOCK`) replace `quantityDelta`. A count line already answered `booked` / `found`.
-2. **Ledger** - done, `V20261230000200`: `stock_movement.stock_package_id` replaces `from_stock_package_id` and
+2. **Ledger** - done, `V20261231000200`: `stock_movement.stock_package_id` replaces `from_stock_package_id` and
    `to_stock_package_id`, and every new line must name its carton (`ck_stock_movement_names_carton`, NOT VALID so that
    loose lines a hand-kept database has stay as they are - until step 3b removed them). The four CHECKs that said "this kind of line names a carton"
    and `ck_stock_movement_package_side` went into that one rule; whether a carton arrived, moved or left is read from
@@ -71,7 +71,7 @@ its own:
    `fromLpn` and `toLpn`.
 3. **The carton is the stock** - `stock_item` folded into `stock_package`, `stock_reservation` by carton,
    `stock_movement.quantity` dropped, the `inventory :: api` availability types answer in cartons.
-   * **3a, the count** - done, `V20261230000300`: `stock_package.counted_at` (NULL until the carton is counted in at
+   * **3a, the count** - done, `V20261231000300`: `stock_package.counted_at` (NULL until the carton is counted in at
      receiving) replaces `received_qty`; `ck_stock_package_received` and `ck_stock_package_standard_count` went with
      the number, `ck_stock_package_counted` reads the new column. A counted carton takes its `created_at` (the
      application counts a carton in the call that labels it); the migration refuses to run over a carton counted at
@@ -79,7 +79,7 @@ its own:
      The contract changes with it: `countedAt` replaces `receivedQty` on a carton (`GET /inventory/stock-packages...`
      and a goods receipt line's `packages[]`), and on `inventory :: api` `StockPackageView`; the error code
      `RECEIPT_PACKAGE_NOT_STANDARD` is gone, nothing can raise it.
-   * **3b, the ledger line** - done, `V20261230000400`: `stock_movement.quantity` is dropped with
+   * **3b, the ledger line** - done, `V20261231000400`: `stock_movement.quantity` is dropped with
      `ck_stock_movement_qty`; a line is its carton, whole, and `stock_package_id` is NOT NULL
      (`ck_stock_movement_names_carton` went into it). The lines of loose stock that step 2 let stand are deleted, not
      converted (QD-1); the migration refuses to run over a line whose quantity is not its carton's `nominal_qty`
@@ -93,7 +93,7 @@ its own:
      No HTTP contract change: a ledger line (`GET /inventory/movements`) and a lot trace movement still answer
      `quantity`, now the carton's `nominal_qty`. `inventory :: api` `StockMove` loses `quantity` (nothing outside
      `inventory` read it).
-   * **3c, the reservation** - done, `V20261230000500`: `stock_reservation.cartons` and `units_per_carton` replace
+   * **3c, the reservation** - done, `V20261231000500`: `stock_reservation.cartons` and `units_per_carton` replace
      `quantity`, and `expires_at` goes with `ck_stock_reservation_quantity`, `ck_stock_reservation_allocation`,
      `ck_stock_reservation_expired_had_deadline` and `ix_stock_reservation_expiry` (no hold has carried a deadline
      since V20261117000300). A SKU-level hold is N cartons of the count its order line was quoted in; an allocation
@@ -117,7 +117,7 @@ its own:
      then held for fewer cartons than the units suggest, and `ShippingWarehouseService.giveUpUncovered` may cut a hold
      of a covered count before it reaches the short one. A line with no `units_per_carton` (the legacy redelivery
      path counts it one piece a carton) is held only from cartons of 1.
-   * **3d, the carton is the stock** - done, `V20261230000600`: `stock_item`, `on_hand`, `reserved` and the view
+   * **3d, the carton is the stock** - done, `V20261231000600`: `stock_item`, `on_hand`, `reserved` and the view
      `stock_package_balance` are dropped. `stock_package` carries `stock_status` (set exactly while `IN_STOCK`,
      `ck_stock_package_stock_status`), `lot_id` (required once it has been in stock, `ck_stock_package_lot`) and
      `received_at` (nullable: undated sorts last); lot and date are written at RECEIVING -> IN_STOCK and frozen

@@ -59,7 +59,7 @@ INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, 
                                  production_order_code)
 SELECT md5('qa97:lot')::uuid, sku, code, NOW(), 'PRODUCTION_ORDER', po, code FROM base b
  WHERE NOT EXISTS (SELECT 1 FROM inventory.stock_lot l WHERE l.production_order_id = b.po AND l.sku = b.sku);
--- A carton that has been in stock names its lot (ck_stock_package_lot, V20261230000600): the production order's.
+-- A carton that has been in stock names its lot (ck_stock_package_lot, V20261231000600): the production order's.
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
                                      location_code, status, closed_at, lot_id)
 SELECT md5('qa97:carton')::uuid, 'QA97-LPN-1', i.id, i.id, b.units_per_carton, NOW(), 'HCM-QUA01',
@@ -136,7 +136,7 @@ SELECT pg_temp.expect_fail('RP9 a write-off not yet approved', $q$
     SELECT pg_temp.draft(md5('qa97:r0')::uuid, 'PRD-20261216-9700', 'REPLACEMENT', (SELECT po FROM base));
     SELECT pg_temp.line(md5('qa97:r0')::uuid, 1);
     SELECT pg_temp.write_off(md5('qa97:r0')::uuid, 'pending') $q$);
-SELECT pg_temp.expect_fail('RP9b a posted DAMAGED adjustment that restocks: its direction is not WRITE_OFF (V20261230000100)', $q$
+SELECT pg_temp.expect_fail('RP9b a posted DAMAGED adjustment that restocks: its direction is not WRITE_OFF (V20261231000100)', $q$
     SELECT pg_temp.draft(md5('qa97:r0')::uuid, 'PRD-20261216-9700', 'REPLACEMENT', (SELECT po FROM base));
     SELECT pg_temp.line(md5('qa97:r0')::uuid, 1);
     SELECT pg_temp.write_off(md5('qa97:r0')::uuid, 'restock') $q$);

@@ -125,8 +125,8 @@ public interface StockOperations {
 
     /**
      * One line of the stock history, as the screen shows it. {@code lpn} names the carton the line is about
-     * (V20261230000200: one carton, where {@code fromLpn} / {@code toLpn} named one per side) and {@code quantity} is
-     * that carton's standard count: the ledger keeps no quantity of its own (V20261230000400), a line is one whole
+     * (V20261231000200: one carton, where {@code fromLpn} / {@code toLpn} named one per side) and {@code quantity} is
+     * that carton's standard count: the ledger keeps no quantity of its own (V20261231000400), a line is one whole
      * carton.
      */
     record LedgerLine(UUID movementId, StockMovement.MovementType type, String sku, String lotNumber,

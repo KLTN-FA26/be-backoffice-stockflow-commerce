@@ -253,7 +253,7 @@ ALTER TABLE inventory.stock_package
                OR return_ownership = 'COMPANY');
 
 COMMENT ON TABLE inventory.stock_package IS
-    'One physical carton with its own LPN, and the stock itself (ADR-0011, V20261230000600): while it is IN_STOCK it '
+    'One physical carton with its own LPN, and the stock itself (ADR-0011, V20261231000600): while it is IN_STOCK it '
     'stands for nominal_qty units of its item in stock_status, of lot lot_id, received at received_at. It holds no '
     'quantity; whether it is taken is its live allocation in inventory.stock_reservation.';
 COMMENT ON COLUMN inventory.stock_package.stock_status IS
@@ -311,7 +311,7 @@ CREATE TRIGGER tg_stock_package_lot
     BEFORE INSERT OR UPDATE OF lot_id, stock_status, received_at ON inventory.stock_package
     FOR EACH ROW EXECUTE FUNCTION inventory.check_stock_package_lot();
 
--- The transitions as they were, the count as it was (V20261230000300), and now: the lot and the FIFO date are written
+-- The transitions as they were, the count as it was (V20261231000300), and now: the lot and the FIFO date are written
 -- when the carton goes into stock and never after. A carton that comes back (CONSUMED or LOST -> IN_STOCK) keeps both,
 -- so FIFO never loses the age of stock; an undated carton stays undated rather than be dated on the shelf.
 CREATE OR REPLACE FUNCTION inventory.check_stock_package_transition() RETURNS trigger AS $$
@@ -530,7 +530,7 @@ CREATE TRIGGER tg_stock_reservation_carton_update
     EXECUTE FUNCTION inventory.check_stock_reservation_carton();
 
 -- SKU-level holds are covered by free cartons OF THEIR COUNT, over the whole system and at the hold's warehouse (20
--- BR-17), as V20261230000500 wrote it; a free carton is now an AVAILABLE carton no live allocation names (it was an
+-- BR-17), as V20261231000500 wrote it; a free carton is now an AVAILABLE carton no live allocation names (it was an
 -- AVAILABLE stock row with on_hand > 0 and reserved = 0). Everything else is as it was: the SKU's advisory lock (the
 -- one every hold and allocation of the SKU takes, InventoryPolicyRepository.lock), every AVAILABLE carton wherever it
 -- stands, the warehouse read from the first part of the location code.

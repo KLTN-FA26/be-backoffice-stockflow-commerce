@@ -165,7 +165,7 @@ SELECT pg_temp.expect_true('PD1 no packing-damage or damage-report column is lef
 
 \echo '--- the ledger line of a put-back names the carton it goes back into'
 -- Every ledger line names its carton (ADR-0011): the put-back's own CHECK went into one rule for all lines in
--- V20261230000200, and that rule into the column's NOT NULL in V20261230000400.
+-- V20261231000200, and that rule into the column's NOT NULL in V20261231000400.
 SELECT pg_temp.expect_fail_by('LG1 a pick line put-back in the ledger with no carton', 'null value in column "stock_package_id"', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, to_status, reference_type,
                                           reference_id, occurred_at)
@@ -244,7 +244,7 @@ SELECT pg_temp.expect_true('CK3 short_reason is a VARCHAR(16)',
 SELECT pg_temp.expect_true('CK4 on the demo seed (no loose history) the pick line''s three NOT VALID rules are validated',
     (SELECT bool_and(convalidated) AND count(*) = 3 FROM pg_constraint
       WHERE conname IN ('ck_pick_line_lpn', 'ck_pick_line_short_reported', 'ck_pick_line_put_back_whole')));
--- The ledger's rule judges every line since V20261230000400 removed the loose history: the column is NOT NULL.
+-- The ledger's rule judges every line since V20261231000400 removed the loose history: the column is NOT NULL.
 SELECT pg_temp.expect_true('CK4a the ledger''s carton rule judges every line',
     (SELECT attnotnull FROM pg_attribute
       WHERE attrelid = 'inventory.stock_movement'::regclass AND attname = 'stock_package_id'));

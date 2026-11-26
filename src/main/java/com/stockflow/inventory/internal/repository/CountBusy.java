@@ -43,8 +43,8 @@ final class CountBusy {
     /**
      * True when the carton whose id is the SQL expression {@code cartonId} (a carton's own {@code p.id}, an
      * adjustment's {@code a.stock_package_id}) is in a busy slot: a line of a busy count names it. Every count line
-     * names its carton ({@code cycle_count_line.stock_package_id} is NOT NULL since V20261230000100), and stock is
-     * cartons only (V20261230000600), so there is no loose row left to match by bin, SKU and lot; an adjustment of
+     * names its carton ({@code cycle_count_line.stock_package_id} is NOT NULL since V20261231000100), and stock is
+     * cartons only (V20261231000600), so there is no loose row left to match by bin, SKU and lot; an adjustment of
      * before cartons, which names none, is in no slot.
      */
     static String cartonInBusySlot(String cartonId) {

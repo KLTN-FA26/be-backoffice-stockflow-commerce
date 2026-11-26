@@ -17,7 +17,7 @@ public interface StockLots {
 
     /**
      * The lot of units whose lot is not known (kltn-docs 20 BR-22, open question C45): every unit carries a lot
-     * ({@code ck_stock_package_lot}, V20261230000600), so goods given none are of this one, as V20261111000110 labelled
+     * ({@code ck_stock_package_lot}, V20261231000600), so goods given none are of this one, as V20261111000110 labelled
      * the stock it boxed.
      */
     String UNTRACED = "UNTRACED";
@@ -36,7 +36,7 @@ public interface StockLots {
 
     /**
      * The UNTRACED lot of goods received with no production order: the one of this SKU, lot number and receipt time
-     * when an earlier line of the same receipt opened it, made otherwise. Until V20261230000600 a trigger on the stock
+     * when an earlier line of the same receipt opened it, made otherwise. Until V20261231000600 a trigger on the stock
      * row did this ({@code resolve_stock_item_lot}); the carton has no lot number of its own to resolve one from, so
      * the receipt names the lot. The caller holds the SKU's advisory lock, which keeps two lines from making it twice.
      */

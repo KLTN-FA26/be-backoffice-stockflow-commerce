@@ -29,7 +29,7 @@ import java.util.UUID;
 
 /**
  * Plain SQL over {@code inventory.stock_package}, as {@code CycleCountRepositoryAdapter} reads it: nothing here
- * writes, and the read model ({@code StockPackageBalance}) has no entity. Until V20261230000600 it read the view
+ * writes, and the read model ({@code StockPackageBalance}) has no entity. Until V20261231000600 it read the view
  * {@code inventory.stock_package_balance}, which joined each carton to its stock row; the carton is the stock now
  * (ADR-0011), so the unit figures the lookup still answers are derived here, in {@link #CARTONS}.
  */
@@ -66,7 +66,7 @@ class StockPackageSearchAdapter implements StockPackageSearch {
      * carton: still one statement for a page, whatever its size. {@code stock_statuses} stays a list in the contract;
      * it holds the carton's one stock status, or nothing when the carton is not in stock.
      *
-     * <p>{@code source} reads the ledger by the carton a line names ({@code stock_package_id}, V20261230000200). A
+     * <p>{@code source} reads the ledger by the carton a line names ({@code stock_package_id}, V20261231000200). A
      * PRODUCTION carton was one a production order's line put goods <em>into</em> - the arriving side, when a line had
      * two - and not one it took blanks out of; that is now said by the line having a place it went to
      * ({@code to_location_code}). A return receipt's line is a RECEIPT, which only ever arrives.</p>
@@ -144,7 +144,7 @@ class StockPackageSearchAdapter implements StockPackageSearch {
 
     /**
      * The cartons in stock at the place, grouped; a carton holds one lot, so it falls in one group. There is no loose
-     * stock (the stock rows went with V20261230000600), so {@code looseUnits} is always 0: the field stays in the
+     * stock (the stock rows went with V20261231000600), so {@code looseUnits} is always 0: the field stays in the
      * contract.
      */
     @Override

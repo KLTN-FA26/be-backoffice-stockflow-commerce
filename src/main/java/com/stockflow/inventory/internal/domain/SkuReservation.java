@@ -18,7 +18,7 @@ import java.util.UUID;
  * twice; it says nothing about which shelf the goods will come from. Since V20261117000300 no hold carries a
  * deadline: the checkout's expiring reservation and its sweeper are gone.
  *
- * <p><b>It counts cartons (ADR-0011, V20261230000500).</b> Stock is whole sealed cartons, so a hold is
+ * <p><b>It counts cartons (ADR-0011, V20261231000500).</b> Stock is whole sealed cartons, so a hold is
  * {@link #cartons()} cartons of {@link #unitsPerCarton()} - the count the order line was quoted in - and is covered,
  * and at release served, only by cartons of exactly that count: which cartons a hold wants is said by their count, not
  * by a packing unit's id, because retired packing units of one item may share a factor. {@link #quantity()} is the

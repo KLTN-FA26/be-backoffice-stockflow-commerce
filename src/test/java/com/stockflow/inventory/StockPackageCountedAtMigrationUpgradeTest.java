@@ -12,7 +12,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * V20261230000300 on the real upgrade path (ADR-0011, step 3a): cartons written while a count was a number of units
+ * V20261231000300 on the real upgrade path (ADR-0011, step 3a): cartons written while a count was a number of units
  * end with the moment they were counted in, or none.
  *
  * <ul>
@@ -33,8 +33,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class StockPackageCountedAtMigrationUpgradeTest {
 
     /** The last migration before the one under test. */
-    private static final String BEFORE = "20261230000200";
-    private static final String MIGRATION = "20261230000300";
+    private static final String BEFORE = "20261231000200";
+    private static final String MIGRATION = "20261231000300";
 
     private static final String CARTON = "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, "
             + "uom_conversion_id, nominal_qty, received_qty, location_code, status, closed_at, created_at) VALUES "

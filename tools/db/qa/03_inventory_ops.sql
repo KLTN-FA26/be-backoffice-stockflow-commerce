@@ -5,7 +5,7 @@
 \set ON_ERROR_STOP on
 BEGIN;
 -- The moves and holds below use two cartons of the demo cup LY-GIAY-DEMO-12OZ-XANH made here, of 25 and of 8 cups, in a
--- lot of their own. The carton is the stock (ADR-0011, V20261230000600): each is one row of inventory.stock_package
+-- lot of their own. The carton is the stock (ADR-0011, V20261231000600): each is one row of inventory.stock_package
 -- with its stock status, lot and receipt date. The cups' demo cartons stay beside them; no check here reads a SKU's
 -- total.
 INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)
@@ -87,7 +87,7 @@ INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, 
 VALUES (gen_random_uuid(), md5('qa:wh:HN')::uuid, md5('qa:loc:HN-RCV')::uuid, 'RCV01', 'RECEIVING', 'x', 1, 1, 5, 5, 0, FALSE, 'ACTIVE');
 
 \echo '--- stock movement ledger (docs 11 BR-06)'
--- A ledger line names its carton (stock_package_id NOT NULL, V20261230000400): one of the demo's blue-cup cartons
+-- A ledger line names its carton (stock_package_id NOT NULL, V20261231000400): one of the demo's blue-cup cartons
 -- standing at the place, so that each line below is judged by the rule its label names.
 CREATE FUNCTION pg_temp.blue_carton(place TEXT) RETURNS uuid LANGUAGE sql AS $$
     SELECT p.id FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
@@ -150,7 +150,7 @@ VALUES (md5('qa:cc:1')::uuid, 'CC-QA-1', md5('demo:wh:HCM')::uuid, 'SHORT_PICK',
 SELECT pg_temp.expect_fail('I10 counting a location of another warehouse', $q$
     INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, booked, stock_package_id)
     VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HN-RCV01', 'LY-GIAY-DEMO-12OZ-XANH', FALSE, md5('qa03:pk1')::uuid) $q$);
-SELECT pg_temp.expect_fail_by('I10b a loose count line: a line names its carton (NOT NULL since V20261230000100)', '"stock_package_id"', $q$
+SELECT pg_temp.expect_fail_by('I10b a loose count line: a line names its carton (NOT NULL since V20261231000100)', '"stock_package_id"', $q$
     INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, booked)
     VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A01-2-B', 'LY-GIAY-DEMO-12OZ-XANH', FALSE) $q$);
 SELECT pg_temp.expect_ok('I11 a count line: the carton booked, not found', $q$
@@ -205,7 +205,7 @@ SELECT pg_temp.expect_ok('I36 two document types on one day', $q$
 SELECT pg_temp.expect_fail('I37 lowercase document type', $q$
     INSERT INTO platform.document_sequence (document_type, sequence_date) VALUES ('gr', CURRENT_DATE) $q$);
 
-\echo '--- holds: no deadline at all (V20261117000300; the column went with V20261230000500, ADR-0011)'
+\echo '--- holds: no deadline at all (V20261117000300; the column went with V20261231000500, ADR-0011)'
 SELECT pg_temp.expect_ok('I38 a pinned hold (no deadline) on a carton', $q$
     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
                                          created_at, contract_signed_at)
@@ -224,7 +224,7 @@ SELECT pg_temp.expect_ok('I40 a pinned hold released when its order is cancelled
            closed_at = NOW() WHERE id = md5('qa:res:pinned')::uuid $q$);
 
 \echo '--- adjustment withdrawal; scrap and samples are reasons of the history (SCRUM-459; 20 BR-04)'
--- An adjustment names a carton (V20261230000100): the second carton of this script, in stock on HCM-A02-1-A. What the
+-- An adjustment names a carton (V20261231000100): the second carton of this script, in stock on HCM-A02-1-A. What the
 -- table says of a SCRAP or SAMPLE row of before (ck_stock_adjustment_writes_down) is asked in 62_carton_counts.sql.
 SELECT pg_temp.expect_fail_by('I41 a SCRAP adjustment that adds stock: no new SCRAP, whichever way', 'BR-04 lists six', $q$
     INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, stock_package_id)

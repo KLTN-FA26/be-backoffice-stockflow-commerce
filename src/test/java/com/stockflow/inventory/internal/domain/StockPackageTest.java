@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * The carton, which is the stock (ADR-0011, V20261230000600): its life as the checks and triggers of the table state
+ * The carton, which is the stock (ADR-0011, V20261231000600): its life as the checks and triggers of the table state
  * it a second time, and the rules the stock row beside it used to carry - one live allocation, only free AVAILABLE
  * stock allocated, a held carton never changed from under its hold, lot and FIFO date kept for good.
  *

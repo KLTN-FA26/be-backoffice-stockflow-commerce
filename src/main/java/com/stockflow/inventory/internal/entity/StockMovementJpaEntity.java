@@ -69,8 +69,8 @@ public class StockMovementJpaEntity extends BaseEntity {
     private UUID orderId;
 
     /**
-     * The carton the line is about (ADR-0011): one column where there were two sides (V20261230000200), and the whole
-     * of what the line moved since the ledger keeps no quantity (V20261230000400) - its units are the carton's
+     * The carton the line is about (ADR-0011): one column where there were two sides (V20261231000200), and the whole
+     * of what the line moved since the ledger keeps no quantity (V20261231000400) - its units are the carton's
      * {@code nominal_qty}.
      */
     @Column(name = "stock_package_id", nullable = false, updatable = false)

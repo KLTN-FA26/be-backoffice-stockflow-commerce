@@ -119,7 +119,7 @@ class DemoDataIntegrationTest {
                 WHERE p.created_by = 'V20261206000100'
                   AND NOT EXISTS (SELECT 1 FROM warehouse.storage_location l WHERE l.location_code = p.location_code)
                 """, String.class)).isEmpty();
-        // The carton is the stock (V20261230000600): the demo cups' cartons stand where the seed's stock rows stood.
+        // The carton is the stock (V20261231000600): the demo cups' cartons stand where the seed's stock rows stood.
         assertThat(jdbc.queryForList("""
                 SELECT DISTINCT location_code FROM inventory.stock_package WHERE created_by = 'V20261206000100'
                  ORDER BY location_code""", String.class))

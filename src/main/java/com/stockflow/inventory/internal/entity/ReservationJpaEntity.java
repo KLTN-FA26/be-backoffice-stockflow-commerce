@@ -19,7 +19,7 @@ import java.util.UUID;
 
 /**
  * JPA mapping of one hold. Two kinds share the table (SCRUM-152): an allocation — one carton given to an order —
- * which is a child of its carton ({@code stock_package}, V20261230000600) and never loaded or saved on its own; and a
+ * which is a child of its carton ({@code stock_package}, V20261231000600) and never loaded or saved on its own; and a
  * SKU reservation ({@code stock_package_id} null), the soft hold on no carton yet, which is its own aggregate and saved
  * through {@code SkuReservationRepositoryAdapter}.
  *
@@ -72,7 +72,7 @@ public class ReservationJpaEntity {
     private UUID requestId;
 
     /**
-     * How many cartons the row is (ADR-0011, V20261230000500): any number for a SKU reservation, always 1 for an
+     * How many cartons the row is (ADR-0011, V20261231000500): any number for a SKU reservation, always 1 for an
      * allocation ({@code ck_stock_reservation_kind}). The row keeps no units: they are
      * {@code cartons * unitsPerCarton}.
      */

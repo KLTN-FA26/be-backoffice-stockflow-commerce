@@ -21,7 +21,7 @@ import java.util.Objects;
  * <p><b>Cartons of the hold's count only (ADR-0011, owner decision 2026-11-27).</b> A hold says which cartons it wants
  * by their count - the {@code units_per_carton} its order line was quoted in - and the plan is N cartons of exactly
  * that count. A carton of another count is not a candidate at all, larger or smaller: an order quoted in cartons of
- * 1000 takes cartons of 1000 only, even while cartons of 500 of the same SKU stand free. (Until V20261230000500 the
+ * 1000 takes cartons of 1000 only, even while cartons of 500 of the same SKU stand free. (Until V20261231000500 the
  * plan counted units and took any carton that still fitted in what was needed, skipping a larger one.)</p>
  *
  * <p><b>FIFO, k &lt; N.</b> Cartons go received first, first out, for every SKU (kltn-docs 01 BR-17, 07 BR-03.3): cups

@@ -175,7 +175,7 @@ SELECT pg_temp.expect_ok('LG12 a task moved to dispatch deducts from the staging
     pg_temp.move_sql('PICK', 'HCM-STG01', NULL, 'PICK_LINE', md5('qa64:line:B')::uuid, 8, 'AVAILABLE'));
 SELECT pg_temp.expect_fail_by('LG13 a second PICK of the line', 'uk_stock_movement_pick_line',
     pg_temp.move_sql('PICK', 'HCM-STG01', NULL, 'PICK_LINE', md5('qa64:line:B')::uuid, 8, 'AVAILABLE'));
--- The write-downs name the carton they take, still standing in the staging area (V20261230000200: a line names its carton).
+-- The write-downs name the carton they take, still standing in the staging area (V20261231000200: a line names its carton).
 SELECT pg_temp.expect_ok('LG14 a count corrects a staging area (20 section 4.9 step 4): COUNT_CORRECTION out of it',
     pg_temp.move_sql('COUNT_CORRECTION', 'HCM-STG01', NULL, 'CYCLE_COUNT_LINE', gen_random_uuid(), 7, 'AVAILABLE'));
 SELECT pg_temp.expect_ok('LG15 ... and an approved adjustment writes it down: ADJUSTMENT out of it',

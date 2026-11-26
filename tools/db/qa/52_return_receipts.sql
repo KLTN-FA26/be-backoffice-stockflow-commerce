@@ -94,7 +94,7 @@ UPDATE inventory.uom_conversions SET active = FALSE
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa52:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA52_CTN', 4);
 -- Three cartons that were shipped: CONSUMED, so with no stock status, keeping the lot and the receipt date they had
--- in stock (V20261230000600: the carton is the stock; a carton that comes back keeps both).
+-- in stock (V20261231000600: the carton is the stock; a carton that comes back keeps both).
 INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)
 VALUES (md5('qa52:lot')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'PO-QA52-LOT', NOW() - interval '30 days', 'UNTRACED', NOW());
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,

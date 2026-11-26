@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * V20261230000600 on the real upgrade path (ADR-0011, step 3d): cartons written while each had a stock row beside it
+ * V20261231000600 on the real upgrade path (ADR-0011, step 3d): cartons written while each had a stock row beside it
  * end as the stock themselves.
  *
  * <ul>
@@ -37,8 +37,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class CartonIsTheStockMigrationUpgradeTest {
 
     /** The last migration before the one under test. */
-    private static final String BEFORE = "20261230000500";
-    private static final String MIGRATION = "20261230000600";
+    private static final String BEFORE = "20261231000500";
+    private static final String MIGRATION = "20261231000600";
 
     private static final String SKU = "SKU-UPG-D";
     private static final String LOT = "00000000-0000-4000-8000-0000000d0001";

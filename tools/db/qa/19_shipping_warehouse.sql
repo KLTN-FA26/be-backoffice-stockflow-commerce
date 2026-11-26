@@ -86,7 +86,7 @@ SELECT pg_temp.expect_fail('SW4 held at a warehouse that does not exist', $q$
                                              reserved_at, status, sku, warehouse_code)
     VALUES (gen_random_uuid(), md5('qa19:contract')::uuid, gen_random_uuid(), gen_random_uuid(), 10, 1000, NOW(),
             'HELD', 'LY-GIAY-DEMO-12OZ-XANH', 'NOWHERE') $q$);
--- A hold counts cartons of one count (ADR-0011, V20261230000500): HCM has 33 free cartons of 1,000 of the cup.
+-- A hold counts cartons of one count (ADR-0011, V20261231000500): HCM has 33 free cartons of 1,000 of the cup.
 SELECT pg_temp.expect_true('SW5a the demo cup has 33 free cartons of 1,000 at HCM and none of another count',
     (SELECT count(*) FILTER (WHERE p.nominal_qty = 1000) = 33 AND count(*) FILTER (WHERE p.nominal_qty <> 1000) = 0
        FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
@@ -145,7 +145,7 @@ SELECT pg_temp.expect_fail_by('SW10 a hold on a carton naming a warehouse', 'ck_
      WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A02-1-A' AND p.stock_status = 'AVAILABLE'
      ORDER BY p.lpn LIMIT 1 $q$);
 -- Stock is whole LPN cartons: an allocation names one carton (the demo's 25 cartons of 1,000 cups on HCM-A01-2-B),
--- and that live row is what says the carton is taken (V20261230000600).
+-- and that live row is what says the carton is taken (V20261231000600).
 SELECT pg_temp.expect_ok('SW11 allocated on a carton of HCM, where it is held (released to HCM)', $q$
     INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons,
                                              units_per_carton, reserved_at, status, sku, allocated_from_id)

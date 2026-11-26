@@ -243,7 +243,7 @@ class ReceivingPackagesIntegrationTest {
 
     @Test
     @DisplayName("a carton cannot go past receiving uncounted, not even with the row triggers off: "
-            + "ck_stock_package_counted (V20261230000300); counted again it is a counted draft carton as before")
+            + "ck_stock_package_counted (V20261231000300); counted again it is a counted draft carton as before")
     void anUncountedCartonCannotLeaveReceiving() {
         String lpn = count(PackageCount.fresh(), PackageCount.fresh()).getFirst().lpn();
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> {

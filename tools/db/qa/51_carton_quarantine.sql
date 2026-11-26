@@ -71,7 +71,7 @@ VALUES (md5('qa51:free')::uuid, 'QA51-LPN-F', (SELECT id FROM inventory.inventor
         'HCM-A01-1-A', 'IN_STOCK', 'AVAILABLE', md5('qa51:lot')::uuid, NOW() - interval '2 days'),
        (md5('qa51:qrn')::uuid, 'QA51-LPN-Q', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa51:unit')::uuid, 4, NOW(),
         'HCM-QC01', 'IN_STOCK', 'QUARANTINE', md5('qa51:lot')::uuid, NOW() - interval '1 day');
--- Held: a live allocation names the carton (V20261230000600); that row is the only record of it.
+-- Held: a live allocation names the carton (V20261231000600); that row is the only record of it.
 INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton,
                                          reserved_at, status)
 SELECT md5('qa51:hold')::uuid, md5('qa51:held')::uuid, o.id, gen_random_uuid(), gen_random_uuid(), 1, 4, NOW(), 'HELD'

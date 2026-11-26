@@ -628,7 +628,7 @@ class PickConfirmationIntegrationTest {
     @Test
     @DisplayName("a hold released under the line: 409 RESERVATION_NOT_ACTIVE and nothing written")
     void holdNoLongerActive() throws Exception {
-        // An allocation never expires (X-RESV; no hold has a deadline, V20261230000500): only a release can close it.
+        // An allocation never expires (X-RESV; no hold has a deadline, V20261231000500): only a release can close it.
         for (String how : List.of("RELEASED")) {
             OrderSummary order = confirmedOrder(stocked(1));
             UUID task = startedTask(order);

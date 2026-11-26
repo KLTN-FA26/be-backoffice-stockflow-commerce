@@ -116,7 +116,7 @@ class StockPackageConsumptionIntegrationTest {
         UUID box = cartonOnShelf("A");
         UUID order = confirmedOrder();
 
-        // A hold counts cartons of one count (ADR-0011, V20261230000500): 3 units is "a carton of 3", and the SKU has
+        // A hold counts cartons of one count (ADR-0011, V20261231000500): 3 units is "a carton of 3", and the SKU has
         // none, so part of the carton of 5 is never even held - where, before, the hold was taken in units and only
         // the release refused it (INSUFFICIENT_STOCK: no whole carton for 3).
         assertThat(tx.execute(s -> Holds.attempt(inventory, order, sku, "HCM", 3)).cartonsHeld())

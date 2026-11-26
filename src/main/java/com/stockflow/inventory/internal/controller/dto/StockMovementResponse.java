@@ -8,10 +8,10 @@ import java.util.UUID;
  * for stock that left. {@code toStatus} differs from {@code status} only where the line changed it: a putaway
  * (INBOUND to AVAILABLE), a return's decision, or a QC decision from before receiving QC was removed (INBOUND to
  * QUARANTINE or BLOCKED). {@code lpn} names the carton the line is about, so a carton's history can be read line by
- * line (kltn-docs 20 §4.1). One LPN, where there were {@code fromLpn} and {@code toLpn} (V20261230000200, ADR-0011):
+ * line (kltn-docs 20 §4.1). One LPN, where there were {@code fromLpn} and {@code toLpn} (V20261231000200, ADR-0011):
  * a line is one whole carton, and which way it went is {@code type} with {@code fromLocation} / {@code toLocation}.
  * {@code quantity} is kept for the screens that show it and is that carton's standard count: the ledger stores no
- * quantity of its own (V20261230000400).
+ * quantity of its own (V20261231000400).
  */
 public record StockMovementResponse(UUID movementId, String type, String sku, String lotNumber,
                                     String fromLocation, String toLocation, int quantity, String status,

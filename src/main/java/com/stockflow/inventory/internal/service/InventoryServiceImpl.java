@@ -906,7 +906,7 @@ class InventoryServiceImpl implements InventoryService {
 
     /**
      * Same reservation and carton, same key: allocating again after a retry finds the first allocation. Named after
-     * the carton's id since V20261230000600 (it was its stock row's): an allocation made before is not re-derived, and
+     * the carton's id since V20261231000600 (it was its stock row's): an allocation made before is not re-derived, and
      * a retry of it is answered by its SKU reservation being ALLOCATED already.
      */
     private static UUID allocationRequestId(ReservationId from, StockPackageId stockPackageId) {

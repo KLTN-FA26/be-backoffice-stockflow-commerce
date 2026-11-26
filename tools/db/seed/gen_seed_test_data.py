@@ -633,7 +633,7 @@ SELLER = dict(seller_name="Công ty TNHH StockFlow Commerce", seller_tax_code="0
               seller_representative="Võ Hoàng Minh", seller_representative_title="Giám đốc")
 STAFF_OF = {"HAN": ("quanly.hn", "kho.hn1", "kho.hn2"), "BDG": ("quanly.bd", "kho.bd1", "kho.bd2")}
 NEXT_BIN = {"HAN": 0, "BDG": 0}
-# The stock, in memory: one entry per carton in or out of stock. The carton IS the stock (ADR-0011, V20261230000600):
+# The stock, in memory: one entry per carton in or out of stock. The carton IS the stock (ADR-0011, V20261231000600):
 # the database keeps a stock status, a lot and a receipt date on inventory.stock_package and no quantity; on_hand and
 # reserved here are the generator's own arithmetic (a carton's count while it is in stock / while an order holds it).
 STOCK = {}          # key -> facts (sku, warehouse, location, on_hand, reserved, package, lpn, lot, status)
@@ -852,7 +852,7 @@ class Order:
                 if qty <= 0:
                     continue
                 rid = uid(f"hold:{self.key}:{b['seq']}:{ln['id']}:{len(ln['holds'])}")
-                # A hold counts cartons of the line's count (ADR-0011, V20261230000500); its units are derived.
+                # A hold counts cartons of the line's count (ADR-0011, V20261231000500); its units are derived.
                 ins("inventory.stock_reservation", id=rid, stock_package_id=None, order_id=self.id, root_request_id=rid,
                     request_id=rid, cartons=qty // ln["per"], units_per_carton=ln["per"], reserved_at=when,
                     status="HELD", sku=ln["sku"], warehouse_code=self.p)

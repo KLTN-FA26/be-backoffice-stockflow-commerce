@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * V20261028003000 (SCRUM-473 picking by carton): a pick line names the carton of the hold it consumes - that carton's
- * LPN exactly. Since V20261230000600 the hold names its carton itself ({@code stock_reservation.stock_package_id}),
+ * LPN exactly. Since V20261231000600 the hold names its carton itself ({@code stock_reservation.stock_package_id}),
  * so the trigger reads it from there; a hold on loose units cannot exist at all.
  */
 @IntegrationTest

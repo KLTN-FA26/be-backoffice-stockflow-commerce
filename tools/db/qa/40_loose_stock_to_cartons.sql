@@ -3,7 +3,7 @@
 -- kltn-docs 20 BR-14, BR-18, BR-22, §4.6, §5.5; open question C45). Needs the demo seed. The migration put the demo's
 -- loose furniture into cartons of one; the furniture left the demo with V20261206000100, and the demo cups stand in
 -- its place in whole cartons (same LPNs, bins, lots and statuses, each with its opening RECEIPT line instead of the
--- boxing MOVE lines), so the checks of "the cartons it made" are made on those. Since V20261230000600 (ADR-0011) the
+-- boxing MOVE lines), so the checks of "the cartons it made" are made on those. Since V20261231000600 (ADR-0011) the
 -- carton is the stock itself: the checks of a carton against its stock rows are gone with the rows, and what is left
 -- is asked of the carton. Rolled back at the end.
 -- =============================================================================
@@ -82,7 +82,7 @@ SELECT pg_temp.expect_true('LC4 the red cups keep their lots and the quarantined
                JOIN inventory.stock_lot l ON l.id = p.lot_id
               WHERE i.sku = 'LY-GIAY-DEMO-12OZ-DO' AND p.status = 'IN_STOCK' GROUP BY l.lot_number, p.stock_status) c)
         = 'LOT-2026-03/AVAILABLE=12,LOT-2026-04/QUARANTINE=30');
--- LC5 (the four loose demo rows are empty) went with them: V20261230000600 deleted the empty loose rows.
+-- LC5 (the four loose demo rows are empty) went with them: V20261231000600 deleted the empty loose rows.
 SELECT pg_temp.expect_true('LC6 each of the 75 demo cartons has the one ledger line that put it into stock, in its lot',
     (SELECT count(*) = 75 FROM inventory.stock_package WHERE created_by = 'V20261206000100')
     AND NOT EXISTS (SELECT 1 FROM inventory.stock_package p
@@ -124,7 +124,7 @@ SELECT pg_temp.expect_ok('LC11 a MOVE in place into the carton it names', $q$
            'STOCK_PACKAGE', p.id, p.id, NOW()
       FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
      WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' LIMIT 1 $q$);
--- Not a move by hand (QA 41 has those): it names a return line, and its carton as every line does (V20261230000200).
+-- Not a move by hand (QA 41 has those): it names a return line, and its carton as every line does (V20261231000200).
 SELECT pg_temp.expect_ok('LC12 a MOVE from one place to another is what it was', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code,
                                           reference_type, reference_id, occurred_at, stock_package_id)

@@ -19,7 +19,7 @@ import java.util.UUID;
  *                 the line touched, when that is unambiguous ({@code tg_stock_movement_lot})
  * @param orderId  the customer order the units left for or came back from (a pick, a put-back, a package),
  *                 so the lot trace reaches the order without reading another module's tables (SCRUM-153)
- * @param stockPackage the carton the line is about, and the line's whole quantity (ADR-0011, V20261230000400): stock
+ * @param stockPackage the carton the line is about, and the line's whole quantity (ADR-0011, V20261231000400): stock
  *                 is whole sealed cartons, so a line is one carton and records no number of units - whoever wants
  *                 units reads the carton's {@code nominal_qty}. One carton, not one per side: nothing is ever taken
  *                 out of one carton into another, and whether the carton arrived, moved or left is said by

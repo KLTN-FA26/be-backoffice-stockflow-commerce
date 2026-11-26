@@ -197,7 +197,7 @@ When Sales chooses the shipping warehouse, `ShippingWarehouseService.choose` hol
 `holdAtWarehouse` is a **plain Java call inside this transaction**: if the order fails to persist, the hold rolls
 back with it. Holds are SKU-level (`SkuReservation`, no bin) and have **no deadline**; a shortage is not refused, it
 is shown per delivery batch and topped up when goods are put away (`topUpWaiting`). **A hold counts cartons, of one
-count** (ADR-0011 step 3c, V20261230000500): `stock_reservation.cartons` and `units_per_carton` (the order line's
+count** (ADR-0011 step 3c, V20261231000500): `stock_reservation.cartons` and `units_per_carton` (the order line's
 `units_per_carton`, carried in by `HoldStockCommand`), no `quantity`. It is promised, covered and later allocated from
 cartons whose `stock_package.nominal_qty` is that count only - a free carton of another count is not a candidate, so
 units-ATP of a SKU with cartons of two counts can be above what one line may hold. `check_sku_reservation_covered`
@@ -212,7 +212,7 @@ would strand the rest. Deterministic request ids make a retry converge on the sa
 `StockAllocator.plan` over projections → the planned cartons `FOR UPDATE` in one call, in id order, each once
 (`StockPackageRepository.findAllByIdForUpdate` refreshes, or the pessimistic lock would be decorative) →
 `StockPackage.allocate`; the order line swaps its hold ids for the allocation ids. A reallocation locks the short
-hold's carton and the new one in that same call. **The carton is the stock** (ADR-0011 step 3d, V20261230000600):
+hold's carton and the new one in that same call. **The carton is the stock** (ADR-0011 step 3d, V20261231000600):
 `inventory.stock_item`, `on_hand` and `reserved` are gone; a carton in stock carries its `stock_status`, `lot_id` and
 FIFO `received_at`, and it is taken exactly while a HELD allocation names it (`stock_reservation.stock_package_id`).
 A double allocation is stopped three times: the SKU advisory lock every allocator takes, the carton's row lock with
@@ -225,7 +225,7 @@ team plan 5-1, 4C-2). A carton of another count is never taken, larger or smalle
 carton of its count, never one in a staging area (`tg_stock_reservation_carton`, which locks the carton before reading it); a pick line consumes exactly one. A delivery-scheduled order is released one batch at a time (17 BR-29).
 
 There are no expiring reservations and no sweeper: the manual reservation endpoint, `InventoryService.reserve` and
-`ReservationSweeper` with its TTL are removed (V20261117000300 closes leftover expiring holds and drops `inventory-reservations:CREATE`; `expires_at` itself went with V20261230000500). Stock is held
+`ReservationSweeper` with its TTL are removed (V20261117000300 closes leftover expiring holds and drops `inventory-reservations:CREATE`; `expires_at` itself went with V20261231000500). Stock is held
 only for a signed contract's order and allocated at release. The whole-carton rule needs no statement any more: a carton has no
 quantity, so nothing can take part of one (a request naming no carton is still `STOCK_NOT_IN_CARTON`). What is stated
 twice, in `StockPackage` and in the table, is the carton's own state: a stock status exactly while `IN_STOCK`
@@ -257,7 +257,7 @@ standard count, in the production order's lot, never more than the line orders o
 nothing waits for approval. Cartons are labelled while a DRAFT receipt is counted (`replaceLines` →
 `InventoryService.countReceivingPackages`, which reconciles the line's RECEIVING cartons through the pure
 `ReceivingPackagePlan`: new → LPN, listed → recount, missing → VOID). A count is a moment, not a figure:
-`stock_package.counted_at` (NULL while a carton is only labelled; ADR-0011 step 3a, V20261230000300), and the units a
+`stock_package.counted_at` (NULL while a carton is only labelled; ADR-0011 step 3a, V20261231000300), and the units a
 carton stands for are its `nominal_qty`, nowhere else. `confirm` is one transaction that makes the
 cartons INBOUND stock, advances the production order and sends events after commit. There is no QC step (03 BR-07)
 and no purchase order any more. Lock order, everywhere:
@@ -271,7 +271,7 @@ ledger line is the one carton it is about (`stock_movement.stock_package_id`, NO
 keeps no quantity: its units are that carton's `nominal_qty`, read through a join by whoever sums the ledger
 (`StockLedgerTotalsAdapter`, the lot trace, `tools/db/stock_ledger_balance.sql`). `movement_type` with
 `from_location_code` / `to_location_code` says whether it arrived, moved or left - there is no carton "side". The
-ledger lines of loose stock went with `V20261230000400`, and a putaway task without a carton cannot exist
+ledger lines of loose stock went with `V20261231000400`, and a putaway task without a carton cannot exist
 (`ck_putaway_task_source`). `LpnSequence.reserve` is `REQUIRES_NEW` so a sequence row held until
 commit cannot deadlock two receipts; it draws a line's LPNs as one block. Gaps in LPNs are the accepted price.
 Looking cartons up is `StockPackageLookup` (`/inventory/stock-packages/...`), one SQL statement per kind of fact. There
@@ -367,7 +367,7 @@ The count lives in `inventory`: aggregate `CycleCount` (`PLANNED → IN_PROGRESS
 with one line per LPN carton (`CountSlot`), planning in `CycleCountService`, counting and submission in
 `CycleCountCountingService`. A carton is scanned present or marked not found — never a quantity (20 BR-14), and the
 line stores exactly that: `booked` and `found`, no units; an adjustment stores a `direction` (WRITE_OFF | RESTOCK), no
-delta (ADR-0011, V20261230000100). "booked" is
+delta (ADR-0011, V20261231000100). "booked" is
 read from the carton under its lock when the line is counted, so nothing is frozen while people count. `submit` is one
 `@Transactional` method: count row `FOR UPDATE` → SKU advisory locks in sorted order → cartons `FOR UPDATE` → every
 counted line judged again (BR-09, else `CYCLE_COUNT_STALE` rolls the whole submission back) → `COMPLETED` →

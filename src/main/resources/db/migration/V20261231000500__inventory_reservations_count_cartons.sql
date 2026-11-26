@@ -276,7 +276,7 @@ CREATE TRIGGER tg_stock_reservation_whole_carton
     EXECUTE FUNCTION inventory.check_allocation_whole_carton();
 
 COMMENT ON TABLE inventory.stock_reservation IS
-    'What orders hold of stock, in cartons (ADR-0011, V20261230000500). A SKU-level hold (stock_item_id NULL) is '
+    'What orders hold of stock, in cartons (ADR-0011, V20261231000500). A SKU-level hold (stock_item_id NULL) is '
     '"cartons" cartons of "units_per_carton" of a SKU at a warehouse, on no carton yet; an allocation (stock_item_id '
     'and allocated_from_id set) is one carton given to the order at release. Units, where somebody needs them, are '
     'cartons * units_per_carton. No hold carries a deadline.';

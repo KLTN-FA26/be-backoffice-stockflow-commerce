@@ -77,7 +77,7 @@ final class UnderCountSpecs {
         return notUnderCount("sku", "lotNumber", List.of("locationCode"), List.of("stockPackageId"));
     }
 
-    /** Ledger lines: a bin on each side, one carton (V20261230000200). */
+    /** Ledger lines: a bin on each side, one carton (V20261231000200). */
     static <T> Specification<T> movementsOutsideCountedSlots() {
         return notUnderCount("sku", "lotNumber", List.of("fromLocationCode", "toLocationCode"),
                 List.of("stockPackageId"));

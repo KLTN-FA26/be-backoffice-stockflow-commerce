@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 /**
- * The rules V20261020000100-0600 (and V20261230000600, the carton is the stock) put on stock packages and the units
+ * The rules V20261020000100-0600 (and V20261231000600, the carton is the stock) put on stock packages and the units
  * documents count in, on a fresh database with the demo seed. tools/db/qa/15_stock_packages.sql holds the full set; these are the ones the build must keep, since no
  * workflow runs that script: a later migration replacing one of these functions would otherwise pass CI.
  *
@@ -229,7 +229,7 @@ class StockPackageSchemaMigrationTest {
             update(db, line.formatted("HCM-A01-1-A", other));
             refused(db, "the same carton twice in one count", line.formatted("HCM-A01-1-A", pkg));
             refused(db, "a count line naming a carton at another bin", line.formatted("HCM-A01-1-B", pkg));
-            refused(db, "a loose line: a count line names its carton (NOT NULL since V20261230000100)", line.formatted("HCM-A01-1-A", "NULL"));
+            refused(db, "a loose line: a count line names its carton (NOT NULL since V20261231000100)", line.formatted("HCM-A01-1-A", "NULL"));
         }
     }
 
@@ -246,7 +246,7 @@ class StockPackageSchemaMigrationTest {
 
             refused(db, "a carton in stock that was never counted in (ck_stock_package_counted)",
                     carton.formatted("NULL", "IN_STOCK", "'AVAILABLE'", LOT));
-            // The carton is the stock (V20261230000600): it holds no quantity that could be 7 or 11 of its 10, and it
+            // The carton is the stock (V20261231000600): it holds no quantity that could be 7 or 11 of its 10, and it
             // says what stock it is exactly while it is in stock.
             refused(db, "a carton in stock with no stock status (ck_stock_package_stock_status)",
                     carton.formatted("NOW()", "IN_STOCK", "NULL", LOT));

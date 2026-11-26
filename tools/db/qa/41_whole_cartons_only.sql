@@ -1,7 +1,7 @@
 -- =============================================================================
 -- Adversarial checks + happy paths: stock is kept, moved, received, put away and allocated in whole LPN cartons only
 -- (V20261111000200, team plan 4C-2; kltn-docs 07 BR-03, BR-05; 05 BR-08; 11 BR-04, BR-05; 03 BR-12, BR-13; 20 §4.6,
--- §5.5, §5.6). Needs the demo seed, whose cups are whole cartons (V20261206000100). Since V20261230000600 (ADR-0011)
+-- §5.5, §5.6). Needs the demo seed, whose cups are whole cartons (V20261206000100). Since V20261231000600 (ADR-0011)
 -- the carton is the stock: the checks of a carton against the units on its stock row (part of it taken, refilled with
 -- another figure, left empty) cannot be written any more and are gone, each named where it stood. Rolled back at the end.
 -- =============================================================================
@@ -87,7 +87,7 @@ SELECT pg_temp.expect_true('WC1 a carton in stock is never opened: the flag is g
                    AND table_name = 'stock_package' AND column_name = 'unopened'));
 -- WC2 (part of a carton in stock taken, 3 of 4 left) cannot be written: a carton holds no quantity.
 SELECT pg_temp.expect_true('WC3 a carton cannot be counted at another figure than its standard count (03 BR-13): '
-    'there is no figure to write, a count is the moment counted_at (V20261230000300)',
+    'there is no figure to write, a count is the moment counted_at (V20261231000300)',
     NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
                    AND table_name = 'stock_package' AND column_name = 'received_qty'));
 SELECT pg_temp.expect_ok('WC4 a carton counted in: it stands for its standard count', $q$
@@ -119,7 +119,7 @@ SELECT pg_temp.expect_fail('WC11 VOID back to receiving', $q$
     UPDATE inventory.stock_package SET status = 'RECEIVING', closed_at = NULL WHERE id = md5('qa41:rcv')::uuid $q$);
 
 \echo '--- every unit received is in a carton (03 BR-12)'
--- One rule says it for every kind of line: stock_movement.stock_package_id is NOT NULL (V20261230000400, ADR-0011).
+-- One rule says it for every kind of line: stock_movement.stock_package_id is NOT NULL (V20261231000400, ADR-0011).
 SELECT pg_temp.expect_fail_by('WC12 a receipt line received loose', 'null value in column "stock_package_id"', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, to_location_code, to_status,
                                           reference_type, reference_id, occurred_at)
@@ -143,7 +143,7 @@ SELECT pg_temp.expect_fail_by('WC15 a move by hand of loose units', 'null value 
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, reference_type, reference_id, occurred_at)
     VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-2-B', 'HCM-A01-1-A', 'MOVE_TASK',
             gen_random_uuid(), NOW()) $q$);
--- There is no "one side only" any more (V20261230000200): the line names its carton once. What is still refused is a
+-- There is no "one side only" any more (V20261231000200): the line names its carton once. What is still refused is a
 -- carton that stands at neither of the line's places (it is at HCM-A01-1-B).
 SELECT pg_temp.expect_fail_by('WC16 a move by hand naming a carton that stands at neither of its places', 'names a stock package at', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, reference_type, reference_id, stock_package_id, occurred_at)
@@ -215,8 +215,8 @@ SELECT pg_temp.expect_true('WC25 a putaway task of a receipt line names its cart
                AND pg_get_constraintdef(oid) LIKE '%goods_receipt_line_id IS NULL%stock_package_id IS NOT NULL%'));
 
 \echo '--- the history written before stays as it was'
--- The ledger's three checks (a receipt, a move by hand, a putaway names a carton) became one in V20261230000200, and
--- that one the column's NOT NULL in V20261230000400, when the loose lines of history went: every line is judged now.
+-- The ledger's three checks (a receipt, a move by hand, a putaway names a carton) became one in V20261231000200, and
+-- that one the column's NOT NULL in V20261231000400, when the loose lines of history went: every line is judged now.
 SELECT pg_temp.expect_true('WC26 every ledger line names a carton (NOT NULL); the putaway task''s check is validated',
     (SELECT attnotnull FROM pg_attribute
       WHERE attrelid = 'inventory.stock_movement'::regclass AND attname = 'stock_package_id')

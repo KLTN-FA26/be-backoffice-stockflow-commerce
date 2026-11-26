@@ -598,7 +598,7 @@ class ProductHistoryAndRemovalIntegrationTest {
         ProductSummary created = draft();
         UUID id = created.productId();
         UUID defaultId = defaultVariant(id);
-        // An adjustment names its carton (stock_package_id NOT NULL since V20261230000100), so the SKU has a carton in
+        // An adjustment names its carton (stock_package_id NOT NULL since V20261231000100), so the SKU has a carton in
         // stock and the adjustment that asks to write it off: both refer to the SKU by its code.
         tx.executeWithoutResult(s -> {
             var carton = com.stockflow.support.CartonRows.carton(jdbc, created.code(), "HCM-A01-1-A", 5, null,

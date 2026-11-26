@@ -182,7 +182,7 @@ class ReportsHttpIntegrationTest {
                 .andExpect(jsonPath("$.data.rows.items[0].warehouseId").value(WAREHOUSE_HCM.toString()))
                 .andExpect(jsonPath("$.data.rows.items[0].closing.units").value(4))
                 .andExpect(jsonPath("$.data.rows.items[0].adjustedIn.units").value(4))
-                // A SKU with ledger lines has a carton unit since a line names its carton (V20261230000200): the
+                // A SKU with ledger lines has a carton unit since a line names its carton (V20261231000200): the
                 // NO_CARTON_UNIT note is StockSummaryReportServiceTest's.
                 .andExpect(jsonPath("$.data.rows.items[0].cartonNote").value("NONE"));
         mvc.asRole(Role.WAREHOUSE_MANAGER, manager, get("/api/v1/reports/stock-summary")

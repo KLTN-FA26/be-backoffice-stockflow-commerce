@@ -73,7 +73,7 @@ INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, f
 VALUES (md5('qa:unit:XANH-OLD')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'OLDCTN', 10, 60, 40, 50, 12, FALSE);
 
 
-\echo '--- a stock package is the stock (V20261020000100; the stock rows folded into it by V20261230000600, ADR-0011)'
+\echo '--- a stock package is the stock (V20261020000100; the stock rows folded into it by V20261231000600, ADR-0011)'
 -- The lot of this script's cartons: a carton names its lot by id, the application opens it (StockLots).
 INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)
 VALUES (md5('qa:pk:lot')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', NULL, 'UNTRACED', NOW());
@@ -138,7 +138,7 @@ SELECT pg_temp.expect_fail_by('K24 still RECEIVING but carrying a stock status (
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code, stock_status)
     VALUES (md5('qa:pk:24')::uuid, 'QA-LPN-24', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, 'HCM-A01-1-A', 'AVAILABLE') $q$);
 
-\echo '--- ledger: a line names one carton (V20261020000300; one column since V20261230000200, ADR-0011)'
+\echo '--- ledger: a line names one carton (V20261020000300; one column since V20261231000200, ADR-0011)'
 -- The two carton columns, one per side, are one: a line is one whole carton, and its places say which way it went.
 SELECT pg_temp.expect_true('K27 the ledger has one carton column, indexed, and the two sides are gone', $c$
     (SELECT count(*) FILTER (WHERE column_name = 'stock_package_id') = 1
@@ -147,7 +147,7 @@ SELECT pg_temp.expect_true('K27 the ledger has one carton column, indexed, and t
     AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'inventory' AND indexname = 'ix_stock_movement_package')
     AND NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'inventory'
                      AND indexname IN ('ix_stock_movement_from_package', 'ix_stock_movement_to_package')) $c$);
--- V20261230000400 (ADR-0011, step 3b): a line is one carton and no number of units. The column that repeated the
+-- V20261231000400 (ADR-0011, step 3b): a line is one carton and no number of units. The column that repeated the
 -- carton's nominal_qty is gone, every line names its carton, and the CHECK that said so of new lines only went into
 -- the NOT NULL.
 SELECT pg_temp.expect_true('K27a every line names its carton: stock_package_id is NOT NULL, the NOT VALID CHECK is gone', $c$
@@ -334,11 +334,11 @@ SELECT pg_temp.expect_fail('D6 the same carton counted twice in one count', $q$
     INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, booked, stock_package_id)
     VALUES (gen_random_uuid(), md5('qa:cc:doc')::uuid, 'HCM-A01-1-A', 'LY-GIAY-DEMO-12OZ-XANH', TRUE, md5('qa:pk:doc')::uuid) $q$);
 -- D7 (a carton filled past what was counted into it) went with the stock rows: a carton holds no quantity.
-SELECT pg_temp.expect_true('D8 the balance view is gone with the table it joined (V20261230000600)', $c$
+SELECT pg_temp.expect_true('D8 the balance view is gone with the table it joined (V20261231000600)', $c$
     NOT EXISTS (SELECT 1 FROM pg_views WHERE schemaname = 'inventory' AND viewname = 'stock_package_balance')
     AND to_regclass('inventory.stock_item') IS NULL $c$);
 
-\echo '--- a carton records when it was counted in, not a number of units (V20261230000300, ADR-0011 step 3a)'
+\echo '--- a carton records when it was counted in, not a number of units (V20261231000300, ADR-0011 step 3a)'
 SELECT pg_temp.expect_true('CA1 received_qty is gone from the carton and counted_at is a nullable timestamp', $c$
     NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
                    AND table_name = 'stock_package' AND column_name = 'received_qty')

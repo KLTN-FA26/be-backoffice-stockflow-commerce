@@ -12,7 +12,7 @@ import java.sql.SQLException;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * V20261230000200 on the real upgrade path (ADR-0011, step 2): ledger lines written while a line had a carton per side
+ * V20261231000200 on the real upgrade path (ADR-0011, step 2): ledger lines written while a line had a carton per side
  * end with the one carton they were about.
  *
  * <ul>
@@ -32,8 +32,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class LedgerOneCartonColumnMigrationUpgradeTest {
 
     /** The last migration before the one under test. */
-    private static final String BEFORE = "20261230000100";
-    private static final String MIGRATION = "20261230000200";
+    private static final String BEFORE = "20261231000100";
+    private static final String MIGRATION = "20261231000200";
 
     private static final String CARTON_1 = "00000000-0000-4000-8000-0000000c0021";
     private static final String CARTON_2 = "00000000-0000-4000-8000-0000000c0022";

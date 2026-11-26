@@ -14,7 +14,7 @@ import java.util.UUID;
  * A SKU hold for a test's order, the way Sales takes one since the checkout reservation went (review C4 D-1,
  * V20261117000300): {@link InventoryService#holdAtWarehouse} at the order's shipping warehouse, no deadline.
  *
- * <p>A hold counts cartons of one count and is served only by cartons of that count (ADR-0011, V20261230000500), so a
+ * <p>A hold counts cartons of one count and is served only by cartons of that count (ADR-0011, V20261231000500), so a
  * test says how many cartons of which count it holds: {@link #cartons}. {@link #units} is for the many tests that
  * think in units of a SKU whose cartons all have one count: it reads that count from the SKU's free cartons at the
  * warehouse and holds {@code units / count} of them. It never guesses - units that are not a whole number of the

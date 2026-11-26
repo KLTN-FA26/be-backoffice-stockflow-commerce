@@ -6,7 +6,7 @@ import java.util.UUID;
 
 /**
  * What the API returns for one carton of stock (the name is the contract's: a "stock item" was the row a carton
- * had until V20261230000600, and {@code id} now carries the carton's id).
+ * had until V20261231000600, and {@code id} now carries the carton's id).
  *
  * <p>A separate type from both {@code StockPackage} and {@code StockAvailability}, which looks like
  * duplication and is not. Returning the aggregate would publish its internal shape as the API

@@ -25,7 +25,7 @@ import java.util.Set;
  * {@link StockLedgerTotals}: one statement over {@code inventory.stock_movement}, the ledger every change of stock
  * writes a line to (kltn-docs 20 BR-16) and nothing ever updates ({@code tg_stock_movement_append_only}).
  *
- * <p>A line is one whole carton and keeps no quantity (ADR-0011, V20261230000400): its units are the
+ * <p>A line is one whole carton and keeps no quantity (ADR-0011, V20261231000400): its units are the
  * {@code nominal_qty} of the carton it names, read through a join, so the totals stay in units for the report. Each
  * line is read as two signed sides: {@code +units} for the warehouse of {@code to_location_code},
  * {@code -units} for the warehouse of {@code from_location_code}, a side dropped when the other end is in the same
