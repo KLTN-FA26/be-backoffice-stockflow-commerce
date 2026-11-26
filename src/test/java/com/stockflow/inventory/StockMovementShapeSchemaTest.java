@@ -56,9 +56,9 @@ class StockMovementShapeSchemaTest {
                 + " (md5('it:shape:lot')::uuid, ?, 'UNTRACED', 'UNTRACED', NOW())", SKU);
         update(db, "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,"
                 + " counted_at, location_code, status, stock_status, lot_id, received_at) SELECT ?, 'IT-SHAPE-1',"
-                + " u.inventory_item_id, u.id, u.factor, NOW(), ?, 'IN_STOCK', 'AVAILABLE', md5('it:shape:lot')::uuid,"
+                + " i.id, u.id, u.factor, NOW(), ?, 'IN_STOCK', 'AVAILABLE', md5('it:shape:lot')::uuid,"
                 + " NOW() FROM inventory.uom_conversions u JOIN inventory.inventory_items i"
-                + " ON i.id = u.inventory_item_id WHERE i.sku = ? AND u.active", CARTON, BIN, SKU);
+                + " ON i.variant_id = u.variant_id WHERE i.sku = ? AND u.active", CARTON, BIN, SKU);
     }
 
     /** Every rule of the shape, each allowed case next to the case it refuses. */

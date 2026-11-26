@@ -142,13 +142,12 @@ SELECT pg_temp.expect_fail_by('LC13 a STATUS_CHANGE that changes no status', 'ck
               WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' ORDER BY p.lpn LIMIT 1)) $q$);
 
 \echo '--- every unit has a lot (20 BR-22): a carton in stock names one'
--- 01 BR-03: an item has ONE active carton. The demo seed's own is retired, so the fixture's unit below is the one.
+-- 01 BR-03: a variant has ONE active carton, and the blue and the red cup are packed in their variant's
+-- (V20270104000100). The demo seed's own is retired, so the fixture's carton below is the one, for both cups.
 UPDATE inventory.uom_conversions SET active = FALSE
- WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH', 'LY-GIAY-DEMO-12OZ-DO'));
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-VALUES (md5('qa40:u')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_QA40', 2);
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-SELECT md5('qa40:uo')::uuid, i.id, 'QA_QA40O', 2 FROM inventory.inventory_items i WHERE i.sku = 'LY-GIAY-DEMO-12OZ-DO';
+ WHERE active AND variant_id IN (SELECT variant_id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH', 'LY-GIAY-DEMO-12OZ-DO'));
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor)
+VALUES (md5('qa40:u')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_QA40', 2);
 INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)
 VALUES (md5('qa40:lot')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'LOT-QA40', NOW(), 'UNTRACED', NOW());
 SELECT pg_temp.expect_ok('LC14 a carton of the demo cup in stock, in its lot', $q$
@@ -160,7 +159,7 @@ SELECT pg_temp.expect_ok('LC14 a carton of the demo cup in stock, in its lot', $
 SELECT pg_temp.expect_fail_by('LC16 stock of any SKU (the red cup) with no lot: every SKU is lot-tracked since 5-5 (QA 70)', 'ck_stock_package_lot', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status,
                                          stock_status, received_at)
-    SELECT md5('qa40:po')::uuid, 'QA-QA40-DO', i.id, md5('qa40:uo')::uuid, 2, NOW(), 'HCM-A01-1-A', 'IN_STOCK', 'AVAILABLE', NOW()
+    SELECT md5('qa40:po')::uuid, 'QA-QA40-DO', i.id, md5('qa40:u')::uuid, 2, NOW(), 'HCM-A01-1-A', 'IN_STOCK', 'AVAILABLE', NOW()
       FROM inventory.inventory_items i WHERE i.sku = 'LY-GIAY-DEMO-12OZ-DO' $q$);
 
 \echo '--- the cartons it made are cartons like any other'

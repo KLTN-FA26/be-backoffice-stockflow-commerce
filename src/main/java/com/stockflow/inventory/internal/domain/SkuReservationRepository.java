@@ -46,6 +46,9 @@ public interface SkuReservationRepository {
      */
     List<HeldCartons> heldCartonsOf(String sku);
 
+    /** {@link #heldCartonsOf} for several SKUs in one query, by SKU code; a SKU with no live hold is absent. */
+    Map<String, List<HeldCartons>> heldCartonsBySku(Collection<String> skus);
+
     /**
      * @param warehouseCode  the warehouse the holds are at; null for holds of before 4B-7, promised against the whole
      *                       system

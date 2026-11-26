@@ -181,6 +181,12 @@ public enum ErrorCode {
     /** 01 BR-03: one active carton per SKU ({@code uk_uom_conversions_one_carton}); the other is retired first. */
     UOM_CARTON_ALREADY_DECLARED("This SKU already has a carton unit; retire it before declaring another", 409),
     /**
+     * Owner decision Q1 (2026-11-26): a customer's own SKU is packed in its catalogue variant's carton and has none of
+     * its own ({@code tg_uom_conversions_catalogue_variant}).
+     */
+    UOM_CARTON_OF_CUSTOMER_SKU("A customer's own SKU is packed in its variant's carton; declare cartons on the variant",
+            409),
+    /**
      * The base unit, or a unit a variant sells in, cannot be deleted or retired (docs 01 BR-10, BR-11); a unit
      * a document counts in keeps its factor and code and is not deleted (BR-10, V20261020000600).
      */
@@ -684,6 +690,12 @@ public enum ErrorCode {
     /** 4B-6, 15 BR-13: the void leaves a confirmed order short of its installment on signing; the accountant agrees to hold it. */
     PAYMENT_RECEIPT_VOID_NEEDS_HOLD("Voiding this receipt leaves a confirmed order unpaid: confirm putting it on hold",
             409),
+    /** Credit plan 2026-11-26 part C: no transfer the bank feed reported with that id. */
+    BANK_TRANSACTION_NOT_FOUND("Bank transfer not found", 404),
+    /** Part C: only a transfer waiting for review is assigned or ignored; it was applied or ignored already. */
+    BANK_TRANSACTION_NOT_OPEN("This bank transfer was already dealt with", 409),
+    /** Part C, 15 BR-05: the installments a transfer is assigned to are paid no more than the transfer brought. */
+    BANK_TRANSACTION_OVER_ASSIGNED("The installments are assigned more than this transfer brought", 409),
     /** 4B-9, 15 BR-14: a refund recorded is never more than what the order still has to refund. */
     REFUND_EXCEEDS_REFUNDABLE("This refund is more than the order still has to refund", 409),
     /** 4B-9: no refund record with that id. */
@@ -692,6 +704,19 @@ public enum ErrorCode {
     REFUND_RECORD_ALREADY_VOIDED("This refund record is already voided", 409),
     /** 4B-9: one outgoing bank statement line, one live refund record. */
     REFUND_REFERENCE_IN_USE("This bank statement line is already recorded as a refund", 409),
+    /** QĐ-A (2026-11-26): no credit request with that id (for a customer: none of theirs). */
+    CREDIT_REQUEST_NOT_FOUND("Credit request not found", 404),
+    /** QĐ-A: one credit request is open per customer at a time. */
+    CREDIT_REQUEST_ALREADY_OPEN("This customer already has an open credit request", 409),
+    /** QĐ-A: the step does not fit the request's status (an opinion once given, a decision on one not waiting). */
+    CREDIT_REQUEST_INVALID_TRANSITION("This credit request cannot do that in its status", 409),
+    /** QĐ-A, 18 BR-02: whoever decides neither filed the request nor gave Sales' opinion on it. */
+    CREDIT_REQUEST_SELF_DECISION("A credit request is decided by someone other than whoever filed it or gave Sales' "
+            + "opinion", 409),
+    /** QĐ-A, plan §5 question 3: the limit granted is at most the one asked; a higher one is a new request. */
+    CREDIT_REQUEST_ABOVE_REQUESTED("The limit granted cannot be above the limit asked", 409),
+    /** QĐ-A: a credit request is withdrawn by whoever filed it. */
+    CREDIT_REQUEST_NOT_FILER("Only whoever filed this credit request may withdraw it", 403),
     /** PACK-PARTIAL (lead's decision 2026-10-21): the order does not allow a partial shipment; Sales decides. */
     ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED("This order does not allow partial shipments", 409),
     /** PACK-PARTIAL: whether the order may ship in parts can no longer change once everything left or it is closed. */

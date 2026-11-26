@@ -10,14 +10,15 @@ import java.util.UUID;
 /**
  * A customer's own SKU as the design approval leaves it (kltn-docs 12 §4.5, 01 §4.8, BR-03; 2F-7): an approved
  * customizable product, a design snapshot of the customer's, the SKU drawn on the product's default variant and owned by
- * the customer, and its carton unit - what quotes and orders name since 4B-2 (14 BR-04, BR-08). Written as rows, the way
+ * the customer, packed in that variant's carton unit (owner decision Q1: the SKU has none of its own) - what quotes and
+ * orders name since 4B-2 (14 BR-04, BR-08). Written as rows, the way
  * {@link ReferenceRows} writes another module's: issuing through {@code CustomerSkus.issue} is
  * {@code CustomerSkuIntegrationTest}'s subject, and a test about quotes needs only what it leaves behind.
  */
 public final class CustomerSkuRows {
 
     /**
-     * @param uomConversionId its carton unit
+     * @param uomConversionId its carton unit: its source variant's
      * @param unitsPerCarton  the carton unit's factor
      */
     public record Issued(String sku, UUID variantId, UUID productId, UUID snapshotId, UUID uomConversionId,
@@ -144,21 +145,16 @@ public final class CustomerSkuRows {
                         position, version, created_at, owner_customer_id, design_snapshot_id, source_variant_id)
                     VALUES (?, ?, ?, 'Ly in logo khach', 'ACTIVE', FALSE, ?, 1, 0, NOW(), ?, ?, ?)""",
                     variant, product.productId(), sku, "OWNED-SKU:" + sku, customerId, snapshot, product.variantId());
-            UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, sku);
-            UUID carton = Identifiers.newId();
-            jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
-                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
-                    VALUES (?, ?, 'CARTON', ?, 4.2, 60, 40, 35, TRUE, 0, NOW())""",
-                    carton, item, unitsPerCarton);
+            // The SKU is packed in its source variant's carton (owner decision Q1), never one of its own.
+            UUID carton = CartonRows.ofVariant(jdbc, product.variantId(), unitsPerCarton, "4.2", "60", "40", "35");
             return new Issued(sku, variant, product.productId(), snapshot, carton, unitsPerCarton);
         });
     }
 
     /**
-     * A SKU of {@code customerId} that handles like the catalogue SKU {@code like}: the same rotatable flag, the same
-     * carton size and weight, and a barcode of its own. The item has no weight or size of its own to copy
-     * (V20261215000100): only the carton is measured.
+     * A SKU of {@code customerId} that handles like the catalogue SKU {@code like}: its variant turns the same way
+     * (rotatable, on the variant since V20270104000200), its carton has the same size and weight, and it has a barcode
+     * of its own. The SKU is issued on a product of its own, so its variant's carton is set here and no other SKU's.
      * What a test of picking, packing or loading needs since every order is a contract's, whose lines are only ever the
      * customer's own SKUs (14 BR-04): the demo catalogue's goods, as the customer's.
      */
@@ -167,22 +163,26 @@ public final class CustomerSkuRows {
         Issued issued = issue(jdbc, tx, em, customerId, unitsPerCarton);
         String barcode = "29" + String.format("%011d", Math.floorMod(UUID.randomUUID().getLeastSignificantBits(),
                 100_000_000_000L));
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.inventory_items SET barcode = ? WHERE sku = ?",
+                barcode, issued.sku()));
         tx.executeWithoutResult(s -> jdbc.update("""
-                UPDATE inventory.inventory_items i
-                   SET rotatable = c.rotatable, barcode = ?
-                  FROM inventory.inventory_items c
-                 WHERE i.sku = ? AND c.sku = ?""", barcode, issued.sku(), like));
-        // Since 4C-6 a parcel is a checked LPN carton, sized by its carton unit (08 BR-07): the issued carton takes the
-        // catalogue SKU's carton size and weight as they are now (a test sets them first, CartonStationSupport), so a
-        // load plan counts the customer's cartons as it counted the catalogue's. Kept as issued where the catalogue
-        // declares none.
+                UPDATE product.variants v
+                   SET rotatable = c.rotatable
+                  FROM product.variants c
+                  JOIN inventory.inventory_items ci ON ci.variant_id = c.id
+                 WHERE v.id = (SELECT variant_id FROM inventory.inventory_items WHERE sku = ?) AND ci.sku = ?""",
+                issued.sku(), like));
+        // Since 4C-6 a parcel is a checked LPN carton, sized by its carton unit (08 BR-07): the issued SKU's carton - its
+        // variant's - takes the catalogue SKU's carton size and weight as they are now (a test sets them first,
+        // CartonStationSupport), so a load plan counts the customer's cartons as it counted the catalogue's. Kept as
+        // issued where the catalogue declares none.
         tx.executeWithoutResult(s -> jdbc.update("""
                 UPDATE inventory.uom_conversions u
                    SET length_cm = COALESCE(c.length_cm, u.length_cm), width_cm = COALESCE(c.width_cm, u.width_cm),
                        height_cm = COALESCE(c.height_cm, u.height_cm), weight_kg = COALESCE(c.weight_kg, u.weight_kg)
                   FROM (SELECT cu.length_cm, cu.width_cm, cu.height_cm, cu.weight_kg
                           FROM inventory.uom_conversions cu
-                          JOIN inventory.inventory_items ci ON ci.id = cu.inventory_item_id
+                          JOIN inventory.inventory_items ci ON ci.variant_id = cu.variant_id
                          WHERE ci.sku = ? AND cu.active
                          ORDER BY cu.created_at, cu.id LIMIT 1) c
                  WHERE u.id = ?""", like, issued.uomConversionId()));

@@ -49,9 +49,9 @@ INSERT INTO product.variants (id, product_id, sku, name, status, is_default, att
                               created_at, owner_customer_id, design_snapshot_id, source_variant_id)
 VALUES (md5('qacr:own')::uuid, md5('qacr:product')::uuid, 'QA-CR-OWN', 'QA ly in logo', 'ACTIVE', FALSE,
         'OWNED-SKU:QA-CR-OWN', 1, 0, NOW(), md5('qacr:customer')::uuid, md5('qacr:snap')::uuid, md5('qacr:blank')::uuid);
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active, version, created_at)
-SELECT md5('qacr:carton')::uuid, i.id, 'CARTON', 50, TRUE, 0, NOW()
-  FROM inventory.inventory_items i WHERE i.sku = 'QA-CR-OWN';
+-- The customer's SKU is packed in its blank variant's carton (V20270104000100): the carton is the variant's.
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active, version, created_at)
+VALUES (md5('qacr:carton')::uuid, md5('qacr:blank')::uuid, 'CARTON', 50, TRUE, 0, NOW());
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
                                      currency, placed_at, created_at)
 VALUES (md5('qacr:order')::uuid, 'SO-QA-CR', md5('qacr:customer')::uuid, gen_random_uuid(), 'DRAFT', 2200000, 200000,

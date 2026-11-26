@@ -93,6 +93,31 @@ public interface InventoryService {
     Map<String, Integer> availableToPromiseByWarehouse(Sku sku);
 
     /**
+     * ADR-0011: what each warehouse can still promise a line quoted in cartons of {@code unitsPerCarton}, in such
+     * cartons, by warehouse code - the free cartons of exactly that count a release there could allocate, less the
+     * holds of that count at it, never more than is left of that count system-wide. The figure
+     * {@link #holdAtWarehouse} holds against, so a warehouse shown as covering a line can hold it. Unlike
+     * {@link #availableToPromiseByWarehouse}, cartons of another count are not in it: they never serve the line, and
+     * their units divided by the line's count would promise cartons that do not exist. A warehouse with none is
+     * absent; every warehouse is listed whatever the caller's scope, as there.
+     *
+     * @throws IllegalArgumentException for a count below 1
+     */
+    Map<String, Integer> cartonsToPromiseByWarehouse(Sku sku, int unitsPerCarton);
+
+    /**
+     * ADR-0011: for each SKU, the cartons of the count given for it still to promise over every warehouse - the free
+     * cartons of exactly that count a release could allocate, less the live holds of that count. Every SKU asked for
+     * is a key, {@code 0} for none, in the order asked; one read for the whole page. For a figure shown in cartons of
+     * the count a SKU is sold in, where {@link #availableToPromise(Collection)} divided by that count would count the
+     * units of cartons of other counts too.
+     *
+     * @param unitsPerCarton the count each SKU is sold in, at least 1
+     * @throws IllegalArgumentException for a count missing or below 1
+     */
+    Map<Sku, Integer> cartonsToPromise(Map<Sku, Integer> unitsPerCarton);
+
+    /**
      * WF4-COUNT-EDGE (a): the live SKU reservations of {@code sku} held at {@code warehouseCode} and the whole free
      * cartons there that cover them ({@link SkuHoldCover}). Read in the caller's transaction; under the SKU's advisory
      * lock ({@link #prepareReservation}) it is the figure the next hold or release sees.

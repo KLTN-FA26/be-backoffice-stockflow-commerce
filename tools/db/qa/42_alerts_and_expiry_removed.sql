@@ -74,9 +74,9 @@ SELECT pg_temp.expect_fail('AE8 a threshold written to an item', $q$
 -- Two cartons of 3 for the checks below, in quarantine: the carton is the stock (V20261231000600).
 -- 01 BR-03: an item has ONE active carton. The demo seed's own is retired, so the fixture's unit below is the one.
 UPDATE inventory.uom_conversions SET active = FALSE
- WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-VALUES (md5('qa42:u')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_QA42', 3);
+ WHERE active AND variant_id IN (SELECT variant_id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor)
+VALUES (md5('qa42:u')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_QA42', 3);
 INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)
 VALUES (md5('qa42:lot:x')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'QA-LOT', NOW() - interval '1 day', 'UNTRACED', NOW());
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status,
@@ -152,11 +152,18 @@ SELECT pg_temp.expect_ok('AE20 a lot of the red cup', $q$
 -- AE23, AE24 (a stock row without a lot id finds the untraced lot of its SKU, number and receipt time) and AE25 (a row
 -- put in a lot of another lot number) were tg_stock_item_lot: a carton has no lot number of its own, so there is nothing
 -- to resolve a lot from or to disagree with it - the application names the lot (StockLots.openUntraced).
+-- The red cup's carton of 500 is, since V20270104000100, a retired carton of the cup's variant (its stock keeps it):
+-- it is made the variant's active carton again for these cartons, as a person would before receiving in it (BR-03: one
+-- active at a time).
+UPDATE inventory.uom_conversions SET active = FALSE
+ WHERE active AND variant_id = (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-DO');
+UPDATE inventory.uom_conversions SET active = TRUE WHERE id = md5('demo:cups:unit:LY-GIAY-DEMO-12OZ-DO')::uuid;
 CREATE FUNCTION pg_temp.red_carton_sql(k TEXT, loc TEXT, stock TEXT, lot TEXT, received TEXT) RETURNS TEXT LANGUAGE sql AS $f$
     SELECT format($i$
         INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
                                              location_code, status, stock_status, lot_id, received_at)
-        SELECT md5('qa42:po:' || %L)::uuid, 'QA-QA42-DO-' || %L, u.inventory_item_id, u.id, u.factor, NOW(), %L,
+        SELECT md5('qa42:po:' || %L)::uuid, 'QA-QA42-DO-' || %L,
+               (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-DO'), u.id, u.factor, NOW(), %L,
                'IN_STOCK', %L, %s, %s
           FROM inventory.uom_conversions u WHERE u.id = md5('demo:cups:unit:LY-GIAY-DEMO-12OZ-DO')::uuid $i$,
         k, k, loc, stock, lot, received)

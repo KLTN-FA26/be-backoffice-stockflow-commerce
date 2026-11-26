@@ -25,9 +25,11 @@ import java.util.UUID;
 @Repository
 public class InventoryPolicyRepository {
     private final JdbcTemplate jdbc;
+    private final VariantRotations rotations;
 
-    public InventoryPolicyRepository(JdbcTemplate jdbc) {
+    public InventoryPolicyRepository(JdbcTemplate jdbc, VariantRotations rotations) {
         this.jdbc = jdbc;
+        this.rotations = rotations;
     }
 
     public void lock(String sku) {
@@ -59,8 +61,11 @@ public class InventoryPolicyRepository {
                 sku).stream().findFirst();
     }
 
-    /** One inventory item, its logistics and the version, as they stood together. */
-    public record ItemRow(java.util.UUID id, String sku, long version, ItemLogistics logistics) {
+    /**
+     * One inventory item, its logistics and the version, as they stood together, and the catalogue variant whose
+     * carton it is packed in ({@code variant_id}, V20270104000100).
+     */
+    public record ItemRow(java.util.UUID id, String sku, long version, ItemLogistics logistics, UUID variantId) {
     }
 
     /**
@@ -68,9 +73,8 @@ public class InventoryPolicyRepository {
      * between the reads, and the result would label one save's values with another's version.
      */
     public Optional<ItemRow> findById(java.util.UUID id) {
-        return jdbc.query("select * from inventory.inventory_items where id = ?", (rs, n) ->
-                new ItemRow(rs.getObject("id", java.util.UUID.class), rs.getString("sku"), rs.getLong("version"),
-                        logistics(rs)), id).stream().findFirst();
+        return jdbc.query("select * from inventory.inventory_items where id = ?", (rs, n) -> itemRow(rs), id)
+                .stream().findFirst();
     }
 
     /** The items with these SKUs, in one SELECT; a SKU without an item is simply absent. */
@@ -79,13 +83,16 @@ public class InventoryPolicyRepository {
             return List.of();
         }
         return jdbc.query("select * from inventory.inventory_items where sku = any (?)", ps ->
-                ps.setArray(1, ps.getConnection().createArrayOf("text", skus.toArray())), (rs, n) ->
-                new ItemRow(rs.getObject("id", UUID.class), rs.getString("sku"), rs.getLong("version"),
-                        logistics(rs)));
+                ps.setArray(1, ps.getConnection().createArrayOf("text", skus.toArray())), (rs, n) -> itemRow(rs));
+    }
+
+    private static ItemRow itemRow(java.sql.ResultSet rs) throws java.sql.SQLException {
+        return new ItemRow(rs.getObject("id", UUID.class), rs.getString("sku"), rs.getLong("version"), logistics(rs),
+                rs.getObject("variant_id", UUID.class));
     }
 
     private static ItemLogistics logistics(java.sql.ResultSet rs) throws java.sql.SQLException {
-        return new ItemLogistics(rs.getString("unit_of_measure"), rs.getString("barcode"), rs.getBoolean("rotatable"));
+        return new ItemLogistics(rs.getString("unit_of_measure"), rs.getString("barcode"));
     }
 
     /** The SKU of the item with this id; empty when there is none. */
@@ -102,9 +109,9 @@ public class InventoryPolicyRepository {
     }
 
     /**
-     * The SKU's carton spec: its one active packing unit ({@code uk_uom_conversions_one_carton}) - the rule
-     * {@code StockPackageRepository.cartonFactorOf} uses - with the item's rotatable flag. Empty for an unknown SKU, or
-     * one with no active unit.
+     * The SKU's carton spec: its catalogue variant's one active carton ({@code uk_uom_conversions_one_carton}; owner
+     * decision Q1) with the variant's rotatable flag (Q9). Empty for an unknown SKU, or one whose variant has no active
+     * carton.
      */
     public Optional<com.stockflow.inventory.api.CartonSpec> findCartonSpec(String sku) {
         return Optional.ofNullable(findCartonSpecs(List.of(sku)).get(sku));
@@ -113,32 +120,68 @@ public class InventoryPolicyRepository {
     /**
      * {@link #findCartonSpec} for many SKUs in one read (BE1: the capacity board sizes every SKU it counts by the same
      * rule). A SKU with no carton spec is absent, and so is one with several active units - which
-     * {@code uk_uom_conversions_one_carton} refuses - as {@code StockPackageRepository.cartonFactorOf} and
-     * {@code UomConversion.cartonOf} answer: nothing is guessed.
+     * {@code uk_uom_conversions_one_carton} refuses - as
+     * {@code UomConversion.cartonOf} answers: nothing is guessed.
      */
     public java.util.Map<String, com.stockflow.inventory.api.CartonSpec> findCartonSpecs(Collection<String> skus) {
         if (skus.isEmpty()) {
             return java.util.Map.of();
         }
-        List<com.stockflow.inventory.api.CartonSpec> units = jdbc.query("""
-                select i.sku, u.unit_of_measure, u.factor, u.length_cm, u.width_cm, u.height_cm, u.weight_kg,
-                       i.rotatable
-                  from inventory.uom_conversions u
-                  join inventory.inventory_items i on i.id = u.inventory_item_id
+        record Row(String sku, UUID variantId, String unit, int factor, java.math.BigDecimal length,
+                   java.math.BigDecimal width, java.math.BigDecimal height, java.math.BigDecimal weight) { }
+        List<Row> units = jdbc.query("""
+                select i.sku, i.variant_id, u.unit_of_measure, u.factor, u.length_cm, u.width_cm, u.height_cm,
+                       u.weight_kg
+                  from inventory.inventory_items i
+                  join inventory.uom_conversions u on u.variant_id = i.variant_id
                  where i.sku = any (?) and u.active
                 """, ps -> ps.setArray(1, ps.getConnection().createArrayOf("text", skus.toArray())),
-                (rs, n) -> new com.stockflow.inventory.api.CartonSpec(rs.getString("sku"),
+                (rs, n) -> new Row(rs.getString("sku"), rs.getObject("variant_id", UUID.class),
                         rs.getString("unit_of_measure"), rs.getInt("factor"), rs.getBigDecimal("length_cm"),
-                        rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm"), rs.getBigDecimal("weight_kg"),
-                        rs.getBoolean("rotatable")));
+                        rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm"), rs.getBigDecimal("weight_kg")));
+        java.util.Map<UUID, Boolean> rotatable = rotations.of(units.stream().map(Row::variantId).toList());
         java.util.Map<String, com.stockflow.inventory.api.CartonSpec> specs = new java.util.HashMap<>();
         java.util.Set<String> several = new java.util.HashSet<>();
-        for (com.stockflow.inventory.api.CartonSpec spec : units) {
+        for (Row row : units) {
+            var spec = new com.stockflow.inventory.api.CartonSpec(row.sku(), row.unit(), row.factor(), row.length(),
+                    row.width(), row.height(), row.weight(), VariantRotations.rotatable(rotatable, row.variantId()));
             if (specs.putIfAbsent(spec.sku(), spec) != null) {
                 several.add(spec.sku());
             }
         }
         specs.keySet().removeAll(several);
+        return specs;
+    }
+
+    /**
+     * The carton each of these LPNs was received in ({@code stock_package.uom_conversion_id}, fixed at receipt), as it
+     * is measured now, keyed by LPN, with the carton's own SKU and its variant's rotatable flag (Q9). A carton received
+     * in a carton row since retired keeps that row: it is measured as what it is, not as the variant's new carton.
+     */
+    public java.util.Map<String, com.stockflow.inventory.api.CartonSpec> findCartonSpecsByLpn(Collection<String> lpns) {
+        if (lpns.isEmpty()) {
+            return java.util.Map.of();
+        }
+        record Row(String lpn, String sku, UUID variantId, String unit, int factor, java.math.BigDecimal length,
+                   java.math.BigDecimal width, java.math.BigDecimal height, java.math.BigDecimal weight) { }
+        List<Row> rows = jdbc.query("""
+                select p.lpn, i.sku, u.variant_id, u.unit_of_measure, u.factor, u.length_cm, u.width_cm, u.height_cm,
+                       u.weight_kg
+                  from inventory.stock_package p
+                  join inventory.inventory_items i on i.id = p.inventory_item_id
+                  join inventory.uom_conversions u on u.id = p.uom_conversion_id
+                 where p.lpn = any (?)
+                """, ps -> ps.setArray(1, ps.getConnection().createArrayOf("text", lpns.stream().distinct().toArray())),
+                (rs, n) -> new Row(rs.getString("lpn"), rs.getString("sku"), rs.getObject("variant_id", UUID.class),
+                        rs.getString("unit_of_measure"), rs.getInt("factor"), rs.getBigDecimal("length_cm"),
+                        rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm"), rs.getBigDecimal("weight_kg")));
+        java.util.Map<UUID, Boolean> rotatable = rotations.of(rows.stream().map(Row::variantId).toList());
+        java.util.Map<String, com.stockflow.inventory.api.CartonSpec> specs = new java.util.HashMap<>();
+        for (Row row : rows) {
+            specs.put(row.lpn(), new com.stockflow.inventory.api.CartonSpec(row.sku(), row.unit(), row.factor(),
+                    row.length(), row.width(), row.height(), row.weight(),
+                    VariantRotations.rotatable(rotatable, row.variantId())));
+        }
         return specs;
     }
 
@@ -155,18 +198,18 @@ public class InventoryPolicyRepository {
     /** False when the version moved on: someone else changed the item since it was read. */
     public boolean saveLogistics(String sku, long version, ItemLogistics l, String actor) {
         return jdbc.update("""
-                update inventory.inventory_items set unit_of_measure=?, barcode=?, rotatable=?, version=version+1,
+                update inventory.inventory_items set unit_of_measure=?, barcode=?, version=version+1,
                     last_modified_at=now(),
                     last_modified_by=?
                 where sku=? and version=?
-                """, l.unitOfMeasure(), l.barcode(), l.rotatable(), actor, sku, version) == 1;
+                """, l.unitOfMeasure(), l.barcode(), actor, sku, version) == 1;
     }
 
-    /** Whether a packing unit of the SKU already uses this unit code. */
+    /** Whether a carton of the SKU's variant already uses this unit code. */
     public boolean packingUnitUses(String sku, String unitOfMeasure) {
         return Boolean.TRUE.equals(jdbc.queryForObject("""
-                select exists(select 1 from inventory.uom_conversions c
-                    join inventory.inventory_items i on i.id = c.inventory_item_id
+                select exists(select 1 from inventory.inventory_items i
+                    join inventory.uom_conversions c on c.variant_id = i.variant_id
                     where i.sku = ? and c.unit_of_measure = ?)
                 """, Boolean.class, sku, unitOfMeasure));
     }

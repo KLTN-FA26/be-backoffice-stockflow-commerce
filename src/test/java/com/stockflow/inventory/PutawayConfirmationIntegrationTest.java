@@ -331,12 +331,14 @@ class PutawayConfirmationIntegrationTest {
     @DisplayName("06 BR-01: a carton turned on the horizontal fits a bin 0.5 wide x 0.4 long - unless its item may not be turned")
     void turnedOnTheHorizontal() {
         String turned = bin(warehouse, "A01", "0.5", "0.4", "0.3", 500, "ACTIVE");
-        tx.executeWithoutResult(s -> jdbc.update("update inventory.inventory_items set rotatable = false where sku = ?",
+        tx.executeWithoutResult(s -> jdbc.update("update product.variants set rotatable = false where id = "
+                + "(select variant_id from inventory.inventory_items where sku = ?)",
                 sku));
         assertThat(refusal(() -> confirmCarton(cartonTask, lpn1, turned)).errorCode())
                 .isEqualTo(ErrorCode.CARTON_DOES_NOT_FIT_BIN);
 
-        tx.executeWithoutResult(s -> jdbc.update("update inventory.inventory_items set rotatable = true where sku = ?",
+        tx.executeWithoutResult(s -> jdbc.update("update product.variants set rotatable = true where id = "
+                + "(select variant_id from inventory.inventory_items where sku = ?)",
                 sku));
         assertThat(confirmCarton(cartonTask, lpn1, turned).status()).isEqualTo("DONE");
     }

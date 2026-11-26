@@ -211,14 +211,8 @@ public class ProductionReceivables {
         });
         UUID item = tx.execute(s -> jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?",
                 UUID.class, sku));
-        UUID carton = Identifiers.newId();
-        tx.executeWithoutResult(s -> {
-            jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
-                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
-                    VALUES (?, ?, 'CARTON', ?, 1.2, 60, 40, 35, TRUE, 0, NOW())""",
-                    carton, item, per);
-        });
+        // Packed in its source variant's carton (owner decision Q1): SKUs issued on one product share it.
+        UUID carton = tx.execute(s -> CartonRows.ofVariant(jdbc, product.variantId(), per, "1.2", "60", "40", "35"));
         return new Issued(sku, item, carton, cartons, per);
     }
 

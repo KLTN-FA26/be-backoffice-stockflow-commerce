@@ -90,9 +90,9 @@ VALUES (md5('qa52:o1:l')::uuid, md5('qa52:o1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 
 
 -- 01 BR-03: an item has ONE active carton. The demo seed's own is retired, so the fixture's unit below is the one.
 UPDATE inventory.uom_conversions SET active = FALSE
- WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-VALUES (md5('qa52:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA52_CTN', 4);
+ WHERE active AND variant_id IN (SELECT variant_id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor)
+VALUES (md5('qa52:unit')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA52_CTN', 4);
 -- Three cartons that were shipped: CONSUMED, so with no stock status, keeping the lot and the receipt date they had
 -- in stock (V20261231000600: the carton is the stock; a carton that comes back keeps both).
 INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)

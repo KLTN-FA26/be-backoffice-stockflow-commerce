@@ -92,7 +92,7 @@ reshaped by the rescope (ADR-0010).
 | `inventory` | stock only as whole LPN cartons, holds and allocations, FIFO, putaway, counts and adjustments, quarantine, ledger |
 | `warehouse` | warehouses, zones, bins (capacity in m³, `STAGING`, `QUARANTINE`, `OVERFLOW`), putaway tasks |
 | `order` | quotes, sales contracts, orders, delivery batches, shipping-warehouse choice and release, production orders and producers, cancellations, return requests |
-| `payment` | installments of signed contracts, payment receipts, credit position, settlements, refund records (no money ledger) |
+| `payment` | installments of signed contracts, payment receipts, credit position, settlements, refund records (no money ledger), credit requests (the accountant approves; approving writes the customer's credit through `customer :: api`) |
 | `invoicing` | VAT e-invoices drawn up per delivery and issued through an e-invoice provider (kltn-docs 21) |
 | `fulfillment` | pick lists, staging, carton check and labelling, shipments, load plans, dispatch, carriers (Ahamove), proof of delivery |
 | `procurement` | goods receipts against production orders and return receipts (name kept; purchasing is gone) |
@@ -214,6 +214,13 @@ handover's check) is a direct call through `payment :: api`.
 
 Spring Modulith's **event publication registry** replaces the transactional outbox: an event a listener failed to
 process stays in `event_publication` and is retried (migration `V20260901000400`).
+
+**Receipts from the bank (SePay, credit plan part C; `docs/bank-feed-sepay.md`).** `BankTransactionService` keeps every
+incoming transfer SePay's webhook reports (`payment.bank_transaction`, once per SePay id and bank reference), then, in
+short transactions like `CarrierEventService`, records a receipt through `PaymentReceiptService.record` when the content
+names exactly one payable installment for no more than it owes; anything else waits for the Accountant (`NEEDS_REVIEW`).
+Lock order: the transfer's row, then what `record` takes. The receipt's recorder is the DISABLED system user
+`BankFeedUser`; a nightly catch-up reads SePay's API v2 for what the webhook missed.
 
 ### Holding an order's stock — what still justifies the single transaction
 

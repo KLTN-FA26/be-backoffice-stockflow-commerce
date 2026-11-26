@@ -156,12 +156,12 @@ class ProductPimIntegrationTest {
         assertThat(before.logistics().unitOfMeasure()).isEqualTo("EACH");
 
         String barcode = "893" + suffix.replaceAll("[^0-9]", "1");
-        var logistics = new ItemLogistics("EACH", barcode, false);
+        var logistics = new ItemLogistics("EACH", barcode);
         var after = items.describe(itemId, before.version(), logistics);
 
         assertThat(after.version()).isGreaterThan(before.version());
         assertThat(after.logistics().barcode()).isEqualTo(barcode);
-        assertThat(after.logistics().rotatable()).isFalse();
+
         assertThatThrownBy(() -> items.describe(itemId, before.version(), logistics))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK));

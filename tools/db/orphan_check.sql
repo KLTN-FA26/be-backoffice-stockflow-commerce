@@ -190,7 +190,10 @@ WITH reviewed(col, why) AS (
     ('ordering.production_order_receipt.receipt_number', 'the row''s own business number'),
     ('ordering.quote.quote_number', 'the row''s own business number'),
     ('ordering.return_request.rma_number', 'the row''s own business number'),
-    ('ordering.sales_contract.contract_number', 'the row''s own business number')
+    ('ordering.sales_contract.contract_number', 'the row''s own business number'),
+    ('payment.bank_transaction.provider_transaction_id', 'an external system''s id: SePay''s, for one transfer'),
+    ('payment.bank_transaction.account_number', 'the bank account SePay reported, kept verbatim'),
+    ('payment.bank_transaction.payment_code', 'what SePay read out of the transfer''s content, kept verbatim')
 ), reviewed_pattern(pat, why) AS (
     VALUES
     ('%reason_code', 'enumeration code, checked by a CHECK'),    ('%province_code', 'address code'),    ('%ward_code', 'address code'),    ('%postal_code', 'address code'),    ('%country_code', 'address code'),    ('carrier_city_code', 'the carrier''s city code'),    ('%tax_code', 'tax identifier of a party'),    ('lot_number', 'copy of the lot, which the row reaches by a keyed lot id or the lot table itself'),    ('%waybill_no', 'the carrier''s waybill number, free text'),    ('tracking_number', 'the carrier''s tracking number'),    ('scanned_code', 'what a scanner read, kept verbatim'),    ('scanned_location_code', 'what a scanner read, kept verbatim'),    ('label_code', 'the carton''s own label'),    ('vehicle_code', 'snapshot of the vehicle type''s code'),    ('service_code', 'the carrier''s own service vocabulary')

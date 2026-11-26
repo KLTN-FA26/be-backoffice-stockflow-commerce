@@ -5,7 +5,6 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.contracts.PutawayCompleted;
 import com.stockflow.inventory.api.StockPackageView;
-import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.internal.domain.ReturnedCartonOwnership;
 import com.stockflow.inventory.internal.domain.StockAdjustmentRepository;
 import com.stockflow.inventory.internal.domain.StockPackage;
@@ -13,7 +12,6 @@ import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
-import com.stockflow.inventory.internal.repository.UomConversionRepository;
 import com.stockflow.warehouse.api.NewPutawayTask;
 import com.stockflow.warehouse.api.PutawaySource;
 import com.stockflow.warehouse.api.PutawayTaskView;
@@ -68,7 +66,6 @@ public class CartonQuarantineService {
     private final StockOperations operations;
     private final StockPackageRepository stockPackages;
     private final StockAdjustmentRepository adjustments;
-    private final UomConversionRepository units;
     private final InventoryPolicyRepository policies;
     private final PutawayTasks tasks;
     private final WarehouseService warehouses;
@@ -77,14 +74,13 @@ public class CartonQuarantineService {
 
     public CartonQuarantineService(StockOperations operations, StockPackageRepository stockPackages,
                                    StockAdjustmentRepository adjustments,
-                                   UomConversionRepository units, InventoryPolicyRepository policies,
+                                   InventoryPolicyRepository policies,
                                    PutawayTasks tasks, WarehouseService warehouses, ApplicationEventPublisher events,
                                    ReturnedCartonOwnership ownership) {
         this.ownership = ownership;
         this.operations = operations;
         this.stockPackages = stockPackages;
         this.adjustments = adjustments;
-        this.units = units;
         this.policies = policies;
         this.tasks = tasks;
         this.warehouses = warehouses;
@@ -138,9 +134,8 @@ public class CartonQuarantineService {
     @Transactional
     public UUID release(String lpn, UUID actorId) {
         StockPackage seen = find(lpn);
-        UomConversion unit = units.findAll(List.of(seen.uomConversionId())).stream().findFirst().orElseThrow(() ->
-                new IllegalStateException("Stock package %s is in no known unit".formatted(seen.lpn())));
-        policies.lock(unit.sku());
+        // A carton's SKU is its own item's: its carton row is its variant's, shared by every SKU of the variant (Q1).
+        policies.lock(seen.sku().code());
         StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(seen.id())).stream().findFirst()
                 .orElseThrow(() -> new IllegalStateException("Stock package %s vanished".formatted(seen.lpn())));
         if (carton.status() != StockPackageStatus.IN_STOCK) {
@@ -173,7 +168,7 @@ public class CartonQuarantineService {
                     "A write-off of %s awaits approval; it is released once that is rejected or withdrawn"
                             .formatted(carton.lpn()), List.of(), Map.of("lpn", carton.lpn()));
         }
-        PutawayTaskView task = tasks.open(NewPutawayTask.quarantineRelease(unit.sku(), carton.nominalQty(),
+        PutawayTaskView task = tasks.open(NewPutawayTask.quarantineRelease(carton.sku().code(), carton.nominalQty(),
                 carton.id().value()));
         if (task.source() != PutawaySource.QUARANTINE_RELEASE) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_DECISION_PENDING,

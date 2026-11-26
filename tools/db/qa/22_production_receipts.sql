@@ -73,15 +73,15 @@ SELECT md5('qa22:own')::uuid, md5('qa22:product')::uuid, 'QA-PRR-OWN', 'QA ly in
        'OWNED-SKU:QA-PRR-OWN', 1, 0, NOW(), c.id, md5('qa22:snap')::uuid, md5('qa22:blank')::uuid
   FROM customer.customer c ORDER BY c.id LIMIT 1;
 -- Measured: a carton is received only once its spec has its size and full weight (01 BR-03, V20261215000100).
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active,
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active,
                                        version, created_at, length_cm, width_cm, height_cm, weight_kg)
-SELECT md5('qa22:carton')::uuid, i.id, 'CARTON', 50, TRUE, 0, NOW(), 60, 40, 35, 1.2
+SELECT md5('qa22:carton')::uuid, i.variant_id, 'CARTON', 50, TRUE, 0, NOW(), 60, 40, 35, 1.2
   FROM inventory.inventory_items i WHERE i.sku = 'QA-PRR-OWN';
 -- BOX is a retired unit: the item has one active carton (01 BR-03), the CARTON of 50. A line counted in BOX is
 -- refused for its count (PR15), not for the unit being retired: that trigger asks for the factor only.
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active,
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active,
                                        version, created_at, length_cm, width_cm, height_cm, weight_kg)
-SELECT md5('qa22:box')::uuid, i.id, 'BOX', 25, FALSE, 0, NOW(), 40, 30, 35, 0.6
+SELECT md5('qa22:box')::uuid, i.variant_id, 'BOX', 25, FALSE, 0, NOW(), 40, 30, 35, 0.6
   FROM inventory.inventory_items i WHERE i.sku = 'QA-PRR-OWN';
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
                                      currency, placed_at, created_at)

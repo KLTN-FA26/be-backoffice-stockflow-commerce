@@ -25,8 +25,9 @@ public record GoodsReceiptResponse(UUID id, String number, UUID warehouseId, Str
     /**
      * No expiry: there is none (03 BR-06, team plan 5-1). {@code unitOfMeasure}: the packing unit of
      * the line's cartons, null for a historical line counted loose. {@code looseQuantity}: the part counted into no
-     * carton (the line less the {@code nominalQty} of each carton counted in). {@code packages}: the line's cartons by LPN, voided ones
-     * left out (SCRUM-473). {@code units}: every unit of the line's item, for the counting screen's unit picker.
+     * carton (the line less the {@code nominalQty} of each carton counted in). {@code packages}: the line's cartons by LPN,
+     * voided ones left out (SCRUM-473). {@code units}: the carton the line is received in - the one its order line was
+     * signed in (Q7, Q10), even retired - for the counting screen's unit picker.
      */
     public record Line(UUID id, UUID inventoryItemId, String sku, int quantity, String lotNumber,
                        String locationCode, String note,

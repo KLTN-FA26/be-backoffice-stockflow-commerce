@@ -34,7 +34,6 @@ class DesignModuleTest {
     @MockitoBean com.stockflow.inventory.api.InventoryControlService inventoryControlServiceMock;
     @MockitoBean com.stockflow.inventory.api.InventoryService inventoryServiceMock;
     @MockitoBean com.stockflow.inventory.api.UomConversionService uomConversionServiceMock;
-    @MockitoBean com.stockflow.inventory.api.ItemSpecifications itemSpecificationsMock;
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
     @MockitoBean com.stockflow.warehouse.api.PutawayTasks putawayTasksMock;
     @MockitoBean com.stockflow.warehouse.api.PutawayTrips putawayTripsMock;

@@ -70,7 +70,8 @@ class PackagingSpecResolverIntegrationTest {
 
     private List<String> active() {
         return jdbc.queryForList("select unit_of_measure from inventory.uom_conversions"
-                + " where inventory_item_id = ? and active order by unit_of_measure", String.class, itemId);
+                + " where variant_id = (select variant_id from inventory.inventory_items where id = ?) and active"
+                + " order by unit_of_measure", String.class, itemId);
     }
 
     // ---- the one active carton (01 BR-03) ------------------------------------------------------------------------
@@ -108,8 +109,8 @@ class PackagingSpecResolverIntegrationTest {
     @Test
     void theDatabaseRefusesASecondActiveCarton() {
         units.add(sku, pack("BOX", 10, "5"));
-        assertThatThrownBy(() -> jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, "
-                + "unit_of_measure, factor, active) values (?, ?, 'CARTON', 50, true)", Identifiers.newId(), itemId))
+        assertThatThrownBy(() -> jdbc.update("insert into inventory.uom_conversions (id, variant_id, "
+                + "unit_of_measure, factor, active) values (?, (select variant_id from inventory.inventory_items where id = ?), 'CARTON', 50, true)", Identifiers.newId(), itemId))
                 .isInstanceOf(DataIntegrityViolationException.class)
                 .hasMessageContaining("uk_uom_conversions_one_carton");
         assertThat(active()).containsExactly("BOX");

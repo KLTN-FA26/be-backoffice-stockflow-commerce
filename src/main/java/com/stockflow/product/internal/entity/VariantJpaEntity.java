@@ -50,6 +50,13 @@ public class VariantJpaEntity extends BaseEntity {
     @Column(name = "obsoleted_at")
     private Instant obsoletedAt;
 
+    /**
+     * Whether a carton of this variant may be turned (owner decision Q9, V20270104000200): every SKU of the variant is
+     * packed in its carton, so inventory and the load planner ask the variant, through {@code inventory :: spi}.
+     */
+    @Column(name = "rotatable", nullable = false)
+    private boolean rotatable = true;
+
     /** A customer's own SKU (kltn-docs 12 §4.5): the customer, the approved design and the variant it was drawn on. */
     @Column(name = "owner_customer_id", updatable = false)
     private UUID ownerCustomerId;
@@ -93,6 +100,10 @@ public class VariantJpaEntity extends BaseEntity {
         this.status = VariantStatus.ACTIVE;
     }
 
+    public void setRotatable(boolean rotatable) {
+        this.rotatable = rotatable;
+    }
+
     public void moveTo(VariantStatus target, Instant now) {
         this.status = target;
         this.obsoletedAt = target == VariantStatus.OBSOLETE ? now : null;
@@ -106,6 +117,7 @@ public class VariantJpaEntity extends BaseEntity {
     public String getAttributeSignature() { return attributeSignature; }
     public int getPosition() { return position; }
     public Instant getObsoletedAt() { return obsoletedAt; }
+    public boolean isRotatable() { return rotatable; }
     public UUID getOwnerCustomerId() { return ownerCustomerId; }
     public UUID getDesignSnapshotId() { return designSnapshotId; }
     public UUID getSourceVariantId() { return sourceVariantId; }

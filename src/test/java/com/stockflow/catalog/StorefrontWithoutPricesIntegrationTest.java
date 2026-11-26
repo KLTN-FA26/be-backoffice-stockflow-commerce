@@ -172,10 +172,12 @@ class StorefrontWithoutPricesIntegrationTest {
         Buyer other = buyer("ACTIVE");
         ReferenceRows.ProductRow product = tx.execute(s -> ReferenceRows.approvedProduct(entityManager));
 
-        // Pieces on hand -> indicator, cartons of 10, low at 5 cartons or fewer: a part carton is no carton.
+        // Pieces on hand -> indicator, cartons of 10, low at 5 cartons or fewer. A figure that is not whole cartons of 10
+        // is stocked as one carton of that count (CustomerSkuRows.stock), and a carton of another count is no carton the
+        // SKU is sold in (ADR-0011): 9 and 59 pieces are none.
         Map<String, String> expected = new LinkedHashMap<>();
         int[] pieces = {0, 9, 10, 50, 59, 60, 500};
-        String[] indicator = {"OUT_OF_STOCK", "OUT_OF_STOCK", "LOW_STOCK", "LOW_STOCK", "LOW_STOCK", "IN_STOCK",
+        String[] indicator = {"OUT_OF_STOCK", "OUT_OF_STOCK", "LOW_STOCK", "LOW_STOCK", "OUT_OF_STOCK", "IN_STOCK",
                 "IN_STOCK"};
         for (int i = 0; i < pieces.length; i++) {
             String sku = CustomerSkuRows.issueOn(jdbc, tx, owner.customerId(), product, CARTON).sku();

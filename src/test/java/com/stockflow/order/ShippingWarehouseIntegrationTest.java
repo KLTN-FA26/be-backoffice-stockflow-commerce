@@ -221,6 +221,18 @@ class ShippingWarehouseIntegrationTest {
         });
     }
 
+    /** {@code cartons} whole cartons of {@code perCarton} pieces of the test's SKU in {@code warehouse}'s bin. */
+    private void stockInCartonsOf(Warehouse warehouse, int cartons, int perCarton) {
+        Instant received = Instant.now().minus(Duration.ofDays(2));
+        tx.executeWithoutResult(s -> {
+            UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class,
+                    sku.sku());
+            UUID unit = CartonRows.cartonUnit(jdbc, item, "PK" + perCarton, perCarton);
+            CartonRows.stockOfUnit(jdbc, sku.sku(), unit, warehouse.bin(), cartons, null, received, "AVAILABLE");
+            CartonRows.reactivate(jdbc, sku.uomConversionId());
+        });
+    }
+
     /**
      * A DRAFT order of 20 cartons of 50 at 2,000 a piece with 10% VAT - as a converted quote leaves it. Its number comes
      * from the order sequence, as a real order's does: a random one, from a range other classes draw from too, collided
@@ -911,6 +923,31 @@ class ShippingWarehouseIntegrationTest {
 
         assertThat(shippingWarehouses.coverage(holder).fullyHeld()).isTrue();
         assertThat(releases.release(holder, a.id(), coordinator).status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
+    }
+
+    @Test
+    @DisplayName("ADR-0011: a line is offered only the cartons of its own count a warehouse has, which it can then hold")
+    void optionsCountOnlyCartonsOfTheLinesCount() {
+        // A: 10 cartons of 100, 40 of 25 and 4 of 50 - 2,200 free pieces, 44 cartons of 50 if they were divided.
+        stockInCartonsOf(a, 10, 100);
+        stockInCartonsOf(a, 40, 25);
+        stock(a, 4 * PER_CARTON);
+        UUID orderId = confirmedOrder();
+        UUID line = lineOf(orderId);
+        assertThat(atp(a)).as("in units, every count is still counted").isEqualTo(2_200);
+
+        Option offered = optionOf(shippingWarehouses.options(orderId).warehouses(), a);
+        assertThat(offered.holdsEveryLine()).as("4 cartons of 50 for a line of 20").isFalse();
+        assertThat(offered.availableCartons()).isEqualTo(4);
+        assertThat(offered.lines()).singleElement().satisfies(l -> assertThat(l.availableCartons()).isEqualTo(4));
+        assertThat(choose(orderId, a).lines()).as("what was offered is what is held")
+                .containsExactly(new LineCoverage(line, sku.sku(), CARTONS, 4, 16));
+
+        stock(a, 16 * PER_CARTON);
+        Option again = optionOf(shippingWarehouses.options(orderId).warehouses(), a);
+        assertThat(again.holdsEveryLine()).as("its own 4 held there, and 16 more of 50 free").isTrue();
+        assertThat(again.lines()).singleElement()
+                .satisfies(l -> assertThat(l.availableCartons()).isEqualTo(CARTONS));
     }
 
     @Test
