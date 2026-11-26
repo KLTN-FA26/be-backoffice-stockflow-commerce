@@ -333,6 +333,18 @@ public enum ErrorCode {
     SALES_CONTRACT_ORDER_NOT_CARTONS("A sales contract schedules cartons of the customer's own SKUs; this order has lines not ordered in cartons", 409),
     /** 4B-4 (14 §5.2, BR-14): the contract's state machine. */
     SALES_CONTRACT_STATUS_INVALID("The sales contract is not in a status that allows this", 409),
+    /**
+     * 15 BR-11 (2026-11-26): a contract waiting for accounting to approve the customer's credit is neither edited nor
+     * sent; Sales withdraws it first.
+     */
+    CONTRACT_CREDIT_REVIEW_PENDING("This contract is waiting for accounting to approve the customer's credit; "
+            + "withdraw it to change it", 409),
+    /** 15 BR-11: there is no credit review waiting on this contract to approve, refuse or withdraw. */
+    CONTRACT_CREDIT_REVIEW_NOT_PENDING("This contract is not waiting for accounting to approve the customer's credit",
+            409),
+    /** 15 BR-11, four eyes: whoever sent a contract for the credit review does not decide it. */
+    CONTRACT_CREDIT_REVIEW_SELF("The credit of a contract is decided by someone other than whoever sent it for review",
+            403),
     /** 4B-4 (14 BR-23): batches, windows and cartons; the field errors name each rule broken. */
     DELIVERY_SCHEDULE_INVALID("The delivery schedule breaks a rule of the contract", 409),
     /** 4B-4 (14 BR-13): installments adding up to the total with tax; the field errors name each rule broken. */

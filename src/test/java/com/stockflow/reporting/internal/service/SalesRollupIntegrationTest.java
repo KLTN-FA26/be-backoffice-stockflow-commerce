@@ -291,8 +291,8 @@ class SalesRollupIntegrationTest {
         LocalDate today = BusinessDay.today(clock);
         var before = dayRow(today);
 
-        UUID orderId = confirmedOrders.signed(customer, List.of(new SalesContracts.Installment("After delivery",
-                "AFTER_DELIVERY", null, new BigDecimal("100"), 30, null)),
+        UUID orderId = confirmedOrders.signedHeldForCredit(customer, List.of(new SalesContracts.Installment(
+                "After delivery", "AFTER_DELIVERY", null, new BigDecimal("100"), 30, null)),
                 ConfirmedOrders.Line.cartons(own, 2, 70_000)).orderId();
         placed.add(orderId);
         OrderSummary order = orders.findById(orderId).orElseThrow();

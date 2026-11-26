@@ -196,10 +196,18 @@ same order. `SalesContracts` (`order/internal/service/`) draws the contract up f
 payment plan, free sample rounds), sends it and records it signed; the installments live in `payment`. Money reaches
 the order as an event: `PaymentEventListener` (`@ApplicationModuleListener`) takes `PaymentReceiptRecorded` /
 `PaymentReceiptVoided`, because a receipt the accountant recorded must not wait for, or be rolled back by, what the
-order does next. `accept` does not convert: `convert` is Sales' own step afterwards. At signing an order takes one of three routes to
+order does next. `accept` does not convert: `convert` is Sales' own step afterwards. Sending a contract checks the credit its plan asks
+for (what it pays after delivery, against the limit and anything overdue; 15 BR-11 as changed on 2026-11-26): a failed
+check does not send it - it stays DRAFT with `sales_contract.credit_review = PENDING` and a row of
+`ordering.contract_credit_review` keeping the figures, locked against edits, until accounting
+(`sales-order-credit-holds:APPROVE`, four eyes) approves it with a note - sent at once, as the Sales account that asked
+- or refuses it with a reason - Sales' draft again; Sales may withdraw it, and cancelling the contract withdraws it.
+At signing an order takes one of three routes to
 CONFIRMED (`Order.contractSigned`, `confirmByInstallments`, `approveCredit`): payment due at signing, so
 PENDING_PAYMENT until the receipts pay those installments; nothing due at signing, so CONFIRMED at once; or a failed
-credit check, so ON_HOLD(CREDIT) until it is approved, then the same rule. A void the accountant agreed to puts a
+credit check, so ON_HOLD(CREDIT) until it is approved, then the same rule. A contract approved before sending is not
+held for a check that still fails but is no worse than approved (`ContractCreditFigures.noWorseThan`; the check names
+the approval in `order_credit_check.pre_send_review_id`). A void the accountant agreed to puts a
 confirmed order ON_HOLD (15 BR-07, BR-13). There is no money ledger and no "payment failed" event: an order has no money of
 its own, only its contract's installments. Money that must share a transaction (a cancellation's settlement, the
 handover's check) is a direct call through `payment :: api`.

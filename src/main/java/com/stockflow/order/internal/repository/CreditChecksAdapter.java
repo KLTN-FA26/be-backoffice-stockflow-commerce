@@ -26,8 +26,10 @@ class CreditChecksAdapter implements CreditChecks, CreditHoldSearch {
     public void record(Check check) {
         entityManager.createNativeQuery("""
                         INSERT INTO ordering.order_credit_check (id, order_id, checked_at, credit_limit, exposure,
-                                                                 order_amount, outcome, decided_by, decided_at, note)
-                        VALUES (:id, :order, :at, :limit, :exposure, :amount, :outcome, :by, :decidedAt, :note)""")
+                                                                 order_amount, outcome, decided_by, decided_at, note,
+                                                                 pre_send_review_id)
+                        VALUES (:id, :order, :at, :limit, :exposure, :amount, :outcome, :by, :decidedAt, :note,
+                                :review)""")
                 .setParameter("id", Identifiers.newId())
                 .setParameter("order", check.orderId())
                 .setParameter("at", check.checkedAt())
@@ -38,6 +40,7 @@ class CreditChecksAdapter implements CreditChecks, CreditHoldSearch {
                 .setParameter("by", check.decidedBy())
                 .setParameter("decidedAt", check.decidedAt())
                 .setParameter("note", check.note())
+                .setParameter("review", check.preSendReviewId())
                 .executeUpdate();
     }
 
@@ -46,7 +49,7 @@ class CreditChecksAdapter implements CreditChecks, CreditHoldSearch {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = entityManager.createNativeQuery("""
                         SELECT order_id, checked_at, credit_limit, exposure, order_amount, outcome, decided_by,
-                               decided_at, note
+                               decided_at, note, pre_send_review_id
                           FROM ordering.order_credit_check WHERE order_id = :order
                          ORDER BY checked_at DESC, created_at DESC""")
                 .setParameter("order", orderId)
@@ -54,7 +57,7 @@ class CreditChecksAdapter implements CreditChecks, CreditHoldSearch {
                 .getResultList();
         return rows.stream().findFirst().map(r -> new Check((UUID) r[0], instant(r[1]), (BigDecimal) r[2],
                 (BigDecimal) r[3], (BigDecimal) r[4], Outcome.valueOf((String) r[5]), (UUID) r[6], instant(r[7]),
-                (String) r[8]));
+                (String) r[8], (UUID) r[9]));
     }
 
     @Override

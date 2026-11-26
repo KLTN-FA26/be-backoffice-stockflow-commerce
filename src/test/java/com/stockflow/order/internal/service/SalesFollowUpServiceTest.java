@@ -8,6 +8,9 @@ import com.stockflow.identity.api.StaffUser;
 import com.stockflow.notification.api.Inbox;
 import com.stockflow.notification.api.InboxMessage;
 import com.stockflow.notification.api.InboxSeverity;
+import com.stockflow.order.internal.domain.ContractCreditFigures;
+import com.stockflow.order.internal.domain.ContractCreditReviews;
+import com.stockflow.order.internal.domain.CreditChecks;
 import com.stockflow.order.internal.domain.SalesFollowUps;
 import com.stockflow.payment.api.InstallmentStanding;
 import com.stockflow.payment.api.PaymentService;
@@ -51,6 +54,7 @@ class SalesFollowUpServiceTest {
     private final Inbox inbox = mock(Inbox.class);
     private final IdentityService identity = mock(IdentityService.class);
     private final PaymentService payments = mock(PaymentService.class);
+    private final ContractCreditReviews creditReviews = mock(ContractCreditReviews.class);
     private final UUID sales = UUID.randomUUID();
 
     @BeforeEach
@@ -61,7 +65,7 @@ class SalesFollowUpServiceTest {
 
     private SalesFollowUpService service(Duration unsigned, Duration unpaid) {
         return new SalesFollowUpService(followUps, inbox, new SalesRecipients(identity), identity, payments,
-                Clock.fixed(NOW, ZoneOffset.UTC), unsigned, unpaid);
+                Clock.fixed(NOW, ZoneOffset.UTC), unsigned, unpaid, creditReviews, Duration.ofHours(24));
     }
 
     private static StaffUser user(UUID id, String status) {
@@ -84,7 +88,7 @@ class SalesFollowUpServiceTest {
 
         SalesFollowUpService.Reminded reminded = service(Duration.ofDays(3), Duration.ofDays(2)).remind();
 
-        assertThat(reminded).isEqualTo(new SalesFollowUpService.Reminded(1, 1, 0, 0, 0, 0, 2));
+        assertThat(reminded).isEqualTo(new SalesFollowUpService.Reminded(1, 1, 0, 0, 0, 0, 0, 2));
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Collection<UUID>> to = ArgumentCaptor.forClass(Collection.class);
         ArgumentCaptor<InboxMessage> told = ArgumentCaptor.forClass(InboxMessage.class);
@@ -157,7 +161,7 @@ class SalesFollowUpServiceTest {
 
         SalesFollowUpService.Reminded reminded = service(Duration.ofDays(3), Duration.ofDays(3)).remind();
 
-        assertThat(reminded).isEqualTo(new SalesFollowUpService.Reminded(0, 0, 1, 1, 2, 1, 5));
+        assertThat(reminded).isEqualTo(new SalesFollowUpService.Reminded(0, 0, 1, 1, 2, 1, 0, 5));
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Collection<UUID>> to = ArgumentCaptor.forClass(Collection.class);
         ArgumentCaptor<InboxMessage> told = ArgumentCaptor.forClass(InboxMessage.class);
@@ -206,6 +210,76 @@ class SalesFollowUpServiceTest {
         assertThat(told.getValue().dedupeKey()).isEqualTo("credit-decided:" + order);
         assertThat(told.getValue().severity()).isEqualTo(InboxSeverity.WARN);
         assertThat(told.getValue().body()).contains("SO-9", "CREDIT_REJECTED");
+    }
+
+    @Test
+    @DisplayName("15 BR-11: a contract waiting for accounting past a day is told again to the deciders, not to whoever "
+            + "asked, once per review")
+    void contractsWaitingForAccountingAreToldAgain() {
+        UUID review = UUID.randomUUID();
+        UUID order = UUID.randomUUID();
+        UUID accountant = UUID.randomUUID();
+        Instant submitted = Instant.parse("2026-11-11T09:00:00Z");
+        when(identity.notificationRecipientsHolding(SalesFollowUpService.DECIDES_CREDIT, null)).thenReturn(List.of(
+                new StaffContact(accountant, "kt@x.vn"), new StaffContact(sales, "sale@x.vn")));
+        when(creditReviews.waitingSince(eq(NOW.minus(Duration.ofHours(24))), anyInt())).thenReturn(List.of(
+                new ContractCreditReviews.Waiting(review, UUID.randomUUID(), "HD-7", 3, order, "SO-7",
+                        UUID.randomUUID(), new ContractCreditFigures(CreditChecks.Outcome.OVER_LIMIT,
+                        BigDecimal.TEN, BigDecimal.ONE, BigDecimal.TEN, BigDecimal.ZERO), sales, submitted)));
+
+        SalesFollowUpService.Reminded reminded = service(Duration.ofDays(3), Duration.ofDays(3)).remind();
+
+        assertThat(reminded.creditReviews()).isEqualTo(1);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Collection<UUID>> to = ArgumentCaptor.forClass(Collection.class);
+        ArgumentCaptor<InboxMessage> told = ArgumentCaptor.forClass(InboxMessage.class);
+        verify(inbox).post(to.capture(), told.capture());
+        assertThat(to.getValue()).containsExactly(accountant);
+        assertThat(told.getValue().dedupeKey()).isEqualTo("contract-credit-review:" + review + ":waiting");
+        assertThat(told.getValue().link()).isEqualTo("/admin/orders/credit-holds");
+        assertThat(told.getValue().body()).contains("HD-7", "SO-7", "11/11/2026");
+    }
+
+    @Test
+    @DisplayName("15 BR-11: a contract put in front of accounting is told to the deciders, whoever asked excepted, "
+            + "with why")
+    void aContractWaitingIsToldToTheDeciders() {
+        UUID review = UUID.randomUUID();
+        UUID order = UUID.randomUUID();
+        UUID accountant = UUID.randomUUID();
+        when(identity.notificationRecipientsHolding(SalesFollowUpService.DECIDES_CREDIT, null)).thenReturn(List.of(
+                new StaffContact(accountant, "kt@x.vn"), new StaffContact(sales, "sale@x.vn")));
+
+        service(Duration.ofDays(3), Duration.ofDays(3)).contractCreditReviewRequested(review, order, "SO-8", "HD-8",
+                "OVERDUE", sales);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Collection<UUID>> to = ArgumentCaptor.forClass(Collection.class);
+        ArgumentCaptor<InboxMessage> told = ArgumentCaptor.forClass(InboxMessage.class);
+        verify(inbox).post(to.capture(), told.capture());
+        assertThat(to.getValue()).containsExactly(accountant);
+        assertThat(told.getValue().dedupeKey()).isEqualTo("contract-credit-review:" + review + ":requested");
+        assertThat(told.getValue().body()).contains("HD-8", "SO-8", "quá hạn");
+    }
+
+    @Test
+    @DisplayName("15 BR-11: accounting's decision on a contract waiting goes to the salesperson who asked, keyed once")
+    void contractCreditDecisionToTheSalesperson() {
+        UUID review = UUID.randomUUID();
+        UUID order = UUID.randomUUID();
+
+        service(Duration.ofDays(3), Duration.ofDays(3)).contractCreditDecided(review, order, "SO-9", "HD-9", sales,
+                false);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Collection<UUID>> to = ArgumentCaptor.forClass(Collection.class);
+        ArgumentCaptor<InboxMessage> told = ArgumentCaptor.forClass(InboxMessage.class);
+        verify(inbox).post(to.capture(), told.capture());
+        assertThat(to.getValue()).containsExactly(sales);
+        assertThat(told.getValue().dedupeKey()).isEqualTo("contract-credit-review:" + review + ":refused");
+        assertThat(told.getValue().severity()).isEqualTo(InboxSeverity.WARN);
+        assertThat(told.getValue().title()).contains("HD-9");
+        assertThat(told.getValue().link()).isEqualTo("/admin/orders/" + order);
     }
 
     @Test

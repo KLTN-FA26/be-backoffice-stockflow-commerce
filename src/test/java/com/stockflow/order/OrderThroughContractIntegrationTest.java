@@ -120,6 +120,12 @@ class OrderThroughContractIntegrationTest {
                 accountant));
     }
 
+    /** Accounting changes the limit afterwards (18 BR-02). */
+    private void lowerCredit(long limit) {
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE customer.credit_profile SET credit_limit = ? WHERE "
+                + "customer_id = ?", BigDecimal.valueOf(limit), customerId));
+    }
+
     /**
      * A DRAFT order of 20 cartons of 50 at 2,000 a piece with 10% VAT: 2,200,000 with tax - as a converted quote. Numbered
      * by the order sequence, which never hands a number out twice, not drawn at random from a range other classes share.
@@ -231,14 +237,46 @@ class OrderThroughContractIntegrationTest {
     }
 
     @Test
-    @DisplayName("15 BR-11: paying after delivery past the limit holds the order at signing; accounting decides")
-    void heldForCreditAndDecided() throws Exception {
+    @DisplayName("15 BR-11: past the limit, the contract waits for accounting before it is sent; approved, it is sent "
+            + "and signed without a hold")
+    void approvedBeforeSending() throws Exception {
         credit(1_000_000);
+        UUID orderId = draftOrder();
+        SalesContracts.ContractView waiting = sent(orderId, List.of(share("Deposit", "ON_SIGNING", "20"),
+                share("After delivery", "AFTER_DELIVERY", "80")));
+        assertThat(waiting.status()).as("not sent: it waits for accounting (2026-11-26)").isEqualTo("DRAFT");
+        assertThat(waiting.creditReview()).isEqualTo("PENDING");
+        assertThat(waiting.creditWarning().outcome()).isEqualTo("OVER_LIMIT");
+        assertThat(status(orderId)).isEqualTo(OrderStatus.DRAFT);
+
+        CurrentUser accounting = new CurrentUser(accountant, "accountant-" + accountant, Set.of(Role.ACCOUNTANT),
+                Set.of(), DataScope.ALL, Set.of(), Set.of());
+        SalesContracts.ContractView sent = WithCurrentUser.call(accounting, DataScope.ALL,
+                () -> contracts.approveCredit(accounting, orderId, waiting.version(), "Known customer"));
+        assertThat(sent.status()).isEqualTo("SENT");
+        assertThat(sent.sentBy()).as("sent as the Sales account that asked").isEqualTo(sales.userId());
+        assertThat(status(orderId)).isEqualTo(OrderStatus.PENDING_CONTRACT);
+
+        signed(orderId, sent);
+        assertThat(status(orderId)).as("no worse than approved: not held, it waits for the deposit on signing")
+                .isEqualTo(OrderStatus.PENDING_PAYMENT);
+        assertThat(jdbc.queryForMap("SELECT outcome, pre_send_review_id FROM ordering.order_credit_check WHERE "
+                + "order_id = ? ORDER BY checked_at DESC LIMIT 1", orderId))
+                .containsEntry("outcome", "OVER_LIMIT")
+                .containsEntry("pre_send_review_id", sent.latestCreditReview().id());
+    }
+
+    @Test
+    @DisplayName("15 BR-11: paying after delivery past the limit at signing holds the order; accounting decides")
+    void heldForCreditAndDecided() throws Exception {
+        // Sent while the limit carried it, signed after accounting lowered it: held at signing as before.
+        credit(100_000_000);
         UUID approved = draftOrder();
         SalesContracts.ContractView sent = sent(approved, List.of(share("Deposit", "ON_SIGNING", "20"),
                 share("After delivery", "AFTER_DELIVERY", "80")));
-        assertThat(sent.creditWarning()).as("warned when sent, never refused").isNotNull();
-        assertThat(sent.creditWarning().outcome()).isEqualTo("OVER_LIMIT");
+        assertThat(sent.status()).isEqualTo("SENT");
+        assertThat(sent.creditWarning()).as("within the limit when sent").isNull();
+        lowerCredit(1_000_000);
         signed(approved, sent);
         OrderStatus held = status(approved);
         assertThat(held).isEqualTo(OrderStatus.ON_HOLD);
@@ -249,8 +287,12 @@ class OrderThroughContractIntegrationTest {
         assertThat(status(approved)).as("approved, it still waits for the deposit on signing")
                 .isEqualTo(OrderStatus.PENDING_PAYMENT);
 
+        lowerCredit(100_000_000);
         UUID refused = draftOrder();
-        signed(refused, sent(refused, List.of(share("After delivery", "AFTER_DELIVERY", "100"))));
+        SalesContracts.ContractView refusedSent = sent(refused, List.of(share("After delivery", "AFTER_DELIVERY",
+                "100")));
+        lowerCredit(1_000_000);
+        signed(refused, refusedSent);
         assertThat(status(refused)).isEqualTo(OrderStatus.ON_HOLD);
         // Its terms are its contract's: refusing credit cancels it - there is no other way to re-term it (4B-10).
         creditHolds.refuse(refused, "Too much owed", accountant);
