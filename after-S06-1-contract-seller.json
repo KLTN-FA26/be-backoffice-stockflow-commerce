@@ -1,0 +1,14 @@
+{
+ "POST /orders/{id}/contract": {
+  "orderNumber": "SO-20261123-700041",
+  "contractNumber": "HD-20261123-700041-1",
+  "status": "DRAFT",
+  "seller": {
+   "name": "CÔNG TY TNHH SẢN XUẤT BAO BÌ AN PHÁT",
+   "taxCode": "0312345678",
+   "address": "Số 268 Đường số 7, Phường Tân Tạo, Thành phố Hồ Chí Minh",
+   "representative": "Trần Quốc An",
+   "representativeTitle": "Giám đốc"
+  }
+ }
+}

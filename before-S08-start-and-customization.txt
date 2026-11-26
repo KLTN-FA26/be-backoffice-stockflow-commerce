@@ -1,0 +1,24 @@
+### BEFORE (develop 21bf8fa40) - customer kh.lauthai, POST /api/v1/designs/mine without projectId
+{
+ "success": false,
+ "errorCode": "VALIDATION_FAILED",
+ "message": "Dữ liệu không hợp lệ",
+ "fieldErrors": [
+  {
+   "field": "projectId",
+   "message": "không được để trống",
+   "code": "NotNull"
+  }
+ ],
+ "correlationId": "c8eca8c6-ab4d-4732-bd8a-2931e8059b8c",
+ "timestamp": "2026-11-26T07:42:23.997528Z"
+}
+HTTP 400
+
+
+### BEFORE GET /api/v1/catalog/products/ly-giay-2-lop-in-logo/customization
+{"success":false,"errorCode":"VALIDATION_FAILED","message":"Dữ liệu không hợp lệ","correlationId":"7d4c7a2c-78a6-4fa8-bb02-8e22d00d0a31","timestamp":"2026-11-26T07:42:24.776308Z"}HTTP 400
+### BEFORE GET /api/v1/catalog/products/ly-nhua-pet-in-logo/customization
+{"success":false,"errorCode":"VALIDATION_FAILED","message":"Dữ liệu không hợp lệ","correlationId":"66293bf0-c32d-4964-9ba5-61160a48f815","timestamp":"2026-11-26T07:42:24.920889Z"}HTTP 400
+### BEFORE GET /api/v1/catalog/products/to-giay-kraft-in-logo/customization
+{"success":false,"errorCode":"VALIDATION_FAILED","message":"Dữ liệu không hợp lệ","correlationId":"4238fa20-f57e-457f-b8bb-64f2dabb6c85","timestamp":"2026-11-26T07:42:25.130201Z"}HTTP 400

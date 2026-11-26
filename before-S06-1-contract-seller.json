@@ -1,0 +1,13 @@
+{
+ "GET /orders/{id}/contract": {
+  "orderNumber": "SO-20261122-700040",
+  "status": "DRAFT",
+  "seller": {
+   "name": "DEMO STOCKFLOW CO LTD",
+   "taxCode": "0000000000",
+   "address": "1 Demo Street, Ho Chi Minh City",
+   "representative": "Demo Director",
+   "representativeTitle": "Director"
+  }
+ }
+}

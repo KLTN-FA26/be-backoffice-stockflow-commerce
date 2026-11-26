@@ -1,0 +1,29 @@
+### AFTER (fix/wf4-ui-be-staging) - customer kh.lauthai, POST /api/v1/designs/mine without projectId
+{
+ "success": true,
+ "data": {
+  "id": "01a216d3-b03a-7076-8628-4f628f706039",
+  "name": "Hộp bánh khai trương chi nhánh Cầu Giấy",
+  "status": "DRAFT",
+  "sku": "HOP-BANH-M",
+  "templateCode": "STD",
+  "projectId": null,
+  "productSlug": "hop-giay-dung-banh-in-logo"
+ }
+}
+HTTP 201
+
+
+### AFTER GET /api/v1/catalog/products/ly-giay-2-lop-in-logo/customization
+HTTP 200 {"sku": "LY-GIAY-12OZ", "code": "STD", "area": "BODY", "shape": {"type": "annular-sector", "innerRadiusMm": 230.0360331117452, "outerRadiusMm": 327.0540496676178, "sweepRad": 0.8489413027863026, "seamMm": 8.0}}
+### AFTER GET /api/v1/catalog/products/ly-nhua-pet-in-logo/customization
+HTTP 200 {"sku": "LY-NHUA-16OZ", "code": "STD", "area": "BODY", "shape": {"type": "annular-sector", "innerRadiusMm": 234.86730781162694, "outerRadiusMm": 346.039904035076, "sweepRad": 0.8382523944889835, "seamMm": 0.0}}
+### AFTER GET /api/v1/catalog/products/to-giay-kraft-in-logo/customization
+HTTP 200 {"sku": "TO-GIAY-750ML", "code": "STD", "area": "BODY", "shape": {"type": "annular-sector", "innerRadiusMm": 360.53656633319736, "outerRadiusMm": 421.6438795998368, "sweepRad": 1.104525156860235, "seamMm": 8.0}}
+### AFTER - cup product (400 before the fix on the customization read): start a design, no project
+{"success": true, "data": {"name": "Ly giấy khai trương chi nhánh Cầu Giấy", "status": "DRAFT", "sku": "LY-GIAY-12OZ", "projectId": null}}
+HTTP 201
+
+### AFTER - a named project is still checked (a project id that is not the caller's): 404, nothing written
+{"success":false,"errorCode":"NOT_FOUND","message":"Không tìm thấy","correlationId":"0e0ef662-cd71-4a88-931e-efd35884bab1","timestamp":"2026-11-26T07:48:28.927815Z"}
+HTTP 404
