@@ -114,9 +114,9 @@ class SkuReservationAllocationIntegrationTest {
         return all;
     }
 
-    /** The carton the allocation holds: {@code stockItemId} carries the carton's id (ADR-0011, the name is the contract's). */
+    /** The carton the allocation holds (ADR-0011). */
     private UUID cartonOf(StockReservation allocation) {
-        return allocation.stockItemId();
+        return allocation.stockPackageId();
     }
 
     private UUID order() {
@@ -445,8 +445,8 @@ class SkuReservationAllocationIntegrationTest {
 
         assertThat(replacement).singleElement().satisfies(r -> {
             assertThat(r.quantity()).isEqualTo(1);
-            assertThat(r.stockItemId()).isNotEqualTo(removed.stockItemId());
-            assertThat(held).extracting(StockReservation::stockItemId).doesNotContain(r.stockItemId());
+            assertThat(r.stockPackageId()).isNotEqualTo(removed.stockPackageId());
+            assertThat(held).extracting(StockReservation::stockPackageId).doesNotContain(r.stockPackageId());
         });
         assertThat(status(removed.reservationId())).isEqualTo("CONSUMED");
         assertThat(jdbc.queryForObject("SELECT allocated_from_id FROM inventory.stock_reservation WHERE id = ?",
@@ -514,7 +514,7 @@ class SkuReservationAllocationIntegrationTest {
         reserve(next, 1);
         StockReservation nextHold = allocate(next, "HCM").allocations().get(0).holds().get(0);
         assertThat(nextHold.locationCode()).as("FIFO: the bin's last free carton").isEqualTo("HCM-A01-1-B");
-        assertThat(nextHold.stockItemId()).isNotEqualTo(allocation.stockItemId());
+        assertThat(nextHold.stockPackageId()).isNotEqualTo(allocation.stockPackageId());
 
         var cancelled = tx.execute(s -> cycleCounts.cancel(first.cycleCountId(), "Bin checked by hand", "manager"));
         assertThat(cancelled.status()).isEqualTo("CANCELLED");
@@ -591,7 +591,7 @@ class SkuReservationAllocationIntegrationTest {
         // The bin's held cartons are listed with nothing available, and its free one not at all.
         assertThat(inventory.availabilityOf(new Sku(sku))).filteredOn(a -> "HCM-A01-1-B".equals(a.locationCode()))
                 .as("its one free carton is frozen").extracting(StockAvailability::available).containsOnly(0);
-        assertThat(inventory.availabilityOf(new Sku(sku))).extracting(StockAvailability::stockItemId)
+        assertThat(inventory.availabilityOf(new Sku(sku))).extracting(StockAvailability::stockPackageId)
                 .as("the frozen carton is not offered").doesNotContain(freeCarton);
     }
 

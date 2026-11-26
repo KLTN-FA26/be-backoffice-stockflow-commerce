@@ -102,9 +102,9 @@ class InventoryController {
         Integer perCarton = unitsPerCarton(new Sku(sku));
         // SCRUM-146: the books of a slot under a count are not for a counter; the row stays, its quantities do not.
         Set<UUID> held = BlindCount.visibilityFor(user).hidesCountedSlots()
-                ? browsing.underCount(rows.stream().map(StockAvailability::stockItemId).toList())
+                ? browsing.underCount(rows.stream().map(StockAvailability::stockPackageId).toList())
                 : Set.of();
-        return ApiResponse.ok(rows.stream().map(row -> held.contains(row.stockItemId())
+        return ApiResponse.ok(rows.stream().map(row -> held.contains(row.stockPackageId())
                 ? mapper.toResponse(row, perCarton).hidden() : mapper.toResponse(row, perCarton)).toList());
     }
 

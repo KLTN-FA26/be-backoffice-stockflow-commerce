@@ -918,7 +918,6 @@ class InventoryServiceImpl implements InventoryService {
                 .getBytes(StandardCharsets.UTF_8));
     }
 
-    /** {@code StockReservation.stockItemId} carries the carton's id: the record keeps its shape (ADR-0011). */
     private static StockReservation toApiReservation(StockPackage carton, Reservation reservation) {
         return new StockReservation(
                 reservation.id().value(),
@@ -1028,7 +1027,7 @@ class InventoryServiceImpl implements InventoryService {
         }
     }
 
-    /** In units, as the record always answered; {@code stockItemId} carries the carton's id (ADR-0011). */
+    /** In units, as the record always answered (ADR-0011). */
     private StockAvailability toAvailability(StockPackage carton) {
         return new StockAvailability(
                 carton.id().value(),

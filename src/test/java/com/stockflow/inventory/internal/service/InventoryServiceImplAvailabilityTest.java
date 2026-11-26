@@ -330,7 +330,7 @@ class InventoryServiceImplAvailabilityTest {
 
             StockAvailability row = service.availabilityOf(CUP).get(0);
 
-            assertThat(row.stockItemId()).as("the field keeps its name and carries the carton's id")
+            assertThat(row.stockPackageId()).as("the row is the carton")
                     .isEqualTo(bin.id().value());
             assertThat(row.onHand()).isEqualTo(50);
             assertThat(row.reserved()).isEqualTo(50);

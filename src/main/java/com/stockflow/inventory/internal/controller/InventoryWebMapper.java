@@ -33,7 +33,7 @@ interface InventoryWebMapper {
 
     /** A row of {@code availabilityOf}, one carton; its SKU's carton unit holds {@code unitsPerCarton} pieces. */
     default StockItemResponse toResponse(StockAvailability row, Integer unitsPerCarton) {
-        return new StockItemResponse(row.stockItemId(), row.sku(), row.locationCode(), row.lotNumber(), unitsPerCarton,
+        return new StockItemResponse(row.stockPackageId(), row.sku(), row.locationCode(), row.lotNumber(), unitsPerCarton,
                 row.onHand(), row.reserved(), row.available(),
                 CartonCount.ofOneCarton(row.onHand()), CartonCount.ofOneCarton(row.reserved()),
                 CartonCount.ofOneCarton(row.available()), "AVAILABLE", false);
