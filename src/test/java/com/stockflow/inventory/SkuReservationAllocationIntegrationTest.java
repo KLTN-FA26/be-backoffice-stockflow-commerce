@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -87,8 +88,7 @@ class SkuReservationAllocationIntegrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Allocation fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
-                    + " values (?,?,?,'Allocation fixture','')", Identifiers.newId(), product, sku);
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Allocation fixture");
             row("HCM-A01-1-A", 5, "2025-10-01T00:00:00Z");
             row("HCM-A01-1-B", 5, "2025-09-01T00:00:00Z");
             row("HCM-A01-2-A", 5, "2025-12-01T00:00:00Z");

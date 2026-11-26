@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -85,14 +86,7 @@ class StockOperationsIntegrationTest {
                             sku.code(),
                             "Move fixture",
                             sku.code().toLowerCase(Locale.ROOT));
-                    jdbc.update(
-                            """
-insert into product.variants(id,product_id,sku,name,attribute_signature)
-values (?,?,?,'Move fixture','')
-""",
-                            Identifiers.newId(),
-                            product,
-                            sku.code());
+                    StockedSkus.customerSkuOn(jdbc, product, sku.code(), "Move fixture");
                 });
         tx.executeWithoutResult(s -> carton = CartonRows.stock(jdbc, sku.code(), BIN, 1, 10, lot,
                 java.time.Instant.parse("2026-01-02T00:00:00Z")).getFirst());

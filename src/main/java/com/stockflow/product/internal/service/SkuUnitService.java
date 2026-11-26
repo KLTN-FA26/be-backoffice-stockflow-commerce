@@ -24,8 +24,9 @@ import java.util.UUID;
 /**
  * The units of a product's SKU: the cartons of its catalogue variant (docs 01 §3, BR-03, BR-09, BR-10) and the
  * variant's sales units (§3, BR-11). Both are edited through the product, under the same guard as the logistics: not
- * while it is under review, never once discontinued. A customer's own SKU reads its variant's cartons and is refused
- * on every write ({@code UOM_CARTON_OF_CUSTOMER_SKU}, owner decision Q1).
+ * while it is under review, never once discontinued. A customer's own SKU is not a variant (V20270105000100): its id
+ * is unknown to these screens ({@code NOT_FOUND}), and it is packed in its variant's cartons (owner decision Q1).
+ * Neither the variant nor its customers' SKUs need an inventory item for this: inventory finds the variant itself.
  *
  * <p>Sales unit: a SKU is sold by the carton of its carton specification, which the system assigns (kltn-docs 01 §3
  * "Đơn vị bán", BR-11): quotes, orders and contracts count cartons, priced per piece. So there is nothing to list or
@@ -128,10 +129,6 @@ public class SkuUnitService {
         if (product.status() == ProductStatus.DISCONTINUED || product.status() == ProductStatus.PENDING_APPROVAL)
             throw new BusinessException(ErrorCode.CONFLICT);
         var variant = variants.variantSku(productId, variantId);
-        if (variant.customerSku()) {
-            throw new BusinessException(ErrorCode.UOM_CARTON_OF_CUSTOMER_SKU,
-                    "SKU %s is a customer's own SKU: it is packed in its variant's carton".formatted(variant.sku()));
-        }
         if (variant.obsolete()) {
             throw new BusinessException(ErrorCode.VARIANT_OBSOLETE,
                     "SKU %s is obsolete: its units are kept as they are".formatted(variant.sku()));

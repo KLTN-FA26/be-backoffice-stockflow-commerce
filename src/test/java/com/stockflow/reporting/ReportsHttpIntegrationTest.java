@@ -3,6 +3,7 @@ package com.stockflow.reporting;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
 import com.stockflow.support.CartonRows;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
@@ -73,16 +74,13 @@ class ReportsHttpIntegrationTest {
         accountant = staff("ACCOUNTANT");
         salesStaff = staff("SALES_STAFF");
         manager = staff("WAREHOUSE_MANAGER", WAREHOUSE_HCM);
-        sku = "RPT-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
+        // Stock is a customer's SKU's (V20270105000100: a catalogue variant has no inventory item).
+        ReferenceRows.ProductRow product = tx.execute(s -> ReferenceRows.approvedProduct(entityManager));
+        sku = CustomerSkuRows.issueOn(jdbc, tx, com.stockflow.support.DemoData.CUSTOMER_ID, product, PER_CARTON).sku();
         otherWarehouse = Identifiers.newId();
         String prefix = "R" + UUID.randomUUID().toString().substring(0, 5).toUpperCase(Locale.ROOT);
         otherArea = prefix + "-QC01";
         tx.executeWithoutResult(s -> {
-            UUID product = Identifiers.newId();
-            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
-                    "Report fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Report fixture");
             jdbc.update("""
                     INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height,
                                                      version, created_at)

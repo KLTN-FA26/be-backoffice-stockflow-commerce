@@ -139,8 +139,8 @@ class ProductServiceImpl implements ProductService {
     }
 
     /**
-     * A draft product and its variants; each variant creates its SKU's inventory item (trigger), where
-     * its logistics are then filled in.
+     * A draft product and its variants. A variant has no inventory item (V20270105000100): it is never stocked, and
+     * its customers' SKUs get theirs when an order names them.
      *
      * <p>Without axes the product gets one default variant whose SKU is the product code, so that code
      * must be free as a SKU too. With axes (spec D2) the axes are written and every combination of their
@@ -326,9 +326,9 @@ class ProductServiceImpl implements ProductService {
      * then while a SKU's inventory item is used by any document ({@code InventoryService.skusInUse}: stock, the
      * ledger, warehouse tasks, a price, procurement), and then by the foreign keys for everything else (order and
      * cart lines, designs, a storefront listing): that is the last line of defence, and it is a 409
-     * {@code PRODUCT_IN_USE}, never a 500. The inventory item each SKU got when its variant was created is deleted
-     * with it, its stock alerts too (a note about the item, not a use of it); the stored image files are removed
-     * only after the commit.</p>
+     * {@code PRODUCT_IN_USE}, never a 500. A draft product's variants have no item since V20270105000100 and it has
+     * no customer's SKU, so the item checks find nothing; they stay as the last word should that ever change. The
+     * stored image files are removed only after the commit.</p>
      */
     @Override
     @Auditable(action = AuditAction.DELETE, resourceType = "product", resourceId = "#productId")

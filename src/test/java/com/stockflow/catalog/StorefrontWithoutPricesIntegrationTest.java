@@ -128,7 +128,8 @@ class StorefrontWithoutPricesIntegrationTest {
         awaitListed(owner, marker);
 
         // Everything a price or a stock figure could be read from: the customer's internal price on its own SKU, a price
-        // kept from before 4B-2 on the variant the page shows, and plenty of stock on both.
+        // kept from before 4B-2 on the variant the page shows, and plenty of stock on the customers' SKUs (a variant
+        // holds none since V20270105000100: only a customer's SKU has an inventory item).
         String own = CustomerSkuRows.issueOn(jdbc, tx, owner.customerId(), product, CARTON).sku();
         String others = CustomerSkuRows.issueOn(jdbc, tx, other.customerId(), product, CARTON).sku();
         mvc.perform(post(customerPrice(owner.customerId(), own)).header("Authorization", bearer(manager))
@@ -136,7 +137,7 @@ class StorefrontWithoutPricesIntegrationTest {
                         .content("{\"tiers\":[{\"minQuantity\":2,\"unitPrice\":" + INTERNAL + "}]}"))
                 .andExpect(status().isCreated());
         KeptCheckoutPrices.give(jdbc, tx, owner.customerId(), product.sku(), KEPT);
-        for (String sku : List.of(own, others, product.sku())) CustomerSkuRows.stock(jdbc, tx, sku, 600);
+        for (String sku : List.of(own, others)) CustomerSkuRows.stock(jdbc, tx, sku, 600);
 
         JsonNode cards = storefront(owner, LIST, "q", marker).get("items");
         assertThat(cards).hasSize(1);
@@ -190,10 +191,10 @@ class StorefrontWithoutPricesIntegrationTest {
         stock(secondWarehouse, split, 30);
         expected.put(split, "IN_STOCK");
 
-        // Not the caller's: another customer's SKU and a variant (quy cách), both well stocked.
+        // Not the caller's: another customer's SKU, well stocked, and a variant (quy cách), which holds no stock and
+        // has no inventory item at all (V20270105000100).
         String others = CustomerSkuRows.issueOn(jdbc, tx, other.customerId(), product, CARTON).sku();
         CustomerSkuRows.stock(jdbc, tx, others, 600);
-        CustomerSkuRows.stock(jdbc, tx, product.sku(), 600);
 
         List<String> asked = new ArrayList<>(expected.keySet());
         asked.add(others);

@@ -20,8 +20,9 @@ import org.springframework.transaction.annotation.Transactional;
  * A customer's own SKUs as the quote editor lists them (R5-4): each with the pieces in its carton and the VAT rate a
  * quote line drawn up today would copy, so Sales see a line's total before the draft is saved. Read the way the quote
  * reads them - the carton is the SKU's one carton unit ({@link UomConversion#cartonOf}, 01 BR-03), the rate its
- * product's tax class's rate today (14 BR-21) - so the figure shown is the one the saved line gets. Four statements
- * whatever the count: the SKUs, their tax classes, their units, the rates.
+ * product's tax class's rate today (14 BR-21) - so the figure shown is the one the saved line gets. A handful of
+ * statements whatever the count: the SKUs and their source variants, their tax classes, their units (the source
+ * variant's cartons: the SKU needs no inventory item for that, V20270105000100), the rates.
  */
 @Service
 @Transactional(readOnly = true)
@@ -50,7 +51,15 @@ public class CustomerSkuListing {
     }
 
     public List<Listed> ownedBy(UUID customerId, UUID productId) {
-        List<CustomerSku> owned = customerSkus.ownedBy(customerId, productId);
+        return listed(customerSkus.ownedBy(customerId, productId));
+    }
+
+    /** One SKU as {@link #ownedBy} lists it: what a lifecycle move answers with. */
+    public Listed one(CustomerSku sku) {
+        return listed(List.of(sku)).getFirst();
+    }
+
+    private List<Listed> listed(List<CustomerSku> owned) {
         if (owned.isEmpty()) {
             return List.of();
         }

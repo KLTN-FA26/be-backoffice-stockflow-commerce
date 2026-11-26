@@ -68,12 +68,26 @@ class UomConversionServiceImplTest {
     class Reading {
 
         @Test
-        @DisplayName("a SKU with no inventory item is INVENTORY_ITEM_NOT_FOUND, not an empty list")
+        @DisplayName("a code no item and no catalogue knows is INVENTORY_ITEM_NOT_FOUND, not an empty list")
         void unknownItem() {
-            when(conversions.itemId("NOPE")).thenReturn(Optional.empty());
+            when(conversions.variantId("NOPE")).thenReturn(Optional.empty());
 
             assertThat(codeOf(() -> service.conversions(new Sku("NOPE"), 0, 10)))
                     .isEqualTo(ErrorCode.INVENTORY_ITEM_NOT_FOUND);
+        }
+
+        @Test
+        @DisplayName("a carton write named by a customer's SKU is UOM_CARTON_OF_CUSTOMER_SKU: it would change the variant's")
+        void writeByCustomerSku() {
+            Sku customerSku = new Sku("CUP-12OZ-MOC-01");
+            when(conversions.variantId(customerSku.code())).thenReturn(Optional.of(VARIANT));
+            when(conversions.customerSku(customerSku.code())).thenReturn(true);
+
+            assertThat(codeOf(() -> service.add(customerSku, draft("CARTON", 1000, true))))
+                    .isEqualTo(ErrorCode.UOM_CARTON_OF_CUSTOMER_SKU);
+            assertThat(codeOf(() -> service.remove(customerSku, CARTON_ID, 0)))
+                    .isEqualTo(ErrorCode.UOM_CARTON_OF_CUSTOMER_SKU);
+            verify(conversions, never()).insert(any(), any(), any(), any());
         }
 
         @Test
@@ -203,6 +217,22 @@ class UomConversionServiceImplTest {
             order.verify(items).lock(SKU.code());
             order.verify(items).lock("CUP-12OZ-LA");
             order.verify(items).lock("CUP-12OZ-MOC");
+            order.verify(conversions).insert(any(), eq(VARIANT), any(), eq("system"));
+        }
+
+        @Test
+        @DisplayName("Q5: a catalogue variant has no item, yet its carton is written under the lock of its own code")
+        void aCatalogueVariantWithoutItemsIsWrittenUnderItsOwnCodesLock() {
+            when(conversions.itemId(SKU.code())).thenReturn(Optional.empty());
+            when(conversions.skusOfVariant(VARIANT)).thenReturn(List.of("CUP-12OZ-LA"));
+            when(conversions.find(eq(SKU.code()), any(UUID.class))).thenAnswer(call ->
+                    Optional.of(unit(call.getArgument(1), "CARTON", 12, 0)));
+
+            service.add(SKU, draft("CARTON", 12, true));
+
+            InOrder order = inOrder(items, conversions);
+            order.verify(items).lock(SKU.code());
+            order.verify(items).lock("CUP-12OZ-LA");
             order.verify(conversions).insert(any(), eq(VARIANT), any(), eq("system"));
         }
     }

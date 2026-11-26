@@ -43,9 +43,22 @@ SELECT pg_temp.expect_true('UT4 no SQL function body still names a dropped table
 SELECT pg_temp.expect_true('UT5 an item in stock is in use',
     (SELECT inventory.item_in_use(id, sku) FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'));
 INSERT INTO product.products (id, code, name, slug) VALUES (md5('qa46:product')::uuid, 'QA46', 'QA 46', 'qa46');
-SELECT pg_temp.expect_ok('UT6 a new item is made with its variant', $q$
-    INSERT INTO product.variants (id, product_id, sku, name, attribute_signature)
-    VALUES (md5('qa46:variant')::uuid, md5('qa46:product')::uuid, 'QA46-ITEM', 'QA 46', '') $q$);
+-- Since V20270105000100 an item is a customer's SKU's, made when an order names it.
+INSERT INTO product.variants (id, product_id, sku, name, attribute_signature)
+VALUES (md5('qa46:variant')::uuid, md5('qa46:product')::uuid, 'QA46-BLANK', 'QA 46', '');
+INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
+SELECT md5('qa46:draft')::uuid, c.id, md5('qa46:product')::uuid, 'DRAFT', NOW(), '{}'::jsonb
+  FROM customer.customer c ORDER BY c.id LIMIT 1;
+INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
+VALUES (md5('qa46:snap')::uuid, md5('qa46:draft')::uuid, repeat('a', 64), 'https://example.com/a.pdf', NOW(), NOW(),
+        '[]'::jsonb);
+INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku, name)
+SELECT md5('qa46:sku')::uuid, md5('qa46:product')::uuid, md5('qa46:variant')::uuid, d.customer_id,
+       md5('qa46:snap')::uuid, 'QA46-ITEM', 'QA 46'
+  FROM design.design_draft d WHERE d.id = md5('qa46:draft')::uuid;
+SELECT pg_temp.expect_ok('UT6 a new item of a customer''s SKU, as its first order makes it', $q$
+    INSERT INTO inventory.inventory_items (id, sku, variant_id)
+    VALUES (gen_random_uuid(), 'QA46-ITEM', md5('qa46:variant')::uuid) $q$);
 SELECT pg_temp.expect_true('UT7 ... and nothing uses it',
     (SELECT NOT inventory.item_in_use(id, sku) FROM inventory.inventory_items WHERE sku = 'QA46-ITEM'));
 ROLLBACK;

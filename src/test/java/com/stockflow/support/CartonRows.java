@@ -14,11 +14,15 @@ import java.util.UUID;
  * BR-18), each one row of {@code inventory.stock_package} that is the stock itself (ADR-0011, V20261231000600: there
  * is no stock row beside it), always with a lot (BR-22: a missing lot is 'UNTRACED', team plan 4C-3).
  * Written as rows, for a test whose subject is not receiving: the way
- * a receipt makes them is {@code ReceivingPackagesIntegrationTest}'s. The SKU's inventory item must exist.
+ * a receipt makes them is {@code ReceivingPackagesIntegrationTest}'s.
  *
  * <p>A carton is its catalogue variant's (owner decision Q1, V20270104000100): every helper finds or makes the carton
- * on the variant of the SKU's item ({@code inventory_items.variant_id}), so a customer's SKU and its variant share it,
- * and a carton made "for" a customer's SKU is its variant's.</p>
+ * on the SKU's catalogue variant ({@link #variantOf}: the variant itself, or the one a customer's SKU was drawn on), so
+ * a customer's SKU and its variant share it, and a carton made "for" a customer's SKU is its variant's.</p>
+ *
+ * <p>Stock is a customer's SKU's, and its inventory item is made when an order first names it (owner decision Q5,
+ * V20270105000100). A helper that stocks a SKU makes the item first when it has none ({@link #item}), as that order
+ * would have; a catalogue variant has no item and holds no stock, and asking to stock one fails loudly.</p>
  */
 public final class CartonRows {
 
@@ -53,14 +57,14 @@ public final class CartonRows {
      * SKU's variant has a carton unit already, whatever its factor.
      */
     public static UUID unit(JdbcTemplate jdbc, String sku, int factor) {
+        UUID variant = variantOf(jdbc, sku);
         List<UUID> found = jdbc.queryForList("""
-                SELECT u.id FROM inventory.uom_conversions u JOIN inventory.inventory_items i ON i.variant_id = u.variant_id
-                 WHERE i.sku = ? AND u.active ORDER BY u.created_at, u.id""",
-                UUID.class, sku);
+                SELECT id FROM inventory.uom_conversions WHERE variant_id = ? AND active ORDER BY created_at, id""",
+                UUID.class, variant);
         if (!found.isEmpty()) {
             return found.getFirst();
         }
-        return cartonUnit(jdbc, itemOf(jdbc, sku), "CTN", factor);
+        return cartonUnitOfVariant(jdbc, variant, "CTN", factor);
     }
 
     /**
@@ -71,18 +75,31 @@ public final class CartonRows {
      * {@link #unit} takes whichever carton unit the SKU has active.
      */
     public static UUID unitOf(JdbcTemplate jdbc, String sku, int factor) {
+        UUID variant = variantOf(jdbc, sku);
         List<UUID> found = jdbc.queryForList("""
-                SELECT u.id FROM inventory.uom_conversions u JOIN inventory.inventory_items i ON i.variant_id = u.variant_id
-                 WHERE i.sku = ? AND u.active AND u.factor = ? ORDER BY u.created_at, u.id""",
-                UUID.class, sku, factor);
+                SELECT id FROM inventory.uom_conversions WHERE variant_id = ? AND active AND factor = ?
+                 ORDER BY created_at, id""", UUID.class, variant, factor);
         if (!found.isEmpty()) {
             return found.getFirst();
         }
-        return cartonUnit(jdbc, itemOf(jdbc, sku), "CTN" + factor, factor);
+        return cartonUnitOfVariant(jdbc, variant, "CTN" + factor, factor);
     }
 
-    private static UUID itemOf(JdbcTemplate jdbc, String sku) {
-        return jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, sku);
+    /**
+     * The inventory item of a customer's SKU, made first when it has none - as the order that first names the SKU makes
+     * it (owner decision Q5, {@code InventoryService.openItems}), packed as the variant the SKU was drawn on. A catalogue
+     * variant never has an item ({@code tg_inventory_items_customer_sku}): asking for one fails loudly.
+     */
+    public static UUID item(JdbcTemplate jdbc, String sku) {
+        jdbc.update("""
+                INSERT INTO inventory.inventory_items (id, sku, variant_id)
+                SELECT ?, c.sku, c.variant_id FROM product.customer_skus c WHERE c.sku = ?
+                ON CONFLICT (sku) DO NOTHING""", Identifiers.newId(), sku);
+        List<UUID> found = jdbc.queryForList("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, sku);
+        if (found.isEmpty()) {
+            throw new IllegalStateException(sku + " is not a customer's SKU: only a customer's SKU is stocked");
+        }
+        return found.getFirst();
     }
 
     /**
@@ -120,9 +137,18 @@ public final class CartonRows {
         return carton;
     }
 
-    /** The catalogue variant whose cartons the SKU's item is packed in. */
+    /**
+     * The catalogue variant whose cartons the SKU is packed in: the variant itself for a catalogue variant's code, the
+     * variant its design was drawn on for a customer's SKU - whether or not the SKU has an item yet.
+     */
     public static UUID variantOf(JdbcTemplate jdbc, String sku) {
-        return jdbc.queryForObject("SELECT variant_id FROM inventory.inventory_items WHERE sku = ?", UUID.class, sku);
+        List<UUID> found = jdbc.queryForList("""
+                SELECT id FROM product.variants WHERE sku = ?
+                UNION ALL SELECT variant_id FROM product.customer_skus WHERE sku = ?""", UUID.class, sku, sku);
+        if (found.isEmpty()) {
+            throw new IllegalStateException("No variant or customer SKU " + sku);
+        }
+        return found.getFirst();
     }
 
     /**
@@ -146,6 +172,11 @@ public final class CartonRows {
     public static UUID cartonUnit(JdbcTemplate jdbc, UUID item, String code, int factor) {
         UUID variant = jdbc.queryForObject("SELECT variant_id FROM inventory.inventory_items WHERE id = ?", UUID.class,
                 item);
+        return cartonUnitOfVariant(jdbc, variant, code, factor);
+    }
+
+    /** {@link #cartonUnit}, by the catalogue variant itself: what a SKU without an item yet is packed in. */
+    public static UUID cartonUnitOfVariant(JdbcTemplate jdbc, UUID variant, String code, int factor) {
         List<UUID> found = jdbc.queryForList("""
                 SELECT id FROM inventory.uom_conversions
                  WHERE variant_id = ? AND unit_of_measure = ? AND factor = ?""", UUID.class, variant, code, factor);
@@ -201,6 +232,7 @@ public final class CartonRows {
      */
     public static List<Carton> stockOfUnit(JdbcTemplate jdbc, String sku, UUID unit, String location, int count,
                                            String lotNumber, Instant receivedAt, String status) {
+        item(jdbc, sku);
         UUID lot = lot(jdbc, sku, lotNumber == null ? DEFAULT_LOT : lotNumber, receivedAt);
         List<Carton> made = new ArrayList<>();
         for (int i = 0; i < count; i++) {
@@ -225,6 +257,7 @@ public final class CartonRows {
      * id; the lot number is the lot's.
      */
     public static UUID lot(JdbcTemplate jdbc, String sku, String lotNumber, Instant receivedAt) {
+        item(jdbc, sku);
         Timestamp at = receivedAt == null ? null : Timestamp.from(receivedAt);
         List<UUID> found = jdbc.queryForList("""
                 SELECT id FROM inventory.stock_lot

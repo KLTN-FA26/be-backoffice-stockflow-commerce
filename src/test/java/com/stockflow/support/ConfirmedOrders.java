@@ -202,16 +202,12 @@ public final class ConfirmedOrders {
         if (line.unit() == null) {
             return jdbc.queryForObject("""
                     SELECT u.id FROM inventory.uom_conversions u
-                      JOIN inventory.inventory_items i ON i.variant_id = u.variant_id
-                     WHERE i.sku = ? AND u.factor = ? AND u.active
-                     ORDER BY u.created_at LIMIT 1""", UUID.class, line.sku(),
+                     WHERE u.variant_id = ? AND u.factor = ? AND u.active
+                     ORDER BY u.created_at LIMIT 1""", UUID.class, CartonRows.variantOf(jdbc, line.sku()),
                     line.unitsPerCarton());
         }
-        return tx().execute(s -> {
-            UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class,
-                    line.sku());
-            return CartonRows.cartonUnit(jdbc, item, line.unit(), line.unitsPerCarton());
-        });
+        return tx().execute(s -> CartonRows.cartonUnitOfVariant(jdbc, CartonRows.variantOf(jdbc, line.sku()),
+                line.unit(), line.unitsPerCarton()));
     }
 
     /** A DRAFT order of {@code lines} for the customer - what converting an accepted quote leaves. */
@@ -228,7 +224,11 @@ public final class ConfirmedOrders {
             }
             Order order = Order.draft(OrderNumber.of(today(), SEQUENCE.incrementAndGet()), customerId,
                     Identifiers.newId(), orderLines, Instant.now());
-            return bean(OrderRepository.class).save(order).id().value();
+            UUID id = bean(OrderRepository.class).save(order).id().value();
+            // Placing an order opens the inventory item of each of its SKUs (owner decision Q5); this draft skips
+            // placeQuotedOrder, so it opens them as that would.
+            lines.stream().map(Line::sku).distinct().forEach(sku -> CartonRows.item(jdbc(), sku));
+            return id;
         });
     }
 

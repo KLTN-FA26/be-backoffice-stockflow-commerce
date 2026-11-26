@@ -154,8 +154,9 @@ class ProductVariantOptionsIntegrationTest {
         assertThat(def.options()).extracting(VariantOption::valueCode).containsExactly("12OZ", "CLEAR");
         assertThat(result.created()).extracting(VariantView::sku)
                 .containsExactly(code + "-12OZ-RED", code + "-16OZ-CLEAR", code + "-16OZ-RED");
+        // No variant has an inventory item (V20270105000100): only a customer's SKU an order named has one.
         assertThat(jdbc.queryForObject("select count(*) from inventory.inventory_items i join product.variants v "
-                + "on v.sku = i.sku where v.product_id = ?", Long.class, product)).isEqualTo(4);
+                + "on v.sku = i.sku where v.product_id = ?", Long.class, product)).isZero();
     }
 
     @Test
@@ -226,19 +227,20 @@ class ProductVariantOptionsIntegrationTest {
         assertThat(first.sku()).isEqualTo("CUP-FIRST");
         assertThat(count(product)).isEqualTo(1);
         assertThat(jdbc.queryForObject("select count(*) from inventory.inventory_items where sku = 'CUP-FIRST'",
-                Long.class)).isEqualTo(1);
+                Long.class)).as("a variant has no item").isZero();
     }
 
     @Test
-    void aRenameOfAReferencedSkuIsARefusedTransition() {
+    void aDraftDefaultIsRenamedFreelyNowThatNoDocumentNamesAVariant() {
         UUID product = productWithAxes();
-        // A lot of the SKU is a document that names it (inventory.item_in_use); the price rules that served here are
-        // not read by the guard any more, so a document the guard does read stands in for them.
-        jdbc.update("insert into inventory.stock_lot(id, sku, lot_number, received_at, origin_type, created_at) "
-                + "values (?, ?, 'L-REF', now(), 'UNTRACED', now())", UUID.randomUUID(), newCode);
+        // Until V20270105000100 a lot or a movement of the variant's own item could name the code and refuse the
+        // rename. A variant has no item now, and no customer's SKU is drawn on a DRAFT one, so nothing names it.
 
-        assertThat(errorOf(() -> variants.add(product, new NewVariant("CUP-RENAMED", null, List.of(cap12, clear), null))))
-                .isEqualTo(ErrorCode.INVALID_VARIANT_TRANSITION);
+        VariantView renamed = variants.add(product, new NewVariant("CUP-RENAMED", null, List.of(cap12, clear), null));
+
+        assertThat(renamed.sku()).isEqualTo("CUP-RENAMED");
+        assertThat(jdbc.queryForObject("select count(*) from product.variants where sku = ?", Long.class, newCode))
+                .as("the old code is free").isZero();
     }
 
     @Test
@@ -408,8 +410,9 @@ class ProductVariantOptionsIntegrationTest {
             assertThat(def.name()).isEqualTo("Ly giay – Clear / 12 oz");
         });
         assertThat(all).allSatisfy(v -> assertThat(v.status()).isEqualTo(VariantStatus.DRAFT));
+        // No variant has an inventory item (V20270105000100): only a customer's SKU an order named has one.
         assertThat(jdbc.queryForObject("select count(*) from inventory.inventory_items i join product.variants v "
-                + "on v.sku = i.sku where v.product_id = ?", Long.class, product)).isEqualTo(4);
+                + "on v.sku = i.sku where v.product_id = ?", Long.class, product)).isZero();
         assertThat(attributesOfProduct.get(product).axes()).extracting(ProductAttributeService.AxisView::attributeId)
                 .containsExactly(color, capacity);
         // Generating again finds nothing missing.
@@ -563,9 +566,8 @@ class ProductVariantOptionsIntegrationTest {
 
         assertThat(defaultOf(product).sku()).isEqualTo(code);
         assertThat(generated.created()).extracting(VariantView::sku).containsExactly(code + "-16OZ");
-        var itemIds = inventory.itemIdsOf(List.of(code, code + "-16OZ"));
-        assertThat(items.get(itemIds.get(code)).sku()).isEqualTo(code);
-        assertThat(items.get(itemIds.get(code + "-16OZ")).sku()).isEqualTo(code + "-16OZ");
+        assertThat(inventory.itemIdsOf(List.of(code, code + "-16OZ"))).as("a variant has no item (V20270105000100)")
+                .isEmpty();
     }
 
     @Test

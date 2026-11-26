@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
 import com.stockflow.inventory.api.AllocateStockCommand;
@@ -81,8 +82,7 @@ class CartonLookupHttpTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Carton lookup cup", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Carton lookup cup 12oz");
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Carton lookup cup 12oz");
         });
         newest = carton("LOT-A", "2026-01-03T00:00:00Z");
         oldest = carton("LOT-A", "2026-01-01T00:00:00Z");

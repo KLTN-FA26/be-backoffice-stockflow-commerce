@@ -57,6 +57,21 @@ BEGIN
     RAISE NOTICE 'ok    %', label;
 END $$;
 
+-- A customer's SKU of the grey paper box, with the item an order of it made (V20270105000100: only a customer's SKU is
+-- stocked, and its item is made when an order names it).
+INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
+SELECT md5('qa:pk:grey:draft')::uuid, c.id, v.product_id, 'DRAFT', NOW(), '{}'::jsonb
+  FROM customer.customer c, product.variants v WHERE v.sku = 'HOP-GIAY-DEMO-GREY-PAPER' ORDER BY c.id LIMIT 1;
+INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
+VALUES (md5('qa:pk:grey:snap')::uuid, md5('qa:pk:grey:draft')::uuid, repeat('a', 64), 'https://example.com/g.pdf', NOW(),
+        NOW(), '[]'::jsonb);
+INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku, name)
+SELECT md5('qa:pk:grey')::uuid, v.product_id, v.id, d.customer_id, md5('qa:pk:grey:snap')::uuid, 'QA-PK-GREY', 'QA hop'
+  FROM product.variants v, design.design_draft d
+ WHERE v.sku = 'HOP-GIAY-DEMO-GREY-PAPER' AND d.id = md5('qa:pk:grey:draft')::uuid;
+INSERT INTO inventory.inventory_items (id, sku, variant_id)
+SELECT gen_random_uuid(), sku, variant_id FROM product.customer_skus WHERE sku = 'QA-PK-GREY';
+
 -- Packing units: a carton of 10 blue cups, a carton of 5 grey paper boxes (another catalogue variant: since
 -- V20261231000100 a carton is its variant's, and the red cup shares the blue one's), and a case of 4 blue cups nobody
 -- uses. A variant has ONE
@@ -64,10 +79,10 @@ END $$;
 -- declared retired - a retired unit is declared beside the active one freely.
 UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND variant_id IN (SELECT variant_id FROM inventory.inventory_items
-                                                         WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH', 'HOP-GIAY-DEMO-GREY-PAPER'));
+                                                         WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH', 'QA-PK-GREY'));
 INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg, active)
 VALUES (md5('qa:unit:XANH-CARTON')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_CARTON', 10, 60, 40, 50, 12, TRUE),
-       (md5('qa:unit:DO-CARTON')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'HOP-GIAY-DEMO-GREY-PAPER'), 'QA_CARTON', 5, 80, 60, 40, 30, TRUE),
+       (md5('qa:unit:DO-CARTON')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'QA-PK-GREY'), 'QA_CARTON', 5, 80, 60, 40, 30, TRUE),
        (md5('qa:unit:XANH-CASE')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'CASE', 4, NULL, NULL, NULL, NULL, FALSE);
 -- The supplier's old carton of 10 blue cups, retired before anything was received in it (docs 01 edge case "NCC đổi quy cách thùng").
 -- Measured, as every carton received against a production order must be (01 BR-03, V20261215000100).
@@ -196,7 +211,7 @@ SELECT pg_temp.expect_ok('K28 a whole stock package moved, its line naming it', 
     VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'HCM-A01-1-B', 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
 SELECT pg_temp.expect_fail_by('K28a a movement naming a stock package of another SKU', 'names a stock package of', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, reference_type, reference_id, occurred_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'MOVE', 'HOP-GIAY-DEMO-GREY-PAPER', 'HCM-A01-1-A', 'HCM-A01-1-B', 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
+    VALUES (gen_random_uuid(), 'MOVE', 'QA-PK-GREY', 'HCM-A01-1-A', 'HCM-A01-1-B', 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
 SELECT pg_temp.expect_fail_by('K28b a movement naming a stock package at a bin it never touched', 'names a stock package at', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, reference_type, reference_id, occurred_at, stock_package_id)
     VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-B', 'HCM-RCV01', 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
@@ -251,13 +266,13 @@ SELECT pg_temp.expect_ok('U10 received in CARTON', $q$
             md5('demo:loc:HCM-RCV01')::uuid, 10, 'PRD-20261109-9015', md5('qa:unit:XANH-CARTON')::uuid) $q$);
 SELECT pg_temp.expect_fail('K29 a stock package naming a receipt line of another item', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code, goods_receipt_line_id)
-    VALUES (gen_random_uuid(), 'QA-LPN-29', (SELECT id FROM inventory.inventory_items WHERE sku = 'HOP-GIAY-DEMO-GREY-PAPER'), md5('qa:unit:DO-CARTON')::uuid, 5, 'HCM-RCV01', md5('qa:pk:grl')::uuid) $q$);
+    VALUES (gen_random_uuid(), 'QA-LPN-29', (SELECT id FROM inventory.inventory_items WHERE sku = 'QA-PK-GREY'), md5('qa:unit:DO-CARTON')::uuid, 5, 'HCM-RCV01', md5('qa:pk:grl')::uuid) $q$);
 SELECT pg_temp.expect_ok('K30 a stock package of the receipt line, waiting in the receiving area', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, goods_receipt_line_id)
     VALUES (md5('qa:pk:30')::uuid, 'QA-LPN-30', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, NOW(), 'HCM-RCV01', md5('qa:pk:grl')::uuid) $q$);
 SELECT pg_temp.expect_fail('K31 a putaway task naming a stock package of another SKU', $q$
     INSERT INTO warehouse.putaway_task (id, goods_receipt_id, goods_receipt_line_id, sku, quantity, status, created_at, stock_package_id)
-    VALUES (gen_random_uuid(), md5('qa:pk:gr')::uuid, md5('qa:pk:grl')::uuid, 'HOP-GIAY-DEMO-GREY-PAPER', 10, 'PENDING', NOW(), md5('qa:pk:30')::uuid) $q$);
+    VALUES (gen_random_uuid(), md5('qa:pk:gr')::uuid, md5('qa:pk:grl')::uuid, 'QA-PK-GREY', 10, 'PENDING', NOW(), md5('qa:pk:30')::uuid) $q$);
 SELECT pg_temp.expect_ok('K32 one open putaway task for the stock package', $q$
     INSERT INTO warehouse.putaway_task (id, goods_receipt_id, goods_receipt_line_id, sku, quantity, status, created_at, stock_package_id)
     VALUES (gen_random_uuid(), md5('qa:pk:gr')::uuid, md5('qa:pk:grl')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 10, 'PENDING', NOW(), md5('qa:pk:30')::uuid) $q$);
@@ -300,7 +315,7 @@ SELECT pg_temp.expect_ok('F4 the factor of an unused unit changed', $q$
 SELECT pg_temp.expect_fail('F5 a unit in use deleted', $q$
     DELETE FROM inventory.uom_conversions WHERE id = md5('qa:unit:XANH-CARTON')::uuid $q$);
 SELECT pg_temp.expect_fail('F5a a unit in use moved to another variant', $q$
-    UPDATE inventory.uom_conversions SET variant_id = (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'HOP-GIAY-DEMO-GREY-PAPER')
+    UPDATE inventory.uom_conversions SET variant_id = (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'QA-PK-GREY')
      WHERE id = md5('qa:unit:XANH-CARTON')::uuid $q$);
 SELECT pg_temp.expect_fail('F5b a unit in use renamed', $q$
     UPDATE inventory.uom_conversions SET unit_of_measure = 'BOX' WHERE id = md5('qa:unit:XANH-CARTON')::uuid $q$);
@@ -317,7 +332,7 @@ SELECT pg_temp.expect_ok('D1 a carton of 10 in stock on HCM-A01-1-A', $q$
             'AVAILABLE', md5('qa:pk:lot')::uuid, NOW() - interval '3 day') $q$);
 SELECT pg_temp.expect_fail('D2 an adjustment naming a carton of another SKU', $q$
     INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, stock_package_id)
-    VALUES (gen_random_uuid(), 'QA-ADJ-D2', 'HCM-A01-1-A', 'HOP-GIAY-DEMO-GREY-PAPER', 'WRITE_OFF', 'DAMAGED',
+    VALUES (gen_random_uuid(), 'QA-ADJ-D2', 'HCM-A01-1-A', 'QA-PK-GREY', 'WRITE_OFF', 'DAMAGED',
             (SELECT id FROM identity.app_user ORDER BY id LIMIT 1), md5('qa:pk:doc')::uuid) $q$);
 SELECT pg_temp.expect_fail('D3 an adjustment naming a carton at another bin', $q$
     INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, stock_package_id)

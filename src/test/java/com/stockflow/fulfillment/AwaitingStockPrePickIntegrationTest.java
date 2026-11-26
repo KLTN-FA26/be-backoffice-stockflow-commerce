@@ -128,21 +128,22 @@ class AwaitingStockPrePickIntegrationTest {
             throw new IllegalStateException(e);
         }
         return tx.execute(s -> {
-            UUID variant = com.stockflow.common.id.Identifiers.newId();
-            String code = product.sku() + "-P" + variant.toString().substring(24, 28).toUpperCase(Locale.ROOT);
+            UUID id = com.stockflow.common.id.Identifiers.newId();
+            String code = product.sku() + "-P" + id.toString().substring(24, 28).toUpperCase(Locale.ROOT);
             jdbc.update("""
-                    INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature,
-                        position, version, created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-                    VALUES (?, ?, ?, 'Printed cup', 'ACTIVE', FALSE, ?, 1, 0, NOW(), ?, ?, ?)""",
-                    variant, product.productId(), code, "OWNED-SKU:" + code, DemoData.CUSTOMER_ID,
-                    design.snapshotId(), product.variantId());
-            UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, code);
+                    INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku,
+                        name, status, version, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'Printed cup', 'ACTIVE', 0, NOW())""",
+                    id, product.productId(), product.variantId(), DemoData.CUSTOMER_ID, design.snapshotId(), code);
+            // The order of it made its item (owner decision Q5); the carton is the variant's (Q1).
+            com.stockflow.support.CartonRows.item(jdbc, code);
             UUID carton = com.stockflow.common.id.Identifiers.newId();
             jdbc.update("""
                     INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
                         weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
-                    VALUES (?, (select variant_id from inventory.inventory_items where id = ?), 'CARTON', 10, 1.2, 60, 40, 35, TRUE, 0, NOW())""", carton, item);
-            return new CustomerSkuRows.Issued(code, variant, product.productId(), design.snapshotId(), carton, 10);
+                    VALUES (?, ?, 'CARTON', 10, 1.2, 60, 40, 35, TRUE, 0, NOW())""", carton, product.variantId());
+            return new CustomerSkuRows.Issued(code, id, product.productId(), design.snapshotId(), product.variantId(),
+                    carton, 10);
         });
     }
 

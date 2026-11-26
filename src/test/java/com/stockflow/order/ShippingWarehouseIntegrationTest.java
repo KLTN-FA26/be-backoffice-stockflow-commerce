@@ -211,8 +211,7 @@ class ShippingWarehouseIntegrationTest {
                     received, "AVAILABLE");
             int rest = units % PER_CARTON;
             if (rest > 0) {
-                UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class,
-                        sku.sku());
+                UUID item = CartonRows.item(jdbc, sku.sku());
                 UUID odd = CartonRows.cartonUnit(jdbc, item, "PK" + rest, rest);
                 CartonRows.stockOfUnit(jdbc, sku.sku(), odd, warehouse.bin(), 1, null, received, "AVAILABLE");
                 // 01 BR-03: one active carton; the SKU's own is its active unit again after the odd one is made.
@@ -225,8 +224,7 @@ class ShippingWarehouseIntegrationTest {
     private void stockInCartonsOf(Warehouse warehouse, int cartons, int perCarton) {
         Instant received = Instant.now().minus(Duration.ofDays(2));
         tx.executeWithoutResult(s -> {
-            UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class,
-                    sku.sku());
+            UUID item = CartonRows.item(jdbc, sku.sku());
             UUID unit = CartonRows.cartonUnit(jdbc, item, "PK" + perCarton, perCarton);
             CartonRows.stockOfUnit(jdbc, sku.sku(), unit, warehouse.bin(), cartons, null, received, "AVAILABLE");
             CartonRows.reactivate(jdbc, sku.uomConversionId());

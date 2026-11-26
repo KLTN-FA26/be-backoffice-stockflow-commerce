@@ -58,7 +58,7 @@ class InventoryServiceImplAvailabilityTest {
     private final InventoryServiceImpl service = new InventoryServiceImpl(
             new InventoryEventPublisher(mock(ApplicationEventPublisher.class)), operations,
             mock(InventoryItemDirectory.class), Clock.fixed(NOW, ZoneOffset.UTC), policies, skuReservations,
-            locations, cycleCounts, repository);
+            locations, cycleCounts, repository, mock(com.stockflow.common.security.CurrentUserProvider.class));
 
     @BeforeEach
     void defaults() {

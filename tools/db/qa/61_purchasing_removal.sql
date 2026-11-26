@@ -160,21 +160,36 @@ INSERT INTO product.products (id, code, name, slug, status, kind, tax_class, ver
 VALUES (md5('qa61:product')::uuid, 'QA61', 'QA 61', 'qa-61', 'DRAFT', 'CUSTOMIZABLE', 'STANDARD', 0, NOW());
 SET LOCAL session_replication_role = origin;
 INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version, created_at)
-VALUES (md5('qa61:variant')::uuid, md5('qa61:product')::uuid, 'QA-61-ONLY', 'QA 61', 'DRAFT', TRUE, 'DEFAULT', 0, 0, NOW());
+VALUES (md5('qa61:variant')::uuid, md5('qa61:product')::uuid, 'QA-61-BLANK', 'QA 61', 'DRAFT', TRUE, 'DEFAULT', 0, 0, NOW());
+-- Since V20270105000100 an item is a customer's SKU's, made when its order is: a customer's SKU of the cup, with it.
+INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
+SELECT md5('qa61:draft')::uuid, c.id, md5('qa61:product')::uuid, 'DRAFT', NOW(), '{}'::jsonb
+  FROM customer.customer c ORDER BY c.id LIMIT 1;
+INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
+VALUES (md5('qa61:snap:own')::uuid, md5('qa61:draft')::uuid, repeat('d', 64), 'https://example.com/d.pdf', NOW(), NOW(),
+        '[]'::jsonb);
+INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku, name)
+SELECT md5('qa61:own')::uuid, md5('qa61:product')::uuid, md5('qa61:variant')::uuid, d.customer_id,
+       md5('qa61:snap:own')::uuid, 'QA-61-ONLY', 'QA 61 in'
+  FROM design.design_draft d WHERE d.id = md5('qa61:draft')::uuid;
+INSERT INTO inventory.inventory_items (id, sku, variant_id)
+VALUES (md5('qa61:item')::uuid, 'QA-61-ONLY', md5('qa61:variant')::uuid);
 SELECT pg_temp.expect_true('F3 item_in_use is false for an item no document names', $c$
     NOT inventory.item_in_use((SELECT id FROM inventory.inventory_items WHERE sku = 'QA-61-ONLY'), 'QA-61-ONLY') $c$);
-SELECT pg_temp.expect_ok('F3b an unused DRAFT variant may still be renamed', $q$
+SELECT pg_temp.expect_ok('F3b an unused DRAFT variant may still be renamed: it has no item to follow it', $q$
     UPDATE product.variants SET sku = 'QA-61-FREE' WHERE id = md5('qa61:variant')::uuid $q$);
 SET LOCAL session_replication_role = replica;
 INSERT INTO ordering.production_order_line (id, production_order_id, order_line_id, sku, cartons, units_per_carton,
                                             design_snapshot_id, print_file_checksum)
-VALUES (md5('qa61:prod:line2')::uuid, md5('qa61:prod')::uuid, md5('qa61:ol2')::uuid, 'QA-61-FREE', 1, 10,
+VALUES (md5('qa61:prod:line2')::uuid, md5('qa61:prod')::uuid, md5('qa61:ol2')::uuid, 'QA-61-ONLY', 1, 10,
         md5('qa61:snap')::uuid, repeat('d', 64));
 SET LOCAL session_replication_role = origin;
-SELECT pg_temp.expect_true('F4 item_in_use counts a production order line (the SKU may no longer be renamed)', $c$
-    inventory.item_in_use((SELECT id FROM inventory.inventory_items WHERE sku = 'QA-61-FREE'), 'QA-61-FREE') $c$);
-SELECT pg_temp.expect_fail_like('F5 the SKU of that item renamed', 'unused DRAFT variant', $q$
-    UPDATE product.variants SET sku = 'QA-61-RENAMED' WHERE id = md5('qa61:variant')::uuid $q$);
+SELECT pg_temp.expect_true('F4 item_in_use counts a production order line', $c$
+    inventory.item_in_use((SELECT id FROM inventory.inventory_items WHERE sku = 'QA-61-ONLY'), 'QA-61-ONLY') $c$);
+SELECT pg_temp.expect_fail_like('F5 the SKU of an item renamed: it never changes', 'never changes', $q$
+    UPDATE inventory.inventory_items SET sku = 'QA-61-RENAMED' WHERE sku = 'QA-61-ONLY' $q$);
+SELECT pg_temp.expect_fail_like('F5b the customer''s SKU renamed: its code never changes', 'immutable', $q$
+    UPDATE product.customer_skus SET sku = 'QA-61-RENAMED' WHERE sku = 'QA-61-ONLY' $q$);
 
 INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height, version, created_at)
 VALUES (md5('qa61:wh')::uuid, 'QA other warehouse', 'ACTIVE', 'QAX', 'Somewhere', 'M', 50, 50, 0, NOW());

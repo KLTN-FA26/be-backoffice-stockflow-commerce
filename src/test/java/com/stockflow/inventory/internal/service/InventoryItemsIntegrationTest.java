@@ -1,5 +1,6 @@
 package com.stockflow.inventory.internal.service;
 
+import com.stockflow.support.StockedSkus;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 
@@ -67,10 +68,24 @@ class InventoryItemsIntegrationTest {
 
     private record Fixture(UUID productId, String sku, UUID itemId) {}
 
+    /**
+     * A product of the catalogue and a customer's SKU on its default variant, with the item the SKU's order made: only
+     * a customer's SKU has an item (owner decision Q5, V20270105000100).
+     */
     private Fixture fixture() {
         var created = ProductFixtures.draft(products, tax, suffix);
-        String sku = "FX-" + suffix;
+        String sku = ownSkuOf(created.productId(), "FX-" + suffix);
         return new Fixture(created.productId(), sku, itemId(sku));
+    }
+
+    /** A customer's SKU drawn on the catalogue variant {@code variantSku}, with its item; its code. */
+    private String ownSkuOf(UUID productId, String variantSku) {
+        String sku = variantSku + "-C";
+        tx.executeWithoutResult(s -> StockedSkus.customerSkuOf(jdbc,
+                com.stockflow.support.DemoData.CUSTOMER_ID, productId,
+                jdbc.queryForObject("select id from product.variants where sku = ?", UUID.class, variantSku), sku,
+                "Item fixture"));
+        return sku;
     }
 
     private UUID itemId(String sku) {
@@ -164,7 +179,7 @@ class InventoryItemsIntegrationTest {
     void duplicateBarcodeIs409() {
         var f = fixture();
         var extra = variants.add(f.productId(), new NewVariant("FX-" + suffix + "-16", "16oz", null, null));
-        UUID secondId = itemId(extra.sku());
+        UUID secondId = itemId(ownSkuOf(f.productId(), extra.sku()));
         String barcode = "893" + suffix.replaceAll("[^0-9]", "1");
         var first = items.get(f.itemId());
         items.describe(f.itemId(), first.version(), logistics("EACH", barcode));

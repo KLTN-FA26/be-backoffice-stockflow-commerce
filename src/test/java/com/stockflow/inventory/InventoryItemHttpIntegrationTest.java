@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -43,14 +44,13 @@ class InventoryItemHttpIntegrationTest {
         suffix = UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
     }
 
-    /** A variant makes its inventory item; the barcode is then set on that item. */
+    /** A customer's SKU with the item its order made (owner decision Q5); the barcode is then set on that item. */
     private UUID item(String sku, String barcode) {
         return tx.execute(s -> {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Item fixture", slugOf(sku));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
-                    + " values (?,?,?,'Item fixture','')", Identifiers.newId(), product, sku);
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Item fixture");
             jdbc.update("update inventory.inventory_items set barcode=? where sku=?", barcode, sku);
             return jdbc.queryForObject("select id from inventory.inventory_items where sku=?", UUID.class, sku);
         });

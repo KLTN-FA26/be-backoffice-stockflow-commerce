@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Occupancy;
 import com.stockflow.inventory.internal.repository.BinOccupancyQuery;
@@ -74,8 +75,7 @@ class BinOccupancyGroupIntegrationTest {
         UUID product = Identifiers.newId();
         jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                 "Group occupancy fixture", sku.toLowerCase(Locale.ROOT));
-        jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                Identifiers.newId(), product, sku, "Group occupancy fixture");
+        StockedSkus.customerSkuOn(jdbc, product, sku, "Group occupancy fixture");
     }
 
     /** One carton of {@code units} units, its unit 50 x 40 x 30 cm (0.06 m³). */

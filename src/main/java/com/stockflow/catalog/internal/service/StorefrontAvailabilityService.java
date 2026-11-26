@@ -39,8 +39,10 @@ import java.util.stream.Collectors;
  * query for the whole page, in cartons of exactly that size ({@code cartonsToPromise}; ADR-0011): a carton of another
  * count is never given to a line quoted in this one, so it is not promised either, and dividing every carton's pieces
  * by the size would count it. The carton is the one {@code QuoteService} quotes in: the
- * SKU's single active packing unit of more than one piece ({@link UomConversion#cartonOf}). A SKU without one gets no indicator - a guessed carton would promise stock no quote
- * can sell - and the gap is logged.</p>
+ * SKU's single active packing unit of more than one piece ({@link UomConversion#cartonOf}) - its catalogue variant's
+ * carton (owner decision Q1), read whether or not the SKU has an inventory item yet. A SKU without one gets no
+ * indicator - a guessed carton would promise stock no quote can sell - and the gap is logged. A SKU no order has named
+ * has no inventory item (Q5, V20270105000100) and so no stock: it reads 0 cartons, out of stock.</p>
  *
  * <p>Not cached. Docs 13 allows ten seconds of lag; the endpoint's own short {@code Cache-Control} absorbs a page being
  * refreshed.</p>

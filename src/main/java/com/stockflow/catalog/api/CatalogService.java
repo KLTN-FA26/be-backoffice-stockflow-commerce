@@ -20,8 +20,8 @@ public interface CatalogService {
 
     /**
      * The customer's own price row for {@code sku}, if it has one: what a quote line starts from (14 step 2). For one
-     * of the customer's own SKUs it counts cartons (4B-2; kltn-docs 13 BR-05); the caller checks the SKU is one - a row
-     * kept on a stock variant counts units. Nothing is thrown when there is none - a caller in a transaction would
+     * of the customer's own SKUs it counts cartons (4B-2; kltn-docs 13 BR-05), and since V20270105000100 a customer
+     * price names nothing else ({@code fk_customer_price_customer_sku}). Nothing is thrown when there is none - a caller in a transaction would
      * otherwise find it marked rollback-only by the refusal.
      *
      * @throws com.stockflow.common.error.BusinessException {@code CUSTOMER_NOT_FOUND}

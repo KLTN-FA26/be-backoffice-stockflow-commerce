@@ -3,6 +3,7 @@ package com.stockflow.warehouse.internal.service;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.support.StockedSkus;
 import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
@@ -80,8 +81,7 @@ class PlaceDeactivationIntegrationTest {
         UUID product = Identifiers.newId();
         jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                 "Deactivation fixture", sku.toLowerCase(Locale.ROOT));
-        jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                Identifiers.newId(), product, sku, "Deactivation fixture");
+        StockedSkus.customerSkuOn(jdbc, product, sku, "Deactivation fixture");
         CartonRows.unit(jdbc, sku, 10);
         return sku;
     }

@@ -34,7 +34,7 @@ class LineNamesTest {
 
     private static CustomerSku own(String sku, UUID productId, String name) {
         return new CustomerSku(UUID.randomUUID(), productId, sku, name, UUID.randomUUID(), UUID.randomUUID(),
-                "LY12-BASE", "ACTIVE");
+                UUID.randomUUID(), "LY12-BASE", "ACTIVE");
     }
 
     @Test

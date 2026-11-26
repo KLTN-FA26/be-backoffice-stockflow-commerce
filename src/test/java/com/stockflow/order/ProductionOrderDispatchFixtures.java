@@ -215,12 +215,12 @@ abstract class ProductionOrderDispatchFixtures {
             UUID variant = Identifiers.newId();
             String code = product.sku() + "-D" + variant.toString().substring(24, 28).toUpperCase(Locale.ROOT);
             jdbc.update("""
-                    INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature,
-                        position, version, created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-                    VALUES (?, ?, ?, 'Printed cup', 'ACTIVE', FALSE, ?, 1, 0, NOW(), ?, ?, ?)""",
-                    variant, product.productId(), code, "OWNED-SKU:" + code, customerId, design.snapshotId(),
-                    product.variantId());
-            UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, code);
+                    INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku,
+                        name, status, version, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'Printed cup', 'ACTIVE', 0, NOW())""",
+                    variant, product.productId(), product.variantId(), customerId, design.snapshotId(), code);
+            // The order of the SKU made its inventory item (owner decision Q5); the test stocks or receives it.
+            UUID item = com.stockflow.support.CartonRows.item(jdbc, code);
             UUID carton = Identifiers.newId();
             jdbc.update("""
                     INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,

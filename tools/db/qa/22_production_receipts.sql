@@ -67,22 +67,22 @@ SELECT md5('qa22:draft')::uuid, c.id, md5('qa22:product')::uuid, 'DRAFT', NOW(),
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qa22:snap')::uuid, md5('qa22:draft')::uuid, repeat('d', 64), 'https://example.com/d.pdf', NOW(), NOW(),
         '[]'::jsonb);
-INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
-                              created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-SELECT md5('qa22:own')::uuid, md5('qa22:product')::uuid, 'QA-PRR-OWN', 'QA ly in logo', 'ACTIVE', FALSE,
-       'OWNED-SKU:QA-PRR-OWN', 1, 0, NOW(), c.id, md5('qa22:snap')::uuid, md5('qa22:blank')::uuid
+INSERT INTO product.customer_skus (id, product_id, sku, name, status, version, created_at, customer_id,
+                                  design_snapshot_id, variant_id)
+SELECT md5('qa22:own')::uuid, md5('qa22:product')::uuid, 'QA-PRR-OWN', 'QA ly in logo', 'ACTIVE', 0, NOW(),
+       c.id, md5('qa22:snap')::uuid, md5('qa22:blank')::uuid
   FROM customer.customer c ORDER BY c.id LIMIT 1;
 -- Measured: a carton is received only once its spec has its size and full weight (01 BR-03, V20261215000100).
 INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active,
                                        version, created_at, length_cm, width_cm, height_cm, weight_kg)
 SELECT md5('qa22:carton')::uuid, i.variant_id, 'CARTON', 50, TRUE, 0, NOW(), 60, 40, 35, 1.2
-  FROM inventory.inventory_items i WHERE i.sku = 'QA-PRR-OWN';
+  FROM product.customer_skus i WHERE i.sku = 'QA-PRR-OWN';
 -- BOX is a retired unit: the item has one active carton (01 BR-03), the CARTON of 50. A line counted in BOX is
 -- refused for its count (PR15), not for the unit being retired: that trigger asks for the factor only.
 INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active,
                                        version, created_at, length_cm, width_cm, height_cm, weight_kg)
 SELECT md5('qa22:box')::uuid, i.variant_id, 'BOX', 25, FALSE, 0, NOW(), 40, 30, 35, 0.6
-  FROM inventory.inventory_items i WHERE i.sku = 'QA-PRR-OWN';
+  FROM product.customer_skus i WHERE i.sku = 'QA-PRR-OWN';
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
                                      currency, placed_at, created_at)
 SELECT md5('qa22:order')::uuid, 'SO-QA-PRR', c.id, gen_random_uuid(), 'DRAFT', 2200000, 200000, 'VND', NOW(), NOW()
@@ -91,6 +91,22 @@ INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, curren
                                  units_per_carton, tax_rate, tax_amount)
 VALUES (md5('qa22:line')::uuid, md5('qa22:order')::uuid, 'QA-PRR-OWN', 1000, 2000, 'VND', md5('qa22:carton')::uuid, 20,
         50, 10, 200000);
+-- The order made the SKU's inventory item (owner decision Q5, V20270105000100): what its receipt lines name.
+INSERT INTO inventory.inventory_items (id, sku, variant_id)
+SELECT md5('qa22:item')::uuid, sku, variant_id FROM product.customer_skus WHERE sku = 'QA-PRR-OWN';
+-- Another SKU of the customer on the same cup, ordered before: a receipt line of it is not the production order's.
+INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
+SELECT md5('qa22:draft2')::uuid, c.id, md5('qa22:product')::uuid, 'DRAFT', NOW(), '{}'::jsonb
+  FROM customer.customer c ORDER BY c.id LIMIT 1;
+INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
+VALUES (md5('qa22:snap2')::uuid, md5('qa22:draft2')::uuid, repeat('e', 64), 'https://example.com/e.pdf', NOW(), NOW(),
+        '[]'::jsonb);
+INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku, name)
+SELECT md5('qa22:other')::uuid, md5('qa22:product')::uuid, md5('qa22:blank')::uuid, d.customer_id,
+       md5('qa22:snap2')::uuid, 'QA-PRR-OTHER', 'QA ly khac'
+  FROM design.design_draft d WHERE d.id = md5('qa22:draft2')::uuid;
+INSERT INTO inventory.inventory_items (id, sku, variant_id)
+SELECT gen_random_uuid(), sku, variant_id FROM product.customer_skus WHERE sku = 'QA-PRR-OTHER';
 INSERT INTO ordering.sales_contract (id, contract_number, order_id, status, seller_name, seller_tax_code, seller_address,
                                      seller_representative, seller_representative_title, buyer_name, buyer_address,
                                      buyer_representative, buyer_representative_title, free_sample_rounds)
@@ -242,7 +258,7 @@ SELECT pg_temp.expect_fail('PR17 another SKU than the production order line''s (
     SELECT md5('qa22:l0')::uuid, md5('qa22:gr1')::uuid, md5('PRD-20261109-2201:line')::uuid, i.id, s.id, 100,
            'PRD-20261109-2201'
       FROM inventory.inventory_items i, warehouse.storage_location s
-     WHERE i.sku = 'QA-PRR-BLANK' AND s.location_code = 'HCM-RCV01' $q$);
+     WHERE i.sku = 'QA-PRR-OTHER' AND s.location_code = 'HCM-RCV01' $q$);
 -- The item carries no weight or size of its own (V20261215000100, 01 BR-03): only its carton does, and a carton
 -- without them is not received.
 SELECT pg_temp.expect_fail_like('PR17b a carton with no full weight on its spec (01 BR-03)', 'has no size or weight', $q$
@@ -330,7 +346,7 @@ SELECT pg_temp.expect_fail('PR37 a production order lot under another code than 
 SELECT pg_temp.expect_fail('PR38 a production order lot of a SKU it does not make', $q$
     INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, production_order_id,
                                      production_order_code)
-    VALUES (md5('qa22:lot0')::uuid, 'QA-PRR-BLANK', 'PRD-20261109-2201', NOW(), 'PRODUCTION_ORDER',
+    VALUES (md5('qa22:lot0')::uuid, 'QA-PRR-OTHER', 'PRD-20261109-2201', NOW(), 'PRODUCTION_ORDER',
             md5('qa22:po1')::uuid, 'PRD-20261109-2201') $q$);
 SELECT pg_temp.expect_fail('PR39 a production order lot with an expiry date (BR-06)', $q$
     INSERT INTO inventory.stock_lot (id, sku, lot_number, expiry_date, received_at, origin_type, production_order_id,

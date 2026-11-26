@@ -169,7 +169,7 @@ class OrderLifecycleIntegrationTest {
             // fixture's EXEMPT product makes a 0% line, which an e-invoice refuses at submit
             // (EINVOICE_TAX_EXEMPT_NOT_SUPPORTED).
             jdbc.update("UPDATE product.products SET tax_class = 'STANDARD' WHERE id = (SELECT product_id FROM "
-                    + "product.variants WHERE sku = ?)", sku);
+                    + "product.customer_skus WHERE sku = ?)", sku);
         });
         OrderSummary order = picking(4);
         assertThat(order.status()).isEqualTo(OrderStatus.PICKING);

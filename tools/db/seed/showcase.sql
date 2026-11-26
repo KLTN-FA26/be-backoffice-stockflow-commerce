@@ -54,7 +54,9 @@ SET CONSTRAINTS ALL DEFERRED;
 
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM identity.app_user) OR EXISTS (SELECT 1 FROM warehouse.warehouse)
+    -- The migrations' own system accounts (created_by 'flyway', e.g. system.bank-feed) are part of an empty database.
+    IF EXISTS (SELECT 1 FROM identity.app_user WHERE created_by IS DISTINCT FROM 'flyway')
+        OR EXISTS (SELECT 1 FROM warehouse.warehouse)
         OR EXISTS (SELECT 1 FROM customer.customer) THEN
         RAISE EXCEPTION 'showcase seed: the database already holds users, warehouses or customers; it loads only into a freshly migrated database';
     END IF;
@@ -391,24 +393,22 @@ SELECT pg_temp.sid('product:' || code), code, name, slug, name || ', in theo thi
        pg_temp.staff('sales1')::text
   FROM s_product;
 
-INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
-                              created_at, created_by)
+-- Whether its cartons may be turned is the variant's (owner decision Q9, V20270104000200).
+INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, rotatable,
+                              version, created_at, created_by)
 SELECT pg_temp.sid('variant:' || variant_sku), pg_temp.sid('product:' || code), variant_sku, variant_name, 'ACTIVE',
-       TRUE, signature, 0, 0, pg_temp.at(228, '09:00'), pg_temp.staff('sales1')::text
+       TRUE, signature, 0, rotatable, 0, pg_temp.at(228, '09:00'), pg_temp.staff('sales1')::text
   FROM s_product;
 
--- Each printable product's carton specification (01 BR-03), declared by the warehouse manager on its blank variant: a
--- customer's own SKU inherits it when its design is approved (01 §4.8, ItemSpecifications.copy), so a design approved
--- after this seed gets a SKU that can be quoted. tg_variant_inventory_item made the items just above.
-UPDATE inventory.inventory_items i
-   SET rotatable = p.rotatable
-  FROM s_product p WHERE i.sku = p.variant_sku;
-
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, weight_kg, length_cm,
+-- Each printable product's carton specification (01 BR-03), declared by the warehouse manager on its blank variant:
+-- the carton is the variant's, and every customer's SKU drawn on it is packed in it (owner decision Q1,
+-- V20270104000100), so a design approved after this seed gets a SKU that can be quoted. A catalogue variant has no
+-- inventory item (V20270105000100).
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, weight_kg, length_cm,
                                        width_cm, height_cm, active, version, created_at, created_by)
-SELECT pg_temp.sid('unit:' || p.variant_sku), i.id, 'THUNG', p.units, p.carton_kg, p.length_cm, p.width_cm,
-       p.height_cm, TRUE, 0, pg_temp.at(228, '10:30'), pg_temp.staff('quanly.bd')::text
-  FROM s_product p JOIN inventory.inventory_items i ON i.sku = p.variant_sku;
+SELECT pg_temp.sid('unit:' || p.variant_sku), pg_temp.sid('variant:' || p.variant_sku), 'THUNG', p.units, p.carton_kg,
+       p.length_cm, p.width_cm, p.height_cm, TRUE, 0, pg_temp.at(228, '10:30'), pg_temp.staff('quanly.bd')::text
+  FROM s_product p;
 
 INSERT INTO product.product_categories (id, product_id, category_id, is_primary, version, created_at, created_by)
 SELECT pg_temp.sid('product-category:' || code), pg_temp.sid('product:' || code), pg_temp.sid('category:' || category),
@@ -749,38 +749,16 @@ SELECT pg_temp.sid('snapshot:' || k.sku), a.draft_id,
        0, pg_temp.at(k.since - 2, '14:00'), pg_temp.staff(k.sales)::text
   FROM s_sku k JOIN design.design_artifact a ON a.id = pg_temp.sid('artifact:' || k.sku);
 
--- tg_variant_inventory_item makes each SKU's inventory item, as the catalogue makes it.
-INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position,
-                              owner_customer_id, design_snapshot_id, source_variant_id, version, created_at, created_by)
-SELECT pg_temp.sid('variant:' || sku), pg_temp.sid('product:' || product), sku,
-       variant_name || ' - ' || (SELECT c.name FROM s_customer c WHERE c.code = cust), 'ACTIVE', FALSE,
-       'OWNED-SKU:' || sku, 10 + row_number() OVER (PARTITION BY product ORDER BY cust), customer_id,
-       pg_temp.sid('snapshot:' || sku), pg_temp.sid('variant:' || variant_sku), 0, pg_temp.at(since - 2, '14:05'),
-       'system'
+-- Each design's approval issues the customer's SKU (CustomerSkuService.issue): a row of product.customer_skus (owner
+-- decision Q4, V20270105000100) drawn on the blank variant, packed in that variant's carton (Q1) and sold by it (01
+-- BR-11). No inventory item yet: the order that first names the SKU makes it (Q5, section 10).
+INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku, name, status,
+                                   version, created_at, created_by)
+SELECT pg_temp.sid('variant:' || sku), pg_temp.sid('product:' || product), pg_temp.sid('variant:' || variant_sku),
+       customer_id, pg_temp.sid('snapshot:' || sku), sku,
+       variant_name || ' - ' || (SELECT c.name FROM s_customer c WHERE c.code = cust), 'ACTIVE', 0,
+       pg_temp.at(since - 2, '14:05'), 'system'
   FROM s_sku;
-
-UPDATE inventory.inventory_items i
-   SET rotatable = k.rotatable
-  FROM s_sku k WHERE i.sku = k.sku;
-
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, weight_kg, length_cm,
-                                       width_cm, height_cm, active, version, created_at, created_by)
-SELECT pg_temp.sid('unit:' || k.sku), i.id, 'THUNG', k.units, k.carton_kg, k.length_cm, k.width_cm, k.height_cm,
-       TRUE, 0, pg_temp.at(k.since - 2, '14:10'), pg_temp.staff(k.sales)::text
-  FROM s_sku k JOIN inventory.inventory_items i ON i.sku = k.sku;
-
--- A SKU is sold by its carton (01 BR-11). Until the list of sales units is dropped (V20261226000100) the product
--- screen reads it, so it is written where the table still exists; afterwards the carton above is the sales unit.
-DO $$
-BEGIN
-    IF to_regclass('product.variant_sales_units') IS NOT NULL THEN
-        EXECUTE $q$
-            INSERT INTO product.variant_sales_units (id, variant_id, uom_conversion_id, version, created_at, created_by)
-            SELECT pg_temp.sid('sales-unit:' || sku), pg_temp.sid('variant:' || sku), pg_temp.sid('unit:' || sku), 0,
-                   pg_temp.at(since - 2, '14:10'), pg_temp.staff(sales)::text
-              FROM s_sku $q$;
-    END IF;
-END $$;
 
 -- From 10 cartons the price plus 100, from 30 the price, from 60 the price less 100 (VND a unit).
 INSERT INTO catalog.customer_price (id, customer_id, sku, currency, note, version, created_at, created_by)
@@ -852,7 +830,8 @@ ALTER TABLE h_line
     ADD COLUMN fee_tax NUMERIC, ADD COLUMN po_line_id UUID, ADD COLUMN received INTEGER, ADD COLUMN first_n INTEGER;
 
 UPDATE h_line l
-   SET line_id = pg_temp.sid('order-line:' || l.key || ':' || l.ln), unit_id = pg_temp.sid('unit:' || l.sku),
+   SET line_id = pg_temp.sid('order-line:' || l.key || ':' || l.ln),
+       unit_id = pg_temp.sid('unit:' || (SELECT k.variant_sku FROM s_sku k WHERE k.sku = l.sku)),
        snapshot_id = pg_temp.sid('snapshot:' || l.sku), po_line_id = pg_temp.sid('po-line:' || l.key || ':' || l.ln),
        unit_price = l.price + CASE WHEN l.cartons >= 60 THEN -100 WHEN l.cartons >= 30 THEN 0 ELSE 100 END;
 
@@ -1045,6 +1024,14 @@ SELECT o.id, o.order_number, o.customer_id, pg_temp.sid('order-request:' || o.ke
        c.line1, c.ward_code, c.ward, c.province_code, c.province, 'VN', c.name, c.phone, c.line1, c.ward_code, c.ward,
        c.province_code, c.province, 'VN', 0, pg_temp.at(o.s + 5, '09:30'), pg_temp.staff(o.sales)::text
   FROM h_placed o JOIN s_customer c ON c.code = o.cust;
+
+-- Converting the first quote naming a SKU makes its inventory item, packed as its blank variant (owner decision Q5,
+-- InventoryService.openItems).
+INSERT INTO inventory.inventory_items (id, sku, variant_id, version, created_at, created_by)
+SELECT pg_temp.sid('item:' || k.sku), k.sku, pg_temp.sid('variant:' || k.variant_sku), 0,
+       pg_temp.at(max(o.s) + 5, '09:30'), 'system'
+  FROM s_sku k JOIN h_line l ON l.sku = k.sku JOIN h_placed o ON o.key = l.key
+ GROUP BY k.sku, k.variant_sku;
 
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, requested_delivery_date,
                                  uom_conversion_id, cartons, units_per_carton, tax_rate, tax_amount)
@@ -1347,7 +1334,8 @@ SELECT pg_temp.sid('receipt-goods-line:' || l.key || ':' || l.ln), pg_temp.sid('
 
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
                                      location_code, status, goods_receipt_line_id, version, created_at, created_by)
-SELECT c.package_id, c.lpn, i.id, pg_temp.sid('unit:' || c.sku), c.upc, pg_temp.at(o.r, '08:30'),
+SELECT c.package_id, c.lpn, i.id, pg_temp.sid('unit:' || (SELECT k.variant_sku FROM s_sku k WHERE k.sku = c.sku)),
+       c.upc, pg_temp.at(o.r, '08:30'),
        o.wh || '-RCV01', 'RECEIVING',
        pg_temp.sid('receipt-goods-line:' || c.key || ':' || c.ln), 0, pg_temp.at(o.r, '08:30'),
        pg_temp.staff(o.kho)::text
@@ -2194,8 +2182,8 @@ SELECT pg_temp.sid('dpc:product-history:' || p.code || ':' || h.n), pg_temp.sid(
        (8, 'MEDIA', 'MEDIA', 'media', NULL, NULL, '{published}', 'truongkd', 227, '10:00:02'))
        AS h (n, change_type, subject_type, subject, from_status, to_status, fields, actor, days, hhmi);
 
--- Each customer SKU: issued by the design's approval in the reviewer's transaction (CustomerSkuService.issue), then
--- its carton unit and sales unit added by the salesperson (SkuUnitService).
+-- Each customer SKU: issued by the design's approval in the reviewer's transaction (CustomerSkuService.issue); it has
+-- no carton of its own to add (owner decision Q1).
 INSERT INTO product.product_change_log (id, product_id, change_type, subject_type, subject_id, from_status, to_status,
                                         reason, changed_fields, actor_id, occurred_at)
 SELECT pg_temp.sid('dpc:product-history:' || k.sku || ':' || h.n), pg_temp.sid('product:' || k.product), h.change_type,
@@ -2204,9 +2192,8 @@ SELECT pg_temp.sid('dpc:product-history:' || k.sku || ':' || h.n), pg_temp.sid('
        CASE WHEN h.n = 1 THEN 'customer SKU of design snapshot ' || pg_temp.sid('snapshot:' || k.sku) END,
        h.fields, pg_temp.staff(k.sales), pg_temp.at(k.since - 2, h.hhmi)
   FROM s_sku k
- CROSS JOIN (VALUES (1, 'VARIANT_ADDED', 'ACTIVE', '{}'::text[], '14:05:00'),
-                    (2, 'UOM_CONVERSION', NULL, '{unit:THUNG}', '14:10:00'),
-                    (3, 'SALES_UNIT', NULL, '{unit:THUNG}', '14:10:01')) AS h (n, change_type, to_status, fields, hhmi);
+ CROSS JOIN (VALUES (1, 'VARIANT_ADDED', 'ACTIVE', '{}'::text[], '14:05:00'))
+             AS h (n, change_type, to_status, fields, hhmi);
 SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;
 
@@ -2232,7 +2219,7 @@ SELECT pg_temp.sid('dpc:catalog-entry:' || v.sku), v.sku, p.name, 'sku-' || v.id
   FROM product.variants v
   JOIN product.products p ON p.id = v.product_id
   JOIN catalog.product_listing l ON l.product_id = p.id
- WHERE p.status = 'PUBLISHED' AND v.status = 'ACTIVE' AND v.owner_customer_id IS NULL;
+ WHERE p.status = 'PUBLISHED' AND v.status = 'ACTIVE';
 
 SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;
@@ -5066,11 +5053,12 @@ SELECT o.key, o.id AS order_id, o.wh, o.mgr, o.d,
            'partial', NULL,
            'dimsMm', jsonb_build_object('l', (u.length_cm * 10)::int, 'w', (u.width_cm * 10)::int,
                                         'h', (u.height_cm * 10)::int),
-           'weightKg', u.weight_kg, 'rotatable', i.rotatable, 'kitParts', 1) ORDER BY l.ln) AS lines
+           'weightKg', u.weight_kg, 'rotatable', v.rotatable, 'kitParts', 1) ORDER BY l.ln) AS lines
   FROM h_order o
   JOIN h_line l ON l.key = o.key
   JOIN inventory.inventory_items i ON i.sku = l.sku
-  JOIN inventory.uom_conversions u ON u.inventory_item_id = i.id AND u.active
+  JOIN inventory.uom_conversions u ON u.variant_id = i.variant_id AND u.active
+  JOIN product.variants v ON v.id = i.variant_id
  WHERE o.stage IN ('READY', 'PICKING', 'PACKED')
  GROUP BY o.key, o.id, o.wh, o.mgr, o.d;
 
@@ -5085,14 +5073,15 @@ UPDATE x_ful_est e
                    'partName', c.sku, 'kitGroup', NULL,
                    'origMm', jsonb_build_object('l', (u.length_cm * 10)::int, 'w', (u.width_cm * 10)::int,
                                                 'h', (u.height_cm * 10)::int),
-                   'orientation', 'LWH', 'rotatable', i.rotatable, 'weightKg', u.weight_kg, 'loadSequence', c.n)
+                   'orientation', 'LWH', 'rotatable', v.rotatable, 'weightKg', u.weight_kg, 'loadSequence', c.n)
                    ORDER BY c.n) AS boxes,
                sum((u.length_cm * u.width_cm * u.height_cm * 1000)::bigint) AS volume, sum(u.weight_kg) AS weight,
                count(*)::int AS placed
           FROM h_carton c
           JOIN h_line l ON l.key = c.key AND l.ln = c.ln
           JOIN inventory.inventory_items i ON i.sku = c.sku
-          JOIN inventory.uom_conversions u ON u.inventory_item_id = i.id AND u.active
+          JOIN inventory.uom_conversions u ON u.variant_id = i.variant_id AND u.active
+          JOIN product.variants v ON v.id = i.variant_id
          GROUP BY c.key) b
  WHERE b.key = e.key;
 
@@ -7446,11 +7435,7 @@ SET CONSTRAINTS ALL DEFERRED;
 --     Written as the SMTP transport leaves them (provider SMTP, no provider message id): every seeded address is under
 --     the reserved .example domain, which the Resend transport refuses (RECIPIENT_RESERVED_DOMAIN). Staff notices
 --     write no log row (NotificationSender.sendToStaff).
---   * notification.preference: a few rows; no code reads or writes the table (its repository is a starter stub).
---   * notification.template: one row per template code the delivery log names (tools/db/orphan_check.sql counts
---     delivery_log.template_code against it), its subject and lines copied verbatim from messages_vi.properties. No code
---     reads the table (NotificationTemplateJpaRepository is a starter stub): mail is laid out from
---     templates/email/customer.html and the i18n bundles (EmailTemplates), so these rows override nothing.
+--   * notification.preference and notification.template: none, the tables are gone (V20261228000100).
 --   * platform.audit_log: rows as AuditAspect/AuditWriter write them for @Auditable methods only, for a sample of the
 --     orders (one in ten) inside the 180-day retention, plus sign-ins, warehouse grants and two account changes.
 -- created_by follows the application: the acting user's username, 'system' for listeners, jobs and async work.
@@ -8385,37 +8370,6 @@ SELECT pg_temp.sid('cna:mail:' || ref), template, 'EMAIL', recipient, 'SENT',
        CASE WHEN retried THEN 2 ELSE 1 END, 'SMTP'
   FROM x_cna_mail WHERE at < pg_temp.at(0, '00:00');
 
--- notification.template: the codes the delivery log names, worded as the bundle words them (read by nothing).
-INSERT INTO notification.template (id, code, channel, subject, body, locale, active, version, created_at, created_by)
-SELECT pg_temp.sid('cna:template:' || t.code), t.code, 'EMAIL', t.subject, t.body, 'vi', TRUE, 0, pg_temp.at(229, '09:00'),
-       'admin'
-  FROM (VALUES
-    ('order.placed', 'Đơn hàng %s đã được tiếp nhận',
-     E'Chúng tôi đã tiếp nhận đơn hàng của Quý khách\nCảm ơn Quý khách đã đặt hàng. Đơn hàng %s đã được ghi nhận với các thông tin dưới đây.'),
-    ('shipment.handed-over', 'Đơn hàng %s đã được bàn giao cho đơn vị vận chuyển',
-     E'Hàng đã được bàn giao cho đơn vị vận chuyển\nHàng của đơn hàng %s đã rời kho và được bàn giao cho đơn vị vận chuyển.'),
-    ('shipment.delivered', 'Đơn hàng %s đã được giao thành công',
-     E'Hàng đã được giao thành công\nHàng của đơn hàng %s đã được giao đến Quý khách.'),
-    ('chat.reply', 'Sale đã trả lời anh/chị',
-     E'Anh/chị có câu trả lời mới từ Sale\nBộ phận Sale đã trả lời tin nhắn của anh/chị trong hội thoại.%s'),
-    ('production_order_sent', '[Đơn sản xuất] %s - cần hàng ngày %s',
-     E'Kính gửi %s,\nChúng tôi gửi quý đơn vị Đơn sản xuất %s. Phiếu đặt hàng sản xuất (PDF) được đính kèm thư này; phiếu và file in cũng tải được theo các đường dẫn bên dưới.\nVui lòng trả lời thư này để xác nhận nhận đơn và ngày hoàn thành dự kiến.'))
-       AS t (code, subject, body);
-
--- notification.preference: per-user channel choices. Nothing in the application reads or writes this table yet
--- (NotificationPreferenceJpaRepository is a starter stub); a few rows so the table is not empty.
-INSERT INTO notification.preference (id, user_id, channel, enabled, version, created_at, created_by, last_modified_at,
-                                     last_modified_by)
-SELECT pg_temp.sid('cna:preference:' || p.username || ':' || p.channel), u.id, p.channel, p.enabled,
-       CASE WHEN p.changed IS NOT NULL THEN 1 ELSE 0 END, pg_temp.at(p.created, '08:45'), p.username,
-       CASE WHEN p.changed IS NOT NULL THEN pg_temp.at(p.changed, '16:20') END,
-       CASE WHEN p.changed IS NOT NULL THEN p.username END
-  FROM (VALUES ('ketoan', 'EMAIL', FALSE, 200, 61), ('ketoan', 'PUSH', TRUE, 200, NULL),
-               ('sales1', 'EMAIL', TRUE, 190, NULL), ('sales1', 'SMS', FALSE, 190, NULL),
-               ('quanly.bd', 'PUSH', TRUE, 180, NULL), ('dieuphoi', 'EMAIL', TRUE, 175, 33),
-               ('kh.caphemoc', 'EMAIL', TRUE, 120, NULL), ('kh.trasuamay', 'SMS', FALSE, 110, NULL))
-       AS p (username, channel, enabled, created, changed)
-  JOIN identity.app_user u ON u.username = p.username;
 
 -- ---------------------------------------------------------------------------------------------
 -- 80.6 The audit log (platform.audit_log), as AuditAspect writes it: the @Auditable methods only, the acting user's id

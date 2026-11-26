@@ -204,10 +204,16 @@ SELECT pg_temp.expect_fail_by('CX1 another customer''s order', '16 BR-02', $q$
 SELECT pg_temp.expect_fail_by('CX2 another customer''s quote', '16 BR-02', $q$
     INSERT INTO chat.conversation_context (id, conversation_id, kind, quote_id, attached_at, version, created_at)
     VALUES (gen_random_uuid(), md5('qa97:c1')::uuid, 'QUOTE', md5('qa97:quote-b')::uuid, NOW(), 0, NOW()) $q$);
+-- A customer's SKU is a row of product.customer_skus since V20270105000100 (column customer_sku_id).
 SELECT pg_temp.expect_fail_by('CX3 a catalogue variant is no customer''s own SKU', '16 BR-02', $q$
-    INSERT INTO chat.conversation_context (id, conversation_id, kind, variant_id, attached_at, version, created_at)
+    INSERT INTO chat.conversation_context (id, conversation_id, kind, customer_sku_id, attached_at, version, created_at)
     SELECT gen_random_uuid(), md5('qa97:c1')::uuid, 'CUSTOMER_SKU', v.id, NOW(), 0, NOW()
       FROM product.variants v WHERE v.sku = 'LY-GIAY-DEMO-12OZ' $q$);
+SELECT pg_temp.expect_fail_by('CX3b another customer''s own SKU', '16 BR-02', $q$
+    INSERT INTO chat.conversation_context (id, conversation_id, kind, customer_sku_id, attached_at, version, created_at)
+    SELECT gen_random_uuid(), c.id, 'CUSTOMER_SKU', s.id, NOW(), 0, NOW()
+      FROM chat.conversation c JOIN product.customer_skus s ON s.customer_id <> c.customer_id
+     WHERE c.id = md5('qa97:c1')::uuid ORDER BY s.sku LIMIT 1 $q$);
 SELECT pg_temp.expect_fail_by('CX4 a context names the reference of its kind', 'ck_conversation_context_reference', $q$
     INSERT INTO chat.conversation_context (id, conversation_id, kind, quote_id, attached_at, version, created_at)
     VALUES (gen_random_uuid(), md5('qa97:c2')::uuid, 'ORDER', md5('qa97:quote-b')::uuid, NOW(), 0, NOW()) $q$);

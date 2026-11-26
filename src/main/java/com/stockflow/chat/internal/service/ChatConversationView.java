@@ -57,7 +57,7 @@ public record ChatConversationView(UUID id, UUID customerId, String customerName
     /**
      * A document the conversation is about.
      *
-     * @param refId  the document's id (for a customer's SKU, the variant's)
+     * @param refId  the document's id (for a customer's SKU, its {@code product.customer_skus} id)
      * @param label  its number or name (quote, order, contract number; design name); null in list rows
      * @param status its own status in its module; null in list rows
      */

@@ -522,18 +522,18 @@ def design(key, cust, blank, name, status, when, project=None):
 
 
 def customer_sku(cust, blank, suffix, name, when, project=None):
-    """The customer's own SKU drawn on the blank once its design is approved (kltn-docs 12 §4.5, 01 BR-03), sold and
-    stocked in its blank's carton: the carton is the catalogue variant's, declared once and shared by every customer
-    SKU drawn on it (owner decision Q1, V20270104000100)."""
+    """The customer's own SKU drawn on the blank once its design is approved (kltn-docs 12 §4.5, 01 BR-03), a row of
+    product.customer_skus (owner decision Q4, V20270105000100), sold and stocked in its blank's carton: the carton is
+    the catalogue variant's, declared once and shared by every customer SKU drawn on it (Q1, V20270104000100). The
+    approval makes no inventory item: the order that first names the SKU does (Q5, open_item)."""
     v = VARIANT[blank]
     sku = f"{blank}-{suffix}"
     d = design("d:" + sku, cust, blank, name, "APPROVED", when, project)
-    ins("product.variants", d["at"], id=uid("variant:" + sku), product_id=v["product_id"], sku=sku,
-        name=f"{v['name']} - {name}", status="ACTIVE", is_default=False, attribute_signature="OWNED-SKU:" + sku,
-        position=10, owner_customer_id=CUST[cust]["id"], design_snapshot_id=d["snapshot"], source_variant_id=v["id"])
+    ins("product.customer_skus", d["at"], id=uid("variant:" + sku), product_id=v["product_id"], variant_id=v["id"],
+        customer_id=CUST[cust]["id"], design_snapshot_id=d["snapshot"], sku=sku, name=f"{v['name']} - {name}",
+        status="ACTIVE")
     per = CARTON[v["product"]]
     barcode = "89" + f"{int(hashlib.md5(sku.encode()).hexdigest(), 16) % 10 ** 11:011d}"
-    raw(f"UPDATE inventory.inventory_items SET barcode = '{barcode}' WHERE sku = '{sku}';")
     weight = round(per * v["kg"] + 0.6, 3)
     if blank not in VARIANT_CARTON:
         VARIANT_CARTON[blank] = uid("unit:" + blank)
@@ -543,8 +543,22 @@ def customer_sku(cust, blank, suffix, name, when, project=None):
     unit = VARIANT_CARTON[blank]
     SKU[sku] = dict(sku=sku, cust=cust, blank=blank, unit=unit, per=per, snapshot=d["snapshot"],
                     checksum=d["checksum"], tax=v["tax"], rate=TAX_RATE[v["tax"]], name=name, product=v["product"],
-                    weight=weight)
+                    weight=weight, barcode=barcode, variant=v["id"])
     return sku
+
+
+ITEMS = set()  # customer SKUs whose inventory item an order has made
+
+
+def open_item(sku, when):
+    """The inventory item of a customer's SKU, made when Sales converts the first quote naming it into an order (owner
+    decision Q5, InventoryService.openItems), packed as the variant it was drawn on."""
+    if sku in ITEMS:
+        return
+    ITEMS.add(sku)
+    s = SKU[sku]
+    ins("inventory.inventory_items", when, id=uid("item:" + sku), sku=sku, variant_id=s["variant"],
+        barcode=s["barcode"])
 
 
 PROJECT = uid("project:trasuamay")
@@ -742,6 +756,7 @@ class Order:
             contact_phone=c["phone"], tax_amount=self.tax, **ship)
         self.log(None, "DRAFT", when, U[sales], f"Chuyển từ báo giá {self.q['number']}")
         for ln in self.lines:
+            open_item(ln["sku"], when)
             ins("ordering.order_line", id=ln["id"], order_id=self.id, sku=ln["sku"], quantity=ln["units"],
                 unit_price=ln["price"], currency="VND", requested_delivery_date=(when + timedelta(days=30)).date(),
                 uom_conversion_id=ln["s"]["unit"], cartons=ln["cartons"], units_per_carton=ln["per"],

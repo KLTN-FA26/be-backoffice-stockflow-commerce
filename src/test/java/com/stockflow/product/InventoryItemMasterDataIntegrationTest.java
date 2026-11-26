@@ -17,6 +17,7 @@ import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.product.internal.service.ProductVariantService;
 import com.stockflow.product.internal.service.SkuUnitService;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
@@ -50,6 +51,10 @@ import static org.mockito.Mockito.when;
  * (glossary "Phôi"),
  * the rotatable flag (E13), units of measure (BR-09, BR-10) and the variant's sales units (BR-11).
  * Real database, real services, through the product module as the controllers call them.
+ *
+ * <p>The cartons are the catalogue variant's, which has no inventory item (V20270105000100); the item whose unit and
+ * stock the checks below need is a customer's SKU drawn on the variant, made as the order naming it would make it
+ * ({@link CartonRows#item}).</p>
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -68,6 +73,9 @@ class InventoryItemMasterDataIntegrationTest {
     String suffix;
     UUID productId;
     UUID variantId;
+    /** The variant's own code. */
+    String variantSku;
+    /** A customer's SKU drawn on the variant, with an item: what stock and the item's unit are about. */
     String sku;
 
     @BeforeEach
@@ -80,7 +88,44 @@ class InventoryItemMasterDataIntegrationTest {
                 "Paper cup 12oz", null, null, "Ly", null, null, TaxClass.STANDARD, List.of()));
         productId = created.productId();
         variantId = variants.list(productId, 0, 1).items().getFirst().id();
-        sku = "CUP-" + suffix;
+        variantSku = "CUP-" + suffix;
+        sku = variantSku + "-KH-01";
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        tx.executeWithoutResult(s -> {
+            UUID draft = Identifiers.newId();
+            UUID snapshot = Identifiers.newId();
+            jdbc.update("""
+                    INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
+                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, customer, productId);
+            jdbc.update("""
+                    INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at,
+                        artifact_manifest)
+                    VALUES (?, ?, ?, 'https://example.com/print.pdf', NOW(), NOW(), '[]'::jsonb)""",
+                    snapshot, draft, "c".repeat(64));
+            jdbc.update("""
+                    INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku,
+                        name)
+                    VALUES (?, ?, ?, ?, ?, ?, 'Ly in logo khach')""", Identifiers.newId(), productId, variantId,
+                    customer, snapshot, sku);
+            CartonRows.item(jdbc, sku);
+        });
+    }
+
+    @Test
+    @DisplayName("a catalogue variant has no inventory item (V20270105000100), yet its cartons are declared and read on it")
+    void aVariantHasNoItem() {
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku = ?", Long.class,
+                variantSku)).isZero();
+        UomConversion carton = units.addConversion(productId, variantId, packing("CARTON", 1000, true));
+        assertThat(units.conversions(productId, variantId, 0, 20).items()).extracting(UomConversion::id)
+                .containsExactly(carton.id());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku = ?", Long.class,
+                variantSku)).as("declaring a carton makes none either").isZero();
+        // The database refuses one for a catalogue variant outright.
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update(
+                "INSERT INTO inventory.inventory_items (id, sku, variant_id) VALUES (?, ?, ?)", Identifiers.newId(),
+                variantSku, variantId)))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 
     /** Logistics are edited on the inventory item by its own id (#118). */

@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -97,8 +98,7 @@ class CartonQuarantineIntegrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Quarantine fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Quarantine fixture");
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Quarantine fixture");
             // Every SKU is FIFO and lot-tracked since team plan 5-5: nothing to configure on the item.
             jdbc.update("INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width,"
                     + " map_height, version, created_at) VALUES (?, 'Quarantine', 'ACTIVE', ?, 'Test address',"

@@ -91,7 +91,7 @@ public class ContextResolver {
         return switch (ref.kind()) {
             case PRODUCT -> products.findById(id).map(p -> new Resolved(ref, null, p.name(),
                     p.status() == null ? null : p.status().name(), null));
-            case CUSTOMER_SKU -> customerSkus.findByVariant(id).map(s -> new Resolved(ref, s.ownerCustomerId(),
+            case CUSTOMER_SKU -> customerSkus.findById(id).map(s -> new Resolved(ref, s.ownerCustomerId(),
                     s.sku(), s.status(), null));
             case DESIGN -> designs.design(id).map(d -> new Resolved(ref, d.customerId(), d.name(), d.status(), null));
             case DESIGN_PROJECT -> designs.project(id).map(d -> new Resolved(ref, d.customerId(), d.name(), d.status(),

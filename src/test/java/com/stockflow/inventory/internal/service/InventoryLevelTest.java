@@ -43,7 +43,7 @@ class InventoryLevelTest {
                         skuReservations,
                         locations,
                         mock(com.stockflow.inventory.internal.domain.CycleCountRepository.class),
-                    repository);
+                    repository, mock(com.stockflow.common.security.CurrentUserProvider.class));
 
     /**
      * Review C4 P-1: a warehouse promises what a release there could allocate - the units of the free cartons on

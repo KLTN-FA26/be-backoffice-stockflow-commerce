@@ -7,8 +7,9 @@ import java.util.UUID;
 /**
  * A customer's own price for a SKU, its MOQ (the first tier) and the version to send back on change.
  *
- * @param measure what the tiers count: {@code CARTON} for the customer's own SKU (13 BR-05); {@code UNIT} for a price
- *                set on a stock variant before, kept to read and delete - it is not set again
+ * @param measure what the tiers count: {@code CARTON}, the customer's own SKU (13 BR-05). {@code UNIT} (a price on a
+ *                stock variant from before 4B-2) can no longer occur: V20270105000100 removed those rows and the foreign
+ *                key names customers' SKUs only; the field stays for the screens that show it
  * @param customerName the customer's name, so the price screen needs no customer lookup; null if the customer is unknown
  * @param customerCode the customer's code; null if the customer is unknown
  */

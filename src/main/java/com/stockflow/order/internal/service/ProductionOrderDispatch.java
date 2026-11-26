@@ -621,8 +621,9 @@ public class ProductionOrderDispatch {
                         .ifPresent(carton -> sizes.putIfAbsent(line.sku(), carton));
             }
         }
-        // Every SKU of an order has its inventory item from the order's creation on: no item is a data error, thrown
-        // rather than caught - caught inside the caller's transaction it would mark it rollback-only.
+        // Every SKU of an order has its inventory item from the order's creation on (placing the order opens it, owner
+        // decision Q5): no item is a data error, thrown rather than caught - caught inside the caller's transaction it
+        // would mark it rollback-only.
         if (!unsigned.isEmpty()) {
             for (PackagingSpec spec : packaging.resolveAll(unsigned)) {
                 if (spec.status() == PackagingSpec.Status.RESOLVED && spec.carton() != null) {

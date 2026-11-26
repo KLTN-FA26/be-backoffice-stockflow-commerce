@@ -83,8 +83,10 @@ class StockSummaryReportServiceTest {
         customerSkus = mock(CustomerSkus.class);
         when(customerSkus.ownersOf(anyCollection())).thenReturn(Map.of("CUP-A", OWNER, "CUP-C", OWNER));
         when(customerSkus.ownedBy(OWNER, null)).thenReturn(List.of(
-                new CustomerSku(UUID.randomUUID(), UUID.randomUUID(), "CUP-A", "Cup A", OWNER, null, "CUP", "ACTIVE"),
-                new CustomerSku(UUID.randomUUID(), UUID.randomUUID(), "CUP-C", "Cup C", OWNER, null, "CUP", "ACTIVE")));
+                new CustomerSku(UUID.randomUUID(), UUID.randomUUID(), "CUP-A", "Cup A", OWNER, null, null, "CUP",
+                        "ACTIVE"),
+                new CustomerSku(UUID.randomUUID(), UUID.randomUUID(), "CUP-C", "Cup C", OWNER, null, null, "CUP",
+                        "ACTIVE")));
         warehouses = mock(WarehouseService.class);
         WarehouseView hcm = new WarehouseView(HCM, "HCM", "Kho Hồ Chí Minh", "Q7", true);
         when(warehouses.activeWarehouses()).thenReturn(List.of(hcm));
