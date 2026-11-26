@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CountAndAdjustmentByCartonMigrationUpgradeTest {
 
     /** The last migration before the one under test. */
-    private static final String BEFORE = "20261229000100";
+    private static final String BEFORE = "20261230000200";
     private static final String MIGRATION = "20261231000100";
 
     private static final String USER = "00000000-0000-4000-8000-0000000b0001";

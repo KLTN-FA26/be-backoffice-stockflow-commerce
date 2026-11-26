@@ -69,14 +69,22 @@ class LotTraceSearchAdapter implements LotTraceSearch {
 
     @Override
     public List<LotTrace.Balance> balances(UUID lotId, Set<String> warehouses) {
-        MapSqlParameterSource params = new MapSqlParameterSource().addValue("lotId", lotId);
+        // One constant statement, the warehouse filter bound as an array (null: every warehouse), so nothing is
+        // concatenated into the SQL.
+        MapSqlParameterSource params = new MapSqlParameterSource().addValue("lotId", lotId)
+                .addValue("warehouses", warehouses.isEmpty() ? null : warehouses.toArray(String[]::new),
+                        java.sql.Types.ARRAY);
         String sql = """
                 SELECT si.location_code, si.stock_status AS status, sum(si.nominal_qty) AS on_hand,
-                       COALESCE(sum(si.nominal_qty) FILTER (WHERE\s""" + HELD + """
-                       ), 0) AS held
+                       COALESCE(sum(si.nominal_qty) FILTER (WHERE EXISTS (
+                           SELECT 1 FROM inventory.stock_reservation r
+                            WHERE r.stock_package_id = si.id AND r.status = 'HELD')), 0) AS held
                   FROM inventory.stock_package si
-                 WHERE si.lot_id = :lotId AND si.status = 'IN_STOCK'""" + inWarehouses("si.location_code", warehouses, params)
-                + " GROUP BY si.location_code, si.stock_status ORDER BY si.location_code, si.stock_status";
+                 WHERE si.lot_id = :lotId AND si.status = 'IN_STOCK'
+                   AND (CAST(:warehouses AS text[]) IS NULL
+                        OR split_part(si.location_code, '-', 1) = ANY (CAST(:warehouses AS text[])))
+                 GROUP BY si.location_code, si.stock_status
+                 ORDER BY si.location_code, si.stock_status""";
         return jdbc.query(sql, params, (rs, i) -> new LotTrace.Balance(rs.getString("location_code"),
                 rs.getString("status"), rs.getInt("on_hand"), rs.getInt("held")));
     }
