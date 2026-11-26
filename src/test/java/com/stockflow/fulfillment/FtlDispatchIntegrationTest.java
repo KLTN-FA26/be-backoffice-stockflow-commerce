@@ -1014,18 +1014,18 @@ class FtlDispatchIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("CARRIER_BOOKING_FAILED"))
                 // S17-2: a code the bundles know is answered as what to do and who does it, not as the carrier's words.
                 .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.allOf(
-                        org.hamcrest.Matchers.containsString("Nhân viên kho"),
+                        org.hamcrest.Matchers.containsString("Quản lý kho"),
                         org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("SERVICE_NOT_VALID")))))
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("carrier"))
                 .andExpect(jsonPath("$.fieldErrors[0].code").value("SERVICE_NOT_VALID_AT_PICKUP"))
                 .andExpect(jsonPath("$.fieldErrors[0].message").value(org.hamcrest.Matchers.allOf(
-                        org.hamcrest.Matchers.containsString("Nhân viên kho"),
+                        org.hamcrest.Matchers.containsString("Quản lý kho"),
                         org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("SERVICE_NOT_VALID")))));
         assertThat(load(loadId).path("status").asText()).isEqualTo("PLANNED");
         assertThat(load(loadId).path("carrierBooking").path("status").asText()).isEqualTo("FAILED");
         // What the load shows is the advice; what is stored, for the record, is the carrier's refusal as it came.
         assertThat(load(loadId).path("carrierBooking").path("lastError").asText())
-                .contains("Nhân viên kho").doesNotContain("SERVICE_NOT_VALID_AT_PICKUP");
+                .contains("Quản lý kho").doesNotContain("SERVICE_NOT_VALID_AT_PICKUP");
         assertThat(jdbc.queryForObject("SELECT last_error FROM fulfillment.carrier_booking WHERE load_id = ?::uuid",
                 String.class, loadId)).contains("SERVICE_NOT_VALID_AT_PICKUP");
         // A code the bundles do not know keeps the carrier's own words, as before.

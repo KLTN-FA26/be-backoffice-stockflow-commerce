@@ -314,6 +314,7 @@ public class CustomerDesignService {
                         "The variant or its template can no longer be designed on; start a new design"));
         DesignProjectJpaEntity project = projects.lockForCopy(sourceId, projectId, actor, customer.customerId());
         requireRoomForDraft(customer.customerId());
+        projects.requireStillInNoProject(sourceId, project);
 
         var draft = new DesignDraftJpaEntity(Identifiers.newId(), source.getCustomerId(), source.getProductId(),
                 source.getName(), source.getSpec(), DesignStatus.DRAFT);
@@ -385,6 +386,7 @@ public class CustomerDesignService {
         PrintConfig template = cloneTarget(source.getProductId(), targetSku, templateCode);
         DesignProjectJpaEntity project = projects.lockForCopy(sourceId, projectId, actor, customer.customerId());
         requireRoomForDraft(customer.customerId());
+        projects.requireStillInNoProject(sourceId, project);
 
         String problem = DesignDocumentRules.problem(document,
                 frame(template, assets.idsOf(sourceId).stream().map(UUID::toString).toList()));

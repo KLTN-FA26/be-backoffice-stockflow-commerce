@@ -348,6 +348,18 @@ public class DesignProjectService {
     }
 
     /**
+     * The check that closes {@link #lockForCopy} for a source that was in no project when it was read: it has no
+     * project row to lock, so after the customer's draft limit is locked - the last lock before the copy is written -
+     * the source is read once more, and one that joined a project meanwhile is a conflict to try again, not a copy
+     * left standing alone beside a source that is no longer alone. Nothing to check when the copy goes into a project.
+     */
+    void requireStillInNoProject(UUID sourceId, DesignProjectJpaEntity project) {
+        if (project == null && drafts.projectIdOf(sourceId) != null) {
+            throw new BusinessException(ErrorCode.CONFLICT, "The design joined a project meanwhile; try again");
+        }
+    }
+
+    /**
      * Records that the studio's own preflight refused a batch of the project (FE request 2026-11-13 E-4; kltn-docs 12
      * §5.4 {@code BATCH_PREFLIGHT_FAILED}, BR-13) - findings the backend cannot see itself, such as text crossing a
      * seam. Nothing else changes; each design records its own refusal on its own. The findings come from the browser

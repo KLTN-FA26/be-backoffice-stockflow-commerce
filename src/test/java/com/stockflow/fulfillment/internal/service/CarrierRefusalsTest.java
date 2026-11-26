@@ -43,14 +43,37 @@ class CarrierRefusalsTest {
             String key = CarrierRefusals.keyOf(code);
             String vietnamese = BUNDLE.getMessage(key, null, new Locale("vi"));
             String english = BUNDLE.getMessage(key, null, Locale.ENGLISH);
-            assertThat(vietnamese).as(key).contains("Nhân viên kho").doesNotContain(code).doesNotContain("400")
-                    .doesNotContain("406");
-            assertThat(english).as(key).contains("Warehouse staff").doesNotContain(code);
+            assertThat(vietnamese).as(key).doesNotContain(code).doesNotContain("400").doesNotContain("406");
+            assertThat(english).as(key).doesNotContain(code);
         }
-        assertThat(BUNDLE.getMessage("carrier.refusal.INVALID_LOCATION", null, new Locale("vi")))
-                .contains("Tạo đơn ở hãng").contains("Nhân viên Sale");
-        assertThat(BUNDLE.getMessage("carrier.refusal.INVALID_SERVICE_HOUR", null, new Locale("vi")))
-                .contains("Giờ hẹn lấy hàng");
+    }
+
+    /**
+     * Who acts follows the permissions: the pickup point's address and the vehicle types' service codes are the carrier
+     * setup (fulfillment-carriers:UPDATE, Quản lý kho only, kltn-docs 09 §2); pressing "Tạo đơn ở hãng" again and
+     * choosing another pickup time are the booking (fulfillment-dispatch:UPDATE, warehouse staff too).
+     */
+    @Test
+    void theCarrierSetupIsTheWarehouseManagersAndTheBookingIsWarehouseStaffs() {
+        Locale vi = new Locale("vi");
+        String location = BUNDLE.getMessage("carrier.refusal.INVALID_LOCATION", null, vi);
+        assertThat(location).contains("Quản lý kho kiểm lại địa chỉ điểm lấy hàng").contains("(cấu hình hãng)")
+                .contains("Nhân viên Sale sửa").contains("nhân viên kho bấm “Tạo đơn ở hãng” lại")
+                .doesNotContain("Nhân viên kho kiểm");
+        String service = BUNDLE.getMessage("carrier.refusal.SERVICE_NOT_VALID_AT_PICKUP", null, vi);
+        assertThat(service).contains("Quản lý kho kiểm lại mã dịch vụ").contains("cấu hình hãng")
+                .doesNotContain("Nhân viên kho");
+        String hour = BUNDLE.getMessage("carrier.refusal.INVALID_SERVICE_HOUR", null, vi);
+        assertThat(hour).contains("Nhân viên kho chọn giờ hẹn khác").contains("Giờ hẹn lấy hàng")
+                .contains("Tạo đơn ở hãng");
+
+        assertThat(BUNDLE.getMessage("carrier.refusal.INVALID_LOCATION", null, Locale.ENGLISH))
+                .contains("The Warehouse Manager checks the carrier's pickup point address")
+                .contains("warehouse staff press \"Create order at carrier\" again");
+        assertThat(BUNDLE.getMessage("carrier.refusal.SERVICE_NOT_VALID_AT_PICKUP", null, Locale.ENGLISH))
+                .contains("The Warehouse Manager checks the vehicle type's service code").doesNotContain("staff");
+        assertThat(BUNDLE.getMessage("carrier.refusal.INVALID_SERVICE_HOUR", null, Locale.ENGLISH))
+                .contains("Warehouse staff choose another time");
     }
 
     private static ResourceBundleMessageSource bundle() {

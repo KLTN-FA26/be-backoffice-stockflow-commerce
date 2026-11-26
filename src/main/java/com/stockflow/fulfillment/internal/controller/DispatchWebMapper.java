@@ -21,6 +21,9 @@ import org.springframework.stereotype.Component;
 @Component
 class DispatchWebMapper {
 
+    /** The status of a booking the carrier refused ({@code CarrierBookingJpaEntity.FAILED}, as the view carries it). */
+    private static final String BOOKING_FAILED = "FAILED";
+
     private final Messages messages;
 
     DispatchWebMapper(Messages messages) {
@@ -73,7 +76,8 @@ class DispatchWebMapper {
                 d.waybillNo(), d.carrierConnectionType(), d.carrierBooking() == null ? null
                         : new LoadResponse.CarrierBooking(d.carrierBooking().status(), d.carrierBooking().carrierOrderId(),
                         d.carrierBooking().trackingLink(), d.carrierBooking().requestedAt(),
-                        d.carrierBooking().bookedAt(), refusalAsAdvice(d.carrierBooking().lastError())),
+                        d.carrierBooking().bookedAt(), refusalAsAdvice(d.carrierBooking().status(),
+                        d.carrierBooking().lastError())),
                 d.handoverWarnings().stream().map(w -> new LoadResponse.HandoverWarning(w.orderId(), w.orderNumber(),
                         w.reasonCode(), w.reasonCodes(), w.amountDue(), w.currency(), w.deliveryBatchSeq(),
                         w.windowStart())).toList(), d.loadingStartedByName(), d.bookedByName(), d.warehouseCode());
@@ -118,10 +122,14 @@ class DispatchWebMapper {
     }
 
     /**
-     * The booking's last error as a dispatcher reads it: a refusal whose code the bundles know is answered as what to
-     * do and who does it, anything else as it was stored (the carrier's words, or the server's own English).
+     * The booking's last error as a dispatcher reads it: the refusal of a FAILED booking whose code the bundles know is
+     * answered as what to do and who does it; anything else - another status's error, an unknown code - as it was
+     * stored (the carrier's words, or the server's own English).
      */
-    private String refusalAsAdvice(String lastError) {
+    String refusalAsAdvice(String status, String lastError) {
+        if (!BOOKING_FAILED.equals(status)) {
+            return lastError;
+        }
         String key = CarrierRefusals.keyOf(CarrierRefusals.codeOf(lastError));
         return key == null ? lastError : messages.get(key, lastError);
     }
