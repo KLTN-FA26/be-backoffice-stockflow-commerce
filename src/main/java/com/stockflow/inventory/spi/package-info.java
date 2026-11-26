@@ -24,6 +24,11 @@
  * owner decision Q9): putaway, the bin-fit checks and the packaging resolver ask it, and a module test without
  * {@code product} treats every carton as rotatable, the documented default.</p>
  *
+ * <p>Which catalogue variant a SKU is packed as ({@link SkuVariants}, answered by {@code product}; owner decisions Q1,
+ * Q5) is asked for a SKU without an inventory item - a catalogue variant, or a customer's SKU no order has named yet -
+ * whose cartons a design, a quote or the variant's carton screen still reads; a SKU with an item is answered by the
+ * item's {@code variant_id} without asking.</p>
+ *
  * <p>Like {@code api}: records and interfaces only, nothing internal.</p>
  */
 @org.springframework.modulith.NamedInterface("spi")

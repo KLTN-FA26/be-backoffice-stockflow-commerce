@@ -154,8 +154,9 @@ class ProductVariantOptionsIntegrationTest {
         assertThat(def.options()).extracting(VariantOption::valueCode).containsExactly("12OZ", "CLEAR");
         assertThat(result.created()).extracting(VariantView::sku)
                 .containsExactly(code + "-12OZ-RED", code + "-16OZ-CLEAR", code + "-16OZ-RED");
+        // No variant has an inventory item (V20270105000100): only a customer's SKU an order named has one.
         assertThat(jdbc.queryForObject("select count(*) from inventory.inventory_items i join product.variants v "
-                + "on v.sku = i.sku where v.product_id = ?", Long.class, product)).isEqualTo(4);
+                + "on v.sku = i.sku where v.product_id = ?", Long.class, product)).isZero();
     }
 
     @Test
@@ -226,7 +227,7 @@ class ProductVariantOptionsIntegrationTest {
         assertThat(first.sku()).isEqualTo("CUP-FIRST");
         assertThat(count(product)).isEqualTo(1);
         assertThat(jdbc.queryForObject("select count(*) from inventory.inventory_items where sku = 'CUP-FIRST'",
-                Long.class)).isEqualTo(1);
+                Long.class)).as("a variant has no item").isZero();
     }
 
     @Test
@@ -408,8 +409,9 @@ class ProductVariantOptionsIntegrationTest {
             assertThat(def.name()).isEqualTo("Ly giay – Clear / 12 oz");
         });
         assertThat(all).allSatisfy(v -> assertThat(v.status()).isEqualTo(VariantStatus.DRAFT));
+        // No variant has an inventory item (V20270105000100): only a customer's SKU an order named has one.
         assertThat(jdbc.queryForObject("select count(*) from inventory.inventory_items i join product.variants v "
-                + "on v.sku = i.sku where v.product_id = ?", Long.class, product)).isEqualTo(4);
+                + "on v.sku = i.sku where v.product_id = ?", Long.class, product)).isZero();
         assertThat(attributesOfProduct.get(product).axes()).extracting(ProductAttributeService.AxisView::attributeId)
                 .containsExactly(color, capacity);
         // Generating again finds nothing missing.

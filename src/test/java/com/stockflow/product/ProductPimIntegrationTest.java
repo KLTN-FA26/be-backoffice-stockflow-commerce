@@ -124,8 +124,9 @@ class ProductPimIntegrationTest {
             assertThat(v.defaultVariant()).isTrue();
             assertThat(v.status()).isEqualTo(VariantStatus.DRAFT);
         });
+        // A catalogue variant is never stocked: no inventory item (V20270105000100).
         assertThat(jdbc.queryForObject("select count(*) from inventory.inventory_items where sku = ?", Long.class,
-                "CUP-" + suffix)).isOne();
+                "CUP-" + suffix)).isZero();
         assertThat(products.containsSku(created.productId(), "CUP-" + suffix)).isTrue();
         assertThat(products.nameForSku("cup-" + suffix)).contains("Ly giấy 12oz");
 

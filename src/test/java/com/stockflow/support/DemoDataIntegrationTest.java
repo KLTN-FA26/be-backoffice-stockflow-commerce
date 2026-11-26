@@ -183,6 +183,20 @@ class DemoDataIntegrationTest {
                 .containsEntry("code", "HOP-GIAY-DEMO");
         assertThat(row("SELECT product_id FROM product.variants WHERE sku = ?", DemoData.BLANK_CUP))
                 .containsEntry("product_id", DemoData.PRODUCT_CUP);
+
+        // Owner decisions Q4, Q5 (V20270105000100): the demo's customer SKUs are rows of product.customer_skus drawn on
+        // the blank, no longer variants, and only a customer's SKU has an inventory item - a blank never does.
+        for (String sku : List.of(DemoData.SKU_STOCKED, DemoData.SKU_QUARANTINED)) {
+            assertThat(row("SELECT v.sku AS source FROM product.customer_skus c JOIN product.variants v ON v.id = "
+                    + "c.variant_id WHERE c.sku = ?", sku)).as("%s is a customer's SKU on the blank", sku)
+                    .containsEntry("source", DemoData.BLANK_CUP);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM product.variants WHERE sku = ?", Long.class, sku))
+                    .as("%s is not a variant", sku).isZero();
+        }
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.inventory_items i
+                 WHERE NOT EXISTS (SELECT 1 FROM product.customer_skus c WHERE c.sku = i.sku AND c.variant_id = i.variant_id)
+                """, Long.class)).as("items that are not a customer's SKU's, packed as its variant").isZero();
     }
 
     /** Cartons of a SKU the demo seed put in stock, counted by "location status" of their opening ledger line. */

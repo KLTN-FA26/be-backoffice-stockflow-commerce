@@ -84,7 +84,7 @@ class InventoryServiceImplReservationTest {
     private final StockPackageRepository repository = mock(StockPackageRepository.class);
     private final InventoryServiceImpl service = new InventoryServiceImpl(
             new InventoryEventPublisher(publisher), operations, itemDirectory, Clock.fixed(NOW, ZoneOffset.UTC),
-            policies, skuReservations, locations, cycleCounts, repository);
+            policies, skuReservations, locations, cycleCounts, repository, mock(com.stockflow.common.security.CurrentUserProvider.class));
 
     private final Map<StockPackageId, StockPackage> cartons = new HashMap<>();
 

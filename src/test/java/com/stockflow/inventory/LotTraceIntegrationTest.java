@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
@@ -233,8 +234,7 @@ class LotTraceIntegrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku, "Lot fixture",
                     sku.toLowerCase(java.util.Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
-                    + " values (?,?,?,'Lot fixture','')", Identifiers.newId(), product, sku);
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Lot fixture");
             // Two cartons of one lot received together: both are of the same UNTRACED lot (CartonRows.lot finds it).
             java.time.Instant received = java.time.Instant.now().minusSeconds(30L * 24 * 3600);
             com.stockflow.support.CartonRows.carton(jdbc, sku, "HCM-A01-1-A", 4, "X1", received, "AVAILABLE");

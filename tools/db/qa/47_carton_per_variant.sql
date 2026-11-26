@@ -87,12 +87,12 @@ SELECT pg_temp.expect_true('CV5 uk_uom_conversions_one_carton is unique on the v
        FROM pg_index i WHERE i.indexrelid = 'inventory.uk_uom_conversions_one_carton'::regclass));
 
 \echo '--- the data the migration left: every SKU reads its variant''s carton'
-SELECT pg_temp.expect_true('CV6 an item''s variant is its SKU''s source variant, or the variant itself',
-    NOT EXISTS (SELECT 1 FROM inventory.inventory_items i JOIN product.variants v ON v.sku = i.sku
-                 WHERE i.variant_id IS DISTINCT FROM COALESCE(v.source_variant_id, v.id)));
-SELECT pg_temp.expect_true('CV7 no carton hangs off a customer''s SKU',
-    NOT EXISTS (SELECT 1 FROM inventory.uom_conversions u JOIN product.variants v ON v.id = u.variant_id
-                 WHERE v.owner_customer_id IS NOT NULL));
+-- Since V20270105000100 an item is a customer's SKU's (product.customer_skus), never a catalogue variant's.
+SELECT pg_temp.expect_true('CV6 an item''s variant is its customer SKU''s source variant, and every item is a customer SKU''s',
+    NOT EXISTS (SELECT 1 FROM inventory.inventory_items i LEFT JOIN product.customer_skus c ON c.sku = i.sku
+                 WHERE c.id IS NULL OR i.variant_id IS DISTINCT FROM c.variant_id));
+SELECT pg_temp.expect_true('CV7 no carton hangs off a customer''s SKU (they kept their ids when they left product.variants)',
+    NOT EXISTS (SELECT 1 FROM inventory.uom_conversions u JOIN product.customer_skus c ON c.id = u.variant_id));
 SELECT pg_temp.expect_true('CV8 the demo cup has one active carton, of 1,000, and its blue and red SKUs both read it',
     (SELECT count(*) = 1 AND min(u.factor) = 1000
        FROM inventory.uom_conversions u JOIN product.variants v ON v.id = u.variant_id
@@ -105,12 +105,12 @@ SELECT pg_temp.expect_true('CV9 the red cup''s carton of 500 is kept, retired, u
        FROM inventory.uom_conversions u WHERE u.id = md5('demo:cups:unit:LY-GIAY-DEMO-12OZ-DO')::uuid));
 
 \echo '--- a carton is declared on a catalogue variant only, one active, codes unique (01 BR-03)'
-SELECT pg_temp.expect_fail_like('CV10 a carton declared on a customer''s SKU (tg_uom_conversions_catalogue_variant)',
-    'has none of its own', $q$
+SELECT pg_temp.expect_fail_like('CV10 a carton declared on a customer''s SKU: it is not a variant (fk_uom_conversions_variant)',
+    'fk_uom_conversions_variant', $q$
     INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, weight_kg, length_cm, width_cm,
                                            height_cm, active)
-    SELECT gen_random_uuid(), v.id, 'QA47OWN', 1000, 8.6, 60, 40, 50, FALSE
-      FROM product.variants v WHERE v.sku = 'LY-GIAY-DEMO-12OZ-XANH' $q$);
+    SELECT gen_random_uuid(), c.id, 'QA47OWN', 1000, 8.6, 60, 40, 50, FALSE
+      FROM product.customer_skus c WHERE c.sku = 'LY-GIAY-DEMO-12OZ-XANH' $q$);
 SELECT pg_temp.expect_fail_like('CV11 a second active carton on the demo cup', 'uk_uom_conversions_one_carton', $q$
     INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, weight_kg, length_cm, width_cm,
                                            height_cm, active)
@@ -171,14 +171,19 @@ SELECT md5('qa47:draft')::uuid, c.id, md5('qa47:product')::uuid, 'DRAFT', NOW(),
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qa47:snap')::uuid, md5('qa47:draft')::uuid, repeat('e', 64), 'https://example.com/e.pdf', NOW(), NOW(),
         '[]'::jsonb);
-INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
-                              created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-SELECT md5('qa47:own')::uuid, md5('qa47:product')::uuid, 'QA47-OWN', 'QA 47 in logo', 'ACTIVE', FALSE,
-       'OWNED-SKU:QA47-OWN', 2, 0, NOW(), c.id, md5('qa47:snap')::uuid, md5('qa47:a')::uuid
+INSERT INTO product.customer_skus (id, product_id, sku, name, status, version, created_at, customer_id,
+                                  design_snapshot_id, variant_id)
+SELECT md5('qa47:own')::uuid, md5('qa47:product')::uuid, 'QA47-OWN', 'QA 47 in logo', 'ACTIVE', 0, NOW(),
+       c.id, md5('qa47:snap')::uuid, md5('qa47:a')::uuid
   FROM customer.customer c ORDER BY c.id LIMIT 1;
-SELECT pg_temp.expect_true('CV21 a catalogue variant''s item names the variant; a customer''s SKU''s item names its source',
-    (SELECT variant_id = md5('qa47:a')::uuid FROM inventory.inventory_items WHERE sku = 'QA47-A')
-    AND (SELECT variant_id = md5('qa47:a')::uuid FROM inventory.inventory_items WHERE sku = 'QA47-OWN'));
+SELECT pg_temp.expect_fail_like('CV21 a catalogue variant gets no item (tg_inventory_items_customer_sku)',
+    'packed as its SKU''s catalogue variant', $q$
+    INSERT INTO inventory.inventory_items (id, sku, variant_id) VALUES (gen_random_uuid(), 'QA47-A', md5('qa47:a')::uuid) $q$);
+SELECT pg_temp.expect_fail_like('CV21b a customer''s SKU''s item packed as another variant than its source',
+    'packed as its SKU''s catalogue variant', $q$
+    INSERT INTO inventory.inventory_items (id, sku, variant_id) VALUES (gen_random_uuid(), 'QA47-OWN', md5('qa47:b')::uuid) $q$);
+SELECT pg_temp.expect_ok('CV21c the item its first order makes names its source variant', $q$
+    INSERT INTO inventory.inventory_items (id, sku, variant_id) VALUES (gen_random_uuid(), 'QA47-OWN', md5('qa47:a')::uuid) $q$);
 
 \echo '--- a quote line of a customer''s SKU counts in its variant''s carton, and no other (Q1, 14 BR-04)'
 INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, weight_kg, length_cm, width_cm,

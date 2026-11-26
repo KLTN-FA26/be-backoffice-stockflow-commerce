@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
 import com.stockflow.inventory.internal.service.CycleCountView;
@@ -77,8 +78,7 @@ class CycleCountHttpSecurityIntegrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Cycle count HTTP fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Cycle count HTTP fixture");
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Cycle count HTTP fixture");
             carton = CartonRows.stock(jdbc, sku, BIN, 1, 10, "L1",
                     Instant.parse("2026-01-02T00:00:00Z"), "AVAILABLE").getFirst();
         });

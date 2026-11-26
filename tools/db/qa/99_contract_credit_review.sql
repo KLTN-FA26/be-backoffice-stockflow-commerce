@@ -45,10 +45,10 @@ VALUES (md5('qacr:draft')::uuid, md5('qacr:customer')::uuid, md5('qacr:product')
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qacr:snap')::uuid, md5('qacr:draft')::uuid, repeat('c', 64), 'https://example.com/c.pdf', NOW(), NOW(),
         '[]'::jsonb);
-INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
-                              created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-VALUES (md5('qacr:own')::uuid, md5('qacr:product')::uuid, 'QA-CR-OWN', 'QA ly in logo', 'ACTIVE', FALSE,
-        'OWNED-SKU:QA-CR-OWN', 1, 0, NOW(), md5('qacr:customer')::uuid, md5('qacr:snap')::uuid, md5('qacr:blank')::uuid);
+INSERT INTO product.customer_skus (id, product_id, sku, name, status, version, created_at, customer_id,
+                                  design_snapshot_id, variant_id)
+VALUES ( md5('qacr:own')::uuid, md5('qacr:product')::uuid, 'QA-CR-OWN', 'QA ly in logo', 'ACTIVE', 0, NOW(),
+       md5('qacr:customer')::uuid, md5('qacr:snap')::uuid, md5('qacr:blank')::uuid);
 -- The customer's SKU is packed in its blank variant's carton (V20270104000100): the carton is the variant's.
 INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active, version, created_at)
 VALUES (md5('qacr:carton')::uuid, md5('qacr:blank')::uuid, 'CARTON', 50, TRUE, 0, NOW());

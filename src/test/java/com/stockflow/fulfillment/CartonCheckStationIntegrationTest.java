@@ -909,9 +909,9 @@ class CartonCheckStationIntegrationTest {
             + "active carton unit; measured only with a size and a weight")
     void theCartonSpecOfASku() {
         // A SKU of the test's own: its carton unit put through every shape (a SKU needs a catalogue variant to exist at all).
-        String sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 2).sku();
-        UUID first = jdbc.queryForObject("SELECT u.id FROM inventory.uom_conversions u JOIN inventory.inventory_items i "
-                + "ON u.variant_id = i.variant_id WHERE i.sku = ? AND u.active", UUID.class, sku);
+        CustomerSkuRows.Issued issued = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 2);
+        String sku = issued.sku();
+        UUID first = issued.uomConversionId();
         UUID second = Identifiers.newId();
         assertThat(itemControls.cartonSpec(new Sku("CK-NO-SUCH-SKU"))).as("unknown SKU").isEmpty();
         write("UPDATE inventory.uom_conversions SET active = FALSE WHERE id = ?", first);
@@ -936,7 +936,7 @@ class CartonCheckStationIntegrationTest {
                 .isFalse();
 
         write("INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active) "
-                + "SELECT ?, variant_id, 'CARTON24', 24, FALSE FROM inventory.inventory_items WHERE sku = ?", second, sku);
+                + "VALUES (?, ?, 'CARTON24', 24, FALSE)", second, issued.sourceVariantId());
         assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().unitOfMeasure())
                 .as("a retired unit beside it is not a candidate").isEqualTo("CARTON");
         write("UPDATE inventory.uom_conversions SET active = FALSE WHERE id = ?", first);

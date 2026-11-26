@@ -47,9 +47,24 @@ SELECT pg_temp.expect_true('BU2 the triggers that made and renamed the base row 
 SELECT pg_temp.expect_true('BU3 every item still names the unit its pieces are counted in',
     NOT EXISTS (SELECT 1 FROM inventory.inventory_items WHERE unit_of_measure IS NULL));
 INSERT INTO product.products (id, code, name, slug) VALUES (md5('qa45:product')::uuid, 'QA45', 'QA 45', 'qa45');
-SELECT pg_temp.expect_ok('BU4 a new item is made with its variant (tg_variant_inventory_item)', $q$
-    INSERT INTO product.variants (id, product_id, sku, name, attribute_signature)
-    VALUES (md5('qa45:variant')::uuid, md5('qa45:product')::uuid, 'QA45-ITEM', 'QA 45', '') $q$);
+-- Since V20270105000100 an item is a customer's SKU's, made when an order names it; a catalogue variant has none.
+INSERT INTO product.variants (id, product_id, sku, name, attribute_signature)
+VALUES (md5('qa45:variant')::uuid, md5('qa45:product')::uuid, 'QA45-BLANK', 'QA 45', '');
+INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
+SELECT md5('qa45:draft')::uuid, c.id, md5('qa45:product')::uuid, 'DRAFT', NOW(), '{}'::jsonb
+  FROM customer.customer c ORDER BY c.id LIMIT 1;
+INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
+VALUES (md5('qa45:snap')::uuid, md5('qa45:draft')::uuid, repeat('a', 64), 'https://example.com/a.pdf', NOW(), NOW(),
+        '[]'::jsonb);
+INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku, name)
+SELECT md5('qa45:sku')::uuid, md5('qa45:product')::uuid, md5('qa45:variant')::uuid, d.customer_id,
+       md5('qa45:snap')::uuid, 'QA45-ITEM', 'QA 45'
+  FROM design.design_draft d WHERE d.id = md5('qa45:draft')::uuid;
+SELECT pg_temp.expect_true('BU4 a new variant and a new customer''s SKU make no item (V20270105000100)',
+    NOT EXISTS (SELECT 1 FROM inventory.inventory_items WHERE sku IN ('QA45-BLANK', 'QA45-ITEM')));
+SELECT pg_temp.expect_ok('BU4b the item the order of the SKU makes, packed as its variant', $q$
+    INSERT INTO inventory.inventory_items (id, sku, variant_id)
+    VALUES (gen_random_uuid(), 'QA45-ITEM', md5('qa45:variant')::uuid) $q$);
 SELECT pg_temp.expect_true('BU5 ... its unit EACH on the item, nothing in uom_conversions',
     (SELECT i.unit_of_measure = 'EACH'
             AND NOT EXISTS (SELECT 1 FROM inventory.uom_conversions u WHERE u.variant_id = i.variant_id)

@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
 import com.stockflow.inventory.api.StockAdjustmentReason;
@@ -97,8 +98,7 @@ class BlindCountIntegrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Blind count fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Blind count fixture");
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Blind count fixture");
         });
         Instant received = Instant.parse("2026-01-02T00:00:00Z");
         cartonA = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN2, 1, CARTON, "L1", received)).getFirst();

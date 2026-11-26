@@ -61,7 +61,7 @@ class UomConversionServiceImpl implements UomConversionService {
     @Override
     @Transactional(readOnly = true)
     public PageResponse<UomConversion> conversions(Sku sku, int page, int size) {
-        itemId(sku);
+        variantOf(sku);
         var pageable = Pages.of(page, size);
         return PageResponse.of(conversions.page(sku.code(), pageable.getPageSize(), pageable.getOffset()),
                 page, size, conversions.count(sku.code()));
@@ -70,7 +70,7 @@ class UomConversionServiceImpl implements UomConversionService {
     @Override
     @Transactional(readOnly = true)
     public UomConversion conversion(Sku sku, UUID id) {
-        itemId(sku);
+        variantOf(sku);
         return conversions.find(sku.code(), id).orElseThrow(() -> notFound(sku, id));
     }
 
@@ -131,14 +131,22 @@ class UomConversionServiceImpl implements UomConversionService {
     }
 
     /**
-     * The variant whose cartons {@code sku} names, with the lock of every SKU of the variant taken in sorted order (the
-     * order every multi-SKU lock in inventory takes). Whether {@code sku} is the variant itself and not a customer's
-     * SKU is the product module's to know: it refuses first, and {@code tg_uom_conversions_catalogue_variant} last.
+     * The variant whose cartons {@code sku} names, with the lock of {@code sku} and of every SKU of the variant that has
+     * an item taken in sorted order (the order every multi-SKU lock in inventory takes): the asked code serialises two
+     * writes of the variant's cartons even while no SKU of it has an item yet, the items' codes hold their cartons
+     * still. A write is named by the variant's own code: a customer's SKU resolves to the same variant, so the
+     * database cannot refuse it, and it would change the carton of every customer of the variant -
+     * {@code UOM_CARTON_OF_CUSTOMER_SKU} (owner decision Q1).
      */
     private UUID lockVariant(Sku sku) {
-        UUID variantId = conversions.variantId(sku.code()).orElseThrow(
-                () -> new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No inventory item " + sku));
-        conversions.skusOfVariant(variantId).forEach(items::lock);
+        UUID variantId = variantOf(sku);
+        if (conversions.customerSku(sku.code())) {
+            throw new BusinessException(ErrorCode.UOM_CARTON_OF_CUSTOMER_SKU,
+                    "%s is a customer's SKU; declare its cartons on the variant it is drawn on".formatted(sku));
+        }
+        java.util.SortedSet<String> codes = new java.util.TreeSet<>(conversions.skusOfVariant(variantId));
+        codes.add(sku.code());
+        codes.forEach(items::lock);
         return variantId;
     }
 
@@ -150,9 +158,13 @@ class UomConversionServiceImpl implements UomConversionService {
         });
     }
 
-    private UUID itemId(Sku sku) {
-        return conversions.itemId(sku.code()).orElseThrow(
-                () -> new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No inventory item " + sku));
+    /**
+     * The catalogue variant {@code sku} is packed as, whether or not the SKU has an item (a catalogue variant never
+     * does, V20270105000100). {@code INVENTORY_ITEM_NOT_FOUND} for a code nobody knows, the answer this gave before.
+     */
+    private UUID variantOf(Sku sku) {
+        return conversions.variantId(sku.code()).orElseThrow(
+                () -> new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No SKU " + sku));
     }
 
     private String actor() {

@@ -182,7 +182,8 @@ public enum ErrorCode {
     UOM_CARTON_ALREADY_DECLARED("This SKU already has a carton unit; retire it before declaring another", 409),
     /**
      * Owner decision Q1 (2026-11-26): a customer's own SKU is packed in its catalogue variant's carton and has none of
-     * its own ({@code tg_uom_conversions_catalogue_variant}).
+     * its own; a carton write named by a customer's SKU's code would change every customer's carton of the variant
+     * ({@code UomConversionServiceImpl}; the database cannot tell, both resolve to the variant since V20270105000100).
      */
     UOM_CARTON_OF_CUSTOMER_SKU("A customer's own SKU is packed in its variant's carton; declare cartons on the variant",
             409),
@@ -1073,6 +1074,13 @@ public enum ErrorCode {
     PRINT_CONFIG_SURFACES_INVALID("The 3D model's surfaces do not match the template's print areas", 422),
     /** A customer SKU is issued only from an ordinary ACTIVE variant of an approved or published product (B20). */
     CUSTOMER_SKU_SOURCE_UNAVAILABLE("This variant cannot have customer SKUs now", 409),
+    /** No customer's own SKU has this id ({@code product.customer_skus}, V20270105000100). */
+    CUSTOMER_SKU_NOT_FOUND("Customer SKU not found", 404),
+    /**
+     * A customer's SKU moves ACTIVE - BLOCKED - OBSOLETE ({@code CustomerSkuStatus}); OBSOLETE is final, and one goes on
+     * sale again only while its product is on sale and the variant it was drawn on is ACTIVE.
+     */
+    INVALID_CUSTOMER_SKU_TRANSITION("This customer SKU cannot move to that status right now", 409),
     /** A customer holds at most 50 drafts at once (kltn-docs 12 B37); deleting one makes room. */
     DESIGN_DRAFT_LIMIT_REACHED("You already have the most drafts allowed; delete one first", 409),
     /** Only a draft is renamed, laid out or deleted (kltn-docs 12 BR-07, BR-08, BR-16). */

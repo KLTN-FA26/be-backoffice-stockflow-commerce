@@ -87,15 +87,15 @@ SELECT md5('qa92:draft')::uuid, c.id, md5('qa92:product')::uuid, 'DRAFT', NOW(),
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qa92:snap')::uuid, md5('qa92:draft')::uuid, repeat('c', 64), 'https://example.com/c.pdf', NOW(), NOW(),
         '[]'::jsonb);
-INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
-                              created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-SELECT md5('qa92:own')::uuid, md5('qa92:product')::uuid, 'QA-EC-OWN', 'QA ly in logo', 'ACTIVE', FALSE,
-       'OWNED-SKU:QA-EC-OWN', 1, 0, NOW(), c.id, md5('qa92:snap')::uuid, md5('qa92:blank')::uuid
+INSERT INTO product.customer_skus (id, product_id, sku, name, status, version, created_at, customer_id,
+                                  design_snapshot_id, variant_id)
+SELECT md5('qa92:own')::uuid, md5('qa92:product')::uuid, 'QA-EC-OWN', 'QA ly in logo', 'ACTIVE', 0, NOW(),
+       c.id, md5('qa92:snap')::uuid, md5('qa92:blank')::uuid
   FROM qa92_customer c WHERE c.n = 1;
 INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active,
                                        version, created_at)
 SELECT md5('qa92:carton')::uuid, i.variant_id, 'CARTON', 50, TRUE, 0, NOW()
-  FROM inventory.inventory_items i WHERE i.sku = 'QA-EC-OWN';
+  FROM product.customer_skus i WHERE i.sku = 'QA-EC-OWN';
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
                                      currency, placed_at, created_at)
 SELECT md5('qa92:order' || c.n)::uuid, 'SO-QA-EC' || c.n, c.id, gen_random_uuid(), 'DRAFT', 4400000, 400000, 'VND',

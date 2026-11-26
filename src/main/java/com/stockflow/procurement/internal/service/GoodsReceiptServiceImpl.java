@@ -247,8 +247,10 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             }
             InventoryItemPolicy item = items.get(line.sku());
             if (item == null) {
+                // Placing the order opened the item of every SKU it names (owner decision Q5): none is a data error,
+                // reported on the line rather than met as a null further on.
                 errors.add(i, "productionOrderLineId", ErrorCode.INVENTORY_ITEM_NOT_FOUND,
-                        "No inventory item with SKU " + line.sku());
+                        "No inventory item with SKU %s: the order that names it opens it".formatted(line.sku()));
                 continue;
             }
             ReceivingLocation location = errors.area(i, in.locationCode(), RECEIVING, receipt.warehouseId());

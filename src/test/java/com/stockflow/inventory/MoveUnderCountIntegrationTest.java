@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
@@ -77,8 +78,7 @@ class MoveUnderCountIntegrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Move under count fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Move under count fixture");
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Move under count fixture");
             lpnA = CartonRows.stock(jdbc, sku, A, 1, 10, "L1",
                     Instant.parse("2026-01-02T00:00:00Z"), "AVAILABLE").getFirst().lpn();
             lpnC = CartonRows.stock(jdbc, sku, C, 1, 10, "L1",

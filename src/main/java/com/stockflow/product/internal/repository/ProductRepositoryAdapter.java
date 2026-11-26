@@ -36,11 +36,14 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
     private final CategoryJpaRepository categories;
     private final BrandJpaRepository brands;
     private final VariantJpaRepository variants;
+    private final CustomerSkuJpaRepository customerSkus;
     private final JdbcTemplate jdbc;
     private final EntityManager entityManager;
 
     ProductRepositoryAdapter(ProductJpaRepository jpa, CategoryJpaRepository categories, BrandJpaRepository brands,
-                             VariantJpaRepository variants, JdbcTemplate jdbc, EntityManager entityManager) {
+                             VariantJpaRepository variants, CustomerSkuJpaRepository customerSkus, JdbcTemplate jdbc,
+                             EntityManager entityManager) {
+        this.customerSkus = customerSkus;
         this.jpa = jpa;
         this.categories = categories;
         this.brands = brands;
@@ -61,12 +64,14 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
 
     @Override
     public boolean containsSku(UUID productId, String sku) {
-        return jpa.containsSku(productId, sku);
+        // A design is made for a customer's SKU of the product as much as for one of its variants.
+        return jpa.containsSku(productId, sku) || jpa.containsCustomerSku(productId, sku);
     }
 
     @Override
     public Optional<String> nameForSku(String sku) {
-        var names = jpa.namesForSku(sku);
+        var names = new java.util.ArrayList<>(jpa.namesForSku(sku));
+        names.addAll(jpa.namesForCustomerSku(sku));
         return names.size() == 1 ? Optional.of(names.getFirst()) : Optional.empty();
     }
 
@@ -79,6 +84,9 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
         for (Object[] row : jpa.taxClassesOf(skus)) {
             classes.put((String) row[0], (com.stockflow.product.api.TaxClass) row[1]);
         }
+        for (Object[] row : jpa.customerSkuTaxClassesOf(skus)) {
+            classes.put((String) row[0], (com.stockflow.product.api.TaxClass) row[1]);
+        }
         return classes;
     }
 
@@ -87,7 +95,10 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
         if (skus == null || skus.isEmpty()) {
             return List.of();
         }
-        return jpa.taxClassesBySku(skus).stream().map(row -> new ProductTaxClass((String) row[0], (UUID) row[1],
+        List<Object[]> rows = new java.util.ArrayList<>(jpa.taxClassesBySku(skus));
+        rows.addAll(jpa.customerSkuTaxClassesBySku(skus));
+        rows.sort(java.util.Comparator.comparing(row -> (String) row[0]));
+        return rows.stream().map(row -> new ProductTaxClass((String) row[0], (UUID) row[1],
                 (String) row[2], (String) row[3], (ProductStatus) row[4],
                 (com.stockflow.product.api.TaxClass) row[5], ((Number) row[6]).longValue())).toList();
     }
@@ -108,6 +119,9 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
         for (Object[] row : jpa.variantNamesOf(skus)) {
             names.put((String) row[0], (String) row[1]);
         }
+        for (Object[] row : jpa.customerSkuNamesOf(skus)) {
+            names.put((String) row[0], (String) row[1]);
+        }
         return names;
     }
 
@@ -118,7 +132,8 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
 
     @Override
     public boolean skuExists(String sku) {
-        return variants.existsBySku(sku);
+        // A code names one thing: a variant's or a customer's own SKU's (tg_variants_code_free).
+        return variants.existsBySku(sku) || customerSkus.existsBySku(sku);
     }
 
     @Override
@@ -142,8 +157,12 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
 
     @Override
     public List<String> skusOf(ProductId id) {
-        return variants.findByProductIdOrderByPositionAscIdAsc(id.value()).stream()
-                .map(com.stockflow.product.internal.entity.VariantJpaEntity::getSku).toList();
+        // Its variants' and its customers' own SKUs (V20270105000100): quotes and orders name the latter, so what
+        // still refers to a product being discontinued or deleted is found through them.
+        List<String> skus = new java.util.ArrayList<>(variants.findByProductIdOrderByPositionAscIdAsc(id.value())
+                .stream().map(com.stockflow.product.internal.entity.VariantJpaEntity::getSku).toList());
+        customerSkus.findByProductIdOrderBySkuAscIdAsc(id.value()).forEach(c -> skus.add(c.getSku()));
+        return skus;
     }
 
     /**

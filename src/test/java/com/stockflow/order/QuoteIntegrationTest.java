@@ -707,6 +707,58 @@ class QuoteIntegrationTest {
     }
 
     @Test
+    @DisplayName("Q5 (2026-11-26): converting an accepted quote opens the inventory item of its SKU, packed as the SKU's "
+            + "catalogue variant; converting again or ordering the SKU again opens no second one; a SKU never ordered "
+            + "has none")
+    void convertingAQuoteOpensTheInventoryItemOfItsSku() {
+        // Never produced, so no earlier order made an item: the design approval issued the SKU and nothing else.
+        CustomerSkuRows.Issued fresh = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, PER_CARTON, "EXEMPT",
+                false);
+        CustomerSkuRows.Issued neverOrdered = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, PER_CARTON,
+                "EXEMPT", false);
+        assertThat(itemsOf(fresh.sku())).as("an approved design issues no item").isZero();
+
+        UUID orderId = convertedOrderOf(fresh.sku());
+        assertThat(itemsOf(fresh.sku())).as("the order made the item").isOne();
+        UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class,
+                fresh.sku());
+        assertThat(jdbc.queryForObject("SELECT variant_id FROM inventory.inventory_items WHERE sku = ?", UUID.class,
+                fresh.sku())).as("packed in the variant its design was drawn on (Q1)").isEqualTo(fresh.sourceVariantId());
+        assertThat(jdbc.queryForObject("SELECT sku FROM ordering.order_line WHERE order_id = ?", String.class, orderId))
+                .isEqualTo(fresh.sku());
+
+        UUID reorder = convertedOrderOf(fresh.sku());
+        assertThat(reorder).as("a second quote, a second order").isNotEqualTo(orderId);
+        assertThat(itemsOf(fresh.sku())).as("one item per SKU, whatever orders name it").isOne();
+        assertThat(jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class,
+                fresh.sku())).isEqualTo(item);
+        assertThat(itemsOf(neverOrdered.sku())).as("a SKU no order named has no item").isZero();
+    }
+
+    /** Drafted (its plate fee priced), sent, accepted as offered and converted: the DRAFT order of {@code sku}. */
+    private UUID convertedOrderOf(String sku) {
+        Instant validUntil = Instant.now().plus(Duration.ofDays(7));
+        List<Quotes.Line> lines = List.of(new Quotes.Line(sku, 3, List.of(new Quotes.Tier(2, new BigDecimal("3000")))));
+        Quotes.QuoteView drafted = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                new Quotes.Draft(validUntil, null, lines, null, List.of())));
+        Quotes.QuoteView priced = quotes.edit(sales, drafted.id(), drafted.version(), new Quotes.Draft(validUntil,
+                null, lines, null, drafted.fees().stream()
+                .map(fee -> new Quotes.Fee(fee.kind(), fee.sku(), new BigDecimal("500000"))).toList()));
+        Quotes.QuoteView sent = quotes.send(sales, drafted.id(), priced.version());
+        Quotes.QuoteView accepted = quotes.accept(portal, sent.id(), new Quotes.Acceptance(
+                quotes.get(portal, sent.id()).version(), Map.of()));
+        UUID orderId = quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
+                .convertedOrder().orderId();
+        assertThat(quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
+                .convertedOrder().orderId()).as("converting again returns the same order").isEqualTo(orderId);
+        return orderId;
+    }
+
+    private long itemsOf(String sku) {
+        return jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku = ?", Long.class, sku);
+    }
+
+    @Test
     @DisplayName("4B-2, 14 BR-08: the carton spec changed after acceptance (the unit retired, a new one declared) - the "
             + "accepted quote still converts at the cartons and pieces it fixed; a new draft takes the new spec")
     void aCartonSpecChangedAfterAcceptanceDoesNotMoveTheQuote() {
@@ -714,14 +766,15 @@ class QuoteIntegrationTest {
         Quotes.QuoteView accepted = quotes.accept(portal, sent.id(), new Quotes.Acceptance(
                 quotes.get(portal, sent.id()).version(), Map.of()));
         tx.executeWithoutResult(s -> {
+            // The carton is the SKU's catalogue variant's (Q1); the SKU itself may have no item yet (Q5).
             jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE "
-                    + "WHERE unit_of_measure = 'CARTON' AND variant_id = (SELECT variant_id FROM inventory.inventory_items "
+                    + "WHERE unit_of_measure = 'CARTON' AND variant_id = (SELECT variant_id FROM product.customer_skus "
                     + "WHERE sku = ?)", sku);
             jdbc.update("""
                     INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
                         active, version, created_at)
-                    SELECT ?, i.variant_id, 'CARTON20', 20, TRUE, 0, NOW() FROM inventory.inventory_items i
-                     WHERE i.sku = ?""", Identifiers.newId(), sku);
+                    SELECT ?, c.variant_id, 'CARTON20', 20, TRUE, 0, NOW() FROM product.customer_skus c
+                     WHERE c.sku = ?""", Identifiers.newId(), sku);
         });
 
         UUID orderId = quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
@@ -741,7 +794,7 @@ class QuoteIntegrationTest {
             + "revised onto the customer's SKU; a cancelled one shows the customer the offer it was sent, from the "
             + "history written before 4B-2")
     void aQuoteDraftedOnBlanksIsKeptToReadAndRevisedOntoSkus() {
-        UUID snapshot = jdbc.queryForObject("SELECT design_snapshot_id FROM product.variants WHERE sku = ?", UUID.class,
+        UUID snapshot = jdbc.queryForObject("SELECT design_snapshot_id FROM product.customer_skus WHERE sku = ?", UUID.class,
                 sku);
         UUID draftId = Identifiers.newId();
         UUID cancelledId = Identifiers.newId();

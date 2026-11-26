@@ -48,7 +48,7 @@ class ConversationRepositoryAdapter implements ConversationRepository {
     private static final String OVERDUE = "(c.status not in " + ENDED + " and ((c.first_responded_at is null"
             + " and c.first_response_due_at < :now) or c.resolution_due_at < :now))";
     /** The context row's document, whatever its kind: exactly one of these columns is set (ck_conversation_context_reference). */
-    private static final String REFERENCE = "coalesce(x.product_id, x.variant_id, x.design_id, x.design_project_id, "
+    private static final String REFERENCE = "coalesce(x.product_id, x.customer_sku_id, x.design_id, x.design_project_id, "
             + "x.quote_id, x.order_id, x.contract_id, x.production_order_id, x.einvoice_id)";
     private static final String ABOUT = " and exists (select 1 from chat.conversation_context x where x.conversation_id"
             + " = c.id and x.kind = :aboutKind and " + REFERENCE + " = :aboutId)";

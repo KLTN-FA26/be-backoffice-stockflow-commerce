@@ -285,8 +285,9 @@ class DesignSubmissionIntegrationTest {
                 .andExpect(jsonPath("$.data.hasCartonSpec").value(true));
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE product.variants SET status = 'BLOCKED' WHERE sku = ?", sku);
+            // The variant has no inventory item (V20270105000100): its cartons are found by its own id.
             jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE WHERE variant_id = "
-                    + "(SELECT variant_id FROM inventory.inventory_items WHERE sku = ?)", sku);
+                    + "(SELECT id FROM product.variants WHERE sku = ?)", sku);
         });
 
         JsonNode issues = json.readTree(submit(version())

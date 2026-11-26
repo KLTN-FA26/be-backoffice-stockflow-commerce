@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
 import com.stockflow.support.CartonRows;
@@ -63,8 +64,7 @@ class CartonQuarantineHttpTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Quarantine HTTP fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Quarantine HTTP fixture");
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Quarantine HTTP fixture");
         });
         lpn = tx.execute(s -> CartonRows.stock(jdbc, sku, SHELF, 1, 10, null,
                 Instant.parse("2026-01-02T00:00:00Z"))).getFirst().lpn();

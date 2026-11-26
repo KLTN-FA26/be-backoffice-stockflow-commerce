@@ -91,14 +91,17 @@ class InventoryServiceImpl implements InventoryService {
     private final LocationDirectory locations;
     private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts;
     private final StockPackageRepository stockPackages;
+    private final com.stockflow.common.security.CurrentUserProvider users;
 
     InventoryServiceImpl(InventoryEventPublisher events,
                          StockOperations operations, InventoryItemDirectory items, Clock clock,
                          InventoryPolicyRepository policies,
                          SkuReservationRepository skuReservations, LocationDirectory locations,
                          com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts,
-                         StockPackageRepository stockPackages) {
+                         StockPackageRepository stockPackages,
+                         com.stockflow.common.security.CurrentUserProvider users) {
         this.stockPackages = stockPackages;
+        this.users = users;
         this.events = events;
         this.operations = operations;
         this.items = items;
@@ -142,6 +145,50 @@ class InventoryServiceImpl implements InventoryService {
     @Override
     public List<StockPackageView> reclassifyStockPackages(ReclassifyStockPackagesCommand command) {
         return operations.reclassifyStockPackages(command);
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Map<String, UUID> openItems(com.stockflow.inventory.api.OpenInventoryItemsCommand command) {
+        Map<String, UUID> wanted = new java.util.TreeMap<>();
+        for (var item : command.items()) {
+            if (item == null || item.sku() == null || item.variantId() == null) {
+                throw new com.stockflow.common.error.BusinessException(
+                        com.stockflow.common.error.ErrorCode.VALIDATION_FAILED, "An item needs a SKU and a variant");
+            }
+            UUID earlier = wanted.putIfAbsent(item.sku().code(), item.variantId());
+            if (earlier != null && !earlier.equals(item.variantId())) {
+                throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.CONFLICT,
+                        "SKU %s is named with two variants".formatted(item.sku()));
+            }
+        }
+        if (wanted.isEmpty()) {
+            return Map.of();
+        }
+        // An item that exists is judged and left alone: the insert's BEFORE triggers fire on the proposed row before
+        // ON CONFLICT would keep the old one, so asked again it would be judged as new (another variant as a bare
+        // constraint error rather than this CONFLICT, an item whose unit was edited against its variant's cartons).
+        java.util.Set<String> open = new java.util.HashSet<>();
+        for (var row : policies.findBySkus(wanted.keySet())) {
+            if (!row.variantId().equals(wanted.get(row.sku()))) {
+                throw new com.stockflow.common.error.BusinessException(com.stockflow.common.error.ErrorCode.CONFLICT,
+                        "The item of %s is packed as another variant".formatted(row.sku()));
+            }
+            open.add(row.sku());
+        }
+        // Sorted, as every multi-SKU write in inventory goes; ON CONFLICT keeps an item another order made meanwhile
+        // (the same variant: a customer's SKU's variant never changes).
+        String actor = users.current().map(u -> u.userId().toString()).orElse("system");
+        wanted.forEach((sku, variant) -> {
+            if (!open.contains(sku)) {
+                policies.openItem(com.stockflow.common.id.Identifiers.newId(), sku, variant, actor);
+            }
+        });
+        Map<String, UUID> ids = new java.util.HashMap<>();
+        for (var row : policies.findBySkus(wanted.keySet())) {
+            ids.put(row.sku(), row.id());
+        }
+        return ids;
     }
 
     @Override

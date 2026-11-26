@@ -4860,11 +4860,11 @@ class FtlDispatchIntegrationTest {
         String contract = jdbc.queryForObject("SELECT contract_number FROM ordering.sales_contract WHERE order_id = ? "
                 + "AND status <> 'CANCELLED'", String.class, order.orderId());
         assertThat(lpns).isNotEmpty();
-        // Each SKU carried is printed with its catalogue name (the variant's), looked up through product :: api.
+        // Each SKU carried is printed with its name (the customer's SKU's), looked up through product :: api.
         Map<String, Object> skuNamed = jdbc.queryForMap("""
-                SELECT DISTINCT l.sku, v.name FROM fulfillment.package p
+                SELECT DISTINCT l.sku, c.name FROM fulfillment.package p
                   JOIN fulfillment.pick_line l ON l.id = p.pick_line_id
-                  JOIN product.variants v ON v.sku = l.sku
+                  JOIN product.customer_skus c ON c.sku = l.sku
                  WHERE p.shipment_id = ?""", shipment);
 
         // At dispatch, no vehicle yet: the same form, the vehicle and the handover dotted lines.

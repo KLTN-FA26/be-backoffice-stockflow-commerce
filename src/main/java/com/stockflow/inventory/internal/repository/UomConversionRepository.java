@@ -16,21 +16,24 @@ import java.util.UUID;
 
 /**
  * {@code inventory.uom_conversions}: the cartons of a catalogue variant, one active (kltn-docs 01 BR-03), keyed by
- * variant since V20270104000100 (owner decision Q1). A SKU's cartons are its variant's, read through
- * {@code inventory_items.variant_id}: asked for a customer's SKU they come back under that SKU, so a caller keyed by
- * SKU needs nothing else. Since V20261215000100 the item has no size or weight of its own: only the carton is measured.
+ * variant since V20270104000100 (owner decision Q1). A SKU's cartons are its variant's, found through
+ * {@link SkuVariantLookup} - the item's {@code variant_id} when the SKU has an item, else the catalogue's answer, for a
+ * catalogue variant (which never has an item) or a customer's SKU no order has named yet (Q5, V20270105000100). Asked
+ * for a SKU they come back under that SKU, so a caller keyed by SKU needs nothing else. Since V20261215000100 the item
+ * has no size or weight of its own: only the carton is measured.
  */
 @Repository
 public class UomConversionRepository {
 
-    private static final String SELECT = """
-            select c.id, i.sku, c.unit_of_measure, c.factor, c.active, c.version, c.weight_kg, c.length_cm, c.width_cm, c.height_cm
-            from inventory.inventory_items i join inventory.uom_conversions c on c.variant_id = i.variant_id
-            """;
-
     /** By id alone a carton is no one SKU's - every SKU of its variant shares it - so {@code sku} is null. */
     private static final String SELECT_BY_ID = """
             select c.id, null as sku, c.unit_of_measure, c.factor, c.active, c.version, c.weight_kg, c.length_cm, c.width_cm, c.height_cm
+            from inventory.uom_conversions c
+            """;
+
+    /** As {@link #SELECT_BY_ID}, with the variant, for a read of several variants at once. */
+    private static final String SELECT_BY_VARIANT = """
+            select c.variant_id, c.id, null as sku, c.unit_of_measure, c.factor, c.active, c.version, c.weight_kg, c.length_cm, c.width_cm, c.height_cm
             from inventory.uom_conversions c
             """;
 
@@ -41,43 +44,65 @@ public class UomConversionRepository {
             rs.getBoolean("active"), rs.getLong("version"));
 
     private final JdbcTemplate jdbc;
+    private final SkuVariantLookup variants;
 
-    public UomConversionRepository(JdbcTemplate jdbc) {
+    public UomConversionRepository(JdbcTemplate jdbc, SkuVariantLookup variants) {
         this.jdbc = jdbc;
+        this.variants = variants;
     }
 
+    /** The SKU's inventory item, empty when it has none (only a customer's SKU an order named has one). */
     public Optional<UUID> itemId(String sku) {
         return jdbc.query("select id from inventory.inventory_items where sku = ?",
                 (rs, n) -> rs.getObject("id", UUID.class), sku).stream().findFirst();
     }
 
-    /** The catalogue variant whose cartons the SKU is packed in ({@code inventory_items.variant_id}). */
-    public Optional<UUID> variantId(String sku) {
-        return jdbc.query("select variant_id from inventory.inventory_items where sku = ?",
-                (rs, n) -> rs.getObject("variant_id", UUID.class), sku).stream().findFirst();
+    /** Whether the code is a customer's SKU, which cartons are never written by ({@link SkuVariantLookup}). */
+    public boolean customerSku(String sku) {
+        return variants.isCustomerSku(sku);
     }
 
-    /** Every SKU packed in the variant's cartons, sorted: the SKU locks a change of its carton takes, in order. */
+    /** The catalogue variant whose cartons the SKU is packed in ({@link SkuVariantLookup}). */
+    public Optional<UUID> variantId(String sku) {
+        return variants.of(sku);
+    }
+
+    /**
+     * Every SKU with an item packed in the variant's cartons, sorted: the SKUs whose cartons may move while the
+     * variant's carton changes, whose locks that change takes.
+     */
     public List<String> skusOfVariant(UUID variantId) {
         return jdbc.queryForList("select sku from inventory.inventory_items where variant_id = ? order by sku",
                 String.class, variantId);
     }
 
     public long count(String sku) {
-        Long count = jdbc.queryForObject("""
-                select count(*) from inventory.inventory_items i
-                join inventory.uom_conversions c on c.variant_id = i.variant_id where i.sku = ?""", Long.class, sku);
+        Optional<UUID> variant = variants.of(sku);
+        if (variant.isEmpty()) {
+            return 0;
+        }
+        Long count = jdbc.queryForObject("select count(*) from inventory.uom_conversions where variant_id = ?",
+                Long.class, variant.get());
         return count == null ? 0 : count;
     }
 
     /** By code. */
     public List<UomConversion> page(String sku, int limit, long offset) {
-        return jdbc.query(SELECT + " where i.sku = ? order by c.unit_of_measure limit ? offset ?",
-                ROW, sku, limit, offset);
+        Optional<UUID> variant = variants.of(sku);
+        if (variant.isEmpty()) {
+            return List.of();
+        }
+        return jdbc.query(SELECT_BY_ID + " where c.variant_id = ? order by c.unit_of_measure limit ? offset ?",
+                ROW, variant.get(), limit, offset).stream().map(u -> under(u, sku)).toList();
     }
 
     public Optional<UomConversion> find(String sku, UUID id) {
-        return jdbc.query(SELECT + " where i.sku = ? and c.id = ?", ROW, sku, id).stream().findFirst();
+        Optional<UUID> variant = variants.of(sku);
+        if (variant.isEmpty()) {
+            return Optional.empty();
+        }
+        return jdbc.query(SELECT_BY_ID + " where c.variant_id = ? and c.id = ?", ROW, variant.get(), id).stream()
+                .findFirst().map(u -> under(u, sku));
     }
 
     /**
@@ -92,31 +117,62 @@ public class UomConversionRepository {
 
     public List<UomConversion> find(String sku, Collection<UUID> ids) {
         if (ids.isEmpty()) return List.of();
-        return jdbc.query(SELECT + " where i.sku = ? and c.id = any (?)", ps -> {
-            ps.setString(1, sku);
+        Optional<UUID> variant = variants.of(sku);
+        if (variant.isEmpty()) {
+            return List.of();
+        }
+        return jdbc.query(SELECT_BY_ID + " where c.variant_id = ? and c.id = any (?)", ps -> {
+            ps.setObject(1, variant.get());
             ps.setArray(2, ps.getConnection().createArrayOf("uuid", ids.toArray()));
-        }, ROW);
+        }, ROW).stream().map(u -> under(u, sku)).toList();
     }
 
-    /** The units of each of these SKUs by code; a SKU without units is absent. */
+    /**
+     * The units of each of these SKUs by code; a SKU without units is absent. Two SKUs of one variant get the same
+     * units, each under its own code.
+     */
     public Map<String, List<UomConversion>> bySkus(Collection<String> skus) {
         if (skus.isEmpty()) {
             return Map.of();
         }
-        List<UomConversion> rows = jdbc.query(
-                SELECT + " where i.sku = any (?) order by i.sku, c.unit_of_measure", ps ->
-                        ps.setArray(1, ps.getConnection().createArrayOf("text", skus.toArray())), ROW);
+        Map<String, UUID> variantOf = variants.of(skus);
+        if (variantOf.isEmpty()) {
+            return Map.of();
+        }
+        List<UUID> variantIds = variantOf.values().stream().distinct().toList();
+        Map<UUID, List<UomConversion>> byVariant = new HashMap<>();
+        jdbc.query(SELECT_BY_VARIANT + " where c.variant_id = any (?) order by c.unit_of_measure",
+                ps -> ps.setArray(1, ps.getConnection().createArrayOf("uuid", variantIds.toArray())),
+                rs -> {
+                    byVariant.computeIfAbsent(rs.getObject("variant_id", UUID.class), k -> new ArrayList<>())
+                            .add(ROW.mapRow(rs, 0));
+                });
         Map<String, List<UomConversion>> out = new HashMap<>();
-        rows.forEach(u -> out.computeIfAbsent(u.sku(), k -> new ArrayList<>()).add(u));
+        variantOf.forEach((sku, variant) -> {
+            List<UomConversion> units = byVariant.get(variant);
+            if (units != null) {
+                out.put(sku, units.stream().map(u -> under(u, sku)).toList());
+            }
+        });
         return out;
+    }
+
+    /** {@code unit} as a unit of {@code sku}: every SKU of the variant shares it, so it is shown under the SKU asked. */
+    private static UomConversion under(UomConversion unit, String sku) {
+        return new UomConversion(unit.id(), sku, unit.unitOfMeasure(), unit.factor(), unit.weightKg(),
+                unit.lengthCm(), unit.widthCm(), unit.heightCm(), unit.active(), unit.version());
     }
 
     /**
      * Whether the code is taken on the variant: by another of its cartons, or by the unit the pieces of its SKUs are
      * counted in ({@code inventory_items.unit_of_measure}), which a carton must not be mistaken for
-     * ({@code tg_uom_conversions_unit_code}).
+     * ({@code tg_uom_conversions_unit_code}) - {@code EACH}, the unit an item is opened in, always, since a variant has
+     * no item until an order names one of its customers' SKUs (V20270105000100).
      */
     public boolean unitTaken(UUID variantId, String unitOfMeasure, UUID except) {
+        if ("EACH".equals(unitOfMeasure)) {
+            return true;
+        }
         return Boolean.TRUE.equals(jdbc.queryForObject("""
                 select exists(select 1 from inventory.uom_conversions
                     where variant_id = ? and unit_of_measure = ? and id is distinct from ?)

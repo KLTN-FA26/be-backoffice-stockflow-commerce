@@ -230,11 +230,11 @@ SELECT pg_temp.expect_fail('P16h a print area code the studio does not draw', $q
 SELECT pg_temp.expect_fail('P16i a print area without a computed shape', $q$
     INSERT INTO product.print_areas (id, template_id, code, name, x_mm, y_mm, width_mm, height_mm, uv_mapping_json)
     VALUES (gen_random_uuid(), md5('qa:template:CUP')::uuid, 'FRONT', 'x', 0, 0, 250, 100, '{"meshPart": "front"}') $q$);
-SELECT pg_temp.expect_fail('P16j a customer SKU without its design snapshot and source variant', $q$
-    INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
-                                  created_at, owner_customer_id)
-    VALUES (gen_random_uuid(), md5('qa:product:CUP')::uuid, 'QACUP-KH-01', 'x', 'ACTIVE', FALSE, 'CUSTOMER:QACUP-KH-01',
-            1, 0, NOW(), gen_random_uuid()) $q$);
+-- A customer's SKU is its own table since V20270105000100 (product.customer_skus).
+SELECT pg_temp.expect_fail('P16j a customer SKU without its design snapshot', $q$
+    INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, sku, name)
+    SELECT gen_random_uuid(), md5('qa:product:CUP')::uuid, md5('qa:variant:CUP')::uuid, c.id, 'QACUP-KH-01', 'x'
+      FROM customer.customer c ORDER BY c.id LIMIT 1 $q$);
 -- A customer's draft on the cup's template, with one uploaded image (V20261108000800): rolled back with the rest.
 INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts, variant_id, sku,
                                  template_id, template_code)
@@ -377,13 +377,17 @@ SELECT pg_temp.expect_fail('P18 category moved under its own child', $q$
 SELECT pg_temp.expect_fail('P19 stored media without its file metadata', $q$
     INSERT INTO product.media (id, variant_id, storage_key)
     VALUES (gen_random_uuid(), md5('demo:cups:variant:HOP-GIAY-DEMO-GREY-PAPER')::uuid, 'k/1.png') $q$);
-SELECT pg_temp.expect_fail('P20 inventory item for a sku that is no variant', $q$
-    INSERT INTO inventory.inventory_items (id, sku) VALUES (gen_random_uuid(), 'NO-SUCH-SKU') $q$);
+SELECT pg_temp.expect_fail('P20 inventory item for a sku that is no customer''s SKU', $q$
+    INSERT INTO inventory.inventory_items (id, sku, variant_id)
+    VALUES (gen_random_uuid(), 'NO-SUCH-SKU', md5('demo:cups:variant:HOP-GIAY-DEMO-GREY-PAPER')::uuid) $q$);
 -- P21 (expiry tracked without lots) went with expiry tracking (team plan 5-1, V20261111000300).
 SELECT pg_temp.expect_fail('P22 inventory item sku changed',
     $q$ UPDATE inventory.inventory_items SET sku = 'LY-GIAY-DEMO-12OZ-XA' WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH' $q$);
-SELECT pg_temp.expect_fail('P23 variant deleted while it has an inventory item',
-    $q$ DELETE FROM product.variants WHERE sku = 'HOP-GIAY-DEMO-BLUE-PAPER' $q$);
+-- Since V20270105000100 an item is a customer's SKU's and a catalogue variant has none.
+SELECT pg_temp.expect_fail('P23 customer SKU deleted while it has an inventory item',
+    $q$ DELETE FROM product.customer_skus WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH' $q$);
+SELECT pg_temp.expect_fail('P23b catalogue variant deleted while a customer''s SKU is drawn on it',
+    $q$ DELETE FROM product.variants WHERE sku = 'LY-GIAY-DEMO-12OZ' $q$);
 
 \echo '--- product follow-ups (V20261014001100, SCRUM-461)'
 SELECT pg_temp.expect_fail('P24 DISCONTINUED without a reason (docs 01 §5.1)', $q$

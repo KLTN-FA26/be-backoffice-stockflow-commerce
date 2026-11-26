@@ -46,12 +46,26 @@ END $$;
 -- carton turned on the horizontal fits), both on a level 0.45 m clear.
 -- An item has ONE active carton (01 BR-03): the demo seed's own are retired, the two measured units are the active ones, and
 -- the unmeasured unit is declared retired (BV15 makes it the active one for the length of its check).
+-- The grey box is stocked as a customer's SKU of it, with the item its order made (V20270105000100: a catalogue variant
+-- has no item).
+INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
+SELECT md5('qa50:grey:draft')::uuid, c.id, v.product_id, 'DRAFT', NOW(), '{}'::jsonb
+  FROM customer.customer c, product.variants v WHERE v.sku = 'HOP-GIAY-DEMO-GREY-PAPER' ORDER BY c.id LIMIT 1;
+INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
+VALUES (md5('qa50:grey:snap')::uuid, md5('qa50:grey:draft')::uuid, repeat('a', 64), 'https://example.com/g.pdf', NOW(),
+        NOW(), '[]'::jsonb);
+INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku, name)
+SELECT md5('qa50:grey')::uuid, v.product_id, v.id, d.customer_id, md5('qa50:grey:snap')::uuid, 'QA50-GREY', 'QA hop'
+  FROM product.variants v, design.design_draft d
+ WHERE v.sku = 'HOP-GIAY-DEMO-GREY-PAPER' AND d.id = md5('qa50:grey:draft')::uuid;
+INSERT INTO inventory.inventory_items (id, sku, variant_id)
+SELECT gen_random_uuid(), sku, variant_id FROM product.customer_skus WHERE sku = 'QA50-GREY';
 UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND variant_id IN (SELECT variant_id FROM inventory.inventory_items
-                                                         WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH', 'HOP-GIAY-DEMO-GREY-PAPER'));
+                                                         WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH', 'QA50-GREY'));
 INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, length_cm, width_cm, height_cm, active)
 VALUES (md5('qa50:unit:xanh')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA50_CTN', 1000, 60, 50, 40, TRUE),
-       (md5('qa50:unit:do')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'HOP-GIAY-DEMO-GREY-PAPER'), 'QA50_CTN', 500, 60, 50, 40, TRUE),
+       (md5('qa50:unit:do')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'QA50-GREY'), 'QA50_CTN', 500, 60, 50, 40, TRUE),
        (md5('qa50:unit:unmeasured')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA50_NOSIZE', 1000, NULL, NULL, NULL, FALSE);
 UPDATE product.variants SET rotatable = FALSE WHERE sku = 'HOP-GIAY-DEMO-GREY-PAPER';
 INSERT INTO warehouse.shelf_level (id, shelf_id, level_index, elevation, usable_height, max_weight)
@@ -113,7 +127,7 @@ SELECT pg_temp.expect_ok('BV11 a rotatable carton turned on the horizontal fits 
     UPDATE inventory.stock_package SET location_code = 'HCM-B01-5-T' WHERE id = md5('qa50:pk:xanh')::uuid $q$);
 SELECT pg_temp.expect_fail('BV12 a carton that may not be turned does not fit T', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
-    VALUES (gen_random_uuid(), 'QA50-X', (SELECT id FROM inventory.inventory_items WHERE sku = 'HOP-GIAY-DEMO-GREY-PAPER'), md5('qa50:unit:do')::uuid, 500,
+    VALUES (gen_random_uuid(), 'QA50-X', (SELECT id FROM inventory.inventory_items WHERE sku = 'QA50-GREY'), md5('qa50:unit:do')::uuid, 500,
             'HCM-B01-5-T') $q$);
 SELECT pg_temp.expect_fail('BV13 a carton taller than the level''s clear height (0.45 m) does not fit', $q$
     UPDATE inventory.uom_conversions SET height_cm = 46 WHERE id = md5('qa50:unit:xanh')::uuid;
@@ -122,7 +136,7 @@ SELECT pg_temp.expect_fail('BV13 a carton taller than the level''s clear height 
             'HCM-B01-5-T') $q$);
 SELECT pg_temp.expect_ok('BV14 any carton goes into an area: size is not checked there', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
-    VALUES (gen_random_uuid(), 'QA50-A', (SELECT id FROM inventory.inventory_items WHERE sku = 'HOP-GIAY-DEMO-GREY-PAPER'), md5('qa50:unit:do')::uuid, 500,
+    VALUES (gen_random_uuid(), 'QA50-A', (SELECT id FROM inventory.inventory_items WHERE sku = 'QA50-GREY'), md5('qa50:unit:do')::uuid, 500,
             'HCM-RCV01') $q$);
 SELECT pg_temp.expect_ok('BV15 a carton nobody measured is not judged (a carton unit with no size)', $q$
     UPDATE inventory.uom_conversions SET active = FALSE WHERE id = md5('qa50:unit:xanh')::uuid;
@@ -147,22 +161,22 @@ SELECT pg_temp.expect_ok('BV21 a carton exactly the bin''s width, length and cle
     VALUES (md5('qa50:bin:E')::uuid, md5('qa50:level:E')::uuid, md5('qa50:loc:E')::uuid, 'E', 0, 0, 0.5, 0.6, 0,
             'STANDARD');
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
-    VALUES (gen_random_uuid(), 'QA50-EQ', (SELECT id FROM inventory.inventory_items WHERE sku = 'HOP-GIAY-DEMO-GREY-PAPER'), md5('qa50:unit:do')::uuid, 500,
+    VALUES (gen_random_uuid(), 'QA50-EQ', (SELECT id FROM inventory.inventory_items WHERE sku = 'QA50-GREY'), md5('qa50:unit:do')::uuid, 500,
             'HCM-B01-7-E') $q$);
 SELECT pg_temp.expect_fail('BV22 a millimetre longer than the bin does not fit', $q$
     UPDATE inventory.uom_conversions SET length_cm = 60.1 WHERE id = md5('qa50:unit:do')::uuid;
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
-    VALUES (gen_random_uuid(), 'QA50-L1', (SELECT id FROM inventory.inventory_items WHERE sku = 'HOP-GIAY-DEMO-GREY-PAPER'), md5('qa50:unit:do')::uuid, 500,
+    VALUES (gen_random_uuid(), 'QA50-L1', (SELECT id FROM inventory.inventory_items WHERE sku = 'QA50-GREY'), md5('qa50:unit:do')::uuid, 500,
             'HCM-B01-7-E') $q$);
 SELECT pg_temp.expect_fail('BV23 a millimetre wider than the bin does not fit', $q$
     UPDATE inventory.uom_conversions SET width_cm = 50.1 WHERE id = md5('qa50:unit:do')::uuid;
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
-    VALUES (gen_random_uuid(), 'QA50-W1', (SELECT id FROM inventory.inventory_items WHERE sku = 'HOP-GIAY-DEMO-GREY-PAPER'), md5('qa50:unit:do')::uuid, 500,
+    VALUES (gen_random_uuid(), 'QA50-W1', (SELECT id FROM inventory.inventory_items WHERE sku = 'QA50-GREY'), md5('qa50:unit:do')::uuid, 500,
             'HCM-B01-7-E') $q$);
 SELECT pg_temp.expect_fail('BV24 a millimetre taller than the clear height does not fit', $q$
     UPDATE inventory.uom_conversions SET height_cm = 40.1 WHERE id = md5('qa50:unit:do')::uuid;
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
-    VALUES (gen_random_uuid(), 'QA50-H1', (SELECT id FROM inventory.inventory_items WHERE sku = 'HOP-GIAY-DEMO-GREY-PAPER'), md5('qa50:unit:do')::uuid, 500,
+    VALUES (gen_random_uuid(), 'QA50-H1', (SELECT id FROM inventory.inventory_items WHERE sku = 'QA50-GREY'), md5('qa50:unit:do')::uuid, 500,
             'HCM-B01-7-E') $q$);
 
 \echo '--- a legacy level without a clear height (written before V20261112000100)'
@@ -193,7 +207,7 @@ SELECT pg_temp.expect_true('BV19 the demo HCM has an OVERFLOW area with a locati
                AND l.status = 'ACTIVE' AND NOT l.is_putaway_target));
 SELECT pg_temp.expect_ok('BV20 a carton that fits no bin goes into OVERFLOW', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
-    VALUES (gen_random_uuid(), 'QA50-O', (SELECT id FROM inventory.inventory_items WHERE sku = 'HOP-GIAY-DEMO-GREY-PAPER'), md5('qa50:unit:do')::uuid, 500,
+    VALUES (gen_random_uuid(), 'QA50-O', (SELECT id FROM inventory.inventory_items WHERE sku = 'QA50-GREY'), md5('qa50:unit:do')::uuid, 500,
             'HCM-OVF01') $q$);
 
 ROLLBACK;

@@ -4,6 +4,7 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.support.StockedSkus;
 import com.stockflow.inventory.api.UomConversionDraft;
 import com.stockflow.inventory.api.UomConversionService;
 import com.stockflow.support.CartonRows;
@@ -68,8 +69,7 @@ class BinResizeStrandingIntegrationTest {
         UUID product = Identifiers.newId();
         jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                 "Stranding fixture", sku.toLowerCase(Locale.ROOT));
-        jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                Identifiers.newId(), product, sku, "Stranding fixture");
+        StockedSkus.customerSkuOn(jdbc, product, sku, "Stranding fixture");
         unit = CartonRows.unit(jdbc, sku, 10);
         jdbc.update("update inventory.uom_conversions set length_cm = 50, width_cm = 40, height_cm = 30 where id = ?",
                 unit);

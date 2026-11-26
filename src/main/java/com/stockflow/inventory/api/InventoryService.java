@@ -269,10 +269,26 @@ public interface InventoryService {
      */
     List<StockPackageView> reclassifyStockPackages(ReclassifyStockPackagesCommand command);
 
+    /**
+     * Opens the inventory item of each customer SKU an order names, in the caller's transaction (owner decision Q5 of
+     * 2026-11-26): a customer's SKU has an item - and so can be received, held, counted and shipped - only once Sales
+     * converts a quote naming it into an order, and a catalogue variant never has one. The item records the catalogue
+     * variant whose cartons it is packed in, for good. An item that exists already is kept as it is, so a reorder, a
+     * retried conversion and two orders converted at once all end with the one item.
+     *
+     * <p>{@code tg_inventory_items_customer_sku} refuses an item whose SKU is not a customer's SKU drawn on that
+     * variant; the caller (order placement) passes what {@code CustomerSkus} says.</p>
+     *
+     * @return the item id of every SKU of the command
+     * @throws com.stockflow.common.error.BusinessException {@code CONFLICT} when a SKU's existing item records another
+     *         variant, or one SKU is named with two variants
+     */
+    Map<String, UUID> openItems(OpenInventoryItemsCommand command);
+
     /** The inventory item with this id, empty when no such item exists. */
     Optional<InventoryItemPolicy> itemPolicy(UUID inventoryItemId);
 
-    /** The same, by SKU: the inventory item a variant has, empty when it has none yet. */
+    /** The same, by SKU: the inventory item a customer's SKU has, empty when no order has named it yet. */
     Optional<InventoryItemPolicy> itemPolicy(Sku sku);
 
     /** Each inventory item that exists, in one query (SCRUM-464). */
@@ -283,8 +299,9 @@ public interface InventoryService {
 
     /**
      * Deletes the inventory item of each SKU, for a product that is deleted before anything happened to
-     * it (SCRUM-461): the item exists only because its variant was created (docs 01 BR-07), and the
-     * variant cannot go while it stands. A SKU with no item is skipped.
+     * it (SCRUM-461). Since V20270105000100 only a customer's SKU that an order named has an item, so a product
+     * nothing happened to has none and this deletes nothing; kept for the product deletion's last check. A SKU with
+     * no item is skipped.
      *
      * <p>The caller asks {@link #skusInUse} first; this is the last line of defence: cartons, movements,
      * adjustments, counts, purchase order and receipt lines, pick lines and putaway or move tasks
@@ -298,8 +315,9 @@ public interface InventoryService {
     /**
      * The SKUs among {@code skus} whose inventory item a document uses — stock, a movement, an adjustment, a count,
      * a putaway, move or pick task, a selling price, a supplier item or a procurement line — in SKU
-     * order; empty when none is. Such an item can be neither deleted nor renamed (kltn-docs 01 BR-01, BR-02); the
-     * SKU rename guard asks the same question in the database ({@code inventory.item_in_use}).
+     * order; empty when none is. Such an item cannot be deleted (kltn-docs 01 BR-01, BR-02); since V20270105000100 an
+     * item's SKU never changes at all ({@code tg_inventory_items_immutable}), so this no longer guards a rename. A SKU
+     * without an item - a catalogue variant, or a customer's SKU never ordered - is never in use.
      */
     java.util.List<String> skusInUse(java.util.Collection<String> skus);
 

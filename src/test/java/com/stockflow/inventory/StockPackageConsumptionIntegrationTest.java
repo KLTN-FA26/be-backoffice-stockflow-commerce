@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.consumption.PickConsumption;
@@ -59,8 +60,7 @@ class StockPackageConsumptionIntegrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Carton fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Carton fixture");
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Carton fixture");
             item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
             carton = Identifiers.newId();
             jdbc.update("insert into inventory.uom_conversions (id, variant_id, unit_of_measure, factor)"

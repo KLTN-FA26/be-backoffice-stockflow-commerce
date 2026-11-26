@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -57,8 +58,7 @@ class PackagingSpecResolverIntegrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, code,
                     "Packaging fixture", code.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
-                    + " values (?,?,?,'Packaging fixture','')", Identifiers.newId(), product, code);
+            StockedSkus.customerSkuOn(jdbc, product, code, "Packaging fixture");
             return jdbc.queryForObject("select id from inventory.inventory_items where sku=?", UUID.class, code);
         });
     }
@@ -99,8 +99,7 @@ class PackagingSpecResolverIntegrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, other,
                     "Other", other.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
-                    + " values (?,?,?,'Other','')", Identifiers.newId(), product, other);
+            StockedSkus.customerSkuOn(jdbc, product, other, "Other");
         });
         assertThat(units.add(new Sku(other), pack("BOX", 10, "5")).active()).isTrue();
         assertThat(active()).containsExactly("BOX");

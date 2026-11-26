@@ -199,18 +199,17 @@ public class ProductionReceivables {
         ConfirmedDesigns.Design design = ConfirmedDesigns.confirmedFor(storage, jdbc, tx, entityManager, customerId,
                 product.productId());
         String sku = tx.execute(s -> {
-            UUID variant = Identifiers.newId();
-            String code = product.sku() + "-R" + variant.toString().substring(24, 28).toUpperCase(Locale.ROOT);
+            UUID id = Identifiers.newId();
+            String code = product.sku() + "-R" + id.toString().substring(24, 28).toUpperCase(Locale.ROOT);
             jdbc.update("""
-                    INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature,
-                        position, version, created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-                    VALUES (?, ?, ?, 'Printed cup', 'ACTIVE', FALSE, ?, 1, 0, NOW(), ?, ?, ?)""",
-                    variant, product.productId(), code, "OWNED-SKU:" + code, customerId, design.snapshotId(),
-                    product.variantId());
+                    INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku,
+                        name, status, version, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'Printed cup', 'ACTIVE', 0, NOW())""",
+                    id, product.productId(), product.variantId(), customerId, design.snapshotId(), code);
             return code;
         });
-        UUID item = tx.execute(s -> jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?",
-                UUID.class, sku));
+        // The order this production order is for named the SKU, which made its item (owner decision Q5).
+        UUID item = tx.execute(s -> CartonRows.item(jdbc, sku));
         // Packed in its source variant's carton (owner decision Q1): SKUs issued on one product share it.
         UUID carton = tx.execute(s -> CartonRows.ofVariant(jdbc, product.variantId(), per, "1.2", "60", "40", "35"));
         return new Issued(sku, item, carton, cartons, per);

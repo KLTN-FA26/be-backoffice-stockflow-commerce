@@ -26,8 +26,9 @@ import java.util.Map;
  * SKU was drawn on, and the quote waits for the Sales Manager when it is priced more than the threshold below that
  * reference, or has none (14 BR-10, {@code QuotePriceCheck}).
  *
- * <p>A customer's own SKU has no standard price: it is priced by the customer's own price ({@link CustomerPriceService};
- * {@code tg_standard_price_variant} holds the same rule). Changing a standard price does not move a quote already sent or
+ * <p>A customer's own SKU has no standard price: it is priced by the customer's own price ({@link CustomerPriceService}).
+ * Since V20270105000100 a customer's SKU is not a variant at all ({@code product.customer_skus}), so
+ * {@code fk_standard_price_variant} holds the same rule in the database; the service names it first. Changing a standard price does not move a quote already sent or
  * approved: a quote copies its prices, and an approval keeps the reference it was decided on.</p>
  *
  * <p>Every change is audited with what changed, as a customer's own price (13 §4.2 step 3): the variant and its new
@@ -128,15 +129,18 @@ public class StandardPriceService {
         prices.delete(price.id());
     }
 
-    /** A variant that exists and that no customer owns (13 BR-04, BR-05). */
+    /**
+     * A variant of the catalogue that exists (13 BR-04, BR-05). A customer's own SKU is asked about first, so it is
+     * told apart from an unknown code with its own error rather than a bare 404 or the foreign key's 409.
+     */
     private String catalogueVariant(String sku) {
         String code = sku(sku);
-        if (products.nameForSku(code).isEmpty()) {
-            throw new BusinessException(ErrorCode.VARIANT_NOT_FOUND);
-        }
         if (customerSkus.ownerOf(code).isPresent()) {
             throw new BusinessException(ErrorCode.STANDARD_PRICE_VARIANT_REQUIRED, ("%s is a customer's own SKU: it is "
                     + "priced by that customer's own price, not a standard price").formatted(code));
+        }
+        if (products.nameForSku(code).isEmpty()) {
+            throw new BusinessException(ErrorCode.VARIANT_NOT_FOUND);
         }
         return code;
     }
@@ -156,7 +160,7 @@ public class StandardPriceService {
                 price.note(), price.version());
     }
 
-    /** The shape of {@code product.variants.sku} (ck_variants_sku), upper-cased as every SKU is kept. */
+    /** The shape of a SKU (ck_variants_sku, ck_customer_skus_sku), upper-cased as every SKU is kept. */
     private static final java.util.regex.Pattern SKU = java.util.regex.Pattern.compile("[A-Z0-9][A-Z0-9._-]{0,63}");
 
     private static String sku(String raw) {

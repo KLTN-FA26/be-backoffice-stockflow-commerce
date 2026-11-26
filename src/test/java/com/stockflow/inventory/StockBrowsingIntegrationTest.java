@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
@@ -67,8 +68,7 @@ class StockBrowsingIntegrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Browse fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
-                    + " values (?,?,?,'Browse fixture','')", Identifiers.newId(), product, sku);
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Browse fixture");
             // Two sealed cartons of 3: the older one is allocated whole, the other stays free.
             com.stockflow.support.CartonRows.stock(jdbc, sku, "HCM-A01-1-B", 1, 3, null,
                     java.time.Instant.parse("2026-01-01T00:00:00Z"));

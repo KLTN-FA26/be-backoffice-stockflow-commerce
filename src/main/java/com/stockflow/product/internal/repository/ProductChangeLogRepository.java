@@ -104,7 +104,9 @@ public class ProductChangeLogRepository {
     /**
      * Newest first; ties on the time keep a stable order by id. The subject's SKU and label come from the same
      * statement: an image subject joins {@code media}, every other non-product subject is a variant (a SKU's
-     * units, sales units and older logistics entries name the variant too).
+     * units, sales units and older logistics entries name the variant too) or a customer's own SKU, which keeps its
+     * id in {@code product.customer_skus} since V20270105000100 (the ids are UUIDv7, so the two joins never both
+     * match).
      */
     public Page<Entry> page(UUID productId, Pageable pageable) {
         Long total = jdbc.queryForObject(
@@ -112,10 +114,12 @@ public class ProductChangeLogRepository {
         List<Entry> rows = jdbc.query("""
                 SELECT l.change_type, l.subject_id, l.from_status, l.to_status, l.reason, l.changed_fields,
                        l.actor_id, l.occurred_at,
-                       coalesce(v.sku, mv.sku) AS subject_sku,
-                       coalesce(v.name, m.original_name, m.url) AS subject_label
+                       coalesce(v.sku, c.sku, mv.sku) AS subject_sku,
+                       coalesce(v.name, c.name, m.original_name, m.url) AS subject_label
                   FROM product.product_change_log l
                   LEFT JOIN product.variants v ON v.id = l.subject_id AND l.subject_type NOT IN ('PRODUCT', 'MEDIA')
+                  LEFT JOIN product.customer_skus c ON c.id = l.subject_id
+                                                   AND l.subject_type NOT IN ('PRODUCT', 'MEDIA')
                   LEFT JOIN product.media m ON m.id = l.subject_id AND l.subject_type = 'MEDIA'
                   LEFT JOIN product.variants mv ON mv.id = m.variant_id
                  WHERE l.product_id = ?

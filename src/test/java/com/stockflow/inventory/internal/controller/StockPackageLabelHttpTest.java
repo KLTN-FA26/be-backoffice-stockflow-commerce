@@ -145,8 +145,8 @@ class StockPackageLabelHttpTest {
         String lot = jdbc.queryForObject("SELECT lot_number FROM procurement.goods_receipt_lines WHERE id = ?",
                 String.class, receiptLineId);
         String name = jdbc.queryForObject("""
-                SELECT v.name FROM product.variants v
-                  JOIN inventory.inventory_items i ON i.sku = v.sku
+                SELECT c.name FROM product.customer_skus c
+                  JOIN inventory.inventory_items i ON i.sku = c.sku
                   JOIN inventory.stock_package p ON p.inventory_item_id = i.id
                  WHERE p.lpn = ?""", String.class, lpns.get(0));
         byte[] pdf = print(Role.WAREHOUSE_STAFF, clerk,
