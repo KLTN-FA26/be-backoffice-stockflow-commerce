@@ -44,7 +44,8 @@ class ProductVariantControllerHttpTest {
 
     private static VariantView view() {
         return new VariantView(VARIANT, PRODUCT, "CUP-RED", "Cup / Red", VariantStatus.DRAFT, false,
-                "COLOR=RED", 1, null, 0L, List.of(new VariantOption(ATTR, "COLOR", VALUE, "RED", "Red")));
+                "COLOR=RED", 1, null, 0L, List.of(new VariantOption(ATTR, "COLOR", VALUE, "RED", "Red")), true);
+
     }
 
     @Test

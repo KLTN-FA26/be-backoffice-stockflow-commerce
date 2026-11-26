@@ -59,12 +59,13 @@ class PickLineCartonMigrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Carton fixture", sku.toLowerCase(Locale.ROOT));
+            UUID variant = Identifiers.newId();
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Carton fixture");
+                    variant, product, sku, "Carton fixture");
             item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
             unit = Identifiers.newId();
-            jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
-                    + " values (?, ?, 'CARTON', 10)", unit, item);
+            jdbc.update("insert into inventory.uom_conversions (id, variant_id, unit_of_measure, factor)"
+                    + " values (?, ?, 'CARTON', 10)", unit, variant);
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
                         currency, placed_at, version, created_at, contract_signed_at)

@@ -24,9 +24,11 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * See {@link UomConversionService}. Writes take the SKU's advisory lock (the one logistics and policy
- * edits take), so two people declaring or re-activating a carton of the same SKU are serialised and asked about in turn
- * (below) rather than racing to the unique index.
+ * See {@link UomConversionService}. A carton is its catalogue variant's and every SKU of the variant - its customers'
+ * SKUs included - is packed in it (owner decision Q1, V20261231000700). Writes therefore take the advisory lock of every
+ * SKU of the variant, sorted (the lock logistics edits and every carton move of a SKU take): two people declaring or
+ * re-activating a carton are serialised and asked about in turn (below) rather than racing to the unique index, and a
+ * new size is judged against the bins while no carton of any of those SKUs moves (06 BR-23).
  *
  * <p>BR-10 ("hệ số quy đổi đã phát sinh giao dịch không được sửa"): stock packages and goods receipt lines
  * record the unit they were made or counted in, and none of
@@ -88,28 +90,26 @@ class UomConversionServiceImpl implements UomConversionService {
     @Override
     public UomConversion add(Sku sku, UomConversionDraft draft) {
         UomConversionRules.validatePacking(draft);
-        items.lock(sku.code());
-        UUID itemId = itemId(sku);
-        if (conversions.unitTaken(itemId, draft.unitOfMeasure(), null)) throw duplicate(sku, draft);
-        if (draft.active()) requireNoOtherActiveCarton(sku, itemId, null);
+        UUID variantId = lockVariant(sku);
+        if (conversions.unitTaken(variantId, draft.unitOfMeasure(), null)) throw duplicate(sku, draft);
+        if (draft.active()) requireNoOtherActiveCarton(sku, variantId, null);
         UUID id = Identifiers.newId();
-        conversions.insert(id, itemId, draft, actor());
+        conversions.insert(id, variantId, draft, actor());
         return conversion(sku, id);
     }
 
     @Override
     public UomConversion change(Sku sku, UUID id, long expectedVersion, UomConversionDraft draft) {
-        items.lock(sku.code());
-        UUID itemId = itemId(sku);
+        UUID variantId = lockVariant(sku);
         UomConversion current = conversions.find(sku.code(), id).orElseThrow(() -> notFound(sku, id));
         UomConversionRules.validatePacking(draft);
-        if (conversions.unitTaken(itemId, draft.unitOfMeasure(), id)) throw duplicate(sku, draft);
-        if (draft.active()) requireNoOtherActiveCarton(sku, itemId, id);
+        if (conversions.unitTaken(variantId, draft.unitOfMeasure(), id)) throw duplicate(sku, draft);
+        if (draft.active()) requireNoOtherActiveCarton(sku, variantId, id);
         if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         boolean converts = current.factor() != draft.factor() || !current.unitOfMeasure().equals(draft.unitOfMeasure());
         if (converts && conversions.inUse(id)) throw inUse(sku, current);
         // 06 BR-23: new measures must not leave a carton of this unit standing in a bin it no longer fits. Under the
-        // SKU lock, which every carton move of the SKU takes too.
+        // locks of every SKU of the variant, which every carton move of those SKUs takes too.
         if (resized(current, draft)) {
             stranding.requireUnitResizable(id, draft.lengthCm(), draft.widthCm(), draft.heightCm());
         }
@@ -121,8 +121,7 @@ class UomConversionServiceImpl implements UomConversionService {
 
     @Override
     public void remove(Sku sku, UUID id, long expectedVersion) {
-        items.lock(sku.code());
-        UUID itemId = itemId(sku);
+        lockVariant(sku);
         UomConversion current = conversions.find(sku.code(), id).orElseThrow(() -> notFound(sku, id));
         if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         if (conversions.inUse(id)) throw inUse(sku, current);
@@ -131,8 +130,20 @@ class UomConversionServiceImpl implements UomConversionService {
         }
     }
 
-    private void requireNoOtherActiveCarton(Sku sku, UUID itemId, UUID except) {
-        conversions.activeCartonOf(itemId, except).ifPresent(code -> {
+    /**
+     * The variant whose cartons {@code sku} names, with the lock of every SKU of the variant taken in sorted order (the
+     * order every multi-SKU lock in inventory takes). Whether {@code sku} is the variant itself and not a customer's
+     * SKU is the product module's to know: it refuses first, and {@code tg_uom_conversions_catalogue_variant} last.
+     */
+    private UUID lockVariant(Sku sku) {
+        UUID variantId = conversions.variantId(sku.code()).orElseThrow(
+                () -> new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No inventory item " + sku));
+        conversions.skusOfVariant(variantId).forEach(items::lock);
+        return variantId;
+    }
+
+    private void requireNoOtherActiveCarton(Sku sku, UUID variantId, UUID except) {
+        conversions.activeCartonOf(variantId, except).ifPresent(code -> {
             throw new BusinessException(ErrorCode.UOM_CARTON_ALREADY_DECLARED,
                     "%s already has the carton unit %s; retire it before declaring another (01 BR-03)"
                             .formatted(sku, code));

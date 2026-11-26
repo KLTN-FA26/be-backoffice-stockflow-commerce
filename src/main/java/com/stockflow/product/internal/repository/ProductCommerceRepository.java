@@ -160,17 +160,21 @@ order by pc.is_primary desc, pc.id limit 1
      * @throws BusinessException {@code NOT_FOUND} when the product has no such variant
      */
     public VariantSku variantSku(UUID productId, UUID variantId) {
-        return jdbc.query("select id,sku,status from product.variants where product_id=? and id=?",
+        return jdbc.query("select id,sku,status,owner_customer_id is not null from product.variants"
+                                + " where product_id=? and id=?",
                         (r, n) -> new VariantSku(r.getObject(1, UUID.class), r.getString(2),
-                                "OBSOLETE".equals(r.getString(3))),
+                                "OBSOLETE".equals(r.getString(3)), r.getBoolean(4)),
                         productId, variantId)
                 .stream()
                 .findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
     }
 
-    /** A variant's id and SKU, and whether it is OBSOLETE. */
-    public record VariantSku(UUID variantId, String sku, boolean obsolete) {}
+    /**
+     * A variant's id and SKU, whether it is OBSOLETE, and whether it is a customer's own SKU - which is packed in its
+     * variant's carton and has none of its own (owner decision Q1).
+     */
+    public record VariantSku(UUID variantId, String sku, boolean obsolete, boolean customerSku) {}
 
     public ProductEcommerce ecommerce(UUID id) {
         return jdbc

@@ -91,15 +91,18 @@ class InventoryItemMasterDataIntegrationTest {
     // ---- rotatable -------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("rotatable defaults to on and is written with the logistics")
+    @DisplayName("rotatable is the variant's (owner decision Q9): on by default, set on the variant, read by inventory")
     void rotatable() {
-        var before = items.get(itemId());
-        assertThat(before.logistics().rotatable()).isTrue();
-        var logistics = new ItemLogistics("EACH", null, false);
-        var after = items.describe(itemId(), before.version(), logistics);
-        assertThat(after.logistics().rotatable()).isFalse();
-        assertThat(jdbc.queryForObject("SELECT rotatable FROM inventory.inventory_items WHERE sku = ?",
-                Boolean.class, sku)).isFalse();
+        assertThat(variants.get(productId, variantId).rotatable()).isTrue();
+        var after = variants.update(productId, variantId,
+                new ProductVariantService.NewVariant(null, null, null, null, false));
+        assertThat(after.rotatable()).isFalse();
+        assertThat(jdbc.queryForObject("SELECT rotatable FROM product.variants WHERE id = ?",
+                Boolean.class, variantId)).isFalse();
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM information_schema.columns
+                 WHERE table_schema = 'inventory' AND table_name = 'inventory_items' AND column_name = 'rotatable'""",
+                Integer.class)).as("the item keeps no copy").isZero();
     }
 
     // ---- units of measure ------------------------------------------------------------------------------------
@@ -138,13 +141,14 @@ class InventoryItemMasterDataIntegrationTest {
                 "CARTON")), ErrorCode.UOM_CONVERSION_DUPLICATE);
         assertThatThrownBy(() -> tx.executeWithoutResult(t -> jdbc.update(
                 "UPDATE inventory.inventory_items SET unit_of_measure = 'CARTON' WHERE id = ?", itemId())))
-                .hasMessageContaining("a packing unit of it is already called CARTON");
+                .hasMessageContaining("a carton of its variant is already called CARTON");
         assertThatThrownBy(() -> tx.executeWithoutResult(t -> jdbc.update(
                 "UPDATE inventory.uom_conversions SET unit_of_measure = 'EACH' WHERE id = ?", carton.id())))
-                .hasMessageContaining("the unit the pieces of its item are counted in");
+                .hasMessageContaining("the unit the pieces of its variant's SKUs are counted in");
         items.describe(itemId(), logistics.version(), withUnit(logistics.logistics(), "PCS"));
         assertThat(items.get(itemId()).logistics().unitOfMeasure()).isEqualTo("PCS");
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.uom_conversions WHERE inventory_item_id = ? "
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.uom_conversions WHERE variant_id = "
+                + "(SELECT variant_id FROM inventory.inventory_items WHERE id = ?) "
                 + "AND unit_of_measure IN ('EACH', 'PCS')", Long.class, itemId())).as("and still no row").isZero();
 
         UomConversion reread = units.conversion(productId, variantId, carton.id());
@@ -283,7 +287,8 @@ class InventoryItemMasterDataIntegrationTest {
     }
 
     private static ItemLogistics withUnit(ItemLogistics l, String unit) {
-        return new ItemLogistics(unit, l.barcode(), l.rotatable());
+        return new ItemLogistics(unit, l.barcode());
+
     }
 
     private List<String> history() {

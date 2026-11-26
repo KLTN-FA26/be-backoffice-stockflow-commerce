@@ -35,6 +35,13 @@ class InventoryControlServiceImpl implements InventoryControlService {
 
     @Override
     @Transactional(readOnly = true)
+    public java.util.Map<String, com.stockflow.inventory.api.CartonSpec> cartonSpecsOfLpns(
+            java.util.Collection<String> lpns) {
+        return policies.findCartonSpecsByLpn(lpns);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public InventoryItemLogistics logistics(Sku sku) {
         return policies.findLogistics(sku.code())
                 .orElseThrow(() -> new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No inventory item " + sku));

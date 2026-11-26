@@ -285,8 +285,8 @@ class DesignSubmissionIntegrationTest {
                 .andExpect(jsonPath("$.data.hasCartonSpec").value(true));
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE product.variants SET status = 'BLOCKED' WHERE sku = ?", sku);
-            jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE WHERE inventory_item_id = "
-                    + "(SELECT id FROM inventory.inventory_items WHERE sku = ?)", sku);
+            jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE WHERE variant_id = "
+                    + "(SELECT variant_id FROM inventory.inventory_items WHERE sku = ?)", sku);
         });
 
         JsonNode issues = json.readTree(submit(version())

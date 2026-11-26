@@ -8,7 +8,6 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalInt;
 import java.util.UUID;
 
 /**
@@ -181,10 +180,4 @@ public interface StockPackageRepository {
      * back are lost (a gap).
      */
     List<String> nextLpns(LocalDate day, int count);
-
-    /**
-     * How many units one carton of {@code sku} holds: the factor of its carton unit, its one active packing unit
-     * (01 BR-03). Empty when it has none (it then has no stock in cartons either).
-     */
-    OptionalInt cartonFactorOf(String sku);
 }

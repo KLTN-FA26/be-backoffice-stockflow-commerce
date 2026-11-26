@@ -715,12 +715,12 @@ class QuoteIntegrationTest {
                 quotes.get(portal, sent.id()).version(), Map.of()));
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE "
-                    + "WHERE unit_of_measure = 'CARTON' AND inventory_item_id = (SELECT id FROM inventory.inventory_items "
+                    + "WHERE unit_of_measure = 'CARTON' AND variant_id = (SELECT variant_id FROM inventory.inventory_items "
                     + "WHERE sku = ?)", sku);
             jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
+                    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
                         active, version, created_at)
-                    SELECT ?, i.id, 'CARTON20', 20, TRUE, 0, NOW() FROM inventory.inventory_items i
+                    SELECT ?, i.variant_id, 'CARTON20', 20, TRUE, 0, NOW() FROM inventory.inventory_items i
                      WHERE i.sku = ?""", Identifiers.newId(), sku);
         });
 

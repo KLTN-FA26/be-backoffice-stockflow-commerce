@@ -52,26 +52,26 @@ SELECT pg_temp.expect_ok('BU4 a new item is made with its variant (tg_variant_in
     VALUES (md5('qa45:variant')::uuid, md5('qa45:product')::uuid, 'QA45-ITEM', 'QA 45', '') $q$);
 SELECT pg_temp.expect_true('BU5 ... its unit EACH on the item, nothing in uom_conversions',
     (SELECT i.unit_of_measure = 'EACH'
-            AND NOT EXISTS (SELECT 1 FROM inventory.uom_conversions u WHERE u.inventory_item_id = i.id)
+            AND NOT EXISTS (SELECT 1 FROM inventory.uom_conversions u WHERE u.variant_id = i.variant_id)
        FROM inventory.inventory_items i WHERE i.sku = 'QA45-ITEM'));
 SELECT pg_temp.expect_fail('BU6 a base unit row written by an old script (no is_base column since V20261229000100)', $q$
-    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base)
-    SELECT gen_random_uuid(), id, 'QA45BASE', 1, TRUE FROM inventory.inventory_items WHERE sku = 'QA45-ITEM' $q$);
+    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, is_base)
+    SELECT gen_random_uuid(), variant_id, 'QA45BASE', 1, TRUE FROM inventory.inventory_items WHERE sku = 'QA45-ITEM' $q$);
 SELECT pg_temp.expect_fail('BU7 a carton turned into a base unit (no is_base column since V20261229000100)', $q$
     UPDATE inventory.uom_conversions SET is_base = TRUE
-     WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items
+     WHERE active AND variant_id = (SELECT variant_id FROM inventory.inventory_items
                                             WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);
 
 \echo '--- a packing unit is never called what its item''s pieces are counted in'
 SELECT pg_temp.expect_fail('BU8 a carton called EACH on an item counted in EACH (tg_uom_conversions_unit_code)', $q$
-    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, weight_kg, length_cm,
+    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, weight_kg, length_cm,
                                            width_cm, height_cm, active)
-    SELECT gen_random_uuid(), id, 'EACH', 100, 5, 50, 40, 30, TRUE
+    SELECT gen_random_uuid(), variant_id, 'EACH', 100, 5, 50, 40, 30, TRUE
       FROM inventory.inventory_items WHERE sku = 'QA45-ITEM' $q$);
 SELECT pg_temp.expect_ok('BU9 a carton under its own code', $q$
-    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, weight_kg, length_cm,
+    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, weight_kg, length_cm,
                                            width_cm, height_cm, active)
-    SELECT md5('qa45:carton')::uuid, id, 'THUNG', 100, 5, 50, 40, 30, TRUE
+    SELECT md5('qa45:carton')::uuid, variant_id, 'THUNG', 100, 5, 50, 40, 30, TRUE
       FROM inventory.inventory_items WHERE sku = 'QA45-ITEM' $q$);
 SELECT pg_temp.expect_fail('BU10 that carton renamed to the item''s unit', $q$
     UPDATE inventory.uom_conversions SET unit_of_measure = 'EACH' WHERE id = md5('qa45:carton')::uuid $q$);
@@ -80,7 +80,7 @@ SELECT pg_temp.expect_fail('BU11 the item''s unit renamed to its carton''s code 
 SELECT pg_temp.expect_ok('BU12 the item''s unit renamed to a free code: nothing follows it, there is no row to', $q$
     UPDATE inventory.inventory_items SET unit_of_measure = 'PCS' WHERE sku = 'QA45-ITEM' $q$);
 SELECT pg_temp.expect_true('BU13 ... and the carton is the item''s only unit',
-    (SELECT count(*) FROM inventory.uom_conversions u JOIN inventory.inventory_items i ON i.id = u.inventory_item_id
+    (SELECT count(*) FROM inventory.uom_conversions u JOIN inventory.inventory_items i ON i.variant_id = u.variant_id
       WHERE i.sku = 'QA45-ITEM') = 1);
 ROLLBACK;
 \echo 'PASS 45_no_base_unit_row'

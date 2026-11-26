@@ -116,8 +116,8 @@ class BinResizeStrandingIntegrationTest {
     @DisplayName("the same bin is refused once the item may not be turned; the bin the right way round is not")
     void cartonThatMayNotTurn() {
         jdbc.update("""
-                update inventory.inventory_items set rotatable = false
-                where id = (select inventory_item_id from inventory.uom_conversions where id = ?)""", unit);
+                update product.variants set rotatable = false
+                where id = (select variant_id from inventory.uom_conversions where id = ?)""", unit);
 
         BusinessException refused = assertThrows(BusinessException.class, () -> resizeBin("0.5", "0.4"));
         assertThat(refused.errorCode()).isEqualTo(ErrorCode.CARTONS_WOULD_NOT_FIT);

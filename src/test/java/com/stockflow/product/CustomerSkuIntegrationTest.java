@@ -109,14 +109,19 @@ class CustomerSkuIntegrationTest {
 
     @Test
     void anApprovedDesignGetsAnActiveSkuWithTheVariantsCartonSpec() {
-        // The variant's logistics as a person entered them: they follow; its barcode names its own goods and does not.
-        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.inventory_items SET rotatable = FALSE, "
-                + "barcode = '8930000000017' WHERE sku = ?", sourceSku));
+        // The variant's barcode names its own goods and does not follow; nothing else is copied: the SKU is packed in its
+        // variant's carton (owner decision Q1).
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.inventory_items SET barcode = '8930000000017' "
+                + "WHERE sku = ?", sourceSku));
         CustomerSku sku = issue(snapshot(), "0312345678");
-        var copied = jdbc.queryForMap("SELECT rotatable, barcode FROM inventory.inventory_items WHERE sku = ?",
+        UUID sourceVariant = jdbc.queryForObject("SELECT id FROM product.variants WHERE sku = ?", UUID.class,
+                sourceSku);
+        var item = jdbc.queryForMap("SELECT variant_id, barcode FROM inventory.inventory_items WHERE sku = ?",
                 sku.sku());
-        assertThat(copied.get("rotatable")).isEqualTo(false);
-        assertThat(copied.get("barcode")).isNull();
+        assertThat(item.get("variant_id")).isEqualTo(sourceVariant);
+        assertThat(item.get("barcode")).isNull();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.uom_conversions WHERE variant_id = ?",
+                Long.class, sku.variantId())).as("no carton of its own").isZero();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM product.product_change_log WHERE subject_id = ? AND "
                 + "change_type = 'VARIANT_ADDED'", Long.class, sku.variantId())).isEqualTo(1);
 
@@ -130,12 +135,22 @@ class CustomerSkuIntegrationTest {
 
         var cartons = units.conversionsOf(List.of(new Sku(sku.sku()))).get(sku.sku()).stream()
                 .filter(u -> u.unitOfMeasure().equals("CARTON")).toList();
+        var sourceCartons = units.conversionsOf(List.of(new Sku(sourceSku))).get(sourceSku).stream()
+                .filter(u -> u.unitOfMeasure().equals("CARTON")).toList();
         assertThat(cartons).singleElement().satisfies(carton -> {
+            assertThat(carton.id()).as("the variant's own carton row").isEqualTo(sourceCartons.getFirst().id());
             assertThat(carton.factor()).isEqualTo(50);
             assertThat(carton.active()).isTrue();
             assertThat(carton.weightKg()).isEqualByComparingTo("4.2");
         });
         assertThat(inventory.item(new Sku(sku.sku()))).isNotNull();
+
+        // The warehouse weighs the variant's carton again: the customer's SKU reads the new weight at once.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.uom_conversions SET weight_kg = 9.2 WHERE id = ?",
+                sourceCartons.getFirst().id()));
+        assertThat(units.conversionsOf(List.of(new Sku(sku.sku()))).get(sku.sku()))
+                .filteredOn(u -> u.unitOfMeasure().equals("CARTON")).singleElement()
+                .satisfies(carton -> assertThat(carton.weightKg()).isEqualByComparingTo("9.2"));
     }
 
     @Test

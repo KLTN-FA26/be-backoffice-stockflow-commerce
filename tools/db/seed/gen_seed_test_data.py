@@ -465,6 +465,7 @@ section("6. designs approved for customers, and the SKUs issued on them")
 # Pieces to a carton, by product; every carton is 60 x 40 x 50 cm.
 CARTON = {"LY-GIAY-2L": 1000, "LY-NHUA-PET": 500, "HOP-BANH-KRAFT": 300, "TUI-GIAY-QUAI": 200}
 SKU = {}       # customer sku -> facts
+VARIANT_CARTON = {}   # blank -> its one carton: every customer SKU drawn on it is packed in it (owner decision Q1)
 REVIEW_NOTE = "Đạt: 300 DPI, CMYK, chừa lề an toàn 3 mm"
 
 
@@ -522,7 +523,8 @@ def design(key, cust, blank, name, status, when, project=None):
 
 def customer_sku(cust, blank, suffix, name, when, project=None):
     """The customer's own SKU drawn on the blank once its design is approved (kltn-docs 12 §4.5, 01 BR-03), sold and
-    stocked in cartons of its product's carton unit."""
+    stocked in its blank's carton: the carton is the catalogue variant's, declared once and shared by every customer
+    SKU drawn on it (owner decision Q1, V20261231000700)."""
     v = VARIANT[blank]
     sku = f"{blank}-{suffix}"
     d = design("d:" + sku, cust, blank, name, "APPROVED", when, project)
@@ -532,11 +534,13 @@ def customer_sku(cust, blank, suffix, name, when, project=None):
     per = CARTON[v["product"]]
     barcode = "89" + f"{int(hashlib.md5(sku.encode()).hexdigest(), 16) % 10 ** 11:011d}"
     raw(f"UPDATE inventory.inventory_items SET barcode = '{barcode}' WHERE sku = '{sku}';")
-    unit = uid("unit:" + sku)
     weight = round(per * v["kg"] + 0.6, 3)
-    ins("inventory.uom_conversions", d["at"], id=unit,
-        inventory_item_id=Raw(f"(SELECT id FROM inventory.inventory_items WHERE sku = '{sku}')"),
-        unit_of_measure="THUNG", factor=per, weight_kg=weight, length_cm=60, width_cm=40, height_cm=50, active=True)
+    if blank not in VARIANT_CARTON:
+        VARIANT_CARTON[blank] = uid("unit:" + blank)
+        ins("inventory.uom_conversions", d["at"], id=VARIANT_CARTON[blank], variant_id=v["id"],
+            unit_of_measure="THUNG", factor=per, weight_kg=weight, length_cm=60, width_cm=40, height_cm=50,
+            active=True)
+    unit = VARIANT_CARTON[blank]
     SKU[sku] = dict(sku=sku, cust=cust, blank=blank, unit=unit, per=per, snapshot=d["snapshot"],
                     checksum=d["checksum"], tax=v["tax"], rate=TAX_RATE[v["tax"]], name=name, product=v["product"],
                     weight=weight)

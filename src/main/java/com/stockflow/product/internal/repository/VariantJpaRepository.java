@@ -24,6 +24,10 @@ public interface VariantJpaRepository extends BaseJpaRepository<VariantJpaEntity
     @Query("select v.sku, v.name from VariantJpaEntity v where v.sku in :skus")
     List<Object[]> namesBySku(@Param("skus") java.util.Collection<String> skus);
 
+    /** {@code [id, rotatable]} of each variant among {@code ids}: a projection (owner decision Q9). */
+    @Query("select v.id, v.rotatable from VariantJpaEntity v where v.id in :ids")
+    List<Object[]> rotatableById(@Param("ids") java.util.Collection<java.util.UUID> ids);
+
     /** {@code [sku, product name, variant name]} of each variant among {@code skus}, in one query. */
     @Query("""
             select v.sku, p.name, v.name from VariantJpaEntity v, ProductJpaEntity p

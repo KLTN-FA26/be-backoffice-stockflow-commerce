@@ -95,11 +95,13 @@ public class StockPackageLabels {
         Map<UUID, UomConversion> unitsById = units.findAll(cartons.stream().map(StockPackage::uomConversionId)
                         .distinct().toList()).stream()
                 .collect(Collectors.toMap(UomConversion::id, Function.identity()));
-        Map<String, String> namesBySku = namesOf(unitsById.values().stream().map(UomConversion::sku).toList());
+        // A carton's SKU is its own item's: its carton row is its variant's, shared by every SKU of the variant (Q1).
+        Map<String, String> namesBySku = namesOf(cartons.stream().map(carton -> carton.sku().code()).toList());
         Map<StockPackageId, String> lots = lotsOf(cartons);
         return cartons.stream().sorted(Comparator.comparing(StockPackage::lpn)).map(carton -> {
             UomConversion unit = unitsById.get(carton.uomConversionId());
-            return new StockPackageLabel(carton.lpn(), unit.sku(), namesBySku.get(unit.sku()), lots.get(carton.id()),
+            String sku = carton.sku().code();
+            return new StockPackageLabel(carton.lpn(), sku, namesBySku.get(sku), lots.get(carton.id()),
                     carton.counted(), carton.nominalQty(), unit.unitOfMeasure());
         }).toList();
     }

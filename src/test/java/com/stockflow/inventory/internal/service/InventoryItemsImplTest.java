@@ -52,7 +52,8 @@ class InventoryItemsImplTest {
     }
 
     private ItemRow row(long version, String unit) {
-        return new ItemRow(ID, SKU, version, logistics(unit, null));
+        return new ItemRow(ID, SKU, version, logistics(unit, null), UUID.randomUUID());
+
     }
 
     @BeforeEach

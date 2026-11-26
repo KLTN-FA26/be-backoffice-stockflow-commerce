@@ -43,7 +43,7 @@ BEGIN
     RAISE NOTICE 'ok    %', label;
 END $$;
 
--- Fixtures. A carton unit of 6 blue cups (01 BR-03: an item has ONE active carton; the demo seed's own is retired), a
+-- Fixtures. A carton unit of 6 blue cups (01 BR-03: a variant has ONE active carton, V20261231000700; the demo seed's own is retired), a
 -- lot of them, and cartons of it named by what they are for:
 --   f1 f2 f3   free AVAILABLE cartons on a bin of HCM          blk    BLOCKED on that bin
 --   und        AVAILABLE, its receipt time not known           stg    AVAILABLE, standing in the staging area
@@ -53,9 +53,9 @@ END $$;
 --   cus        CONSUMED, the customer's (held for them)
 -- and one carton of the red cup (red) for "another SKU".
 UPDATE inventory.uom_conversions SET active = FALSE
- WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-VALUES (md5('qa82:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA82_CTN', 6);
+ WHERE active AND variant_id = (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor)
+VALUES (md5('qa82:unit')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA82_CTN', 6);
 INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)
 VALUES (md5('qa82:lot')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'QA82-LOT', NOW() - interval '5 days', 'UNTRACED', NOW()),
        (md5('qa82:lot2')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'QA82-LOT-2', NOW() - interval '5 days', 'UNTRACED', NOW());
@@ -64,7 +64,8 @@ CREATE FUNCTION pg_temp.carton(k TEXT, loc TEXT, stock TEXT, received TEXT DEFAU
     SELECT format($i$
         INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
                                              location_code, status, stock_status, lot_id, received_at)
-        SELECT md5('qa82:' || %L)::uuid, 'QA82-' || upper(%L), u.inventory_item_id, u.id, u.factor, NOW(), %L,
+        SELECT md5('qa82:' || %L)::uuid, 'QA82-' || upper(%L),
+               (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), u.id, u.factor, NOW(), %L,
                'IN_STOCK', %s, %s, %s
           FROM inventory.uom_conversions u WHERE u.id = md5('qa82:unit')::uuid $i$,
         k, k, loc, CASE WHEN stock IS NULL THEN 'NULL' ELSE quote_literal(stock) END, lot, received)
@@ -84,7 +85,7 @@ BEGIN
     EXECUTE pg_temp.carton('und', 'HCM-A01-1-A', 'AVAILABLE', 'NULL');
 END $$;
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code)
-SELECT md5('qa82:rcv')::uuid, 'QA82-RCV', u.inventory_item_id, u.id, u.factor, NOW(), 'HCM-RCV01'
+SELECT md5('qa82:rcv')::uuid, 'QA82-RCV', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), u.id, u.factor, NOW(), 'HCM-RCV01'
   FROM inventory.uom_conversions u WHERE u.id = md5('qa82:unit')::uuid;
 UPDATE inventory.stock_package SET return_opened_at = NOW() WHERE id = md5('qa82:opn')::uuid;
 UPDATE inventory.stock_package SET return_request_id = (SELECT id FROM ordering.return_request ORDER BY id LIMIT 1),

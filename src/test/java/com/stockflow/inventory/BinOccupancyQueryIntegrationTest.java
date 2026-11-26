@@ -119,11 +119,12 @@ class BinOccupancyQueryIntegrationTest {
     }
 
     @Test
-    @DisplayName("what a carton takes: its unit's size, the item's rotatable flag, the unit's weight or none")
+    @DisplayName("what a carton takes: its unit's size, the variant's rotatable flag, the unit's weight or none")
     void needsOfCartons() {
         cartonUnit(skuA, 10, "12");
         cartonUnit(skuB, 10, null);
-        tx.executeWithoutResult(s -> jdbc.update("update inventory.inventory_items set rotatable = false where sku = ?",
+        tx.executeWithoutResult(s -> jdbc.update("update product.variants set rotatable = false where id = "
+                + "(select variant_id from inventory.inventory_items where sku = ?)",
                 skuB));
         UUID a = tx.execute(s -> CartonRows.stock(jdbc, skuA, BIN, 1, 10, "LOT-1", Instant.now())).get(0).id();
         UUID b = tx.execute(s -> CartonRows.stock(jdbc, skuB, BIN, 1, 10, "LOT-1", Instant.now())).get(0).id();

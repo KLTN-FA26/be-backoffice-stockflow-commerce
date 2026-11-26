@@ -27,7 +27,6 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalInt;
 import java.util.TreeMap;
 import java.util.UUID;
 
@@ -373,19 +372,6 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
         return !entityManager.createNativeQuery("""
                         select 1 from inventory.stock_package where id = :id and return_opened_at is not null""")
                 .setParameter("id", id.value()).getResultList().isEmpty();
-    }
-
-    // ------------------------------------------------------------------ labels and units
-
-    @Override
-    public OptionalInt cartonFactorOf(String sku) {
-        @SuppressWarnings("unchecked")
-        List<Number> factors = entityManager.createNativeQuery("""
-                        select u.factor from inventory.uom_conversions u
-                          join inventory.inventory_items i on i.id = u.inventory_item_id
-                         where i.sku = :sku and u.active""")
-                .setParameter("sku", sku).getResultList();
-        return factors.size() == 1 ? OptionalInt.of(factors.getFirst().intValue()) : OptionalInt.empty();
     }
 
     /**

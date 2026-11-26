@@ -51,18 +51,18 @@ SELECT pg_temp.expect_fail('SU5 a sales unit written by an old client', $q$
     SELECT gen_random_uuid(), v.id, u.id
       FROM product.variants v
       JOIN inventory.inventory_items i ON i.sku = v.sku
-      JOIN inventory.uom_conversions u ON u.inventory_item_id = i.id AND u.active
+      JOIN inventory.uom_conversions u ON u.variant_id = i.variant_id AND u.active
      WHERE v.sku = 'LY-GIAY-DEMO-12OZ-XANH' LIMIT 1 $q$);
 
 \echo '--- the carton it stood for is retired and replaced with nothing in the way (01 BR-10)'
 SELECT pg_temp.expect_ok('SU6 the active carton of the blue cup retired', $q$
     UPDATE inventory.uom_conversions SET active = FALSE
      WHERE active AND unit_of_measure <> 'EACH'
-       AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);
+       AND variant_id = (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);
 SELECT pg_temp.expect_ok('SU7 and a new carton specification declared in its place', $q$
-    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, weight_kg, length_cm,
+    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, weight_kg, length_cm,
                                            width_cm, height_cm, active)
-    SELECT gen_random_uuid(), id, 'QA44THUNG', 500, 5, 50, 40, 30, TRUE
+    SELECT gen_random_uuid(), variant_id, 'QA44THUNG', 500, 5, 50, 40, 30, TRUE
       FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH' $q$);
 ROLLBACK;
 \echo 'PASS 44_sales_unit_is_the_carton'

@@ -13,7 +13,6 @@ import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
-import com.stockflow.inventory.internal.repository.UomConversionRepository;
 import com.stockflow.warehouse.api.PutawaySource;
 import com.stockflow.warehouse.api.PutawayTaskView;
 import com.stockflow.warehouse.api.PutawayTasks;
@@ -63,8 +62,7 @@ class CartonQuarantineServiceTest {
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final CartonQuarantineService service = new CartonQuarantineService(operations, stockPackages,
-            mock(StockAdjustmentRepository.class), mock(UomConversionRepository.class),
-            mock(InventoryPolicyRepository.class), tasks, warehouses, events,
+            mock(StockAdjustmentRepository.class), mock(InventoryPolicyRepository.class), tasks, warehouses, events,
             mock(com.stockflow.inventory.internal.domain.ReturnedCartonOwnership.class));
 
     private final StockPackageId cartonId = new StockPackageId(UUID.randomUUID());
