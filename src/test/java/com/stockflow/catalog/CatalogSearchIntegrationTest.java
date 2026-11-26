@@ -12,7 +12,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.catalog.internal.service.CatalogProjectionService;
 import com.stockflow.common.security.Role;
-import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
 
@@ -116,11 +115,6 @@ class CatalogSearchIntegrationTest {
                 jdbc.update("delete from catalog.catalog_entry where product_id=?", id);
                 jdbc.update("delete from catalog.product_listing where product_id=?", id);
                 jdbc.update("delete from product.media where variant_id in (select id from product.variants where product_id=?)", id);
-                // Stock a test gave one of its SKUs (CustomerSkuRows.stock) goes before the item: no ledger line names it.
-                jdbc.update("delete from inventory.stock_package where inventory_item_id in (select i.id from inventory.inventory_items i"
-                        + " join product.variants v on v.sku = i.sku where v.product_id=?)", id);
-                jdbc.update("delete from inventory.stock_lot where sku in (select sku from product.variants where product_id=?)", id);
-                jdbc.update("delete from inventory.inventory_items where sku in (select sku from product.variants where product_id=?)", id);
                 jdbc.update("delete from product.variants where product_id=?", id);
                 jdbc.update("delete from product.product_categories where product_id=?", id);
                 jdbc.update("update product.products set status='DRAFT' where id=?", id);
@@ -279,23 +273,6 @@ class CatalogSearchIntegrationTest {
         publish(m + " cốc giấy", null, sku(m, 1));
         publish("Khay đựng", "Tương thích " + m, m.toUpperCase(Locale.ROOT)); // SKU is exactly the word typed
         assertThat(titles(asCustomer(LIST, "q", m))).containsExactly("Khay đựng", m + " cốc giấy");
-    }
-
-    @Test
-    void inStockOutranksOutOfStockWhenTextScoresAreEqual() throws Exception {
-        String m = marker();
-        // Same title and description, so scores tie on text and stock decides. The one in stock is the one the
-        // tie-break (title, then id) would put last: only its stock can bring it first.
-        UUID first = publish(m + " ly giấy in logo", "Ly giấy hai lớp " + m, sku(m, 1));
-        UUID second = publish(m + " ly giấy in logo", "Ly giấy hai lớp " + m, sku(m, 2));
-        boolean firstSortsLast = first.compareTo(second) > 0;
-        UUID inStock = firstSortsLast ? first : second;
-        UUID outOfStock = firstSortsLast ? second : first;
-        CustomerSkuRows.stock(jdbc, tx, sku(m, firstSortsLast ? 1 : 2), 10);
-        var out = body(asCustomer(LIST, "q", m).andExpect(status().isOk()));
-        var ids = new ArrayList<String>();
-        out.at("/data/items").forEach(n -> ids.add(n.get("productId").asText()));
-        assertThat(ids).containsExactly(inStock.toString(), outOfStock.toString());
     }
 
     @Test

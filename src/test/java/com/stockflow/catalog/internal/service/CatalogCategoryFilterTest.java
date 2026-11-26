@@ -4,7 +4,6 @@ import com.stockflow.catalog.internal.repository.CatalogSearchRepository;
 import com.stockflow.catalog.internal.repository.CatalogSearchRepository.Candidate;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.product.api.CategoryNavigation;
 import com.stockflow.product.api.ProductPublication;
 import org.junit.jupiter.api.DisplayName;
@@ -32,7 +31,7 @@ class CatalogCategoryFilterTest {
     private final ProductPublication products = mock(ProductPublication.class);
     private final CategoryNavigation categories = mock(CategoryNavigation.class);
     private final CatalogSearchService service = new CatalogSearchService(repository, products,
-            mock(InventoryService.class), new SearchProperties(1.0, 1.0, 10.0, 0.25, 0.2, 500), categories);
+            new SearchProperties(1.0, 1.0, 10.0, 0.2, 500), categories);
 
     @Test
     @DisplayName("the listing asks the database for the subtree's products only")
