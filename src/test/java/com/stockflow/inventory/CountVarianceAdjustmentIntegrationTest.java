@@ -84,8 +84,8 @@ class CountVarianceAdjustmentIntegrationTest {
             // Every SKU is lot-tracked and first in, first out since 5-5 (kltn-docs 01 BR-17): there is no policy to set.
             item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
             cartonUnit = Identifiers.newId();
-            jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
-                    + " values (?, ?, 'CARTON', ?)", cartonUnit, item, CARTON_FACTOR);
+            jdbc.update("insert into inventory.uom_conversions (id, variant_id, unit_of_measure, factor)"
+                    + " values (?, (select variant_id from inventory.inventory_items where id = ?), 'CARTON', ?)", cartonUnit, item, CARTON_FACTOR);
         });
     }
 

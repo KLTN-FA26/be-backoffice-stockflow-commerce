@@ -26,11 +26,9 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  */
 class StockPackageSchemaMigrationTest {
 
-    /** The items of the demo cups {@code LY-GIAY-DEMO-12OZ-XANH} and {@code LY-GIAY-DEMO-12OZ-DO}. */
+    /** The item of the demo cup {@code LY-GIAY-DEMO-12OZ-XANH}. */
     private static final String BLUE_CUP =
             "(SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH')";
-    private static final String RED_CUP =
-            "(SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-DO')";
 
     private static PostgreSQLContainer<?> pg;
 
@@ -55,15 +53,20 @@ class StockPackageSchemaMigrationTest {
     private static String unit(Connection db, String name) throws SQLException {
         // 01 BR-03: the item has one active carton, so the earlier tests' units are retired (their cartons stay).
         update(db, "UPDATE inventory.uom_conversions SET active = FALSE WHERE "
-                + "inventory_item_id = " + BLUE_CUP + " AND active");
+                + "variant_id = " + variantOf(BLUE_CUP) + " AND active");
         return unit(db, name, true);
     }
 
     private static String unit(Connection db, String name, boolean active) throws SQLException {
         String id = "md5('it:unit:" + name + "')::uuid";
-        update(db, "INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active) "
-                + "VALUES (" + id + ", " + BLUE_CUP + ", '" + name + "', 10, " + active + ")");
+        update(db, "INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active) "
+                + "VALUES (" + id + ", " + variantOf(BLUE_CUP) + ", '" + name + "', 10, " + active + ")");
         return id;
+    }
+
+    /** The catalogue variant whose cartons an item is packed in (owner decision Q1, V20261231000100). */
+    private static String variantOf(String item) {
+        return "(SELECT variant_id FROM inventory.inventory_items WHERE id = " + item + ")";
     }
 
     /** A whole stock package of 10 in stock at {@code location}, holding its 10 cups in one row (lot UNTRACED). */
@@ -107,8 +110,9 @@ class StockPackageSchemaMigrationTest {
 
             refused(db, "the factor of a unit in use", "UPDATE inventory.uom_conversions SET factor = 12 WHERE id = "
                     + carton);
-            refused(db, "a unit in use moved to another item",
-                    "UPDATE inventory.uom_conversions SET inventory_item_id = " + RED_CUP + " WHERE id = " + carton);
+            refused(db, "a unit in use moved to another variant",
+                    "UPDATE inventory.uom_conversions SET variant_id = (SELECT id FROM product.variants"
+                            + " WHERE sku = 'HOP-GIAY-DEMO-GREY-PAPER') WHERE id = " + carton);
             refused(db, "a unit in use renamed",
                     "UPDATE inventory.uom_conversions SET unit_of_measure = 'BOX' WHERE id = " + carton);
             assertThat(text(db, "SELECT unit_of_measure || ':' || factor FROM inventory.uom_conversions WHERE id = "

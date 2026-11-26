@@ -48,9 +48,9 @@ SELECT md5('qa15:other')::uuid, 'SO-QA-15B', c.id, gen_random_uuid(), 'PENDING_P
 -- One carton of 2 (the allocation below takes it whole; stock is kept in whole cartons only: ck_stock_item_whole_cartons).
 -- 01 BR-03: an item has ONE active carton. The demo seed's own is retired, so the fixture's unit below is the one.
 UPDATE inventory.uom_conversions SET active = FALSE
- WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-VALUES (md5('qa15:u')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_QA15', 2);
+ WHERE active AND variant_id IN (SELECT variant_id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor)
+VALUES (md5('qa15:u')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_QA15', 2);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
 VALUES (md5('qa15:p')::uuid, 'QA-QA15-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa15:u')::uuid, 2, 2, 'HCM-B01-2-B', 'IN_STOCK');
 INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version, created_at,

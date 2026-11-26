@@ -181,6 +181,12 @@ public enum ErrorCode {
     /** 01 BR-03: one active carton per SKU ({@code uk_uom_conversions_one_carton}); the other is retired first. */
     UOM_CARTON_ALREADY_DECLARED("This SKU already has a carton unit; retire it before declaring another", 409),
     /**
+     * Owner decision Q1 (2026-11-26): a customer's own SKU is packed in its catalogue variant's carton and has none of
+     * its own ({@code tg_uom_conversions_catalogue_variant}).
+     */
+    UOM_CARTON_OF_CUSTOMER_SKU("A customer's own SKU is packed in its variant's carton; declare cartons on the variant",
+            409),
+    /**
      * The base unit, or a unit a variant sells in, cannot be deleted or retired (docs 01 BR-10, BR-11); a unit
      * a document counts in keeps its factor and code and is not deleted (BR-10, V20261020000600).
      */

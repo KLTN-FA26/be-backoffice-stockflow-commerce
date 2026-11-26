@@ -147,6 +147,8 @@ class ProductVariantController {
     }
 
     private static ProductVariantService.NewVariant command(VariantRequest r) {
-        return new ProductVariantService.NewVariant(r.sku(), r.name(), r.optionValueIds(), r.position());
+        return new ProductVariantService.NewVariant(r.sku(), r.name(), r.optionValueIds(), r.position(),
+                r.rotatable());
+
     }
 }

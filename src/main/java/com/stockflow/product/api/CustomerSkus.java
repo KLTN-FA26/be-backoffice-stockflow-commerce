@@ -13,9 +13,9 @@ public interface CustomerSkus {
     /**
      * Issues the customer's SKU for an approved design snapshot, in the caller's transaction (the approval's: the design
      * is approved, frozen and given its SKU in one step, or not at all - 12 BR-09). The code is the product's code, the
-     * customer's code and the next number for that customer on that product; the SKU is ACTIVE at once, and its item
-     * gets the source variant's carton spec, logistics and stock policy. Issuing again for the same snapshot returns
-     * the SKU issued before.
+     * customer's code and the next number for that customer on that product; the SKU is ACTIVE at once and is packed in
+     * the source variant's carton - nothing is copied onto it (owner decision Q1). Issuing again for the same snapshot
+     * returns the SKU issued before.
      *
      * @throws com.stockflow.common.error.BusinessException {@code VARIANT_NOT_FOUND} for an unknown source SKU;
      *         {@code PRODUCT_NOT_CUSTOMIZABLE}; {@code CUSTOMER_SKU_SOURCE_UNAVAILABLE} when the product or the source

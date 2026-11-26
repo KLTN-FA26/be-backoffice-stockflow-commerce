@@ -75,9 +75,9 @@ SELECT pg_temp.expect_fail('AE8 a threshold written to an item', $q$
 -- A carton of 3 for the rows below: a stock row with units must sit in one (ck_stock_item_whole_cartons).
 -- 01 BR-03: an item has ONE active carton. The demo seed's own is retired, so the fixture's unit below is the one.
 UPDATE inventory.uom_conversions SET active = FALSE
- WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-VALUES (md5('qa42:u')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_QA42', 3);
+ WHERE active AND variant_id IN (SELECT variant_id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor)
+VALUES (md5('qa42:u')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_QA42', 3);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
 VALUES (md5('qa42:p')::uuid, 'QA-QA42-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa42:u')::uuid, 3, 3, 'HCM-QC01', 'IN_STOCK');
 CREATE FUNCTION pg_temp.expect_fail_by(label TEXT, rule TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
@@ -135,9 +135,15 @@ SELECT pg_temp.expect_ok('AE18 an EXPIRED adjustment recorded before is still de
 SELECT pg_temp.expect_ok('AE20 a lot of the red cup', $q$
     INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type)
     VALUES (md5('qa42:lot:1')::uuid, 'LY-GIAY-DEMO-12OZ-DO', 'LOT-QA42', NOW(), 'UNTRACED') $q$);
--- Two cartons of the red cup in its own carton unit, 500 cups each (a row with units must sit in a carton).
+-- Two cartons of the red cup in its own carton unit, 500 cups each (a row with units must sit in a carton). Since
+-- V20261231000100 that carton is a retired carton of the cup's variant (its stock keeps it): it is made the variant's
+-- active carton again for the fixture, as a person would before receiving in it (BR-03: one active at a time).
+UPDATE inventory.uom_conversions SET active = FALSE
+ WHERE active AND variant_id = (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-DO');
+UPDATE inventory.uom_conversions SET active = TRUE WHERE id = md5('demo:cups:unit:LY-GIAY-DEMO-12OZ-DO')::uuid;
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
-SELECT md5('qa42:po:' || k)::uuid, 'QA-QA42-DO-' || k, u.inventory_item_id, u.id, u.factor, u.factor, loc, 'IN_STOCK'
+SELECT md5('qa42:po:' || k)::uuid, 'QA-QA42-DO-' || k,
+       (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-DO'), u.id, u.factor, u.factor, loc, 'IN_STOCK'
   FROM inventory.uom_conversions u, (VALUES ('1', 'HCM-QC01'), ('2', 'HCM-RCV01')) v(k, loc)
  WHERE u.id = md5('demo:cups:unit:LY-GIAY-DEMO-12OZ-DO')::uuid;
 SELECT pg_temp.expect_ok('AE23 a stock row without a lot id finds the untraced lot of its SKU, number and receipt time', $q$

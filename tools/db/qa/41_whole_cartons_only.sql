@@ -41,9 +41,9 @@ END $$;
 -- customer with a SKU reservation of 4 cups.
 -- 01 BR-03: an item has ONE active carton. The demo seed's own is retired, so the fixture's unit below is the one.
 UPDATE inventory.uom_conversions SET active = FALSE
- WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-VALUES (md5('qa41:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA41_CTN', 4);
+ WHERE active AND variant_id IN (SELECT variant_id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor)
+VALUES (md5('qa41:unit')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA41_CTN', 4);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
                                      location_code, status)
 VALUES (md5('qa41:pk')::uuid, 'QA41-LPN-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa41:unit')::uuid, 4, 4,

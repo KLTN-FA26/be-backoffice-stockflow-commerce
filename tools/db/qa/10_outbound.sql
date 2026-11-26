@@ -24,15 +24,15 @@ ALTER TABLE inventory.stock_item DISABLE TRIGGER trg_stock_sku_policy;
 -- An item has ONE active carton (01 BR-03): the demo seed's is retired, then each carton is made in its unit while
 -- that unit is the active one, which is retired before the next is declared.
 UPDATE inventory.uom_conversions SET active = FALSE
- WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-VALUES (md5('qa10x:demo:u25')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_DEMO25', 25);
+ WHERE active AND variant_id = (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor)
+VALUES (md5('qa10x:demo:u25')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_DEMO25', 25);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
 VALUES (md5('qa10x:demo:p25')::uuid, 'QA-DEMO-25', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa10x:demo:u25')::uuid, 25, 25, 'HCM-A01-2-B', 'IN_STOCK');
 UPDATE inventory.uom_conversions SET active = FALSE
- WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-VALUES (md5('qa10x:demo:u8')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_DEMO8', 8);
+ WHERE active AND variant_id = (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor)
+VALUES (md5('qa10x:demo:u8')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_DEMO8', 8);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
 VALUES (md5('qa10x:demo:p8')::uuid, 'QA-DEMO-8', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa10x:demo:u8')::uuid, 8, 8, 'HCM-A02-1-A', 'IN_STOCK');
 UPDATE inventory.stock_item SET on_hand = 25, lot_number = 'QA-LOT', lot_id = NULL, stock_package_id = md5('qa10x:demo:p25')::uuid
@@ -94,9 +94,9 @@ SELECT row_number() OVER (ORDER BY p.lpn) AS n, s.id AS row_id, p.id AS package_
  ORDER BY p.lpn LIMIT 4;
 -- One active carton per item (01 BR-03): the one before is retired.
 UPDATE inventory.uom_conversions SET active = FALSE
- WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
-VALUES (md5('qa10:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA10_CTN', 3);
+ WHERE active AND variant_id = (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor)
+VALUES (md5('qa10:unit')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA10_CTN', 3);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
                                      location_code, status)
 VALUES (md5('qa10:pk3')::uuid, 'QA10-LPN-3', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa10:unit')::uuid, 3, 3,

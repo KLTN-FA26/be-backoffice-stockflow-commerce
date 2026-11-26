@@ -147,9 +147,10 @@ public class ProductVariantService {
         this.clock = clock;
     }
 
+    /** {@code rotatable}: whether a carton of the variant may be turned (owner decision Q9). */
     public record VariantView(UUID id, UUID productId, String sku, String name, VariantStatus status,
                               boolean defaultVariant, String attributeSignature, int position, Instant obsoletedAt,
-                              long version, List<VariantOption> options) {
+                              long version, List<VariantOption> options, boolean rotatable) {
     }
 
     /** The option a variant takes on one axis, with the dictionary's code and label. */
@@ -160,9 +161,14 @@ public class ProductVariantService {
     /**
      * A variant to add or the new state of one. {@code optionValueIds} name one value per axis; null
      * on an update means "leave the options alone". {@code sku} and {@code name} are optional on a
-     * product with axes (a rule and a generated name fill them in).
+     * product with axes (a rule and a generated name fill them in). {@code rotatable} null keeps the current value
+     * (true for a new variant).
      */
-    public record NewVariant(String sku, String name, List<UUID> optionValueIds, Integer position) {
+    public record NewVariant(String sku, String name, List<UUID> optionValueIds, Integer position, Boolean rotatable) {
+
+        public NewVariant(String sku, String name, List<UUID> optionValueIds, Integer position) {
+            this(sku, name, optionValueIds, position, null);
+        }
     }
 
     public record Generated(List<VariantView> created, int skipped) {
@@ -241,6 +247,17 @@ public class ProductVariantService {
 
     @Auditable(action = AuditAction.CREATE, resourceType = "product-variant", resourceId = "#result?.id()")
     public VariantView add(UUID productId, NewVariant command) {
+        VariantView added = addVariant(productId, command);
+        if (command.rotatable() == null || command.rotatable() == added.rotatable()) {
+            return added;
+        }
+        VariantJpaEntity variant = requireVariant(productId, added.id());
+        variant.setRotatable(command.rotatable());
+        variants.saveAndFlush(variant);
+        return view(variant, added.options());
+    }
+
+    private VariantView addVariant(UUID productId, NewVariant command) {
         Product product = requireChangeable(productId);
         Catalog catalog = catalog(product);
         if (catalog.axes.isEmpty()) {
@@ -428,6 +445,10 @@ public class ProductVariantService {
         if (!name.equals(variant.getName())) changed.add("name");
         if (!signature.equals(variant.getAttributeSignature())) changed.add("attributeSignature");
         if (position != variant.getPosition()) changed.add("position");
+        if (command.rotatable() != null && command.rotatable() != variant.isRotatable()) {
+            changed.add("rotatable");
+            variant.setRotatable(command.rotatable());
+        }
         variant.setDetails(sku, name, signature, position);
         try {
             if (newCombination != null) {
@@ -658,7 +679,7 @@ public class ProductVariantService {
     static VariantView view(VariantJpaEntity v, List<VariantOption> options) {
         return new VariantView(v.getId(), v.getProductId(), v.getSku(), v.getName(), v.getStatus(),
                 v.isDefaultVariant(), v.getAttributeSignature(), v.getPosition(), v.getObsoletedAt(), v.getVersion(),
-                options);
+                options, v.isRotatable());
     }
 
     private Catalog catalog(Product product) {

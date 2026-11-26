@@ -264,10 +264,9 @@ class StockOperationsServiceImpl implements StockOperations {
         Map<UUID, UomConversion> unitsById = units.findAll(seen.values().stream().map(StockPackage::uomConversionId)
                         .distinct().toList()).stream()
                 .collect(Collectors.toMap(UomConversion::id, Function.identity()));
-        seen.values().stream()
-                .map(carton -> Optional.ofNullable(unitsById.get(carton.uomConversionId())).orElseThrow(() ->
-                        new IllegalStateException("Stock package %s is in no known unit".formatted(carton.lpn()))))
-                .map(UomConversion::sku).distinct().sorted()
+        // A carton's SKU is its own item's: its carton row is shared by every SKU of the variant (Q1).
+        Map<UUID, String> skuByItem = skusOf(seen.values());
+        seen.values().stream().map(carton -> skuByItem.get(carton.inventoryItemId())).distinct().sorted()
                 .forEach(policies::lock);
 
         boolean byHand = reference == MoveReference.MOVE_TASK;
@@ -397,8 +396,8 @@ class StockOperationsServiceImpl implements StockOperations {
                 target == null ? "" : ", now " + target);
         return cartons.stream()
                 .sorted(Comparator.comparing(StockPackage::lpn))
-                .map(carton -> view(carton, unitsById.get(carton.uomConversionId()),
-                        onHand.getOrDefault(carton.id(), 0)))
+                .map(carton -> view(carton, skuByItem.get(carton.inventoryItemId()),
+                        unitsById.get(carton.uomConversionId()), onHand.getOrDefault(carton.id(), 0)))
                 .toList();
     }
 
@@ -471,7 +470,8 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         UomConversion unit = units.findAll(List.of(seen.uomConversionId())).stream().findFirst().orElseThrow(() ->
                 new IllegalStateException("Stock package %s is in no known unit".formatted(normal)));
-        policies.lock(unit.sku());
+        String sku = skusOf(List.of(seen)).get(seen.inventoryItemId());
+        policies.lock(sku);
 
         StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(seen.id())).stream().findFirst()
                 .orElseThrow(() -> new IllegalStateException("Stock package %s vanished".formatted(normal)));
@@ -540,9 +540,9 @@ class StockOperationsServiceImpl implements StockOperations {
         if (reportedShort) {
             rows.forEach(events::publishEventsOf);
         }
-        log.info("Quarantined carton {} ({} x {}) from {} into {}", LogSafe.text(normal), onHand, unit.sku(), from,
+        log.info("Quarantined carton {} ({} x {}) from {} into {}", LogSafe.text(normal), onHand, sku, from,
                 LogSafe.text(to));
-        return view(carton, unit, onHand);
+        return view(carton, sku, unit, onHand);
     }
 
     /** Cartons as they stand now, by LPN. */
@@ -550,11 +550,12 @@ class StockOperationsServiceImpl implements StockOperations {
         Map<UUID, UomConversion> unitsById = new HashMap<>(knownUnits);
         units.findAll(cartons.stream().map(StockPackage::uomConversionId).filter(id -> !unitsById.containsKey(id))
                 .distinct().toList()).forEach(unit -> unitsById.put(unit.id(), unit));
+        Map<UUID, String> skuByItem = skusOf(cartons);
         Map<StockPackageId, Integer> onHand = stockPackages.onHandOf(cartons.stream().map(StockPackage::id).toList());
         return cartons.stream()
                 .sorted(Comparator.comparing(StockPackage::lpn))
-                .map(carton -> view(carton, unitsById.get(carton.uomConversionId()),
-                        onHand.getOrDefault(carton.id(), 0)))
+                .map(carton -> view(carton, skuByItem.get(carton.inventoryItemId()),
+                        unitsById.get(carton.uomConversionId()), onHand.getOrDefault(carton.id(), 0)))
                 .toList();
     }
 
@@ -768,7 +769,7 @@ class StockOperationsServiceImpl implements StockOperations {
                 plan.recounts().size(), plan.newCartons(), plan.voided().size());
         return live.stream()
                 .sorted(Comparator.comparing(StockPackage::lpn))
-                .map(carton -> view(carton, unit, carton.receivedQty()))
+                .map(carton -> view(carton, command.sku().code(), unit, carton.receivedQty()))
                 .toList();
     }
 
@@ -791,11 +792,13 @@ class StockOperationsServiceImpl implements StockOperations {
         Map<UUID, UomConversion> unitsById = units.findAll(found.stream().map(StockPackage::uomConversionId)
                         .distinct().toList()).stream()
                 .collect(Collectors.toMap(UomConversion::id, Function.identity()));
+        Map<UUID, String> skuByItem = skusOf(found);
         // A carton being received holds no row yet: what was counted into it is its quantity.
         Map<StockPackageId, Integer> onHand = stockPackages.onHandOf(found.stream()
                 .filter(carton -> carton.status() != StockPackageStatus.RECEIVING).map(StockPackage::id).toList());
         return found.stream().collect(Collectors.groupingBy(StockPackage::goodsReceiptLineId, LinkedHashMap::new,
-                Collectors.mapping(carton -> view(carton, unitsById.get(carton.uomConversionId()),
+                Collectors.mapping(carton -> view(carton, skuByItem.get(carton.inventoryItemId()),
+                                unitsById.get(carton.uomConversionId()),
                                 carton.status() == StockPackageStatus.RECEIVING
                                         ? carton.receivedQty() : onHand.getOrDefault(carton.id(), 0)),
                         Collectors.toList())));
@@ -818,9 +821,23 @@ class StockOperationsServiceImpl implements StockOperations {
                 .map(StockPackage::id).toList());
     }
 
-    private static StockPackageView view(StockPackage carton, UomConversion unit, Integer quantity) {
+    /**
+     * The SKU of each carton's own item, by item id, every one required. A carton's SKU is never its carton row's:
+     * the row is its catalogue variant's and every SKU of the variant shares it (owner decision Q1, V20261231000100).
+     */
+    private Map<UUID, String> skusOf(Collection<StockPackage> cartons) {
+        Map<UUID, String> skuByItem = policies.skusOfItems(cartons.stream().map(StockPackage::inventoryItemId)
+                .distinct().toList());
+        cartons.stream().filter(carton -> !skuByItem.containsKey(carton.inventoryItemId())).findFirst()
+                .ifPresent(carton -> {
+                    throw new IllegalStateException("Stock package %s is of no known item".formatted(carton.lpn()));
+                });
+        return skuByItem;
+    }
+
+    private static StockPackageView view(StockPackage carton, String sku, UomConversion unit, Integer quantity) {
         return new StockPackageView(carton.id().value(), carton.lpn(), carton.goodsReceiptLineId(),
-                unit == null ? null : unit.sku(), carton.uomConversionId(), unit == null ? null : unit.unitOfMeasure(),
+                sku, carton.uomConversionId(), unit == null ? null : unit.unitOfMeasure(),
                 carton.nominalQty(), quantity, carton.receivedQty(), carton.location().code(), carton.status().name());
     }
 
@@ -898,16 +915,14 @@ class StockOperationsServiceImpl implements StockOperations {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION,
                     "%s is at %s, not %s".formatted(normal, carton.location(), command.locationCode()));
         }
-        UomConversion unit = units.findAll(List.of(carton.uomConversionId())).stream().findFirst().orElseThrow(() ->
-                new IllegalStateException("Stock package %s is in no known unit".formatted(normal)));
-        Sku sku = new Sku(unit.sku());
+        Sku sku = new Sku(skusOf(List.of(carton)).get(carton.inventoryItemId()));
         if (command.sku() != null && !command.sku().equals(sku)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "%s holds %s, not %s".formatted(normal, sku,
                     command.sku()));
         }
         // Under the SKU lock, as a release and an approval take it: a release opened at the same moment either is
         // seen below or sees this request pending.
-        policies.lock(unit.sku());
+        policies.lock(sku.code());
         int onHand = stockPackages.onHandOf(List.of(carton.id())).getOrDefault(carton.id(), 0);
         if (command.quantityDelta() != -onHand) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE,

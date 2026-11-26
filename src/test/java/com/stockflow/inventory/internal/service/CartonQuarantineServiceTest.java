@@ -17,7 +17,7 @@ import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
-import com.stockflow.inventory.internal.repository.UomConversionRepository;
+import com.stockflow.warehouse.api.NewPutawayTask;
 import com.stockflow.warehouse.api.PutawaySource;
 import com.stockflow.warehouse.api.PutawayTaskView;
 import com.stockflow.warehouse.api.PutawayTasks;
@@ -60,6 +60,8 @@ class CartonQuarantineServiceTest {
     private static final UUID MANAGER = UUID.randomUUID();
     private static final UUID RECEIPT = UUID.randomUUID();
     private static final UUID LINE = UUID.randomUUID();
+    /** The carton's own item: a customer's SKU, packed in its variant's carton row (owner decision Q1). */
+    private static final UUID ITEM = UUID.randomUUID();
 
     private final StockOperations operations = mock(StockOperations.class);
     private final StockPackageRepository stockPackages = mock(StockPackageRepository.class);
@@ -67,17 +69,18 @@ class CartonQuarantineServiceTest {
     private final PutawayTasks tasks = mock(PutawayTasks.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
+    private final InventoryPolicyRepository policies = mock(InventoryPolicyRepository.class);
     private final CartonQuarantineService service = new CartonQuarantineService(operations, stockPackages, stockItems,
-            mock(StockAdjustmentRepository.class), mock(UomConversionRepository.class),
-            mock(InventoryPolicyRepository.class), tasks, warehouses, events,
+            mock(StockAdjustmentRepository.class), policies, tasks, warehouses, events,
             mock(com.stockflow.inventory.internal.domain.ReturnedCartonOwnership.class));
 
     private final StockPackageId cartonId = new StockPackageId(UUID.randomUUID());
     private final UUID areaId = UUID.randomUUID();
+    private StockPackage carton;
 
     @BeforeEach
     void setUp() {
-        StockPackage carton = new StockPackage(cartonId, LPN, UUID.randomUUID(), UUID.randomUUID(), 10, 10,
+        carton = new StockPackage(cartonId, LPN, ITEM, UUID.randomUUID(), 10, 10,
                 new LocationId(DOCK), StockPackageStatus.IN_STOCK, LINE, null, 0L);
         when(stockPackages.findByLpns(List.of(LPN))).thenReturn(List.of(carton));
         StockItemId row = StockItemId.newId();
@@ -145,5 +148,24 @@ class CartonQuarantineServiceTest {
 
         assertThat(refused.errorCode()).isEqualTo(ErrorCode.STOCK_PACKAGE_DECISION_PENDING);
         verifyNoInteractions(operations);
+    }
+
+    @Test
+    @DisplayName("a released carton of a customer's SKU is locked and put away as that SKU, not its variant's carton row")
+    void releaseNamesTheCartonsOwnSku() {
+        StockItemId row = StockItemId.newId();
+        when(stockItems.findIdsInStockPackage(cartonId)).thenReturn(List.of(row));
+        when(stockItems.findById(row)).thenReturn(Optional.of(new StockItem(row, new Sku("CUP-12OZ-MOC"),
+                new LocationId(AREA), "LOT-1", Quantity.of(10), StockStatus.QUARANTINE, List.of(), 0L,
+                Instant.parse("2026-11-01T00:00:00Z"), UUID.randomUUID(), cartonId)));
+        when(stockPackages.findAllByIdForUpdate(List.of(cartonId))).thenReturn(List.of(carton));
+        when(policies.findSku(ITEM)).thenReturn(Optional.of("CUP-12OZ-MOC"));
+        when(tasks.open(any())).thenReturn(new PutawayTaskView(UUID.randomUUID(), null, null, "CUP-12OZ-MOC", 10,
+                cartonId.value(), null, "PENDING", PutawaySource.QUARANTINE_RELEASE));
+
+        service.release(LPN, MANAGER);
+
+        verify(policies).lock("CUP-12OZ-MOC");
+        verify(tasks).open(NewPutawayTask.quarantineRelease("CUP-12OZ-MOC", 10, cartonId.value()));
     }
 }

@@ -9,6 +9,7 @@ import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
+import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.repository.UomConversionRepository;
 import com.stockflow.inventory.spi.PickedNotHandedOver;
 import com.stockflow.inventory.spi.ReceiptLineLots;
@@ -54,6 +55,8 @@ public class StockPackageLabels {
 
     private final StockPackageRepository stockPackages;
     private final UomConversionRepository units;
+    /** The SKU each carton's own item is: a carton row is shared by every SKU of its variant (owner decision Q1). */
+    private final InventoryPolicyRepository items;
     /** Fulfillment's answer to which consumed cartons are picked and not handed over yet; absent in a module test. */
     private final ObjectProvider<PickedNotHandedOver> picked;
     /** Product's answer to what each SKU is called; absent in a module test. */
@@ -62,10 +65,12 @@ public class StockPackageLabels {
     private final ObjectProvider<ReceiptLineLots> receiptLots;
 
     public StockPackageLabels(StockPackageRepository stockPackages, UomConversionRepository units,
+                              InventoryPolicyRepository items,
                               ObjectProvider<PickedNotHandedOver> picked, ObjectProvider<SkuNames> names,
                               ObjectProvider<ReceiptLineLots> receiptLots) {
         this.stockPackages = stockPackages;
         this.units = units;
+        this.items = items;
         this.picked = picked;
         this.names = names;
         this.receiptLots = receiptLots;
@@ -95,11 +100,16 @@ public class StockPackageLabels {
         Map<UUID, UomConversion> unitsById = units.findAll(cartons.stream().map(StockPackage::uomConversionId)
                         .distinct().toList()).stream()
                 .collect(Collectors.toMap(UomConversion::id, Function.identity()));
-        Map<String, String> namesBySku = namesOf(unitsById.values().stream().map(UomConversion::sku).toList());
+        // The label names the carton's own SKU - a customer's SKU, printed to their design - never its carton row's,
+        // which every SKU of the variant shares (owner decision Q1).
+        Map<UUID, String> skuByItem = items.skusOfItems(cartons.stream().map(StockPackage::inventoryItemId)
+                .distinct().toList());
+        Map<String, String> namesBySku = namesOf(skuByItem.values());
         Map<StockPackageId, String> lots = lotsOf(cartons);
         return cartons.stream().sorted(Comparator.comparing(StockPackage::lpn)).map(carton -> {
             UomConversion unit = unitsById.get(carton.uomConversionId());
-            return new StockPackageLabel(carton.lpn(), unit.sku(), namesBySku.get(unit.sku()), lots.get(carton.id()),
+            String sku = skuByItem.get(carton.inventoryItemId());
+            return new StockPackageLabel(carton.lpn(), sku, namesBySku.get(sku), lots.get(carton.id()),
                     carton.receivedQty(), carton.nominalQty(), unit.unitOfMeasure());
         }).toList();
     }

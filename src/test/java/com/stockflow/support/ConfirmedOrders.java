@@ -202,7 +202,7 @@ public final class ConfirmedOrders {
         if (line.unit() == null) {
             return jdbc.queryForObject("""
                     SELECT u.id FROM inventory.uom_conversions u
-                      JOIN inventory.inventory_items i ON i.id = u.inventory_item_id
+                      JOIN inventory.inventory_items i ON i.variant_id = u.variant_id
                      WHERE i.sku = ? AND u.factor = ? AND u.active
                      ORDER BY u.created_at LIMIT 1""", UUID.class, line.sku(),
                     line.unitsPerCarton());

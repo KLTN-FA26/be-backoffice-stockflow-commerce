@@ -146,8 +146,10 @@ class PlaceDeactivationIntegrationTest {
         jdbc.update("""
                 insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
                                                      location_code, status)
-                select ?, ?, inventory_item_id, id, factor, ?, 'RECEIVING' from inventory.uom_conversions where id = ?""",
-                Identifiers.newId(), "PDI-RCV-" + sku, EMPTY_BIN, unit);
+                select ?, ?, i.id, u.id, u.factor, ?, 'RECEIVING'
+                  from inventory.uom_conversions u join inventory.inventory_items i on i.variant_id = u.variant_id
+                 where u.id = ? and i.sku = ?""",
+                Identifiers.newId(), "PDI-RCV-" + sku, EMPTY_BIN, unit, sku);
 
         assertThat(refusal(() -> binStatus(EMPTY_BIN, 1, LocationStatus.INACTIVE)).errorCode())
                 .isEqualTo(ErrorCode.LOCATION_HOLDS_CARTONS);

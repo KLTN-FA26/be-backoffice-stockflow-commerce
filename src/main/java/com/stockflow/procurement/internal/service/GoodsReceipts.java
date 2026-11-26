@@ -59,8 +59,9 @@ public interface GoodsReceipts {
      * unit of the line's cartons, null for a historical line counted loose. {@code looseQuantity}: what was counted
      * into no carton, {@code quantity} less what the cartons were counted at ({@code receivedQty}) - none on a
      * production line. {@code packages}: the line's cartons, voided ones left out, by LPN - the client prints their
-     * labels from these. {@code units}: every unit of the line's item, so the counting screen can offer the packing
-     * units without the product permission the unit catalogue sits behind.
+     * labels from these. {@code units}: the carton the line is received in - the one its order line was signed in
+     * (Q7, Q10), even retired - so the counting screen can offer it without the product permission the unit
+     * catalogue sits behind.
      */
     record LineView(UUID id, UUID inventoryItemId, String sku, int quantity, String lotNumber,
                     String locationCode, String note,

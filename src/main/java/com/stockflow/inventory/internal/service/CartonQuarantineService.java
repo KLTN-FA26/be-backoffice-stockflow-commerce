@@ -5,7 +5,6 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.contracts.PutawayCompleted;
 import com.stockflow.inventory.api.StockPackageView;
-import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.internal.domain.ReturnedCartonOwnership;
 import com.stockflow.inventory.internal.domain.StockAdjustmentRepository;
 import com.stockflow.inventory.internal.domain.StockItem;
@@ -15,7 +14,6 @@ import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
-import com.stockflow.inventory.internal.repository.UomConversionRepository;
 import com.stockflow.warehouse.api.NewPutawayTask;
 import com.stockflow.warehouse.api.PutawaySource;
 import com.stockflow.warehouse.api.PutawayTaskView;
@@ -71,7 +69,6 @@ public class CartonQuarantineService {
     private final StockPackageRepository stockPackages;
     private final StockItemRepository stockItems;
     private final StockAdjustmentRepository adjustments;
-    private final UomConversionRepository units;
     private final InventoryPolicyRepository policies;
     private final PutawayTasks tasks;
     private final WarehouseService warehouses;
@@ -80,7 +77,7 @@ public class CartonQuarantineService {
 
     public CartonQuarantineService(StockOperations operations, StockPackageRepository stockPackages,
                                    StockItemRepository stockItems, StockAdjustmentRepository adjustments,
-                                   UomConversionRepository units, InventoryPolicyRepository policies,
+                                   InventoryPolicyRepository policies,
                                    PutawayTasks tasks, WarehouseService warehouses, ApplicationEventPublisher events,
                                    ReturnedCartonOwnership ownership) {
         this.ownership = ownership;
@@ -88,7 +85,6 @@ public class CartonQuarantineService {
         this.stockPackages = stockPackages;
         this.stockItems = stockItems;
         this.adjustments = adjustments;
-        this.units = units;
         this.policies = policies;
         this.tasks = tasks;
         this.warehouses = warehouses;
@@ -142,9 +138,10 @@ public class CartonQuarantineService {
     @Transactional
     public UUID release(String lpn, UUID actorId) {
         StockPackage seen = find(lpn);
-        UomConversion unit = units.findAll(List.of(seen.uomConversionId())).stream().findFirst().orElseThrow(() ->
-                new IllegalStateException("Stock package %s is in no known unit".formatted(seen.lpn())));
-        policies.lock(unit.sku());
+        // The carton's SKU is its own item's: its carton row is shared by every SKU of the variant (Q1).
+        String sku = policies.findSku(seen.inventoryItemId()).orElseThrow(() ->
+                new IllegalStateException("Stock package %s is of no known item".formatted(seen.lpn())));
+        policies.lock(sku);
         StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(seen.id())).stream().findFirst()
                 .orElseThrow(() -> new IllegalStateException("Stock package %s vanished".formatted(seen.lpn())));
         if (carton.status() != StockPackageStatus.IN_STOCK) {
@@ -179,7 +176,7 @@ public class CartonQuarantineService {
                             .formatted(carton.lpn()), List.of(), Map.of("lpn", carton.lpn()));
         }
         int onHand = live.stream().mapToInt(row -> row.onHand().value()).sum();
-        PutawayTaskView task = tasks.open(NewPutawayTask.quarantineRelease(unit.sku(), onHand, carton.id().value()));
+        PutawayTaskView task = tasks.open(NewPutawayTask.quarantineRelease(sku, onHand, carton.id().value()));
         if (task.source() != PutawaySource.QUARANTINE_RELEASE) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_DECISION_PENDING,
                     "%s still has its receipt's putaway task %s open".formatted(carton.lpn(), task.id()),

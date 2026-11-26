@@ -4,7 +4,6 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
-import com.stockflow.inventory.api.ItemSpecifications;
 import com.stockflow.product.api.CustomerSku;
 import com.stockflow.product.api.CustomerSkus;
 import com.stockflow.product.api.IssueCustomerSkuCommand;
@@ -39,6 +38,10 @@ import java.util.stream.Collectors;
  * <p>The code is "product - customer - number" ({@code CUP12-0312345678-01}); a long product code shortens the
  * customer's part rather than failing the approval, and the number moves on past a code already taken, so two
  * customers whose codes shorten alike never meet.</p>
+ *
+ * <p>Nothing is copied onto the new SKU: it is packed in its source variant's carton (owner decision Q1, reversing
+ * B20), which inventory reads through the item's {@code variant_id}, so a carton measured again on the variant reaches
+ * every customer's SKU of it at once.</p>
  */
 @Service
 public class CustomerSkuService implements CustomerSkus {
@@ -48,16 +51,13 @@ public class CustomerSkuService implements CustomerSkus {
 
     private final VariantJpaRepository variants;
     private final ProductJpaRepository products;
-    private final ItemSpecifications specifications;
     private final ProductChangeLogRepository history;
     private final EntityManager entityManager;
 
     public CustomerSkuService(VariantJpaRepository variants, ProductJpaRepository products,
-                              ItemSpecifications specifications, ProductChangeLogRepository history,
-                              EntityManager entityManager) {
+                              ProductChangeLogRepository history, EntityManager entityManager) {
         this.variants = variants;
         this.products = products;
-        this.specifications = specifications;
         this.history = history;
         this.entityManager = entityManager;
     }
@@ -110,8 +110,7 @@ public class CustomerSkuService implements CustomerSkus {
         variants.saveAndFlush(variant);
         history.record(product.getId(), ProductChangeType.VARIANT_ADDED, variant.getId(), null,
                 variant.getStatus().name(), "customer SKU of design snapshot " + command.designSnapshotId(), List.of());
-        // The insert created the SKU's item (tg_variant_inventory_item); it now takes the source's specification.
-        specifications.copy(new Sku(source.getSku()), new Sku(sku));
+        // The insert created the SKU's item (tg_variant_inventory_item), packed in the source variant's carton.
         return view(variant, source.getSku());
     }
 

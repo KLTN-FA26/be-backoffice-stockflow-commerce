@@ -21,9 +21,12 @@ public record ReceivableProductionOrder(UUID id, String code, String status, boo
 
     /**
      * One line: {@code cartons} ordered of {@code unitsPerCarton} each, {@code receivedCartons} of them counted in by
-     * receipts confirmed so far (drafts not included).
+     * receipts confirmed so far (drafts not included). {@code uomConversionId} is the carton of the sales order line it
+     * was made for - the one the contract was signed in, which the goods come back in even if the company has retired
+     * it since (owner decisions Q7, Q10 of 2026-11-26); null only for an order line that never had a carton.
      */
-    public record Line(UUID id, UUID orderLineId, String sku, int cartons, int unitsPerCarton, int receivedCartons) {
+    public record Line(UUID id, UUID orderLineId, String sku, int cartons, int unitsPerCarton, int receivedCartons,
+                       UUID uomConversionId) {
 
         public Line {
             Objects.requireNonNull(id, "id");

@@ -77,9 +77,8 @@ class InventoryItemsIntegrationTest {
         return jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
     }
 
-    /** Logistics that turn the rotatable flag off: an item is rotatable until somebody says otherwise. */
     private ItemLogistics logistics(String unit, String barcode) {
-        return new ItemLogistics(unit, barcode, false);
+        return new ItemLogistics(unit, barcode);
     }
 
     private static ErrorCode codeOf(Runnable call) {
@@ -111,7 +110,7 @@ class InventoryItemsIntegrationTest {
         var before = items.get(f.itemId());
         var after = items.describe(f.itemId(), before.version(), logistics("EACH", null));
         assertThat(after.version()).isEqualTo(before.version() + 1);
-        assertThat(after.logistics().rotatable()).isFalse();
+
     }
 
     @Test

@@ -20,6 +20,10 @@
  * to carry its lot yet. Each is one question per label sheet, and a module test without the answering module prints
  * the label without that field.</p>
  *
+ * <p>Whether a carton may be turned is its catalogue variant's ({@link CartonRotation}, answered by {@code product};
+ * owner decision Q9): putaway, the bin-fit checks and the packaging resolver ask it, and a module test without
+ * {@code product} treats every carton as rotatable, the documented default.</p>
+ *
  * <p>Like {@code api}: records and interfaces only, nothing internal.</p>
  */
 @org.springframework.modulith.NamedInterface("spi")

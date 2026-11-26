@@ -22,13 +22,14 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * The units of a product's SKU: the units of measure of its inventory item (docs 01 §3 "Đơn vị quy đổi",
- * BR-09, BR-10) and the variant's sales units (§3 "Đơn vị bán", BR-11). Both are edited through the
- * product, under the same guard as the logistics: not while it is under review, never once discontinued.
+ * The units of a product's SKU: the cartons of its catalogue variant (docs 01 §3, BR-03, BR-09, BR-10) and the
+ * variant's sales units (§3, BR-11). Both are edited through the product, under the same guard as the logistics: not
+ * while it is under review, never once discontinued. A customer's own SKU reads its variant's cartons and is refused
+ * on every write ({@code UOM_CARTON_OF_CUSTOMER_SKU}, owner decision Q1).
  *
  * <p>Sales unit: a SKU is sold by the carton of its carton specification, which the system assigns (kltn-docs 01 §3
  * "Đơn vị bán", BR-11): quotes, orders and contracts count cartons, priced per piece. So there is nothing to list or
- * choose - the sales unit <em>is</em> the item's one active packing unit (01 BR-03,
+ * choose - the sales unit <em>is</em> the variant's one active carton (01 BR-03,
  * {@code uk_uom_conversions_one_carton}), read when asked for; a SKU with no carton yet has none. The table that once
  * listed units a variant sells in ({@code product.variant_sales_units}, dropped by V20261226000100) recorded that same
  * fact a second time, was never written by the system, and kept a carton from being retired (BR-10) while it was
@@ -100,7 +101,7 @@ public class SkuUnitService {
 
     // ---- sales unit ---------------------------------------------------------------------------------------
 
-    /** The unit the variant is sold in: its item's one active carton; an empty page while it has none. */
+    /** The unit the variant is sold in: its catalogue variant's one active carton; an empty page while it has none. */
     @Transactional(readOnly = true)
     public PageResponse<SalesUnitView> salesUnits(UUID productId, UUID variantId, int page, int size) {
         Sku sku = readSku(productId, variantId);
@@ -127,6 +128,10 @@ public class SkuUnitService {
         if (product.status() == ProductStatus.DISCONTINUED || product.status() == ProductStatus.PENDING_APPROVAL)
             throw new BusinessException(ErrorCode.CONFLICT);
         var variant = variants.variantSku(productId, variantId);
+        if (variant.customerSku()) {
+            throw new BusinessException(ErrorCode.UOM_CARTON_OF_CUSTOMER_SKU,
+                    "SKU %s is a customer's own SKU: it is packed in its variant's carton".formatted(variant.sku()));
+        }
         if (variant.obsolete()) {
             throw new BusinessException(ErrorCode.VARIANT_OBSOLETE,
                     "SKU %s is obsolete: its units are kept as they are".formatted(variant.sku()));

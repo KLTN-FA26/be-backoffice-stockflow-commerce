@@ -37,6 +37,8 @@ class UomConversionServiceImplTest {
 
     private static final Sku SKU = new Sku("CUP-12OZ");
     private static final UUID ITEM = UUID.randomUUID();
+    /** The catalogue variant whose cartons these are (owner decision Q1, V20261231000100). */
+    private static final UUID VARIANT = UUID.randomUUID();
     private static final UUID CARTON_ID = UUID.randomUUID();
 
     private final UomConversionRepository conversions = mock(UomConversionRepository.class);
@@ -48,6 +50,8 @@ class UomConversionServiceImplTest {
     @BeforeEach
     void itemExists() {
         when(conversions.itemId(SKU.code())).thenReturn(Optional.of(ITEM));
+        when(conversions.variantId(SKU.code())).thenReturn(Optional.of(VARIANT));
+        when(conversions.skusOfVariant(VARIANT)).thenReturn(List.of(SKU.code()));
         when(users.current()).thenReturn(Optional.empty());
     }
 
@@ -135,7 +139,7 @@ class UomConversionServiceImplTest {
         @Test
         @DisplayName("a code the item already uses is UOM_CONVERSION_DUPLICATE")
         void duplicateUnit() {
-            when(conversions.unitTaken(ITEM, "CARTON", null)).thenReturn(true);
+            when(conversions.unitTaken(VARIANT, "CARTON", null)).thenReturn(true);
 
             assertThat(codeOf(() -> service.add(SKU, draft("CARTON", 12, true))))
                     .isEqualTo(ErrorCode.UOM_CONVERSION_DUPLICATE);
@@ -145,7 +149,7 @@ class UomConversionServiceImplTest {
         @Test
         @DisplayName("01 BR-03: a second active carton is UOM_CARTON_ALREADY_DECLARED; a retired one is declared freely")
         void secondActiveCartonIsRefused() {
-            when(conversions.activeCartonOf(ITEM, null)).thenReturn(Optional.of("CARTON"));
+            when(conversions.activeCartonOf(VARIANT, null)).thenReturn(Optional.of("CARTON"));
 
             assertThat(codeOf(() -> service.add(SKU, draft("BOX", 12, true))))
                     .isEqualTo(ErrorCode.UOM_CARTON_ALREADY_DECLARED);
@@ -154,7 +158,7 @@ class UomConversionServiceImplTest {
             when(conversions.find(eq(SKU.code()), any(UUID.class))).thenAnswer(call ->
                     Optional.of(unit(call.getArgument(1), "BOX", 12, 0)));
             service.add(SKU, draft("BOX", 12, false));
-            verify(conversions).insert(any(), eq(ITEM), any(), eq("system"));
+            verify(conversions).insert(any(), eq(VARIANT), any(), eq("system"));
         }
 
         @Test
@@ -164,7 +168,7 @@ class UomConversionServiceImplTest {
             org.mockito.Mockito.doAnswer(call -> {
                 inserted[0] = call.getArgument(0);
                 return null;
-            }).when(conversions).insert(any(), eq(ITEM), any(), eq("system"));
+            }).when(conversions).insert(any(), eq(VARIANT), any(), eq("system"));
             when(conversions.find(eq(SKU.code()), any(UUID.class))).thenAnswer(call ->
                     Optional.of(unit(call.getArgument(1), "CARTON", 12, 0)));
 
@@ -172,17 +176,34 @@ class UomConversionServiceImplTest {
 
             InOrder order = inOrder(items, conversions);
             order.verify(items).lock(SKU.code());
-            order.verify(conversions).insert(any(), eq(ITEM), any(), eq("system"));
+            order.verify(conversions).insert(any(), eq(VARIANT), any(), eq("system"));
             assertThat(created.id()).isEqualTo(inserted[0]);
         }
 
         @Test
-        @DisplayName("an unknown SKU is refused after the lock, with INVENTORY_ITEM_NOT_FOUND")
+        @DisplayName("an unknown SKU is refused with INVENTORY_ITEM_NOT_FOUND, before any lock")
         void unknownSku() {
-            when(conversions.itemId("NOPE")).thenReturn(Optional.empty());
+            when(conversions.variantId("NOPE")).thenReturn(Optional.empty());
 
             assertThat(codeOf(() -> service.add(new Sku("NOPE"), draft("CARTON", 12, true))))
                     .isEqualTo(ErrorCode.INVENTORY_ITEM_NOT_FOUND);
+            verify(items, never()).lock(any());
+        }
+
+        @Test
+        @DisplayName("Q1: the carton is the variant's, so the write locks every SKU packed in it, in sorted order")
+        void locksEverySkuOfTheVariant() {
+            when(conversions.skusOfVariant(VARIANT)).thenReturn(List.of(SKU.code(), "CUP-12OZ-LA", "CUP-12OZ-MOC"));
+            when(conversions.find(eq(SKU.code()), any(UUID.class))).thenAnswer(call ->
+                    Optional.of(unit(call.getArgument(1), "CARTON", 12, 0)));
+
+            service.add(SKU, draft("CARTON", 12, true));
+
+            InOrder order = inOrder(items, conversions);
+            order.verify(items).lock(SKU.code());
+            order.verify(items).lock("CUP-12OZ-LA");
+            order.verify(items).lock("CUP-12OZ-MOC");
+            order.verify(conversions).insert(any(), eq(VARIANT), any(), eq("system"));
         }
     }
 
@@ -249,7 +270,7 @@ class UomConversionServiceImplTest {
             UomConversion retired = new UomConversion(retiredId, SKU.code(), "OLD", 1000, BigDecimal.ONE, null,
                     null, null, false, 2);
             when(conversions.find(SKU.code(), retiredId)).thenReturn(Optional.of(retired));
-            when(conversions.activeCartonOf(ITEM, retiredId)).thenReturn(Optional.of("CARTON"));
+            when(conversions.activeCartonOf(VARIANT, retiredId)).thenReturn(Optional.of("CARTON"));
 
             assertThat(codeOf(() -> service.change(SKU, retiredId, 2, draft("OLD", 1000, true))))
                     .isEqualTo(ErrorCode.UOM_CARTON_ALREADY_DECLARED);
@@ -276,7 +297,7 @@ class UomConversionServiceImplTest {
         @Test
         @DisplayName("renaming to a code another unit of the item has is UOM_CONVERSION_DUPLICATE")
         void renameToTakenCode() {
-            when(conversions.unitTaken(ITEM, "BOX", CARTON_ID)).thenReturn(true);
+            when(conversions.unitTaken(VARIANT, "BOX", CARTON_ID)).thenReturn(true);
 
             assertThat(codeOf(() -> service.change(SKU, CARTON_ID, 4, draft("BOX", 1000, true))))
                     .isEqualTo(ErrorCode.UOM_CONVERSION_DUPLICATE);

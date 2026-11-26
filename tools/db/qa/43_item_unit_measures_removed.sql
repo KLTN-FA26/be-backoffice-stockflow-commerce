@@ -44,10 +44,12 @@ SELECT pg_temp.expect_true('IM1 none of the ten measure columns is left on inven
                    AND column_name IN ('weight_kg', 'length_cm', 'width_cm', 'height_cm', 'package_weight_kg',
                                        'package_length_cm', 'package_width_cm', 'package_height_cm', 'package_count',
                                        'pack_size')));
-SELECT pg_temp.expect_true('IM2 unit_of_measure, barcode and rotatable stay',
+SELECT pg_temp.expect_true('IM2 unit_of_measure and barcode stay; rotatable moved to the variant (V20261231000200)',
     (SELECT count(*) FROM information_schema.columns
       WHERE table_schema = 'inventory' AND table_name = 'inventory_items'
-        AND column_name IN ('unit_of_measure', 'barcode', 'rotatable')) = 3);
+        AND column_name IN ('unit_of_measure', 'barcode', 'rotatable')) = 2
+    AND EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'product' AND table_name = 'variants' AND column_name = 'rotatable'));
 SELECT pg_temp.expect_true('IM3 their CHECKs went with them',
     NOT EXISTS (SELECT 1 FROM pg_constraint
                  WHERE conrelid = 'inventory.inventory_items'::regclass
@@ -66,11 +68,11 @@ SELECT pg_temp.expect_fail('IM5 an item weight written by an old client', $q$
 SELECT pg_temp.expect_ok('IM6 the carton of the blue cup measured', $q$
     UPDATE inventory.uom_conversions SET length_cm = 60, width_cm = 50, height_cm = 40, weight_kg = 6
      WHERE active
-       AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);
+       AND variant_id = (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);
 SELECT pg_temp.expect_fail('IM7 a carton of no weight (ck_uom_conversions_weight)', $q$
     UPDATE inventory.uom_conversions SET weight_kg = 0
      WHERE active
-       AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);
+       AND variant_id = (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);
 SELECT pg_temp.expect_true('IM8 no base unit row is left to give a weight to: the base unit is the item''s own (V20261226000200, V20261229000100)',
     NOT EXISTS (SELECT 1 FROM information_schema.columns
                  WHERE table_schema = 'inventory' AND table_name = 'uom_conversions' AND column_name = 'is_base'));

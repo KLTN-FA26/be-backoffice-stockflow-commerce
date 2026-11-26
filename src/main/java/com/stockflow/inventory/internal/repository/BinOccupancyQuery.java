@@ -21,8 +21,9 @@ import java.util.UUID;
 /**
  * What the given bins hold right now, and what a carton takes of a bin, for putting it away (SCRUM-92; kltn-docs
  * 05 BR-03, 06 BR-19) and for suggesting bins to a move of a group of cartons (issue #412; 11 §4.1, docs#46), which
- * judges room by putaway's rule and so must read it the same way. Grouped reads of the inventory schema only: sizes and weights come from the carton units (the
- * item master gives only the rotatable flag) of the same schema, never from another module's tables.
+ * judges room by putaway's rule and so must read it the same way. Grouped reads of the inventory schema only: sizes and
+ * weights come from the carton units of the same schema, never from another module's tables; whether a carton may be
+ * turned is its catalogue variant's, asked once per read through {@link VariantRotations} (owner decision Q9).
  *
  * <p>A bin's load is every carton on its rows - any SKU, any status - because the shelf is as full of a quarantined
  * or held carton as of a sellable one. A carton takes its carton unit's length x width x height and weighs what that
@@ -41,9 +42,11 @@ public class BinOccupancyQuery {
     public static final int BIN_LOCK_SEED = 704;
 
     private final JdbcTemplate jdbc;
+    private final VariantRotations rotations;
 
-    public BinOccupancyQuery(JdbcTemplate jdbc) {
+    public BinOccupancyQuery(JdbcTemplate jdbc, VariantRotations rotations) {
         this.jdbc = jdbc;
+        this.rotations = rotations;
     }
 
     /**
@@ -180,26 +183,30 @@ public class BinOccupancyQuery {
     }
 
     /**
-     * What each of these cartons takes of a bin: its carton unit's size, whether its item may be turned on the
-     * horizontal ({@code rotatable}, docs 01) and its full weight - the unit's, null when nobody recorded it. A carton that does not exist is absent.
+     * What each of these cartons takes of a bin: its carton unit's size, whether its variant's cartons may be turned on
+     * the horizontal ({@code rotatable}, docs 01; owner decision Q9) and its full weight - the unit's, null when nobody
+     * recorded it. A carton that does not exist is absent.
      */
     public Map<UUID, Need> needsOf(Collection<UUID> cartonIds) {
         if (cartonIds.isEmpty()) {
             return Map.of();
         }
-        Map<UUID, Need> out = new HashMap<>();
-        jdbc.query("""
-                select p.id, u.length_cm, u.width_cm, u.height_cm, i.rotatable, u.weight_kg
+        record Row(UUID id, UUID variantId, BigDecimal length, BigDecimal width, BigDecimal height, BigDecimal weight) { }
+        java.util.List<Row> rows = jdbc.query("""
+                select p.id, u.variant_id, u.length_cm, u.width_cm, u.height_cm, u.weight_kg
                 from inventory.stock_package p
                 join inventory.uom_conversions u on u.id = p.uom_conversion_id
-                join inventory.inventory_items i on i.id = p.inventory_item_id
                 where p.id = any (?)""",
                 ps -> ps.setArray(1, ps.getConnection().createArrayOf("uuid", cartonIds.toArray())),
-                rs -> {
-                    out.put(rs.getObject("id", UUID.class), new Need(new CartonFit.Carton(rs.getBigDecimal("length_cm"),
-                            rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm"), rs.getBoolean("rotatable")),
-                            rs.getBigDecimal("weight_kg")));
-                });
+                (rs, n) -> new Row(rs.getObject("id", UUID.class), rs.getObject("variant_id", UUID.class),
+                        rs.getBigDecimal("length_cm"), rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm"),
+                        rs.getBigDecimal("weight_kg")));
+        Map<UUID, Boolean> rotatable = rotations.of(rows.stream().map(Row::variantId).toList());
+        Map<UUID, Need> out = new HashMap<>();
+        for (Row row : rows) {
+            out.put(row.id(), new Need(new CartonFit.Carton(row.length(), row.width(), row.height(),
+                    VariantRotations.rotatable(rotatable, row.variantId())), row.weight()));
+        }
         return out;
     }
 
@@ -269,20 +276,25 @@ public class BinOccupancyQuery {
         if (locationCodes.isEmpty()) {
             return java.util.List.of();
         }
-        return jdbc.query("""
-                select p.location_code, p.id, p.uom_conversion_id, p.lpn, u.length_cm, u.width_cm, u.height_cm,
-                       i.rotatable
+        record Row(String locationCode, UUID id, UUID unitId, String lpn, UUID variantId, BigDecimal length,
+                   BigDecimal width, BigDecimal height) { }
+        java.util.List<Row> rows = jdbc.query("""
+                select p.location_code, p.id, p.uom_conversion_id, p.lpn, u.variant_id, u.length_cm, u.width_cm,
+                       u.height_cm
                 from inventory.stock_package p
                 join inventory.uom_conversions u on u.id = p.uom_conversion_id
-                join inventory.inventory_items i on i.id = p.inventory_item_id
                 where p.location_code = any (?)
                   and exists (select 1 from inventory.stock_item s where s.stock_package_id = p.id and s.on_hand > 0)
                 order by p.lpn""",
                 ps -> ps.setArray(1, ps.getConnection().createArrayOf("text", locationCodes.toArray())),
-                (rs, n) -> new CartonIn(rs.getString("location_code"), rs.getObject("id", UUID.class),
+                (rs, n) -> new Row(rs.getString("location_code"), rs.getObject("id", UUID.class),
                         rs.getObject("uom_conversion_id", UUID.class), rs.getString("lpn"),
-                        new CartonFit.Carton(rs.getBigDecimal("length_cm"), rs.getBigDecimal("width_cm"),
-                                rs.getBigDecimal("height_cm"), rs.getBoolean("rotatable"))));
+                        rs.getObject("variant_id", UUID.class), rs.getBigDecimal("length_cm"),
+                        rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm")));
+        Map<UUID, Boolean> rotatable = rotations.of(rows.stream().map(Row::variantId).toList());
+        return rows.stream().map(row -> new CartonIn(row.locationCode(), row.id(), row.unitId(), row.lpn(),
+                new CartonFit.Carton(row.length(), row.width(), row.height(),
+                        VariantRotations.rotatable(rotatable, row.variantId())))).toList();
     }
 
     /** A carton standing at {@code locationCode}, named by its LPN. */

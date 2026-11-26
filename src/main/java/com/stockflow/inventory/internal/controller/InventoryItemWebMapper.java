@@ -13,7 +13,7 @@ class InventoryItemWebMapper {
     InventoryItemResponse toResponse(InventoryItems.Detail d) {
         var l = d.logistics();
         return new InventoryItemResponse(d.id(), d.sku(), d.version(),
-                new InventoryItemResponse.Logistics(l.unitOfMeasure(), l.barcode(), l.rotatable()));
+                new InventoryItemResponse.Logistics(l.unitOfMeasure(), l.barcode()));
     }
 
     InventoryItemSummaryResponse toSummary(InventoryItems.Summary s) {
@@ -21,6 +21,7 @@ class InventoryItemWebMapper {
     }
 
     ItemLogistics toLogistics(UpdateItemLogisticsRequest r) {
-        return new ItemLogistics(r.unitOfMeasure(), r.barcode(), !Boolean.FALSE.equals(r.rotatable()));
+        return new ItemLogistics(r.unitOfMeasure(), r.barcode());
+
     }
 }

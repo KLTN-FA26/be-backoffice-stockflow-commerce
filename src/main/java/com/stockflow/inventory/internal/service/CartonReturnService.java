@@ -13,7 +13,6 @@ import com.stockflow.inventory.api.ReceiveReturnedCartonsCommand;
 import com.stockflow.inventory.api.RefundedSku;
 import com.stockflow.inventory.api.ReturnedCarton;
 import com.stockflow.inventory.api.StockPackageView;
-import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.ReturnedCartonOwnership;
@@ -27,7 +26,6 @@ import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
-import com.stockflow.inventory.internal.repository.UomConversionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -76,21 +74,19 @@ public class CartonReturnService implements CartonReturns {
     private final StockPackageRepository stockPackages;
     private final StockItemRepository stockItems;
     private final StockPackageContents cartons;
-    private final UomConversionRepository units;
     private final InventoryPolicyRepository policies;
     private final LocationDirectory locations;
     private final StockMovementLog ledger;
     private final ReturnedCartonOwnership ownership;
 
     public CartonReturnService(StockPackageRepository stockPackages, StockItemRepository stockItems,
-                               StockPackageContents cartons, UomConversionRepository units,
-                               InventoryPolicyRepository policies, LocationDirectory locations,
+                               StockPackageContents cartons, InventoryPolicyRepository policies,
+                               LocationDirectory locations,
                                StockMovementLog ledger, ReturnedCartonOwnership ownership) {
         this.ownership = ownership;
         this.stockPackages = stockPackages;
         this.stockItems = stockItems;
         this.cartons = cartons;
-        this.units = units;
         this.policies = policies;
         this.locations = locations;
         this.ledger = ledger;
@@ -104,9 +100,8 @@ public class CartonReturnService implements CartonReturns {
             return Optional.empty();
         }
         return stockPackages.findByLpns(List.of(normal)).stream().findFirst().map(carton -> {
-            UomConversion unit = unitOf(carton);
             Optional<ReturnedCartonOwnership.Owned> owned = ownership.owned(carton.id());
-            ReturnedCarton seen = view(carton, unit.sku(), lotOf(carton),
+            ReturnedCarton seen = view(carton, skuOf(carton), lotOf(carton),
                     stockPackages.returnOpenedAt(carton.id()).orElse(null),
                     owned.map(o -> o.ownership().name()).orElse(null));
             return new ReturnedCarton(seen.stockPackageId(), seen.lpn(), seen.sku(), seen.lotNumber(), seen.quantity(),
@@ -147,8 +142,11 @@ public class CartonReturnService implements CartonReturns {
                         Map.of("lpn", seen.lpn()));
             }
         }
+        // A carton's SKU is its own item's: its carton row is shared by every SKU of its variant (Q1).
+        Map<UUID, String> skuByItem = policies.skusOfItems(byLpn.values().stream()
+                .map(StockPackage::inventoryItemId).toList());
         Map<String, String> skuByLpn = byLpn.values().stream()
-                .collect(Collectors.toMap(StockPackage::lpn, carton -> unitOf(carton).sku()));
+                .collect(Collectors.toMap(StockPackage::lpn, carton -> requireSku(carton, skuByItem)));
 
         // The global lock order: SKUs in code order, every carton (in id order), then each carton's row.
         skuByLpn.values().stream().distinct().sorted().forEach(policies::lock);
@@ -290,9 +288,17 @@ public class CartonReturnService implements CartonReturns {
                 : ownership.reversedBy(returnRequestId, StockPackageView.normalLpns(List.copyOf(lpns)));
     }
 
-    private UomConversion unitOf(StockPackage carton) {
-        return units.findAll(List.of(carton.uomConversionId())).stream().findFirst().orElseThrow(() ->
-                new IllegalStateException("Stock package %s is in no known unit".formatted(carton.lpn())));
+    /** The carton's SKU: its own item's, never its carton row's, which every SKU of the variant shares (Q1). */
+    private String skuOf(StockPackage carton) {
+        return requireSku(carton, policies.skusOfItems(List.of(carton.inventoryItemId())));
+    }
+
+    private static String requireSku(StockPackage carton, Map<UUID, String> skuByItem) {
+        String sku = skuByItem.get(carton.inventoryItemId());
+        if (sku == null) {
+            throw new IllegalStateException("Stock package %s is of no known item".formatted(carton.lpn()));
+        }
+        return sku;
     }
 
     /** The lot of the carton's row: one row per carton since team plan 4C-1, and a row keeps its lot for good. */

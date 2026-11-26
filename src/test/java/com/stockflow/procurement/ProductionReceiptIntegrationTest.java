@@ -115,8 +115,8 @@ class ProductionReceiptIntegrationTest {
     private record Warehouse(UUID id, String code, String receiving, String bin) {
     }
 
-    /** The test's own customer SKU, its confirmed design and its carton unit. */
-    private record IssuedSku(String sku, UUID itemId, UUID uomConversionId) {
+    /** The test's own customer SKU, its item, the carton it is packed in and the catalogue variant that carton is of. */
+    private record IssuedSku(String sku, UUID itemId, UUID uomConversionId, UUID variantId) {
     }
 
     /** Created once per database: more would only grow every list. */
@@ -231,8 +231,9 @@ class ProductionReceiptIntegrationTest {
     }
 
     /**
-     * A customer SKU as the design approval leaves it, made to a design the customer really confirmed, with its
-     * logistics complete (a receipt line refuses an item without them, BR-03) and a CARTON of 50.
+     * A customer SKU as the design approval leaves it, made to a design the customer really confirmed, packed in its
+     * catalogue variant's CARTON of 50 (owner decision Q1, V20261231000100: the carton is the variant's, the customer's
+     * SKU has none of its own).
      */
     private IssuedSku issueSku() throws Exception {
         ReferenceRows.ProductRow product = tx.execute(s -> ReferenceRows.approvedProduct(entityManager));
@@ -253,11 +254,11 @@ class ProductionReceiptIntegrationTest {
             UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, code);
             UUID carton = Identifiers.newId();
             jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
+                    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
                         weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
                     VALUES (?, ?, 'CARTON', ?, 1.2, 60, 40, 35, TRUE, 0, NOW())""",
-                    carton, item, PER_CARTON);
-            return new IssuedSku(code, item, carton);
+                    carton, product.variantId(), PER_CARTON);
+            return new IssuedSku(code, item, carton, product.variantId());
         });
     }
 
@@ -569,33 +570,80 @@ class ProductionReceiptIntegrationTest {
     }
 
     @Test
-    @DisplayName("01 BR-03: the carton unit was retired and replaced after counting: naming the old cartons is refused, leaving them out voids them")
-    void recountAfterTheCartonUnitWasRetired() {
+    @DisplayName("Q7, Q10: the company retired the carton the contract was signed in and declared another; the goods of "
+            + "that contract are still received in the signed carton")
+    void receivedInTheCartonTheContractWasSignedInAfterItWasRetired() {
         UUID orderId = confirmedOrderAtA();
         ProductionOrder production = sentWithoutSample(orderId, 1);
         ReceiptView receipt = start(production);
         List<PackageView> counted = count(receipt, lineId(production), cartons(2)).lines().getFirst().packages();
 
-        // BR-10: a unit a document counts in is retired, never changed; its replacement has the same count.
+        // BR-10, Q8: the company changes carton for every customer of the variant - retire, then declare the new one.
+        UUID replacement = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE WHERE id = ?", sku.uomConversionId());
             jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
+                    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
                         weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
                     VALUES (?, ?, 'CARTON2', ?, 1.2, 60, 40, 35, TRUE, 0, NOW())""",
-                    Identifiers.newId(), sku.itemId(), PER_CARTON);
+                    replacement, sku.variantId(), PER_CARTON);
         });
+        assertThat(receiving.find(production.id()).orElseThrow().lines()).singleElement()
+                .extracting(ReceivableProductionOrder.Line::uomConversionId)
+                .as("the order line's carton, not the variant's carton of today").isEqualTo(sku.uomConversionId());
 
-        Throwable named = catchThrowable(() -> count(receipt, lineId(production), List.of(
-                new NewPackage(counted.get(0).lpn()), new NewPackage(null))));
-        assertThat(fields(named)).containsExactly("lines[0].unitOfMeasure:RECEIPT_LINE_HAS_PACKAGES");
+        GoodsReceipts.LineView recounted = count(receipt, lineId(production), List.of(
+                new NewPackage(counted.get(0).lpn()), new NewPackage(counted.get(1).lpn()), new NewPackage(null)))
+                .lines().getFirst();
+        assertThat(recounted.unitOfMeasure()).as("the carton the contract was signed in").isEqualTo("CARTON");
+        assertThat(recounted.units()).as("the one carton the counting screen offers")
+                .singleElement().satisfies(unit -> {
+                    assertThat(unit.unitOfMeasure()).isEqualTo("CARTON");
+                    assertThat(unit.active()).isFalse();
+                });
+        assertThat(recounted.packages()).hasSize(3)
+                .extracting(PackageView::lpn).contains(counted.get(0).lpn(), counted.get(1).lpn());
+        assertThat(jdbc.queryForList("""
+                SELECT uom_conversion_id FROM inventory.stock_package
+                 WHERE goods_receipt_line_id = ? AND status <> 'VOID'""", UUID.class, recounted.id()))
+                .as("every carton labelled in the signed carton").hasSize(3).containsOnly(sku.uomConversionId());
+        assertThat(jdbc.queryForList("""
+                SELECT nominal_qty FROM inventory.stock_package
+                 WHERE goods_receipt_line_id = ? AND status <> 'VOID'""", Integer.class, recounted.id()))
+                .as("each of the signed count").containsOnly(PER_CARTON);
 
-        GoodsReceipts.LineView recounted = count(receipt, lineId(production), cartons(2)).lines().getFirst();
-        assertThat(recounted.unitOfMeasure()).isEqualTo("CARTON2");
-        assertThat(recounted.packages()).extracting(PackageView::lpn)
-                .doesNotContainAnyElementsOf(counted.stream().map(PackageView::lpn).toList());
-        counted.forEach(old -> assertThat(jdbc.queryForObject("SELECT status FROM inventory.stock_package WHERE lpn = ?",
-                String.class, old.lpn())).as("the carton labelled in the retired unit").isEqualTo("VOID"));
+        // Naming the company's carton of today is naming another carton than the one signed.
+        Throwable cartonOfToday = catchThrowable(() -> receipts.replaceLines(receipt.id(), List.of(
+                new NewLine(lineId(production), null, a.receiving(), null, "CARTON2", cartons(1), null))));
+        assertThat(fields(cartonOfToday)).containsExactly("lines[0].unitOfMeasure:RECEIPT_LINE_UNIT_INVALID");
+    }
+
+    @Test
+    @DisplayName("Q10: a retired carton that is not the one its order line was signed in takes no goods - the database "
+            + "refuses it too")
+    void aRetiredCartonNotSignedForTheLineIsRefused() {
+        UUID orderId = confirmedOrderAtA();
+        ProductionOrder production = sentWithoutSample(orderId, 1);
+        ReceiptView receipt = start(production);
+        UUID countedLine = count(receipt, lineId(production), cartons(1)).lines().getFirst().id();
+        UUID retiredElsewhere = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
+                    weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
+                VALUES (?, ?, 'OLDBOX', ?, 1.2, 60, 40, 35, FALSE, 0, NOW())""",
+                retiredElsewhere, sku.variantId(), PER_CARTON));
+
+        Throwable named = catchThrowable(() -> receipts.replaceLines(receipt.id(), List.of(
+                new NewLine(lineId(production), null, a.receiving(), null, "OLDBOX", cartons(1), null))));
+        assertThat(fields(named)).containsExactly("lines[0].unitOfMeasure:RECEIPT_LINE_UNIT_INVALID");
+
+        assertThatThrownBy(() -> sqlAtCommit(
+                "UPDATE procurement.goods_receipt_lines SET uom_conversion_id = ? WHERE id = ?",
+                retiredElsewhere, countedLine))
+                .as("check_goods_receipt_line_unit: retired, and not the order line's carton")
+                .isInstanceOf(DataAccessException.class).hasMessageContaining("retired");
+        assertThat(jdbc.queryForObject("SELECT uom_conversion_id FROM procurement.goods_receipt_lines WHERE id = ?",
+                UUID.class, countedLine)).isEqualTo(sku.uomConversionId());
     }
 
     @Test
