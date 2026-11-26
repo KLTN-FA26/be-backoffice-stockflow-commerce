@@ -94,7 +94,7 @@ class CartonQuarantineHttpTest {
 
     private String stockStatus() {
         return jdbc.queryForObject("""
-                SELECT i.status FROM inventory.stock_item i JOIN inventory.stock_package p ON p.id = i.stock_package_id
+                SELECT p.stock_status FROM inventory.stock_package p
                  WHERE p.lpn = ?""", String.class, lpn);
     }
 

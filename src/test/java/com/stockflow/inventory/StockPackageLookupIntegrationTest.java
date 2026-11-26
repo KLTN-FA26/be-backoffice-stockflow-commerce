@@ -124,7 +124,7 @@ class StockPackageLookupIntegrationTest {
     }
 
     @Test
-    @DisplayName("a carton still being received has no stock row yet: on hand 0, no contents")
+    @DisplayName("a carton still being received is not stock yet: on hand 0, no contents")
     void aReceivingCartonHoldsNothingYet() {
         StockPackageBalance.Detail found = lookup.byLpn(lpns.get(1));
 

@@ -1,6 +1,6 @@
 -- =============================================================================
 -- Stock ledger balance report (2026-11-14 plan, BE2-C): for every warehouse and SKU, the whole stock ledger summed
--- must equal the stock on hand. Read-only. Run it on any database, after the demo seed or real data:
+-- must equal the stock on hand - the cartons in stock, in units. Read-only. Run it on any database, after the demo seed or real data:
 --
 --   docker exec -i sf-schema psql -U postgres -d <db> -X < tools/db/stock_ledger_balance.sql
 --
@@ -33,8 +33,11 @@ WITH warehouses AS (
                                         upper(split_part(m.from_location_code, '-', 1)))
      GROUP BY w.prefix, m.sku
 ), books AS (
-    SELECT upper(split_part(location_code, '-', 1)) AS prefix, sku, SUM(on_hand) AS on_hand
-      FROM inventory.stock_item
+    -- The stock is the cartons in stock, each its nominal_qty (ADR-0011, V20261230000600: there is no stock_item).
+    SELECT upper(split_part(p.location_code, '-', 1)) AS prefix, i.sku, SUM(p.nominal_qty) AS on_hand
+      FROM inventory.stock_package p
+      JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+     WHERE p.status = 'IN_STOCK'
      GROUP BY 1, 2
 )
 SELECT COALESCE(l.prefix, b.prefix) AS warehouse,

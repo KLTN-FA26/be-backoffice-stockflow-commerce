@@ -58,14 +58,14 @@ INSERT INTO fulfillment.pack (id, pick_id, status, created_at)
 VALUES (md5('qa80:pack')::uuid, md5('qa80:pick')::uuid, 'PENDING', NOW());
 
 CREATE TEMP TABLE qa80_carton AS
-SELECT row_number() OVER (ORDER BY p.lpn) AS n, s.id AS row_id, p.id AS package_id, p.lpn, s.on_hand AS units
-  FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
- WHERE s.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND s.location_code = 'HCM-A01-2-B' AND p.status = 'IN_STOCK'
-   AND s.on_hand = p.nominal_qty AND s.reserved = 0
+SELECT row_number() OVER (ORDER BY p.lpn) AS n, p.id AS package_id, p.lpn, p.nominal_qty AS units
+  FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+ WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' AND p.stock_status = 'AVAILABLE'
+   AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation a WHERE a.stock_package_id = p.id AND a.status = 'HELD')
  ORDER BY p.lpn LIMIT 2;
 SELECT pg_temp.expect_true('F0 the demo seed has two cup cartons to build on', (SELECT count(*) FROM qa80_carton) = 2);
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
-SELECT md5('qa80:res:' || n)::uuid, row_id, md5('qa80:order')::uuid, gen_random_uuid(), gen_random_uuid(), 1, units, NOW(),
+INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
+SELECT md5('qa80:res:' || n)::uuid, package_id, md5('qa80:order')::uuid, gen_random_uuid(), gen_random_uuid(), 1, units, NOW(),
        'HELD'
   FROM qa80_carton;
 INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no, allocated_qty,
@@ -233,15 +233,11 @@ SELECT pg_temp.expect_ok('U11 the parcel is unloaded', $q$
      WHERE id = md5('qa80:un:1')::uuid $q$);
 SELECT pg_temp.expect_ok('U12 ... and then the load is DISPATCHED', pg_temp.dispatch_sql());
 
-\echo '--- stock is kept in whole cartons (ck_stock_item_whole_cartons, V20261117000100)'
-SELECT pg_temp.expect_fail_by('W1 a live loose row: units on it, no carton', 'ck_stock_item_whole_cartons', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
-    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'QA80-LOOSE', 1, 0, 'AVAILABLE', NOW(), NOW()) $q$);
-SELECT pg_temp.expect_ok('W2 a loose row at zero (history of a lot) is allowed', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
-    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'QA80-LOOSE', 0, 0, 'AVAILABLE', NOW(), NOW()) $q$);
-SELECT pg_temp.expect_fail_by('W3 a carton row emptied into a loose one: the carton link dropped while units remain', 'ck_stock_item_whole_cartons', $q$
-    UPDATE inventory.stock_item SET stock_package_id = NULL WHERE stock_package_id IS NOT NULL AND on_hand > 0 $q$);
+\echo '--- stock is cartons and nothing else (the stock rows and ck_stock_item_whole_cartons went with V20261230000600)'
+-- W1 (a live loose row), W2 (a loose row at zero) and W3 (a carton row turned loose) checked ck_stock_item_whole_cartons:
+-- there is no stock row to be loose any more.
+SELECT pg_temp.expect_true('W1 there is no stock row beside a carton: inventory.stock_item is gone',
+    to_regclass('inventory.stock_item') IS NULL);
 SELECT pg_temp.expect_true('W4 the lot no longer carries purchase / supplier columns (V20261117000200)', (
     SELECT count(*) FROM information_schema.columns WHERE table_schema = 'inventory' AND table_name = 'stock_lot'
        AND column_name IN ('purchase_order_id', 'purchase_order_number', 'supplier_id', 'supplier_name')) = 0);

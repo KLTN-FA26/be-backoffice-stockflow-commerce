@@ -44,7 +44,7 @@ public interface CycleCountRepository {
     List<CountLineDraft> stockIn(String warehousePrefix, Collection<String> locationCodes,
                                  Collection<String> locationPrefixes, Collection<String> skus);
 
-    /** Whether the books hold the carton, by its committed stock row read FOR SHARE. */
+    /** Whether the books hold the carton: it is in stock, by its committed row read FOR SHARE. */
     boolean booked(CountSlot slot);
 
     /**
@@ -69,9 +69,10 @@ public interface CycleCountRepository {
 
     /**
      * Cartons held back from picking: by an open SHORT_PICK recount (or one whose variance waits for approval), by a
-     * pending shortage of any count, or by a write-off waiting for approval (kltn-docs 20 BR-11).
+     * pending shortage of any count, or by a write-off waiting for approval (kltn-docs 20 BR-11). Only free cartons
+     * are listed - a held one is not promised anyway - and {@code free} is the carton's units, its count.
      */
-    record Frozen(UUID stockItemId, String sku, String locationCode, long free) { }
+    record Frozen(UUID stockPackageId, String sku, String locationCode, long free) { }
 
     /**
      * A count without its lines: {@code lineCount} lines, {@code countedCount} of them counted, {@code varianceCount}

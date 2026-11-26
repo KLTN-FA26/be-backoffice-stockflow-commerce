@@ -11,8 +11,8 @@ import java.util.UUID;
  *
  * @param uomConversionId the packing unit it was made in; {@code nominalQty} is that unit's factor when it was made
  * @param quantity        what is in it now: what was counted into it while it is RECEIVING (null until counted);
- *                        once in stock, what is left in it - the sum of its stock rows, since a carton holds no
- *                        quantity of its own
+ *                        once in stock, the units it stands for - its {@code nominalQty} while it is in stock,
+ *                        nothing once it has left, since a carton holds no quantity of its own
  * @param countedAt       when it was counted in at receiving ({@code counted_at}, null until counted). A counted
  *                        carton stands for {@code nominalQty} units and that does not change once it is in stock, so
  *                        a receipt's loose part is its line less the {@code nominalQty} of its counted cartons,

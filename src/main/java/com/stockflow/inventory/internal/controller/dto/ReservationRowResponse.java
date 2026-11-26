@@ -5,7 +5,8 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import java.time.Instant;
 import java.util.UUID;
 
-@Schema(name = "StockReservationRow", description = "One hold on one stock row, for the back office (SCRUM-462)")
+@Schema(name = "StockReservationRow", description = "One hold, for the back office (SCRUM-462); stockItemId is the id of the "
+        + "carton an allocation took, null for a hold on no carton yet")
 public record ReservationRowResponse(
         UUID reservationId,
         UUID orderId,

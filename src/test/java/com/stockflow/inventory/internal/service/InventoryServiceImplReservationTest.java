@@ -17,7 +17,6 @@ import com.stockflow.inventory.internal.domain.HeldStock;
 import com.stockflow.inventory.internal.domain.InventoryItemDirectory;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
-import com.stockflow.inventory.internal.domain.Quantity;
 import com.stockflow.inventory.internal.domain.ReleaseReason;
 import com.stockflow.inventory.internal.domain.Reservation;
 import com.stockflow.inventory.internal.domain.ReservationId;
@@ -25,10 +24,8 @@ import com.stockflow.inventory.internal.domain.ReservationStatus;
 import com.stockflow.inventory.internal.domain.SkuReservation;
 import com.stockflow.inventory.internal.domain.SkuReservationRepository;
 import com.stockflow.inventory.internal.domain.StockAllocator;
-import com.stockflow.inventory.internal.domain.StockItem;
-import com.stockflow.inventory.internal.domain.StockItemId;
-import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockLevelLine;
+import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockStatus;
@@ -77,7 +74,6 @@ class InventoryServiceImplReservationTest {
     private static final Sku CUP = new Sku("CUP-12OZ");
     private static final UUID ORDER = UUID.randomUUID();
 
-    private final StockItemRepository repository = mock(StockItemRepository.class);
     private final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
     private final StockOperations operations = mock(StockOperations.class);
     private final InventoryItemDirectory itemDirectory = mock(InventoryItemDirectory.class);
@@ -85,17 +81,27 @@ class InventoryServiceImplReservationTest {
     private final SkuReservationRepository skuReservations = mock(SkuReservationRepository.class);
     private final LocationDirectory locations = mock(LocationDirectory.class);
     private final CycleCountRepository cycleCounts = mock(CycleCountRepository.class);
-    private final StockPackageRepository stockPackages = mock(StockPackageRepository.class);
-    private final InventoryServiceImpl service = new InventoryServiceImpl(repository,
+    private final StockPackageRepository repository = mock(StockPackageRepository.class);
+    private final InventoryServiceImpl service = new InventoryServiceImpl(
             new InventoryEventPublisher(publisher), operations, itemDirectory, Clock.fixed(NOW, ZoneOffset.UTC),
-            policies, skuReservations, locations, cycleCounts, stockPackages);
+            policies, skuReservations, locations, cycleCounts, repository);
 
-    private final Map<StockItemId, StockItem> rows = new HashMap<>();
+    private final Map<StockPackageId, StockPackage> cartons = new HashMap<>();
 
     @BeforeEach
     void defaults() {
-        when(repository.findByIdForUpdate(any())).thenAnswer(c -> Optional.ofNullable(rows.get(c.<StockItemId>getArgument(0))));
-        when(repository.findById(any())).thenAnswer(c -> Optional.ofNullable(rows.get(c.<StockItemId>getArgument(0))));
+        // The cartons asked for, in id order, as the adapter locks them.
+        when(repository.findAllByIdForUpdate(anyCollection())).thenAnswer(c ->
+                c.<java.util.Collection<StockPackageId>>getArgument(0).stream().distinct()
+                        .sorted(java.util.Comparator.comparing(StockPackageId::value))
+                        .map(cartons::get).filter(java.util.Objects::nonNull).toList());
+        when(repository.findByIdForUpdate(any())).thenAnswer(c ->
+                Optional.ofNullable(cartons.get(c.<StockPackageId>getArgument(0))));
+        when(repository.findById(any())).thenAnswer(c ->
+                Optional.ofNullable(cartons.get(c.<StockPackageId>getArgument(0))));
+        when(repository.findIdByReservationId(any())).thenAnswer(c -> cartons.values().stream()
+                .filter(carton -> carton.findReservation(c.<ReservationId>getArgument(0)).isPresent())
+                .map(StockPackage::id).findFirst());
         when(locations.pickable(anyCollection())).thenAnswer(c -> {
             Map<String, UUID> pickable = new HashMap<>();
             c.<java.util.Collection<String>>getArgument(0).stream().filter(code -> !code.contains("-QC"))
@@ -104,35 +110,34 @@ class InventoryServiceImplReservationTest {
         });
     }
 
-    /** A sellable carton's row: only a carton's row takes an allocation (kltn-docs 20 BR-14). */
-    private StockItem stock(String location, String lot, int onHand) {
-        return received(location, lot, onHand, null);
+    /** A sellable carton in stock, held by no order: what takes an allocation (kltn-docs 20 BR-14). */
+    private StockPackage stock(String location, String lot, int units) {
+        return received(location, lot, units, null);
     }
 
     /** As {@link #stock}, received at {@code receivedAt}: the time FIFO ranks by. */
-    private StockItem received(String location, String lot, int onHand, Instant receivedAt) {
-        StockItem item = new StockItem(StockItemId.newId(), CUP, new LocationId(location), lot, Quantity.of(onHand),
-                StockStatus.AVAILABLE, List.of(), 0L, receivedAt, UUID.randomUUID(),
-                new StockPackageId(UUID.randomUUID()));
-        rows.put(item.id(), item);
-        return item;
+    private StockPackage received(String location, String lot, int units, Instant receivedAt) {
+        StockPackage carton = InventoryFixtures.availableReceived(CUP.code(), location, lot, units, receivedAt);
+        cartons.put(carton.id(), carton);
+        return carton;
     }
 
-    /** Each row as the whole content of a sealed carton: what allocation draws on since team plan 4C-2. */
-    private void availabilityIs(StockItem... items) {
-        when(repository.findAvailabilityBySku(CUP)).thenReturn(java.util.Arrays.stream(items).map(item ->
-                new StockAllocator.Candidate(item.id(), item.location(), item.lotNumber(), item.status(), item.available(), item.receivedAt(), UUID.randomUUID(), true)).toList());
+    /** The free cartons the planner is offered: what allocation draws on since team plan 4C-2. */
+    private void availabilityIs(StockPackage... free) {
+        when(repository.findAvailabilityBySku(CUP)).thenReturn(java.util.Arrays.stream(free).map(carton ->
+                new StockAllocator.Candidate(carton.id(), carton.location(), carton.lotNumber(), carton.stockStatus(),
+                        carton.nominalQty(), carton.receivedAt())).toList());
     }
 
     /**
      * The cup's sellable, unheld units at HCM, one whole free carton per argument on a pickable bin: the level line
      * Inventory Level reads and the allocatable rows a warehouse promises from (review C4 P-1, {@link PickableStock}).
      */
-    private List<StockItemRepository.Allocatable> levelAtHcmIs(int... cartons) {
+    private List<StockPackageRepository.Allocatable> levelAtHcmIs(int... cartons) {
         when(repository.findLevelLinesBySku(CUP)).thenReturn(List.of(new StockLevelLine(
                 new LocationId("HCM-A01-1-A"), StockStatus.AVAILABLE, java.util.Arrays.stream(cartons).sum(), 0)));
-        List<StockItemRepository.Allocatable> allocatable = java.util.Arrays.stream(cartons)
-                .mapToObj(units -> new StockItemRepository.Allocatable(StockItemId.newId(), CUP.code(), "HCM-A01-1-A",
+        List<StockPackageRepository.Allocatable> allocatable = java.util.Arrays.stream(cartons)
+                .mapToObj(units -> new StockPackageRepository.Allocatable(new StockPackageId(UUID.randomUUID()), CUP.code(), "HCM-A01-1-A",
                         units))
                 .toList();
         when(repository.findAllocatable(anyCollection())).thenReturn(allocatable);
@@ -262,7 +267,7 @@ class InventoryServiceImplReservationTest {
         @Test
         @DisplayName("units in doubt at a recount (a picker came up short) are not promised")
         void frozenUnitsAreNotPromised() {
-            StockItemRepository.Allocatable doubtful = levelAtHcmIs(cartonsOf(9, 10)).get(8);
+            StockPackageRepository.Allocatable doubtful = levelAtHcmIs(cartonsOf(9, 10)).get(8);
             when(cycleCounts.frozen(anyCollection())).thenReturn(List.of(
                     new CycleCountRepository.Frozen(doubtful.id().value(), "CUP-12OZ", "HCM-A01-1-A", 10)));
 
@@ -275,7 +280,7 @@ class InventoryServiceImplReservationTest {
             when(repository.findLevelLinesBySku(CUP)).thenReturn(List.of(
                     new StockLevelLine(new LocationId("HCM-QC01"), StockStatus.AVAILABLE, 50, 0)));
             when(repository.findAllocatable(anyCollection())).thenReturn(List.of(
-                    new StockItemRepository.Allocatable(StockItemId.newId(), CUP.code(), "HCM-QC01", 50)));
+                    new StockPackageRepository.Allocatable(new StockPackageId(UUID.randomUUID()), CUP.code(), "HCM-QC01", 50)));
 
             assertThat(hold(1, 50).cartonsHeld()).isZero();
             verify(skuReservations, never()).save(any());
@@ -337,8 +342,8 @@ class InventoryServiceImplReservationTest {
         @Test
         @DisplayName("FIFO: the carton received first is drawn first, across bins; the reservation becomes ALLOCATED")
         void allocatesFifo() {
-            StockItem later = received("HCM-A01-1-A", "L2", 25, NOW.minusSeconds(60));
-            StockItem sooner = received("HCM-A02-1-A", "L1", 25, NOW.minusSeconds(3600));
+            StockPackage later = received("HCM-A01-1-A", "L2", 25, NOW.minusSeconds(60));
+            StockPackage sooner = received("HCM-A02-1-A", "L1", 25, NOW.minusSeconds(3600));
             availabilityIs(later, sooner);
             SkuReservation reservation = hold("CUP-12OZ", 2, 25);
             when(skuReservations.findHeldForOrder(ORDER)).thenReturn(List.of(reservation));
@@ -351,8 +356,8 @@ class InventoryServiceImplReservationTest {
                 assertThat(allocation.holds()).extracting(h -> h.lotNumber() + ":" + h.quantity())
                         .containsExactly("L1:25", "L2:25");
             });
-            assertThat(sooner.reserved().value()).isEqualTo(25);
-            assertThat(later.reserved().value()).isEqualTo(25);
+            assertThat(sooner.unitsHeld()).isEqualTo(25);
+            assertThat(later.unitsHeld()).isEqualTo(25);
             assertThat(reservation.status()).isEqualTo(ReservationStatus.ALLOCATED);
             verify(skuReservations).save(reservation);
             verify(repository).save(sooner);
@@ -362,7 +367,7 @@ class InventoryServiceImplReservationTest {
         @Test
         @DisplayName("an allocation is one whole carton of the hold's count, pinned to its order and its reservation")
         void anAllocationIsOneCarton() {
-            StockItem bin = stock("HCM-A01-1-A", "L1", 10);
+            StockPackage bin = stock("HCM-A01-1-A", "L1", 10);
             availabilityIs(bin);
             SkuReservation reservation = hold("CUP-12OZ", 1, 10);
             when(skuReservations.findHeldForOrder(ORDER)).thenReturn(List.of(reservation));
@@ -374,17 +379,18 @@ class InventoryServiceImplReservationTest {
             assertThat(allocation.isAllocation()).isTrue();
             assertThat(allocation.allocatedFrom()).isEqualTo(reservation.id().value());
             assertThat(allocation.unitsPerCarton()).isEqualTo(10);
-            assertThat(bin.reserved()).as("the carton is taken whole").isEqualTo(bin.onHand());
+            assertThat(bin.unitsHeld()).as("the carton is taken whole").isEqualTo(bin.unitsInStock());
+            assertThat(bin.liveAllocation()).contains(allocation);
         }
 
         @Test
         @DisplayName("ADR-0011: a hold of cartons of 10 is allocated cartons of 10 only - an older carton of another "
                 + "count is passed over, and two cartons of 5 are not added up into one of 10")
         void onlyCartonsOfTheHoldsCount() {
-            StockItem olderBig = received("HCM-A01-1-A", "L0", 20, NOW.minusSeconds(9000));
-            StockItem smallOne = received("HCM-A02-1-A", "L1", 5, NOW.minusSeconds(8000));
-            StockItem smallTwo = received("HCM-A03-1-A", "L1", 5, NOW.minusSeconds(7000));
-            StockItem right = received("HCM-A04-1-A", "L2", 10, NOW.minusSeconds(60));
+            StockPackage olderBig = received("HCM-A01-1-A", "L0", 20, NOW.minusSeconds(9000));
+            StockPackage smallOne = received("HCM-A02-1-A", "L1", 5, NOW.minusSeconds(8000));
+            StockPackage smallTwo = received("HCM-A03-1-A", "L1", 5, NOW.minusSeconds(7000));
+            StockPackage right = received("HCM-A04-1-A", "L2", 10, NOW.minusSeconds(60));
             availabilityIs(olderBig, smallOne, smallTwo, right);
             SkuReservation reservation = hold("CUP-12OZ", 1, 10);
             when(skuReservations.findHeldForOrder(ORDER)).thenReturn(List.of(reservation));
@@ -395,10 +401,10 @@ class InventoryServiceImplReservationTest {
             assertThat(result.allocations()).singleElement().satisfies(allocation ->
                     assertThat(allocation.holds()).extracting(h -> h.lotNumber() + ":" + h.quantity())
                             .containsExactly("L2:10"));
-            assertThat(right.reserved().value()).isEqualTo(10);
-            assertThat(olderBig.reserved().value()).isZero();
-            assertThat(smallOne.reserved().value()).isZero();
-            assertThat(smallTwo.reserved().value()).isZero();
+            assertThat(right.unitsHeld()).isEqualTo(10);
+            assertThat(olderBig.isHeld()).isFalse();
+            assertThat(smallOne.isHeld()).isFalse();
+            assertThat(smallTwo.isHeld()).isFalse();
         }
 
         @Test
@@ -445,9 +451,9 @@ class InventoryServiceImplReservationTest {
         @Test
         @DisplayName("only the warehouse's own bins are drawn from, never a bin that is not pickable (module 06 BR-12)")
         void onlyPickableBinsOfTheWarehouse() {
-            StockItem otherWarehouse = stock("HN-A01-1-A", "L0", 40);
-            StockItem qc = stock("HCM-QC01", "L0", 40);
-            StockItem pickable = stock("HCM-A01-1-A", "L1", 40);
+            StockPackage otherWarehouse = stock("HN-A01-1-A", "L0", 40);
+            StockPackage qc = stock("HCM-QC01", "L0", 40);
+            StockPackage pickable = stock("HCM-A01-1-A", "L1", 40);
             availabilityIs(otherWarehouse, qc, pickable);
             SkuReservation reservation = hold("CUP-12OZ", 1, 40);
             when(skuReservations.findHeldForOrder(ORDER)).thenReturn(List.of(reservation));
@@ -455,9 +461,9 @@ class InventoryServiceImplReservationTest {
 
             service.allocate(new AllocateStockCommand(ORDER, "HCM"));
 
-            assertThat(pickable.reserved().value()).isEqualTo(40);
-            assertThat(otherWarehouse.reserved().value()).isZero();
-            assertThat(qc.reserved().value()).isZero();
+            assertThat(pickable.unitsHeld()).isEqualTo(40);
+            assertThat(otherWarehouse.isHeld()).isFalse();
+            assertThat(qc.isHeld()).isFalse();
         }
 
         @Test
@@ -479,8 +485,8 @@ class InventoryServiceImplReservationTest {
         @Test
         @DisplayName("units in doubt at a recount are not allocated")
         void frozenLayersAreSkipped() {
-            StockItem doubtful = stock("HCM-A01-1-A", "L1", 30);
-            StockItem fine = stock("HCM-A02-1-A", "L2", 30);
+            StockPackage doubtful = stock("HCM-A01-1-A", "L1", 30);
+            StockPackage fine = stock("HCM-A02-1-A", "L2", 30);
             availabilityIs(doubtful, fine);
             when(cycleCounts.frozen(anyCollection())).thenReturn(List.of(
                     new CycleCountRepository.Frozen(doubtful.id().value(), "CUP-12OZ", "HCM-A01-1-A", 30)));
@@ -490,15 +496,15 @@ class InventoryServiceImplReservationTest {
 
             service.allocate(new AllocateStockCommand(ORDER, "HCM"));
 
-            assertThat(doubtful.reserved().value()).isZero();
-            assertThat(fine.reserved().value()).isEqualTo(30);
+            assertThat(doubtful.isHeld()).isFalse();
+            assertThat(fine.unitsHeld()).isEqualTo(30);
         }
 
         @Test
         @DisplayName("two lines of one SKU do not draw the same carton twice: the second sees what the first took")
         void secondLineSeesWhatTheFirstTook() {
-            StockItem only30 = stock("HCM-A01-1-A", "L1", 30);
-            StockItem a20 = stock("HCM-A02-1-A", "L2", 20);
+            StockPackage only30 = stock("HCM-A01-1-A", "L1", 30);
+            StockPackage a20 = stock("HCM-A02-1-A", "L2", 20);
             availabilityIs(only30, a20);
             SkuReservation first = hold("CUP-12OZ", 1, 30);
             SkuReservation second = hold("CUP-12OZ", 1, 30);
@@ -511,14 +517,15 @@ class InventoryServiceImplReservationTest {
             assertThat(refused.errorCode()).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
             assertThat(refused.getMessage()).as("the one carton of 30 went to the first line; the carton of 20 is not "
                     + "a carton of 30").contains("0 pickable").contains("30 are needed");
-            assertThat(a20.reserved().value()).isZero();
+            assertThat(a20.isHeld()).isFalse();
         }
 
         @Test
-        @DisplayName("each SKU is locked once, in sorted order, before the reservations and the rows")
+        @DisplayName("each SKU is locked once, in sorted order, before the reservations and the cartons, which are "
+                + "locked together in one call")
         void lockOrder() {
-            StockItem bin = stock("HCM-A01-1-A", "L1", 5);
-            StockItem other = stock("HCM-A02-1-A", "L2", 5);
+            StockPackage bin = stock("HCM-A01-1-A", "L1", 5);
+            StockPackage other = stock("HCM-A02-1-A", "L2", 5);
             availabilityIs(bin, other);
             SkuReservation a = hold("CUP-12OZ", 1, 5);
             SkuReservation b = hold("CUP-12OZ", 1, 5);
@@ -530,7 +537,7 @@ class InventoryServiceImplReservationTest {
             InOrder order = inOrder(policies, skuReservations, repository);
             order.verify(policies, times(1)).lock("CUP-12OZ");
             order.verify(skuReservations).findHeldForOrderForUpdate(ORDER);
-            order.verify(repository).findByIdForUpdate(bin.id());
+            order.verify(repository, times(1)).findAllByIdForUpdate(Set.of(bin.id(), other.id()));
         }
     }
 
@@ -706,15 +713,15 @@ class InventoryServiceImplReservationTest {
         }
 
         @Test
-        @DisplayName("a hold on a stock row is released and the units are free again")
+        @DisplayName("an allocation is released on its carton, which is free again")
         void releasesStockHold() {
-            StockItem bin = stock("HCM-A01-1-A", "L1", 50);
+            StockPackage bin = stock("HCM-A01-1-A", "L1", 50);
             Reservation reservation = bin.allocate(hold("CUP-12OZ", 1, 50), UUID.randomUUID(), NOW);
-            when(repository.findByReservationIdForUpdate(reservation.id())).thenReturn(Optional.of(bin));
 
             service.release(reservation.id().value(), "PAYMENT_FAILED");
 
-            assertThat(bin.available().value()).isEqualTo(50);
+            assertThat(bin.isFree()).isTrue();
+            assertThat(bin.unitsAvailable()).isEqualTo(50);
             verify(repository).save(bin);
         }
 
@@ -728,9 +735,8 @@ class InventoryServiceImplReservationTest {
         @Test
         @DisplayName("a clerk cannot release a hold in another warehouse's bin")
         void otherWarehouseBin() {
-            StockItem bin = stock("HN-A01-1-A", "L1", 50);
+            StockPackage bin = stock("HN-A01-1-A", "L1", 50);
             Reservation reservation = bin.allocate(hold("CUP-12OZ", 1, 50), UUID.randomUUID(), NOW);
-            when(repository.findByReservationIdForUpdate(reservation.id())).thenReturn(Optional.of(bin));
 
             WithCurrentUser.run(clerk(), () ->
                     assertThat(codeOf(() -> service.release(reservation.id().value(), "MANUAL_OVERRIDE")))

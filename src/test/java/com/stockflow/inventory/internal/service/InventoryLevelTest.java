@@ -7,7 +7,8 @@ import static org.mockito.Mockito.when;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.inventory.api.StockLevel;
 import com.stockflow.inventory.internal.domain.LocationId;
-import com.stockflow.inventory.internal.domain.StockItemRepository;
+import com.stockflow.inventory.internal.domain.StockPackageId;
+import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockLevelLine;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
@@ -27,12 +28,11 @@ class InventoryLevelTest {
 
     private static final Sku SKU = new Sku("LY-GIAY-DEMO-12OZ-XANH");
 
-    private final StockItemRepository repository = mock(StockItemRepository.class);
+    private final StockPackageRepository repository = mock(StockPackageRepository.class);
     private final com.stockflow.inventory.internal.domain.LocationDirectory locations =
             mock(com.stockflow.inventory.internal.domain.LocationDirectory.class);
     private final InventoryServiceImpl service =
             new InventoryServiceImpl(
-                    repository,
                     mock(InventoryEventPublisher.class),
                     mock(StockOperations.class),
                     mock(com.stockflow.inventory.internal.domain.InventoryItemDirectory.class),
@@ -41,16 +41,16 @@ class InventoryLevelTest {
                         mock(com.stockflow.inventory.internal.domain.SkuReservationRepository.class),
                         locations,
                         mock(com.stockflow.inventory.internal.domain.CycleCountRepository.class),
-                    mock(com.stockflow.inventory.internal.domain.StockPackageRepository.class));
+                    repository);
 
     /**
-     * Review C4 P-1: a warehouse promises what a release there could allocate - the free units of whole cartons on
-     * pickable bins, which the repository offers as {@code Allocatable} rows. Every location here is a pickable bin.
+     * Review C4 P-1: a warehouse promises what a release there could allocate - the units of the free cartons on
+     * pickable bins, which the repository offers as {@code Allocatable} cartons. Every location here is a pickable bin.
      */
     private void allocatable(java.util.Map<String, Integer> freeUnits) {
         when(repository.findAllocatable(org.mockito.ArgumentMatchers.anyCollection())).thenReturn(freeUnits.entrySet()
-                .stream().map(e -> new StockItemRepository.Allocatable(
-                        new com.stockflow.inventory.internal.domain.StockItemId(java.util.UUID.randomUUID()), SKU.code(),
+                .stream().map(e -> new StockPackageRepository.Allocatable(
+                        new StockPackageId(java.util.UUID.randomUUID()), SKU.code(),
                         e.getKey(), e.getValue())).toList());
         when(locations.pickable(org.mockito.ArgumentMatchers.anyCollection())).thenAnswer(c ->
                 c.<java.util.Collection<String>>getArgument(0).stream().collect(java.util.stream.Collectors.toMap(

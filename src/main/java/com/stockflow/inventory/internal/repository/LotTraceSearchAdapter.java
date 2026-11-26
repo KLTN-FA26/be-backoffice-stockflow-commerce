@@ -24,6 +24,13 @@ import java.util.UUID;
 @Repository
 class LotTraceSearchAdapter implements LotTraceSearch {
 
+    /**
+     * A carton ({@code si}) a live allocation names: its units are held. There is no counter of held units any more
+     * (ADR-0011, V20261230000600); the allocation is the record.
+     */
+    private static final String HELD =
+            "EXISTS (SELECT 1 FROM inventory.stock_reservation r WHERE r.stock_package_id = si.id AND r.status = 'HELD')";
+
     /** The warehouse prefix of a location code ({@code HCM} in {@code HCM-A01-2-B}). */
     private static final String PREFIX = "split_part(%s, '-', 1)";
 
@@ -64,10 +71,12 @@ class LotTraceSearchAdapter implements LotTraceSearch {
     public List<LotTrace.Balance> balances(UUID lotId, Set<String> warehouses) {
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("lotId", lotId);
         String sql = """
-                SELECT si.location_code, si.status, sum(si.on_hand) AS on_hand, sum(si.reserved) AS held
-                  FROM inventory.stock_item si
-                 WHERE si.lot_id = :lotId AND si.on_hand > 0""" + inWarehouses("si.location_code", warehouses, params)
-                + " GROUP BY si.location_code, si.status ORDER BY si.location_code, si.status";
+                SELECT si.location_code, si.stock_status AS status, sum(si.nominal_qty) AS on_hand,
+                       COALESCE(sum(si.nominal_qty) FILTER (WHERE\s""" + HELD + """
+                       ), 0) AS held
+                  FROM inventory.stock_package si
+                 WHERE si.lot_id = :lotId AND si.status = 'IN_STOCK'""" + inWarehouses("si.location_code", warehouses, params)
+                + " GROUP BY si.location_code, si.stock_status ORDER BY si.location_code, si.stock_status";
         return jdbc.query(sql, params, (rs, i) -> new LotTrace.Balance(rs.getString("location_code"),
                 rs.getString("status"), rs.getInt("on_hand"), rs.getInt("held")));
     }
@@ -80,7 +89,7 @@ class LotTraceSearchAdapter implements LotTraceSearch {
                        r.cartons * r.units_per_carton AS quantity,
                        r.status, r.reserved_at, r.closed_at
                   FROM inventory.stock_reservation r
-                  JOIN inventory.stock_item si ON si.id = r.stock_item_id
+                  JOIN inventory.stock_package si ON si.id = r.stock_package_id
                  WHERE si.lot_id = :lotId""" + inWarehouses("si.location_code", warehouses, params)
                 + " ORDER BY r.reserved_at, r.id";
         return jdbc.query(sql, params, (rs, i) -> new LotTrace.Hold(uuid(rs, "id"), uuid(rs, "order_id"),
@@ -140,11 +149,12 @@ class LotTraceSearchAdapter implements LotTraceSearch {
     // ------------------------------------------------------------------ SQL fragments
 
     /**
-     * The lot with its receipt quantity and current balance, narrowed to {@code warehouses}. {@code available} is
-     * what {@code StockItem.available()} means, summed: unheld units of AVAILABLE rows.
+     * The lot with its receipt quantity and current balance, narrowed to {@code warehouses}, in units: a carton in
+     * stock is its count ({@code nominal_qty}). {@code available} is what {@code StockPackage.unitsAvailable()} means,
+     * summed: the AVAILABLE cartons no order holds.
      */
     private static String summarySelect(Set<String> warehouses, MapSqlParameterSource params) {
-        String items = inWarehouses("si.location_code", warehouses, params);
+        String cartons = inWarehouses("si.location_code", warehouses, params);
         String receipts = inWarehouses("m.to_location_code", warehouses, params);
         return """
                 SELECT l.id, l.sku, l.lot_number, l.received_at, l.origin_type,
@@ -153,14 +163,16 @@ class LotTraceSearchAdapter implements LotTraceSearch {
                                     JOIN inventory.stock_package p ON p.id = m.stock_package_id
                                   WHERE m.lot_id = l.id AND m.movement_type = 'RECEIPT'""" + receipts + "), 0) AS received,"
                 + """
-                       COALESCE((SELECT sum(si.on_hand) FROM inventory.stock_item si WHERE si.lot_id = l.id""" + items
+                       COALESCE((SELECT sum(si.nominal_qty) FROM inventory.stock_package si
+                                  WHERE si.lot_id = l.id AND si.status = 'IN_STOCK'""" + cartons
                 + "), 0) AS on_hand,"
                 + """
-                       COALESCE((SELECT sum(si.on_hand - si.reserved) FROM inventory.stock_item si
-                                  WHERE si.lot_id = l.id AND si.status = 'AVAILABLE'""" + items
+                       COALESCE((SELECT sum(si.nominal_qty) FROM inventory.stock_package si
+                                  WHERE si.lot_id = l.id AND si.stock_status = 'AVAILABLE' AND NOT\s""" + HELD + cartons
                 + "), 0) AS available,"
                 + """
-                       COALESCE((SELECT sum(si.reserved) FROM inventory.stock_item si WHERE si.lot_id = l.id""" + items
+                       COALESCE((SELECT sum(si.nominal_qty) FROM inventory.stock_package si
+                                  WHERE si.lot_id = l.id AND\s""" + HELD + cartons
                 + "), 0) AS held FROM inventory.stock_lot l";
     }
 
@@ -184,10 +196,10 @@ class LotTraceSearchAdapter implements LotTraceSearch {
         return String.join(" AND ", conditions);
     }
 
-    /** The lot has a stock row, or a ledger line naming a location, in one of {@code warehouses}. */
+    /** The lot has a carton, or a ledger line naming a location, in one of {@code warehouses}. */
     private static String wasIn(Set<String> warehouses, MapSqlParameterSource params) {
         params.addValue("warehouses", warehouses);
-        return "(EXISTS (SELECT 1 FROM inventory.stock_item si WHERE si.lot_id = l.id AND "
+        return "(EXISTS (SELECT 1 FROM inventory.stock_package si WHERE si.lot_id = l.id AND "
                 + PREFIX.formatted("si.location_code") + " IN (:warehouses))"
                 + " OR EXISTS (SELECT 1 FROM inventory.stock_movement m WHERE m.lot_id = l.id"
                 + movementIn(warehouses, params) + "))";

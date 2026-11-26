@@ -20,7 +20,7 @@ import java.util.UUID;
 /**
  * Adapter for {@link SkuReservationRepository}. The locking reads lock the rows with a plain
  * {@code SELECT ... FOR UPDATE} first and then refresh the entities, for the reason
- * {@code StockItemRepositoryAdapter#findByIdForUpdate} gives: a locking JPQL query hands back whatever copy the
+ * {@code StockPackageRepositoryAdapter#findAllByIdForUpdate} gives: a locking JPQL query hands back whatever copy the
  * persistence context already holds, and the decision taken under the lock would run on pre-lock state.
  */
 @Repository
@@ -47,7 +47,7 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
 
     @Override
     public Optional<SkuReservation> findByIdForUpdate(ReservationId reservationId) {
-        return lock("select id from inventory.stock_reservation where id = :key and stock_item_id is null for update",
+        return lock("select id from inventory.stock_reservation where id = :key and stock_package_id is null for update",
                 reservationId.value()).stream().findFirst();
     }
 
@@ -60,7 +60,7 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
     public List<SkuReservation> findHeldForOrderForUpdate(UUID orderId) {
         return lock("""
                 select id from inventory.stock_reservation
-                 where order_id = :key and stock_item_id is null and status = 'HELD'
+                 where order_id = :key and stock_package_id is null and status = 'HELD'
                  order by sku, id for update
                 """, orderId).stream().filter(r -> r.status().isActive()).toList();
     }
@@ -79,7 +79,7 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
     public boolean anyLapsedForOrder(UUID orderId) {
         return !entityManager.createNativeQuery("""
                         select 1 from inventory.stock_reservation
-                         where order_id = :orderId and stock_item_id is null and status in ('EXPIRED', 'RELEASED')
+                         where order_id = :orderId and stock_package_id is null and status in ('EXPIRED', 'RELEASED')
                            and warehouse_code is null
                          limit 1
                         """)
@@ -109,7 +109,7 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = entityManager.createNativeQuery("""
                         select warehouse_code, units_per_carton, sum(cartons) from inventory.stock_reservation
-                         where sku = :sku and stock_item_id is null and status = 'HELD'
+                         where sku = :sku and stock_package_id is null and status = 'HELD'
                          group by warehouse_code, units_per_carton
                         """)
                 .setParameter("sku", sku).getResultList();
@@ -128,8 +128,8 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
         Optional<ReservationJpaEntity> existing = jpa.findById(reservation.id().value());
         if (existing.isPresent()) {
             ReservationJpaEntity managed = existing.get();
-            if (managed.getStockItemOrNull() != null) {
-                throw new IllegalStateException("Reservation %s is on a stock item".formatted(reservation.id()));
+            if (managed.getStockPackageOrNull() != null) {
+                throw new IllegalStateException("Reservation %s is an allocation of a carton".formatted(reservation.id()));
             }
             managed.apply(reservation.status(), reservation.releaseReason(), reservation.closedAt());
             return toDomain(jpa.save(managed));

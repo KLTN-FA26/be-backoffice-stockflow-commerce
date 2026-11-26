@@ -33,11 +33,11 @@ class SkuReservationTest {
                 availableCartons, NOW);
     }
 
-    /** A carton's row: only a carton's row takes an allocation (kltn-docs 20 BR-14). */
-    private static StockItem stock(int onHand) {
-        return new StockItem(StockItemId.newId(), SKU, new LocationId("HCM-A01-1-A"), "LOT-1", Quantity.of(onHand),
-                StockStatus.AVAILABLE, java.util.List.of(), 0L, NOW, UUID.randomUUID(),
-                new StockPackageId(UUID.randomUUID()));
+    /** A free AVAILABLE carton of {@code units}: what takes an allocation (kltn-docs 20 BR-14). */
+    private static StockPackage stock(int units) {
+        return new StockPackage(new StockPackageId(UUID.randomUUID()), "LPN-SKU-RES-1", SKU, UUID.randomUUID(),
+                UUID.randomUUID(), units, NOW, new LocationId("HCM-A01-1-A"), StockPackageStatus.IN_STOCK,
+                StockStatus.AVAILABLE, UUID.randomUUID(), "LOT-1", NOW, null, null, java.util.List.of(), 0L);
     }
 
     @Test
@@ -130,10 +130,10 @@ class SkuReservationTest {
     }
 
     @Test
-    @DisplayName("allocation: one whole carton on the stock item pointing back at the reservation, which closes ALLOCATED")
+    @DisplayName("allocation: one whole carton pointing back at the reservation, which closes ALLOCATED")
     void allocation() {
         SkuReservation reservation = hold(4, 10);
-        StockItem item = stock(5);
+        StockPackage item = stock(5);
         UUID request = UUID.randomUUID();
 
         Reservation allocation = item.allocate(reservation, request, NOW);
@@ -142,7 +142,7 @@ class SkuReservationTest {
         assertThat(allocation.allocatedFrom()).isEqualTo(reservation.id().value());
         assertThat(allocation.orderId()).isEqualTo(reservation.orderId());
         assertThat(allocation.unitsPerCarton()).isEqualTo(PER_CARTON);
-        assertThat(item.reserved()).as("the carton is taken whole").isEqualTo(Quantity.of(5));
+        assertThat(item.unitsHeld()).as("the carton is taken whole").isEqualTo(5);
         assertThat(item.allocate(reservation, request, NOW)).as("replayed").isSameAs(allocation);
         assertThat(reservation.status()).isEqualTo(ReservationStatus.ALLOCATED);
         assertThatThrownBy(() -> item.allocate(hold(2, 10), UUID.randomUUID(), NOW))
@@ -180,14 +180,14 @@ class SkuReservationTest {
         var plan = StockAllocator.plan("LY-GIAY-DEMO-12OZ-XANH", java.util.List.of(newReceipt, late, oldReceipt, early),
                 4, 5);
 
-        assertThat(plan.lines()).extracting(StockAllocator.AllocationLine::stockItemId).containsExactly(
-                early.stockItemId(), oldReceipt.stockItemId(), newReceipt.stockItemId(), late.stockItemId());
+        assertThat(plan.lines()).extracting(StockAllocator.AllocationLine::stockPackageId).containsExactly(
+                early.stockPackageId(), oldReceipt.stockPackageId(), newReceipt.stockPackageId(), late.stockPackageId());
         assertThat(plan.isShort()).isFalse();
     }
 
     /** A sealed carton of 5. */
     private static StockAllocator.Candidate carton(LocationId bin, String lot, String received) {
-        return new StockAllocator.Candidate(StockItemId.newId(), bin, lot, StockStatus.AVAILABLE,
-                Quantity.of(5), Instant.parse(received), java.util.UUID.randomUUID(), true);
+        return new StockAllocator.Candidate(new StockPackageId(java.util.UUID.randomUUID()), bin, lot,
+                StockStatus.AVAILABLE, 5, Instant.parse(received));
     }
 }

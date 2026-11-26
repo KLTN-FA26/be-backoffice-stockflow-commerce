@@ -7,6 +7,7 @@ import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
+import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.warehouse.api.NewPutawayTask;
 import com.stockflow.warehouse.api.PutawayTaskView;
 import com.stockflow.warehouse.api.PutawayTasks;
@@ -14,9 +15,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
-import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 import static com.stockflow.inventory.internal.service.InventoryFixtures.NOW;
@@ -42,11 +41,14 @@ class PutawayTaskCreatorTest {
     private final StockPackageRepository stockPackages = mock(StockPackageRepository.class);
     private final PutawayTaskCreator creator = new PutawayTaskCreator(tasks, stockPackages);
 
-    private static StockPackage carton(UUID line, StockPackageStatus status) {
-        Instant closedAt = status.isClosed() ? NOW : null;
+    /** A carton of 24 received on {@code line}: in stock in {@code stockStatus}, CONSUMED when that is null. */
+    private static StockPackage carton(UUID line, StockStatus stockStatus) {
+        boolean inStock = stockStatus != null;
         return new StockPackage(new StockPackageId(UUID.randomUUID()),
-                "LPN-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(), UUID.randomUUID(),
-                UUID.randomUUID(), 24, NOW, new LocationId("HCM-RCV01"), status, line, closedAt, 0L);
+                "LPN-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(),
+                new com.stockflow.common.domain.Sku("CUP-12OZ"), UUID.randomUUID(), UUID.randomUUID(), 24, NOW,
+                new LocationId("HCM-RCV01"), inStock ? StockPackageStatus.IN_STOCK : StockPackageStatus.CONSUMED,
+                stockStatus, UUID.randomUUID(), "L1", NOW, line, inStock ? null : NOW, List.of(), 0L);
     }
 
     private static ReceiptStockReadyForPutaway event(Line... lines) {
@@ -72,12 +74,11 @@ class PutawayTaskCreatorTest {
     }
 
     @Test
-    @DisplayName("cartons open one task each, sized by their INBOUND units; the units beyond them open none")
+    @DisplayName("INBOUND cartons open one task each, sized by their count; the units beyond them open none")
     void cartonsPlusLooseRest() {
-        StockPackage a = carton(LINE, StockPackageStatus.IN_STOCK);
-        StockPackage b = carton(LINE, StockPackageStatus.IN_STOCK);
+        StockPackage a = carton(LINE, StockStatus.INBOUND);
+        StockPackage b = carton(LINE, StockStatus.INBOUND);
         when(stockPackages.findByReceiptLines(anyCollection())).thenReturn(List.of(a, b));
-        when(stockPackages.inboundOnHandOf(anyCollection())).thenReturn(Map.of(a.id(), 24, b.id(), 24));
 
         creator.on(event(line(LINE, 60)));
 
@@ -89,9 +90,8 @@ class PutawayTaskCreatorTest {
     @Test
     @DisplayName("when the cartons hold the whole line there is no loose task")
     void noLooseWhenCartonsCoverTheLine() {
-        StockPackage a = carton(LINE, StockPackageStatus.IN_STOCK);
+        StockPackage a = carton(LINE, StockStatus.INBOUND);
         when(stockPackages.findByReceiptLines(anyCollection())).thenReturn(List.of(a));
-        when(stockPackages.inboundOnHandOf(anyCollection())).thenReturn(Map.of(a.id(), 24));
 
         creator.on(event(line(LINE, 24)));
 
@@ -99,11 +99,10 @@ class PutawayTaskCreatorTest {
     }
 
     @Test
-    @DisplayName("a carton with no INBOUND units (QC rejected it, or it is already put away) opens no carton task")
+    @DisplayName("a carton that is not INBOUND (quarantined, or already put away) opens no carton task")
     void cartonWithoutInboundUnitsOpensNothing() {
-        StockPackage putAway = carton(LINE, StockPackageStatus.IN_STOCK);
+        StockPackage putAway = carton(LINE, StockStatus.AVAILABLE);
         when(stockPackages.findByReceiptLines(anyCollection())).thenReturn(List.of(putAway));
-        when(stockPackages.inboundOnHandOf(anyCollection())).thenReturn(Map.of());
 
         creator.on(event(line(LINE, 24)));
 
@@ -113,9 +112,8 @@ class PutawayTaskCreatorTest {
     @Test
     @DisplayName("a carton that is not IN_STOCK opens nothing")
     void closedCartonOpensNothing() {
-        StockPackage consumed = carton(LINE, StockPackageStatus.CONSUMED);
+        StockPackage consumed = carton(LINE, null);
         when(stockPackages.findByReceiptLines(anyCollection())).thenReturn(List.of(consumed));
-        when(stockPackages.inboundOnHandOf(anyCollection())).thenReturn(Map.of(consumed.id(), 24));
 
         creator.on(event(line(LINE, 24)));
 
@@ -139,9 +137,8 @@ class PutawayTaskCreatorTest {
         UUID other = UUID.randomUUID();
         when(tasks.tasksOfReceipt(RECEIPT)).thenReturn(List.of(new PutawayTaskView(UUID.randomUUID(), RECEIPT, LINE,
                 "CUP-12OZ", 100, null, null, "OPEN")));
-        StockPackage ofOther = carton(other, StockPackageStatus.IN_STOCK);
+        StockPackage ofOther = carton(other, StockStatus.INBOUND);
         when(stockPackages.findByReceiptLines(anyCollection())).thenReturn(List.of(ofOther));
-        when(stockPackages.inboundOnHandOf(anyCollection())).thenReturn(Map.of(ofOther.id(), 24));
 
         creator.on(event(line(LINE, 100), line(other, 24)));
 

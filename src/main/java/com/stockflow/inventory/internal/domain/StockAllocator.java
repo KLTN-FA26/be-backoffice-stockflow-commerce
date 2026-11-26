@@ -5,20 +5,18 @@ import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
-import java.util.UUID;
 
 /**
  * Domain service: decides <b>which cartons</b> an order line is given, and in what order.
  *
- * <p>A domain service rather than a method on {@link StockItem} because the decision spans several
- * aggregates — no single stock item can see the others. It is deliberately not in the application
+ * <p>A domain service rather than a method on {@link StockPackage} because the decision spans several
+ * aggregates — no single carton can see the others. It is deliberately not in the application
  * layer either: the order of removal is a business rule, not orchestration, and the business would want it tested
  * on its own.</p>
  *
  * <p><b>Whole cartons only (kltn-docs 07 BR-03, 20 §5.6; team plan 4C-2).</b> An order line is given whole LPN
- * cartons of the SKU, never part of one: a carton is not opened, and a picker takes it by its LPN. So only a
- * candidate that is its carton's entire, sealed content with nothing of it held ({@link Candidate#wholeCarton}) is
- * drawn on; loose units and a carton another order already holds part of are left alone.</p>
+ * cartons of the SKU, never part of one: a carton is not opened, and a picker takes it by its LPN. A candidate is a
+ * free carton - AVAILABLE, with no live allocation; a carton another order holds is not offered at all.</p>
  *
  * <p><b>Cartons of the hold's count only (ADR-0011, owner decision 2026-11-27).</b> A hold says which cartons it wants
  * by their count - the {@code units_per_carton} its order line was quoted in - and the plan is N cartons of exactly
@@ -34,11 +32,11 @@ import java.util.UUID;
  * ({@code AWAITING_STOCK}, team plan 4A-6, which sends the shortfall to a Production Order, 07 BR-03.4).</p>
  *
  * <p><b>It plans over {@link Candidate} projections, not over loaded aggregates.</b> That is a
- * correctness requirement, not a performance one. If the planner read whole {@code StockItem}
+ * correctness requirement, not a performance one. If the planner read whole {@code StockPackage}
  * aggregates, those entities would be sitting in the persistence context, and the subsequent
  * {@code SELECT ... FOR UPDATE} would return the cached copies rather than the freshly locked
- * rows — so the availability re-check under the lock would run against pre-lock data and could
- * still oversell. Planning over a projection keeps the locked read the first read.</p>
+ * rows — so the re-check under the lock would run against pre-lock data and could
+ * still give one carton to two orders. Planning over a projection keeps the locked read the first read.</p>
  *
  * <p>Stateless and free of Spring annotations: it is constructed where it is used, and tested by
  * calling it.</p>
@@ -49,58 +47,52 @@ public final class StockAllocator {
     }
 
     /**
-     * What the planner needs to know about one stock item, and nothing more.
+     * What the planner needs to know about one free carton, and nothing more.
      *
-     * @param available      available to promise at the moment of reading — already stale by the time
-     *                       the lock is taken, which is why {@link StockItem#reserve} checks again
-     * @param stockPackageId the carton the row is in; null for loose stock
-     * @param wholeCarton    the row is its carton's entire, sealed content and nothing of it is held: taking it takes
-     *                       the carton as it stands, and {@code available} is then the carton's count. Only such a row
-     *                       is ever planned
+     * <p>Free at the moment of reading — already stale by the time the lock is taken, which is why
+     * {@link StockPackage#allocate} checks again.</p>
+     *
+     * @param unitsPerCarton the carton's count ({@code nominal_qty}): a hold takes cartons of its own count only
+     * @param receivedAt     the FIFO date; null when it is not known, which sorts last
      */
     public record Candidate(
-            StockItemId stockItemId,
+            StockPackageId stockPackageId,
             LocationId location,
             String lotNumber,
             StockStatus status,
-            Quantity available,
-            Instant receivedAt,
-            UUID stockPackageId,
-            boolean wholeCarton
+            int unitsPerCarton,
+            Instant receivedAt
     ) {
-        /** Loose stock, for ordering a list in removal order; never planned. */
-        public Candidate(StockItemId id, LocationId location, String lotNumber, StockStatus status,
-                         Quantity available, Instant receivedAt) {
-            this(id, location, lotNumber, status, available, receivedAt, null, false);
-        }
-
         public Candidate {
-            Objects.requireNonNull(stockItemId, "stockItemId");
+            Objects.requireNonNull(stockPackageId, "stockPackageId");
             Objects.requireNonNull(location, "location");
             Objects.requireNonNull(status, "status");
-            Objects.requireNonNull(available, "available");
-            if (wholeCarton && stockPackageId == null) {
-                throw new IllegalArgumentException("Only a row in a carton can be a whole carton");
+            if (unitsPerCarton < 1) {
+                throw new IllegalArgumentException("A carton holds at least one unit, not " + unitsPerCarton);
             }
+        }
+
+        /** Units this carton would give: its count while it is sellable. */
+        public Quantity available() {
+            return status.isReservable() ? Quantity.of(unitsPerCarton) : Quantity.ZERO;
         }
     }
 
     /**
-     * The removal order, as a comparator: FIFO by receipt time. A row with no receipt time (stock that predates timed
-     * receipts) sorts after every timed one, as it did before FEFO went: no SKU's order changes under it. The final
+     * The removal order, as a comparator: FIFO by receipt time. A carton with no receipt time (stock that predates
+     * timed receipts; ADR-0011 keeps the date unknown rather than invent one) sorts after every timed one. The final
      * tie-breaks on location code and id make the plan deterministic: without them, two runs over the same data could
      * produce different orders, and a test asserting on the plan would be flaky.
      */
     public static Comparator<Candidate> comparator() {
         return Comparator.comparing(Candidate::receivedAt, Comparator.nullsLast(Comparator.<Instant>naturalOrder()))
                 .thenComparing(c -> c.location().code())
-                .thenComparing(c -> c.stockItemId().value());
+                .thenComparing(c -> c.stockPackageId().value());
     }
 
-    /** Whether {@code candidate} is a whole free carton of {@code unitsPerCarton}: the only stock a hold of that count takes. */
+    /** Whether {@code candidate} is a sellable carton of {@code unitsPerCarton}: the only stock a hold of that count takes. */
     public static boolean isCartonOf(Candidate candidate, int unitsPerCarton) {
-        return candidate.wholeCarton() && candidate.status().isReservable()
-                && candidate.available().value() == unitsPerCarton;
+        return candidate.status().isReservable() && candidate.unitsPerCarton() == unitsPerCarton;
     }
 
     /**
@@ -171,9 +163,6 @@ public final class StockAllocator {
 
         public AllocationLine {
             Objects.requireNonNull(candidate, "candidate");
-            if (!candidate.wholeCarton()) {
-                throw new IllegalArgumentException("Only a whole free carton is allocated");
-            }
         }
 
         /** Everything the carton holds: its count. */
@@ -181,8 +170,8 @@ public final class StockAllocator {
             return candidate.available();
         }
 
-        public StockItemId stockItemId() {
-            return candidate.stockItemId();
+        public StockPackageId stockPackageId() {
+            return candidate.stockPackageId();
         }
     }
 }

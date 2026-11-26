@@ -18,10 +18,10 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * JPA mapping of one hold. Two kinds share the table (SCRUM-152): a hold on a stock item — an allocation, a
- * checkout hold placed before SKU reservations — which is a child of {@code stock_item} and
- * never loaded or saved on its own; and a SKU reservation ({@code stock_item_id} null), the soft checkout hold,
- * which is its own aggregate and saved through {@code SkuReservationRepositoryAdapter}.
+ * JPA mapping of one hold. Two kinds share the table (SCRUM-152): an allocation — one carton given to an order —
+ * which is a child of its carton ({@code stock_package}, V20261230000600) and never loaded or saved on its own; and a
+ * SKU reservation ({@code stock_package_id} null), the soft hold on no carton yet, which is its own aggregate and saved
+ * through {@code SkuReservationRepositoryAdapter}.
  *
  * <p>The indexes are not decoration; each one exists for a query that runs constantly:
  * {@code order_id} for cancellation and release.
@@ -45,11 +45,14 @@ public class ReservationJpaEntity {
     @Column(name = "id", nullable = false, updatable = false)
     private UUID id;
 
-    /** Null for a SKU reservation: it is not on any stock item until it is allocated. */
+    /**
+     * The carton an allocation took; null for a SKU reservation, which is on no carton until it is allocated. While
+     * the row is HELD the carton is taken ({@code uk_stock_reservation_live_carton}).
+     */
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "stock_item_id",
-            foreignKey = @jakarta.persistence.ForeignKey(name = "fk_reservation_stock_item"))
-    private StockItemJpaEntity stockItem;
+    @JoinColumn(name = "stock_package_id",
+            foreignKey = @jakarta.persistence.ForeignKey(name = "fk_stock_reservation_package"))
+    private StockPackageJpaEntity stockPackage;
 
     /**
      * The order holding the stock (a foreign key into {@code ordering} since V20260928004000, ADR-0007).
@@ -69,8 +72,8 @@ public class ReservationJpaEntity {
     private UUID requestId;
 
     /**
-     * How many cartons the row is (ADR-0011, V20261230000500): any number for a SKU reservation, always 1 for a hold
-     * on a stock item ({@code ck_stock_reservation_one_carton}). The row keeps no units: they are
+     * How many cartons the row is (ADR-0011, V20261230000500): any number for a SKU reservation, always 1 for an
+     * allocation ({@code ck_stock_reservation_kind}). The row keeps no units: they are
      * {@code cartons * unitsPerCarton}.
      */
     @Column(name = "cartons", nullable = false, updatable = false)
@@ -94,7 +97,7 @@ public class ReservationJpaEntity {
     @Column(name = "closed_at")
     private Instant closedAt;
 
-    /** The SKU held; for a hold on a stock item it is that item's ({@code tg_stock_reservation_sku}). */
+    /** The SKU held; for an allocation it is its carton's ({@code tg_stock_reservation_sku}). */
     @Column(name = "sku", nullable = false, length = 64)
     private String sku;
 
@@ -162,8 +165,8 @@ public class ReservationJpaEntity {
         this.closedAt = closedAt;
     }
 
-    public void attachTo(StockItemJpaEntity parent) {
-        this.stockItem = parent;
+    public void attachTo(StockPackageJpaEntity parent) {
+        this.stockPackage = parent;
     }
 
     public UUID getId() { return id; }
@@ -177,7 +180,7 @@ public class ReservationJpaEntity {
     public ReleaseReason getReleaseReason() { return releaseReason; }
     public Instant getClosedAt() { return closedAt; }
     public String getSku() { return sku; }
-    /** The stock item the hold is on; null for a SKU reservation. Lazy: comparing with null loads nothing. */
-    public StockItemJpaEntity getStockItemOrNull() { return stockItem; }
+    /** The carton the allocation is on; null for a SKU reservation. Lazy: comparing with null loads nothing. */
+    public StockPackageJpaEntity getStockPackageOrNull() { return stockPackage; }
     public UUID getAllocatedFrom() { return allocatedFrom; }
 }

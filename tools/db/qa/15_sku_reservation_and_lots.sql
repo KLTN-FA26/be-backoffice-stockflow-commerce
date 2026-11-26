@@ -53,7 +53,7 @@ BEGIN
     END IF;
 END $$;
 
--- Fixtures: an order of the first customer, and a sellable layer of the demo cup on a bin.
+-- Fixtures: an order of the first customer, and a sellable carton of the demo cup on a bin.
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency,
                                      placed_at, version, created_at)
 SELECT md5('qa15:order')::uuid, 'SO-QA-15', c.id, gen_random_uuid(), 'PENDING_PAYMENT', 1000, 'VND', NOW(), 0, NOW()
@@ -62,32 +62,34 @@ INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, 
                                      placed_at, version, created_at)
 SELECT md5('qa15:other')::uuid, 'SO-QA-15B', c.id, gen_random_uuid(), 'PENDING_PAYMENT', 1000, 'VND', NOW(), 0, NOW()
   FROM customer.customer c ORDER BY c.id LIMIT 1;
--- One carton of 2 (the allocation below takes it whole; stock is kept in whole cartons only: ck_stock_item_whole_cartons).
+-- One carton of 2, in a lot of its own (the allocation below takes it: an allocation is its carton, V20261230000600).
 -- 01 BR-03: an item has ONE active carton. The demo seed's own is retired, so the fixture's unit below is the one.
 UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa15:u')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_QA15', 2);
-INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status)
-VALUES (md5('qa15:p')::uuid, 'QA-QA15-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa15:u')::uuid, 2, NOW(), 'HCM-B01-2-B', 'IN_STOCK');
-INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version, created_at,
-                                  received_at, stock_package_id)
-VALUES (md5('qa15:layer')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-B01-2-B', 'QA15-LOT', 2, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '3 days',
-        md5('qa15:p')::uuid);
+INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)
+VALUES (md5('qa15:lot')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'QA15-LOT', NOW() - interval '3 days', 'UNTRACED', NOW());
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status,
+                                     stock_status, lot_id, received_at)
+VALUES (md5('qa15:p')::uuid, 'QA-QA15-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa15:u')::uuid, 2, NOW(), 'HCM-B01-2-B', 'IN_STOCK',
+        'AVAILABLE', md5('qa15:lot')::uuid, NOW() - interval '3 days');
 
 \echo '--- SKU reservations (V20261023000100), in cartons of one count (V20261230000500, ADR-0011)'
 -- The fixture's carton of 2 stands beside the demo's cartons of 1,000 of the same cup: two counts of one SKU.
 SELECT pg_temp.expect_true('SR0 the cup has one free carton of 2 and many of 1,000',
     (SELECT count(*) FILTER (WHERE p.nominal_qty = 2) = 1 AND count(*) FILTER (WHERE p.nominal_qty = 1000) >= 20
-       FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
-      WHERE s.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND s.status = 'AVAILABLE' AND s.on_hand > 0 AND s.reserved = 0));
+       FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+      WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.stock_status = 'AVAILABLE'
+        AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation a
+                         WHERE a.stock_package_id = p.id AND a.status = 'HELD')));
 SELECT pg_temp.expect_fail_by('SR0a a carton of 2 held at DNI: the one carton of 2 stands at HCM',
     'exceed its free available cartons of that count there', $q$
     INSERT INTO inventory.stock_reservation (id, sku, order_id, root_request_id, request_id, cartons, units_per_carton,
         reserved_at, status, warehouse_code)
     VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', md5('qa15:order')::uuid, gen_random_uuid(), gen_random_uuid(), 1, 2,
             NOW(), 'HELD', 'DNI') $q$);
-SELECT pg_temp.expect_ok('SR1 a reservation of a SKU, on no stock row: one carton of 2', $q$
+SELECT pg_temp.expect_ok('SR1 a reservation of a SKU, on no carton: one carton of 2', $q$
     INSERT INTO inventory.stock_reservation (id, sku, order_id, root_request_id, request_id, cartons, units_per_carton,
         reserved_at, status)
     VALUES (md5('qa15:soft')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa15:order')::uuid, gen_random_uuid(), gen_random_uuid(), 1, 2,
@@ -127,42 +129,41 @@ SELECT pg_temp.expect_fail('SR3 a SKU reservation that is no customer order''s',
             'HELD') $q$);
 SELECT pg_temp.expect_fail('SR4 a SKU reservation consumed directly', $q$
     UPDATE inventory.stock_reservation SET status = 'CONSUMED', closed_at = NOW() WHERE id = md5('qa15:soft')::uuid $q$);
-SELECT pg_temp.expect_fail('SR5 ALLOCATED on a stock row', $q$
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, sku, order_id, root_request_id, request_id, cartons,
+SELECT pg_temp.expect_fail('SR5 ALLOCATED on a carton', $q$
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, sku, order_id, root_request_id, request_id, cartons,
         units_per_carton, reserved_at, status, closed_at)
-    VALUES (gen_random_uuid(), md5('qa15:layer')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa15:order')::uuid, gen_random_uuid(),
+    VALUES (gen_random_uuid(), md5('qa15:p')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa15:order')::uuid, gen_random_uuid(),
             gen_random_uuid(), 1, 2, NOW(), 'ALLOCATED', NOW()) $q$);
-SELECT pg_temp.expect_fail('SR6 a hold on a stock row naming another SKU', $q$
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, sku, order_id, root_request_id, request_id, cartons,
+SELECT pg_temp.expect_fail('SR6 a hold on a carton naming another SKU', $q$
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, sku, order_id, root_request_id, request_id, cartons,
         units_per_carton, reserved_at, status)
-    VALUES (gen_random_uuid(), md5('qa15:layer')::uuid, 'LY-GIAY-DEMO-12OZ-DO', md5('qa15:order')::uuid, gen_random_uuid(),
+    VALUES (gen_random_uuid(), md5('qa15:p')::uuid, 'LY-GIAY-DEMO-12OZ-DO', md5('qa15:order')::uuid, gen_random_uuid(),
             gen_random_uuid(), 1, 2, NOW(), 'HELD') $q$);
-SELECT pg_temp.expect_fail_by('SR7 an allocation of two cartons: an allocation is one', 'ck_stock_reservation_one_carton', $q$
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, sku, order_id, allocated_from_id, root_request_id,
+SELECT pg_temp.expect_fail_by('SR7 an allocation of two cartons: an allocation is one', 'ck_stock_reservation_kind', $q$
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, sku, order_id, allocated_from_id, root_request_id,
         request_id, cartons, units_per_carton, reserved_at, status)
-    VALUES (gen_random_uuid(), md5('qa15:layer')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa15:order')::uuid,
+    VALUES (gen_random_uuid(), md5('qa15:p')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa15:order')::uuid,
             md5('qa15:soft')::uuid, gen_random_uuid(), gen_random_uuid(), 2, 2, NOW(), 'HELD') $q$);
 SELECT pg_temp.expect_fail_by('SR7a an allocation whose count is not its carton''s (1,000 on a carton of 2)',
     'an allocation is its carton', $q$
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, sku, order_id, allocated_from_id, root_request_id,
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, sku, order_id, allocated_from_id, root_request_id,
         request_id, cartons, units_per_carton, reserved_at, status)
-    VALUES (gen_random_uuid(), md5('qa15:layer')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa15:order')::uuid,
+    VALUES (gen_random_uuid(), md5('qa15:p')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa15:order')::uuid,
             md5('qa15:soft')::uuid, gen_random_uuid(), gen_random_uuid(), 1, 1000, NOW(), 'HELD') $q$);
 SELECT pg_temp.expect_fail_by('SR7b an allocation of part of its carton (1 of 2)', 'an allocation is its carton', $q$
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, sku, order_id, allocated_from_id, root_request_id,
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, sku, order_id, allocated_from_id, root_request_id,
         request_id, cartons, units_per_carton, reserved_at, status)
-    VALUES (gen_random_uuid(), md5('qa15:layer')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa15:order')::uuid,
+    VALUES (gen_random_uuid(), md5('qa15:p')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa15:order')::uuid,
             md5('qa15:soft')::uuid, gen_random_uuid(), gen_random_uuid(), 1, 1, NOW(), 'HELD') $q$);
 SELECT pg_temp.expect_fail('SR8 an allocation for another order than its reservation', $q$
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, sku, order_id, allocated_from_id, root_request_id,
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, sku, order_id, allocated_from_id, root_request_id,
         request_id, cartons, units_per_carton, reserved_at, status)
-    VALUES (gen_random_uuid(), md5('qa15:layer')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa15:other')::uuid,
+    VALUES (gen_random_uuid(), md5('qa15:p')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa15:other')::uuid,
             md5('qa15:soft')::uuid, gen_random_uuid(), gen_random_uuid(), 1, 2, NOW(), 'HELD') $q$);
 SELECT pg_temp.expect_ok('SR9 an allocation of the reservation: its carton, with the order number snapshot', $q$
-    UPDATE inventory.stock_item SET reserved = 2 WHERE id = md5('qa15:layer')::uuid;
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, sku, order_id, allocated_from_id, root_request_id,
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, sku, order_id, allocated_from_id, root_request_id,
         request_id, cartons, units_per_carton, reserved_at, status)
-    VALUES (md5('qa15:alloc')::uuid, md5('qa15:layer')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa15:order')::uuid,
+    VALUES (md5('qa15:alloc')::uuid, md5('qa15:p')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa15:order')::uuid,
             md5('qa15:soft')::uuid, md5('qa15:soft')::uuid, gen_random_uuid(), 1, 2, NOW(), 'HELD');
     UPDATE inventory.stock_reservation SET status = 'ALLOCATED', closed_at = NOW()
      WHERE id = md5('qa15:soft')::uuid $q$);
@@ -199,26 +200,33 @@ SELECT pg_temp.expect_true('SR16 no view reads the table',
     AND NOT EXISTS (SELECT 1 FROM pg_matviews WHERE definition ~* 'stock_reservation'));
 
 \echo '--- lots (V20261023000200)'
-SELECT pg_temp.expect_true('LT1 a layer written with a lot number got a lot row (live stock without one is refused since 5-5: QA 70)',
-    (SELECT lot_id IS NOT NULL FROM inventory.stock_item WHERE id = md5('qa15:layer')::uuid));
-SELECT pg_temp.expect_true('LT2 every layer has a lot', NOT EXISTS (SELECT 1 FROM inventory.stock_item WHERE lot_id IS NULL));
-SELECT pg_temp.expect_fail('LT3 a layer moved into a lot of another SKU', $q$
-    UPDATE inventory.stock_item SET lot_id = (SELECT id FROM inventory.stock_lot WHERE sku <> 'LY-GIAY-DEMO-12OZ-XANH' LIMIT 1)
-     WHERE id = md5('qa15:layer')::uuid $q$);
+-- LT1 ("a layer written with a lot number got a lot row") went with tg_stock_item_lot: a carton has no lot number to
+-- resolve a lot from, the application names the lot (V20261230000600).
+SELECT pg_temp.expect_true('LT2 every carton that has been in stock has a lot',
+    NOT EXISTS (SELECT 1 FROM inventory.stock_package WHERE lot_id IS NULL AND status NOT IN ('RECEIVING', 'VOID')));
+SELECT pg_temp.expect_fail('LT3 a carton moved into a lot of another SKU', $q$
+    UPDATE inventory.stock_package SET lot_id = (SELECT id FROM inventory.stock_lot WHERE sku <> 'LY-GIAY-DEMO-12OZ-XANH' LIMIT 1)
+     WHERE id = md5('qa15:p')::uuid $q$);
+SELECT pg_temp.expect_fail_by('LT3a a new carton in a lot of another SKU', 'but lot', $q$
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
+                                         location_code, status, stock_status, lot_id)
+    VALUES (gen_random_uuid(), 'QA-QA15-X', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
+            md5('qa15:u')::uuid, 2, NOW(), 'HCM-B01-2-B', 'IN_STOCK', 'AVAILABLE',
+            (SELECT id FROM inventory.stock_lot WHERE sku <> 'LY-GIAY-DEMO-12OZ-XANH' LIMIT 1)) $q$);
 SELECT pg_temp.expect_fail('LT4 a ledger line naming a lot of another SKU', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, reference_type,
         reference_id, occurred_at, lot_id, stock_package_id)
     VALUES (gen_random_uuid(), 'PICK', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-B01-2-B', 'ORDER', md5('qa15:order')::uuid, NOW(),
             (SELECT id FROM inventory.stock_lot WHERE sku <> 'LY-GIAY-DEMO-12OZ-XANH' LIMIT 1), md5('qa15:p')::uuid) $q$);
-SELECT pg_temp.expect_ok('LT5 a pick from the layer takes its lot and its order number', $q$
+SELECT pg_temp.expect_ok('LT5 a pick of the carton takes its lot and its order number', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
         reference_type, reference_id, occurred_at, order_id, stock_package_id)
     VALUES (md5('qa15:pick')::uuid, 'PICK', 'LY-GIAY-DEMO-12OZ-XANH', 'QA15-LOT', 'HCM-B01-2-B', 'ORDER',
             md5('qa15:order')::uuid, NOW(), md5('qa15:order')::uuid, md5('qa15:p')::uuid) $q$);
-SELECT pg_temp.expect_true('LT6 ... with the layer''s lot and the order''s number',
-    (SELECT m.lot_id = s.lot_id AND m.order_number = 'SO-QA-15'
-       FROM inventory.stock_movement m, inventory.stock_item s
-      WHERE m.id = md5('qa15:pick')::uuid AND s.id = md5('qa15:layer')::uuid));
+SELECT pg_temp.expect_true('LT6 ... with the carton''s lot and the order''s number',
+    (SELECT m.lot_id = p.lot_id AND m.order_number = 'SO-QA-15'
+       FROM inventory.stock_movement m, inventory.stock_package p
+      WHERE m.id = md5('qa15:pick')::uuid AND p.id = md5('qa15:p')::uuid));
 SELECT pg_temp.expect_fail('LT7 a lot of the removed origin GOODS_RECEIPT (ck_stock_lot_origin; QA 96 names the rule)', $q$
     INSERT INTO inventory.stock_lot (id, sku, origin_type, received_at) VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH',
         'GOODS_RECEIPT', NOW()) $q$);

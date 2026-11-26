@@ -1,7 +1,9 @@
 -- =============================================================================
 -- Adversarial checks + happy paths: stock is kept, moved, received, put away and allocated in whole LPN cartons only
 -- (V20261111000200, team plan 4C-2; kltn-docs 07 BR-03, BR-05; 05 BR-08; 11 BR-04, BR-05; 03 BR-12, BR-13; 20 §4.6,
--- §5.5, §5.6). Needs the demo seed, whose cups are whole cartons (V20261206000100). Rolled back at the end.
+-- §5.5, §5.6). Needs the demo seed, whose cups are whole cartons (V20261206000100). Since V20261230000600 (ADR-0011)
+-- the carton is the stock: the checks of a carton against the units on its stock row (part of it taken, refilled with
+-- another figure, left empty) cannot be written any more and are gone, each named where it stood. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -61,14 +63,12 @@ UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND inventory_item_id IN (SELECT id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH'));
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa41:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA41_CTN', 4);
+INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)
+VALUES (md5('qa41:lot')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', NOW() - interval '1 day', 'UNTRACED', NOW());
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
-                                     location_code, status)
+                                     location_code, status, stock_status, lot_id, received_at)
 VALUES (md5('qa41:pk')::uuid, 'QA41-LPN-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa41:unit')::uuid, 4, NOW(),
-        'HCM-A01-1-A', 'IN_STOCK');
-INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,
-                                  received_at, stock_package_id)
-VALUES (md5('qa41:pk:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'UNTRACED', 4, 0, 'AVAILABLE', NOW(),
-        NOW() - interval '1 day', md5('qa41:pk')::uuid);
+        'HCM-A01-1-A', 'IN_STOCK', 'AVAILABLE', md5('qa41:lot')::uuid, NOW() - interval '1 day');
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
 VALUES (md5('qa41:rcv')::uuid, 'QA41-LPN-2', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa41:unit')::uuid, 4,
         'HCM-RCV01');
@@ -85,55 +85,35 @@ VALUES (md5('qa41:soft')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa41:order')::uui
 SELECT pg_temp.expect_true('WC1 a carton in stock is never opened: the flag is gone (V20261113000300, team plan 4C-3)',
     NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
                    AND table_name = 'stock_package' AND column_name = 'unopened'));
-SELECT pg_temp.expect_fail('WC2 part of a carton in stock is taken (3 of 4 left)', $q$
-    UPDATE inventory.stock_item SET on_hand = 3 WHERE id = md5('qa41:pk:row')::uuid $q$);
+-- WC2 (part of a carton in stock taken, 3 of 4 left) cannot be written: a carton holds no quantity.
 SELECT pg_temp.expect_true('WC3 a carton cannot be counted at another figure than its standard count (03 BR-13): '
     'there is no figure to write, a count is the moment counted_at (V20261230000300)',
     NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
                    AND table_name = 'stock_package' AND column_name = 'received_qty'));
 SELECT pg_temp.expect_ok('WC4 a carton counted in: it stands for its standard count', $q$
     UPDATE inventory.stock_package SET counted_at = NOW() WHERE id = md5('qa41:rcv')::uuid $q$);
-SELECT pg_temp.expect_fail('WC5 a counted draft goes into stock holding another figure than its standard count', $q$
-    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
-                                         location_code)
-    VALUES (md5('qa41:old')::uuid, 'QA41-LPN-3', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa41:unit')::uuid, 4, NOW(),
-            'HCM-RCV01');
-    UPDATE inventory.stock_package SET status = 'IN_STOCK' WHERE id = md5('qa41:old')::uuid;
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,
-                                      received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-RCV01', 'UNTRACED', 3, 0, 'INBOUND', NOW(), NOW(),
-            md5('qa41:old')::uuid) $q$);
-SELECT pg_temp.expect_ok('WC6 the whole carton leaves stock: emptied and CONSUMED in one transaction', $q$
-    UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa41:pk:row')::uuid;
-    UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW()
+-- WC5 (a counted draft in stock holding another figure), WC7 (back in stock with part of its count), WC10c (found with
+-- part of its count) cannot be written. WC8 and WC10b (back in stock, or found, "with its row still empty") are now:
+-- back in stock without a stock status.
+SELECT pg_temp.expect_ok('WC6 the whole carton leaves stock: CONSUMED, with no stock status', $q$
+    UPDATE inventory.stock_package SET status = 'CONSUMED', stock_status = NULL, closed_at = NOW()
      WHERE id = md5('qa41:pk')::uuid $q$);
-SELECT pg_temp.expect_fail('WC7 a consumed carton back in stock with only part of its count', $q$
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL
-     WHERE id = md5('qa41:pk')::uuid;
-    UPDATE inventory.stock_item SET on_hand = 3 WHERE id = md5('qa41:pk:row')::uuid $q$);
-SELECT pg_temp.expect_fail('WC8 a consumed carton back in stock with its row still empty', $q$
+SELECT pg_temp.expect_fail_by('WC8 a consumed carton back in stock without saying as what', 'ck_stock_package_stock_status', $q$
     UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa41:pk')::uuid $q$);
-SELECT pg_temp.expect_ok('WC9 CONSUMED -> IN_STOCK: put back whole on another bin (20 §4.6 step 5)', $q$
-    SET LOCAL stockflow.same_receipt_merge = '855874c7-250e-165a-634e-378f66c747e3';
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL,
-           location_code = 'HCM-A01-1-B' WHERE id = md5('qa41:pk')::uuid;
-    UPDATE inventory.stock_item SET on_hand = 4, location_code = 'HCM-A01-1-B' WHERE id = md5('qa41:pk:row')::uuid $q$);
-SELECT pg_temp.expect_ok('WC10 a carton lost and found again whole is in stock again, on its own row (4C-2 review: it was never allocatable)', $q$
-    UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa41:pk:row')::uuid;
-    UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW()
+SELECT pg_temp.expect_ok('WC9 CONSUMED -> IN_STOCK: put back whole on another bin as AVAILABLE (20 §4.6 step 5)', $q$
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', stock_status = 'AVAILABLE', closed_at = NULL,
+           location_code = 'HCM-A01-1-B' WHERE id = md5('qa41:pk')::uuid $q$);
+SELECT pg_temp.expect_ok('WC10 a carton lost and found again whole is in stock again, the same carton (4C-2 review: it was never allocatable)', $q$
+    UPDATE inventory.stock_package SET status = 'LOST', stock_status = NULL, closed_at = NOW()
      WHERE id = md5('qa41:pk')::uuid;
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL
-     WHERE id = md5('qa41:pk')::uuid;
-    UPDATE inventory.stock_item SET on_hand = 4 WHERE id = md5('qa41:pk:row')::uuid $q$);
-SELECT pg_temp.expect_fail('WC10b a carton found again without its units back on its row', $q$
-    UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa41:pk:row')::uuid;
-    UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW() WHERE id = md5('qa41:pk')::uuid;
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', stock_status = 'AVAILABLE', closed_at = NULL
+     WHERE id = md5('qa41:pk')::uuid $q$);
+SELECT pg_temp.expect_fail_by('WC10b a carton found again without saying as what', 'ck_stock_package_stock_status', $q$
+    UPDATE inventory.stock_package SET status = 'LOST', stock_status = NULL, closed_at = NOW() WHERE id = md5('qa41:pk')::uuid;
     UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa41:pk')::uuid $q$);
-SELECT pg_temp.expect_fail('WC10c a lost carton found with part of its count on its row', $q$
-    UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa41:pk:row')::uuid;
-    UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW() WHERE id = md5('qa41:pk')::uuid;
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa41:pk')::uuid;
-    UPDATE inventory.stock_item SET on_hand = 3 WHERE id = md5('qa41:pk:row')::uuid $q$);
+SELECT pg_temp.expect_true('WC10d through all of that the carton kept its lot and its receipt date',
+    (SELECT lot_id = md5('qa41:lot')::uuid AND received_at < NOW() - interval '23 hours'
+       FROM inventory.stock_package WHERE id = md5('qa41:pk')::uuid));
 SELECT pg_temp.expect_fail('WC11 VOID back to receiving', $q$
     UPDATE inventory.stock_package SET status = 'VOID', closed_at = NOW() WHERE id = md5('qa41:rcv')::uuid;
     UPDATE inventory.stock_package SET status = 'RECEIVING', closed_at = NULL WHERE id = md5('qa41:rcv')::uuid $q$);
@@ -171,28 +151,24 @@ SELECT pg_temp.expect_fail_by('WC16 a move by hand naming a carton that stands a
             gen_random_uuid(), md5('qa41:pk')::uuid, NOW()) $q$);
 SELECT pg_temp.expect_ok('WC17 a carton moved by hand, its line naming it', $q$
     UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-A' WHERE id = md5('qa41:pk')::uuid;
-    UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-A' WHERE id = md5('qa41:pk:row')::uuid;
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, reference_type, reference_id, stock_package_id, occurred_at)
     VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-1-B', 'HCM-A01-1-A', 'MOVE_TASK',
             gen_random_uuid(), md5('qa41:pk')::uuid, NOW()) $q$);
 SELECT pg_temp.expect_ok('WC18 the carton allocated whole to the order (07 BR-03)', $q$
-    UPDATE inventory.stock_item SET reserved = 4 WHERE id = md5('qa41:pk:row')::uuid;
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, sku, order_id, allocated_from_id, root_request_id,
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, sku, order_id, allocated_from_id, root_request_id,
         request_id, cartons, units_per_carton, reserved_at, status)
-    VALUES (md5('qa41:alloc')::uuid, md5('qa41:pk:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa41:order')::uuid,
+    VALUES (md5('qa41:alloc')::uuid, md5('qa41:pk')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa41:order')::uuid,
             md5('qa41:soft')::uuid, md5('qa41:soft')::uuid, gen_random_uuid(), 1, 4, NOW(), 'HELD');
     UPDATE inventory.stock_reservation SET status = 'ALLOCATED', closed_at = NOW() WHERE id = md5('qa41:soft')::uuid $q$);
 SELECT pg_temp.expect_fail_by('WC19 the held carton moved by hand', 'it is not moved by hand', $q$
     UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-B' WHERE id = md5('qa41:pk')::uuid;
-    UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-B' WHERE id = md5('qa41:pk:row')::uuid;
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, reference_type, reference_id, stock_package_id, occurred_at)
     VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-1-A', 'HCM-A01-1-B', 'MOVE_TASK',
             gen_random_uuid(), md5('qa41:pk')::uuid, NOW()) $q$);
--- An allocation is its carton (ADR-0011, V20261230000500): one carton, of the carton's own count.
+-- An allocation is its carton (ADR-0011): one carton, of the carton's own count, and the carton's only live one.
 SELECT pg_temp.expect_fail_by('WC20 the allocation cut to part of its carton', 'an allocation is its carton', $q$
-    UPDATE inventory.stock_item SET reserved = 3 WHERE id = md5('qa41:pk:row')::uuid;
     UPDATE inventory.stock_reservation SET units_per_carton = 3 WHERE id = md5('qa41:alloc')::uuid $q$);
-SELECT pg_temp.expect_fail_by('WC20b the allocation made two cartons', 'ck_stock_reservation_one_carton', $q$
+SELECT pg_temp.expect_fail_by('WC20b the allocation made two cartons', 'ck_stock_reservation_kind', $q$
     UPDATE inventory.stock_reservation SET cartons = 2 WHERE id = md5('qa41:alloc')::uuid $q$);
 SELECT pg_temp.expect_fail_by('WC20c the allocation said to be of a carton of another count (1,000, as the demo''s are)',
     'an allocation is its carton', $q$
@@ -200,22 +176,28 @@ SELECT pg_temp.expect_fail_by('WC20c the allocation said to be of a carton of an
 SELECT pg_temp.expect_fail_by('WC21 an allocation of part of a carton', 'an allocation is its carton', $q$
     UPDATE inventory.stock_reservation SET status = 'RELEASED', release_reason = 'MANUAL_OVERRIDE', closed_at = NOW()
      WHERE id = md5('qa41:alloc')::uuid;
-    UPDATE inventory.stock_item SET reserved = 2 WHERE id = md5('qa41:pk:row')::uuid;
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, sku, order_id, allocated_from_id, root_request_id,
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, sku, order_id, allocated_from_id, root_request_id,
         request_id, cartons, units_per_carton, reserved_at, status)
-    VALUES (gen_random_uuid(), md5('qa41:pk:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa41:order')::uuid,
+    VALUES (gen_random_uuid(), md5('qa41:pk')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa41:order')::uuid,
             md5('qa41:soft')::uuid, md5('qa41:soft')::uuid, gen_random_uuid(), 1, 2, NOW(), 'HELD') $q$);
-SELECT pg_temp.expect_fail_by('WC21b an allocation of two cartons on one carton''s row', 'ck_stock_reservation_one_carton', $q$
+SELECT pg_temp.expect_fail_by('WC21b an allocation of two cartons on one carton', 'ck_stock_reservation_kind', $q$
     UPDATE inventory.stock_reservation SET status = 'RELEASED', release_reason = 'MANUAL_OVERRIDE', closed_at = NOW()
      WHERE id = md5('qa41:alloc')::uuid;
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, sku, order_id, allocated_from_id, root_request_id,
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, sku, order_id, allocated_from_id, root_request_id,
         request_id, cartons, units_per_carton, reserved_at, status)
-    VALUES (gen_random_uuid(), md5('qa41:pk:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa41:order')::uuid,
+    VALUES (gen_random_uuid(), md5('qa41:pk')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa41:order')::uuid,
             md5('qa41:soft')::uuid, md5('qa41:soft')::uuid, gen_random_uuid(), 2, 4, NOW(), 'HELD') $q$);
+SELECT pg_temp.expect_fail_by('WC21c a second live allocation of the carton', 'uk_stock_reservation_live_carton', $q$
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, sku, order_id, allocated_from_id, root_request_id,
+        request_id, cartons, units_per_carton, reserved_at, status)
+    VALUES (gen_random_uuid(), md5('qa41:pk')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', md5('qa41:order')::uuid,
+            md5('qa41:soft')::uuid, md5('qa41:soft')::uuid, gen_random_uuid(), 1, 4, NOW(), 'HELD') $q$);
+SELECT pg_temp.expect_fail_by('WC21d the held carton leaving stock with its allocation still live', 'is held for order', $q$
+    UPDATE inventory.stock_package SET status = 'CONSUMED', stock_status = NULL, closed_at = NOW()
+     WHERE id = md5('qa41:pk')::uuid $q$);
 SELECT pg_temp.expect_ok('WC22 the held carton picked: the allocation consumed, the carton CONSUMED whole', $q$
     UPDATE inventory.stock_reservation SET status = 'CONSUMED', closed_at = NOW() WHERE id = md5('qa41:alloc')::uuid;
-    UPDATE inventory.stock_item SET on_hand = 0, reserved = 0 WHERE id = md5('qa41:pk:row')::uuid;
-    UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW()
+    UPDATE inventory.stock_package SET status = 'CONSUMED', stock_status = NULL, closed_at = NOW()
      WHERE id = md5('qa41:pk')::uuid $q$);
 
 \echo '--- a putaway puts a carton away (05 BR-08)'

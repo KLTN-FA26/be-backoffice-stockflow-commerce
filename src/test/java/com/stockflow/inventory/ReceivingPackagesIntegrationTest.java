@@ -96,8 +96,10 @@ class ReceivingPackagesIntegrationTest {
                 line);
     }
 
-    private int stockRows() {
-        return jdbc.queryForObject("select count(*) from inventory.stock_item where sku = ?", Integer.class, sku);
+    /** Cartons of the SKU that are stock: IN_STOCK, so with a stock status. A carton being received is not one. */
+    private int cartonsInStock() {
+        return jdbc.queryForObject("select count(*) from inventory.stock_package p join inventory.inventory_items i"
+                + " on i.id = p.inventory_item_id where i.sku = ? and p.stock_status is not null", Integer.class, sku);
     }
 
     private int receiptLines() {
@@ -135,7 +137,7 @@ class ReceivingPackagesIntegrationTest {
         assertThat(jdbc.queryForList("""
                 select distinct location_code from inventory.stock_package where goods_receipt_line_id = ?""",
                 String.class, line)).containsExactly(RECEIVING);
-        assertThat(stockRows()).as("a carton being received holds no stock row").isZero();
+        assertThat(cartonsInStock()).as("a carton being received is not stock yet").isZero();
     }
 
     @Test
@@ -186,11 +188,11 @@ class ReceivingPackagesIntegrationTest {
                 select status from inventory.stock_package where goods_receipt_line_id = ?""",
                 String.class, line)).containsExactly("IN_STOCK", "IN_STOCK");
         assertThat(jdbc.query("""
-                select s.on_hand, s.status, s.location_code,
+                select p.nominal_qty as on_hand, p.stock_status as status, p.location_code,
                        case when p.counted_at is not null then p.nominal_qty end as counted_units
-                  from inventory.stock_item s
-                  left join inventory.stock_package p on p.id = s.stock_package_id
-                 where s.sku = ? order by s.on_hand""",
+                  from inventory.stock_package p
+                  join inventory.inventory_items i on i.id = p.inventory_item_id
+                 where i.sku = ? and p.status = 'IN_STOCK' order by p.lpn""",
                 (rs, n) -> rs.getInt("on_hand") + ":" + rs.getString("status") + ":" + rs.getString("location_code")
                         + ":" + (rs.getObject("counted_units") == null ? "loose" : "carton of " + rs.getInt("counted_units")),
                 sku)).containsExactly(
@@ -220,7 +222,7 @@ class ReceivingPackagesIntegrationTest {
                 .extracting(ReceivingPackagesIntegrationTest::code).isEqualTo(ErrorCode.RECEIPT_PACKAGES_EXCEED_LINE);
 
         assertThat(cartons()).hasSize(2).allSatisfy(row -> assertThat(row).contains(":RECEIVING:"));
-        assertThat(stockRows()).isZero();
+        assertThat(cartonsInStock()).isZero();
         assertThat(receiptLines()).isZero();
     }
 
@@ -235,7 +237,7 @@ class ReceivingPackagesIntegrationTest {
                 .extracting(ReceivingPackagesIntegrationTest::code).isEqualTo(ErrorCode.RECEIPT_LINE_NOT_IN_CARTONS);
 
         assertThat(cartons()).singleElement().satisfies(row -> assertThat(row).contains(":RECEIVING:"));
-        assertThat(stockRows()).isZero();
+        assertThat(cartonsInStock()).isZero();
         assertThat(receiptLines()).isZero();
     }
 
@@ -249,7 +251,7 @@ class ReceivingPackagesIntegrationTest {
             jdbc.update("update inventory.stock_package set counted_at = null, status = 'IN_STOCK' where lpn = ?",
                     lpn);
         })).hasMessageContaining("ck_stock_package_counted");
-        assertThat(stockRows()).isZero();
+        assertThat(cartonsInStock()).isZero();
 
         count(new PackageCount(lpn), PackageCount.fresh());
         assertThat(cartons()).filteredOn(row -> row.startsWith(lpn)).containsExactly(lpn + ":RECEIVING:1000");
@@ -260,14 +262,14 @@ class ReceivingPackagesIntegrationTest {
     void receiveReplayWritesNothingTwice() {
         count(PackageCount.fresh(), PackageCount.fresh());
         StockMove first = receive(2000);
-        int rows = stockRows();
+        int rows = cartonsInStock();
         int ledger = receiptLines();
 
         StockMove again = receive(2000);
 
         assertThat(again.movementId()).isEqualTo(first.movementId());
         assertThat(unitsOfLine(again)).isEqualTo(1000);
-        assertThat(stockRows()).isEqualTo(rows).isEqualTo(2);
+        assertThat(cartonsInStock()).isEqualTo(rows).isEqualTo(2);
         assertThat(receiptLines()).isEqualTo(ledger).isEqualTo(2);
         assertThat(cartons()).hasSize(2).allSatisfy(row -> assertThat(row).contains(":IN_STOCK:"));
     }

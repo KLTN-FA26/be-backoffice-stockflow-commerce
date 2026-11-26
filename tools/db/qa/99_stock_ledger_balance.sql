@@ -1,7 +1,8 @@
 -- =============================================================================
 -- The stock ledger balances (kltn-docs 20 BR-16; 2026-11-14 plan, BE2-C and BE4-A): for every warehouse and SKU the
 -- whole ledger summed is the stock on hand. The stock summary report (GET /api/v1/reports/stock-summary) is that ledger
--- summed, so it is only true while every change of on hand wrote its line. A line changes warehouse W by
+-- summed, so it is only true while every carton that entered or left stock wrote its line. Stock on hand is the
+-- cartons IN_STOCK, each its nominal_qty (ADR-0011, V20261230000600: the carton is the stock). A line changes warehouse W by
 --   nominal_qty of its carton * ([to_location in W] - [from_location in W])
 -- where "in W" is the location code's prefix (06 BR-13): a move inside a warehouse counts zero.
 --
@@ -38,8 +39,10 @@ LANGUAGE sql AS $$
                                             upper(split_part(m.from_location_code, '-', 1)))
          GROUP BY w.prefix, m.sku
     ), books AS (
-        SELECT upper(split_part(location_code, '-', 1)) AS prefix, sku, SUM(on_hand) AS on_hand
-          FROM inventory.stock_item
+        SELECT upper(split_part(p.location_code, '-', 1)) AS prefix, i.sku, SUM(p.nominal_qty) AS on_hand
+          FROM inventory.stock_package p
+          JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+         WHERE p.status = 'IN_STOCK'
          GROUP BY 1, 2
     )
     SELECT COALESCE(l.prefix, b.prefix)::text, COALESCE(l.sku, b.sku)::text, COALESCE(l.ledger_units, 0)::bigint,
@@ -70,10 +73,9 @@ SELECT pg_temp.expect_true('LB1 a ledger line with no stock behind it is seen, b
 ROLLBACK TO SAVEPOINT breach;
 
 SAVEPOINT breach;
--- Stock written with no ledger line: a carton of 1,000 blue demo cups written off by hand on its row only.
-UPDATE inventory.stock_item SET on_hand = 0
- WHERE stock_package_id = (SELECT id FROM inventory.stock_package WHERE lpn = 'LPN-20261111-000001');
-UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW() WHERE lpn = 'LPN-20261111-000001';
+-- Stock written with no ledger line: a carton of 1,000 blue demo cups written off by hand, the carton only.
+UPDATE inventory.stock_package SET status = 'LOST', stock_status = NULL, closed_at = NOW()
+ WHERE lpn = 'LPN-20261111-000001';
 SELECT pg_temp.expect_true('LB2 stock that changed with no ledger line is seen too',
     EXISTS (SELECT 1 FROM pg_temp.unbalanced() u
              WHERE u.warehouse = 'HCM' AND u.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND u.ledger_units = u.on_hand + 1000));

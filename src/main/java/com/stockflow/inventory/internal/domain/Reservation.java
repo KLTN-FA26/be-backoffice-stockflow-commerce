@@ -4,17 +4,18 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * One hold on stock, held by one order line inside one {@link StockItem}.
+ * One allocation: one carton ({@link StockPackage}) held for one order.
  *
  * <p><b>Why this class exists.</b> The first cut of this model kept {@code reserved} as a single
- * integer on the stock item. That number cannot answer two questions the business asks every
- * day: how much did <i>this</i> order reserve, and how do we release exactly that order's share. An
- * entity with an owner answers both. (It once carried a deadline too, for an abandoned checkout; no
+ * integer beside the stock. That number cannot answer two questions the business asks every
+ * day: which order holds this, and how do we release exactly that order's hold. An
+ * entity with an owner answers both - and since V20261230000600 it is the only record that a carton is taken: the
+ * counter is gone, so it cannot drift from these rows. (It once carried a deadline too, for an abandoned checkout; no
  * hold has had one since V20261117000300, and the column went with V20261230000500.)</p>
  *
  * <p><b>Entity, not aggregate root.</b> It has an identity that matters ({@link ReservationId})
  * but no independent life: it is created, consumed and released only through its
- * {@code StockItem}, which is what keeps {@code sum(active reservations) <= onHand} true. Loading
+ * {@code StockPackage}, which is what keeps a carton to at most one live allocation. Loading
  * a reservation on its own and mutating it would step around that invariant, so there is no
  * repository for this type.</p>
  *
@@ -31,14 +32,14 @@ public final class Reservation {
      *
      * <p>Kept alongside {@link #requestId} rather than instead of it because they answer different
      * questions. This one answers "has this caller's request already been served?", which must be
-     * asked <i>before</i> any lots are chosen. The derived one answers "has this exact stock item
-     * already been held for it?", and has to differ per stock item so the unique constraint does
-     * not reject the second lot.</p>
+     * asked <i>before</i> any cartons are chosen. The derived one answers "has this exact carton
+     * already been held for it?", and has to differ per carton so the unique constraint does
+     * not reject the second carton.</p>
      */
     private final UUID rootRequestId;
     private final UUID requestId;
     /**
-     * The count of the one carton this hold is (ADR-0011, V20261230000500): a hold on a stock row takes its carton
+     * The count of the one carton this hold is (ADR-0011, V20261230000500): an allocation takes its carton
      * whole and is released whole, so it stores no number of cartons - always one - and no units of its own.
      */
     private final int unitsPerCarton;
@@ -48,8 +49,8 @@ public final class Reservation {
     private ReleaseReason releaseReason;
     private Instant closedAt;
     /**
-     * The {@link SkuReservation} this hold was allocated from (F-FUL step 02), null for a checkout hold placed on a
-     * stock item before SKU reservations existed.
+     * The {@link SkuReservation} this hold was allocated from (F-FUL step 02), null for a checkout hold placed
+     * straight on stock before SKU reservations existed (history).
      */
     private final UUID allocatedFrom;
 
@@ -67,7 +68,7 @@ public final class Reservation {
                        ReservationStatus status, ReleaseReason releaseReason, Instant closedAt, UUID allocatedFrom) {
         this.id = java.util.Objects.requireNonNull(id, "id");
         if (status == ReservationStatus.ALLOCATED) {
-            throw new IllegalArgumentException("A hold on a stock item is never ALLOCATED; its SKU reservation is");
+            throw new IllegalArgumentException("An allocation of a carton is never ALLOCATED; its SKU reservation is");
         }
         this.allocatedFrom = allocatedFrom;
         this.orderId = java.util.Objects.requireNonNull(orderId, "orderId");
@@ -84,8 +85,8 @@ public final class Reservation {
     }
 
     /**
-     * An allocation (F-FUL step 02): one carton of a {@link SkuReservation}, the one this stock item is, given to the
-     * order when it was released to its warehouse. Package-private: only {@link StockItem} places one.
+     * An allocation (F-FUL step 02): one carton of a {@link SkuReservation}, given to the
+     * order when it was released to its warehouse. Package-private: only {@link StockPackage} places one.
      */
     static Reservation allocate(UUID orderId, UUID allocatedFrom, UUID rootRequestId, UUID requestId,
                                 int unitsPerCarton, Instant now) {

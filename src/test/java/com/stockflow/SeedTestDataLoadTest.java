@@ -273,38 +273,35 @@ class SeedTestDataLoadTest {
     }
 
     /**
-     * 20 BR-18 / BR-22: stock is whole LPN cartons only, one row each; a carton in stock holds its standard count, a
-     * consumed one nothing; the ledger of each carton adds up to what it holds; every lot is a production order's
-     * code (03 BR-03), and returned cartons wait in a quarantine area.
+     * 20 BR-18 / BR-22: stock is whole LPN cartons only, and the carton is the stock (ADR-0011): one in stock has a
+     * stock status and stands for its standard count, a consumed one has none; the ledger of each carton adds up to
+     * whether it is in stock; every lot is a production order's code (03 BR-03), and returned cartons wait in a
+     * quarantine area.
      */
     private static void stockInWholeCartons(Connection db) throws Exception {
-        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_item WHERE created_by = 'seed' AND "
-                + "stock_package_id IS NULL")).as("no loose stock").isZero();
         assertThat(byStatus(db, "inventory.stock_package")).containsOnlyKeys("IN_STOCK", "CONSUMED");
         assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package p WHERE p.created_by = 'seed' AND "
-                + "(SELECT count(*) FROM inventory.stock_item s WHERE s.stock_package_id = p.id) <> 1"))
-                .as("one row per carton").isZero();
-        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package p JOIN inventory.stock_item s ON "
-                + "s.stock_package_id = p.id WHERE p.created_by = 'seed' AND NOT CASE p.status WHEN 'IN_STOCK' THEN "
-                + "s.on_hand = p.nominal_qty AND p.counted_at IS NOT NULL ELSE s.on_hand = 0 END"))
-                .as("a carton holds its standard count or, consumed, nothing").isZero();
-        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package p JOIN inventory.stock_item s ON "
-                + "s.stock_package_id = p.id WHERE p.created_by = 'seed' AND s.on_hand <> p.nominal_qty * (SELECT "
+                + "NOT CASE p.status WHEN 'IN_STOCK' THEN p.stock_status IS NOT NULL AND p.counted_at IS NOT NULL "
+                + "ELSE p.stock_status IS NULL END"))
+                .as("a carton in stock was counted in and has a stock status; consumed, it has none").isZero();
+        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package p WHERE p.created_by = 'seed' AND "
+                + "CASE WHEN p.status = 'IN_STOCK' THEN 1 ELSE 0 END <> (SELECT "
                 + "count(*) FILTER (WHERE m.to_location_code IS NOT NULL) - count(*) "
                 + "FILTER (WHERE m.from_location_code IS NOT NULL) FROM inventory.stock_movement m WHERE "
                 + "m.stock_package_id = p.id)")).as("each carton's ledger adds up: a line is the carton, whole").isZero();
-        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_item s JOIN inventory.stock_lot l ON l.id = "
-                + "s.lot_id LEFT JOIN ordering.production_order o ON o.id = l.production_order_id WHERE s.created_by = "
-                + "'seed' AND (l.origin_type <> 'PRODUCTION_ORDER' OR s.lot_number IS DISTINCT FROM o.code)"))
+        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package p LEFT JOIN inventory.stock_lot l ON "
+                + "l.id = p.lot_id LEFT JOIN ordering.production_order o ON o.id = l.production_order_id WHERE "
+                + "p.created_by = 'seed' AND (l.origin_type IS DISTINCT FROM 'PRODUCTION_ORDER' "
+                + "OR l.lot_number IS DISTINCT FROM o.code)"))
                 .as("lot = the production order's code").isZero();
         assertThat(RawSql.number(db, "SELECT count(*) FROM procurement.goods_receipts WHERE created_by = 'seed' AND "
                 + "receipt_type = 'RETURN' AND status = 'CLOSED'")).as("a return received").isPositive();
-        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_item s JOIN warehouse.storage_location l ON "
+        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package s JOIN warehouse.storage_location l ON "
                 + "l.location_code = s.location_code JOIN warehouse.area a ON a.location_id = l.id WHERE s.created_by = "
-                + "'seed' AND s.on_hand > 0 AND s.status = 'QUARANTINE' AND a.type = 'QUARANTINE'"))
+                + "'seed' AND s.stock_status = 'QUARANTINE' AND a.type = 'QUARANTINE'"))
                 .as("returned cartons in quarantine").isPositive();
-        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_item s WHERE s.created_by = 'seed' AND "
-                + "s.status = 'QUARANTINE' AND NOT EXISTS (SELECT 1 FROM warehouse.storage_location l JOIN "
+        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package s WHERE s.created_by = 'seed' AND "
+                + "s.stock_status = 'QUARANTINE' AND NOT EXISTS (SELECT 1 FROM warehouse.storage_location l JOIN "
                 + "warehouse.area a ON a.location_id = l.id WHERE l.location_code = s.location_code AND a.type = "
                 + "'QUARANTINE')")).as("quarantined stock outside a quarantine area").isZero();
     }
@@ -314,9 +311,9 @@ class SeedTestDataLoadTest {
         assertThat(RawSql.number(db, "SELECT count(*) FROM fulfillment.pick_line l JOIN fulfillment.pick p ON p.id = "
                 + "l.pick_id WHERE p.created_by = 'seed' AND l.status = 'STAGED'")).as("lines picked to staging")
                 .isPositive();
-        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_item s JOIN warehouse.storage_location l ON "
+        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package s JOIN warehouse.storage_location l ON "
                 + "l.location_code = s.location_code JOIN warehouse.area a ON a.location_id = l.id WHERE s.created_by = "
-                + "'seed' AND s.on_hand > 0 AND a.type = 'STAGING'")).as("cartons waiting in staging").isPositive();
+                + "'seed' AND s.status = 'IN_STOCK' AND a.type = 'STAGING'")).as("cartons waiting in staging").isPositive();
         assertThat(byStatus(db, "fulfillment.pack")).containsKey("COMPLETED");
         assertThat(byStatus(db, "fulfillment.load_plan")).containsKeys("CONFIRMED", "DISPATCHED");
         assertThat(byStatus(db, "fulfillment.shipment")).containsKeys("READY_TO_DISPATCH", "HANDED_OVER", "DELIVERED",

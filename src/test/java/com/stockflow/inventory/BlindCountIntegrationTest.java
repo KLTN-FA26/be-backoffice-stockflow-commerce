@@ -44,7 +44,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * SCRUM-146, owner decision BLIND (28/10), by carton since team plan 4C-3 (kltn-docs 20 §4.2, BR-07): the books of a
  * carton a cycle count holds - open, or submitted with its
  * variance still pending approval - are for who holds {@code inventory-cycle-counts:APPROVE}, in every stock screen
- * and not just on the count screen. For everyone else the stock rows of the slot lose their quantities
+ * and not just on the count screen. For everyone else the stock lines of the slot lose their quantities
  * ({@code hiddenDuringCount}), and its ledger lines and adjustments are left out.
  *
  * <p>The HTTP tests go through the real filter chain with the seeded grants: the warehouse staff read stock, the
@@ -104,8 +104,8 @@ class BlindCountIntegrationTest {
         cartonA = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN2, 1, CARTON, "L1", received)).getFirst();
         cartonB = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN, 1, CARTON, "L1", received)).getFirst();
         cartonC = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN3, 1, CARTON, "L1", received)).getFirst();
-        lot = jdbc.queryForObject("select lot_id from inventory.stock_item where id = ?", UUID.class,
-                cartonB.stockItemId());
+        lot = jdbc.queryForObject("select lot_id from inventory.stock_package where id = ?", UUID.class,
+                cartonB.id());
         tx.executeWithoutResult(s -> {
             movement(BIN, BIN2, cartonB.id());
             movement(BIN2, BIN3, cartonC.id());
@@ -172,7 +172,7 @@ class BlindCountIntegrationTest {
         cycleCounts.count(count.id(), lineOf(count, cartonB.id()), false, null, clerk, false);
     }
 
-    // ------------------------------------------------------------------ stock rows
+    // ------------------------------------------------------------------ stock lines
 
     @Test
     @DisplayName("stock by SKU: while a count holds the bin's cartons the counter's rows have no quantity; the "

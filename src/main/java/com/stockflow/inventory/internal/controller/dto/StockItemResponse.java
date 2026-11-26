@@ -5,19 +5,21 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import java.util.UUID;
 
 /**
- * What the API returns for one stock row.
+ * What the API returns for one carton of stock (the name is the contract's: a "stock item" was the row a carton
+ * had until V20261230000600, and {@code id} now carries the carton's id).
  *
- * <p>A separate type from both {@code StockItem} and {@code StockAvailability}, which looks like
+ * <p>A separate type from both {@code StockPackage} and {@code StockAvailability}, which looks like
  * duplication and is not. Returning the aggregate would publish its internal shape as the API
  * contract, so renaming a private field becomes a breaking change for the frontend. Returning
  * {@code StockAvailability} would tie the wire format to another module's view type.</p>
  *
- * <p>Quantities are in pieces and again in cartons (kltn-docs 01 BR-09). A stock row is the contents of one carton.</p>
+ * <p>Quantities are in pieces and again in cartons (kltn-docs 01 BR-09): the carton's count, derived, since stock
+ * keeps no quantity (ADR-0011).</p>
  */
 @Schema(name = "StockItem", description = "Stock on hand for one SKU at one location")
 public record StockItemResponse(
 
-        @Schema(description = "Stock item identifier")
+        @Schema(description = "The carton's identifier")
         UUID id,
 
         @Schema(example = "LY-GIAY-DEMO-12OZ-XANH")

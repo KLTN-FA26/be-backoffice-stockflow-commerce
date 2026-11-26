@@ -1,6 +1,6 @@
 # ADR-0011 — Stock is recorded as cartons, not as units
 
-* **Status:** Accepted — being carried out in steps; steps 1, 2, 3a, 3b and 3c are done (see *Steps*). Amends kltn-docs 01 BR-09 and
+* **Status:** Accepted — being carried out in steps; steps 1, 2, 3a, 3b, 3c and 3d are done (see *Steps*). Amends kltn-docs 01 BR-09 and
   20 §1 ("base units are kept internally"), which must be reworded in the kltn-docs repository.
 * **Date:** 2026-11-26
 * **Deciders:** repository owner (Phương)
@@ -117,6 +117,35 @@ its own:
      then held for fewer cartons than the units suggest, and `ShippingWarehouseService.giveUpUncovered` may cut a hold
      of a covered count before it reaches the short one. A line with no `units_per_carton` (the legacy redelivery
      path counts it one piece a carton) is held only from cartons of 1.
+   * **3d, the carton is the stock** - done, `V20261230000600`: `stock_item`, `on_hand`, `reserved` and the view
+     `stock_package_balance` are dropped. `stock_package` carries `stock_status` (set exactly while `IN_STOCK`,
+     `ck_stock_package_stock_status`), `lot_id` (required once it has been in stock, `ck_stock_package_lot`) and
+     `received_at` (nullable: undated sorts last); lot and date are written at RECEIVING -> IN_STOCK and frozen
+     (`tg_stock_package_transition`). `stock_reservation.stock_package_id` replaces `stock_item_id`; a carton is
+     taken exactly while a HELD row names it (`uk_stock_reservation_live_carton`) - HELD is the only live status of
+     an allocation (CONSUMED, RELEASED and EXPIRED are closed; ALLOCATED is a SKU-level hold's). An allocation
+     takes a free AVAILABLE carton of its count that stands in no staging area (`tg_stock_reservation_carton`, which
+     locks the carton row before reading it), and a held carton stays AVAILABLE (`tg_stock_package_held_available`,
+     a constraint trigger deferred to commit: the application closes the allocation and changes the carton in one
+     flush, in an order it does not choose; staging keeps its held carton AVAILABLE and passes). The opened-return and
+     returned-carton rules are CHECKs of the carton. The migration repoints every reservation before the table goes
+     (`fk_reservation_stock_item` was ON DELETE CASCADE), deletes empty loose rows with their unreferenced closed
+     history, and refuses, by name, a carton that has been in stock with no row, and a live hold that is not the one
+     allocation of an AVAILABLE carton in stock.
+     In the code `StockPackage` is the aggregate root and owns its allocations; `StockItem`, `StockItemRepository`,
+     `saveMerged` and the `stockflow.same_receipt_merge` marker are gone ("replenishment needs a new layer" has
+     nothing left to refuse: nothing can grow). **A carton that comes back is given its status by what brings it
+     back**: put back after a cancelled order AVAILABLE; removed as damaged or received on a return QUARANTINE; a
+     LOST carton found AVAILABLE, or QUARANTINE when it stands in a quarantine area. It keeps its lot and its FIFO
+     date. Lock order everywhere: SKU advisory locks (sorted) -> cartons `FOR UPDATE` in id order, nothing after;
+     allocate and reallocate now lock the cartons themselves (they locked only the stock rows, never the carton a
+     move locks). A receipt with no origin opens its UNTRACED lot in the application (`StockLots.openUntraced`; a
+     trigger of the stock row did).
+     Contract: `inventory :: api`, `inventory :: consumption`, the events and every HTTP field keep their shape;
+     fields named `stockItemId` carry the carton's id, and unit fields are cartons times `nominal_qty`. Noticeable:
+     stock listings no longer show the zero rows of cartons that left stock (`availabilityOf`, levels), and a held
+     carton is held whole in the lot trace. Cartons in the API is step 3e; `lot_number` on count lines and
+     adjustments may go in a later step.
 
 ## Decisions for the rest of step 3 (owner, 2026-11-27)
 

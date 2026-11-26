@@ -186,8 +186,11 @@ class CartonQuarantineIntegrationTest {
 
     private Map<String, Object> cartonRow(String lpn) {
         return jdbc.queryForMap("""
-                SELECT p.status AS carton, p.location_code AS location, i.status AS stock, i.on_hand, i.reserved
-                  FROM inventory.stock_package p JOIN inventory.stock_item i ON i.stock_package_id = p.id
+                SELECT p.status AS carton, p.location_code AS location, p.stock_status AS stock,
+                       CASE WHEN p.status = 'IN_STOCK' THEN p.nominal_qty ELSE 0 END AS on_hand,
+                       (SELECT COALESCE(SUM(r.cartons * r.units_per_carton), 0)::int FROM inventory.stock_reservation r
+                         WHERE r.stock_package_id = p.id AND r.status = 'HELD') AS reserved
+                  FROM inventory.stock_package p
                  WHERE p.lpn = ?""", lpn);
     }
 
@@ -331,10 +334,10 @@ class CartonQuarantineIntegrationTest {
         assertThat(refusal(() -> quarantine.release(lpn, manager)).errorCode())
                 .isEqualTo(ErrorCode.RETURN_CARTON_OPENED);
         assertThat(cartonRow(lpn)).containsEntry("stock", "QUARANTINE");
-        Throwable onSale = catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update("""
-                UPDATE inventory.stock_item SET status = 'AVAILABLE'
-                 WHERE stock_package_id = (SELECT id FROM inventory.stock_package WHERE lpn = ?)""", lpn)));
-        assertThat(onSale).as("tg_stock_item_opened_return").hasMessageContaining("came back opened");
+        Throwable onSale = catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE inventory.stock_package SET stock_status = 'AVAILABLE' WHERE lpn = ?", lpn)));
+        assertThat(onSale).as("an opened return carton is never AVAILABLE")
+                .hasMessageContaining("ck_stock_package_opened_return");
         Throwable unmarked = catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update(
                 "UPDATE inventory.stock_package SET return_opened_at = NULL WHERE lpn = ?", lpn)));
         assertThat(unmarked).as("tg_stock_package_return_opened").hasMessageContaining("came back opened");

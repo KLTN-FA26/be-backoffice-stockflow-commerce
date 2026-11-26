@@ -38,14 +38,14 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * SCRUM-424 / SCRUM-145 against a real database: the stock rows, the ledger line and the adjustment
+ * SCRUM-424 / SCRUM-145 against a real database: the cartons, the ledger line and the adjustment
  * all land, with the table constraints (four eyes, ledger shape, foreign keys) live. Each test
  * works on its own canonical SKU and lot, so it never disturbs the demo stock other tests read.
  *
  * <p>Moves are of whole cartons by LPN since team plan 4C-2 (kltn-docs 11 BR-04, BR-07): a carton of 10 stands at
- * {@link #BIN} beside another of the same lot. Since review C4 M-5 ({@code ck_stock_item_whole_cartons}) no row in no
- * carton holds stock, so the four-eyes mechanism is exercised on whole-carton write-offs by LPN (kltn-docs 20 BR-14),
- * and the loose path only refuses to add units ({@code STOCK_NOT_IN_CARTON}). Restocking and the other carton paths:
+ * {@link #BIN} beside another of the same lot. The carton is the stock (ADR-0011): there is nothing loose, so the
+ * four-eyes mechanism is exercised on whole-carton write-offs by LPN (kltn-docs 20 BR-14), and a request naming no
+ * carton is only refused ({@code STOCK_NOT_IN_CARTON}). Restocking and the other carton paths:
  * {@code CartonAdjustmentIntegrationTest} (team plan 4C-3).</p>
  */
 // DIRECT_DEPENDENCIES: moves ask warehouse :: api whether a location may take stock (issue #67).
@@ -107,14 +107,16 @@ values (?,?,?,'Move fixture','')
 
     /** Units of the carton at {@code location}, null when it is not there. */
     private Integer cartonAt(String location) {
-        return jdbc.query("SELECT on_hand FROM inventory.stock_item WHERE id = ? AND location_code = ?",
-                rs -> rs.next() ? rs.getInt(1) : null, carton.stockItemId(), location);
+        return jdbc.query("SELECT CASE WHEN status = 'IN_STOCK' THEN nominal_qty ELSE 0 END FROM"
+                + " inventory.stock_package WHERE id = ? AND location_code = ?",
+                rs -> rs.next() ? rs.getInt(1) : null, carton.id(), location);
     }
 
     /** Units of the other carton (at {@link #BIN}): 10 until a write-off of it posts, 0 after. */
     private Integer onHand(String location) {
-        return jdbc.query("SELECT on_hand FROM inventory.stock_item WHERE id = ? AND location_code = ?",
-                rs -> rs.next() ? rs.getInt(1) : null, other.stockItemId(), location);
+        return jdbc.query("SELECT CASE WHEN status = 'IN_STOCK' THEN nominal_qty ELSE 0 END FROM"
+                + " inventory.stock_package WHERE id = ? AND location_code = ?",
+                rs -> rs.next() ? rs.getInt(1) : null, other.id(), location);
     }
 
     /** The carton's status: IN_STOCK, or CONSUMED / LOST once written off. */
@@ -128,7 +130,7 @@ values (?,?,?,'Move fixture','')
     }
 
     @Test
-    @DisplayName("a carton moved by hand goes whole with its row, one ledger line naming it on both sides; the same "
+    @DisplayName("a carton moved by hand goes whole, one ledger line naming it on both sides; the same "
             + "request again is answered, not moved twice (11 BR-04, BR-07)")
     void moveWritesStockAndLedger() {
         UUID requestId = UUID.randomUUID();
@@ -180,11 +182,8 @@ values (?,?,?,'Move fixture','')
         // One carton of two cannot go (it is consumed): neither moves.
         CartonRows.Carton gone = tx.execute(s -> CartonRows.stock(jdbc, sku.code(), BIN, 1, 10, lot,
                 java.time.Instant.parse("2026-01-03T00:00:00Z")).getFirst());
-        tx.executeWithoutResult(s -> {
-            jdbc.update("UPDATE inventory.stock_item SET on_hand = 0 WHERE id = ?", gone.stockItemId());
-            jdbc.update("UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW()"
-                    + " WHERE id = ?", gone.id());
-        });
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.stock_package SET status = 'CONSUMED',"
+                + " stock_status = NULL, closed_at = NOW() WHERE id = ?", gone.id()));
         assertThatThrownBy(() -> inventory.moveStockPackages(new MoveStockPackagesCommand(
                 List.of(carton.lpn(), gone.lpn()), PACKING, MoveReference.MOVE_TASK, UUID.randomUUID(), clerk)))
                 .extracting(e -> ((BusinessException) e).errorCode())

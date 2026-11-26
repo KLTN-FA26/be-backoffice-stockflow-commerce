@@ -29,9 +29,9 @@ import com.stockflow.inventory.internal.domain.Reservation;
 import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.ReservationStatus;
 import com.stockflow.inventory.internal.domain.StockAllocator;
-import com.stockflow.inventory.internal.domain.StockItem;
-import com.stockflow.inventory.internal.domain.StockItemId;
-import com.stockflow.inventory.internal.domain.StockItemRepository;
+import com.stockflow.inventory.internal.domain.StockPackage;
+import com.stockflow.inventory.internal.domain.StockPackageId;
+import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockLevelLine;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.common.domain.Sku;
@@ -66,7 +66,7 @@ import java.util.stream.Collectors;
  *
  * <p><b>What the application layer is for.</b> It orchestrates: load the aggregates, call the
  * domain method, save, publish. It contains no business rules — every "may I?" and "how much?"
- * question is answered by {@link StockItem} or {@link StockAllocator}. If a rule appears in this
+ * question is answered by {@link StockPackage} or {@link StockAllocator}. If a rule appears in this
  * class it is in the wrong place, and {@code ArchitectureTest} is what keeps that honest.</p>
  *
  * <p><b>Package-private class, public interface.</b> Spring injects it by the interface. Nothing
@@ -82,7 +82,6 @@ class InventoryServiceImpl implements InventoryService {
 
     private static final Logger log = LoggerFactory.getLogger(InventoryServiceImpl.class);
 
-    private final StockItemRepository repository;
     private final InventoryEventPublisher events;
     private final StockOperations operations;
     private final InventoryItemDirectory items;
@@ -91,16 +90,15 @@ class InventoryServiceImpl implements InventoryService {
     private final SkuReservationRepository skuReservations;
     private final LocationDirectory locations;
     private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts;
-    private final com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages;
+    private final StockPackageRepository stockPackages;
 
-    InventoryServiceImpl(StockItemRepository repository, InventoryEventPublisher events,
+    InventoryServiceImpl(InventoryEventPublisher events,
                          StockOperations operations, InventoryItemDirectory items, Clock clock,
                          InventoryPolicyRepository policies,
                          SkuReservationRepository skuReservations, LocationDirectory locations,
                          com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts,
-                         com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages) {
+                         StockPackageRepository stockPackages) {
         this.stockPackages = stockPackages;
-        this.repository = repository;
         this.events = events;
         this.operations = operations;
         this.items = items;
@@ -114,7 +112,7 @@ class InventoryServiceImpl implements InventoryService {
     @Override
     @Transactional(propagation = Propagation.MANDATORY)
     public void prepareReservation(Set<Sku> skus) {
-        // SKU advisory locks only (SCRUM-152): a SKU reservation touches no stock row, so locking stock rows here
+        // SKU advisory locks only (SCRUM-152): a SKU reservation touches no carton, so locking cartons here
         // would only serialise holding against picking.
         skus.stream().map(Sku::code).distinct().sorted().forEach(policies::lock);
     }
@@ -201,8 +199,8 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     /**
-     * Locked like every carton write (V20261020000100), though a carton being received holds no stock row to lock
-     * after it: the receipt's own lock keeps two edits of it apart, this keeps the cartons' rule in one place.
+     * Locked like every carton write (V20261020000100): the receipt's own lock keeps two edits of it apart, this
+     * keeps the cartons' rule in one place.
      */
     @Override
     public void voidStockPackagesOfReceiptLines(java.util.Collection<UUID> receiptLineIds) {
@@ -252,15 +250,15 @@ class InventoryServiceImpl implements InventoryService {
      * Units a release could allocate, per SKU code (team plan 4C-2; kltn-docs 07 BR-03, 20 §5.6): whole sealed cartons
      * nothing holds, unexpired, on pickable bins (module 06 BR-12), none a recount has frozen (X-SHORT step 03). The
      * same stock {@link PickableStock} offers the planner, across every warehouse: a reservation is promised against
-     * the whole system. Loose units and an opened carton are on hand but never allocated, so they are not promised.
+     * the whole system, in units of the cartons' counts.
      */
     private Map<String, Long> allocatableBySku(Collection<String> skus) {
-        return new PickableStock(repository, locations, cycleCounts).allocatableBySku(skus);
+        return new PickableStock(stockPackages, locations, cycleCounts).allocatableBySku(skus);
     }
 
-    private Set<StockItemId> frozenLayers(Sku sku) {
+    private Set<StockPackageId> frozenCartons(Sku sku) {
         return cycleCounts.frozen(List.of(sku.code())).stream()
-                .map(frozen -> new StockItemId(frozen.stockItemId())).collect(Collectors.toSet());
+                .map(frozen -> new StockPackageId(frozen.stockPackageId())).collect(Collectors.toSet());
     }
 
     @Override
@@ -290,21 +288,22 @@ class InventoryServiceImpl implements InventoryService {
     @Override
     @Transactional(readOnly = true)
     public List<StockAvailability> availabilityOf(Sku sku) {
-        Set<StockItemId> frozen = frozenLayers(sku);
+        Set<StockPackageId> frozen = frozenCartons(sku);
         // A staging area's cartons are an order's, or wait to be put back: nobody takes stock from there (20 BR-20).
         Set<String> staging = locations.stagingAreas();
-        // In picking order: FIFO by receipt time (kltn-docs 01 BR-17).
-        return repository.findAvailableBySku(sku).stream()
-                .filter(item -> !frozen.contains(item.id()))
-                .filter(item -> !staging.contains(item.location().code()))
-                .sorted(Comparator.comparing(item ->
+        // The AVAILABLE cartons, held or not, in picking order: FIFO by receipt time (kltn-docs 01 BR-17). A carton
+        // out of stock is not listed: it has no stock status, where its emptied row used to keep a stale AVAILABLE.
+        return stockPackages.findAvailableBySku(sku).stream()
+                .filter(carton -> !frozen.contains(carton.id()))
+                .filter(carton -> !staging.contains(carton.location().code()))
+                .sorted(Comparator.comparing(carton ->
                                         new StockAllocator.Candidate(
-                                                item.id(),
-                                                item.location(),
-                                                item.lotNumber(),
-                                                item.status(),
-                                                item.available(),
-                                                item.receivedAt()),
+                                                carton.id(),
+                                                carton.location(),
+                                                carton.lotNumber(),
+                                                carton.stockStatus(),
+                                                carton.nominalQty(),
+                                                carton.receivedAt()),
                                 StockAllocator.comparator()))
                 .map(this::toAvailability)
                 // BR-SEC-002: a warehouse-bound caller sees the stock of their own warehouses only.
@@ -376,7 +375,7 @@ class InventoryServiceImpl implements InventoryService {
      * by it. Read under the SKU's advisory lock by the caller.
      */
     private int cartonsToPromiseAt(Sku sku, String warehouse, int unitsPerCarton) {
-        Map<String, Long> free = new PickableStock(repository, locations, cycleCounts)
+        Map<String, Long> free = new PickableStock(stockPackages, locations, cycleCounts)
                 .allocatableCartonsByWarehouse(sku, unitsPerCarton);
         List<SkuReservationRepository.HeldCartons> held = skuReservations.heldCartonsOf(sku.code()).stream()
                 .filter(h -> h.unitsPerCarton() == unitsPerCarton).toList();
@@ -404,7 +403,7 @@ class InventoryServiceImpl implements InventoryService {
     @Transactional(propagation = Propagation.REQUIRED, readOnly = true)
     public com.stockflow.inventory.api.SkuHoldCover skuHoldCover(Sku sku, String warehouseCode) {
         String warehouse = new LocationId(warehouseCode).code();
-        Map<Integer, Long> free = new PickableStock(repository, locations, cycleCounts)
+        Map<Integer, Long> free = new PickableStock(stockPackages, locations, cycleCounts)
                 .coverableCartonsAt(sku, warehouse);
         List<SkuReservation> held = skuReservations.findHeldAt(sku.code(), warehouse);
         Map<Integer, Long> wanted = new TreeMap<>();
@@ -490,14 +489,15 @@ class InventoryServiceImpl implements InventoryService {
             return Set.of();
         }
         Set<UUID> givenUp = new LinkedHashSet<>();
-        for (com.stockflow.inventory.internal.domain.HoldDetail detail : repository.findHolds(Set.copyOf(reservationIds))) {
+        for (com.stockflow.inventory.internal.domain.HoldDetail detail : stockPackages.findHolds(Set.copyOf(reservationIds))) {
             if (detail.status() != ReservationStatus.RELEASED) {
                 continue;
             }
             ReservationId id = ReservationId.of(detail.reservationId());
-            repository.findIdByReservationId(id).flatMap(repository::findById)
-                    .filter(row -> row.findReservation(id).map(hold -> givenUpWithItsCarton(hold, row)).orElse(false))
-                    .ifPresent(row -> givenUp.add(detail.reservationId()));
+            stockPackages.findByReservationId(id)
+                    .filter(carton -> carton.findReservation(id).map(hold -> givenUpWithItsCarton(hold, carton))
+                            .orElse(false))
+                    .ifPresent(carton -> givenUp.add(detail.reservationId()));
         }
         return givenUp;
     }
@@ -507,8 +507,8 @@ class InventoryServiceImpl implements InventoryService {
      * free cartons on pickable, usable locations, none frozen, the very set the release plans over
      * ({@link PickableStock}; review P-1: a carton in a receiving area is on hand, never allocated, so never promised) -
      * less the SKU reservations held at it (4B-7, BR-17), never more than is left system-wide once every SKU
-     * reservation - held at a warehouse or not - is counted. On hand, available and reserved are the rows' figures, as
-     * Inventory Level shows them. {@code scoped}: only the warehouses a warehouse-bound caller may see.
+     * reservation - held at a warehouse or not - is counted. On hand, available and reserved are the cartons in stock,
+     * in units of their counts (a carton out of stock adds nothing, and no line), as Inventory Level shows them. {@code scoped}: only the warehouses a warehouse-bound caller may see.
      */
     private List<StockLevel> levels(Sku sku, boolean scoped) {
         record Totals(int onHand, int available, int reserved, int atp) {
@@ -524,16 +524,16 @@ class InventoryServiceImpl implements InventoryService {
             }
         }
         Map<String, Totals> byWarehouse = new TreeMap<>();
-        for (StockLevelLine line : repository.findLevelLinesBySku(sku)) {
+        for (StockLevelLine line : stockPackages.findLevelLinesBySku(sku)) {
             byWarehouse.merge(line.location().warehouseCode(), Totals.of(line), Totals::plus);
         }
-        Map<String, Long> allocatable = new PickableStock(repository, locations, cycleCounts).allocatableByWarehouse(sku);
+        Map<String, Long> allocatable = new PickableStock(stockPackages, locations, cycleCounts).allocatableByWarehouse(sku);
         byWarehouse.replaceAll((code, totals) -> new Totals(totals.onHand(), totals.available(), totals.reserved(),
                 Math.toIntExact(allocatable.getOrDefault(code, 0L))));
-        // Allocations are holds on these same rows: counted in reserved above, shown apart below (glossary: a
+        // Allocations are holds on these same cartons: counted in reserved above, shown apart below (glossary: a
         // reservation is a soft hold on the SKU, an allocation a hard hold on a bin), so the two never add up twice.
         Map<String, Integer> allocatedByWarehouse = new TreeMap<>();
-        repository.findAllocatedBySku(sku).forEach((locationCode, units) ->
+        stockPackages.findAllocatedBySku(sku).forEach((locationCode, units) ->
                 allocatedByWarehouse.merge(new LocationId(locationCode).warehouseCode(), units, Integer::sum));
         // A SKU reservation of before 4B-7 named no warehouse and was promised against the whole system (SCRUM-152):
         // no warehouse can promise more than is left system-wide once every SKU reservation is counted - from these
@@ -565,10 +565,12 @@ class InventoryServiceImpl implements InventoryService {
      * {@inheritDoc}
      *
      * <p>The order of locks is the one every hold and move uses: the SKUs' advisory locks (sorted), then the
-     * order's reservations, then the stock rows in id order. Planning reads projections only, so the locked read of
-     * each stock row is its first read in this transaction and the re-check in {@link StockItem#allocate} runs on
-     * current numbers. Each stock row is locked once even when two lines of the order draw on it — refreshing a
-     * row twice would discard the first line's unflushed allocation.</p>
+     * order's reservations, then the cartons {@code FOR UPDATE} in id order, all of the plan in one call. Planning
+     * reads projections only, so the locked read of each carton is its first read in this transaction and the
+     * re-check in {@link StockPackage#allocate} runs on its current state. Locking the carton - not a row beside it -
+     * is also what serialises a release against a move or a quarantine of the same carton, which lock only the carton.
+     * A carton is given to two orders by none of three layers: the SKU's advisory lock every allocator takes, the
+     * carton's row lock with a refresh, and {@code uk_stock_reservation_live_carton}.</p>
      */
     @Override
     @Transactional(propagation = Propagation.REQUIRED)
@@ -620,18 +622,19 @@ class InventoryServiceImpl implements InventoryService {
             pools.put(reservation.sku(), without(pool, lines));
         }
 
-        Map<StockItemId, List<Planned>> byItem = new TreeMap<>(Comparator.comparing(id -> id.value().toString()));
-        planned.forEach(p -> byItem.computeIfAbsent(p.line().stockItemId(), id -> new ArrayList<>()).add(p));
+        // A carton is planned once: the pool a second line of the SKU draws on has lost what the first took.
+        Map<StockPackageId, Planned> byCarton = new LinkedHashMap<>();
+        planned.forEach(p -> byCarton.put(p.line().stockPackageId(), p));
+        List<StockPackage> cartons = stockPackages.findAllByIdForUpdate(byCarton.keySet());
+        if (cartons.size() != byCarton.size()) {
+            throw new IllegalStateException("A stock package vanished mid-allocation");
+        }
         Map<Integer, StockReservation> made = new TreeMap<>();
-        for (Map.Entry<StockItemId, List<Planned>> entry : byItem.entrySet()) {
-            StockItem locked = repository.findByIdForUpdate(entry.getKey()).orElseThrow(() ->
-                    new IllegalStateException("Stock item %s vanished mid-allocation".formatted(entry.getKey())));
-            for (Planned p : entry.getValue()) {
-                Reservation allocation = locked.allocate(p.from(), allocationRequestId(p.from().id(), entry.getKey()),
-                        now);
-                made.put(p.sequence(), toApiReservation(locked, allocation));
-            }
-            repository.save(locked);
+        for (StockPackage locked : cartons) {
+            Planned p = byCarton.get(locked.id());
+            Reservation allocation = locked.allocate(p.from(), allocationRequestId(p.from().id(), locked.id()), now);
+            made.put(p.sequence(), toApiReservation(locked, allocation));
+            stockPackages.save(locked);
             events.publishEventsOf(locked);
         }
 
@@ -650,7 +653,7 @@ class InventoryServiceImpl implements InventoryService {
     /**
      * {@inheritDoc}
      *
-     * <p>Locks: the SKU, then the short allocation's row and the new rows together, in id order. The new
+     * <p>Locks: the SKU, then the short allocation's carton and the new cartons together, in id order. The new
      * allocations remember the SKU reservation the short one came from, so the lot trace and the order keep one
      * line of descent.</p>
      */
@@ -682,7 +685,7 @@ class InventoryServiceImpl implements InventoryService {
     private List<StockReservation> reallocate(ReallocateStockCommand command, boolean removedCarton) {
         Instant now = clock.instant();
         ReservationId shortId = ReservationId.of(command.reservationId());
-        StockItem view = repository.findIdByReservationId(shortId).flatMap(repository::findById)
+        StockPackage view = stockPackages.findByReservationId(shortId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
                         "No allocation with id " + command.reservationId()));
         Reservation shortHold = view.findReservation(shortId).orElseThrow();
@@ -691,10 +694,10 @@ class InventoryServiceImpl implements InventoryService {
                     "Allocation %s is not order %s's".formatted(command.reservationId(), command.orderId()));
         }
         if (removedCarton) {
-            List<StockReservation> made = repository.findReservedByRequest(command.requestId()).stream()
-                    .flatMap(item -> item.reservations().stream()
+            List<StockReservation> made = stockPackages.findReservedByRequest(command.requestId()).stream()
+                    .flatMap(carton -> carton.reservations().stream()
                             .filter(r -> command.requestId().equals(r.rootRequestId()))
-                            .map(r -> toApiReservation(item, r)))
+                            .map(r -> toApiReservation(carton, r)))
                     .toList();
             if (!made.isEmpty()) {
                 return made;
@@ -705,9 +708,10 @@ class InventoryServiceImpl implements InventoryService {
                         + "carton picked and then removed is replaced").formatted(shortId, shortHold.status()));
             }
         }
-        List<StockReservation> replayed = repository.findWithReservationsForRequest(command.requestId()).stream()
-                .flatMap(item -> item.activeReservationsFor(command.requestId()).stream()
-                        .map(r -> toApiReservation(item, r)))
+        // Read without a lock: a replay only answers, and the lock order is the SKU before any carton.
+        List<StockReservation> replayed = stockPackages.findHoldingRequest(command.requestId()).stream()
+                .flatMap(carton -> carton.activeReservationsFor(command.requestId()).stream()
+                        .map(r -> toApiReservation(carton, r)))
                 .toList();
         if (!replayed.isEmpty()) {
             return replayed;
@@ -715,65 +719,73 @@ class InventoryServiceImpl implements InventoryService {
         policies.lock(view.sku().code());
         // Released and reallocated to whole cartons, or INSUFFICIENT_STOCK leaves everything as it was (4C-4 B1).
         String warehouse = view.location().warehouseCode();
-        // 4B-7: the new bins come out of what other orders do not hold at this warehouse by SKU (20 BR-17). One pool
-        // for both: every pickable carton but the short one's (4C-2 excludes a stock row, no longer a whole bin).
+        // 4B-7: the new cartons come out of what other orders do not hold at this warehouse by SKU (20 BR-17). One
+        // pool for both: every pickable carton but the short one (4C-2: only that carton is in doubt, not its bin).
         // One carton for one carton, of the same count: the order's line was quoted in cartons of it (ADR-0011).
         List<StockAllocator.Candidate> pool = pickableCandidates(view.sku(), warehouse, view.id());
         requireRoomBesideHoldsAt(view.sku(), warehouse, shortHold.unitsPerCarton(), 1, 0, pool);
         List<StockAllocator.AllocationLine> lines = plan(view.sku(), pool, 1, shortHold.unitsPerCarton(), warehouse);
         UUID origin = shortHold.allocatedFrom() != null ? shortHold.allocatedFrom() : shortHold.id().value();
 
-        Set<StockItemId> ids = new java.util.TreeSet<>(Comparator.comparing(id -> id.value().toString()));
+        // The short hold's carton and the new ones, locked together in id order, each once.
+        Set<StockPackageId> ids = new LinkedHashSet<>();
         ids.add(view.id());
-        lines.forEach(line -> ids.add(line.stockItemId()));
-        Map<StockItemId, StockReservation> made = new LinkedHashMap<>();
-        for (StockItemId id : ids) {
-            StockItem locked = repository.findByIdForUpdate(id).orElseThrow();
-            if (id.equals(view.id()) && !removedCarton) {
+        lines.forEach(line -> ids.add(line.stockPackageId()));
+        Map<StockPackageId, StockReservation> made = new LinkedHashMap<>();
+        for (StockPackage locked : stockPackages.findAllByIdForUpdate(ids)) {
+            boolean changed = false;
+            if (locked.id().equals(view.id()) && !removedCarton) {
                 Reservation current = locked.findReservation(shortId).orElseThrow();
                 if (current.status().isActive()) {
                     locked.releaseReservation(shortId, ReleaseReason.SHORT_PICKED, now);
+                    changed = true;
                 } else if (!givenUpWithItsCarton(current, locked)) {
                     throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
                             "Allocation %s is already %s".formatted(shortId, current.status()));
                 }
             }
             for (StockAllocator.AllocationLine line : lines) {
-                if (line.stockItemId().equals(id)) {
+                if (line.stockPackageId().equals(locked.id())) {
                     Reservation allocation = locked.allocate(command.orderId(), origin, command.requestId(),
-                            allocationRequestId(ReservationId.of(command.requestId()), id),
+                            allocationRequestId(ReservationId.of(command.requestId()), locked.id()),
                             shortHold.unitsPerCarton(), now);
-                    made.put(id, toApiReservation(locked, allocation));
+                    made.put(locked.id(), toApiReservation(locked, allocation));
+                    changed = true;
                 }
             }
-            repository.save(locked);
-            events.publishEventsOf(locked);
+            if (changed) {
+                stockPackages.save(locked);
+                events.publishEventsOf(locked);
+            }
+        }
+        if (made.size() != lines.size()) {
+            throw new IllegalStateException("A stock package vanished mid-reallocation");
         }
         log.info("Allocation {} of order {} came up short at {}; reallocated {} unit(s) to {} hold(s)", shortId,
                 command.orderId(), view.location(), shortHold.quantity(), made.size());
-        return lines.stream().map(line -> made.get(line.stockItemId())).toList();
+        return lines.stream().map(line -> made.get(line.stockPackageId())).toList();
     }
 
     /**
      * Whether the short allocation was already given up because its carton left with it: an approved count variance
      * released it ({@code SHORT_PICKED}) while its pick line waited for this reallocation (20 §4.2 step 8, 07 §4.4), and
-     * the carton is empty now - or the manager quarantined the carton the picker reported short (07 §4.4 step 9, 20
+     * the carton is out of stock now - or the manager quarantined the carton the picker reported short (07 §4.4 step 9, 20
      * §4.8), which gave the hold up and left the carton QUARANTINE. A hold given up by an earlier reallocation names a
      * carton still in stock, available, and is refused as before; a replay of that reallocation never gets here (it is
      * answered from its own holds).
      */
-    private static boolean givenUpWithItsCarton(Reservation hold, StockItem row) {
+    private static boolean givenUpWithItsCarton(Reservation hold, StockPackage carton) {
         return hold.status() == ReservationStatus.RELEASED && hold.releaseReason() == ReleaseReason.SHORT_PICKED
-                && (row.onHand().isZero() || row.status() == StockStatus.QUARANTINE);
+                && (!carton.inStock() || carton.stockStatus() == StockStatus.QUARANTINE);
     }
 
     /**
-     * Sellable stock of the SKU on pickable, usable locations of one warehouse (module 06 BR-12), never at
+     * Free cartons of the SKU on pickable, usable locations of one warehouse (module 06 BR-12), never the carton
      * {@code excluded}; read as projections, so nothing lands in the persistence context before the locked reads.
      * The one definition: {@link PickableStock}.
      */
-    private List<StockAllocator.Candidate> pickableCandidates(Sku sku, String warehouse, StockItemId excluded) {
-        return new PickableStock(repository, locations, cycleCounts).candidates(sku, warehouse, excluded);
+    private List<StockAllocator.Candidate> pickableCandidates(Sku sku, String warehouse, StockPackageId excluded) {
+        return new PickableStock(stockPackages, locations, cycleCounts).candidates(sku, warehouse, excluded);
     }
 
     /**
@@ -840,23 +852,28 @@ class InventoryServiceImpl implements InventoryService {
     /** The pool after {@code taken}: what a second line of the same SKU may still draw on. A carton goes whole. */
     private static List<StockAllocator.Candidate> without(List<StockAllocator.Candidate> pool,
                                                           List<StockAllocator.AllocationLine> taken) {
-        Set<StockItemId> used = taken.stream().map(StockAllocator.AllocationLine::stockItemId)
+        Set<StockPackageId> used = taken.stream().map(StockAllocator.AllocationLine::stockPackageId)
                 .collect(Collectors.toSet());
-        return pool.stream().filter(c -> !used.contains(c.stockItemId())).toList();
+        return pool.stream().filter(c -> !used.contains(c.stockPackageId())).toList();
     }
 
-    /** Same reservation and stock item, same key: allocating again after a retry finds the first allocation. */
-    private static UUID allocationRequestId(ReservationId from, StockItemId stockItemId) {
-        return UUID.nameUUIDFromBytes(("allocation:" + from.value() + ":" + stockItemId)
+    /**
+     * Same reservation and carton, same key: allocating again after a retry finds the first allocation. Named after
+     * the carton's id since V20261230000600 (it was its stock row's): an allocation made before is not re-derived, and
+     * a retry of it is answered by its SKU reservation being ALLOCATED already.
+     */
+    private static UUID allocationRequestId(ReservationId from, StockPackageId stockPackageId) {
+        return UUID.nameUUIDFromBytes(("allocation:" + from.value() + ":" + stockPackageId)
                 .getBytes(StandardCharsets.UTF_8));
     }
 
-    private static StockReservation toApiReservation(StockItem item, Reservation reservation) {
+    /** {@code StockReservation.stockItemId} carries the carton's id: the record keeps its shape (ADR-0011). */
+    private static StockReservation toApiReservation(StockPackage carton, Reservation reservation) {
         return new StockReservation(
                 reservation.id().value(),
-                item.id().value(),
-                item.location().code(),
-                item.lotNumber(),
+                carton.id().value(),
+                carton.location().code(),
+                carton.lotNumber(),
                 // The reservation's own quantity, never the plan's: on a replay the two can differ.
                 reservation.quantity().value());
     }
@@ -867,7 +884,7 @@ class InventoryServiceImpl implements InventoryService {
         List<OrderHold> holds = new ArrayList<>();
         skuReservations.findHeldForOrder(orderId)
                 .forEach(r -> holds.add(new OrderHold(r.sku().code(), null, r.quantity().value())));
-        repository.findHeldForOrder(orderId)
+        stockPackages.findHeldForOrder(orderId)
                 .forEach(held -> holds.add(new OrderHold(held.sku(), held.locationCode(), held.quantity())));
         return holds;
     }
@@ -876,7 +893,7 @@ class InventoryServiceImpl implements InventoryService {
     @Transactional(readOnly = true)
     public List<com.stockflow.inventory.api.HoldView> holds(Collection<UUID> reservationIds) {
         List<com.stockflow.inventory.api.HoldView> views = new ArrayList<>(
-                repository.findHolds(Set.copyOf(reservationIds)).stream()
+                stockPackages.findHolds(Set.copyOf(reservationIds)).stream()
                 .map(hold -> new com.stockflow.inventory.api.HoldView(hold.reservationId(), hold.sku(),
                         hold.locationCode(), hold.lotNumber(), hold.quantity(),
                         com.stockflow.inventory.api.HoldView.Status.valueOf(hold.status().name()), null,
@@ -892,7 +909,7 @@ class InventoryServiceImpl implements InventoryService {
     /**
      * {@inheritDoc}
      *
-     * <p>A SKU reservation is released as itself; a hold on a stock row frees its units on that row. A print line's
+     * <p>A SKU reservation is released as itself; an allocation is released on its carton, which is free again. A print line's
      * goods are released like any other: they are the customer's goods in stock, printed outside the system.</p>
      */
     @Override
@@ -902,10 +919,10 @@ class InventoryServiceImpl implements InventoryService {
             releaseSkuReservation(ReservationId.of(reservationId), releaseReason);
             return;
         }
-        StockItem item = holderOf(ReservationId.of(reservationId));
-        item.releaseReservation(ReservationId.of(reservationId), releaseReason, clock.instant());
-        repository.save(item);
-        events.publishEventsOf(item);
+        StockPackage carton = holderOf(ReservationId.of(reservationId));
+        carton.releaseReservation(ReservationId.of(reservationId), releaseReason, clock.instant());
+        stockPackages.save(carton);
+        events.publishEventsOf(carton);
 
         log.info("Released reservation {} ({})", reservationId, releaseReason);
     }
@@ -930,29 +947,18 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     /**
-     * The stock item holding {@code reservationId}, locked. A warehouse-bound caller reaches only
-     * holds in their own warehouses (BR-SEC-002); the system — an event listener — is not limited.
+     * The carton holding {@code reservationId}, locked. A warehouse-bound caller reaches only
+     * holds in their own warehouses (BR-SEC-002); the system — an event listener — is not limited. The carton's row
+     * lock only, no SKU lock: a release frees stock and promises none, and an order's holds are released one by one,
+     * in no order of SKU.
      */
-    private StockItem holderOf(ReservationId reservationId) {
-        StockItem item = repository.findByReservationIdForUpdate(reservationId)
+    private StockPackage holderOf(ReservationId reservationId) {
+        StockPackage carton = stockPackages.findIdByReservationId(reservationId)
+                .flatMap(stockPackages::findByIdForUpdate)
                 .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
                         "No reservation with id " + reservationId.value()));
-        WarehouseScope.requireLocation(item.location().code());
-        return item;
-    }
-
-    /**
-     * Same inputs, same id, every time.
-     *
-     * <p>Type 3 (name-based) UUID semantics, derived from the caller's request id and the stock
-     * item it applies to. Two properties matter: it differs per stock item, so the unique
-     * constraint on {@code request_id} is not violated when one line spans several lots; and it is
-     * stable across processes and restarts, so a retried request is recognised as a replay rather
-     * than held a second time.</p>
-     */
-    private static UUID perStockItemRequestId(UUID requestId, StockItemId stockItemId) {
-        return UUID.nameUUIDFromBytes((requestId + ":" + stockItemId)
-                .getBytes(StandardCharsets.UTF_8));
+        WarehouseScope.requireLocation(carton.location().code());
+        return carton;
     }
 
     /**
@@ -971,15 +977,16 @@ class InventoryServiceImpl implements InventoryService {
         }
     }
 
-    private StockAvailability toAvailability(StockItem item) {
+    /** In units, as the record always answered; {@code stockItemId} carries the carton's id (ADR-0011). */
+    private StockAvailability toAvailability(StockPackage carton) {
         return new StockAvailability(
-                item.id().value(),
-                item.sku().code(),
-                item.location().code(),
-                item.lotNumber(),
-                item.onHand().value(),
-                item.reserved().value(),
+                carton.id().value(),
+                carton.sku().code(),
+                carton.location().code(),
+                carton.lotNumber(),
+                carton.unitsInStock(),
+                carton.unitsHeld(),
                 0,
-                item.available().value());
+                carton.unitsAvailable());
     }
 }

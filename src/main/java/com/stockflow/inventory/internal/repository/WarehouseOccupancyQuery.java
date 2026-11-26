@@ -65,15 +65,13 @@ public class WarehouseOccupancyQuery {
                 select p.location_code,
                        count(*) as cartons,
                        count(distinct p.inventory_item_id) as skus,
-                       coalesce(sum(s.on_hand), 0) as units,
+                       coalesce(sum(p.nominal_qty), 0) as units,
                        count(*) filter (where u.length_cm is null or u.width_cm is null or u.height_cm is null)
                            as without_size,
                        coalesce(sum(u.length_cm * u.width_cm * u.height_cm / 1000000), 0) as volume_m3,
                        coalesce(sum(u.weight_kg), 0) as weight_kg
                   from inventory.stock_package p
                   join inventory.uom_conversions u on u.id = p.uom_conversion_id
-                  left join lateral (select sum(i.on_hand) as on_hand from inventory.stock_item i
-                                      where i.stock_package_id = p.id) s on true
                  where p.status = 'IN_STOCK'
                    and p.location_code like ?
                  group by p.location_code
@@ -95,7 +93,7 @@ public class WarehouseOccupancyQuery {
     }
 
     /**
-     * The units of each SKU held at the warehouse by a hold of its own - {@code HELD}, tied to no stock row, taken at
+     * The units of each SKU held at the warehouse by a hold of its own - {@code HELD}, on no carton yet, taken at
      * this warehouse (4B-7: {@code warehouse_code}). A hold of before 4B-7 names no warehouse and is not counted.
      */
     public Map<String, Long> skuHoldUnits(String warehousePrefix) {
@@ -103,7 +101,7 @@ public class WarehouseOccupancyQuery {
         jdbc.query("""
                 select r.sku, sum(r.cartons * r.units_per_carton) as units
                   from inventory.stock_reservation r
-                 where r.status = 'HELD' and r.stock_item_id is null and r.warehouse_code = ?
+                 where r.status = 'HELD' and r.stock_package_id is null and r.warehouse_code = ?
                  group by r.sku""",
                 rs -> {
                     units.put(rs.getString("sku"), rs.getLong("units"));
@@ -112,20 +110,17 @@ public class WarehouseOccupancyQuery {
     }
 
     /**
-     * The volume of the cartons allocated at the warehouse and not yet consumed: each carton once, though its row may
-     * carry more than one allocation. A carton without a size adds nothing.
+     * The volume of the cartons allocated at the warehouse and not yet consumed: the cartons a live allocation names,
+     * each of which has at most one ({@code uk_stock_reservation_live_carton}). A carton without a size adds nothing.
      */
     public BigDecimal allocatedVolumeM3(String warehousePrefix) {
         return m3(jdbc.queryForObject("""
                 select coalesce(sum(u.length_cm * u.width_cm * u.height_cm / 1000000), 0)
-                  from (select distinct s.stock_package_id
-                          from inventory.stock_reservation r
-                          join inventory.stock_item s on s.id = r.stock_item_id
-                         where r.status = 'HELD'
-                           and s.stock_package_id is not null
-                           and s.location_code like ?) held
-                  join inventory.stock_package p on p.id = held.stock_package_id
-                  join inventory.uom_conversions u on u.id = p.uom_conversion_id""",
+                  from inventory.stock_reservation r
+                  join inventory.stock_package p on p.id = r.stock_package_id
+                  join inventory.uom_conversions u on u.id = p.uom_conversion_id
+                 where r.status = 'HELD'
+                   and p.location_code like ?""",
                 BigDecimal.class, warehousePrefix + "-%"));
     }
 

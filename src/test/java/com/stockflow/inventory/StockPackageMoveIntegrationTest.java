@@ -33,8 +33,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * SCRUM-473: a carton received into stock moves and is reclassified whole, keeping its LPN, its stock row and its
- * unopened state. Commits like production: the carton's rows are checked against it at commit (V20261020000200).
+ * SCRUM-473: a carton received into stock moves and is reclassified whole, keeping its LPN, its lot and its
+ * unopened state. Commits like production, so the deferred rules of the carton run at commit.
  * Each test counts a line of 2000 as two cartons of the standard 1000 and receives it, then works on the first
  * carton.
  */
@@ -96,17 +96,14 @@ class StockPackageMoveIntegrationTest {
     }
 
     private String rowState() {
-        return jdbc.queryForObject("select location_code || ':' || status || ':' || on_hand"
-                + " from inventory.stock_item where stock_package_id = ?", String.class, cartonId);
+        return jdbc.queryForObject("select location_code || ':' || stock_status || ':' || nominal_qty"
+                + " from inventory.stock_package where id = ?", String.class, cartonId);
     }
 
     @Test
-    @DisplayName("a move takes the carton and its row along: same row, one MOVE line naming the carton")
+    @DisplayName("a move takes the carton whole, stock status and all: one MOVE line naming the carton")
     void moveTakesTheRowsAlong() {
         receiveCartons();
-        UUID row = jdbc.queryForObject("select id from inventory.stock_item where stock_package_id = ?", UUID.class,
-                cartonId);
-
         StockPackageView moved = inventory.moveStockPackages(move(BIN)).getFirst();
 
         assertThat(moved.lpn()).isEqualTo(lpn);
@@ -114,8 +111,6 @@ class StockPackageMoveIntegrationTest {
         assertThat(moved.quantity()).isEqualTo(1000);
         assertThat(cartonState()).isEqualTo(BIN + ":IN_STOCK");
         assertThat(rowState()).isEqualTo(BIN + ":INBOUND:1000");
-        assertThat(jdbc.queryForObject("select id from inventory.stock_item where stock_package_id = ?", UUID.class,
-                cartonId)).as("the row is the same one").isEqualTo(row);
         assertThat(jdbc.query("""
                 select m.stock_package_id, p.nominal_qty as quantity
                   from inventory.stock_movement m join inventory.stock_package p on p.id = m.stock_package_id
@@ -184,7 +179,7 @@ class StockPackageMoveIntegrationTest {
     }
 
     @Test
-    @DisplayName("both cartons move in one call, each with its row and one MOVE line naming it")
+    @DisplayName("both cartons move in one call, each with one MOVE line naming it")
     void severalCartonsInOneCall() {
         receiveCartons();
         List<String> both = jdbc.queryForList("select lpn from inventory.stock_package where goods_receipt_line_id = ?"

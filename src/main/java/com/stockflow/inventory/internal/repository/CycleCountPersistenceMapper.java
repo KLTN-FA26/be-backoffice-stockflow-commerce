@@ -15,7 +15,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * Hand-written for the reason {@link StockItemPersistenceMapper} gives: rehydration goes through the domain
+ * Hand-written for the reason {@code StockPackageRepositoryAdapter} gives: rehydration goes through the domain
  * constructors so the invariants are re-checked, and the slot is a value object over four columns.
  */
 final class CycleCountPersistenceMapper {

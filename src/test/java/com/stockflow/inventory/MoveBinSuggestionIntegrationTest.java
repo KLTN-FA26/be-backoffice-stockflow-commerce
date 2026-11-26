@@ -92,13 +92,8 @@ class MoveBinSuggestionIntegrationTest {
     @AfterEach
     void removeCartons() {
         tx.executeWithoutResult(s -> {
-            jdbc.update("update inventory.stock_item set location_code = ? where sku = ? and stock_package_id in"
-                    + " (select stock_package_id from inventory.stock_movement where sku = ?)", OVERFLOW, sku, sku);
             jdbc.update("update inventory.stock_package set location_code = ? where id in"
                     + " (select stock_package_id from inventory.stock_movement where sku = ?)", OVERFLOW, sku);
-            jdbc.update("delete from inventory.stock_item where sku = ? and stock_package_id not in"
-                    + " (select stock_package_id from inventory.stock_movement where sku = ?"
-                    + "  and stock_package_id is not null)", sku, sku);
             jdbc.update("delete from inventory.stock_package where inventory_item_id in"
                     + " (select id from inventory.inventory_items where sku = ?) and id not in"
                     + " (select stock_package_id from inventory.stock_movement where sku = ?"

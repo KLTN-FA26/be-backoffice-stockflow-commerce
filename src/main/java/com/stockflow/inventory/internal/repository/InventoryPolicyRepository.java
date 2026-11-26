@@ -142,10 +142,13 @@ public class InventoryPolicyRepository {
         return specs;
     }
 
-    /** Whether any stock of the SKU is held anywhere, in any status. */
+    /** Whether any carton of the SKU is in stock anywhere, in any stock status. */
     public boolean holdsStock(String sku) {
         return Boolean.TRUE.equals(jdbc.queryForObject(
-                "select exists(select 1 from inventory.stock_item where sku = ? and (on_hand > 0 or reserved > 0))",
+                """
+                select exists(select 1 from inventory.stock_package p
+                                join inventory.inventory_items i on i.id = p.inventory_item_id
+                               where i.sku = ? and p.status = 'IN_STOCK')""",
                 Boolean.class, sku));
     }
 

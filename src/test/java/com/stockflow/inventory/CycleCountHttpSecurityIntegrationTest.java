@@ -402,16 +402,16 @@ class CycleCountHttpSecurityIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("ADJUSTMENT_SELF_APPROVAL"));
         assertThat(jdbc.queryForObject("select status from inventory.stock_adjustment where id = ?", String.class,
                 adjustment)).isEqualTo("PENDING_APPROVAL");
-        assertThat(jdbc.queryForObject("select on_hand from inventory.stock_item where sku = ?", Integer.class, sku))
-                .as("nothing posted").isEqualTo(10);
+        assertThat(jdbc.queryForObject("select stock_status from inventory.stock_package where id = ?", String.class,
+                carton.id())).as("nothing posted").isEqualTo("AVAILABLE");
         assertThat(jdbc.queryForObject("select status from inventory.stock_package where id = ?", String.class,
                 carton.id())).isEqualTo("IN_STOCK");
 
         mvc.asRole(Role.WAREHOUSE_MANAGER, otherManager, post(approval))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("POSTED"));
-        assertThat(jdbc.queryForObject("select on_hand from inventory.stock_item where sku = ?", Integer.class, sku))
-                .as("the carton written off").isZero();
+        assertThat(jdbc.queryForObject("select stock_status from inventory.stock_package where id = ?", String.class,
+                carton.id())).as("the carton written off: out of stock, no stock status").isNull();
         assertThat(jdbc.queryForObject("select status from inventory.stock_package where id = ?", String.class,
                 carton.id())).isEqualTo("LOST");
     }

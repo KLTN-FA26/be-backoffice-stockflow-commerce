@@ -258,8 +258,9 @@ class ReturnsRound3IntegrationTest {
 
     private Map<String, Object> carton(String lpn) {
         return jdbc.queryForMap("""
-                SELECT p.status, p.return_ownership, p.return_request_id, p.custody_choice, s.status AS stock,
-                       s.on_hand FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
+                SELECT p.status, p.return_ownership, p.return_request_id, p.custody_choice, p.stock_status AS stock,
+                       CASE WHEN p.status = 'IN_STOCK' THEN p.nominal_qty ELSE 0 END AS on_hand
+                  FROM inventory.stock_package p
                  WHERE p.lpn = ?""", lpn);
     }
 

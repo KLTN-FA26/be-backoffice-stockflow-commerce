@@ -5,7 +5,10 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import java.time.Instant;
 import java.util.UUID;
 
-/** Quantities are in pieces and again in cartons (kltn-docs 01 BR-09). A stock row is the contents of one carton. */
+/**
+ * Quantities are in pieces and again in cartons (kltn-docs 01 BR-09). A row is one carton: {@code stockItemId} carries
+ * its id and the quantities are its count, derived (ADR-0011). {@code status} is null for a carton out of stock.
+ */
 @Schema(name = "WarehouseStockItem", description = "One stock row of a warehouse, in any status (SCRUM-462)")
 public record WarehouseStockItemResponse(
         UUID stockItemId,

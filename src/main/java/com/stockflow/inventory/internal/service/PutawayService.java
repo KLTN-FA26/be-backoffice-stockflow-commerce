@@ -22,8 +22,6 @@ import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.repository.BinOccupancyQuery;
-import com.stockflow.inventory.internal.domain.StockItem;
-import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.warehouse.api.PutawayCandidate;
 import com.stockflow.warehouse.api.PutawaySource;
 import com.stockflow.warehouse.api.PutawayTaskView;
@@ -55,7 +53,7 @@ import java.util.stream.Collectors;
  * <p>A task has one of two sources (kltn-docs 05 BR-01): a carton of a confirmed receipt, INBOUND at the receiving
  * area, or a carton a warehouse manager released from quarantine (team plan 4D-1), QUARANTINE at the quarantine area;
  * putting either away makes it AVAILABLE (05 BR-14). A release names no receipt line, so its lot is read from the
- * carton's own rows, and finishing it announces no receipt's putaway - {@link PutawayCompleted} is for the receipt's
+ * carton itself, and finishing it announces no receipt's putaway - {@link PutawayCompleted} is for the receipt's
  * closing - but {@code QuarantineStockReleased}: the carton is stock to promise again.</p>
  *
  * <p>Every task is one carton, put away whole (kltn-docs 05 BR-08; team plan 4C-2). Where a task's goods stand now
@@ -72,7 +70,7 @@ import java.util.stream.Collectors;
  *
  * <p>Lock order of {@link #confirm}: task row, then the target bin's advisory lock (taken before the bin's occupancy
  * is read: occupancy is bin-wide across SKUs, so only a lock on the bin serialises two putaways of different SKUs
- * into it), then the SKU advisory lock, the carton row and the stock rows by id, as in the move itself.</p>
+ * into it), then the SKU advisory lock and the carton row, as in the move itself.</p>
  *
  * <p>Suggestions are computed on {@link #get} only, from the bins and the stock of this moment, and never stored: a
  * suggestion is stale as soon as someone else puts goods away.</p>
@@ -96,15 +94,13 @@ public class PutawayService {
     private final BinOccupancyQuery occupancy;
     private final StockOperations operations;
     private final ApplicationEventPublisher events;
-    private final StockItemRepository stockItems;
     private final PutawayTrips trips;
     private final BinSuggestionInputs inputs;
 
     public PutawayService(PutawayTasks tasks, WarehouseService warehouses, StockPackageRepository stockPackages,
                           StockMovementLog ledger, BinOccupancyQuery occupancy,
                           StockOperations operations, ApplicationEventPublisher events,
-                          StockItemRepository stockItems, PutawayTrips trips, BinSuggestionInputs inputs) {
-        this.stockItems = stockItems;
+                          PutawayTrips trips, BinSuggestionInputs inputs) {
         this.trips = trips;
         this.inputs = inputs;
         this.tasks = tasks;
@@ -428,14 +424,12 @@ public class PutawayService {
 
     /**
      * The lot of a task's goods: its receipt line's, or - for a quarantine release, which has no line - that of the
-     * carton's own rows (a carton holds one lot).
+     * carton itself (a carton is of one lot).
      */
     private String lotOf(PutawayTaskView task, Reads reads) {
         if (task.goodsReceiptLineId() == null) {
             return reads.cartonLot.computeIfAbsent(task.stockPackageId(),
-                    carton -> stockItems.findIdsInStockPackage(new StockPackageId(carton)).stream()
-                            .map(stockItems::findById).flatMap(Optional::stream)
-                            .map(StockItem::lotNumber).filter(java.util.Objects::nonNull).findFirst())
+                    carton -> stockPackages.findById(new StockPackageId(carton)).map(StockPackage::lotNumber))
                     .orElse(null);
         }
         return receiptLine(task.goodsReceiptLineId(), reads).map(StockMovement::lotNumber).orElse(null);

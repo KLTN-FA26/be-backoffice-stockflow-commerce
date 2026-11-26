@@ -215,11 +215,9 @@ class CountVarianceOfShortCartonIntegrationTest {
 
     private Map<String, Object> cartonState(UUID carton) {
         return jdbc.queryForMap("""
-                SELECT p.status, (p.closed_at IS NOT NULL) AS closed,
-                       (SELECT COALESCE(SUM(s.on_hand), 0) FROM inventory.stock_item s WHERE s.stock_package_id = p.id)
-                           AS on_hand,
-                       (SELECT COUNT(*) FROM inventory.stock_reservation r JOIN inventory.stock_item s
-                            ON s.id = r.stock_item_id WHERE s.stock_package_id = p.id AND r.status = 'HELD') AS live_holds
+                SELECT p.status, (p.closed_at IS NOT NULL) AS closed, (p.stock_status IS NOT NULL) AS in_stock,
+                       (SELECT COUNT(*) FROM inventory.stock_reservation r
+                         WHERE r.stock_package_id = p.id AND r.status = 'HELD') AS live_holds
                   FROM inventory.stock_package p WHERE p.id = ?""", carton);
     }
 
@@ -229,9 +227,8 @@ class CountVarianceOfShortCartonIntegrationTest {
 
     private List<Map<String, Object>> liveHolds(UUID order) {
         return jdbc.queryForList("""
-                SELECT r.id, r.cartons * r.units_per_carton AS quantity, s.stock_package_id FROM inventory.stock_reservation r
-                  JOIN inventory.stock_item s ON s.id = r.stock_item_id
-                 WHERE r.order_id = ? AND r.status = 'HELD'""", order);
+                SELECT r.id, r.cartons * r.units_per_carton AS quantity, r.stock_package_id FROM inventory.stock_reservation r
+                 WHERE r.order_id = ? AND r.stock_package_id IS NOT NULL AND r.status = 'HELD'""", order);
     }
 
     private List<UUID> holdsRecordedOnTheOrder(UUID order) {
@@ -264,7 +261,7 @@ class CountVarianceOfShortCartonIntegrationTest {
     /** What must be true at the end, whichever order the two steps came in. */
     private void assertSettled(Scenario s) {
         assertThat(cartonState(s.carton())).as("the carton is written off whole and LOST")
-                .containsEntry("status", "LOST").containsEntry("closed", true).containsEntry("on_hand", 0L)
+                .containsEntry("status", "LOST").containsEntry("closed", true).containsEntry("in_stock", false)
                 .containsEntry("live_holds", 0L);
         assertThat(ledgerOf(s.variance().adjustmentId())).as("one ADJUSTMENT line, leaving the carton").singleElement()
                 .satisfies(row -> {
@@ -305,7 +302,7 @@ class CountVarianceOfShortCartonIntegrationTest {
         StockAdjustmentSummary posted = approve(s);
 
         assertThat(posted.status()).isEqualTo(StockAdjustmentStatus.POSTED);
-        assertThat(cartonState(s.carton())).containsEntry("status", "LOST").containsEntry("on_hand", 0L)
+        assertThat(cartonState(s.carton())).containsEntry("status", "LOST").containsEntry("in_stock", false)
                 .containsEntry("live_holds", 0L);
         assertThat(holdState(s.hold())).containsEntry("status", "RELEASED").containsEntry("release_reason",
                 "SHORT_PICKED");
@@ -377,7 +374,7 @@ class CountVarianceOfShortCartonIntegrationTest {
 
         assertThat(quarantined.locationCode()).isEqualTo("HCM-QC01");
         assertThat(jdbc.queryForObject("""
-                SELECT string_agg(DISTINCT s.status, ',') FROM inventory.stock_item s WHERE s.stock_package_id = ?""",
+                SELECT stock_status FROM inventory.stock_package WHERE id = ?""",
                 String.class, carton)).isEqualTo("QUARANTINE");
         assertThat(holdState(hold)).containsEntry("status", "RELEASED").containsEntry("release_reason", "SHORT_PICKED");
         assertThat(jdbc.queryForObject("SELECT status FROM inventory.cycle_count WHERE id = ?", String.class, count))
@@ -434,7 +431,7 @@ class CountVarianceOfShortCartonIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT location_code FROM inventory.stock_package WHERE id = ?", String.class,
                 carton)).isEqualTo("HCM-QC01");
         assertThat(jdbc.queryForObject("""
-                SELECT string_agg(DISTINCT s.status, ',') FROM inventory.stock_item s WHERE s.stock_package_id = ?""",
+                SELECT stock_status FROM inventory.stock_package WHERE id = ?""",
                 String.class, carton)).isEqualTo("QUARANTINE");
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM inventory.stock_movement WHERE movement_type = 'STATUS_CHANGE'
@@ -486,8 +483,8 @@ class CountVarianceOfShortCartonIntegrationTest {
                         .orderId(), HCM, coordinator).orderId();
         placed.add(order);
         String heldLpn = jdbc.queryForObject("""
-                SELECT p.lpn FROM inventory.stock_reservation r JOIN inventory.stock_item s ON s.id = r.stock_item_id
-                  JOIN inventory.stock_package p ON p.id = s.stock_package_id
+                SELECT p.lpn FROM inventory.stock_reservation r
+                  JOIN inventory.stock_package p ON p.id = r.stock_package_id
                  WHERE r.order_id = ? AND r.status = 'HELD' LIMIT 1""", String.class, order);
 
         Throwable refused = org.assertj.core.api.Assertions.catchThrowable(() -> WithCurrentUser.call(TestUsers.admin(),
@@ -579,7 +576,7 @@ class CountVarianceOfShortCartonIntegrationTest {
         awaitHold(order);
         OrderSummary held = orders.findById(order).orElseThrow();
         assertThat(held.lifecycle().holdReason()).isEqualTo(HoldReason.INVENTORY);
-        assertThat(cartonState(carton)).containsEntry("status", "LOST").containsEntry("on_hand", 0L)
+        assertThat(cartonState(carton)).containsEntry("status", "LOST").containsEntry("in_stock", false)
                 .containsEntry("live_holds", 0L);
         assertThat(holdState(s.hold())).containsEntry("status", "RELEASED").containsEntry("release_reason",
                 "SHORT_PICKED");
@@ -647,14 +644,14 @@ class CountVarianceOfShortCartonIntegrationTest {
         confirmedOrders.ship(order, HCM);
         assertThat(liveHolds(order)).as("no allocation on a carton before the release").isEmpty();
         UUID carton = jdbc.queryForObject("""
-                SELECT p.id FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
-                 WHERE s.sku = ? AND p.status = 'IN_STOCK' ORDER BY p.lpn LIMIT 1""", UUID.class, cup.code());
+                SELECT p.id FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+                 WHERE i.sku = ? AND p.status = 'IN_STOCK' ORDER BY p.lpn LIMIT 1""", UUID.class, cup.code());
         StockAdjustmentSummary variance = manualCountMisses(carton);
 
         assertThat(WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> operations.approve(
                 variance.adjustmentId(), approver)).status()).isEqualTo(StockAdjustmentStatus.POSTED);
 
-        assertThat(cartonState(carton)).containsEntry("status", "LOST").containsEntry("on_hand", 0L);
+        assertThat(cartonState(carton)).containsEntry("status", "LOST").containsEntry("in_stock", false);
         assertThat(ledgerOf(variance.adjustmentId())).hasSize(1);
         assertThat(orders.findById(order).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
     }
@@ -665,21 +662,23 @@ class CountVarianceOfShortCartonIntegrationTest {
     private int heldBySku(UUID order) {
         return jdbc.queryForObject("""
                 SELECT COALESCE(SUM(cartons * units_per_carton), 0) FROM inventory.stock_reservation
-                 WHERE order_id = ? AND stock_item_id IS NULL AND status = 'HELD'""", Integer.class, order);
+                 WHERE order_id = ? AND stock_package_id IS NULL AND status = 'HELD'""", Integer.class, order);
     }
 
     private UUID freeCarton() {
         return jdbc.queryForObject("""
-                SELECT p.id FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
-                 WHERE s.sku = ? AND p.status = 'IN_STOCK' AND s.reserved = 0 ORDER BY p.lpn LIMIT 1""", UUID.class,
+                SELECT p.id FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+                 WHERE i.sku = ? AND p.status = 'IN_STOCK' AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation r
+                        WHERE r.stock_package_id = p.id AND r.status = 'HELD') ORDER BY p.lpn LIMIT 1""", UUID.class,
                 cup.code());
     }
 
     /** {@code n} cartons of the SKU nothing holds. */
     private List<UUID> freeCartons(int n) {
         return jdbc.queryForList("""
-                SELECT p.id FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
-                 WHERE s.sku = ? AND p.status = 'IN_STOCK' AND s.reserved = 0 ORDER BY p.lpn LIMIT ?""", UUID.class,
+                SELECT p.id FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+                 WHERE i.sku = ? AND p.status = 'IN_STOCK' AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation r
+                        WHERE r.stock_package_id = p.id AND r.status = 'HELD') ORDER BY p.lpn LIMIT ?""", UUID.class,
                 cup.code(), n);
     }
 
@@ -703,7 +702,7 @@ class CountVarianceOfShortCartonIntegrationTest {
         confirmedOrders.ship(order, HCM);
         assertThat(heldBySku(order)).as("the five cartons of HCM, held by SKU").isEqualTo(10);
         UUID first = jdbc.queryForObject("""
-                SELECT id FROM inventory.stock_reservation WHERE order_id = ? AND stock_item_id IS NULL
+                SELECT id FROM inventory.stock_reservation WHERE order_id = ? AND stock_package_id IS NULL
                    AND status = 'HELD'""", UUID.class, order);
         StockAdjustmentSummary variance = manualCountMisses(freeCarton());
 
@@ -715,7 +714,7 @@ class CountVarianceOfShortCartonIntegrationTest {
         assertThat(holdState(first)).containsEntry("status", "RELEASED").containsEntry("release_reason",
                 "SHORT_PICKED");
         UUID kept = jdbc.queryForObject("""
-                SELECT id FROM inventory.stock_reservation WHERE order_id = ? AND stock_item_id IS NULL
+                SELECT id FROM inventory.stock_reservation WHERE order_id = ? AND stock_package_id IS NULL
                    AND status = 'HELD'""", UUID.class, order);
         assertThat(jdbc.queryForObject("SELECT warehouse_code FROM inventory.stock_reservation WHERE id = ?",
                 String.class, kept)).isEqualTo("HCM");
@@ -752,7 +751,7 @@ class CountVarianceOfShortCartonIntegrationTest {
         awaitRecomputed();
         assertThat(heldBySku(order)).isEqualTo(6);
         assertThat(jdbc.queryForObject("""
-                SELECT COUNT(*) FROM inventory.stock_reservation WHERE order_id = ? AND stock_item_id IS NULL
+                SELECT COUNT(*) FROM inventory.stock_reservation WHERE order_id = ? AND stock_package_id IS NULL
                    AND status <> 'HELD'""", Integer.class, order)).isZero();
     }
 

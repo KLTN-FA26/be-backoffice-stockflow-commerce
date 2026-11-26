@@ -89,7 +89,7 @@ class StockBrowsingImpl implements StockBrowsing {
                 && query.sort().strip().toLowerCase(Locale.ROOT).startsWith("onhand") ? null : query.sort();
         var page = search.stock(criteria, Pages.of(query.page(), query.size(), STOCK_SORT.parse(sort)));
         Set<UUID> held = visibility.hidesCountedSlots()
-                ? underCount.stockItemsUnderCount(page.getContent().stream().map(StockBrowseSearch.StockRow::stockItemId)
+                ? underCount.cartonsUnderCount(page.getContent().stream().map(StockBrowseSearch.StockRow::stockItemId)
                         .toList())
                 : Set.of();
         // One read for the page's SKUs: the carton each SKU is counted in (kltn-docs 01 BR-09).
@@ -105,8 +105,8 @@ class StockBrowsingImpl implements StockBrowsing {
     }
 
     @Override
-    public Set<UUID> underCount(Collection<UUID> stockItemIds) {
-        return underCount.stockItemsUnderCount(stockItemIds);
+    public Set<UUID> underCount(Collection<UUID> stockPackageIds) {
+        return underCount.cartonsUnderCount(stockPackageIds);
     }
 
     private static int available(StockBrowseSearch.StockRow row) {

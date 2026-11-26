@@ -148,7 +148,7 @@ class LooseStockToCartonsIntegrationTest {
             assertThat(carton.has("unopened")).as("%s: the flag is gone (4C-3)", lpn).isFalse();
             assertThat(absent(carton.path("goodsReceiptLineId"))).as("%s was made in the warehouse", lpn).isTrue();
 
-            // The LPN a person scans finds the same carton, with its one stock row: the units, their lot and status.
+            // The LPN a person scans finds the same carton, which is the stock: its units, their lot and status.
             JsonNode detail = data(get("/api/v1/inventory/stock-packages/{lpn}", lpn.toLowerCase()));
             assertThat(detail.path("lpn").asText()).isEqualTo(lpn);
             assertThat(detail.path("sku").asText()).as(lpn).isEqualTo(sku);
@@ -177,7 +177,7 @@ class LooseStockToCartonsIntegrationTest {
 
     @Test
     @DisplayName("where the demo stock stands, every unit is in a sealed carton: no opened carton, nothing loose, and"
-            + " every stock row carries a lot")
+            + " every carton carries a lot")
     void nothingIsLooseOrOpened() throws Exception {
         assertThat(locationLine(STOCKED_BIN, STOCKED))
                 .isEqualTo("UNTRACED/AVAILABLE whole 25 (25000) opened 0 (0) loose 0 = 25000");

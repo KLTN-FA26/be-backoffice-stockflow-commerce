@@ -11,14 +11,10 @@ import com.stockflow.inventory.consumption.StagedLine;
 import com.stockflow.inventory.consumption.StagedPick;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
-import com.stockflow.inventory.internal.domain.Quantity;
 import com.stockflow.inventory.internal.domain.ReleaseReason;
 import com.stockflow.inventory.internal.domain.Reservation;
 import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.ReservationStatus;
-import com.stockflow.inventory.internal.domain.StockItem;
-import com.stockflow.inventory.internal.domain.StockItemId;
-import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovement;
 import com.stockflow.inventory.internal.domain.StockMovementLog;
 import com.stockflow.inventory.internal.domain.StockPackage;
@@ -38,7 +34,9 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -52,7 +50,9 @@ import static org.mockito.Mockito.when;
 
 /**
  * SCRUM-275: the in-process deduction of a pick line and the put-back of a cancelled order, without a
- * database — the ledger is an in-memory list, the stock rows are mocks handing out real aggregates.
+ * database — the ledger is an in-memory list, the carton repository a mock over a map handing out real aggregates.
+ * The carton is the stock (ADR-0011): a pick takes it out of stock through its allocation, a put-back brings that very
+ * carton back, and staging moves it with its allocation still live.
  */
 class PickConsumptionServiceTest {
 
@@ -61,13 +61,15 @@ class PickConsumptionServiceTest {
     private static final LocationId BIN = new LocationId("HCM-A01-2-B");
     private static final LocationId OTHER_BIN = new LocationId("HCM-A02-1-A");
     private static final UUID PICKER = UUID.randomUUID();
+    private static final UUID LOT = UUID.randomUUID();
+    private static final Instant RECEIVED = NOW.minusSeconds(86_400);
 
-    private final StockItemRepository stockItems = mock(StockItemRepository.class);
     private final List<StockMovement> ledgerRows = new ArrayList<>();
     private final StockMovementLog ledger = new StockMovementLog() {
         @Override
         public void append(StockMovement movement) {
             ledgerRows.add(movement);
+            writtenAtOnceBeforeLine.add(List.copyOf(writtenAtOnce));
         }
 
         @Override
@@ -104,27 +106,50 @@ class PickConsumptionServiceTest {
             mock(com.stockflow.inventory.internal.domain.CycleCountRepository.class);
     private final StockPackageRepository stockPackages = mock(StockPackageRepository.class);
     private final CartonPlacement placement = mock(CartonPlacement.class);
-    private final PickConsumptionService service = new PickConsumptionService(stockItems, ledger,
+    private final PickConsumptionService service = new PickConsumptionService(ledger,
             new InventoryEventPublisher(publisher), locations, policies,
-            new StockPackageContents(stockPackages, stockItems, locations,
+            new StockPackageContents(stockPackages, locations,
                     mock(com.stockflow.inventory.internal.domain.ReturnedCartonOwnership.class)), Clock.fixed(NOW, ZoneOffset.UTC),
             cycleCounts, stockPackages, placement);
-    private final List<StockItem> saved = new ArrayList<>();
-    private final List<StockItem> merged = new ArrayList<>();
+    /** The cartons the repository knows, by id. */
+    private final Map<StockPackageId, StockPackage> cartons = new HashMap<>();
+    private final List<StockPackage> saved = new ArrayList<>();
+    /** Cartons written to the database at once ({@code saveNow}), and what had been at each ledger line. */
+    private final List<StockPackage> writtenAtOnce = new ArrayList<>();
+    private final List<List<StockPackage>> writtenAtOnceBeforeLine = new ArrayList<>();
 
     @BeforeEach
-    void storeSaves() {
-        when(stockItems.save(any())).thenAnswer(call -> {
-            StockItem item = call.getArgument(0);
-            saved.add(item);
-            return item;
+    void store() {
+        when(stockPackages.save(any())).thenAnswer(call -> {
+            StockPackage carton = call.getArgument(0);
+            saved.add(carton);
+            return carton;
         });
-        when(stockItems.saveMerged(any())).thenAnswer(call -> {
-            StockItem item = call.getArgument(0);
-            merged.add(item);
-            return item;
+        when(stockPackages.saveNow(any())).thenAnswer(call -> {
+            StockPackage carton = call.getArgument(0);
+            writtenAtOnce.add(carton);
+            return carton;
         });
+        when(stockPackages.findById(any())).thenAnswer(call ->
+                Optional.ofNullable(cartons.get(call.<StockPackageId>getArgument(0))));
+        when(stockPackages.findByIdForUpdate(any())).thenAnswer(call ->
+                Optional.ofNullable(cartons.get(call.<StockPackageId>getArgument(0))));
+        when(stockPackages.findAllById(any())).thenAnswer(call ->
+                call.<java.util.Collection<StockPackageId>>getArgument(0).stream().map(cartons::get)
+                        .filter(java.util.Objects::nonNull).toList());
+        // In id order, each once: as the adapter locks them.
+        when(stockPackages.findAllByIdForUpdate(any())).thenAnswer(call ->
+                call.<java.util.Collection<StockPackageId>>getArgument(0).stream().distinct()
+                        .sorted(java.util.Comparator.comparing(StockPackageId::value)).map(cartons::get)
+                        .filter(java.util.Objects::nonNull).toList());
+        when(stockPackages.findIdByReservationId(any())).thenAnswer(call -> holderOf(call.getArgument(0))
+                .map(StockPackage::id));
+        when(stockPackages.findByReservationId(any())).thenAnswer(call -> holderOf(call.getArgument(0)));
         when(locations.stateOf(any())).thenReturn(LocationDirectory.LocationState.USABLE);
+    }
+
+    private Optional<StockPackage> holderOf(ReservationId reservation) {
+        return cartons.values().stream().filter(carton -> carton.findReservation(reservation).isPresent()).findFirst();
     }
 
     private static ErrorCode refusal(ThrowableAssert.ThrowingCallable call) {
@@ -133,46 +158,32 @@ class PickConsumptionServiceTest {
         return ((BusinessException) thrown).errorCode();
     }
 
-    /**
-     * A row in no carton, as the domain still models one ({@code StockItem#isLoose}); the database holds none
-     * ({@code ck_stock_item_whole_cartons}). For the guards that refuse it.
-     */
-    private StockItem looseRowWithHold(LocationId location, int onHand, int held, ReservationStatus status,
-                                       UUID reservationId) {
-        Reservation hold = new Reservation(ReservationId.of(reservationId), UUID.randomUUID(), UUID.randomUUID(),
-                UUID.randomUUID(), held, NOW.minusSeconds(3600), status, null,
-                status == ReservationStatus.HELD ? null : NOW.minusSeconds(60));
-        StockItem item = new StockItem(StockItemId.newId(), CUP, location, "LOT-1", Quantity.of(onHand),
-                StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400));
-        when(stockItems.findIdByReservationId(ReservationId.of(reservationId))).thenReturn(Optional.of(item.id()));
-        when(stockItems.findById(item.id())).thenReturn(Optional.of(item));
-        when(stockItems.findByReservationIdForUpdate(ReservationId.of(reservationId))).thenReturn(Optional.of(item));
-        when(stockItems.findByIdForUpdate(item.id())).thenReturn(Optional.of(item));
-        return item;
+    private static Reservation hold(UUID reservationId, int units, ReservationStatus status) {
+        return new Reservation(ReservationId.of(reservationId), UUID.randomUUID(), UUID.randomUUID(),
+                UUID.randomUUID(), units, NOW.minusSeconds(3600), status,
+                status == ReservationStatus.RELEASED ? ReleaseReason.ORDER_CANCELLED : null,
+                status == ReservationStatus.HELD ? null : NOW.minusSeconds(60), UUID.randomUUID());
     }
 
     /**
-     * The AVAILABLE row of a carton of {@code onHand} units sealed at {@code location}, holding {@code held} of them
-     * for one pinned hold. In a carton, as all stock is: a ledger line names the carton its row is in.
+     * A carton of {@code units} of {@code sku} at {@code location}, with one allocation in {@code holdStatus}. In
+     * stock in {@code stockStatus}; out of stock (CONSUMED, as a pick leaves it) when that is null.
      */
-    private StockItem stockWithHold(LocationId location, int onHand, int held, ReservationStatus status,
-                                    UUID reservationId) {
-        Reservation hold = new Reservation(ReservationId.of(reservationId), UUID.randomUUID(), UUID.randomUUID(),
-                UUID.randomUUID(), held, NOW.minusSeconds(3600), status,
-                status == ReservationStatus.RELEASED ? ReleaseReason.ORDER_CANCELLED : null,
-                status == ReservationStatus.HELD ? null : NOW.minusSeconds(60));
-        StockPackageId cartonId = new StockPackageId(UUID.randomUUID());
-        StockPackage carton = new StockPackage(cartonId, "LPN-20261113-000009", UUID.randomUUID(), UUID.randomUUID(),
-                onHand, NOW.minusSeconds(7200), location, StockPackageStatus.IN_STOCK, null, null, 0L);
-        StockItem item = new StockItem(StockItemId.newId(), CUP, location, "LOT-1", Quantity.of(onHand),
-                StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400), null, cartonId);
-        when(stockItems.findIdByReservationId(ReservationId.of(reservationId))).thenReturn(Optional.of(item.id()));
-        when(stockItems.findById(item.id())).thenReturn(Optional.of(item));
-        when(stockItems.findByReservationIdForUpdate(ReservationId.of(reservationId))).thenReturn(Optional.of(item));
-        when(stockItems.findByIdForUpdate(item.id())).thenReturn(Optional.of(item));
-        when(stockPackages.findAllByIdForUpdate(any())).thenReturn(List.of(carton));
-        when(stockPackages.save(any())).thenAnswer(call -> call.getArgument(0));
-        return item;
+    private StockPackage carton(String lpn, Sku sku, LocationId location, int units, StockStatus stockStatus,
+                                ReservationStatus holdStatus, UUID reservationId) {
+        boolean inStock = stockStatus != null;
+        StockPackage carton = new StockPackage(new StockPackageId(UUID.randomUUID()), lpn, sku, UUID.randomUUID(),
+                UUID.randomUUID(), units, NOW.minusSeconds(7200), location,
+                inStock ? StockPackageStatus.IN_STOCK : StockPackageStatus.CONSUMED, stockStatus, LOT, "LOT-1",
+                RECEIVED, null, inStock ? null : NOW.minusSeconds(60),
+                List.of(hold(reservationId, units, holdStatus)), 0L);
+        cartons.put(carton.id(), carton);
+        return carton;
+    }
+
+    /** The AVAILABLE carton of {@code units} sealed at {@code location}, with one allocation of it. */
+    private StockPackage cartonWithHold(LocationId location, int units, ReservationStatus status, UUID reservationId) {
+        return carton("LPN-20261113-000009", CUP, location, units, StockStatus.AVAILABLE, status, reservationId);
     }
 
     @Nested
@@ -180,34 +191,51 @@ class PickConsumptionServiceTest {
     class Deducting {
 
         @Test
-        @DisplayName("on_hand falls by the hold, the hold is consumed, one PICK ledger row names the line and the carton, StockDeducted goes out")
+        @DisplayName("the carton leaves stock whole, the hold is consumed, one PICK ledger row names the line and the carton, StockDeducted goes out")
         void deductsOnce() {
             UUID hold = UUID.randomUUID();
             UUID line = UUID.randomUUID();
-            StockItem item = stockWithHold(BIN, 3, 3, ReservationStatus.HELD, hold);
+            StockPackage carton = cartonWithHold(BIN, 3, ReservationStatus.HELD, hold);
 
             ConsumedPick consumed = service.consumeForPick(hold, line, PICKER);
 
             assertThat(consumed).isEqualTo(new ConsumedPick(hold, "LY-GIAY-DEMO-12OZ-XANH", "HCM-A01-2-B", "LOT-1", 3,
                     false));
-            assertThat(item.onHand()).isEqualTo(Quantity.ZERO);
-            assertThat(item.findReservation(ReservationId.of(hold)).orElseThrow().status())
+            assertThat(carton.status()).as("picked: out of stock, in the same step").isEqualTo(StockPackageStatus.CONSUMED);
+            assertThat(carton.stockStatus()).isNull();
+            assertThat(carton.unitsInStock()).isZero();
+            assertThat(carton.findReservation(ReservationId.of(hold)).orElseThrow().status())
                     .isEqualTo(ReservationStatus.CONSUMED);
-            assertThat(saved).containsExactly(item);
+            assertThat(saved).containsExactly(carton);
             assertThat(ledgerRows).singleElement().satisfies(row -> {
                 assertThat(row.type()).isEqualTo(StockMovement.MovementType.PICK);
                 assertThat(row.referenceType()).isEqualTo(StockMovement.ReferenceType.PICK_LINE);
                 assertThat(row.referenceId()).isEqualTo(line);
                 assertThat(row.from()).isEqualTo(BIN);
                 assertThat(row.to()).isNull();
-                assertThat(row.stockPackage()).as("the line is the carton, whole").isEqualTo(item.stockPackageId());
+                assertThat(row.stockPackage()).as("the line is the carton, whole").isEqualTo(carton.id());
                 assertThat(row.lotNumber()).isEqualTo("LOT-1");
-                assertThat(row.status()).isEqualTo(StockStatus.AVAILABLE);
+                assertThat(row.status()).as("the status it had when it left").isEqualTo(StockStatus.AVAILABLE);
                 assertThat(row.actorId()).isEqualTo(PICKER);
             });
             verify(publisher).publishEvent(new StockDeducted(
-                    item.findReservation(ReservationId.of(hold)).orElseThrow().orderId(), "LY-GIAY-DEMO-12OZ-XANH",
+                    carton.findReservation(ReservationId.of(hold)).orElseThrow().orderId(), "LY-GIAY-DEMO-12OZ-XANH",
                     "HCM-A01-2-B", 3));
+        }
+
+        @Test
+        @DisplayName("the SKU is locked, then the carton - and nothing after it")
+        void lockOrder() {
+            UUID hold = UUID.randomUUID();
+            StockPackage carton = cartonWithHold(BIN, 3, ReservationStatus.HELD, hold);
+
+            service.consumeForPick(hold, UUID.randomUUID(), PICKER);
+
+            var order = org.mockito.Mockito.inOrder(policies, stockPackages);
+            order.verify(stockPackages).findByReservationId(ReservationId.of(hold));
+            order.verify(policies).lock("LY-GIAY-DEMO-12OZ-XANH");
+            order.verify(stockPackages).findByIdForUpdate(carton.id());
+            order.verify(stockPackages).save(carton);
         }
 
         @Test
@@ -215,7 +243,7 @@ class PickConsumptionServiceTest {
         void alreadyConsumedByThisLine() {
             UUID hold = UUID.randomUUID();
             UUID line = UUID.randomUUID();
-            StockItem item = stockWithHold(BIN, 3, 3, ReservationStatus.HELD, hold);
+            StockPackage carton = cartonWithHold(BIN, 3, ReservationStatus.HELD, hold);
             service.consumeForPick(hold, line, PICKER);
             saved.clear();
 
@@ -223,7 +251,8 @@ class PickConsumptionServiceTest {
 
             assertThat(again.alreadyConsumed()).isTrue();
             assertThat(again.quantity()).isEqualTo(3);
-            assertThat(item.onHand()).isEqualTo(Quantity.ZERO);
+            assertThat(again.locationCode()).isEqualTo("HCM-A01-2-B");
+            assertThat(carton.status()).isEqualTo(StockPackageStatus.CONSUMED);
             assertThat(ledgerRows).hasSize(1);
             assertThat(saved).isEmpty();
         }
@@ -232,27 +261,28 @@ class PickConsumptionServiceTest {
         @DisplayName("a hold consumed by another line is not active: refused, nothing written")
         void consumedByAnotherLine() {
             UUID hold = UUID.randomUUID();
-            StockItem item = stockWithHold(BIN, 3, 3, ReservationStatus.HELD, hold);
+            StockPackage carton = cartonWithHold(BIN, 3, ReservationStatus.HELD, hold);
             service.consumeForPick(hold, UUID.randomUUID(), PICKER);
             saved.clear();
 
             assertThat(refusal(() -> service.consumeForPick(hold, UUID.randomUUID(), PICKER)))
                     .isEqualTo(ErrorCode.RESERVATION_NOT_ACTIVE);
-            assertThat(item.onHand()).isEqualTo(Quantity.ZERO);
+            assertThat(carton.status()).isEqualTo(StockPackageStatus.CONSUMED);
             assertThat(ledgerRows).hasSize(1);
             assertThat(saved).isEmpty();
         }
 
         @Test
-        @DisplayName("a released or expired hold: RESERVATION_NOT_ACTIVE, nothing written, no event")
+        @DisplayName("a released or expired hold: RESERVATION_NOT_ACTIVE, the carton stays in stock, nothing written, no event")
         void releasedOrExpiredHold() {
             for (ReservationStatus status : List.of(ReservationStatus.RELEASED, ReservationStatus.EXPIRED)) {
                 UUID hold = UUID.randomUUID();
-                StockItem item = stockWithHold(BIN, 10, 3, status, hold);
+                StockPackage carton = cartonWithHold(BIN, 10, status, hold);
 
                 assertThat(refusal(() -> service.consumeForPick(hold, UUID.randomUUID(), PICKER)))
                         .as(status.name()).isEqualTo(ErrorCode.RESERVATION_NOT_ACTIVE);
-                assertThat(item.onHand()).isEqualTo(Quantity.of(10));
+                assertThat(carton.status()).isEqualTo(StockPackageStatus.IN_STOCK);
+                assertThat(carton.unitsInStock()).isEqualTo(10);
             }
             assertThat(ledgerRows).isEmpty();
             assertThat(saved).isEmpty();
@@ -263,23 +293,23 @@ class PickConsumptionServiceTest {
         @DisplayName("an unknown hold: RESERVATION_NOT_FOUND")
         void unknownHold() {
             UUID hold = UUID.randomUUID();
-            when(stockItems.findByReservationIdForUpdate(ReservationId.of(hold))).thenReturn(Optional.empty());
 
             assertThat(refusal(() -> service.consumeForPick(hold, UUID.randomUUID(), PICKER)))
                     .isEqualTo(ErrorCode.RESERVATION_NOT_FOUND);
             assertThat(ledgerRows).isEmpty();
+            verify(policies, never()).lock(any());
         }
 
         @Test
         @DisplayName("the operations endpoint deducts the same way and names the order in the ledger")
         void byHand() {
             UUID hold = UUID.randomUUID();
-            StockItem item = stockWithHold(BIN, 3, 3, ReservationStatus.HELD, hold);
-            UUID order = item.findReservation(ReservationId.of(hold)).orElseThrow().orderId();
+            StockPackage carton = cartonWithHold(BIN, 3, ReservationStatus.HELD, hold);
+            UUID order = carton.findReservation(ReservationId.of(hold)).orElseThrow().orderId();
 
             service.consume(hold, PICKER);
 
-            assertThat(item.onHand()).isEqualTo(Quantity.ZERO);
+            assertThat(carton.status()).isEqualTo(StockPackageStatus.CONSUMED);
             assertThat(ledgerRows).singleElement().satisfies(row -> {
                 assertThat(row.type()).isEqualTo(StockMovement.MovementType.PICK);
                 assertThat(row.referenceType()).isEqualTo(StockMovement.ReferenceType.ORDER);
@@ -295,18 +325,15 @@ class PickConsumptionServiceTest {
     class NotAnOrdersStock {
 
         @Test
-        @DisplayName("an order's hold on goods a legacy print-shop row still records (IN_PRODUCTION) is refused too")
+        @DisplayName("an order's hold on goods a legacy print-shop carton still records (IN_PRODUCTION) is refused too")
         void goodsInThePrintShopAreRefused() {
             UUID holdId = UUID.randomUUID();
-            Reservation hold = new Reservation(ReservationId.of(holdId), UUID.randomUUID(), UUID.randomUUID(),
-                    UUID.randomUUID(), 2, NOW.minusSeconds(3600), ReservationStatus.HELD, null, null);
-            StockItem item = new StockItem(StockItemId.newId(), CUP, new LocationId("HCM-PRD01"), "LOT-1",
-                    Quantity.of(2), StockStatus.IN_PRODUCTION, List.of(hold), 0L,
-                    NOW.minusSeconds(86_400));
-            when(stockItems.findByReservationIdForUpdate(ReservationId.of(holdId))).thenReturn(Optional.of(item));
+            StockPackage carton = carton("LPN-20261113-000009", CUP, new LocationId("HCM-PRD01"), 2,
+                    StockStatus.IN_PRODUCTION, ReservationStatus.HELD, holdId);
 
             assertThat(refusal(() -> service.consumeForPick(holdId, UUID.randomUUID(), PICKER)))
                     .isEqualTo(ErrorCode.PRODUCTION_HOLD_NOT_PICKABLE);
+            assertThat(carton.status()).isEqualTo(StockPackageStatus.IN_STOCK);
             assertThat(ledgerRows).isEmpty();
         }
     }
@@ -316,15 +343,10 @@ class PickConsumptionServiceTest {
     class ShortPick {
 
         @Test
-        @DisplayName("on a carton's row, the recount is of that carton, booked as the books have it")
-        void aCartonRowIsRecountedAsACarton() {
+        @DisplayName("the recount is of the carton the hold is on, booked as the books have it")
+        void theHeldCartonIsRecounted() {
             UUID holdId = UUID.randomUUID();
-            Reservation hold = new Reservation(ReservationId.of(holdId), UUID.randomUUID(), UUID.randomUUID(),
-                    UUID.randomUUID(), 2, NOW.minusSeconds(3600), ReservationStatus.HELD, null, null);
-            var carton = new com.stockflow.inventory.internal.domain.StockPackageId(UUID.randomUUID());
-            StockItem item = new StockItem(StockItemId.newId(), CUP, BIN, "LOT-1", Quantity.of(4), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400), carton);
-            when(stockItems.findIdByReservationId(ReservationId.of(holdId))).thenReturn(Optional.of(item.id()));
-            when(stockItems.findById(item.id())).thenReturn(Optional.of(item));
+            StockPackage carton = cartonWithHold(BIN, 4, ReservationStatus.HELD, holdId);
             when(cycleCounts.findHolding(any())).thenReturn(Optional.empty());
             when(cycleCounts.booked(any())).thenReturn(true);
             when(cycleCounts.nextNumber(any())).thenReturn("CC-20261014-0001");
@@ -335,11 +357,12 @@ class PickConsumptionServiceTest {
 
             var slot = org.mockito.ArgumentCaptor.forClass(com.stockflow.inventory.internal.domain.CountSlot.class);
             verify(cycleCounts).findHolding(slot.capture());
-            assertThat(slot.getValue().stockPackageId()).isEqualTo(carton);
-            var saved = org.mockito.ArgumentCaptor.forClass(com.stockflow.inventory.internal.domain.CycleCount.class);
-            verify(cycleCounts).save(saved.capture());
-            assertThat(saved.getValue().lines().get(0).slot().stockPackageId()).isEqualTo(carton);
-            assertThat(saved.getValue().lines().get(0).booked()).isTrue();
+            assertThat(slot.getValue().stockPackageId()).isEqualTo(carton.id());
+            assertThat(slot.getValue().lotNumber()).as("the lot is the carton's").isEqualTo("LOT-1");
+            var counts = org.mockito.ArgumentCaptor.forClass(com.stockflow.inventory.internal.domain.CycleCount.class);
+            verify(cycleCounts).save(counts.capture());
+            assertThat(counts.getValue().lines().get(0).slot().stockPackageId()).isEqualTo(carton.id());
+            assertThat(counts.getValue().lines().get(0).booked()).isTrue();
             assertThat(recount.created()).isTrue();
         }
     }
@@ -350,62 +373,38 @@ class PickConsumptionServiceTest {
 
         private static final String LPN = "LPN-20261113-000001";
 
-        /** The carton a pick took whole, and the one row of it the pick emptied. */
-        private record Picked(StockItem row, StockPackage carton) { }
-
         private PutBackCommand command(UUID line, UUID hold, LocationId target) {
             return new PutBackCommand(line, hold, LPN, target.code(), PICKER);
         }
 
         /**
-         * A carton of {@code count} units picked for an order: CONSUMED, and its row at 0 with the CONSUMED hold of the
-         * whole carton, as a pick leaves them.
+         * A carton of {@code count} units picked for an order: CONSUMED, with no stock status, its allocation
+         * CONSUMED - as a pick leaves it.
          */
-        private Picked pickedCarton(LocationId bin, int count, UUID hold) {
-            return pickedCarton(bin, count, count, ReservationStatus.CONSUMED, hold, StockStatus.AVAILABLE);
-        }
-
-        private Picked pickedCarton(LocationId bin, int received, int held, ReservationStatus holdStatus, UUID hold,
-                                    StockStatus rowStatus) {
-            Reservation reservation = new Reservation(ReservationId.of(hold), UUID.randomUUID(), UUID.randomUUID(),
-                    UUID.randomUUID(), held, NOW.minusSeconds(3600), holdStatus, null,
-                    holdStatus == ReservationStatus.HELD ? null : NOW.minusSeconds(60));
-            StockPackageId id = new StockPackageId(UUID.randomUUID());
-            boolean consumed = holdStatus == ReservationStatus.CONSUMED;
-            StockPackage carton = new StockPackage(id, LPN, UUID.randomUUID(), UUID.randomUUID(), received,
-                    NOW.minusSeconds(7200), bin, consumed ? StockPackageStatus.CONSUMED : StockPackageStatus.IN_STOCK, null,
-                    consumed ? NOW.minusSeconds(60) : null, 0L);
-            StockItem row = new StockItem(StockItemId.newId(), CUP, bin, "LOT-1",
-                    consumed ? Quantity.ZERO : Quantity.of(received), rowStatus, List.of(reservation), 0L,
-                    NOW.minusSeconds(86_400), null, id);
-            when(stockItems.findIdByReservationId(ReservationId.of(hold))).thenReturn(Optional.of(row.id()));
-            when(stockItems.findById(row.id())).thenReturn(Optional.of(row));
-            when(stockItems.findByIdForUpdate(row.id())).thenReturn(Optional.of(row));
-            when(stockPackages.findAllByIdForUpdate(any())).thenReturn(List.of(carton));
-            when(stockPackages.findById(id)).thenReturn(Optional.of(carton));
-            when(stockPackages.save(any())).thenAnswer(call -> call.getArgument(0));
-            return new Picked(row, carton);
+        private StockPackage pickedCarton(LocationId bin, int count, UUID hold) {
+            return carton(LPN, CUP, bin, count, null, ReservationStatus.CONSUMED, hold);
         }
 
         @Test
-        @DisplayName("back to the bin it left: CONSUMED to IN_STOCK sealed, its row refilled as AVAILABLE, one PUT_BACK row naming the carton")
+        @DisplayName("back to the bin it left: CONSUMED to IN_STOCK sealed, AVAILABLE again, its lot and FIFO date kept, one PUT_BACK row naming the carton")
         void backToTheSameBin() {
             UUID hold = UUID.randomUUID();
             UUID line = UUID.randomUUID();
-            Picked picked = pickedCarton(BIN, 3, hold);
+            StockPackage picked = pickedCarton(BIN, 3, hold);
 
             service.putBack(command(line, hold, BIN));
 
-            assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.IN_STOCK);
-            assertThat(picked.carton().closedAt()).isNull();
-            assertThat(picked.carton().location()).isEqualTo(BIN);
-            assertThat(picked.carton().lpn()).as("it keeps its LPN").isEqualTo(LPN);
-            assertThat(picked.row().onHand()).isEqualTo(Quantity.of(3));
-            assertThat(picked.row().status()).isEqualTo(StockStatus.AVAILABLE);
-            assertThat(picked.row().location()).isEqualTo(BIN);
-            assertThat(merged).as("a raise of an existing layer is a same-receipt merge").containsExactly(picked.row());
-            assertThat(saved).as("no new row: the carton's own took its units back").isEmpty();
-            verify(stockPackages).save(picked.carton());
+            assertThat(picked.status()).isEqualTo(StockPackageStatus.IN_STOCK);
+            assertThat(picked.closedAt()).isNull();
+            assertThat(picked.location()).isEqualTo(BIN);
+            assertThat(picked.lpn()).as("it keeps its LPN").isEqualTo(LPN);
+            assertThat(picked.unitsInStock()).isEqualTo(3);
+            assertThat(picked.stockStatus()).as("the status the put-back gives it: sellable again")
+                    .isEqualTo(StockStatus.AVAILABLE);
+            assertThat(picked.isFree()).isTrue();
+            assertThat(picked.lotId()).as("the same goods").isEqualTo(LOT);
+            assertThat(picked.receivedAt()).as("as old as they were: FIFO keeps their age").isEqualTo(RECEIVED);
+            assertThat(writtenAtOnce).containsExactly(picked);
             assertThat(ledgerRows).singleElement().satisfies(row -> {
                 assertThat(row.type()).isEqualTo(StockMovement.MovementType.PUT_BACK);
                 assertThat(row.referenceType()).isEqualTo(StockMovement.ReferenceType.PICK_LINE);
@@ -414,41 +413,40 @@ class PickConsumptionServiceTest {
                 assertThat(row.to()).isEqualTo(BIN);
                 assertThat(row.toStatus()).isEqualTo(StockStatus.AVAILABLE);
                 assertThat(row.lotNumber()).isEqualTo("LOT-1");
-                assertThat(row.stockPackage()).as("the ledger names the carton").isEqualTo(picked.carton().id());
+                assertThat(row.stockPackage()).as("the ledger names the carton").isEqualTo(picked.id());
             });
             verify(policies).lock("LY-GIAY-DEMO-12OZ-XANH");
         }
 
         @Test
-        @DisplayName("onto another bin: the carton and its row follow it there whole; no row is created or split")
+        @DisplayName("onto another bin: the same carton stands there whole; nothing is created or split")
         void ontoAnotherBin() {
             UUID hold = UUID.randomUUID();
-            Picked picked = pickedCarton(BIN, 3, hold);
+            StockPackage picked = pickedCarton(BIN, 3, hold);
 
             service.putBack(command(UUID.randomUUID(), hold, OTHER_BIN));
 
-            assertThat(picked.carton().location()).isEqualTo(OTHER_BIN);
-            assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.IN_STOCK);
-            assertThat(picked.row().location()).as("the row follows its carton").isEqualTo(OTHER_BIN);
-            assertThat(picked.row().onHand()).isEqualTo(Quantity.of(3));
-            assertThat(picked.row().sku()).isEqualTo(CUP);
-            assertThat(picked.row().lotNumber()).isEqualTo("LOT-1");
-            assertThat(saved).isEmpty();
+            assertThat(picked.location()).isEqualTo(OTHER_BIN);
+            assertThat(picked.status()).isEqualTo(StockPackageStatus.IN_STOCK);
+            assertThat(picked.unitsInStock()).isEqualTo(3);
+            assertThat(picked.sku()).isEqualTo(CUP);
+            assertThat(picked.lotNumber()).isEqualTo("LOT-1");
+            assertThat(writtenAtOnce).containsExactly(picked);
             assertThat(ledgerRows).singleElement().satisfies(row -> {
                 assertThat(row.to()).isEqualTo(OTHER_BIN);
-                assertThat(row.stockPackage()).isEqualTo(picked.carton().id());
+                assertThat(row.stockPackage()).isEqualTo(picked.id());
             });
         }
 
         private final LocationId quarantine = new LocationId("HCM-QC01");
 
         @Test
-        @DisplayName("a damaged carton (removed at the check station) goes whole into a QUARANTINE area: IN_STOCK there, its row "
-                + "QUARANTINE with its units, one PUT_BACK row whose status is QUARANTINE - never AVAILABLE (4C-6)")
+        @DisplayName("a damaged carton (removed at the check station) goes whole into a QUARANTINE area: IN_STOCK there, "
+                + "QUARANTINE, one PUT_BACK row whose status is QUARANTINE - never AVAILABLE (4C-6)")
         void damagedCartonToQuarantine() {
             UUID hold = UUID.randomUUID();
             UUID line = UUID.randomUUID();
-            Picked picked = pickedCarton(BIN, 3, hold);
+            StockPackage picked = pickedCarton(BIN, 3, hold);
             when(locations.isQuarantineArea(quarantine)).thenReturn(true);
             UUID warehouse = UUID.randomUUID();
             when(locations.warehouseOf(BIN)).thenReturn(Optional.of(warehouse));
@@ -456,46 +454,46 @@ class PickConsumptionServiceTest {
 
             service.putBackToQuarantine(command(line, hold, quarantine));
 
-            assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.IN_STOCK);
-            assertThat(picked.carton().location()).isEqualTo(quarantine);
-            assertThat(picked.carton().lpn()).isEqualTo(LPN);
-            assertThat(picked.row().status()).isEqualTo(StockStatus.QUARANTINE);
-            assertThat(picked.row().location()).as("the row follows its carton").isEqualTo(quarantine);
-            assertThat(picked.row().onHand()).isEqualTo(Quantity.of(3));
+            assertThat(picked.status()).isEqualTo(StockPackageStatus.IN_STOCK);
+            assertThat(picked.location()).isEqualTo(quarantine);
+            assertThat(picked.lpn()).isEqualTo(LPN);
+            assertThat(picked.stockStatus()).isEqualTo(StockStatus.QUARANTINE);
+            assertThat(picked.unitsInStock()).isEqualTo(3);
+            assertThat(picked.unitsAvailable()).as("out of ATP until a manager releases it").isZero();
             assertThat(ledgerRows).singleElement().satisfies(row -> {
                 assertThat(row.type()).isEqualTo(StockMovement.MovementType.PUT_BACK);
                 assertThat(row.referenceId()).isEqualTo(line);
                 assertThat(row.to()).isEqualTo(quarantine);
                 assertThat(row.toStatus()).isEqualTo(StockStatus.QUARANTINE);
-                assertThat(row.stockPackage()).isEqualTo(picked.carton().id());
+                assertThat(row.stockPackage()).isEqualTo(picked.id());
             });
-            var order = org.mockito.Mockito.inOrder(policies, stockPackages, stockItems);
+            var order = org.mockito.Mockito.inOrder(policies, stockPackages);
             order.verify(policies).lock("LY-GIAY-DEMO-12OZ-XANH");
-            order.verify(stockPackages).findAllByIdForUpdate(any());
-            order.verify(stockItems).findByIdForUpdate(picked.row().id());
+            order.verify(stockPackages).findByIdForUpdate(picked.id());
         }
 
         @Test
         @DisplayName("a bin is not a quarantine area: LOCATION_AREA_MISMATCH, and the carton stays picked")
         void damagedCartonNeedsAQuarantineArea() {
             UUID hold = UUID.randomUUID();
-            Picked picked = pickedCarton(BIN, 3, hold);
+            StockPackage picked = pickedCarton(BIN, 3, hold);
             when(locations.isQuarantineArea(OTHER_BIN)).thenReturn(false);
 
             assertThat(refusal(() -> service.putBackToQuarantine(command(UUID.randomUUID(), hold, OTHER_BIN))))
                     .isEqualTo(ErrorCode.LOCATION_AREA_MISMATCH);
 
-            assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
-            assertThat(picked.row().onHand()).isEqualTo(Quantity.ZERO);
+            assertThat(picked.status()).isEqualTo(StockPackageStatus.CONSUMED);
+            assertThat(picked.unitsInStock()).isZero();
             assertThat(ledgerRows).isEmpty();
             verify(stockPackages, never()).save(any());
+            verify(stockPackages, never()).saveNow(any());
         }
 
         @Test
         @DisplayName("a quarantine area of another warehouse is MOVE_ACROSS_WAREHOUSES: stock never changes warehouse")
         void damagedCartonStaysInItsWarehouse() {
             UUID hold = UUID.randomUUID();
-            Picked picked = pickedCarton(BIN, 3, hold);
+            StockPackage picked = pickedCarton(BIN, 3, hold);
             when(locations.isQuarantineArea(quarantine)).thenReturn(true);
             when(locations.warehouseOf(BIN)).thenReturn(Optional.of(UUID.randomUUID()));
             when(locations.warehouseOf(quarantine)).thenReturn(Optional.of(UUID.randomUUID()));
@@ -503,7 +501,7 @@ class PickConsumptionServiceTest {
             assertThat(refusal(() -> service.putBackToQuarantine(command(UUID.randomUUID(), hold, quarantine))))
                     .isEqualTo(ErrorCode.MOVE_ACROSS_WAREHOUSES);
 
-            assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
+            assertThat(picked.status()).isEqualTo(StockPackageStatus.CONSUMED);
             assertThat(ledgerRows).isEmpty();
         }
 
@@ -512,7 +510,7 @@ class PickConsumptionServiceTest {
                 + "as 'the same warehouse'")
         void unknownTargetWarehouse() {
             UUID hold = UUID.randomUUID();
-            Picked picked = pickedCarton(BIN, 3, hold);
+            StockPackage picked = pickedCarton(BIN, 3, hold);
             when(locations.isQuarantineArea(quarantine)).thenReturn(true);
             when(locations.warehouseOf(BIN)).thenReturn(Optional.empty());
             when(locations.warehouseOf(quarantine)).thenReturn(Optional.empty());
@@ -520,7 +518,7 @@ class PickConsumptionServiceTest {
             assertThat(refusal(() -> service.putBackToQuarantine(command(UUID.randomUUID(), hold, quarantine))))
                     .isEqualTo(ErrorCode.LOCATION_NOT_FOUND);
 
-            assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
+            assertThat(picked.status()).isEqualTo(StockPackageStatus.CONSUMED);
             assertThat(ledgerRows).isEmpty();
         }
 
@@ -528,7 +526,7 @@ class PickConsumptionServiceTest {
         @DisplayName("a carton standing at a location with no warehouse is a data fault: IllegalStateException, nothing changes")
         void cartonAtAnUnknownLocation() {
             UUID hold = UUID.randomUUID();
-            Picked picked = pickedCarton(BIN, 3, hold);
+            StockPackage picked = pickedCarton(BIN, 3, hold);
             when(locations.isQuarantineArea(quarantine)).thenReturn(true);
             when(locations.warehouseOf(quarantine)).thenReturn(Optional.of(UUID.randomUUID()));
             when(locations.warehouseOf(BIN)).thenReturn(Optional.empty());
@@ -537,7 +535,7 @@ class PickConsumptionServiceTest {
                     command(UUID.randomUUID(), hold, quarantine))).isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining(LPN);
 
-            assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
+            assertThat(picked.status()).isEqualTo(StockPackageStatus.CONSUMED);
             assertThat(ledgerRows).isEmpty();
         }
 
@@ -546,7 +544,7 @@ class PickConsumptionServiceTest {
         void damagedCartonReplayAndUsability() {
             UUID hold = UUID.randomUUID();
             UUID line = UUID.randomUUID();
-            Picked picked = pickedCarton(BIN, 3, hold);
+            StockPackage picked = pickedCarton(BIN, 3, hold);
             LocationId closed = new LocationId("HCM-QC09");
             when(locations.stateOf(closed)).thenReturn(LocationDirectory.LocationState.UNUSABLE);
             assertThat(refusal(() -> service.putBackToQuarantine(command(line, hold, closed))))
@@ -560,52 +558,50 @@ class PickConsumptionServiceTest {
             service.putBackToQuarantine(command(line, hold, quarantine));
 
             assertThat(ledgerRows).hasSize(1);
-            assertThat(picked.row().status()).isEqualTo(StockStatus.QUARANTINE);
-            verify(stockPackages, org.mockito.Mockito.times(1)).save(any());
+            assertThat(picked.stockStatus()).isEqualTo(StockStatus.QUARANTINE);
+            verify(stockPackages, org.mockito.Mockito.times(1)).saveNow(any());
         }
 
         @Test
-        @DisplayName("the SKU is locked, then the carton, then its row - in that order")
+        @DisplayName("the SKU is locked, then the carton; the carton is written before the ledger line names it at its new place")
         void lockOrder() {
             UUID hold = UUID.randomUUID();
-            Picked picked = pickedCarton(BIN, 3, hold);
+            StockPackage picked = pickedCarton(BIN, 3, hold);
 
-            service.putBack(command(UUID.randomUUID(), hold, BIN));
+            service.putBack(command(UUID.randomUUID(), hold, OTHER_BIN));
 
-            var order = org.mockito.Mockito.inOrder(policies, stockPackages, stockItems);
+            var order = org.mockito.Mockito.inOrder(policies, stockPackages);
             order.verify(policies).lock("LY-GIAY-DEMO-12OZ-XANH");
-            order.verify(stockPackages).findAllByIdForUpdate(any());
-            order.verify(stockItems).findByIdForUpdate(picked.row().id());
-            // The carton is saved before the row, so it stands at its new bin when the ledger line names it there
-            // (check_stock_movement_package): a put-back onto another bin failed 409 when the order was the reverse.
-            order.verify(stockPackages).save(picked.carton());
-            order.verify(stockItems).saveMerged(picked.row());
+            order.verify(stockPackages).findByIdForUpdate(picked.id());
+            order.verify(stockPackages).saveNow(picked);
+            // check_stock_movement_package reads the carton when the line is inserted: a put-back onto another bin
+            // failed 409 when the line went first.
+            assertThat(writtenAtOnceBeforeLine).singleElement().satisfies(written ->
+                    assertThat(written).containsExactly(picked));
         }
 
         @Test
-        @DisplayName("the same line again changes nothing: one ledger row, the carton is saved once")
+        @DisplayName("the same line again changes nothing: one ledger row, the carton is written once")
         void idempotentPerLine() {
             UUID hold = UUID.randomUUID();
             UUID line = UUID.randomUUID();
-            Picked picked = pickedCarton(BIN, 3, hold);
+            StockPackage picked = pickedCarton(BIN, 3, hold);
             service.putBack(command(line, hold, BIN));
-            merged.clear();
 
             service.putBack(command(line, hold, OTHER_BIN));
 
-            assertThat(picked.row().onHand()).isEqualTo(Quantity.of(3));
-            assertThat(picked.carton().location()).as("the replay is not a second move").isEqualTo(BIN);
+            assertThat(picked.unitsInStock()).isEqualTo(3);
+            assertThat(picked.location()).as("the replay is not a second move").isEqualTo(BIN);
             assertThat(ledgerRows).hasSize(1);
-            assertThat(merged).isEmpty();
             assertThat(saved).isEmpty();
-            verify(stockPackages, org.mockito.Mockito.times(1)).save(any());
+            verify(stockPackages, org.mockito.Mockito.times(1)).saveNow(any());
         }
 
         @Test
         @DisplayName("an unknown or unusable bin is refused before any stock changes")
         void unusableBin() {
             UUID hold = UUID.randomUUID();
-            Picked picked = pickedCarton(BIN, 3, hold);
+            StockPackage picked = pickedCarton(BIN, 3, hold);
             when(locations.stateOf(OTHER_BIN)).thenReturn(LocationDirectory.LocationState.UNUSABLE);
             LocationId nowhere = new LocationId("HCM-ZZ9-9-Z");
             when(locations.stateOf(nowhere)).thenReturn(LocationDirectory.LocationState.UNKNOWN);
@@ -614,76 +610,51 @@ class PickConsumptionServiceTest {
                     .isEqualTo(ErrorCode.LOCATION_NOT_USABLE);
             assertThat(refusal(() -> service.putBack(command(UUID.randomUUID(), hold, nowhere))))
                     .isEqualTo(ErrorCode.LOCATION_NOT_FOUND);
-            assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
-            assertThat(picked.row().onHand()).isEqualTo(Quantity.ZERO);
+            assertThat(picked.status()).isEqualTo(StockPackageStatus.CONSUMED);
+            assertThat(picked.unitsInStock()).isZero();
             assertThat(ledgerRows).isEmpty();
             assertThat(saved).isEmpty();
-            assertThat(merged).isEmpty();
-            verify(stockPackages, never()).save(any());
-        }
-
-        @Test
-        @DisplayName("a pick of loose stock (no carton) is STOCK_PACKAGE_TAKEN_WHOLE: loose stock is not put back")
-        void looseStockIsRefused() {
-            UUID hold = UUID.randomUUID();
-            StockItem item = looseRowWithHold(BIN, 0, 3, ReservationStatus.CONSUMED, hold);
-
-            assertThat(refusal(() -> service.putBack(command(UUID.randomUUID(), hold, BIN))))
-                    .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
-            assertThat(item.onHand()).isEqualTo(Quantity.ZERO);
-            assertThat(ledgerRows).isEmpty();
-            assertThat(saved).isEmpty();
-            assertThat(merged).isEmpty();
-        }
-
-        @Test
-        @DisplayName("a hold that is not the carton's whole count is STOCK_PACKAGE_TAKEN_WHOLE")
-        void partOfTheCartonIsRefused() {
-            UUID hold = UUID.randomUUID();
-            Picked picked = pickedCarton(BIN, 4, 3, ReservationStatus.CONSUMED, hold, StockStatus.AVAILABLE);
-
-            assertThat(refusal(() -> service.putBack(command(UUID.randomUUID(), hold, BIN))))
-                    .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
-            assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
-            assertThat(ledgerRows).isEmpty();
-            verify(stockPackages, never()).save(any());
+            verify(stockPackages, never()).saveNow(any());
         }
 
         @Test
         @DisplayName("a hold the pick did not consume is not a carton that left: STOCK_PACKAGE_TAKEN_WHOLE")
         void notConsumed() {
             UUID hold = UUID.randomUUID();
-            pickedCarton(BIN, 3, 3, ReservationStatus.HELD, hold, StockStatus.AVAILABLE);
+            StockPackage held = carton(LPN, CUP, BIN, 3, StockStatus.AVAILABLE, ReservationStatus.HELD, hold);
 
             assertThat(refusal(() -> service.putBack(command(UUID.randomUUID(), hold, BIN))))
                     .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
+            assertThat(held.isHeld()).isTrue();
             assertThat(ledgerRows).isEmpty();
+            verify(stockPackages, never()).saveNow(any());
         }
 
         @Test
-        @DisplayName("a row that is not AVAILABLE stock does not take the carton back: STOCK_STATUS_MISMATCH")
-        void rowNotAvailable() {
+        @DisplayName("a carton that is in stock already does not come back a second time: INVALID_STOCK_PACKAGE_TRANSITION")
+        void alreadyBackInStock() {
             UUID hold = UUID.randomUUID();
-            Picked picked = pickedCarton(BIN, 3, 3, ReservationStatus.CONSUMED, hold, StockStatus.QUARANTINE);
+            // Picked, then brought back by another document (a return receipt put it into quarantine).
+            StockPackage back = carton(LPN, CUP, BIN, 3, StockStatus.QUARANTINE, ReservationStatus.CONSUMED, hold);
 
             assertThat(refusal(() -> service.putBack(command(UUID.randomUUID(), hold, BIN))))
-                    .isEqualTo(ErrorCode.STOCK_STATUS_MISMATCH);
-            assertThat(picked.row().onHand()).isEqualTo(Quantity.ZERO);
+                    .isEqualTo(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION);
+            assertThat(back.stockStatus()).as("a put-back is not how quarantined goods get on sale")
+                    .isEqualTo(StockStatus.QUARANTINE);
             assertThat(ledgerRows).isEmpty();
-            assertThat(merged).isEmpty();
-            verify(stockPackages, never()).save(any());
+            verify(stockPackages, never()).saveNow(any());
         }
 
         @Test
         @DisplayName("a command naming another LPN than the hold's carton is a caller's bug: IllegalStateException")
         void anotherLpnIsACallersBug() {
             UUID hold = UUID.randomUUID();
-            Picked picked = pickedCarton(BIN, 3, hold);
+            StockPackage picked = pickedCarton(BIN, 3, hold);
 
             org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.putBack(new PutBackCommand(
                     UUID.randomUUID(), hold, "LPN-SOMEONE-ELSE", BIN.code(), PICKER)))
                     .isInstanceOf(IllegalStateException.class);
-            assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
+            assertThat(picked.status()).isEqualTo(StockPackageStatus.CONSUMED);
             assertThat(ledgerRows).isEmpty();
         }
 
@@ -691,21 +662,18 @@ class PickConsumptionServiceTest {
         @DisplayName("the LPN is compared in any case")
         void lpnInAnyCase() {
             UUID hold = UUID.randomUUID();
-            Picked picked = pickedCarton(BIN, 3, hold);
+            StockPackage picked = pickedCarton(BIN, 3, hold);
 
             service.putBack(new PutBackCommand(UUID.randomUUID(), hold, " " + LPN.toLowerCase() + " ", BIN.code(),
                     PICKER));
 
-            assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.IN_STOCK);
+            assertThat(picked.status()).isEqualTo(StockPackageStatus.IN_STOCK);
         }
 
         @Test
         @DisplayName("an unknown hold is RESERVATION_NOT_FOUND")
         void unknownHold() {
-            UUID hold = UUID.randomUUID();
-            when(stockItems.findIdByReservationId(ReservationId.of(hold))).thenReturn(Optional.empty());
-
-            assertThat(refusal(() -> service.putBack(command(UUID.randomUUID(), hold, BIN))))
+            assertThat(refusal(() -> service.putBack(command(UUID.randomUUID(), UUID.randomUUID(), BIN))))
                     .isEqualTo(ErrorCode.RESERVATION_NOT_FOUND);
         }
     }
@@ -717,7 +685,7 @@ class PickConsumptionServiceTest {
         private static final String LPN = "LPN-20261113-000001";
         private final LocationId staging = new LocationId("HCM-STG01");
 
-        private record Held(StockItem row, StockPackage carton, UUID hold) { }
+        private record Held(StockPackage carton, UUID hold) { }
 
         @BeforeEach
         void stagingIsAnArea() {
@@ -729,35 +697,18 @@ class PickConsumptionServiceTest {
             return new StageCommand(line, hold, LPN, staging.code(), PICKER);
         }
 
-        /** A carton of {@code count} units sealed in {@code bin}, its one row all held for an order. */
-        private Held heldCarton(LocationId bin, int count, int held, ReservationStatus status, StockStatus rowStatus) {
+        /** A carton of {@code count} units sealed in {@code bin}, with one allocation of it in {@code status}. */
+        private Held heldCarton(LocationId bin, int count, ReservationStatus status, StockStatus stockStatus) {
             UUID hold = UUID.randomUUID();
-            Reservation reservation = new Reservation(ReservationId.of(hold), UUID.randomUUID(), UUID.randomUUID(),
-                    UUID.randomUUID(), held, NOW.minusSeconds(3600), status, null,
-                    status == ReservationStatus.HELD ? null : NOW.minusSeconds(60));
-            StockPackageId id = new StockPackageId(UUID.randomUUID());
-            StockPackage carton = new StockPackage(id, LPN, UUID.randomUUID(), UUID.randomUUID(), count,
-                    NOW.minusSeconds(7200), bin,
-                    StockPackageStatus.IN_STOCK, null, null, 0L);
-            StockItem row = new StockItem(StockItemId.newId(), CUP, bin, "LOT-1",
-                    Quantity.of(count), rowStatus, List.of(reservation), 0L, NOW.minusSeconds(86_400), null, id);
-            when(stockItems.findIdByReservationId(ReservationId.of(hold))).thenReturn(Optional.of(row.id()));
-            when(stockItems.findById(row.id())).thenReturn(Optional.of(row));
-            when(stockItems.findByIdForUpdate(row.id())).thenReturn(Optional.of(row));
-            when(stockItems.findByReservationIdForUpdate(ReservationId.of(hold))).thenReturn(Optional.of(row));
-            when(stockItems.findIdsInStockPackage(id)).thenReturn(List.of(row.id()));
-            when(stockPackages.findAllByIdForUpdate(any())).thenReturn(List.of(carton));
-            when(stockPackages.findAllById(any())).thenReturn(List.of(carton));
-            when(stockPackages.save(any())).thenAnswer(call -> call.getArgument(0));
-            return new Held(row, carton, hold);
+            return new Held(carton(LPN, CUP, bin, count, stockStatus, status, hold), hold);
         }
 
         private Held heldCarton(LocationId bin) {
-            return heldCarton(bin, 6, 6, ReservationStatus.HELD, StockStatus.AVAILABLE);
+            return heldCarton(bin, 6, ReservationStatus.HELD, StockStatus.AVAILABLE);
         }
 
         @Test
-        @DisplayName("stage: the carton and its row move whole to the staging area, the hold stays HELD, one MOVE row names the line")
+        @DisplayName("stage: the carton moves whole to the staging area, still AVAILABLE, the hold stays HELD, one MOVE row names the line")
         void stagesWhole() {
             Held held = heldCarton(BIN);
             UUID line = UUID.randomUUID();
@@ -768,10 +719,11 @@ class PickConsumptionServiceTest {
                     staging.code(), false));
             assertThat(held.carton().location()).isEqualTo(staging);
             assertThat(held.carton().status()).isEqualTo(StockPackageStatus.IN_STOCK);
-            assertThat(held.row().location()).isEqualTo(staging);
-            assertThat(held.row().onHand()).as("nothing is deducted").isEqualTo(Quantity.of(6));
-            assertThat(held.row().findReservation(ReservationId.of(held.hold())).orElseThrow().status())
+            assertThat(held.carton().stockStatus()).as("a held carton stays AVAILABLE").isEqualTo(StockStatus.AVAILABLE);
+            assertThat(held.carton().unitsInStock()).as("nothing is deducted").isEqualTo(6);
+            assertThat(held.carton().findReservation(ReservationId.of(held.hold())).orElseThrow().status())
                     .isEqualTo(ReservationStatus.HELD);
+            assertThat(saved).containsExactly(held.carton());
             assertThat(ledgerRows).singleElement().satisfies(row -> {
                 assertThat(row.type()).isEqualTo(StockMovement.MovementType.MOVE);
                 assertThat(row.referenceType()).isEqualTo(StockMovement.ReferenceType.PICK_LINE);
@@ -784,16 +736,15 @@ class PickConsumptionServiceTest {
         }
 
         @Test
-        @DisplayName("stage: SKU lock, then the carton, then its row - in that order")
+        @DisplayName("stage: SKU lock, then the carton - in that order")
         void stageLockOrder() {
             Held held = heldCarton(BIN);
 
             service.stage(stageCommand(UUID.randomUUID(), held.hold()));
 
-            var order = org.mockito.Mockito.inOrder(policies, stockPackages, stockItems);
+            var order = org.mockito.Mockito.inOrder(policies, stockPackages);
             order.verify(policies).lock("LY-GIAY-DEMO-12OZ-XANH");
-            order.verify(stockPackages).findAllByIdForUpdate(any());
-            order.verify(stockItems).findByIdForUpdate(held.row().id());
+            order.verify(stockPackages).findByIdForUpdate(held.carton().id());
         }
 
         @Test
@@ -817,46 +768,18 @@ class PickConsumptionServiceTest {
         }
 
         @Test
-        @DisplayName("stage: loose stock is STOCK_PACKAGE_TAKEN_WHOLE, nothing moves")
-        void stageLooseRow() {
-            UUID hold = UUID.randomUUID();
-            StockItem item = looseRowWithHold(BIN, 6, 6, ReservationStatus.HELD, hold);
-
-            assertThat(refusal(() -> service.stage(stageCommand(UUID.randomUUID(), hold))))
-                    .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
-            assertThat(item.location()).isEqualTo(BIN);
-            assertThat(ledgerRows).isEmpty();
-        }
-
-        @Test
-        @DisplayName("stage: a carton with two rows, or a hold of part of it, is STOCK_PACKAGE_TAKEN_WHOLE")
-        void stageNotTheWholeCarton() {
-            Held twoRows = heldCarton(BIN);
-            when(stockItems.findIdsInStockPackage(twoRows.carton().id()))
-                    .thenReturn(List.of(twoRows.row().id(), StockItemId.newId()));
-            assertThat(refusal(() -> service.stage(stageCommand(UUID.randomUUID(), twoRows.hold()))))
-                    .as("two rows").isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
-            assertThat(twoRows.carton().location()).isEqualTo(BIN);
-
-            Held partHeld = heldCarton(BIN, 6, 4, ReservationStatus.HELD, StockStatus.AVAILABLE);
-            assertThat(refusal(() -> service.stage(stageCommand(UUID.randomUUID(), partHeld.hold()))))
-                    .as("part held").isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
-            assertThat(partHeld.carton().location()).isEqualTo(BIN);
-            assertThat(ledgerRows).isEmpty();
-            verify(stockPackages, never()).save(any());
-        }
-
-        @Test
-        @DisplayName("stage: a hold that is not HELD is RESERVATION_NOT_ACTIVE; a row that is not AVAILABLE is STOCK_STATUS_MISMATCH")
-        void stageHoldAndRowState() {
+        @DisplayName("stage: a hold that is not HELD is RESERVATION_NOT_ACTIVE; a carton that is not AVAILABLE is STOCK_STATUS_MISMATCH")
+        void stageHoldAndCartonState() {
             for (ReservationStatus status : List.of(ReservationStatus.CONSUMED, ReservationStatus.RELEASED)) {
-                Held notHeld = heldCarton(BIN, 6, 6, status, StockStatus.AVAILABLE);
+                Held notHeld = heldCarton(BIN, 6, status, StockStatus.AVAILABLE);
                 assertThat(refusal(() -> service.stage(stageCommand(UUID.randomUUID(), notHeld.hold()))))
                         .as(status.name()).isEqualTo(ErrorCode.RESERVATION_NOT_ACTIVE);
             }
-            Held quarantined = heldCarton(BIN, 6, 6, ReservationStatus.HELD, StockStatus.QUARANTINE);
+            // A state the table refuses (a held carton stays AVAILABLE); the service says so too, with its own code.
+            Held quarantined = heldCarton(BIN, 6, ReservationStatus.HELD, StockStatus.QUARANTINE);
             assertThat(refusal(() -> service.stage(stageCommand(UUID.randomUUID(), quarantined.hold()))))
                     .isEqualTo(ErrorCode.STOCK_STATUS_MISMATCH);
+            assertThat(quarantined.carton().location()).isEqualTo(BIN);
             assertThat(ledgerRows).isEmpty();
             verify(stockPackages, never()).save(any());
         }
@@ -910,7 +833,7 @@ class PickConsumptionServiceTest {
         }
 
         @Test
-        @DisplayName("consumeStaged: deducts from the staging area - hold CONSUMED, on_hand 0, carton CONSUMED, one PICK row from staging")
+        @DisplayName("consumeStaged: deducts from the staging area - hold CONSUMED, carton CONSUMED, one PICK row from staging")
         void consumeStagedDeducts() {
             UUID line = UUID.randomUUID();
             Held held = staged(line);
@@ -919,8 +842,8 @@ class PickConsumptionServiceTest {
 
             assertThat(consumed).isEqualTo(new ConsumedPick(held.hold(), "LY-GIAY-DEMO-12OZ-XANH", staging.code(),
                     "LOT-1", 6, false));
-            assertThat(held.row().onHand()).isEqualTo(Quantity.ZERO);
-            assertThat(held.row().findReservation(ReservationId.of(held.hold())).orElseThrow().status())
+            assertThat(held.carton().unitsInStock()).isZero();
+            assertThat(held.carton().findReservation(ReservationId.of(held.hold())).orElseThrow().status())
                     .isEqualTo(ReservationStatus.CONSUMED);
             assertThat(held.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
             assertThat(ledgerRows).hasSize(2);
@@ -955,17 +878,18 @@ class PickConsumptionServiceTest {
             org.assertj.core.api.Assertions.assertThatThrownBy(() ->
                             service.consumeStaged(held.hold(), UUID.randomUUID(), PICKER))
                     .isInstanceOf(IllegalStateException.class);
-            assertThat(held.row().onHand()).isEqualTo(Quantity.of(6));
+            assertThat(held.carton().unitsInStock()).isEqualTo(6);
+            assertThat(held.carton().isHeld()).isTrue();
             assertThat(ledgerRows).isEmpty();
         }
 
         /** The order was cancelled: its hold is released, the carton is still in the staging area. */
         private void cancelled(Held held) {
-            held.row().releaseReservation(ReservationId.of(held.hold()), ReleaseReason.ORDER_CANCELLED, NOW);
+            held.carton().releaseReservation(ReservationId.of(held.hold()), ReleaseReason.ORDER_CANCELLED, NOW);
         }
 
         @Test
-        @DisplayName("unstage: back onto a bin - carton and row move whole, one second MOVE row")
+        @DisplayName("unstage: back onto a bin - the carton moves whole, one second MOVE row")
         void unstageMovesBack() {
             UUID line = UUID.randomUUID();
             Held held = staged(line);
@@ -975,8 +899,8 @@ class PickConsumptionServiceTest {
 
             assertThat(held.carton().location()).isEqualTo(OTHER_BIN);
             assertThat(held.carton().status()).isEqualTo(StockPackageStatus.IN_STOCK);
-            assertThat(held.row().location()).isEqualTo(OTHER_BIN);
-            assertThat(held.row().onHand()).isEqualTo(Quantity.of(6));
+            assertThat(held.carton().unitsInStock()).isEqualTo(6);
+            assertThat(held.carton().isFree()).as("released and on a bin: stock anyone may be given").isTrue();
             assertThat(ledgerRows).hasSize(2);
             assertThat(ledgerRows.get(1)).satisfies(row -> {
                 assertThat(row.type()).isEqualTo(StockMovement.MovementType.MOVE);
@@ -1047,7 +971,6 @@ class PickConsumptionServiceTest {
             assertThat(refusal(() -> service.unstage(new PutBackCommand(line, held.hold(), LPN, OTHER_BIN.code(),
                     PICKER)))).isEqualTo(ErrorCode.CARTON_DOES_NOT_FIT_BIN);
             assertThat(held.carton().location()).as("nothing moved").isEqualTo(staging);
-            assertThat(held.row().location()).isEqualTo(staging);
             assertThat(ledgerRows).hasSize(1);
 
             LocationId overflow = new LocationId("HCM-OVF01");
@@ -1085,66 +1008,45 @@ class PickConsumptionServiceTest {
     class BulkMoveToDispatch {
 
         private final LocationId staging = new LocationId("HCM-STG01");
-        private final java.util.Map<StockPackageId, StockPackage> cartonsById = new java.util.HashMap<>();
 
-        private record Line(StockItem row, StockPackage carton, UUID hold, UUID line, StagedLine staged) { }
+        private record Line(StockPackage carton, UUID hold, UUID line, StagedLine staged) { }
 
         @BeforeEach
         void stubs() {
             when(locations.isStagingArea(staging)).thenReturn(true);
             when(locations.stateOf(staging)).thenReturn(LocationDirectory.LocationState.USABLE);
-            when(stockPackages.findAllByIdForUpdate(any())).thenAnswer(call ->
-                    ((java.util.Collection<StockPackageId>) call.getArgument(0)).stream()
-                            .map(cartonsById::get).filter(java.util.Objects::nonNull).toList());
-            when(stockPackages.save(any())).thenAnswer(call -> call.getArgument(0));
         }
 
-        /** A sealed carton of {@code sku} held whole for an order and staged by its own pick line. */
+        /** A sealed carton of {@code sku} held for an order and staged by its own pick line. */
         private Line stagedLine(String sku, String lpn, LocationId bin) {
             UUID hold = UUID.randomUUID();
             UUID line = UUID.randomUUID();
-            Reservation reservation = new Reservation(ReservationId.of(hold), UUID.randomUUID(), UUID.randomUUID(),
-                    UUID.randomUUID(), 2, NOW.minusSeconds(3600), ReservationStatus.HELD, null, null);
-            StockPackageId id = new StockPackageId(UUID.randomUUID());
-            StockPackage carton = new StockPackage(id, lpn, UUID.randomUUID(), UUID.randomUUID(), 2,
-                    NOW.minusSeconds(7200), bin,
-                    StockPackageStatus.IN_STOCK, null, null, 0L);
-            cartonsById.put(id, carton);
-            StockItem row = new StockItem(StockItemId.newId(), new Sku(sku), bin, "LOT-1",
-                    Quantity.of(2), StockStatus.AVAILABLE, List.of(reservation), 0L, NOW.minusSeconds(86_400), null, id);
-            when(stockItems.findIdByReservationId(ReservationId.of(hold))).thenReturn(Optional.of(row.id()));
-            when(stockItems.findById(row.id())).thenReturn(Optional.of(row));
-            when(stockItems.findByIdForUpdate(row.id())).thenReturn(Optional.of(row));
-            when(stockItems.findByReservationIdForUpdate(ReservationId.of(hold))).thenReturn(Optional.of(row));
-            when(stockItems.findIdsInStockPackage(id)).thenReturn(List.of(row.id()));
+            StockPackage carton = carton(lpn, new Sku(sku), bin, 2, StockStatus.AVAILABLE, ReservationStatus.HELD,
+                    hold);
             service.stage(new StageCommand(line, hold, lpn, staging.code(), PICKER));
             saved.clear();
-            return new Line(row, carton, hold, line, new StagedLine(hold, line));
+            return new Line(carton, hold, line, new StagedLine(hold, line));
         }
 
         @Test
-        @DisplayName("lines of two SKUs given in reverse order: SKU locks sorted, cartons locked once, rows by id, cartons settled once")
+        @DisplayName("lines of two SKUs given in reverse order: SKU locks sorted, then every carton locked in one call, each taken out of stock once")
         void locksInOneOrderForTheWholeTask() {
             Line b = stagedLine("SKU-B", "LPN-B", BIN);
             Line a = stagedLine("SKU-A", "LPN-A", OTHER_BIN);
-            org.mockito.Mockito.clearInvocations(policies, stockPackages, stockItems);
+            org.mockito.Mockito.clearInvocations(policies, stockPackages);
 
             var consumed = service.consumeStaged(List.of(b.staged(), a.staged()), PICKER);
 
             assertThat(consumed).extracting(ConsumedPick::sku).containsExactly("SKU-B", "SKU-A");
             assertThat(consumed).allMatch(c -> !c.alreadyConsumed());
-            var order = org.mockito.Mockito.inOrder(policies, stockPackages, stockItems);
+            var order = org.mockito.Mockito.inOrder(policies, stockPackages);
             order.verify(policies).lock("SKU-A");
             order.verify(policies).lock("SKU-B");
+            // one call for the task's cartons, which the repository locks in id order - never one lock per line, in
+            // the order the lines were given
             order.verify(stockPackages).findAllByIdForUpdate(any());
-            // each row is locked, through its hold, in row id order - not in the order the lines were given
-            List<UUID> holdsByRowId = java.util.stream.Stream.of(a, b)
-                    .sorted(java.util.Comparator.comparing(l -> l.row().id().value().toString()))
-                    .map(Line::hold).toList();
-            for (UUID hold : holdsByRowId) {
-                order.verify(stockItems).findByReservationIdForUpdate(ReservationId.of(hold));
-            }
             verify(stockPackages, org.mockito.Mockito.times(1)).findAllByIdForUpdate(any());
+            verify(stockPackages, never()).findByIdForUpdate(any());
             assertThat(a.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
             assertThat(b.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
             verify(stockPackages, org.mockito.Mockito.times(2)).save(any());
@@ -1169,25 +1071,31 @@ class PickConsumptionServiceTest {
         }
 
         @Test
-        @DisplayName("a carton a count found LOST, or one that is elsewhere, is CONFLICT and nothing of the task is deducted")
+        @DisplayName("a carton a count found LOST, or one that is elsewhere, is CONFLICT: the task is refused")
         void aCartonNotWhereItWasStagedRefusesTheWholeTask() {
-            Line good = stagedLine("SKU-A", "LPN-A", OTHER_BIN);
             Line lost = stagedLine("SKU-B", "LPN-B", BIN);
+            Line good = stagedLine("SKU-A", "LPN-A", OTHER_BIN);
+            // An approved count's shortage: the hold is given up with the carton, which is LOST.
+            lost.carton().giveUpHoldsOfWrittenOffCarton(UUID.randomUUID(), NOW);
             lost.carton().lose(NOW);
             org.mockito.Mockito.clearInvocations(stockPackages);
 
-            assertThat(refusal(() -> service.consumeStaged(List.of(good.staged(), lost.staged()), PICKER)))
+            assertThat(refusal(() -> service.consumeStaged(List.of(lost.staged(), good.staged()), PICKER)))
                     .isEqualTo(ErrorCode.CONFLICT);
-            // the refusal rolls the transaction back; no carton was settled (settling comes after every row)
+            // the refusal rolls the transaction back; the line after it was never reached
             verify(stockPackages, never()).save(any());
             assertThat(good.carton().status()).isEqualTo(StockPackageStatus.IN_STOCK);
+            assertThat(lost.carton().status()).as("never deducted as if it had shipped")
+                    .isEqualTo(StockPackageStatus.LOST);
+            assertThat(refusal(() -> service.consumeStaged(List.of(good.staged(), lost.staged()), PICKER)))
+                    .as("whatever the order of the lines").isEqualTo(ErrorCode.CONFLICT);
 
-            ledgerRows.clear();   // the first refusal rolled back in production; this mock ledger does not
+            ledgerRows.clear();   // a refusal rolled back in production; this mock ledger does not
             Line moved = stagedLine("SKU-C", "LPN-C", BIN);
             moved.carton().moveTo(OTHER_BIN);
             assertThat(refusal(() -> service.consumeStaged(List.of(moved.staged()), PICKER)))
                     .isEqualTo(ErrorCode.CONFLICT);
-            assertThat(moved.row().onHand()).isEqualTo(Quantity.of(2));
+            assertThat(moved.carton().unitsInStock()).isEqualTo(2);
             assertThat(ledgerRows.stream().filter(r -> r.type() == StockMovement.MovementType.PICK)).isEmpty();
         }
     }

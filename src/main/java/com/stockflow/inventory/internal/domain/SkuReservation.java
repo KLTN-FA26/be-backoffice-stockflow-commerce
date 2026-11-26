@@ -24,18 +24,18 @@ import java.util.UUID;
  * by a packing unit's id, because retired packing units of one item may share a factor. {@link #quantity()} is the
  * units that stands for, derived, for the events and the other modules that still do their arithmetic in units.</p>
  *
- * <p><b>Why it is not a {@link Reservation}.</b> A {@code Reservation} lives inside one {@link StockItem} and is
- * what a picker walks to. Choosing that stock item when the hold is taken — what this module did until SCRUM-152 — picked a
+ * <p><b>Why it is not a {@link Reservation}.</b> A {@code Reservation} lives inside one {@link StockPackage} and is
+ * what a picker walks to. Choosing that carton when the hold is taken — what this module did until SCRUM-152 — picked a
  * bin and a lot days before anybody knew which warehouse would ship the order, so FEFO was decided on stale data
  * and the coordinator's release could only discover afterwards that the stock sat in the wrong building. The
  * choice now happens at release ({@code InventoryService.allocate}): this hold turns {@code ALLOCATED} and lives
  * on as one {@code Reservation} per bin and lot, each pointing back here through {@code allocatedFrom}.</p>
  *
- * <p><b>Its own aggregate.</b> It belongs to no stock item, so nothing else can keep its invariants; the one rule
+ * <p><b>Its own aggregate.</b> It belongs to no carton, so nothing else can keep its invariants; the one rule
  * that spans many of them — the SKU's reservations never exceed its sellable stock — is checked by the application
  * service under the SKU's advisory lock and again by {@code tg_stock_reservation_soft_atp} in the database.</p>
  *
- * <p>Stored in {@code inventory.stock_reservation} with {@code stock_item_id IS NULL}: the order line keeps the
+ * <p>Stored in {@code inventory.stock_reservation} with {@code stock_package_id IS NULL}: the order line keeps the
  * same reservation ids it always kept, and {@code ordering.order_line_reservation}'s foreign key keeps pointing at
  * the same table.</p>
  */
@@ -164,7 +164,7 @@ public final class SkuReservation extends AggregateRoot {
     /**
      * The order was released to a warehouse and every carton of this hold now is an allocation (F-FUL step 02).
      * Called after the allocations were made, in the same transaction, so the cartons are never counted twice: from
-     * here on they are in {@code stock_item.reserved}, no longer in the SKU's soft reservations.
+     * here on each is the live allocation of its carton, no longer in the SKU's soft reservations.
      *
      * @throws BusinessException {@code RESERVATION_NOT_ACTIVE} when the hold was released or expired meanwhile
      */

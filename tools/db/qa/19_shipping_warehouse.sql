@@ -89,9 +89,10 @@ SELECT pg_temp.expect_fail('SW4 held at a warehouse that does not exist', $q$
 -- A hold counts cartons of one count (ADR-0011, V20261230000500): HCM has 33 free cartons of 1,000 of the cup.
 SELECT pg_temp.expect_true('SW5a the demo cup has 33 free cartons of 1,000 at HCM and none of another count',
     (SELECT count(*) FILTER (WHERE p.nominal_qty = 1000) = 33 AND count(*) FILTER (WHERE p.nominal_qty <> 1000) = 0
-       FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
-      WHERE s.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND s.status = 'AVAILABLE' AND s.on_hand > 0 AND s.reserved = 0
-        AND split_part(s.location_code, '-', 1) = 'HCM'));
+       FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+      WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.stock_status = 'AVAILABLE'
+        AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation a WHERE a.stock_package_id = p.id AND a.status = 'HELD')
+        AND split_part(p.location_code, '-', 1) = 'HCM'));
 SELECT pg_temp.expect_fail_by('SW5 more held at HCM than its free cartons of that count (34 > 33)',
     'exceed its free available cartons of that count (33)', $q$
     INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, cartons, units_per_carton,
@@ -135,23 +136,25 @@ SELECT pg_temp.expect_fail_by('SW8c the hold turned into cartons of another coun
     UPDATE inventory.stock_reservation SET units_per_carton = 500 WHERE id = md5('qa19:hold')::uuid $q$);
 SELECT pg_temp.expect_fail('SW9 where it is held moved', $q$
     UPDATE inventory.stock_reservation SET warehouse_code = NULL WHERE id = md5('qa19:hold')::uuid $q$);
-SELECT pg_temp.expect_fail('SW10 a hold on a stock item naming a warehouse', $q$
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons,
+SELECT pg_temp.expect_fail_by('SW10 a hold on a carton naming a warehouse', 'ck_stock_reservation_warehouse', $q$
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons,
                                              units_per_carton, reserved_at, status, sku, warehouse_code)
-    VALUES (gen_random_uuid(), md5('demo:cups:empty-stock:LY-GIAY-DEMO-12OZ-XANH:HCM-A02-1-A')::uuid, md5('qa19:contract')::uuid, gen_random_uuid(),
-            gen_random_uuid(), 1, 1, NOW(), 'HELD', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM') $q$);
--- Stock is whole LPN cartons since 4C-1/4C-2: an allocation is one carton's row (the demo's 25 cartons of 1,000 cups
--- on HCM-A01-2-B), taken whole.
+    SELECT gen_random_uuid(), p.id, md5('qa19:contract')::uuid, gen_random_uuid(),
+           gen_random_uuid(), 1, p.nominal_qty, NOW(), 'HELD', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM'
+      FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+     WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A02-1-A' AND p.stock_status = 'AVAILABLE'
+     ORDER BY p.lpn LIMIT 1 $q$);
+-- Stock is whole LPN cartons: an allocation names one carton (the demo's 25 cartons of 1,000 cups on HCM-A01-2-B),
+-- and that live row is what says the carton is taken (V20261230000600).
 SELECT pg_temp.expect_ok('SW11 allocated on a carton of HCM, where it is held (released to HCM)', $q$
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons,
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons,
                                              units_per_carton, reserved_at, status, sku, allocated_from_id)
     SELECT md5('qa19:alloc')::uuid, c.id, md5('qa19:contract')::uuid, gen_random_uuid(),
-           gen_random_uuid(), 1, c.on_hand, NOW(), 'HELD', 'LY-GIAY-DEMO-12OZ-XANH', md5('qa19:hold')::uuid
-      FROM (SELECT s.id, s.on_hand FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
-             WHERE s.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND s.location_code = 'HCM-A01-2-B' AND p.status = 'IN_STOCK'
-               AND s.on_hand = p.nominal_qty AND s.reserved = 0 ORDER BY p.lpn LIMIT 1) c;
-    UPDATE inventory.stock_item SET reserved = on_hand
-     WHERE id = (SELECT stock_item_id FROM inventory.stock_reservation WHERE id = md5('qa19:alloc')::uuid) $q$);
+           gen_random_uuid(), 1, c.nominal_qty, NOW(), 'HELD', 'LY-GIAY-DEMO-12OZ-XANH', md5('qa19:hold')::uuid
+      FROM (SELECT p.id, p.nominal_qty FROM inventory.stock_package p
+              JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+             WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' AND p.stock_status = 'AVAILABLE'
+               AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation a WHERE a.stock_package_id = p.id AND a.status = 'HELD') ORDER BY p.lpn LIMIT 1) c $q$);
 
 \echo '--- released from where it ships (BR-22)'
 SELECT pg_temp.expect_fail('SW12 an order of a contract released with no shipping warehouse', $q$

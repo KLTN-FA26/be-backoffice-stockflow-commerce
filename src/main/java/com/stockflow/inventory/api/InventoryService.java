@@ -12,12 +12,12 @@ import java.util.UUID;
  * THE public API of the inventory module. Every other module talks to inventory through this
  * interface and nothing else.
  *
- * <p>What other modules deliberately cannot reach: {@code StockItem}, {@code StockItemRepository},
+ * <p>What other modules deliberately cannot reach: {@code StockPackage}, {@code StockPackageRepository},
  * the JPA entities, the controller. They all live under {@code inventory.internal}, and
  * {@code ModularityTest} fails the build if anyone imports them.</p>
  *
  * <p>The parameters and return types are records declared in this same package, never domain
- * objects. Handing another module a {@code StockItem} would let it call {@code allocate()} on the
+ * objects. Handing another module a {@code StockPackage} would let it call {@code allocate()} on the
  * aggregate directly, outside a transaction and outside the invariants.</p>
  */
 public interface InventoryService {
@@ -25,7 +25,7 @@ public interface InventoryService {
     /**
      * Available to promise for one SKU (docs 01): sellable units on hand — AVAILABLE — minus
      * every hold on them (allocations) minus the live SKU reservations (the holds Sales takes at a
-     * shipping warehouse), which sit on no stock item. Never negative.
+     * shipping warehouse), which sit on no carton. Never negative.
      */
     int availableToPromise(Sku sku);
 
@@ -261,7 +261,7 @@ public interface InventoryService {
      * it (SCRUM-461): the item exists only because its variant was created (docs 01 BR-07), and the
      * variant cannot go while it stands. A SKU with no item is skipped.
      *
-     * <p>The caller asks {@link #skusInUse} first; this is the last line of defence: stock rows, movements,
+     * <p>The caller asks {@link #skusInUse} first; this is the last line of defence: cartons, movements,
      * adjustments, counts, purchase order and receipt lines, pick lines and putaway or move tasks
      * all point at an item through foreign keys, and any of them refuses the delete.</p>
      *

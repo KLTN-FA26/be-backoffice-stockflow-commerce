@@ -314,7 +314,7 @@ class ShippingWarehouseIntegrationTest {
     /** Every reservation row of the order: SKU reservations and allocations alike. */
     private List<Map<String, Object>> reservationsOf(UUID orderId) {
         return jdbc.queryForList("""
-                SELECT id, sku, warehouse_code, stock_item_id, status, cartons * units_per_carton AS quantity, cartons,
+                SELECT id, sku, warehouse_code, stock_package_id, status, cartons * units_per_carton AS quantity, cartons,
                        units_per_carton, allocated_from_id, release_reason
                   FROM inventory.stock_reservation WHERE order_id = ? ORDER BY reserved_at, id""", orderId);
     }
@@ -535,7 +535,7 @@ class ShippingWarehouseIntegrationTest {
                 .containsEntry("status", "HELD")
                 .containsEntry("quantity", CARTONS * PER_CARTON).containsEntry("cartons", CARTONS)
                 .containsEntry("units_per_carton", PER_CARTON);
-        assertThat(hold.get("stock_item_id")).as("on no stock item: bins are chosen at release").isNull();
+        assertThat(hold.get("stock_package_id")).as("on no carton: cartons are chosen at release").isNull();
         UUID reservationId = (UUID) hold.get("id");
         assertThat(lineReservations(line)).containsExactly(reservationId);
 
@@ -630,7 +630,7 @@ class ShippingWarehouseIntegrationTest {
                 .satisfies(r -> {
                     assertThat(r).containsEntry("quantity", 5 * PER_CARTON).containsEntry("warehouse_code", a.code())
                             .containsEntry("status", "HELD");
-                    assertThat(r.get("stock_item_id")).isNull();
+                    assertThat(r.get("stock_package_id")).isNull();
                 });
         assertThat(atp(a)).isZero();
     }
@@ -796,7 +796,7 @@ class ShippingWarehouseIntegrationTest {
                 reservationId)).as("the SKU reservation became allocations").isEqualTo("ALLOCATED");
         List<Map<String, Object>> allocations = jdbc.queryForList("""
                 SELECT r.id, r.cartons * r.units_per_carton AS quantity, r.cartons, r.status, s.location_code
-                  FROM inventory.stock_reservation r JOIN inventory.stock_item s ON s.id = r.stock_item_id
+                  FROM inventory.stock_reservation r JOIN inventory.stock_package s ON s.id = r.stock_package_id
                  WHERE r.allocated_from_id = ?""", reservationId);
         assertThat(allocations).isNotEmpty();
         assertThat(allocations).extracting(r -> r.get("location_code")).as("on bins of A only").containsOnly(a.bin());
@@ -808,8 +808,10 @@ class ShippingWarehouseIntegrationTest {
         assertThat(lineReservations(line)).as("the line now names the allocations")
                 .containsExactlyInAnyOrderElementsOf(allocations.stream().map(r -> (UUID) r.get("id")).toList());
         assertThat(jdbc.queryForObject("""
-                SELECT COALESCE(SUM(reserved), 0) FROM inventory.stock_item WHERE sku = ? AND location_code = ?""",
-                Long.class, sku.sku(), b.bin())).as("B's stock untouched").isZero();
+                SELECT count(*) FROM inventory.stock_reservation r
+                  JOIN inventory.stock_package p ON p.id = r.stock_package_id
+                 WHERE r.sku = ? AND r.status = 'HELD' AND p.location_code = ?""",
+                Long.class, sku.sku(), b.bin())).as("B's stock untouched: no live allocation names a carton there").isZero();
     }
 
     @Test

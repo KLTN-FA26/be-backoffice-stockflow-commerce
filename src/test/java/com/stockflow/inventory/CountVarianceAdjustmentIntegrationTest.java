@@ -93,19 +93,16 @@ class CountVarianceAdjustmentIntegrationTest {
 
     // ------------------------------------------------------------------ fixtures
 
-    /** A whole carton on the bin and the one row holding all of it. */
+    /** A whole carton on the bin: AVAILABLE, of the test's lot. */
     private UUID carton(String name) {
         UUID id = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
-                        counted_at, location_code, status) values (?, ?, ?, ?, ?, now(), ?, 'IN_STOCK')""",
-                    id, "LPN-" + sku + "-" + name, item, cartonUnit, CARTON_FACTOR, BIN);
-            jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, lot_number, received_at,
-                        on_hand, reserved, status, version, created_at, stock_package_id)
-                    values (?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now(), ?)""",
-                    Identifiers.newId(), sku, BIN, lot, Timestamp.from(EARLY), CARTON_FACTOR, id);
+                        counted_at, location_code, status, stock_status, lot_id, received_at)
+                    values (?, ?, ?, ?, ?, now(), ?, 'IN_STOCK', 'AVAILABLE', ?, ?)""",
+                    id, "LPN-" + sku + "-" + name, item, cartonUnit, CARTON_FACTOR, BIN,
+                    com.stockflow.support.CartonRows.lot(jdbc, sku, lot, EARLY), Timestamp.from(EARLY));
         });
         return id;
     }
@@ -135,7 +132,7 @@ class CountVarianceAdjustmentIntegrationTest {
     private Map<String, Object> cartonState(UUID id) {
         return jdbc.queryForMap("""
                 select p.status,
-                       (select coalesce(sum(s.on_hand), 0) from inventory.stock_item s where s.stock_package_id = p.id) as held
+                       (case when p.status = 'IN_STOCK' then p.nominal_qty else 0 end)::bigint as held
                   from inventory.stock_package p where p.id = ?""", id);
     }
 
@@ -279,10 +276,10 @@ class CountVarianceAdjustmentIntegrationTest {
         assertThat(cartonState(box)).containsEntry("status", "IN_STOCK").containsEntry("held", (long) CARTON_FACTOR);
         assertThat(jdbc.queryForObject("select closed_at is null from inventory.stock_package where id = ?",
                 Boolean.class, box)).isTrue();
-        assertThat(jdbc.queryForObject("select count(*) from inventory.stock_item where sku = ?", Integer.class, sku))
-                .as("the carton's one row (uk_stock_item_package), no new layer").isEqualTo(1);
-        assertThat(jdbc.queryForObject("select lot_number from inventory.stock_item where stock_package_id = ?",
-                String.class, box)).as("BR-18: its own lot").isEqualTo(lot);
+        assertThat(jdbc.queryForObject("select count(*) from inventory.stock_package where inventory_item_id = ?",
+                Integer.class, item)).as("the very carton, no second one").isEqualTo(1);
+        assertThat(jdbc.queryForObject("select l.lot_number from inventory.stock_package p join inventory.stock_lot l"
+                + " on l.id = p.lot_id where p.id = ?", String.class, box)).as("BR-18: its own lot").isEqualTo(lot);
         assertThat(adjustmentLedger()).filteredOn(row -> found.adjustmentId().equals(row.get("reference_id")))
                 .singleElement().satisfies(row -> {
                     assertThat(row.get("stock_package_id")).isEqualTo(box);
@@ -323,8 +320,8 @@ class CountVarianceAdjustmentIntegrationTest {
         });
         assertThat(jdbc.queryForObject("select status || ':' || release_reason from inventory.stock_reservation "
                 + "where id = ?", String.class, hold)).isEqualTo("RELEASED:SHORT_PICKED");
-        assertThat(jdbc.queryForObject("select reserved from inventory.stock_item where stock_package_id = ?",
-                Integer.class, box)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from inventory.stock_reservation where stock_package_id = ?"
+                + " and status = 'HELD'", Integer.class, box)).as("no live allocation names the carton").isZero();
     }
 
     @Test

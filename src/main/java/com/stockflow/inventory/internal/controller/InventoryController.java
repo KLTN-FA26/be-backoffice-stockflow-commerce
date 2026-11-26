@@ -197,7 +197,7 @@ class InventoryController {
      * <p><b>For operations, not for picking.</b> A pick line deducts its hold in-process, in its own
      * transaction, through {@code inventory :: consumption} (SCRUM-275): {@code fulfillment} never
      * calls this endpoint. It stays for an operator who has to consume a hold outside a pick task, and
-     * runs the same implementation — the hold becomes CONSUMED, {@code on_hand} falls, one {@code PICK}
+     * runs the same implementation — the hold becomes CONSUMED, its carton leaves stock, one {@code PICK}
      * ledger row names the order and {@code StockDeducted} is published. A hold that is no longer HELD
      * is a 409 {@code RESERVATION_NOT_ACTIVE}. Guarded by {@code UPDATE} rather than {@code CREATE}: it
      * changes an existing hold, it does not make one.</p>

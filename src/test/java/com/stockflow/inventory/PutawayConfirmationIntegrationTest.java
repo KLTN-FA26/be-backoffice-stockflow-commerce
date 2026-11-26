@@ -456,8 +456,8 @@ class PutawayConfirmationIntegrationTest {
             assertThat(row.get("lpn")).isEqualTo(lpn1);
         });
         assertThat(jdbc.queryForList("""
-                SELECT s.status, s.location_code FROM inventory.stock_item s
-                  JOIN inventory.stock_package p ON p.id = s.stock_package_id WHERE p.lpn = ?""", lpn1))
+                SELECT p.stock_status AS status, p.location_code FROM inventory.stock_package p
+                 WHERE p.lpn = ?""", lpn1))
                 .singleElement().satisfies(row -> {
                     assertThat(row.get("status")).isEqualTo("AVAILABLE");
                     assertThat(row.get("location_code")).isEqualTo(bin);
@@ -484,8 +484,8 @@ class PutawayConfirmationIntegrationTest {
         assertThat(done.status()).isEqualTo("DONE");
         assertThat(done.targetLocationCode()).isEqualTo(overflow);
         assertThat(jdbc.queryForList("""
-                SELECT s.status, s.location_code FROM inventory.stock_item s
-                  JOIN inventory.stock_package p ON p.id = s.stock_package_id WHERE p.lpn = ?""", lpn1))
+                SELECT p.stock_status AS status, p.location_code FROM inventory.stock_package p
+                 WHERE p.lpn = ?""", lpn1))
                 .singleElement().satisfies(row -> {
                     assertThat(row.get("status")).isEqualTo("AVAILABLE");
                     assertThat(row.get("location_code")).isEqualTo(overflow);
@@ -536,7 +536,7 @@ class PutawayConfirmationIntegrationTest {
                                                      location_code)
                 SELECT ?, ?, p.inventory_item_id, p.uom_conversion_id, 10, ? FROM inventory.stock_package p
                  WHERE p.lpn = ?""";
-        // Each in a transaction rolled back: only the row trigger is under test, not the carton's stock rows.
+        // Each in a transaction rolled back: only the row trigger is under test, not the carton as stock.
         assertThat(org.junit.jupiter.api.Assertions.assertThrows(org.springframework.dao.DataAccessException.class,
                 () -> tx.executeWithoutResult(s -> {
                     s.setRollbackOnly();

@@ -4,37 +4,27 @@
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
--- V20261111000110 (team plan 4C-1) put the demo stock into cartons. The checks of loose stock below - loose stock goes
--- with 4C-3 - use the empty rows it left of the demo cup LY-GIAY-DEMO-12OZ-XANH (made again for the cups by
--- V20261206000100), filled as they were before it. The cups' cartons stay beside them, so the books hold the demo cups
--- twice for the length of this script; no check here reads a SKU's total.
--- Since 5-5 enforce_sku_policy refuses live stock with no lot and a layer raised in place, for every SKU: the demo
--- rows are lot-less zero rows that 4C-1 emptied, so this fixture - and only this statement pair - writes them back by
--- hand under a lot of their own, with the trigger off. Everything checked after it runs with the trigger on.
--- Since the whole-carton rule (ck_stock_item_whole_cartons, V20261117000100) a row with units must sit in a carton, so
--- the two demo rows are filled the only way the table allows: each in a carton of its own size (25 and 8 cups).
-ALTER TABLE inventory.stock_item DISABLE TRIGGER trg_stock_sku_policy;
+-- The moves and holds below use two cartons of the demo cup LY-GIAY-DEMO-12OZ-XANH made here, of 25 and of 8 cups, in a
+-- lot of their own. The carton is the stock (ADR-0011, V20261230000600): each is one row of inventory.stock_package
+-- with its stock status, lot and receipt date. The cups' demo cartons stay beside them; no check here reads a SKU's
+-- total.
+INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)
+VALUES (md5('qa03x:demo:lot')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'QA-LOT', NULL, 'UNTRACED', NOW()),
+       (md5('qa03:lot')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', NOW() - interval '1 day', 'UNTRACED', NOW());
 -- An item has ONE active carton (01 BR-03): the demo seed's is retired, then each carton is made in its unit while
 -- that unit is the active one, which is retired before the next is declared.
 UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa03x:demo:u25')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_DEMO25', 25);
-INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status)
-VALUES (md5('qa03x:demo:p25')::uuid, 'QA-DEMO-25', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa03x:demo:u25')::uuid, 25, NOW(), 'HCM-A01-2-B', 'IN_STOCK');
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status, stock_status, lot_id)
+VALUES (md5('qa03x:demo:p25')::uuid, 'QA-DEMO-25', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa03x:demo:u25')::uuid, 25, NOW(), 'HCM-A01-2-B', 'IN_STOCK', 'AVAILABLE', md5('qa03x:demo:lot')::uuid);
 UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa03x:demo:u8')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_DEMO8', 8);
-INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status)
-VALUES (md5('qa03x:demo:p8')::uuid, 'QA-DEMO-8', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa03x:demo:u8')::uuid, 8, NOW(), 'HCM-A02-1-A', 'IN_STOCK');
-UPDATE inventory.stock_item SET on_hand = 25, lot_number = 'QA-LOT', lot_id = NULL, stock_package_id = md5('qa03x:demo:p25')::uuid
- WHERE id = md5('demo:cups:empty-stock:LY-GIAY-DEMO-12OZ-XANH:HCM-A01-2-B')::uuid;
-UPDATE inventory.stock_item SET on_hand = 8, lot_number = 'QA-LOT', lot_id = NULL, stock_package_id = md5('qa03x:demo:p8')::uuid
- WHERE id = md5('demo:cups:empty-stock:LY-GIAY-DEMO-12OZ-XANH:HCM-A02-1-A')::uuid;
-SET CONSTRAINTS ALL IMMEDIATE;
-SET CONSTRAINTS ALL DEFERRED;
-ALTER TABLE inventory.stock_item ENABLE TRIGGER trg_stock_sku_policy;
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status, stock_status, lot_id)
+VALUES (md5('qa03x:demo:p8')::uuid, 'QA-DEMO-8', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa03x:demo:u8')::uuid, 8, NOW(), 'HCM-A02-1-A', 'IN_STOCK', 'AVAILABLE', md5('qa03x:demo:lot')::uuid);
 
 -- Inserts a warehouse whether or not the pre-C2 column "code" still exists (C2 drops it).
 CREATE FUNCTION pg_temp.qa_warehouse(wid UUID, wprefix TEXT, wunit TEXT, w NUMERIC, h NUMERIC) RETURNS void
@@ -150,17 +140,11 @@ UPDATE inventory.uom_conversions SET active = FALSE
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa03:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA03_CTN', 4);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
-                                     location_code, status)
+                                     location_code, status, stock_status, lot_id, received_at)
 VALUES (md5('qa03:pk1')::uuid, 'QA03-LPN-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa03:unit')::uuid, 4, NOW(),
-        'HCM-A01-2-B', 'IN_STOCK'),
+        'HCM-A01-2-B', 'IN_STOCK', 'AVAILABLE', md5('qa03:lot')::uuid, NOW() - interval '1 day'),
        (md5('qa03:pk2')::uuid, 'QA03-LPN-2', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa03:unit')::uuid, 4, NOW(),
-        'HCM-A02-1-A', 'IN_STOCK');
-INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,
-                                  received_at, stock_package_id)
-VALUES (md5('qa03:pk1:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'UNTRACED', 4, 0, 'AVAILABLE', NOW(),
-        NOW() - interval '1 day', md5('qa03:pk1')::uuid),
-       (md5('qa03:pk2:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A02-1-A', 'UNTRACED', 4, 0, 'AVAILABLE', NOW(),
-        NOW() - interval '1 day', md5('qa03:pk2')::uuid);
+        'HCM-A02-1-A', 'IN_STOCK', 'AVAILABLE', md5('qa03:lot')::uuid, NOW() - interval '1 day');
 INSERT INTO inventory.cycle_count (id, count_number, warehouse_id, trigger_type, status, started_at, assigned_user_id)
 VALUES (md5('qa:cc:1')::uuid, 'CC-QA-1', md5('demo:wh:HCM')::uuid, 'SHORT_PICK', 'IN_PROGRESS', NOW(), md5('demo:user:editor')::uuid);
 SELECT pg_temp.expect_fail('I10 counting a location of another warehouse', $q$
@@ -204,8 +188,7 @@ SELECT pg_temp.expect_fail_by('I19 an adjustment that goes neither way', '"direc
 SELECT pg_temp.expect_ok('I20 approved by someone else, posted: the carton written off whole and LOST, with its ledger row', $q$
     UPDATE inventory.stock_adjustment SET status = 'APPROVED', decided_by = md5('demo:user:approver')::uuid, decided_at = NOW() WHERE id = md5('qa:adj:1')::uuid;
     UPDATE inventory.stock_adjustment SET status = 'POSTED', posted_at = NOW() WHERE id = md5('qa:adj:1')::uuid;
-    UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa03:pk1:row')::uuid;
-    UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW() WHERE id = md5('qa03:pk1')::uuid;
+    UPDATE inventory.stock_package SET status = 'LOST', stock_status = NULL, closed_at = NOW() WHERE id = md5('qa03:pk1')::uuid;
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, reference_type, reference_id, actor_id, occurred_at, stock_package_id)
     VALUES (gen_random_uuid(), 'COUNT_CORRECTION', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'STOCK_ADJUSTMENT', md5('qa:adj:1')::uuid, md5('demo:user:approver')::uuid, NOW(), md5('qa03:pk1')::uuid) $q$);
 
@@ -223,16 +206,16 @@ SELECT pg_temp.expect_fail('I37 lowercase document type', $q$
     INSERT INTO platform.document_sequence (document_type, sequence_date) VALUES ('gr', CURRENT_DATE) $q$);
 
 \echo '--- holds: no deadline at all (V20261117000300; the column went with V20261230000500, ADR-0011)'
-SELECT pg_temp.expect_ok('I38 a pinned hold (no deadline) on a stock row', $q$
+SELECT pg_temp.expect_ok('I38 a pinned hold (no deadline) on a carton', $q$
     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
                                          created_at, contract_signed_at)
     VALUES (md5('qa:order:pinned')::uuid, 'SO-QA-PIN', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'CONFIRMED',
             10000000, 'VND', NOW(), NOW(), NOW());
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons, units_per_carton,
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton,
                                             reserved_at, status)
-    SELECT md5('qa:res:pinned')::uuid, s.id, md5('qa:order:pinned')::uuid, md5('qa:req:pinned')::uuid,
-           md5('qa:req:pinned')::uuid, 1, s.on_hand, NOW(), 'HELD'
-      FROM inventory.stock_item s WHERE s.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND s.location_code = 'HCM-A01-2-B' LIMIT 1 $q$);
+    SELECT md5('qa:res:pinned')::uuid, p.id, md5('qa:order:pinned')::uuid, md5('qa:req:pinned')::uuid,
+           md5('qa:req:pinned')::uuid, 1, p.nominal_qty, NOW(), 'HELD'
+      FROM inventory.stock_package p WHERE p.id = md5('qa03x:demo:p25')::uuid $q$);
 SELECT pg_temp.expect_fail('I39 a deadline on a hold: the column is gone', $q$
     UPDATE inventory.stock_reservation SET expires_at = NOW() + INTERVAL '30 minutes'
      WHERE id = md5('qa:res:pinned')::uuid $q$);

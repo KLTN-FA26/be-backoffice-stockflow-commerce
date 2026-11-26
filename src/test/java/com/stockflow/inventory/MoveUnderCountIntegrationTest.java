@@ -126,8 +126,7 @@ class MoveUnderCountIntegrationTest {
         plan(A);
 
         assertThat(code(catchThrowable(() -> move(lpnA, B)))).isEqualTo(ErrorCode.STOCK_SLOT_UNDER_COUNT);
-        assertThat(jdbc.queryForObject("select sum(on_hand) from inventory.stock_item where sku = ? and location_code = ?",
-                Integer.class, sku, A)).isEqualTo(10);
+        assertThat(unitsAt(A)).isEqualTo(10);
     }
 
     @Test
@@ -153,8 +152,14 @@ class MoveUnderCountIntegrationTest {
 
         move(lpnA, B);
 
-        assertThat(jdbc.queryForObject("select sum(on_hand) from inventory.stock_item where sku = ? and location_code = ?",
-                Integer.class, sku, B)).isEqualTo(10);
+        assertThat(unitsAt(B)).isEqualTo(10);
+    }
+
+    /** Units of the SKU standing at a location: the counts of its cartons in stock there. */
+    private int unitsAt(String location) {
+        return jdbc.queryForObject("select coalesce(sum(p.nominal_qty), 0) from inventory.stock_package p"
+                + " join inventory.inventory_items i on i.id = p.inventory_item_id"
+                + " where i.sku = ? and p.location_code = ? and p.status = 'IN_STOCK'", Integer.class, sku, location);
     }
 
     @Test

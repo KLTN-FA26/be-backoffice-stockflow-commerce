@@ -51,16 +51,14 @@ class StockMovementShapeSchemaTest {
 
     /** One whole carton of {@link #SKU} in stock at {@link #BIN}, in the SKU's carton unit. */
     private static void carton(Connection db) throws SQLException {
-        db.setAutoCommit(false);   // the carton and its row are checked together, at commit
+        // The carton is the stock (V20261230000600): AVAILABLE, of a lot of its SKU.
+        update(db, "INSERT INTO inventory.stock_lot (id, sku, lot_number, origin_type, created_at) VALUES"
+                + " (md5('it:shape:lot')::uuid, ?, 'UNTRACED', 'UNTRACED', NOW())", SKU);
         update(db, "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,"
-                + " counted_at, location_code, status) SELECT ?, 'IT-SHAPE-1', u.inventory_item_id, u.id, u.factor,"
-                + " NOW(), ?, 'IN_STOCK' FROM inventory.uom_conversions u JOIN inventory.inventory_items i"
+                + " counted_at, location_code, status, stock_status, lot_id, received_at) SELECT ?, 'IT-SHAPE-1',"
+                + " u.inventory_item_id, u.id, u.factor, NOW(), ?, 'IN_STOCK', 'AVAILABLE', md5('it:shape:lot')::uuid,"
+                + " NOW() FROM inventory.uom_conversions u JOIN inventory.inventory_items i"
                 + " ON i.id = u.inventory_item_id WHERE i.sku = ? AND u.active", CARTON, BIN, SKU);
-        update(db, "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status,"
-                + " created_at, received_at, stock_package_id) SELECT gen_random_uuid(), ?, ?, 'UNTRACED', p.nominal_qty,"
-                + " 0, 'AVAILABLE', NOW(), NOW(), p.id FROM inventory.stock_package p WHERE p.id = ?", SKU, BIN, CARTON);
-        db.commit();
-        db.setAutoCommit(true);
     }
 
     /** Every rule of the shape, each allowed case next to the case it refuses. */

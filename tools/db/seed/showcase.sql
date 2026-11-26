@@ -894,12 +894,11 @@ UPDATE h_order o
           FROM h_order) x
  WHERE x.seq = o.seq AND o.stage = 'DELIVERED' AND o.credit AND o.d > 1;
 
--- One row per carton of each order that has goods in a warehouse: its LPN, its rows, where it was put away.
+-- One row per carton of each order that has goods in a warehouse: its LPN, its ids, where it was put away.
 CREATE TEMP TABLE h_carton ON COMMIT DROP AS
 SELECT o.key, o.seq, l.ln, l.sku, l.line_id, l.upc, l.length_cm, l.width_cm, l.height_cm, l.carton_kg, l.rotatable,
        l.first_n + m - 1 AS n,
        pg_temp.sid('lpn:' || o.key || ':' || (l.first_n + m - 1)) AS package_id,
-       pg_temp.sid('stock:' || o.key || ':' || (l.first_n + m - 1)) AS stock_item_id,
        pg_temp.sid('putaway:' || o.key || ':' || (l.first_n + m - 1)) AS task_id,
        pg_temp.sid('allocation:' || o.key || ':' || (l.first_n + m - 1)) AS allocation_id,
        pg_temp.sid('pick-line:' || o.key || ':' || (l.first_n + m - 1)) AS pick_line_id,
@@ -1383,16 +1382,13 @@ UPDATE ordering.production_order p
        last_modified_at = pg_temp.at(o.r, '09:00'), last_modified_by = pg_temp.staff(o.kho)::text
   FROM h_received o WHERE p.id = o.po_id;
 
+-- The carton is the stock (ADR-0011, V20261230000600): going into stock it takes its stock status, its lot and its
+-- receipt date, and there is no stock row beside it.
 UPDATE inventory.stock_package p
-   SET status = 'IN_STOCK', version = 1, last_modified_at = pg_temp.at(o.r, '09:00'),
+   SET status = 'IN_STOCK', stock_status = 'INBOUND', lot_id = pg_temp.sid('lot:' || c.key || ':' || c.ln),
+       received_at = pg_temp.at(o.r, '09:00'), version = 1, last_modified_at = pg_temp.at(o.r, '09:00'),
        last_modified_by = pg_temp.staff(o.kho)::text
   FROM h_carton c JOIN h_received o ON o.key = c.key WHERE p.id = c.package_id;
-
-INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version, created_at,
-                                  created_by, received_at, stock_package_id, lot_id)
-SELECT c.stock_item_id, c.sku, o.wh || '-RCV01', o.po_code, c.upc, 0, 'INBOUND', 0, pg_temp.at(o.r, '09:00'),
-       pg_temp.staff(o.kho)::text, pg_temp.at(o.r, '09:00'), c.package_id, pg_temp.sid('lot:' || c.key || ':' || c.ln)
-  FROM h_carton c JOIN h_received o ON o.key = c.key;
 
 INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, lot_id, from_location_code, to_location_code,
                                       from_status, to_status, reference_type, reference_id, actor_id,
@@ -1434,16 +1430,10 @@ SELECT pg_temp.sid('po-history:' || o.key || ':' || h.n), o.po_id, h.from_status
 -- 15. Putaway (05): one task per carton, each carton whole into a bin that fits it - a minute a carton from 10:00
 -- ---------------------------------------------------------------------------------------------
 UPDATE inventory.stock_package p
-   SET location_code = c.bin, version = 2,
+   SET location_code = c.bin, stock_status = 'AVAILABLE', version = 2,
        last_modified_at = pg_temp.at(o.r, '10:00') + (c.n || ' minutes')::interval,
        last_modified_by = pg_temp.staff(o.kho)::text
   FROM h_carton c JOIN h_received o ON o.key = c.key WHERE p.id = c.package_id;
-
-UPDATE inventory.stock_item s
-   SET location_code = c.bin, status = 'AVAILABLE', version = 1,
-       last_modified_at = pg_temp.at(o.r, '10:00') + (c.n || ' minutes')::interval,
-       last_modified_by = pg_temp.staff(o.kho)::text
-  FROM h_carton c JOIN h_received o ON o.key = c.key WHERE s.id = c.stock_item_id;
 
 INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, lot_id, from_location_code, to_location_code,
                                       from_status, to_status, reference_type, reference_id, actor_id,
@@ -1506,17 +1496,13 @@ UPDATE inventory.stock_reservation r
    SET status = 'ALLOCATED', closed_at = pg_temp.at(o.d + 3, '09:00')
   FROM h_line l JOIN h_released o ON o.key = l.key WHERE r.id = pg_temp.sid('hold:' || l.key || ':' || l.ln);
 
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons,
+-- An allocation names its carton; while it is HELD the carton is taken (uk_stock_reservation_live_carton).
+INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons,
                                          units_per_carton, reserved_at, status, sku, allocated_from_id)
-SELECT c.allocation_id, c.stock_item_id, o.id, pg_temp.sid('hold:' || c.key || ':' || c.ln),
+SELECT c.allocation_id, c.package_id, o.id, pg_temp.sid('hold:' || c.key || ':' || c.ln),
        pg_temp.sid('allocation-request:' || c.key || ':' || c.n), 1, c.upc, pg_temp.at(o.d + 3, '09:00'), 'HELD', c.sku,
        pg_temp.sid('hold:' || c.key || ':' || c.ln)
   FROM h_carton c JOIN h_released o ON o.key = c.key;
-
-UPDATE inventory.stock_item s
-   SET reserved = c.upc, version = 2, last_modified_at = pg_temp.at(o.d + 3, '09:00'),
-       last_modified_by = pg_temp.staff(o.mgr)::text
-  FROM h_carton c JOIN h_released o ON o.key = c.key WHERE s.id = c.stock_item_id;
 
 INSERT INTO ordering.delivery_batch_hold (reservation_id, delivery_batch_id, order_id, order_line_id, created_at)
 SELECT c.allocation_id, o.batch_id, o.id, c.line_id, pg_temp.at(o.d + 3, '09:00')
@@ -1626,12 +1612,8 @@ SELECT pg_temp.sid('ledger:pick:' || c.key || ':' || c.n), 'PICK', c.sku, c.po_c
        pg_temp.staff(c.kho), c.package_id, c.order_id, c.at, 0, c.at, pg_temp.staff(c.kho)::text
   FROM h_picked c;
 
-UPDATE inventory.stock_item s
-   SET on_hand = 0, reserved = 0, version = 3, last_modified_at = c.at, last_modified_by = pg_temp.staff(c.kho)::text
-  FROM h_picked c WHERE s.id = c.stock_item_id;
-
 UPDATE inventory.stock_package p
-   SET status = 'CONSUMED', closed_at = c.at, version = 3, last_modified_at = c.at,
+   SET status = 'CONSUMED', stock_status = NULL, closed_at = c.at, version = 3, last_modified_at = c.at,
        last_modified_by = pg_temp.staff(c.kho)::text
   FROM h_picked c WHERE p.id = c.package_id;
 
@@ -3763,11 +3745,12 @@ SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;
 
 -- ---------------------------------------------------------------------------------------------
--- 30.2 The cartons this section names (h_carton: order seq and carton number n), read with their rows as they stand
+-- 30.2 The cartons this section names (h_carton: order seq and carton number n), read with their lot as they stand
 -- ---------------------------------------------------------------------------------------------
 CREATE TEMP TABLE x_iop_carton ON COMMIT DROP AS
-SELECT c.seq, c.n, c.key, c.ln, c.line_id, c.package_id, c.stock_item_id, c.lpn, c.sku, c.upc, s.lot_number, s.lot_id
-  FROM h_carton c JOIN inventory.stock_item s ON s.id = c.stock_item_id
+SELECT c.seq, c.n, c.key, c.ln, c.line_id, c.package_id, c.lpn, c.sku, c.upc, l.lot_number, p.lot_id
+  FROM h_carton c JOIN inventory.stock_package p ON p.id = c.package_id
+  JOIN inventory.stock_lot l ON l.id = p.lot_id
  WHERE c.seq IN (93, 94, 95, 96, 99, 100);
 
 -- Where a carton is now (it follows the moves below).
@@ -3777,11 +3760,13 @@ $$ SELECT p.location_code FROM inventory.stock_package p JOIN h_carton c ON c.pa
 
 DO $$
 BEGIN
-    -- Every carton named below is in stock in a bin, its row AVAILABLE; those of the HELD orders are held by SKU only.
+    -- Every carton named below is in stock in a bin, AVAILABLE; those of the HELD orders are held by SKU only (no
+    -- live allocation names them).
     IF EXISTS (SELECT 1 FROM x_iop_carton x JOIN inventory.stock_package p ON p.id = x.package_id
-                 JOIN inventory.stock_item s ON s.id = x.stock_item_id
-                WHERE p.status <> 'IN_STOCK' OR s.status <> 'AVAILABLE' OR p.location_code NOT LIKE 'BDG-_%-%-%'
-                   OR (x.seq IN (93, 94, 95) AND s.reserved <> 0)) THEN
+                WHERE p.stock_status IS DISTINCT FROM 'AVAILABLE' OR p.location_code NOT LIKE 'BDG-_%-%-%'
+                   OR (x.seq IN (93, 94, 95)
+                       AND EXISTS (SELECT 1 FROM inventory.stock_reservation a
+                                    WHERE a.stock_package_id = p.id AND a.status = 'HELD'))) THEN
         RAISE EXCEPTION 'iop: a carton of orders 93-100 is not in stock in a BDG bin as expected';
     END IF;
     -- TUIL-NUD is order 94's alone, held by one SKU hold: the write-off below cuts that hold only.
@@ -3838,9 +3823,9 @@ SELECT pg_temp.iop_count_id(c.code), c.number, pg_temp.sid('wh:BDG'), c.trigger_
 INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, lot_number, booked,
                                         recount_required, version, created_at, created_by, stock_package_id)
 SELECT pg_temp.iop_line_id(l.code, l.seq, l.n), pg_temp.iop_count_id(l.code), pg_temp.iop_bin(l.seq, l.n), x.sku,
-       x.lot_number, s.on_hand > 0, FALSE, 0, pg_temp.at(c.days, c.planned), pg_temp.staff(c.planner)::text, x.package_id
+       x.lot_number, p.status = 'IN_STOCK', FALSE, 0, pg_temp.at(c.days, c.planned), pg_temp.staff(c.planner)::text, x.package_id
   FROM x_iop_line l JOIN x_iop_count c ON c.code = l.code
-  JOIN x_iop_carton x ON x.seq = l.seq AND x.n = l.n JOIN inventory.stock_item s ON s.id = x.stock_item_id
+  JOIN x_iop_carton x ON x.seq = l.seq AND x.n = l.n JOIN inventory.stock_package p ON p.id = x.package_id
  WHERE l.code = p_code;
 $$;
 
@@ -3955,8 +3940,8 @@ SET CONSTRAINTS ALL DEFERRED;
 
 -- ---------------------------------------------------------------------------------------------
 -- 30.5 Cartons moved by hand (11; StockOperationsController.move): scanned by LPN to one bin, all of them or none,
---      never a carton held for an order (these are held by SKU only, reserved 0). One MOVE line a carton, reference
---      MOVE_TASK and the request id; the carton and its row follow, status unchanged.
+--      never a carton held for an order (these are held by SKU only, no allocation). One MOVE line a carton, reference
+--      MOVE_TASK and the request id; the carton moves, its stock status unchanged.
 -- ---------------------------------------------------------------------------------------------
 CREATE TEMP TABLE x_iop_move ON COMMIT DROP AS
 SELECT m.req, m.seq, m.n, m.to_bin, pg_temp.at(m.days, m.at) + (m.k * 40 || ' seconds')::interval AS at,
@@ -3970,11 +3955,6 @@ UPDATE inventory.stock_package p
    SET location_code = m.to_bin, version = p.version + 1, last_modified_at = m.at,
        last_modified_by = pg_temp.staff('kho.bd2')::text
   FROM x_iop_move m JOIN x_iop_carton x ON x.seq = m.seq AND x.n = m.n WHERE p.id = x.package_id;
-
-UPDATE inventory.stock_item s
-   SET location_code = m.to_bin, version = s.version + 1, last_modified_at = m.at,
-       last_modified_by = pg_temp.staff('kho.bd2')::text
-  FROM x_iop_move m JOIN x_iop_carton x ON x.seq = m.seq AND x.n = m.n WHERE s.id = x.stock_item_id;
 
 INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, lot_id, from_location_code, to_location_code,
                                       from_status, to_status, reference_type, reference_id, reason, actor_id,
@@ -4033,7 +4013,7 @@ SET CONSTRAINTS ALL DEFERRED;
 
 -- ---------------------------------------------------------------------------------------------
 -- 30.7 The manager decides at the end of the day.
---      V1 approved (approveCarton): the carton the count did not find written off whole - its row to zero, the carton
+--      V1 approved (approveCarton): the carton the count did not find written off whole - out of stock, so no stock status, the carton
 --      LOST so a later count can find it again (20 §4.6 step 7) - and one ADJUSTMENT line naming who approved, who
 --      asked and who counted (V20261121000200).
 -- ---------------------------------------------------------------------------------------------
@@ -4049,14 +4029,9 @@ UPDATE inventory.stock_adjustment
  WHERE id = pg_temp.iop_adj_id('V1');
 
 UPDATE inventory.stock_package p
-   SET status = 'LOST', closed_at = pg_temp.at(1, '16:00'), version = p.version + 1,
+   SET status = 'LOST', stock_status = NULL, closed_at = pg_temp.at(1, '16:00'), version = p.version + 1,
        last_modified_at = pg_temp.at(1, '16:00'), last_modified_by = pg_temp.staff('quanly.bd')::text
   FROM x_iop_post x WHERE p.id = x.package_id;
-
-UPDATE inventory.stock_item s
-   SET on_hand = 0, version = s.version + 1, last_modified_at = pg_temp.at(1, '16:00'),
-       last_modified_by = pg_temp.staff('quanly.bd')::text
-  FROM x_iop_post x WHERE s.id = x.stock_item_id;
 
 INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, lot_id, from_location_code, to_location_code,
                                       from_status, to_status, reference_type, reference_id, reason, actor_id,
@@ -4082,7 +4057,7 @@ SELECT r.id AS old_id, r.order_id, r.sku, r.warehouse_code, r.cartons - 1 AS kee
        pg_temp.at(1, '16:00') + interval '3 seconds' AS at
   FROM inventory.stock_reservation r JOIN ordering.delivery_batch_hold h ON h.reservation_id = r.id
   JOIN x_iop_post p ON p.sku = r.sku
- WHERE r.status = 'HELD' AND r.stock_item_id IS NULL AND r.warehouse_code = 'BDG';
+ WHERE r.status = 'HELD' AND r.stock_package_id IS NULL AND r.warehouse_code = 'BDG';
 
 UPDATE inventory.stock_reservation r
    SET status = 'RELEASED', release_reason = 'SHORT_PICKED', closed_at = x.at
@@ -5656,7 +5631,7 @@ SELECT r.receipt_id, r.receipt_number, r.warehouse_id, 'DRAFT', pg_temp.at(1, '1
   FROM x_dlf_ret r;
 
 CREATE TEMP TABLE x_dlf_carton ON COMMIT DROP AS
-SELECT c.key, c.n, c.lpn, c.sku, c.upc, c.package_id, c.stock_item_id, r.po_code AS lot_number, r.receipt_id, r.kho,
+SELECT c.key, c.n, c.lpn, c.sku, c.upc, c.package_id, r.po_code AS lot_number, r.receipt_id, r.kho,
        r.order_id, r.area, pg_temp.at(1, '16:25') + (c.n * 30 || ' seconds')::interval AS scanned_at,
        CASE WHEN pg_temp.rnd('dlf:dent:' || c.key || ':' || c.n) < 0.12
             THEN 'Thùng móp góc khi bốc dỡ, hàng bên trong nguyên vẹn' END AS condition
@@ -5673,33 +5648,21 @@ SELECT pg_temp.sid('dlf:return-carton:' || c.key || ':' || c.n), c.receipt_id, c
 SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;
 
+-- Back into stock as QUARANTINE (the status is named by what brings a carton back: a return receipt), with the lot
+-- and the receipt date it had: the same goods, as old as they were (V20261230000600).
 UPDATE inventory.stock_package p
-   SET status = 'IN_STOCK', location_code = c.area, closed_at = NULL, version = p.version + 1,
-       last_modified_at = pg_temp.at(1, '17:10'), last_modified_by = pg_temp.staff(c.kho)::text
+   SET status = 'IN_STOCK', stock_status = 'QUARANTINE', location_code = c.area, closed_at = NULL,
+       version = p.version + 1, last_modified_at = pg_temp.at(1, '17:10'),
+       last_modified_by = pg_temp.staff(c.kho)::text
   FROM x_dlf_carton c WHERE p.id = c.package_id;
-
--- The row fills again with its own carton's units (StockItemRepositoryAdapter.saveMerged): the same receipt layer, so
--- the application names the row to the FIFO policy trigger for that one statement.
-DO $$
-DECLARE
-    c RECORD;
-BEGIN
-    FOR c IN SELECT * FROM x_dlf_carton ORDER BY stock_item_id LOOP
-        PERFORM set_config('stockflow.same_receipt_merge', c.stock_item_id::text, true);
-        UPDATE inventory.stock_item s
-           SET location_code = c.area, status = 'QUARANTINE', on_hand = c.upc, version = s.version + 1,
-               last_modified_at = pg_temp.at(1, '17:10'), last_modified_by = pg_temp.staff(c.kho)::text
-         WHERE s.id = c.stock_item_id;
-        PERFORM set_config('stockflow.same_receipt_merge', '', true);
-    END LOOP;
-END $$;
 
 INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, lot_id, from_location_code, to_location_code,
                                       from_status, to_status, reference_type, reference_id, actor_id,
                                       order_id, stock_package_id, occurred_at, version, created_at, created_by)
-SELECT pg_temp.sid('dlf:ledger:return:' || c.key || ':' || c.n), 'RECEIPT', c.sku, s.lot_number, s.lot_id, NULL, c.area, 'QUARANTINE', 'QUARANTINE', 'GOODS_RECEIPT', c.receipt_id, pg_temp.staff(c.kho), c.order_id,
+SELECT pg_temp.sid('dlf:ledger:return:' || c.key || ':' || c.n), 'RECEIPT', c.sku, l.lot_number, p.lot_id, NULL, c.area, 'QUARANTINE', 'QUARANTINE', 'GOODS_RECEIPT', c.receipt_id, pg_temp.staff(c.kho), c.order_id,
        c.package_id, pg_temp.at(1, '17:10'), 0, pg_temp.at(1, '17:10'), pg_temp.staff(c.kho)::text
-  FROM x_dlf_carton c JOIN inventory.stock_item s ON s.id = c.stock_item_id;
+  FROM x_dlf_carton c JOIN inventory.stock_package p ON p.id = c.package_id
+  JOIN inventory.stock_lot l ON l.id = p.lot_id;
 
 UPDATE procurement.goods_receipts g
    SET status = 'CLOSED', confirmed_at = pg_temp.at(1, '17:10'), confirmed_by = pg_temp.staff(r.kho),
@@ -5769,7 +5732,7 @@ SET CONSTRAINTS ALL DEFERRED;
 -- ---------------------------------------------------------------------------------------------
 -- 60. Returns (17 §4.10, 03 §4.2, 15 §4.5; team plan 4D-2, 4D-3): a return request opened on a delivered shipment and
 --     approved on its photos; the goods always come back on a return receipt, scanned by LPN into the warehouse's
---     QUARANTINE area (each carton CONSUMED -> IN_STOCK, its row QUARANTINE in its own lot, one RECEIPT ledger line);
+--     QUARANTINE area (each carton CONSUMED -> IN_STOCK as QUARANTINE, in its own lot, one RECEIPT ledger line);
 --     Sales propose the refund per line, a second person approves it and payment settles it (order_settlement
 --     GOODS_RETURNED); the accountant records the transfer (refund_record) and the order moves on to
 --     PARTIALLY_REFUNDED / REFUNDED. Every status of a return is shown, on delivered orders with i % 12 = 1 only.
@@ -5926,7 +5889,7 @@ SELECT c.key, c.ln, c.cartons, c.loose, l.line_id, l.sku, l.upc, l.first_n, ol.u
 
 -- Every carton that came back, with its parcel's receipt.
 CREATE TEMP TABLE x_ret_carton ON COMMIT DROP AS
-SELECT b.key, b.ln, b.k, b.parcel, b.cond, h.n, h.package_id, h.stock_item_id, h.lpn, h.sku, h.upc,
+SELECT b.key, b.ln, b.k, b.parcel, b.cond, h.n, h.package_id, h.lpn, h.sku, h.upc,
        COALESCE(b.counted, h.upc) AS counted, b.counted IS NOT NULL AND b.counted < h.upc AS opened,
        pg_temp.sid('lot:' || h.key || ':' || h.ln) AS lot_id, p.day,
        pg_temp.sid('ret:receipt:' || b.key || ':' || b.parcel) AS receipt_id
@@ -6150,8 +6113,8 @@ BEGIN
 
     -- 60.5: the carton stands at the area before the ledger line names it there (tg_stock_movement_package).
     UPDATE inventory.stock_package p
-       SET status = 'IN_STOCK', location_code = r.qc_code, closed_at = NULL, return_request_id = r.rid,
-           return_ownership = 'PENDING', version = p.version + 1,
+       SET status = 'IN_STOCK', stock_status = 'QUARANTINE', location_code = r.qc_code, closed_at = NULL,
+           return_request_id = r.rid, return_ownership = 'PENDING', version = p.version + 1,
            last_modified_at = pg_temp.at(c.day, '09:30'), last_modified_by = pg_temp.staff(r.kho)::text
       FROM x_ret_carton c JOIN x_ret r ON r.key = c.key
      WHERE p.id = c.package_id AND c.parcel = rnd AND NOT c.opened;
@@ -6161,20 +6124,6 @@ BEGIN
            last_modified_at = pg_temp.at(c.day, '09:30'), last_modified_by = pg_temp.staff(r.kho)::text
       FROM x_ret_carton c JOIN x_ret r ON r.key = c.key
      WHERE p.id = c.package_id AND c.parcel = rnd AND c.opened;
-
-    -- The carton's own row is filled again in place (StockItemRepositoryAdapter.saveMerged names the row it merges
-    -- into for that one statement, so enforce_sku_policy does not take it for a new FIFO layer).
-    FOR carton IN SELECT c.stock_item_id, c.upc, c.day, r.qc_code, r.kho
-                    FROM x_ret_carton c JOIN x_ret r ON r.key = c.key
-                   WHERE c.parcel = rnd AND NOT c.opened ORDER BY c.stock_item_id LOOP
-        PERFORM set_config('stockflow.same_receipt_merge', carton.stock_item_id::text, true);
-        UPDATE inventory.stock_item s
-           SET location_code = carton.qc_code, status = 'QUARANTINE', on_hand = carton.upc, reserved = 0,
-               version = s.version + 1, last_modified_at = pg_temp.at(carton.day, '09:30'),
-               last_modified_by = pg_temp.staff(carton.kho)::text
-         WHERE s.id = carton.stock_item_id;
-    END LOOP;
-    PERFORM set_config('stockflow.same_receipt_merge', '', true);
 
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, lot_id, from_location_code,
                                           to_location_code, from_status, to_status, reference_type,

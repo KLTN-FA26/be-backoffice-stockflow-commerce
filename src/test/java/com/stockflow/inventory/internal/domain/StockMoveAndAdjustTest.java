@@ -8,13 +8,16 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
-import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** SCRUM-424 / SCRUM-145: moving stock between locations and four-eyes adjustments, no Spring. */
+/**
+ * SCRUM-145: four-eyes adjustments, no Spring. The moves of SCRUM-424 this class also covered were arithmetic on a
+ * stock row (movable units, merging layers); a carton moves whole and holds no quantity (ADR-0011), so what is left of
+ * moving is {@code StockPackageTest}'s.
+ */
 class StockMoveAndAdjustTest {
 
     private static final Sku SKU = new Sku("CUP-PP-500");
@@ -22,72 +25,6 @@ class StockMoveAndAdjustTest {
     private static final Instant NOW = Instant.parse("2026-10-08T03:00:00Z");
     private static final UUID CLERK = UUID.randomUUID();
     private static final UUID MANAGER = UUID.randomUUID();
-
-    /** A carton's row: stock is kept in whole cartons (kltn-docs 20 BR-14), so only a carton's row takes units or holds. */
-    private static StockItem available(int onHand) {
-        StockItem item = new StockItem(StockItemId.newId(), SKU, BIN, "LOT-1", Quantity.of(onHand), StockStatus.AVAILABLE,
-                List.of(), 0L, NOW, UUID.randomUUID(), new StockPackageId(UUID.randomUUID()));
-        item.pullDomainEvents();
-        return item;
-    }
-
-    @Nested
-    @DisplayName("moving stock")
-    class Moving {
-
-        @Test
-        @DisplayName("moves only the unreserved units; a carton held for an order stays where it was taken")
-        void reservedUnitsDoNotMove() {
-            StockItem free = available(10);
-            assertThat(free.movable()).isEqualTo(Quantity.of(10));
-
-            // An allocation is the whole carton (ADR-0011), so nothing of a held carton is left to move.
-            StockItem item = available(10);
-            item.allocate(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), 10, NOW);
-
-            assertThat(item.movable()).isEqualTo(Quantity.ZERO);
-            assertThatThrownBy(() -> item.moveOut(Quantity.of(1)))
-                    .isInstanceOf(InsufficientStockException.class);
-            assertThat(item.onHand()).isEqualTo(Quantity.of(10));
-            assertThat(item.reserved()).isEqualTo(Quantity.of(10));
-        }
-
-        @Test
-        @DisplayName("a carton row is other goods than a quarantined loose row: nothing merges across (review C4 M-5)")
-        void looseArrivalIsRefused() {
-            // No loose row is made with units any more (StockItem.arrivedFrom went with review P-3); the loose-row
-            // refusals of moveIn, adjust and allocate are StockItemTest's "whole cartons only" cases.
-            StockItem source = StockItem.receive(SKU, BIN, "LOT-9", Quantity.of(5));
-            assertThat(available(1).canReceiveFrom(source)).as("a carton row is other goods than a quarantined row")
-                    .isFalse();
-        }
-
-        @Test
-        @DisplayName("one lot number with two expiries, or in two lots, is two layers: a put-back never merges them")
-        void sameLotNumberOtherExpiryOrLotIsOtherGoods() {
-            Instant received = Instant.parse("2026-10-01T02:00:00Z");
-            UUID lotA = UUID.randomUUID();
-            StockItem early = StockItem.receiveInbound(SKU, BIN, "L01", Quantity.of(4),
-                    received, lotA);
-            StockItem late = StockItem.receiveInbound(SKU, BIN, "L01", Quantity.of(4),
-                    received, UUID.randomUUID());
-            StockItem otherLot = StockItem.receiveInbound(SKU, BIN, "L01", Quantity.of(4),
-                    received, UUID.randomUUID());
-            StockItem untagged = StockItem.receiveInbound(SKU, BIN, "L01", Quantity.of(4),
-                    received, null);
-
-            assertThat(late.isSameGoodsAs(early)).as("another expiry").isFalse();
-            assertThat(otherLot.isSameGoodsAs(early)).as("another stock_lot").isFalse();
-            assertThat(untagged.isSameGoodsAs(early)).as("not tagged by the database yet").isTrue();
-        }
-
-        @Test
-        @DisplayName("a move needs a quantity")
-        void degenerateMovesAreRefused() {
-            StockItem item = available(3);
-            assertThatThrownBy(() -> item.moveOut(Quantity.ZERO)).isInstanceOf(IllegalArgumentException.class);
-        }
-    }
 
     @Nested
     @DisplayName("adjusting stock")

@@ -11,37 +11,26 @@
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
--- V20261111000110 (team plan 4C-1) put the demo stock into cartons. The checks of loose stock below - loose stock goes
--- with 4C-3 - use the empty rows it left of the demo cup LY-GIAY-DEMO-12OZ-XANH (made again for the cups by
--- V20261206000100), filled as they were before it. The cups' cartons stay beside them, so the books hold the demo cups
--- twice for the length of this script; no check here reads a SKU's total.
--- Since 5-5 enforce_sku_policy refuses live stock with no lot and a layer raised in place, for every SKU: the demo
--- rows are lot-less zero rows that 4C-1 emptied, so this fixture - and only this statement pair - writes them back by
--- hand under a lot of their own, with the trigger off. Everything checked after it runs with the trigger on.
--- Since the whole-carton rule (ck_stock_item_whole_cartons, V20261117000100) a row with units must sit in a carton, so
--- the two demo rows are filled the only way the table allows: each in a carton of its own size (25 and 8 cups).
-ALTER TABLE inventory.stock_item DISABLE TRIGGER trg_stock_sku_policy;
+-- The moves below use two cartons of the demo cup LY-GIAY-DEMO-12OZ-XANH made here, of 25 and of 8 cups, in a lot of
+-- their own. The carton is the stock (ADR-0011, V20261230000600): each is one row of inventory.stock_package with its
+-- stock status, lot and receipt date. The cups' demo cartons stay beside them; no check here reads a SKU's total.
+INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)
+VALUES (md5('qa10x:demo:lot')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'QA-LOT', NULL, 'UNTRACED', NOW()),
+       (md5('qa10:lot')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', NOW() - interval '1 day', 'UNTRACED', NOW());
 -- An item has ONE active carton (01 BR-03): the demo seed's is retired, then each carton is made in its unit while
 -- that unit is the active one, which is retired before the next is declared.
 UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa10x:demo:u25')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_DEMO25', 25);
-INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status)
-VALUES (md5('qa10x:demo:p25')::uuid, 'QA-DEMO-25', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa10x:demo:u25')::uuid, 25, NOW(), 'HCM-A01-2-B', 'IN_STOCK');
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status, stock_status, lot_id)
+VALUES (md5('qa10x:demo:p25')::uuid, 'QA-DEMO-25', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa10x:demo:u25')::uuid, 25, NOW(), 'HCM-A01-2-B', 'IN_STOCK', 'AVAILABLE', md5('qa10x:demo:lot')::uuid);
 UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa10x:demo:u8')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA_DEMO8', 8);
-INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status)
-VALUES (md5('qa10x:demo:p8')::uuid, 'QA-DEMO-8', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa10x:demo:u8')::uuid, 8, NOW(), 'HCM-A02-1-A', 'IN_STOCK');
-UPDATE inventory.stock_item SET on_hand = 25, lot_number = 'QA-LOT', lot_id = NULL, stock_package_id = md5('qa10x:demo:p25')::uuid
- WHERE id = md5('demo:cups:empty-stock:LY-GIAY-DEMO-12OZ-XANH:HCM-A01-2-B')::uuid;
-UPDATE inventory.stock_item SET on_hand = 8, lot_number = 'QA-LOT', lot_id = NULL, stock_package_id = md5('qa10x:demo:p8')::uuid
- WHERE id = md5('demo:cups:empty-stock:LY-GIAY-DEMO-12OZ-XANH:HCM-A02-1-A')::uuid;
-SET CONSTRAINTS ALL IMMEDIATE;
-SET CONSTRAINTS ALL DEFERRED;
-ALTER TABLE inventory.stock_item ENABLE TRIGGER trg_stock_sku_policy;
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status, stock_status, lot_id)
+VALUES (md5('qa10x:demo:p8')::uuid, 'QA-DEMO-8', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa10x:demo:u8')::uuid, 8, NOW(), 'HCM-A02-1-A', 'IN_STOCK', 'AVAILABLE', md5('qa10x:demo:lot')::uuid);
 
 CREATE FUNCTION pg_temp.expect_fail(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
@@ -87,10 +76,11 @@ END $$;
 -- the lines below are on whole demo cartons of 1,000 cups (n = 1 to 4, units = 1,000) and on a carton of three of
 -- their own, QA10-LPN-3.
 CREATE TEMP TABLE qa10_carton AS
-SELECT row_number() OVER (ORDER BY p.lpn) AS n, s.id AS row_id, p.id AS package_id, p.lpn, s.on_hand AS units
-  FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
- WHERE s.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND s.location_code = 'HCM-A01-2-B' AND p.status = 'IN_STOCK'
-   AND s.on_hand = p.nominal_qty AND s.reserved = 0
+SELECT row_number() OVER (ORDER BY p.lpn) AS n, p.id AS package_id, p.lpn, p.nominal_qty AS units
+  FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+ WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' AND p.stock_status = 'AVAILABLE'
+   AND p.nominal_qty = 1000
+   AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation a WHERE a.stock_package_id = p.id AND a.status = 'HELD')
  ORDER BY p.lpn LIMIT 4;
 -- One active carton per item (01 BR-03): the one before is retired.
 UPDATE inventory.uom_conversions SET active = FALSE
@@ -98,13 +88,9 @@ UPDATE inventory.uom_conversions SET active = FALSE
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa10:unit')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'QA10_CTN', 3);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
-                                     location_code, status)
+                                     location_code, status, stock_status, lot_id, received_at)
 VALUES (md5('qa10:pk3')::uuid, 'QA10-LPN-3', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa10:unit')::uuid, 3, NOW(),
-        'HCM-A01-2-B', 'IN_STOCK');
-INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,
-                                  received_at, stock_package_id)
-VALUES (md5('qa10:pk3:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', 'UNTRACED', 3, 0, 'AVAILABLE', NOW(),
-        NOW() - interval '1 day', md5('qa10:pk3')::uuid);
+        'HCM-A01-2-B', 'IN_STOCK', 'AVAILABLE', md5('qa10:lot')::uuid, NOW() - interval '1 day');
 
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
                                      created_at, warehouse_id)
@@ -128,9 +114,9 @@ SELECT pg_temp.expect_ok('F4 a pick with both', $q$
 \echo '--- pick lines: picked means deducted, one live line per hold, put back in full (fulfillment.pick_line)'
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
 VALUES (md5('qa:ol:f5')::uuid, md5('qa:order:f1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 2000, 6000, 'VND');
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons, units_per_carton,
+INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton,
                                          reserved_at, status, closed_at)
-SELECT md5('qa:res:f5')::uuid, c.row_id, md5('qa:order:f1')::uuid, gen_random_uuid(),
+SELECT md5('qa:res:f5')::uuid, c.package_id, md5('qa:order:f1')::uuid, gen_random_uuid(),
         gen_random_uuid(), 1, c.units, NOW(), 'CONSUMED', NOW() FROM qa10_carton c WHERE c.n = 1;
 INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no, allocated_qty,
                                    lpn, whole_carton)
@@ -206,12 +192,10 @@ SELECT pg_temp.expect_ok('F18 a put-back moved back from a staging location stil
 SELECT pg_temp.expect_ok('F19 a cancelled line frees its hold for a new live line', $q$
     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
     VALUES (md5('qa:ol:f19')::uuid, md5('qa:order:f1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 1000, 6000, 'VND');
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons, units_per_carton,
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton,
                                              reserved_at, status)
-    SELECT md5('qa:res:f19')::uuid, c.row_id, md5('qa:order:f1')::uuid,
+    SELECT md5('qa:res:f19')::uuid, c.package_id, md5('qa:order:f1')::uuid,
            gen_random_uuid(), gen_random_uuid(), 1, c.units, NOW(), 'HELD' FROM qa10_carton c WHERE c.n = 2;
-    UPDATE inventory.stock_item SET reserved = reserved + (SELECT units FROM qa10_carton WHERE n = 2)
-     WHERE id = (SELECT row_id FROM qa10_carton WHERE n = 2);
     INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, allocated_qty, status,
                                        lpn, whole_carton)
     SELECT gen_random_uuid(), md5('qa:pick:f1')::uuid, md5('qa:ol:f19')::uuid, md5('qa:res:f19')::uuid,
@@ -222,9 +206,9 @@ SELECT pg_temp.expect_ok('F19 a cancelled line frees its hold for a new live lin
 INSERT INTO fulfillment.pack (id, pick_id, status, created_at)
 VALUES (md5('qa:pack:f1')::uuid, md5('qa:pick:f1')::uuid, 'PENDING', NOW());
 -- One more picked, deducted carton on the pick (carton 4): the shipping carton row below is its.
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons, units_per_carton,
+INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton,
                                          reserved_at, status, closed_at)
-SELECT md5('qa:res:f20')::uuid, c.row_id, md5('qa:order:f1')::uuid, gen_random_uuid(), gen_random_uuid(), 1, c.units, NOW(),
+SELECT md5('qa:res:f20')::uuid, c.package_id, md5('qa:order:f1')::uuid, gen_random_uuid(), gen_random_uuid(), 1, c.units, NOW(),
        'CONSUMED', NOW() FROM qa10_carton c WHERE c.n = 4;
 INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no, allocated_qty,
                                    picked_qty, status, picked_by, picked_at, consumed_at, lpn, whole_carton)

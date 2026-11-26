@@ -226,8 +226,9 @@ class ReturnsRound2IntegrationTest {
 
     private Map<String, Object> carton(String lpn) {
         return jdbc.queryForMap("""
-                SELECT p.status, p.return_ownership, p.return_request_id, p.custody_choice, s.status AS stock,
-                       s.on_hand FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
+                SELECT p.status, p.return_ownership, p.return_request_id, p.custody_choice, p.stock_status AS stock,
+                       CASE WHEN p.status = 'IN_STOCK' THEN p.nominal_qty ELSE 0 END AS on_hand
+                  FROM inventory.stock_package p
                  WHERE p.lpn = ?""", lpn);
     }
 
@@ -263,9 +264,9 @@ class ReturnsRound2IntegrationTest {
         assertThat(code(catchThrowable(() -> asHcm(manager, () -> quarantine.release(d.lpn(0), manager)))))
                 .isEqualTo(ErrorCode.STOCK_PACKAGE_DECISION_PENDING);
         assertThat(inDatabase("""
-                UPDATE inventory.stock_item SET status = 'AVAILABLE' WHERE stock_package_id =
-                    (SELECT id FROM inventory.stock_package WHERE lpn = ?)""", d.lpn(0)))
-                .as("tg_stock_item_returned_carton").hasMessageContaining("stay in quarantine");
+                UPDATE inventory.stock_package SET stock_status = 'AVAILABLE' WHERE lpn = ?""", d.lpn(0)))
+                .as("a carton whose return is undecided stays in quarantine")
+                .hasMessageContaining("ck_stock_package_returned_in_quarantine");
 
         ReturnRequest resolved = refusedAll(request);
         assertThat(resolved.outcome()).isEqualTo(ReturnRequest.Outcome.REFUSED);
@@ -439,8 +440,8 @@ class ReturnsRound2IntegrationTest {
                 .hasMessageContaining("kept in custody");
         scan(receipt.id(), d.lpn(1), 25);
         Map<String, Object> pkg = jdbc.queryForMap("""
-                SELECT p.id, s.lot_number FROM inventory.stock_package p
-                  JOIN inventory.stock_item s ON s.stock_package_id = p.id WHERE p.lpn = ?""", d.lpn(2));
+                SELECT p.id, l.lot_number FROM inventory.stock_package p
+                  JOIN inventory.stock_lot l ON l.id = p.lot_id WHERE p.lpn = ?""", d.lpn(2));
         assertThat(inDatabase("""
                 INSERT INTO procurement.goods_receipt_return_cartons (id, receipt_id, stock_package_id, lpn, sku,
                     lot_number, quantity, scanned_by, version, created_at)

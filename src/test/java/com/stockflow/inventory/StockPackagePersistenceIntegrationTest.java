@@ -5,7 +5,6 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
-import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
@@ -31,23 +30,24 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * SCRUM-473 (#140) against a real PostgreSQL: a bin holding a loose layer and cartons of the very same receipt
- * (V20261020000200 keys a carton's row by the carton, so all three share SKU, bin, lot and receipt time). An
- * adjustment named by those takes the loose layer and never a carton - it used to pick one by chance, or refuse with
- * INVENTORY_POLICY_STOCK_CONFLICT. The loose layer is an emptied one: since V20261117000100 a row in no carton holds
- * nothing (ck_stock_item_whole_cartons), so a write-down of it is refused rather than taken from a carton. (A person's move named by SKU, bin and lot is gone with team plan 4C-2: cartons are
- * moved by LPN, {@code StockPackageMoveIntegrationTest}.)
+ * SCRUM-473 against a real PostgreSQL: the carton through its port, now that the carton is the stock (ADR-0011,
+ * V20261230000600) - read back with its SKU, stock status, lot and FIFO date; recounted, voided and locked while it is
+ * being received. And an adjustment named by SKU and bin and no carton is refused, leaving the bin's cartons as they
+ * are: stock is adjusted by carton only.
+ *
+ * <p>Took the place of {@code StockPackageLayerIntegrationTest}, whose bin held a loose layer beside the cartons of
+ * its receipt; there is no row beside a carton any more. (A person's move is by LPN:
+ * {@code StockPackageMoveIntegrationTest}.)</p>
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
-class StockPackageLayerIntegrationTest {
+class StockPackagePersistenceIntegrationTest {
 
     private static final String SHELF = "HCM-A01-1-B";
     private static final Instant RECEIVED = Instant.parse("2026-01-02T00:00:00Z");
 
     @Autowired InventoryService inventory;
     @Autowired StockOperations operations;
-    @Autowired StockItemRepository stockItems;
     @Autowired StockPackageRepository stockPackages;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
@@ -76,68 +76,58 @@ class StockPackageLayerIntegrationTest {
             carton = Identifiers.newId();
             jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
                     + " values (?, ?, 'CARTON', 5)", carton, item);
-            emptiedLayer(SHELF);
             inCarton(SHELF, "A");
             inCarton(SHELF, "B");
         });
     }
 
-    /** The receipt's loose layer as 4C-1 left it: emptied, its units boxed into cartons. */
-    private void emptiedLayer(String location) {
-        jdbc.update("""
-                insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved,
-                    status, version, created_at) values (?, ?, ?, ?, ?, 0, 0, 'AVAILABLE', 0, now())""",
-                Identifiers.newId(), sku, location, lot, java.sql.Timestamp.from(RECEIVED));
-    }
-
-    /** An unopened carton of 5 of the same receipt, counted in at 5. */
+    /** A carton of 5 of the receipt in stock: AVAILABLE, of the test's lot. */
     private UUID inCarton(String location, String name) {
         UUID id = Identifiers.newId();
         jdbc.update("""
                 insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
-                    counted_at, location_code, status) values (?, ?, ?, ?, 5, now(), ?, 'IN_STOCK')""",
-                id, "LPN-" + sku + "-" + name, item, carton, location);
-        jdbc.update("""
-                insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved,
-                    status, version, created_at, stock_package_id) values (?, ?, ?, ?, ?, 5, 0, 'AVAILABLE', 0, now(), ?)""",
-                Identifiers.newId(), sku, location, lot, java.sql.Timestamp.from(RECEIVED), id);
+                    counted_at, location_code, status, stock_status, lot_id, received_at)
+                values (?, ?, ?, ?, 5, now(), ?, 'IN_STOCK', 'AVAILABLE', ?, ?)""",
+                id, "LPN-" + sku + "-" + name, item, carton, location,
+                com.stockflow.support.CartonRows.lot(jdbc, sku, lot, RECEIVED), java.sql.Timestamp.from(RECEIVED));
         return id;
     }
 
-    /** "location:on_hand:carton-or-loose", by location then on_hand. */
+    /** "location:status:stock status" of each carton of the SKU, by LPN. */
     private List<String> rows() {
         return jdbc.queryForList("""
-                select location_code, on_hand, stock_package_id from inventory.stock_item
-                 where sku = ? order by location_code, on_hand, stock_package_id nulls first""", sku).stream()
-                .map(r -> r.get("location_code") + ":" + r.get("on_hand") + ":"
-                        + (r.get("stock_package_id") == null ? "loose" : "carton"))
-                .toList();
+                select p.location_code || ':' || p.status || ':' || p.stock_status
+                  from inventory.stock_package p where p.inventory_item_id = ? order by p.lpn""", String.class, item);
     }
 
     @Test
     @DisplayName("an adjustment named by SKU and bin and no carton is refused when asked: stock is adjusted by "
             + "carton only, and no carton is opened for it (review C4 P-3)")
-    void adjustmentTakesTheLooseLayer() {
+    void adjustmentNamingNoCartonIsRefused() {
         Throwable refused = org.assertj.core.api.Assertions.catchThrowable(() -> tx.execute(s ->
                 operations.requestAdjustment(new RequestAdjustmentCommand(null, SHELF, new Sku(sku),
                         StockAdjustmentReason.DAMAGED, "torn", clerk))));
 
         assertThat(refused).isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class,
                 e -> assertThat(e.errorCode()).isEqualTo(com.stockflow.common.error.ErrorCode.STOCK_NOT_IN_CARTON));
-        assertThat(rows()).containsExactly(SHELF + ":0:loose", SHELF + ":5:carton", SHELF + ":5:carton");
+        assertThat(rows()).as("neither carton is touched")
+                .containsExactly(SHELF + ":IN_STOCK:AVAILABLE", SHELF + ":IN_STOCK:AVAILABLE");
     }
 
     @Test
-    @DisplayName("a row read back knows its carton; a carton is read, recounted, voided and locked through its port")
+    @DisplayName("a carton read back is the stock it is; a carton is read, recounted, voided and locked through its port")
     void stockPackagePersistence() {
-        UUID packed = jdbc.queryForObject("""
-                select stock_package_id from inventory.stock_item where sku = ? and stock_package_id is not null
-                 order by stock_package_id limit 1""", UUID.class, sku);
-        UUID rowId = jdbc.queryForObject("select id from inventory.stock_item where stock_package_id = ?", UUID.class,
-                packed);
-        java.util.Optional<com.stockflow.inventory.internal.domain.StockItem> inCarton =
-                tx.execute(s -> stockItems.findById(new com.stockflow.inventory.internal.domain.StockItemId(rowId)));
-        assertThat(inCarton).get().satisfies(row -> assertThat(row.stockPackageId()).isEqualTo(new StockPackageId(packed)));
+        UUID packed = jdbc.queryForObject("select id from inventory.stock_package where inventory_item_id = ?"
+                + " order by lpn limit 1", UUID.class, item);
+        java.util.Optional<StockPackage> inStock = tx.execute(s -> stockPackages.findById(new StockPackageId(packed)));
+        assertThat(inStock).get().satisfies(read -> {
+            assertThat(read.sku()).as("its item's SKU, read with it").isEqualTo(new Sku(sku));
+            assertThat(read.stockStatus()).isEqualTo(com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE);
+            assertThat(read.lotNumber()).as("its lot's number, read with it").isEqualTo(lot);
+            assertThat(read.receivedAt()).as("its FIFO date").isEqualTo(RECEIVED);
+            assertThat(read.unitsInStock()).as("in stock it stands for its count").isEqualTo(5);
+            assertThat(read.isFree()).isTrue();
+        });
 
         // A carton labelled on a receipt still being counted (no receipt line: as one repacked in the warehouse).
         UUID labelled = Identifiers.newId();

@@ -145,8 +145,9 @@ class StockLedgerTotalsIntegrationTest {
 
     private long onHand() {
         return jdbc.queryForObject("""
-                SELECT COALESCE(SUM(on_hand), 0) FROM inventory.stock_item
-                 WHERE sku = ? AND location_code LIKE 'HCM-%'""", Long.class, sku);
+                SELECT COALESCE(SUM(p.nominal_qty), 0) FROM inventory.stock_package p
+                  JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+                 WHERE i.sku = ? AND p.status = 'IN_STOCK' AND p.location_code LIKE 'HCM-%'""", Long.class, sku);
     }
 
     /**

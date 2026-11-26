@@ -71,16 +71,13 @@ class StockPackageConsumptionIntegrationTest {
     /** A whole carton of 5 on the shelf, counted in at 5: the only stock of the SKU unless another is added. */
     private UUID cartonOnShelf(String name) {
         UUID id = Identifiers.newId();
-        tx.executeWithoutResult(s -> {
-            jdbc.update("""
-                    insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
-                        counted_at, location_code, status) values (?, ?, ?, ?, 5, now(), ?, 'IN_STOCK')""",
-                    id, "LPN-" + sku + "-" + name, item, carton, SHELF);
-            jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved, status,
-                        version, created_at, stock_package_id) values (?, ?, ?, 'UNTRACED', ?, 5, 0, 'AVAILABLE', 0, now(), ?)""",
-                    Identifiers.newId(), sku, SHELF, java.sql.Timestamp.from(RECEIVED), id);
-        });
+        tx.executeWithoutResult(s -> jdbc.update("""
+                insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
+                    counted_at, location_code, status, stock_status, lot_id, received_at)
+                values (?, ?, ?, ?, 5, now(), ?, 'IN_STOCK', 'AVAILABLE', ?, ?)""",
+                id, "LPN-" + sku + "-" + name, item, carton, SHELF,
+                com.stockflow.support.CartonRows.lot(jdbc, sku, "UNTRACED", RECEIVED),
+                java.sql.Timestamp.from(RECEIVED)));
         return id;
     }
 
@@ -109,7 +106,7 @@ class StockPackageConsumptionIntegrationTest {
     private Map<String, Object> carton(UUID id) {
         return jdbc.queryForMap("""
                 select p.status, p.closed_at is not null as closed,
-                       (select coalesce(sum(s.on_hand), 0) from inventory.stock_item s where s.stock_package_id = p.id) as held
+                       (case when p.status = 'IN_STOCK' then p.nominal_qty else 0 end)::bigint as held
                   from inventory.stock_package p where p.id = ?""", id);
     }
 

@@ -108,7 +108,8 @@ class CartonAllocationIntegrationTest {
     }
 
     private int heldUnits() {
-        return jdbc.queryForObject("select coalesce(sum(reserved), 0) from inventory.stock_item where sku = ?",
+        return jdbc.queryForObject("select coalesce(sum(cartons * units_per_carton), 0) from"
+                + " inventory.stock_reservation where sku = ? and stock_package_id is not null and status = 'HELD'",
                 Integer.class, sku);
     }
 
@@ -142,8 +143,9 @@ class CartonAllocationIntegrationTest {
         assertThat(release(reserved(20))).extracting(CartonAllocationIntegrationTest::describe)
                 .containsExactlyInAnyOrder(first + ":10:whole", second + ":10:whole");
         assertThat(jdbc.queryForObject("""
-                select i.reserved from inventory.stock_item i join inventory.stock_package p on p.id = i.stock_package_id
-                 where p.lpn = ?""", Integer.class, latest)).isZero();
+                select count(*) from inventory.stock_reservation r join inventory.stock_package p
+                    on p.id = r.stock_package_id
+                 where p.lpn = ? and r.status = 'HELD'""", Integer.class, latest)).isZero();
     }
 
     @Test
@@ -169,7 +171,7 @@ class CartonAllocationIntegrationTest {
 
     @Test
     @DisplayName("available to promise counts only cartons a release could allocate: not a carton off a pickable"
-            + " bin (loose units no longer exist: ck_stock_item_whole_cartons)")
+            + " bin (there are no loose units: the carton is the stock)")
     void onlyAllocatableStockIsPromised() {
         carton(2);
         tx.executeWithoutResult(s ->

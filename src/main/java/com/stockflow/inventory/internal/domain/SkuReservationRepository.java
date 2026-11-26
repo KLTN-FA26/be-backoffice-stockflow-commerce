@@ -8,7 +8,7 @@ import java.util.UUID;
 
 /**
  * The persistence port of {@link SkuReservation}. Locking reads take a row lock ({@code FOR UPDATE}) and return
- * state read after it, for the same reason {@link StockItemRepository#findByIdForUpdate} does.
+ * state read after it, for the same reason {@link StockPackageRepository#findAllByIdForUpdate} does.
  */
 public interface SkuReservationRepository {
 

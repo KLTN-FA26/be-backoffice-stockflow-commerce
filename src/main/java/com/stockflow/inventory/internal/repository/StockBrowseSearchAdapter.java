@@ -3,7 +3,9 @@ package com.stockflow.inventory.internal.repository;
 import com.stockflow.common.persistence.Specs;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.inventory.internal.entity.ReservationJpaEntity;
-import com.stockflow.inventory.internal.entity.StockItemJpaEntity;
+import com.stockflow.inventory.internal.domain.ReservationStatus;
+import com.stockflow.inventory.internal.domain.StockPackageStatus;
+import com.stockflow.inventory.internal.entity.StockPackageJpaEntity;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import jakarta.persistence.criteria.CriteriaBuilder;
@@ -13,7 +15,9 @@ import jakarta.persistence.criteria.Predicate;
 import jakarta.persistence.criteria.Root;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Repository;
 
@@ -21,25 +25,27 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
- * Holds are read with their stock row in one query (Criteria API, a constructor result: nothing lands
- * in the persistence context, and no filter that was not asked for is bound). The stock row is a left join: a SKU
+ * Holds are read with their carton in one query (Criteria API, a constructor result: nothing lands
+ * in the persistence context, and no filter that was not asked for is bound). The carton is a left join: a SKU
  * reservation (SCRUM-152) has none, and is listed with a null location - outside every warehouse, so a warehouse
- * filter or a warehouse-bound caller does not see it. Stock rows are a
- * Specification over {@code stock_item}.
+ * filter or a warehouse-bound caller does not see it. Stock rows are a Specification over {@code stock_package}: one
+ * carton is one row, in units of its count (ADR-0011), and whether it is held is read from its live allocation, one
+ * query for the page.
  */
 @Repository
 class StockBrowseSearchAdapter implements StockBrowseSearch {
 
-    private final StockItemJpaRepository stockItems;
+    private final StockPackageJpaRepository stockPackages;
 
     @PersistenceContext
     private EntityManager entityManager;
 
-    StockBrowseSearchAdapter(StockItemJpaRepository stockItems) {
-        this.stockItems = stockItems;
+    StockBrowseSearchAdapter(StockPackageJpaRepository stockPackages) {
+        this.stockPackages = stockPackages;
     }
 
     @Override
@@ -47,7 +53,7 @@ class StockBrowseSearchAdapter implements StockBrowseSearch {
         CriteriaBuilder cb = entityManager.getCriteriaBuilder();
         CriteriaQuery<ReservationRow> query = cb.createQuery(ReservationRow.class);
         Root<ReservationJpaEntity> root = query.from(ReservationJpaEntity.class);
-        Join<ReservationJpaEntity, StockItemJpaEntity> stock = root.join("stockItem", jakarta.persistence.criteria.JoinType.LEFT);
+        Join<ReservationJpaEntity, StockPackageJpaEntity> stock = root.join("stockPackage", jakarta.persistence.criteria.JoinType.LEFT);
         query.select(row(cb, root, stock))
                 .where(reservationFilters(cb, root, stock, criteria).toArray(Predicate[]::new))
                 .orderBy(cb.desc(root.get("reservedAt")), cb.asc(root.get("id")));
@@ -58,7 +64,7 @@ class StockBrowseSearchAdapter implements StockBrowseSearch {
 
         CriteriaQuery<Long> count = cb.createQuery(Long.class);
         Root<ReservationJpaEntity> countRoot = count.from(ReservationJpaEntity.class);
-        Join<ReservationJpaEntity, StockItemJpaEntity> countStock = countRoot.join("stockItem", jakarta.persistence.criteria.JoinType.LEFT);
+        Join<ReservationJpaEntity, StockPackageJpaEntity> countStock = countRoot.join("stockPackage", jakarta.persistence.criteria.JoinType.LEFT);
         count.select(cb.count(countRoot))
                 .where(reservationFilters(cb, countRoot, countStock, criteria).toArray(Predicate[]::new));
         return new PageImpl<>(content, pageable, entityManager.createQuery(count).getSingleResult());
@@ -69,13 +75,13 @@ class StockBrowseSearchAdapter implements StockBrowseSearch {
         CriteriaBuilder cb = entityManager.getCriteriaBuilder();
         CriteriaQuery<ReservationRow> query = cb.createQuery(ReservationRow.class);
         Root<ReservationJpaEntity> root = query.from(ReservationJpaEntity.class);
-        Join<ReservationJpaEntity, StockItemJpaEntity> stock = root.join("stockItem", jakarta.persistence.criteria.JoinType.LEFT);
+        Join<ReservationJpaEntity, StockPackageJpaEntity> stock = root.join("stockPackage", jakarta.persistence.criteria.JoinType.LEFT);
         query.select(row(cb, root, stock)).where(cb.equal(root.get("id"), reservationId));
         return entityManager.createQuery(query).getResultList().stream().findFirst();
     }
 
     private static jakarta.persistence.criteria.CompoundSelection<ReservationRow> row(
-            CriteriaBuilder cb, Root<ReservationJpaEntity> root, Join<ReservationJpaEntity, StockItemJpaEntity> stock) {
+            CriteriaBuilder cb, Root<ReservationJpaEntity> root, Join<ReservationJpaEntity, StockPackageJpaEntity> stock) {
         return cb.construct(ReservationRow.class, root.get("id"), root.get("orderId"), stock.get("id"),
                 root.get("sku"), stock.get("locationCode"), stock.get("lotNumber"),
                 // The row keeps cartons and their count; the screen reads units (ADR-0011).
@@ -85,7 +91,7 @@ class StockBrowseSearchAdapter implements StockBrowseSearch {
     }
 
     private static List<Predicate> reservationFilters(CriteriaBuilder cb, Root<ReservationJpaEntity> root,
-                                                      Join<ReservationJpaEntity, StockItemJpaEntity> stock,
+                                                      Join<ReservationJpaEntity, StockPackageJpaEntity> stock,
                                                       ReservationCriteria criteria) {
         List<Predicate> filters = new ArrayList<>();
         if (criteria.orderId() != null) {
@@ -112,17 +118,46 @@ class StockBrowseSearchAdapter implements StockBrowseSearch {
 
     @Override
     public Page<StockRow> stock(StockCriteria criteria, Pageable pageable) {
-        Specification<StockItemJpaEntity> spec = Specification
-                .<StockItemJpaEntity>where((root, query, cb) -> cb.like(root.get("locationCode"),
+        Specification<StockPackageJpaEntity> spec = Specification
+                .<StockPackageJpaEntity>where((root, query, cb) -> cb.like(root.get("locationCode"),
                         WarehouseScope.locationPattern(criteria.warehousePrefix()), '\\'))
                 .and(Specs.startsWith("locationCode", criteria.locationPrefix()))
                 .and(Specs.eq("sku", blankToNull(criteria.sku())))
                 .and(Specs.eq("lotNumber", blankToNull(criteria.lotNumber())))
-                .and(Specs.in("status", criteria.statuses()))
-                .and(criteria.includeEmpty() ? null : (root, query, cb) -> cb.greaterThan(root.get("onHand"), 0))
+                .and(Specs.in("stockStatus", criteria.statuses()))
+                // A carton that has never been in stock (RECEIVING, VOID) is not stock at all; one that left it is
+                // the "empty row" of the screen.
+                .and((root, query, cb) -> criteria.includeEmpty()
+                        ? root.get("status").in(StockPackageStatus.IN_STOCK, StockPackageStatus.CONSUMED,
+                                StockPackageStatus.LOST)
+                        : cb.equal(root.get("status"), StockPackageStatus.IN_STOCK))
                 .and(WarehouseScope.locationsIn("locationCode"));
-        return stockItems.findAll(spec, pageable).map(s -> new StockRow(s.getId(), s.getSku(), s.getLocationCode(),
-                s.getLotNumber(), s.getOnHand(), s.getReserved(), s.getStatus(), s.getReceivedAt()));
+        Page<StockPackageJpaEntity> page = stockPackages.findAll(spec, onCartons(pageable));
+        Set<UUID> held = heldAmong(page.getContent().stream().map(StockPackageJpaEntity::getId).toList());
+        return page.map(p -> {
+            int onHand = p.getStatus() == StockPackageStatus.IN_STOCK ? p.getNominalQty() : 0;
+            return new StockRow(p.getId(), p.getSku(), p.getLocationCode(), p.getLotNumber(), onHand,
+                    held.contains(p.getId()) ? onHand : 0, p.getStockStatus(), p.getReceivedAt());
+        });
+    }
+
+    /** The screen sorts by {@code onHand}; of cartons that is their count. */
+    private static Pageable onCartons(Pageable pageable) {
+        Sort sort = Sort.by(pageable.getSort().stream()
+                .map(order -> "onHand".equals(order.getProperty()) ? order.withProperty("nominalQty") : order)
+                .toList());
+        return PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), sort);
+    }
+
+    /** Which of these cartons an order holds: the ones a live allocation names. One query for the page. */
+    private Set<UUID> heldAmong(List<UUID> cartonIds) {
+        if (cartonIds.isEmpty()) {
+            return Set.of();
+        }
+        return Set.copyOf(entityManager.createQuery("""
+                        select r.stockPackage.id from ReservationJpaEntity r
+                        where r.stockPackage.id in :ids and r.status = :held""", UUID.class)
+                .setParameter("ids", cartonIds).setParameter("held", ReservationStatus.HELD).getResultList());
     }
 
     private static String blankToNull(String value) {

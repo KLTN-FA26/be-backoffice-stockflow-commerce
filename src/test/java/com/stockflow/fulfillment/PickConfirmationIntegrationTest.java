@@ -346,8 +346,10 @@ class PickConfirmationIntegrationTest {
     }
 
     private int onHand(String location, Sku sku) {
-        return jdbc.queryForObject("SELECT COALESCE(SUM(on_hand), 0) FROM inventory.stock_item WHERE sku = ? AND location_code = ?",
-                Integer.class, sku.code(), location);
+        // Units, as the test always counted them: the count of every carton of the SKU in stock at the location.
+        return jdbc.queryForObject("SELECT COALESCE(SUM(p.nominal_qty), 0) FROM inventory.stock_package p JOIN "
+                + "inventory.inventory_items i ON i.id = p.inventory_item_id WHERE i.sku = ? AND p.location_code = ? "
+                + "AND p.status = 'IN_STOCK'", Integer.class, sku.code(), location);
     }
 
     private int ledgerRows(String type, String line) {
@@ -450,7 +452,7 @@ class PickConfirmationIntegrationTest {
 
 
     @Test
-    @DisplayName("a confirmed line deducts its hold: on_hand, hold CONSUMED, one PICK ledger row, StockDeducted in the registry")
+    @DisplayName("a confirmed line deducts its hold: the carton out of stock, hold CONSUMED, one PICK ledger row, StockDeducted in the registry")
     void confirmationDeductsWithLedgerAndEvent() throws Exception {
         OrderSummary order = confirmedOrder(stocked(1));
         UUID task = startedTask(order);
@@ -639,14 +641,10 @@ class PickConfirmationIntegrationTest {
                 WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> inventory.release(hold, "MANUAL_OVERRIDE"));
             } else {
                 // What the sweeper leaves behind, written directly so no expiry event cancels the order meanwhile.
-                tx.executeWithoutResult(s -> {
-                    jdbc.update("""
-                            UPDATE inventory.stock_reservation SET status = 'EXPIRED', release_reason = 'RESERVATION_EXPIRED',
-                                   closed_at = NOW() WHERE id = ?""", hold);
-                    jdbc.update("""
-                            UPDATE inventory.stock_item SET reserved = reserved - 1
-                             WHERE id = (SELECT stock_item_id FROM inventory.stock_reservation WHERE id = ?)""", hold);
-                });
+                // Closing the allocation is all there is to it: the carton is free once no HELD row names it.
+                tx.executeWithoutResult(s -> jdbc.update("""
+                        UPDATE inventory.stock_reservation SET status = 'EXPIRED', release_reason = 'RESERVATION_EXPIRED',
+                               closed_at = NOW() WHERE id = ?""", hold));
             }
             int before = onHand(location, STOCKED);
 
@@ -799,7 +797,7 @@ class PickConfirmationIntegrationTest {
     // ---- put-back -------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("cancelled after picking: the line waits in /put-backs; put back restores on_hand once, with a ledger row")
+    @DisplayName("cancelled after picking: the line waits in /put-backs; put back restores the carton once, with a ledger row")
     void putBackAfterCancellation() throws Exception {
         // The whole carton comes back, IN_STOCK and sealed, onto the bin it left. Another bin is
         // covered by putBackOntoAnotherBin.
@@ -896,13 +894,15 @@ class PickConfirmationIntegrationTest {
                 .containsEntry("from_location_code", null).containsEntry("to_location_code", target)
                 .containsEntry("to_status", "AVAILABLE").containsEntry("actor_id", otherPickerHcm)
                 .containsEntry("names_the_carton", true);
-        // The carton is back: IN_STOCK at the target, holding what was counted in; its row follows it.
+        // The carton is back: IN_STOCK at the target, AVAILABLE, standing for its count, held by nobody.
         assertThat(jdbc.queryForMap("""
                 SELECT status, location_code FROM inventory.stock_package WHERE lpn = ?""",
                 lpn)).containsEntry("status", "IN_STOCK").containsEntry("location_code", target);
         assertThat(jdbc.queryForMap("""
-                SELECT i.status, i.location_code, i.on_hand, i.reserved FROM inventory.stock_item i
-                  JOIN inventory.stock_package p ON p.id = i.stock_package_id WHERE p.lpn = ?""", lpn))
+                SELECT p.stock_status AS status, p.location_code, p.nominal_qty AS on_hand,
+                       (SELECT count(*)::int FROM inventory.stock_reservation r
+                         WHERE r.stock_package_id = p.id AND r.status = 'HELD') AS reserved
+                  FROM inventory.stock_package p WHERE p.lpn = ? AND p.status = 'IN_STOCK'""", lpn))
                 .containsEntry("status", "AVAILABLE").containsEntry("location_code", target)
                 .containsEntry("on_hand", 1).containsEntry("reserved", 0);
 
@@ -1044,12 +1044,10 @@ class PickConfirmationIntegrationTest {
         assertThat(onHand(location, STOCKED)).isEqualTo(before);
         assertThat(cartonStatus(lpn)).as("the carton is IN_STOCK again").isEqualTo("IN_STOCK");
         assertThat(jdbc.queryForObject("""
-                SELECT count(*) FROM inventory.stock_item WHERE sku = ? AND stock_package_id IS NULL
-                   AND on_hand > 0 AND location_code = ?""", Integer.class, STOCKED.code(), location)).as("no loose row: the carton's own row took its units back").isZero();
-        assertThat(jdbc.queryForObject("""
-                SELECT count(*) FROM inventory.stock_item i JOIN inventory.stock_package p ON p.id = i.stock_package_id
-                 WHERE p.lpn = ? AND i.on_hand = 1 AND i.status = 'AVAILABLE' AND i.location_code = ?""",
-                Integer.class, lpn, location)).isEqualTo(1);
+                SELECT count(*) FROM inventory.stock_package p
+                 WHERE p.lpn = ? AND p.status = 'IN_STOCK' AND p.nominal_qty = 1 AND p.stock_status = 'AVAILABLE'
+                   AND p.location_code = ?""",
+                Integer.class, lpn, location)).as("the very carton is the stock again").isEqualTo(1);
         assertThat(ledgerRows("PUT_BACK", lineId)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT p.lpn FROM inventory.stock_movement m JOIN inventory.stock_package p"
                 + " ON p.id = m.stock_package_id WHERE m.movement_type = 'PUT_BACK' AND m.reference_id = ?::uuid",
@@ -1073,14 +1071,14 @@ class PickConfirmationIntegrationTest {
                 .header("Authorization", token(otherPickerHcm, "WAREHOUSE_STAFF")).contentType("application/json")
                 .content(putBackBody(location, lpn))).andExpect(status().isOk());
 
-        // Nothing is left half-way: no hold on the carton's row, no reservation counted, the books add up.
+        // Nothing is left half-way: no live allocation on the carton, the books add up.
         assertThat(jdbc.queryForObject("""
-                SELECT i.reserved FROM inventory.stock_item i JOIN inventory.stock_package p ON p.id = i.stock_package_id
-                 WHERE p.lpn = ?""", Integer.class, lpn)).isZero();
+                SELECT count(*) FROM inventory.stock_reservation r JOIN inventory.stock_package p ON p.id = r.stock_package_id
+                 WHERE p.lpn = ? AND r.status = 'HELD'""", Integer.class, lpn)).isZero();
         OrderSummary next = confirmedOrder(stocked(1));
         assertThat(next.lines().getFirst().reservationIds()).hasSize(1);
         assertThat(jdbc.queryForObject("""
-                SELECT count(*) FROM inventory.stock_reservation r JOIN inventory.stock_item i ON i.id = r.stock_item_id
+                SELECT count(*) FROM inventory.stock_reservation r JOIN inventory.stock_package i ON i.id = r.stock_package_id
                  WHERE r.id = ?""", Integer.class, next.lines().getFirst().reservationIds().getFirst()))
                 .isEqualTo(1);
     }

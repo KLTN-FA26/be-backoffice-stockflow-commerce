@@ -15,7 +15,6 @@ import com.stockflow.inventory.internal.domain.PutawayRanker;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Need;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Occupancy;
 import com.stockflow.inventory.internal.domain.StockMovement;
-import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovementLog;
 import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageId;
@@ -96,7 +95,7 @@ class PutawayServiceConfirmTest {
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final PutawayTrips trips = mock(PutawayTrips.class);
     private final PutawayService service = new PutawayService(tasks, warehouses, stockPackages, ledger, occupancy,
-            operations, events, mock(StockItemRepository.class), trips,
+            operations, events, trips,
             new BinSuggestionInputs(warehouses, trips, occupancy));
 
     private final UUID binId = UUID.randomUUID();
@@ -107,8 +106,10 @@ class PutawayServiceConfirmTest {
     }
 
     private StockPackage cartonAt(String locationCode) {
-        return new StockPackage(carton, LPN, UUID.randomUUID(), UUID.randomUUID(), CARTON_UNITS, NOW,
-                new LocationId(locationCode), StockPackageStatus.IN_STOCK, LINE, null, 0L);
+        // Received on the task's receipt line and still to be put away: INBOUND, in the receipt's lot.
+        return new StockPackage(carton, LPN, new Sku(SKU), UUID.randomUUID(), UUID.randomUUID(), CARTON_UNITS, NOW,
+                new LocationId(locationCode), StockPackageStatus.IN_STOCK, StockStatus.INBOUND, LOT, "L1", NOW, LINE,
+                null, List.of(), 0L);
     }
 
     private static StorageLocationView location(UUID id, Kind kind, UUID warehouse, String code, boolean usable) {
@@ -167,7 +168,6 @@ class PutawayServiceConfirmTest {
                 StockMovement.ReferenceType.GOODS_RECEIPT_LINE, LINE, null, null, NOW, carton).ofLot(LOT);
         when(ledger.findByReference(any(), any(), eq(LINE))).thenReturn(Optional.of(received));
         when(stockPackages.findAllById(anyCollection())).thenReturn(List.of(cartonAt(RCV)));
-        when(stockPackages.onHandOf(anyCollection())).thenReturn(Map.of(carton, CARTON_UNITS));
         when(occupancy.needsOf(anyCollection())).thenReturn(Map.of(carton.value(), CARTON));
         when(warehouses.findLocation(RCV)).thenReturn(Optional.of(location(UUID.randomUUID(), Kind.AREA, WAREHOUSE,
                 RCV, true)));

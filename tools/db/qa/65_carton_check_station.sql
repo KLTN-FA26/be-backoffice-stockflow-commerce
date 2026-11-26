@@ -77,15 +77,15 @@ INSERT INTO fulfillment.pack (id, pick_id, status, created_at)
 SELECT md5('qa65:pack:' || k)::uuid, md5('qa65:pick:' || k)::uuid, 'PENDING', NOW() FROM (VALUES ('A'), ('B')) v(k);
 
 CREATE TEMP TABLE qa65_carton AS
-SELECT row_number() OVER (ORDER BY p.lpn) AS n, s.id AS row_id, p.id AS package_id, p.lpn, s.on_hand AS units
-  FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
- WHERE s.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND s.location_code = 'HCM-A01-2-B' AND p.status = 'IN_STOCK'
-   AND s.on_hand = p.nominal_qty AND s.reserved = 0
+SELECT row_number() OVER (ORDER BY p.lpn) AS n, p.id AS package_id, p.lpn, p.nominal_qty AS units
+  FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+ WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' AND p.stock_status = 'AVAILABLE'
+   AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation a WHERE a.stock_package_id = p.id AND a.status = 'HELD')
  ORDER BY p.lpn LIMIT 9;
 
 -- Cartons 1-6 are order A's, 7-8 order B's; carton 9 is nobody's.
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
-SELECT md5('qa65:res:' || n)::uuid, row_id,
+INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
+SELECT md5('qa65:res:' || n)::uuid, package_id,
        CASE WHEN n <= 6 THEN md5('qa65:order:A')::uuid ELSE md5('qa65:order:B')::uuid END,
        gen_random_uuid(), gen_random_uuid(), 1, units, NOW(), 'HELD'
   FROM qa65_carton WHERE n <= 8;

@@ -116,7 +116,7 @@ Three things to internalise:
    package, which holds only `package-info.java`.
 
 2. **What belongs in `api` is decided mechanically:** the service interface, plus exactly the types
-   appearing in its method signatures, plus what those drag in. Nothing else. `StockItem` is the
+   appearing in its method signatures, plus what those drag in. Nothing else. `StockPackage` is the
    module's most important class and it is *not* in `api`, because it appears in no signature.
    Handing another module an aggregate lets it call behaviour outside a transaction and outside the
    invariants. `docs/adding-a-module.md` §1 works this through.
@@ -134,8 +134,8 @@ not form a cycle.
 ### Naming
 
 `docs/adding-a-module.md` §2 is the full convention. The short version: a class with a framework
-role carries that role as a suffix (`InventoryController`, `StockItemJpaEntity`,
-`OrderRepositoryAdapter`); a value carries none (`StockItem`, `Quantity`, `StockAvailability`) —
+role carries that role as a suffix (`InventoryController`, `StockPackageJpaEntity`,
+`OrderRepositoryAdapter`); a value carries none (`StockPackage`, `Quantity`, `StockAvailability`) —
 no `...Dto`, no `...Model`. A `Command` and its `Result` share a stem. One word per concept across
 migration, domain, api and URL.
 
@@ -209,19 +209,31 @@ order is recorded per batch (`DeliveryBatchRecords`), so a batch is released wit
 would strand the rest. Deterministic request ids make a retry converge on the same holds.
 
 `OrderReleaseService.release` (or task creation) then allocates: SKU locks (sorted) → the order's holds `FOR UPDATE` →
-`StockAllocator.plan` over projections → each stock row locked once, in id order (`findByIdForUpdate` refreshes, or the
-pessimistic lock would be decorative) → `StockItem.allocate`; the order line swaps its hold ids for the allocation ids.
+`StockAllocator.plan` over projections → the planned cartons `FOR UPDATE` in one call, in id order, each once
+(`StockPackageRepository.findAllByIdForUpdate` refreshes, or the pessimistic lock would be decorative) →
+`StockPackage.allocate`; the order line swaps its hold ids for the allocation ids. A reallocation locks the short
+hold's carton and the new one in that same call. **The carton is the stock** (ADR-0011 step 3d, V20261230000600):
+`inventory.stock_item`, `on_hand` and `reserved` are gone; a carton in stock carries its `stock_status`, `lot_id` and
+FIFO `received_at`, and it is taken exactly while a HELD allocation names it (`stock_reservation.stock_package_id`).
+A double allocation is stopped three times: the SKU advisory lock every allocator takes, the carton's row lock with
+refresh, and `uk_stock_reservation_live_carton`.
 The plan gives **whole sealed LPN cartons only**, N of them **of the hold's count**, FIFO by real `received_at`
 (undated last) for every SKU — there is no expiry, no FEFO, no loose or opened stock (kltn-docs 01 BR-17, 07 BR-03;
 team plan 5-1, 4C-2). A carton of another count is never taken, larger or smaller, and smaller ones are not added up
 (until step 3c the plan counted units and skipped a carton larger than what was still needed). Allocations are
-`stock_reservation` rows with `allocated_from_id`, each **one carton** (`ck_stock_reservation_one_carton`) carrying
-its carton's count (`tg_stock_reservation_whole_carton`); a pick line consumes exactly one. A delivery-scheduled order is released one batch at a time (17 BR-29).
+`stock_reservation` rows with `allocated_from_id`, each **one carton** (`ck_stock_reservation_kind`) of a free AVAILABLE
+carton of its count, never one in a staging area (`tg_stock_reservation_carton`, which locks the carton before reading it); a pick line consumes exactly one. A delivery-scheduled order is released one batch at a time (17 BR-29).
 
 There are no expiring reservations and no sweeper: the manual reservation endpoint, `InventoryService.reserve` and
 `ReservationSweeper` with its TTL are removed (V20261117000300 closes leftover expiring holds and drops `inventory-reservations:CREATE`; `expires_at` itself went with V20261230000500). Stock is held
-only for a signed contract's order and allocated at release. The whole-carton rule is stated twice, in the aggregate
-and as `ck_stock_item_whole_cartons` on `inventory.stock_item` (V20261117000100; stock is never loose, domain error `STOCK_NOT_IN_CARTON`).
+only for a signed contract's order and allocated at release. The whole-carton rule needs no statement any more: a carton has no
+quantity, so nothing can take part of one (a request naming no carton is still `STOCK_NOT_IN_CARTON`). What is stated
+twice, in `StockPackage` and in the table, is the carton's own state: a stock status exactly while `IN_STOCK`
+(`ck_stock_package_stock_status`), a lot once it has been in stock and lot and FIFO date frozen
+(`ck_stock_package_lot`, `tg_stock_package_transition`), and a held carton stays AVAILABLE
+(`tg_stock_package_held_available`, deferred to commit). A carton that comes back is given its stock status by what
+brings it back: a put-back AVAILABLE, a damaged or returned carton QUARANTINE, a LOST one found AVAILABLE unless it
+stands in a quarantine area.
 
 ### Production orders and receiving
 
@@ -251,10 +263,10 @@ cartons INBOUND stock, advances the production order and sends events after comm
 and no purchase order any more. Lock order, everywhere:
 
 ```
-customer_order → production_order → goods receipt FOR UPDATE → SKU advisory locks (sorted) → stock_package FOR UPDATE → stock rows by id
+customer_order → production_order → goods receipt FOR UPDATE → SKU advisory locks (sorted) → stock_package FOR UPDATE (id order)
 ```
 
-Cartons move and change status whole, a list of LPNs per call (`moveStockPackages` / `reclassifyStockPackages`). A
+Nothing is locked after a carton: it is the last link of every chain (the stock rows went with step 3d). Cartons move and change status whole, a list of LPNs per call (`moveStockPackages` / `reclassifyStockPackages`). A
 ledger line is the one carton it is about (`stock_movement.stock_package_id`, NOT NULL; ADR-0011 steps 2 and 3b) and
 keeps no quantity: its units are that carton's `nominal_qty`, read through a join by whoever sums the ledger
 (`StockLedgerTotalsAdapter`, the lot trace, `tools/db/stock_ledger_balance.sql`). `movement_type` with
@@ -276,7 +288,7 @@ usable bins flagged `is_putaway_target`, ranked by the pure `PutawayRanker`; a b
 bin has a volume, so capacity is bins only; cartons standing in an area still count as occupied.
 
 ```
-lock order: task row → bin advisory lock (putaway-bin:<code>) → SKU advisory lock → stock_package FOR UPDATE → stock rows by id
+lock order: task row → bin advisory lock (putaway-bin:<code>) → SKU advisory lock → stock_package FOR UPDATE
 ```
 
 The bin lock exists because only putaway checks bin capacity and occupancy is bin-wide across SKUs. Confirmation is
@@ -289,12 +301,13 @@ goods away tops up the orders waiting for stock (above). Loose tasks are history
 `PickListService.confirm` (`fulfillment/internal/service/`), one `@Transactional` method:
 
 ```
-1. lockPick           ← SELECT … FOR UPDATE on fulfillment.pick. ALWAYS first: pick, then stock row,
-                        never the reverse (cancelling an order locks stock rows in its own transaction
+1. lockPick           ← SELECT … FOR UPDATE on fulfillment.pick. ALWAYS first: pick, then carton,
+                        never the reverse (cancelling an order locks cartons in its own transaction
                         and touches the pick only later, in the OrderCancelled listener)
 2. scope + assignee   ← WarehouseScope.requireWarehouse(pick.warehouseId), then only the assignee
 3. PickList.confirm   ← domain: location, then the line's own LPN only (07 BR-10); no quantity, the carton is whole (BR-04); same scan again = done
-4. PickConsumption    ← inventory, same transaction: consumeForPick locks the stock row, hold → CONSUMED, on_hand falls,
+4. PickConsumption    ← inventory, same transaction: consumeForPick reads the hold's carton unlocked, takes the SKU lock, locks the
+                        carton and reads the hold again: hold → CONSUMED and carton IN_STOCK → CONSUMED in one step,
                         one stock_movement(PICK, PICK_LINE) row, StockDeducted published. Idempotent per pick line
                         (the ledger row is looked up first; uk_stock_movement_pick_line is the last defence)
 ```
@@ -310,11 +323,11 @@ cancelled afterwards goes back whole, scanned by LPN (`POST /fulfillment/tasks/{
 assignee): `DISPATCH` deducts each carton at the scan; `STAGING` calls `PickConsumption.stage` instead — the carton moves
 whole to the task's staging area with its allocation still HELD, the line is STAGED and the task completes STAGED. The
 warehouse manager moves the whole task to dispatch (`POST /fulfillment/tasks/{id}/dispatch-transfer`, refused while
-the order is ON_HOLD): one bulk `consumeStaged` for every staged line (SKU locks sorted, then cartons, then rows); a carton
+the order is ON_HOLD): one bulk `consumeStaged` for every staged line (SKU locks sorted, then the cartons in id order); a carton
 no longer IN_STOCK in the staging area is refused, not shipped. Stock in a STAGING area is out of ATP, never allocated,
 never moved by hand (`StockOperationsServiceImpl.requireMovableBetween`, `tg_stock_movement_staging`), and written
-down by a count or an adjustment but never up. Lock order of the move to dispatch: pick → order → SKU locks → carton →
-row. A top-up (`POST …/top-up`) plans lines for holds no line has yet, in the same task.
+down by a count or an adjustment but never up. Lock order of the move to dispatch: pick → order → SKU locks →
+cartons. A top-up (`POST …/top-up`) plans lines for holds no line has yet, in the same task.
 
 `POST /api/v1/inventory/reservations/{reservationId}/consumption` still exists for operations and runs the same
 implementation; nothing in the repo calls it — picking never goes over HTTP.
@@ -371,7 +384,7 @@ Goods that come back never go straight into stock. A return receipt (`ReturnRece
 into a QUARANTINE area; it shares `procurement.goods_receipts` but is its own aggregate (`ReturnReceipt`, with
 `@SQLRestriction("receipt_type = 'RETURN'")`; `GoodsReceiptJpaEntity` excludes those rows). Cartons are scanned by LPN and
 checked against `fulfillment :: api` `ShipmentCartons`. Confirming is one transaction: receipt `FOR UPDATE` →
-`CartonReturns.receive` (SKU locks → cartons → rows; each carton CONSUMED → IN_STOCK sealed, its row QUARANTINE in its own
+`CartonReturns.receive` (SKU locks → cartons; each carton CONSUMED → IN_STOCK sealed, QUARANTINE, in its own
 lot) → receipt `CLOSED` (no putaway) → `ReturnedGoodsReceived` after commit. A warehouse manager then releases a
 quarantined carton to putaway or writes it off (4D-1).
 
