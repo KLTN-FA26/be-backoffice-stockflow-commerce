@@ -1,0 +1,40 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "data": {
+      "orderId": "cc53bdd7-d92e-4dfd-ac79-fa298b68f605",
+      "warehouseId": "cbb034ea-3059-fc0a-0d16-7c39594b6694",
+      "warehouseCode": "HAN",
+      "warehouseName": "Kho Hà Nội",
+      "fullyHeld": true,
+      "lines": [
+        {
+          "lineId": "3ce006e2-5cfd-3c90-8e70-4e05c6b32afb",
+          "sku": "LY-GIAY-2L-12OZ-CPM",
+          "cartons": 3,
+          "heldCartons": 3,
+          "shortCartons": 0
+        }
+      ],
+      "batches": [
+        {
+          "seq": 1,
+          "windowStart": "2026-11-27",
+          "windowEnd": "2026-12-04",
+          "fullyHeld": true,
+          "lines": [
+            {
+              "lineId": "3ce006e2-5cfd-3c90-8e70-4e05c6b32afb",
+              "sku": "LY-GIAY-2L-12OZ-CPM",
+              "cartons": 3,
+              "heldCartons": 3,
+              "shortCartons": 0
+            }
+          ]
+        }
+      ]
+    },
+    "timestamp": "2026-11-26T12:18:53.178750Z"
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "data": {
+      "items": [
+        {
+          "customerId": "51ae07f4-81fa-e768-946f-fcad119d842a",
+          "userId": "4b795424-a1a1-19fe-5f0b-b99605dd69f5",
+          "fullName": "Quán trà Lá",
+          "email": "muahang.la@stockflow.local",
+          "phone": "0901220032",
+          "taxCode": "039****021",
+          "status": "ACTIVE",
+          "version": 0,
+          "createdAt": "2026-08-27T02:00:00Z",
+          "defaultShippingProvinceName": "TP. Hồ Chí Minh"
+        },
+        {
+          "customerId": "b0822582-8428-dc4b-5e91-152390364395",
+          "userId": "9b485cb2-3f8e-f2ba-a917-e52fb2add35b",
+          "fullName": "Công ty CP Trà Sữa Mây",
+          "email": "trasuamay@khachhang.example",
+          "phone": "0901000002",
+          "taxCode": "010****542",
+          "status": "ACTIVE",
+          "version": 0,
+          "createdAt": "2026-08-25T02:00:00Z",
+          "defaultShippingProvinceName": "TP. Hà Nội"
+        },
+        {
+          "customerId": "d0938090-20ac-ae0d-e6ce-aae90663ac33",
+          "userId": "0fcea640-771a-22a6-4ab9-eef1e9e2016a",
+          "fullName": "Công ty CP Trà Sữa Mây",
+          "email": "muahang.tsm@stockflow.local",
+          "phone": "0901110012",
+          "taxCode": "039****012",
+          "status": "ACTIVE",
+          "version": 0,
+          "createdAt": "2026-07-12T02:00:00Z",
+          "defaultShippingProvinceName": "TP. Hồ Chí Minh"
+        }
+      ],
+      "page": 0,
+      "size": 5,
+      "totalElements": 3,
+      "totalPages": 1,
+      "hasNext": false,
+      "hasPrevious": false
+    },
+    "timestamp": "2026-11-26T12:18:53.036418Z"
+  }
+}

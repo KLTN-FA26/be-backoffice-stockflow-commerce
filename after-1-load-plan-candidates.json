@@ -1,0 +1,86 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "data": [
+      {
+        "shipmentId": "01a2170b-e4c4-7062-aad7-ebf05f577938",
+        "code": "SO-20261126-000002-S1",
+        "orderId": "3aa0e56d-b004-4cb7-81b4-fc056ba21dfc",
+        "orderNumber": "SO-20261126-000002",
+        "allowPartialShipment": false,
+        "readyAt": "2026-11-26T08:49:45.136537Z",
+        "packageCount": 4,
+        "packagesInOtherPlans": 0,
+        "weightKg": 44.4,
+        "volumeMm3": 480000000,
+        "packages": [
+          {
+            "packageId": "01a2170b-a11d-70c2-a1c5-757847285605",
+            "labelCode": "SO-20261126-000002-C1",
+            "shipmentId": "01a2170b-e4c4-7062-aad7-ebf05f577938",
+            "shipmentCode": "SO-20261126-000002-S1",
+            "partName": "HOP-BANH-KRAFT-M-BMV",
+            "lengthMm": 600,
+            "widthMm": 400,
+            "heightMm": 500,
+            "weightKg": 11.1,
+            "rotatable": true,
+            "orderLineId": "1aa78200-f772-364c-bbfd-0e16cde176ba",
+            "fill": false,
+            "productName": "Hộp bánh giấy kraft in logo - Hộp Bánh Mì Việt"
+          },
+          {
+            "packageId": "01a2170b-a11d-70c3-b520-d968a1399edb",
+            "labelCode": "SO-20261126-000002-C2",
+            "shipmentId": "01a2170b-e4c4-7062-aad7-ebf05f577938",
+            "shipmentCode": "SO-20261126-000002-S1",
+            "partName": "HOP-BANH-KRAFT-M-BMV",
+            "lengthMm": 600,
+            "widthMm": 400,
+            "heightMm": 500,
+            "weightKg": 11.1,
+            "rotatable": true,
+            "orderLineId": "1aa78200-f772-364c-bbfd-0e16cde176ba",
+            "fill": false,
+            "productName": "Hộp bánh giấy kraft in logo - Hộp Bánh Mì Việt"
+          },
+          {
+            "packageId": "01a2170b-a11d-70c4-94bc-f95bef95ca87",
+            "labelCode": "SO-20261126-000002-C3",
+            "shipmentId": "01a2170b-e4c4-7062-aad7-ebf05f577938",
+            "shipmentCode": "SO-20261126-000002-S1",
+            "partName": "HOP-BANH-KRAFT-M-BMV",
+            "lengthMm": 600,
+            "widthMm": 400,
+            "heightMm": 500,
+            "weightKg": 11.1,
+            "rotatable": true,
+            "orderLineId": "1aa78200-f772-364c-bbfd-0e16cde176ba",
+            "fill": false,
+            "productName": "Hộp bánh giấy kraft in logo - Hộp Bánh Mì Việt"
+          },
+          {
+            "packageId": "01a2170b-a11d-70c5-96aa-04c25640ff6f",
+            "labelCode": "SO-20261126-000002-C4",
+            "shipmentId": "01a2170b-e4c4-7062-aad7-ebf05f577938",
+            "shipmentCode": "SO-20261126-000002-S1",
+            "partName": "HOP-BANH-KRAFT-M-BMV",
+            "lengthMm": 600,
+            "widthMm": 400,
+            "heightMm": 500,
+            "weightKg": 11.1,
+            "rotatable": true,
+            "orderLineId": "1aa78200-f772-364c-bbfd-0e16cde176ba",
+            "fill": false,
+            "productName": "Hộp bánh giấy kraft in logo - Hộp Bánh Mì Việt"
+          }
+        ],
+        "sourceType": "ORDER",
+        "customerName": "Công ty TNHH Bánh Mì Việt",
+        "deliveryProvinceName": "TP. Hồ Chí Minh"
+      }
+    ],
+    "timestamp": "2026-11-26T12:18:52.632013Z"
+  }
+}

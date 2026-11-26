@@ -1,0 +1,121 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "data": {
+      "loadPlanId": "01a2170d-cc84-70c2-a47b-54e709099769",
+      "code": "LP-20261126-0002",
+      "warehouseId": "cbb034ea-3059-fc0a-0d16-7c39594b6694",
+      "sourceType": "ORDER",
+      "selectionMode": "SINGLE_TYPE",
+      "status": "CONFIRMED",
+      "vehicleTypes": [
+        {
+          "vehicleTypeId": "130add55-ba7a-2db0-eb43-26fd9c80ee64",
+          "code": "PICKUP",
+          "name": "Pickup truck (xe bán tải)",
+          "kind": "PICKUP",
+          "availableCount": 10,
+          "status": "ACTIVE"
+        }
+      ],
+      "shipments": [
+        {
+          "shipmentId": "01a2170d-b3c3-707f-b8a5-d6bac1851f8d",
+          "code": "SO-20261126-000004-S1",
+          "orderId": "cc53bdd7-d92e-4dfd-ac79-fa298b68f605",
+          "orderNumber": "SO-20261126-000004",
+          "allowPartialShipment": false,
+          "packageCount": 3
+        }
+      ],
+      "vehicles": [
+        {
+          "seq": 1,
+          "loadPlanVehicleId": "01a2170d-cdfd-70fd-a738-fa872154704d",
+          "vehicleTypeId": "130add55-ba7a-2db0-eb43-26fd9c80ee64",
+          "code": "PICKUP",
+          "packageCount": 3,
+          "usedVolumeMm3": 360000000,
+          "usedWeightKg": 25.8,
+          "volumeFillPct": 42.11,
+          "weightFillPct": 3.23,
+          "load": {
+            "loadId": "01a2170d-f7a0-7027-87ee-886a98807e3c",
+            "code": "LD-20261126-0002",
+            "status": "LOADING"
+          },
+          "needsRecalculation": false
+        }
+      ],
+      "packages": [
+        {
+          "packageId": "01a2170d-79e0-7004-aca0-4fa4963a9add",
+          "labelCode": "SO-20261126-000004-C1",
+          "shipmentId": "01a2170d-b3c3-707f-b8a5-d6bac1851f8d",
+          "shipmentCode": "SO-20261126-000004-S1",
+          "partName": "LY-GIAY-2L-12OZ-CPM",
+          "lengthMm": 600,
+          "widthMm": 400,
+          "heightMm": 500,
+          "weightKg": 8.6,
+          "rotatable": true,
+          "vehicleSeq": 1,
+          "orderLineId": "3ce006e2-5cfd-3c90-8e70-4e05c6b32afb",
+          "fill": false
+        },
+        {
+          "packageId": "01a2170d-79e0-7005-9c86-ce7ea6214b83",
+          "labelCode": "SO-20261126-000004-C2",
+          "shipmentId": "01a2170d-b3c3-707f-b8a5-d6bac1851f8d",
+          "shipmentCode": "SO-20261126-000004-S1",
+          "partName": "LY-GIAY-2L-12OZ-CPM",
+          "lengthMm": 600,
+          "widthMm": 400,
+          "heightMm": 500,
+          "weightKg": 8.6,
+          "rotatable": true,
+          "vehicleSeq": 1,
+          "orderLineId": "3ce006e2-5cfd-3c90-8e70-4e05c6b32afb",
+          "fill": false
+        },
+        {
+          "packageId": "01a2170d-79e0-7006-bcee-b56d311bdf00",
+          "labelCode": "SO-20261126-000004-C3",
+          "shipmentId": "01a2170d-b3c3-707f-b8a5-d6bac1851f8d",
+          "shipmentCode": "SO-20261126-000004-S1",
+          "partName": "LY-GIAY-2L-12OZ-CPM",
+          "lengthMm": 600,
+          "widthMm": 400,
+          "heightMm": 500,
+          "weightKg": 8.6,
+          "rotatable": true,
+          "vehicleSeq": 1,
+          "orderLineId": "3ce006e2-5cfd-3c90-8e70-4e05c6b32afb",
+          "fill": false
+        }
+      ],
+      "packageCount": 3,
+      "placedCount": 3,
+      "unplacedCount": 0,
+      "calculatedAt": "2026-11-26T08:51:50.397517Z",
+      "solverMeta": {
+        "algorithm": "GRASP_KIT",
+        "setsTotal": 0,
+        "kitWarnings": [],
+        "minVehicles": 1,
+        "elapsedMillis": 1,
+        "bestFoundMillis": 1,
+        "budgetExhausted": false
+      },
+      "confirmedAt": "2026-11-26T08:52:01.023031Z",
+      "createdAt": "2026-11-26T08:51:50.131212Z",
+      "version": 10,
+      "pendingUnloads": [],
+      "controlledCancelled": false,
+      "warehouseCode": "HAN",
+      "warehouseName": "Kho Hà Nội"
+    },
+    "timestamp": "2026-11-26T09:21:55.208483Z"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "status": 403,
+  "body": {
+    "success": false,
+    "errorCode": "FORBIDDEN",
+    "message": "Bạn không có quyền thực hiện thao tác này",
+    "correlationId": "da5dca07-e457-46e9-ae5e-73765638e852",
+    "timestamp": "2026-11-26T12:18:53.292945Z"
+  }
+}
