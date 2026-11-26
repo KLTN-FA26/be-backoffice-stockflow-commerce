@@ -19,6 +19,23 @@ BEGIN
     RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
 END $$;
 
+-- Refused by the named rule: a statement that breaks something else proves nothing.
+CREATE FUNCTION pg_temp.expect_fail_by(label TEXT, rule TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    BEGIN
+        EXECUTE stmt;
+        SET CONSTRAINTS ALL IMMEDIATE;
+        SET CONSTRAINTS ALL DEFERRED;
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM NOT LIKE '%' || rule || '%' THEN
+            RAISE EXCEPTION 'FAIL  %: refused, but not by %: %', label, rule, SQLERRM;
+        END IF;
+        RAISE NOTICE 'ok    %  [%]', label, rule;
+        RETURN;
+    END;
+    RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
+END $$;
+
 CREATE FUNCTION pg_temp.expect_ok(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     EXECUTE stmt;
@@ -56,71 +73,54 @@ INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, f
 VALUES (md5('qa:unit:XANH-OLD')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'OLDCTN', 10, 60, 40, 50, 12, FALSE);
 
 
-\echo '--- a stock package and its stock rows (V20261020000100, 0200)'
-SELECT pg_temp.expect_ok('K1 received into stock: RECEIVING, counted, then IN_STOCK with its row', $q$
-    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code)
-    VALUES (md5('qa:pk:1')::uuid, 'QA-LPN-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, 10, 'HCM-A01-1-A');
-    UPDATE inventory.stock_package SET status = 'IN_STOCK' WHERE id = md5('qa:pk:1')::uuid;
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (md5('qa:pk:1:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'UNTRACED', 10, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:1')::uuid) $q$);
-SELECT pg_temp.expect_fail('K2 the stock package moved without its rows', $q$
+\echo '--- a stock package is the stock (V20261020000100; the stock rows folded into it by V20261231000600, ADR-0011)'
+-- The lot of this script's cartons: a carton names its lot by id, the application opens it (StockLots).
+INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)
+VALUES (md5('qa:pk:lot')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', NULL, 'UNTRACED', NOW());
+SELECT pg_temp.expect_ok('K1 received into stock: RECEIVING, counted, then IN_STOCK as INBOUND with its lot and receipt date', $q$
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code)
+    VALUES (md5('qa:pk:1')::uuid, 'QA-LPN-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, NOW(), 'HCM-A01-1-A');
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', stock_status = 'INBOUND', lot_id = md5('qa:pk:lot')::uuid,
+           received_at = NOW() - interval '1 hour' WHERE id = md5('qa:pk:1')::uuid;
+    UPDATE inventory.stock_package SET stock_status = 'AVAILABLE' WHERE id = md5('qa:pk:1')::uuid $q$);
+-- K2, K3 (the carton and its rows moved apart), K5, K6, K13 (part of a carton leaving), K7 (a row of another SKU in
+-- it), K25, K26 (two lots / two layers in one carton) checked a carton against its stock rows
+-- (check_stock_package_contents): there are no rows and no quantity to disagree with any more.
+SELECT pg_temp.expect_ok('K4 the stock package moved: one row, nothing to move with it', $q$
     UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-B' WHERE id = md5('qa:pk:1')::uuid $q$);
-SELECT pg_temp.expect_fail('K3 a row moved out from under its stock package', $q$
-    UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-B' WHERE id = md5('qa:pk:1:row')::uuid $q$);
-SELECT pg_temp.expect_ok('K4 the stock package moved with its rows, one transaction', $q$
-    UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-B' WHERE id = md5('qa:pk:1')::uuid;
-    UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-B' WHERE stock_package_id = md5('qa:pk:1')::uuid $q$);
-SELECT pg_temp.expect_fail('K5 a whole stock package in stock loses stock', $q$
-    UPDATE inventory.stock_item SET on_hand = 9 WHERE id = md5('qa:pk:1:row')::uuid $q$);
-SELECT pg_temp.expect_fail('K6 part of a stock package in stock leaves for QC', $q$
-    UPDATE inventory.stock_item SET on_hand = 6 WHERE id = md5('qa:pk:1:row')::uuid;
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
-    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-QC01', 'UNTRACED', 4, 0, 'QUARANTINE', NOW(), NOW() - interval '1 hour') $q$);
-SELECT pg_temp.expect_fail('K7 a row of another SKU put into it', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-DO', 'HCM-A01-1-B', 'L1', 1, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:1')::uuid) $q$);
 SELECT pg_temp.expect_fail('K8 counted again once in stock', $q$
-    UPDATE inventory.stock_package SET received_qty = 9 WHERE id = md5('qa:pk:1')::uuid $q$);
+    UPDATE inventory.stock_package SET counted_at = counted_at + interval '1 minute' WHERE id = md5('qa:pk:1')::uuid $q$);
 SELECT pg_temp.expect_fail('K9 its LPN changed', $q$
     UPDATE inventory.stock_package SET lpn = 'QA-LPN-X' WHERE id = md5('qa:pk:1')::uuid $q$);
 SELECT pg_temp.expect_fail('K10 a second stock package with the same LPN', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
     VALUES (gen_random_uuid(), 'QA-LPN-1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, 'HCM-A01-1-A') $q$);
-SELECT pg_temp.expect_fail('K11 emptied but left IN_STOCK', $q$
-    UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa:pk:1:row')::uuid $q$);
-SELECT pg_temp.expect_fail('K12 CONSUMED while still holding stock', $q$
+SELECT pg_temp.expect_fail_by('K11 in stock with no stock status (it was: emptied but left IN_STOCK)', 'ck_stock_package_stock_status', $q$
+    UPDATE inventory.stock_package SET stock_status = NULL WHERE id = md5('qa:pk:1')::uuid $q$);
+SELECT pg_temp.expect_fail_by('K12 CONSUMED while still carrying a stock status (it was: while still holding stock)', 'ck_stock_package_stock_status', $q$
     UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW() WHERE id = md5('qa:pk:1')::uuid $q$);
--- V20261111000200 (team plan 4C-2): a carton is taken whole; one in stock is never opened (QA 41).
-SELECT pg_temp.expect_fail('K13 part of it leaves for QC as loose stock, the rest staying in an IN_STOCK carton', $q$
-    UPDATE inventory.stock_item SET on_hand = 6 WHERE id = md5('qa:pk:1:row')::uuid;
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
-    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-QC01', 'UNTRACED', 4, 0, 'QUARANTINE', NOW(), NOW() - interval '1 hour') $q$);
 SELECT pg_temp.expect_true('K14 no stock package is ever opened: the flag is gone (V20261113000300, team plan 4C-3)',
     'NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = ''inventory'' AND table_name = ''stock_package'' AND column_name = ''unopened'')');
-SELECT pg_temp.expect_ok('K15 emptied and CONSUMED in one transaction', $q$
-    UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa:pk:1:row')::uuid;
-    UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW()
+SELECT pg_temp.expect_ok('K15 CONSUMED: out of stock, so no stock status; its lot and receipt date stay', $q$
+    UPDATE inventory.stock_package SET status = 'CONSUMED', stock_status = NULL, closed_at = NOW()
      WHERE id = md5('qa:pk:1')::uuid $q$);
-SELECT pg_temp.expect_fail('K16 CONSUMED back to IN_STOCK with only part of its count on its row', $q$
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa:pk:1')::uuid;
-    UPDATE inventory.stock_item SET on_hand = 6 WHERE id = md5('qa:pk:1:row')::uuid $q$);
+SELECT pg_temp.expect_fail_by('K16 CONSUMED back to IN_STOCK without saying as what', 'ck_stock_package_stock_status', $q$
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa:pk:1')::uuid $q$);
 
 \echo '--- creation and lifecycle'
-SELECT pg_temp.expect_ok('K17 made in the warehouse (repacked): created IN_STOCK with its row', $q$
-    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
-    VALUES (md5('qa:pk:2')::uuid, 'QA-LPN-2', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, 10, 'HCM-A01-1-A', 'IN_STOCK');
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (md5('qa:pk:2:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'UNTRACED', 10, 0, 'AVAILABLE', NOW(), NOW() - interval '2 hour', md5('qa:pk:2')::uuid) $q$);
-SELECT pg_temp.expect_ok('K18 not found by a count (LOST, emptied), then found again', $q$
-    SET LOCAL stockflow.same_receipt_merge = '6bdfe88b-6a35-8c0c-3bca-a765468fd79e';
-    UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa:pk:2:row')::uuid;
-    UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW()
+SELECT pg_temp.expect_ok('K17 made in the warehouse (repacked): created IN_STOCK with its stock status and lot', $q$
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status,
+                                         stock_status, lot_id, received_at)
+    VALUES (md5('qa:pk:2')::uuid, 'QA-LPN-2', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, NOW(), 'HCM-A01-1-A', 'IN_STOCK',
+            'AVAILABLE', md5('qa:pk:lot')::uuid, NOW() - interval '2 hour') $q$);
+SELECT pg_temp.expect_ok('K18 not found by a count (LOST), then found again as AVAILABLE, the same lot and date', $q$
+    UPDATE inventory.stock_package SET status = 'LOST', stock_status = NULL, closed_at = NOW()
      WHERE id = md5('qa:pk:2')::uuid;
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa:pk:2')::uuid;
-    UPDATE inventory.stock_item SET on_hand = 10 WHERE id = md5('qa:pk:2:row')::uuid $q$);
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', stock_status = 'AVAILABLE', closed_at = NULL
+     WHERE id = md5('qa:pk:2')::uuid $q$);
 SELECT pg_temp.expect_fail('K19 created already CONSUMED (skipping the lifecycle)', $q$
-    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status, closed_at)
-    VALUES (gen_random_uuid(), 'QA-LPN-19', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, 10, 'HCM-A01-1-A', 'CONSUMED', NOW()) $q$);
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status, closed_at, lot_id)
+    VALUES (gen_random_uuid(), 'QA-LPN-19', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, NOW(), 'HCM-A01-1-A', 'CONSUMED', NOW(), md5('qa:pk:lot')::uuid) $q$);
 SELECT pg_temp.expect_fail('K20 a base unit row to make a carton in: there is none any more, nor the column that flagged one (V20261229000100, QA 46)', $q$
     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base)
     SELECT gen_random_uuid(), id, 'QA15BASE', 1, TRUE
@@ -131,58 +131,85 @@ SELECT pg_temp.expect_fail('K21 nominal_qty other than the unit''s factor', $q$
 SELECT pg_temp.expect_fail('K22 a unit of another item', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
     VALUES (gen_random_uuid(), 'QA-LPN-22', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:DO-CARTON')::uuid, 5, 'HCM-A01-1-A') $q$);
-SELECT pg_temp.expect_fail('K23 in stock without having been counted', $q$
-    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code, status)
-    VALUES (gen_random_uuid(), 'QA-LPN-23', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, 'HCM-A01-1-A', 'IN_STOCK') $q$);
-SELECT pg_temp.expect_fail('K24 still RECEIVING but holding stock', $q$
-    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
-    VALUES (md5('qa:pk:24')::uuid, 'QA-LPN-24', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, 'HCM-A01-1-A');
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'UNTRACED', 3, 0, 'AVAILABLE', NOW(), NOW() - interval '3 hour', md5('qa:pk:24')::uuid) $q$);
-SELECT pg_temp.expect_fail('K25 two lots in one stock package', $q$
-    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
-    VALUES (md5('qa:pk:25')::uuid, 'QA-LPN-25', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-DO'), md5('qa:unit:DO-CARTON')::uuid, 5, 5, 'HCM-A01-1-A', 'IN_STOCK');
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-DO', 'HCM-A01-1-A', 'L1', 2, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:25')::uuid),
-           (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-DO', 'HCM-A01-1-A', 'L2', 3, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:25')::uuid) $q$);
-SELECT pg_temp.expect_fail('K26 one lot received at two times in one stock package: a carton is one row (uk_stock_item_package, V20261113000300)', $q$
-    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
-    VALUES (md5('qa:pk:26')::uuid, 'QA-LPN-26', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-DO'), md5('qa:unit:DO-CARTON')::uuid, 5, 5, 'HCM-A01-1-A', 'IN_STOCK');
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-DO', 'HCM-A01-1-A', 'L1', 2, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:26')::uuid),
-           (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-DO', 'HCM-A01-1-A', 'L1', 3, 0, 'AVAILABLE', NOW(), NOW() - interval '3 hour', md5('qa:pk:26')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('K23 in stock without having been counted', 'ck_stock_package_counted', $q$
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code, status, stock_status, lot_id)
+    VALUES (gen_random_uuid(), 'QA-LPN-23', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, 'HCM-A01-1-A', 'IN_STOCK', 'AVAILABLE', md5('qa:pk:lot')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('K24 still RECEIVING but carrying a stock status (it was: but holding stock)', 'ck_stock_package_stock_status', $q$
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code, stock_status)
+    VALUES (md5('qa:pk:24')::uuid, 'QA-LPN-24', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, 'HCM-A01-1-A', 'AVAILABLE') $q$);
 
-\echo '--- ledger (V20261020000300)'
-SELECT pg_temp.expect_fail('K27 a source stock package with no source location', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, reference_type, reference_id, occurred_at, from_stock_package_id)
-    VALUES (gen_random_uuid(), 'RECEIPT', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 1, 'GOODS_RECEIPT_LINE', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
-SELECT pg_temp.expect_ok('K28 a whole stock package moved, named on both sides', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, from_stock_package_id, to_stock_package_id)
-    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'HCM-A01-1-B', 4, 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid, md5('qa:pk:2')::uuid) $q$);
-SELECT pg_temp.expect_fail('K28a a movement naming a stock package of another SKU', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, from_stock_package_id)
-    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-DO', 'HCM-A01-1-A', 'HCM-A01-1-B', 1, 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
-SELECT pg_temp.expect_fail('K28b a movement naming a stock package at a bin it never touched', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, from_stock_package_id)
-    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-B', 'HCM-RCV01', 1, 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
+\echo '--- ledger: a line names one carton (V20261020000300; one column since V20261231000200, ADR-0011)'
+-- The two carton columns, one per side, are one: a line is one whole carton, and its places say which way it went.
+SELECT pg_temp.expect_true('K27 the ledger has one carton column, indexed, and the two sides are gone', $c$
+    (SELECT count(*) FILTER (WHERE column_name = 'stock_package_id') = 1
+            AND count(*) FILTER (WHERE column_name IN ('from_stock_package_id', 'to_stock_package_id')) = 0
+       FROM information_schema.columns WHERE table_schema = 'inventory' AND table_name = 'stock_movement')
+    AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'inventory' AND indexname = 'ix_stock_movement_package')
+    AND NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'inventory'
+                     AND indexname IN ('ix_stock_movement_from_package', 'ix_stock_movement_to_package')) $c$);
+-- V20261231000400 (ADR-0011, step 3b): a line is one carton and no number of units. The column that repeated the
+-- carton's nominal_qty is gone, every line names its carton, and the CHECK that said so of new lines only went into
+-- the NOT NULL.
+SELECT pg_temp.expect_true('K27a every line names its carton: stock_package_id is NOT NULL, the NOT VALID CHECK is gone', $c$
+    (SELECT attnotnull FROM pg_attribute
+      WHERE attrelid = 'inventory.stock_movement'::regclass AND attname = 'stock_package_id')
+    AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_stock_movement_names_carton') $c$);
+SELECT pg_temp.expect_true('K27e the ledger keeps no quantity, and no CHECK or index of one', $c$
+    NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
+                 AND table_name = 'stock_movement' AND column_name = 'quantity')
+    AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_stock_movement_qty')
+    AND NOT EXISTS (SELECT 1 FROM pg_index WHERE indrelid = 'inventory.stock_movement'::regclass
+                     AND pg_get_indexdef(indexrelid) ~ 'quantity') $c$);
+SELECT pg_temp.expect_fail('K27f a line cannot be written with a quantity any more', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'HCM-A01-1-B', 5, 'RETURN_REQUEST_LINE', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
+-- Postgres does not track what a function body mentions (a view it does: the drop would have been refused), so
+-- nothing live may still read the dropped column: by the table's name, by an alias the body gave the ledger, or bare
+-- in a statement over the ledger alone.
+CREATE FUNCTION pg_temp.reads_ledger_quantity(body TEXT) RETURNS boolean LANGUAGE sql IMMUTABLE AS $f$
+    SELECT body ~* 'stock_movement\.quantity\M'
+        OR body ~* 'stock_movement\s+(WHERE|SET)\M[^;]*\mquantity\M'
+        OR EXISTS (SELECT 1 FROM regexp_matches(body, 'stock_movement\s+(?:AS\s+)?(\w+)', 'gi') AS a
+                    WHERE lower(a[1]) NOT IN ('where', 'set', 'join', 'on', 'group', 'order', 'for')
+                      AND body ~* ('\m' || a[1] || '\.quantity\M'))
+$f$;
+SELECT pg_temp.expect_true('K27g the reader check bites: a body that reads the ledger''s quantity is seen, one that reads another table''s is not', $c$
+    pg_temp.reads_ledger_quantity('SELECT sum(m.quantity) FROM inventory.stock_movement m WHERE m.sku = x;')
+    AND pg_temp.reads_ledger_quantity('SELECT 1 FROM inventory.stock_movement AS mv JOIN t ON mv.quantity > 0;')
+    AND pg_temp.reads_ledger_quantity('SELECT sum(quantity) FROM x; UPDATE inventory.stock_movement SET quantity = 1;')
+    AND NOT pg_temp.reads_ledger_quantity('SELECT count(*) FROM inventory.stock_movement m WHERE m.sku = x; '
+                                          || 'SELECT 1 FROM procurement.goods_receipt_return_cartons c WHERE c.quantity > 0;') $c$);
+SELECT pg_temp.expect_true('K27h no live function reads stock_movement.quantity', $c$
+    NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                 WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+                   AND pg_temp.reads_ledger_quantity(p.prosrc)) $c$);
+SELECT pg_temp.expect_fail_by('K27c a new ledger line that names no carton', 'null value in column "stock_package_id"', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, reference_type, reference_id, occurred_at)
+    VALUES (gen_random_uuid(), 'RECEIPT', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'GOODS_RECEIPT_LINE', gen_random_uuid(), NOW()) $q$);
+SELECT pg_temp.expect_fail_by('K27d ... whatever kind of line it is', 'null value in column "stock_package_id"', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, reference_type, reference_id, occurred_at)
+    VALUES (gen_random_uuid(), 'ADJUSTMENT', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'STOCK_ADJUSTMENT', gen_random_uuid(), NOW()) $q$);
+SELECT pg_temp.expect_ok('K28 a whole stock package moved, its line naming it', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, reference_type, reference_id, occurred_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'HCM-A01-1-B', 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('K28a a movement naming a stock package of another SKU', 'names a stock package of', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, reference_type, reference_id, occurred_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-DO', 'HCM-A01-1-A', 'HCM-A01-1-B', 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('K28b a movement naming a stock package at a bin it never touched', 'names a stock package at', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, reference_type, reference_id, occurred_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-B', 'HCM-RCV01', 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('K28b2 ... a line that leaves, from a bin the carton does not stand at', 'names a stock package at', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, reference_type, reference_id, occurred_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'PICK', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-B', 'PICK_LINE', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('K28b3 a held carton is still not moved by hand: the trigger reads the one carton', 'it is not moved by hand', $q$
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
+    SELECT gen_random_uuid(), md5('qa:pk:2')::uuid, o.id, gen_random_uuid(), gen_random_uuid(), 1, 10, NOW(), 'HELD'
+      FROM ordering.customer_order o ORDER BY o.id LIMIT 1;
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, reference_type, reference_id, occurred_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'HCM-A01-1-B', 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
 
-\echo '--- a carton is one stock row, wherever it is (V20261020000200; one row since V20261113000300, 20 BR-18)'
-SELECT pg_temp.expect_fail('K28c a second row, an emptied one, in the stock package (uk_stock_item_package)', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (md5('qa:pk:2:empty')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'UNTRACED', 0, 0, 'AVAILABLE', NOW(), NOW() - interval '5 hour', md5('qa:pk:2')::uuid) $q$);
-SELECT pg_temp.expect_ok('K28d the stock package and its one row move together', $q$
-    UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-B' WHERE id = md5('qa:pk:2')::uuid;
-    UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-B' WHERE id = md5('qa:pk:2:row')::uuid $q$);
-SELECT pg_temp.expect_fail('K28e another lot put back into the stock package as a second row', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-B', 'L2', 1, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:2')::uuid) $q$);
-SELECT pg_temp.expect_fail('K28f a second row of the layer in the stock package, on its new bin', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    SELECT gen_random_uuid(), sku, 'HCM-A01-1-B', lot_number, 1, 0, 'AVAILABLE', NOW(), received_at, stock_package_id
-      FROM inventory.stock_item WHERE id = md5('qa:pk:2:row')::uuid $q$);
-SELECT pg_temp.expect_ok('K28g the stock package back on the bin it came from', $q$
-    UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-A' WHERE id = md5('qa:pk:2')::uuid;
-    UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-A' WHERE id = md5('qa:pk:2:row')::uuid $q$);
+-- K28c to K28g (a second row in a carton, a carton and its one row moving together) went with the stock rows: a
+-- carton is one row of inventory.stock_package, and uk_stock_item_package has nothing left to forbid.
 
 \echo '--- receiving by the carton, putaway by the stock package (V20261020000400, 0500; purchase orders went with V20261113000200)'
 -- A production order of 5 cartons of 10 blue cups at HCM, SENT with no sample to approve first, so goods may be received
@@ -224,8 +251,8 @@ SELECT pg_temp.expect_fail('K29 a stock package naming a receipt line of another
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code, goods_receipt_line_id)
     VALUES (gen_random_uuid(), 'QA-LPN-29', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-DO'), md5('qa:unit:DO-CARTON')::uuid, 5, 'HCM-RCV01', md5('qa:pk:grl')::uuid) $q$);
 SELECT pg_temp.expect_ok('K30 a stock package of the receipt line, waiting in the receiving area', $q$
-    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, goods_receipt_line_id)
-    VALUES (md5('qa:pk:30')::uuid, 'QA-LPN-30', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, 10, 'HCM-RCV01', md5('qa:pk:grl')::uuid) $q$);
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, goods_receipt_line_id)
+    VALUES (md5('qa:pk:30')::uuid, 'QA-LPN-30', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, NOW(), 'HCM-RCV01', md5('qa:pk:grl')::uuid) $q$);
 SELECT pg_temp.expect_fail('K31 a putaway task naming a stock package of another SKU', $q$
     INSERT INTO warehouse.putaway_task (id, goods_receipt_id, goods_receipt_line_id, sku, quantity, status, created_at, stock_package_id)
     VALUES (gen_random_uuid(), md5('qa:pk:gr')::uuid, md5('qa:pk:grl')::uuid, 'LY-GIAY-DEMO-12OZ-DO', 10, 'PENDING', NOW(), md5('qa:pk:30')::uuid) $q$);
@@ -280,38 +307,95 @@ SELECT pg_temp.expect_ok('F5c an unused unit renamed', $q$
 SELECT pg_temp.expect_true('F6 an item with stock packages is in use', $c$
     inventory.item_in_use((SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'LY-GIAY-DEMO-12OZ-XANH') $c$);
 
-\echo '--- documents name their carton; a carton holds no more than was counted; one row per carton (V20261022000100)'
-SELECT pg_temp.expect_ok('D1 a whole carton counted in at 10, holding 10, on HCM-A01-1-A', $q$
-    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
-    VALUES (md5('qa:pk:doc')::uuid, 'QA-LPN-D1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, 10, 'HCM-A01-1-A', 'IN_STOCK');
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (md5('qa:pk:doc:row')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'UNTRACED', 10, 0, 'AVAILABLE', NOW(), NOW() - interval '3 day', md5('qa:pk:doc')::uuid) $q$);
+\echo '--- documents name their carton (V20261022000100)'
+SELECT pg_temp.expect_ok('D1 a carton of 10 in stock on HCM-A01-1-A', $q$
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at, location_code, status,
+                                         stock_status, lot_id, received_at)
+    VALUES (md5('qa:pk:doc')::uuid, 'QA-LPN-D1', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, NOW(), 'HCM-A01-1-A', 'IN_STOCK',
+            'AVAILABLE', md5('qa:pk:lot')::uuid, NOW() - interval '3 day') $q$);
 SELECT pg_temp.expect_fail('D2 an adjustment naming a carton of another SKU', $q$
-    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, stock_package_id)
-    VALUES (gen_random_uuid(), 'QA-ADJ-D2', 'HCM-A01-1-A', 'LY-GIAY-DEMO-12OZ-DO', -10, 'DAMAGED',
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'QA-ADJ-D2', 'HCM-A01-1-A', 'LY-GIAY-DEMO-12OZ-DO', 'WRITE_OFF', 'DAMAGED',
             (SELECT id FROM identity.app_user ORDER BY id LIMIT 1), md5('qa:pk:doc')::uuid) $q$);
 SELECT pg_temp.expect_fail('D3 an adjustment naming a carton at another bin', $q$
-    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, stock_package_id)
-    VALUES (gen_random_uuid(), 'QA-ADJ-D3', 'HCM-A01-1-B', 'LY-GIAY-DEMO-12OZ-XANH', -10, 'DAMAGED',
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'QA-ADJ-D3', 'HCM-A01-1-B', 'LY-GIAY-DEMO-12OZ-XANH', 'WRITE_OFF', 'DAMAGED',
             (SELECT id FROM identity.app_user ORDER BY id LIMIT 1), md5('qa:pk:doc')::uuid) $q$);
 SELECT pg_temp.expect_ok('D4 an adjustment of that carton: the whole carton', $q$
-    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, stock_package_id)
-    VALUES (gen_random_uuid(), 'QA-ADJ-D4', 'HCM-A01-1-A', 'LY-GIAY-DEMO-12OZ-XANH', -10, 'DAMAGED',
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, direction, reason_code, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'QA-ADJ-D4', 'HCM-A01-1-A', 'LY-GIAY-DEMO-12OZ-XANH', 'WRITE_OFF', 'DAMAGED',
             (SELECT id FROM identity.app_user ORDER BY id LIMIT 1), md5('qa:pk:doc')::uuid) $q$);
 SELECT pg_temp.expect_ok('D5 a count with a line for the carton', $q$
     INSERT INTO inventory.cycle_count (id, count_number, warehouse_id, trigger_type)
     SELECT md5('qa:cc:doc')::uuid, 'QA-CC-D5', id, 'MANUAL' FROM warehouse.warehouse WHERE prefix = 'HCM';
-    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
-    VALUES (gen_random_uuid(), md5('qa:cc:doc')::uuid, 'HCM-A01-1-A', 'LY-GIAY-DEMO-12OZ-XANH', 10, md5('qa:pk:doc')::uuid) $q$);
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, booked, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:doc')::uuid, 'HCM-A01-1-A', 'LY-GIAY-DEMO-12OZ-XANH', TRUE, md5('qa:pk:doc')::uuid) $q$);
 SELECT pg_temp.expect_fail('D6 the same carton counted twice in one count', $q$
-    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
-    VALUES (gen_random_uuid(), md5('qa:cc:doc')::uuid, 'HCM-A01-1-A', 'LY-GIAY-DEMO-12OZ-XANH', 10, md5('qa:pk:doc')::uuid) $q$);
-SELECT pg_temp.expect_fail('D7 a carton in stock filled past what was counted into it', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-1-A', 'UNTRACED', 1, 0, 'AVAILABLE', NOW(), NOW() - interval '2 day', md5('qa:pk:doc')::uuid) $q$);
-SELECT pg_temp.expect_true('D8 the balance view reads the carton as one row', $c$
-    (SELECT lpn || ':' || on_hand || ':' || reserved || ':' || available || ':' || unit_of_measure
-       FROM inventory.stock_package_balance WHERE stock_package_id = md5('qa:pk:doc')::uuid) = 'QA-LPN-D1:10:0:10:QA_CARTON' $c$);
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, booked, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:doc')::uuid, 'HCM-A01-1-A', 'LY-GIAY-DEMO-12OZ-XANH', TRUE, md5('qa:pk:doc')::uuid) $q$);
+-- D7 (a carton filled past what was counted into it) went with the stock rows: a carton holds no quantity.
+SELECT pg_temp.expect_true('D8 the balance view is gone with the table it joined (V20261231000600)', $c$
+    NOT EXISTS (SELECT 1 FROM pg_views WHERE schemaname = 'inventory' AND viewname = 'stock_package_balance')
+    AND to_regclass('inventory.stock_item') IS NULL $c$);
+
+\echo '--- a carton records when it was counted in, not a number of units (V20261231000300, ADR-0011 step 3a)'
+SELECT pg_temp.expect_true('CA1 received_qty is gone from the carton and counted_at is a nullable timestamp', $c$
+    NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
+                   AND table_name = 'stock_package' AND column_name = 'received_qty')
+    AND (SELECT data_type = 'timestamp with time zone' AND is_nullable = 'YES' FROM information_schema.columns
+          WHERE table_schema = 'inventory' AND table_name = 'stock_package' AND column_name = 'counted_at') $c$);
+SELECT pg_temp.expect_true('CA2 the CHECKs that only constrained the figure went with it; "counted" reads counted_at', $c$
+    NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'inventory.stock_package'::regclass
+                   AND conname IN ('ck_stock_package_received', 'ck_stock_package_standard_count'))
+    AND (SELECT pg_get_constraintdef(oid) LIKE '%counted_at IS NOT NULL%' FROM pg_constraint
+          WHERE conrelid = 'inventory.stock_package'::regclass AND conname = 'ck_stock_package_counted') $c$);
+SELECT pg_temp.expect_true('CA3 no function of inventory or ordering, nor the returned-carton check, still reads a carton''s received_qty', $c$
+    NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                 WHERE p.prosrc ILIKE '%received_qty%'
+                   AND (n.nspname IN ('inventory', 'ordering', 'fulfillment', 'warehouse')
+                        OR p.proname = 'check_return_receipt_carton'))
+    AND NOT EXISTS (SELECT 1 FROM pg_views WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+                       AND definition ILIKE '%received_qty%') $c$);
+SELECT pg_temp.expect_true('CA4 the lifecycle trigger fires when counted_at changes (the contents check went with the rows)', $c$
+    (SELECT count(*) FROM pg_trigger WHERE tgrelid = 'inventory.stock_package'::regclass AND NOT tgisinternal
+        AND tgname = 'tg_stock_package_transition' AND pg_get_triggerdef(oid) LIKE '%counted_at%') = 1
+    AND NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tg_stock_package_rows') $c$);
+SELECT pg_temp.expect_ok('CA5 labelled and not counted yet: RECEIVING with no count', $q$
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
+    VALUES (md5('qa:pk:ca')::uuid, 'QA-LPN-CA', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, 'HCM-RCV01') $q$);
+SELECT pg_temp.expect_fail_by('CA6 it goes into stock uncounted', 'ck_stock_package_counted', $q$
+    UPDATE inventory.stock_package SET status = 'IN_STOCK' WHERE id = md5('qa:pk:ca')::uuid $q$);
+SELECT pg_temp.expect_fail_by('CA7 a carton made IN_STOCK that was never counted in', 'ck_stock_package_counted', $q$
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code, status)
+    VALUES (gen_random_uuid(), 'QA-LPN-CA7', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, 'HCM-A01-1-A', 'IN_STOCK') $q$);
+SELECT pg_temp.expect_ok('CA8 counted, counted again and uncounted while it is still RECEIVING (a draft is recounted)', $q$
+    UPDATE inventory.stock_package SET counted_at = NOW() - interval '1 hour' WHERE id = md5('qa:pk:ca')::uuid;
+    UPDATE inventory.stock_package SET counted_at = NOW() WHERE id = md5('qa:pk:ca')::uuid;
+    UPDATE inventory.stock_package SET counted_at = NULL WHERE id = md5('qa:pk:ca')::uuid;
+    UPDATE inventory.stock_package SET counted_at = NOW() WHERE id = md5('qa:pk:ca')::uuid $q$);
+-- CA9 (a counted carton in stock holding 9 of the 10 it stands for) cannot be written: there is no quantity.
+SELECT pg_temp.expect_ok('CA10 counted, it goes into stock: nominal_qty is what it stands for', $q$
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', stock_status = 'INBOUND', lot_id = md5('qa:pk:lot')::uuid,
+           received_at = NOW() WHERE id = md5('qa:pk:ca')::uuid $q$);
+SELECT pg_temp.expect_fail_by('CA11 its count moved once it is in stock', 'counted in only while it is being received', $q$
+    UPDATE inventory.stock_package SET counted_at = counted_at + interval '1 minute' WHERE id = md5('qa:pk:ca')::uuid $q$);
+SELECT pg_temp.expect_fail('CA12 its count taken away once it is in stock', $q$
+    UPDATE inventory.stock_package SET counted_at = NULL WHERE id = md5('qa:pk:ca')::uuid $q$);
+SELECT pg_temp.expect_fail_by('CA13 its count taken away with its status untouched and the row triggers off: the CHECK alone', 'ck_stock_package_counted', $q$
+    SET LOCAL session_replication_role = replica;
+    UPDATE inventory.stock_package SET counted_at = NULL WHERE id = md5('qa:pk:ca')::uuid $q$);
+SET LOCAL session_replication_role = origin;
+SELECT pg_temp.expect_ok('CA14 a carton voided before it was counted stays uncounted', $q$
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
+    VALUES (md5('qa:pk:cv')::uuid, 'QA-LPN-CV', (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('qa:unit:XANH-CARTON')::uuid, 10, 'HCM-RCV01');
+    UPDATE inventory.stock_package SET status = 'VOID', closed_at = NOW() WHERE id = md5('qa:pk:cv')::uuid $q$);
+SELECT pg_temp.expect_fail('CA15 a voided carton counted afterwards', $q$
+    UPDATE inventory.stock_package SET counted_at = NOW() WHERE id = md5('qa:pk:cv')::uuid $q$);
+SELECT pg_temp.expect_true('CA16 the carton answers the count as a moment beside the standard count', $c$
+    (SELECT nominal_qty = 10 AND counted_at IS NOT NULL AND status = 'IN_STOCK'
+       FROM inventory.stock_package WHERE id = md5('qa:pk:ca')::uuid)
+    AND (SELECT counted_at IS NULL AND status = 'VOID' AND stock_status IS NULL AND lot_id IS NULL
+           FROM inventory.stock_package WHERE id = md5('qa:pk:cv')::uuid) $c$);
 
 \echo '--- permissions (V20261020000700)'
 SELECT pg_temp.expect_true('P1 SYSTEM_ADMIN holds every inventory-stock-packages permission', $c$

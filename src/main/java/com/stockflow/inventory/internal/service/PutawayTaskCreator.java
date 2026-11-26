@@ -3,16 +3,14 @@ package com.stockflow.inventory.internal.service;
 import com.stockflow.contracts.ReceiptStockReadyForPutaway;
 import com.stockflow.contracts.ReceiptStockReadyForPutaway.Line;
 import com.stockflow.inventory.internal.domain.StockPackage;
-import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
-import com.stockflow.inventory.internal.domain.StockPackageStatus;
+import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.warehouse.api.NewPutawayTask;
 import com.stockflow.warehouse.api.PutawayTaskView;
 import com.stockflow.warehouse.api.PutawayTasks;
 import org.springframework.modulith.events.ApplicationModuleListener;
 import org.springframework.stereotype.Component;
 
-import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -59,8 +57,6 @@ public class PutawayTaskCreator {
         Map<UUID, List<StockPackage>> cartonsByLine = stockPackages
                 .findByReceiptLines(event.lines().stream().map(Line::receiptLineId).toList()).stream()
                 .collect(Collectors.groupingBy(StockPackage::goodsReceiptLineId));
-        Map<StockPackageId, Integer> inbound = stockPackages.inboundOnHandOf(cartonsByLine.values().stream()
-                .flatMap(Collection::stream).map(StockPackage::id).toList());
 
         for (Line line : event.lines()) {
             if (processed.contains(line.receiptLineId())) {
@@ -68,10 +64,11 @@ public class PutawayTaskCreator {
             }
             int inCartons = 0;
             for (StockPackage carton : cartonsByLine.getOrDefault(line.receiptLineId(), List.of())) {
-                int units = inbound.getOrDefault(carton.id(), 0);
-                if (carton.status() != StockPackageStatus.IN_STOCK || units <= 0) {
+                // Only a carton still waiting for putaway: one already available (or quarantined) opens no task.
+                if (carton.stockStatus() != StockStatus.INBOUND) {
                     continue;
                 }
+                int units = carton.nominalQty();
                 inCartons += units;
                 tasks.open(new NewPutawayTask(event.receiptId(), line.receiptLineId(), line.sku(), units,
                         carton.id().value()));

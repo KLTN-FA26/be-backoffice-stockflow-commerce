@@ -22,8 +22,8 @@ import java.util.UUID;
 public interface PickConsumption {
 
     /**
-     * Turns the hold behind a pick line into a real deduction: {@code on_hand} falls by the hold's
-     * quantity, the hold becomes CONSUMED, one {@code PICK} ledger row names the pick line and
+     * Turns the hold behind a pick line into a real deduction: the hold becomes CONSUMED and its carton
+     * leaves stock whole, one {@code PICK} ledger row names the pick line and
      * {@code StockDeducted} is published. Called again for the same pick line, it changes nothing and
      * answers {@code alreadyConsumed = true}.
      *
@@ -82,7 +82,7 @@ public interface PickConsumption {
 
     /**
      * Deducts a carton {@link #stage} put in a staging area, where it stands (kltn-docs 07 §4.3 step 8, 20 §4.9 step 3):
-     * as {@link #consumeForPick} - the allocation CONSUMED, {@code on_hand} falls, the carton CONSUMED, one {@code PICK}
+     * as {@link #consumeForPick} - the allocation CONSUMED, the carton CONSUMED, one {@code PICK}
      * ledger row from the staging area names the pick line. Called again for the same pick line, it changes nothing and
      * answers {@code alreadyConsumed = true}.
      *

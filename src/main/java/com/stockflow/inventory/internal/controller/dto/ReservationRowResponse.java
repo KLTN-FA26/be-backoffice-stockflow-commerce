@@ -5,7 +5,8 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import java.time.Instant;
 import java.util.UUID;
 
-@Schema(name = "StockReservationRow", description = "One hold on one stock row, for the back office (SCRUM-462)")
+@Schema(name = "StockReservationRow", description = "One hold, for the back office (SCRUM-462); stockItemId is the id of the "
+        + "carton an allocation took, null for a hold on no carton yet")
 public record ReservationRowResponse(
         UUID reservationId,
         UUID orderId,
@@ -13,10 +14,10 @@ public record ReservationRowResponse(
         String sku,
         @Schema(example = "HCM-A01-2-B") String locationCode,
         String lotNumber,
-        int quantity,
+        @Schema(description = "Units held: cartons times their count") int quantity,
+        @Schema(description = "Cartons held; an allocation is always one (ADR-0011)") int cartons,
         @Schema(description = "HELD, CONSUMED, RELEASED or EXPIRED") String status,
         Instant reservedAt,
-        @Schema(description = "Null once the order no longer waits for payment (the hold is pinned)") Instant expiresAt,
         @Schema(description = "Why it was released: ORDER_CANCELLED, PAYMENT_FAILED, RESERVATION_EXPIRED, MANUAL_OVERRIDE")
         String releaseReason,
         Instant closedAt,

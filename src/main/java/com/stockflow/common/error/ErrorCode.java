@@ -232,8 +232,6 @@ public enum ErrorCode {
     RECEIPT_PACKAGES_EXCEED_LINE("The cartons hold more than the receipt line", 422),
     /** Kltn-docs 03 BR-12: every unit received is in a carton; units outside one are not received. */
     RECEIPT_LINE_NOT_IN_CARTONS("Every unit of a receipt line must be in a carton", 422),
-    /** Kltn-docs 03 BR-13: a carton holds the SKU's standard count; one of another count is not received. */
-    RECEIPT_PACKAGE_NOT_STANDARD("A carton must hold the SKU's standard count", 422),
     /** SCRUM-92: no putaway task with this id. */
     PUTAWAY_TASK_NOT_FOUND("Putaway task not found", 404),
     /** SCRUM-92: the task has been put away completely; nothing is left to move. */

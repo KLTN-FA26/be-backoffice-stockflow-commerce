@@ -65,7 +65,7 @@ public interface ReturnedCartonOwnership {
     /**
      * A carton waiting for its return's refund decision, as the decision splits them ({@link ReturnedCartonSettlement}).
      *
-     * @param quantity the units it came back with, whole and sealed: its label ({@code received_qty}), what the receipt's
+     * @param quantity the units it came back with, whole and sealed: its standard count ({@code nominal_qty}), what the receipt's
      *                 RECEIPT line put into stock
      */
     record Waiting(StockPackageId id, String lpn, String sku, int quantity) {

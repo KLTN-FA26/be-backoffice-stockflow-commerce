@@ -12,7 +12,8 @@ public record StockPackageResponse(
         String sku,
         @Schema(example = "CARTON") String unitOfMeasure,
         @Schema(description = "What it was made to hold: its unit's factor then") int nominalQty,
-        @Schema(description = "What was counted into it at receipt; null until counted") Integer receivedQty,
+        @Schema(description = "When it was counted in at receiving; null until counted. A counted carton stands for "
+                + "nominalQty units", nullable = true) Instant countedAt,
         String lotNumber,
         @Schema(description = "What is left in it") int onHand,
         @Schema(description = "Of onHand, the units held for orders") int reserved,

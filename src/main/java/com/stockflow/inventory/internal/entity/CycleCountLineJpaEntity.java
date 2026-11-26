@@ -32,14 +32,15 @@ public class CycleCountLineJpaEntity extends BaseEntity {
     @Column(name = "lot_number", length = 64, updatable = false)
     private String lotNumber;
 
-    @Column(name = "stock_package_id", updatable = false)
+    @Column(name = "stock_package_id", nullable = false, updatable = false)
     private UUID stockPackageId;
 
-    @Column(name = "expected_qty", nullable = false)
-    private int expectedQty;
+    @Column(name = "booked", nullable = false)
+    private boolean booked;
 
-    @Column(name = "counted_qty")
-    private Integer countedQty;
+    /** Null until the line is counted. */
+    @Column(name = "found")
+    private Boolean found;
 
     @Column(name = "counted_by")
     private UUID countedBy;
@@ -54,14 +55,14 @@ public class CycleCountLineJpaEntity extends BaseEntity {
     }
 
     public CycleCountLineJpaEntity(UUID id, String locationCode, String sku, String lotNumber, UUID stockPackageId,
-                                   int expectedQty, Integer countedQty, UUID countedBy, Instant countedAt,
+                                   boolean booked, Boolean found, UUID countedBy, Instant countedAt,
                                    boolean recountRequired) {
         super(id);
         this.locationCode = locationCode;
         this.sku = sku;
         this.lotNumber = lotNumber;
         this.stockPackageId = stockPackageId;
-        apply(expectedQty, countedQty, countedBy, countedAt, recountRequired);
+        apply(booked, found, countedBy, countedAt, recountRequired);
     }
 
     /** A carton line following its carton; the line trigger re-checks the carton is at this bin. */
@@ -73,10 +74,10 @@ public class CycleCountLineJpaEntity extends BaseEntity {
         this.cycleCount = count;
     }
 
-    public void apply(int expectedQty, Integer countedQty, UUID countedBy, Instant countedAt,
+    public void apply(boolean booked, Boolean found, UUID countedBy, Instant countedAt,
                       boolean recountRequired) {
-        this.expectedQty = expectedQty;
-        this.countedQty = countedQty;
+        this.booked = booked;
+        this.found = found;
         this.countedBy = countedBy;
         this.countedAt = countedAt;
         this.recountRequired = recountRequired;
@@ -86,8 +87,8 @@ public class CycleCountLineJpaEntity extends BaseEntity {
     public String getSku() { return sku; }
     public String getLotNumber() { return lotNumber; }
     public UUID getStockPackageId() { return stockPackageId; }
-    public int getExpectedQty() { return expectedQty; }
-    public Integer getCountedQty() { return countedQty; }
+    public boolean isBooked() { return booked; }
+    public Boolean getFound() { return found; }
     public UUID getCountedBy() { return countedBy; }
     public Instant getCountedAt() { return countedAt; }
     public boolean isRecountRequired() { return recountRequired; }

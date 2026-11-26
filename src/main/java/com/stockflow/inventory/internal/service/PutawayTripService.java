@@ -49,7 +49,7 @@ import java.util.stream.Collectors;
  * rules whether it is the one assigned or not (BR-07, BR-09), and a hold is not a lock (BR-16). The trip is told by
  * the putaway itself, so a carton of a cart put away from the single-task screen leaves its cart all the same.</p>
  *
- * <p>Lock order: the trip row first, then whatever a putaway locks (task row, bin, SKU, carton, stock rows).</p>
+ * <p>Lock order: the trip row first, then whatever a putaway locks (task row, bin, SKU, carton).</p>
  *
  * <p>A trip is worked by its own clerk; a warehouse manager may close one left behind (05 §4.5 step 17), which the
  * controller lets through under its own permission.</p>

@@ -208,7 +208,8 @@ class CycleCountController {
                         line.sku(), line.lotNumber(), line.stockPackageId(), line.lpn(), line.booked(),
                         line.found(), line.countedBy(), line.countedAt(), line.recountRequired(),
                         line.adjustments().stream().map(adjustment -> new CycleCountResponse.Adjustment(
-                                adjustment.id(), adjustment.number(), adjustment.quantityDelta(), adjustment.status()))
+                                adjustment.id(), adjustment.number(), adjustment.direction().name(),
+                                adjustment.status()))
                                 .toList(), ResponseLabels.name(names, line.countedBy()))).toList(),
                 ResponseLabels.name(names, count.assignedUserId()), ResponseLabels.code(warehouses, count.warehouseId()),
                 ResponseLabels.warehouseName(warehouses, count.warehouseId()));

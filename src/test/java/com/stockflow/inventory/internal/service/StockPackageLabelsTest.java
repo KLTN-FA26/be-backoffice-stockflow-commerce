@@ -59,10 +59,19 @@ class StockPackageLabelsTest {
     }
 
     private static StockPackage carton(String lpn, String location, StockPackageStatus status) {
+        return carton(lpn, location, status, "L1");
+    }
+
+    /** A carton in {@code status}; once it has been in stock it is of a lot numbered {@code lotNumber}. */
+    private static StockPackage carton(String lpn, String location, StockPackageStatus status, String lotNumber) {
         Instant closedAt = status.isClosed() ? NOW : null;
-        Integer counted = status == StockPackageStatus.RECEIVING ? null : 24;
-        return new StockPackage(new StockPackageId(UUID.randomUUID()), lpn, UUID.randomUUID(), CARTON_UNIT, 24, counted,
-                new LocationId(location), status, RECEIPT_LINE, closedAt, 0L);
+        Instant counted = status == StockPackageStatus.RECEIVING ? null : NOW;
+        boolean stocked = status != StockPackageStatus.RECEIVING && status != StockPackageStatus.VOID;
+        return new StockPackage(new StockPackageId(UUID.randomUUID()), lpn, new com.stockflow.common.domain.Sku(
+                "CUP-12OZ"), UUID.randomUUID(), CARTON_UNIT, 24, counted, new LocationId(location), status,
+                status == StockPackageStatus.IN_STOCK ? com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE
+                        : null, stocked ? UUID.randomUUID() : null, stocked ? lotNumber : null, stocked ? NOW : null,
+                RECEIPT_LINE, closedAt, List.of(), 0L);
     }
 
     private void unitOfCartons() {
@@ -94,21 +103,20 @@ class StockPackageLabelsTest {
         List<StockPackageLabel> sheet = labels.sheetFor(RECEIPT_LINE, null);
 
         assertThat(sheet).extracting(StockPackageLabel::lpn).containsExactly("LPN-0001", "LPN-0002");
-        assertThat(sheet.get(0).receivedQty()).isNull();
-        assertThat(sheet.get(1).receivedQty()).isEqualTo(24);
+        assertThat(sheet.get(0).counted()).isFalse();
+        assertThat(sheet.get(1).counted()).isTrue();
         assertThat(sheet.get(1).nominalQty()).isEqualTo(24);
         assertThat(sheet.get(1).unit()).isEqualTo("CARTON");
         assertThat(sheet.get(1).sku()).isEqualTo("CUP-12OZ");
     }
 
     @Test
-    @DisplayName("a label names the item, and takes the lot from the carton's stock row, else from its receipt line")
+    @DisplayName("a label names the item, and takes the lot from the carton once it is in stock, else from its receipt line")
     void nameAndLot() {
         unitOfCartons();
-        StockPackage stored = carton("LPN-0001", "HCM-RCV01", StockPackageStatus.IN_STOCK);
+        StockPackage stored = carton("LPN-0001", "HCM-RCV01", StockPackageStatus.IN_STOCK, "RETURN-LOT");
         StockPackage counting = carton("LPN-0002", "HCM-RCV01", StockPackageStatus.RECEIVING);
         when(stockPackages.findByReceiptLines(List.of(RECEIPT_LINE))).thenReturn(List.of(stored, counting));
-        when(stockPackages.lotsOf(anyCollection())).thenReturn(Map.of(stored.id(), "RETURN-LOT"));
         when(receiptLots.lotsOf(List.of(RECEIPT_LINE))).thenReturn(Map.of(RECEIPT_LINE, "PRD-20261111-0001"));
         when(names.namesOf(List.of("CUP-12OZ"))).thenReturn(Map.of("CUP-12OZ", "Paper cup 12oz"));
 
@@ -234,7 +242,8 @@ class StockPackageLabelsTest {
         List<StockPackageLabel> sheet = labels.sheetFor(null, List.of("LPN-0004", "LPN-0008"));
 
         assertThat(sheet).extracting(StockPackageLabel::lpn).containsExactly("LPN-0004", "LPN-0008");
-        assertThat(sheet.get(0).receivedQty()).isEqualTo(24);
+        assertThat(sheet.get(0).counted()).isTrue();
+        assertThat(sheet.get(0).nominalQty()).isEqualTo(24);
     }
 
     @Test

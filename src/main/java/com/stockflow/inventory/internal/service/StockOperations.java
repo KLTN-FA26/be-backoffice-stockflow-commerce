@@ -76,7 +76,9 @@ public interface StockOperations {
      * adjustment keeps who counted the line (WF-05 fix plan, section 8), read from the line itself - its counter is
      * fixed once the count is submitted - so neither the caller nor a later reader has to be trusted with it.
      */
-    StockAdjustmentSummary requestCountVariance(UUID cycleCountLineId, CountSlot slot, int delta, UUID requestedBy,
+    StockAdjustmentSummary requestCountVariance(UUID cycleCountLineId, CountSlot slot,
+                                                com.stockflow.inventory.internal.domain.AdjustmentDirection direction,
+                                                UUID requestedBy,
                                                 String note);
 
     /**
@@ -121,25 +123,16 @@ public interface StockOperations {
     PageResponse<StockAdjustmentSummary> adjustments(StockAdjustmentStatus status, String sku, String location,
                                                     int page, int size, String sort, BookVisibility visibility);
 
-    /** One line of the stock history, as the screen shows it. */
     /**
-     * One line of the history. {@code fromLpn} / {@code toLpn} name the carton the units left and the one they went
-     * into (V20261020000300), null for a side with no carton - stock that arrived or left, or a line from before
-     * everything was boxed (V20261111000110).
+     * One line of the stock history, as the screen shows it. {@code lpn} names the carton the line is about
+     * (V20261231000200: one carton, where {@code fromLpn} / {@code toLpn} named one per side) and {@code quantity} is
+     * that carton's standard count: the ledger keeps no quantity of its own (V20261231000400), a line is one whole
+     * carton.
      */
     record LedgerLine(UUID movementId, StockMovement.MovementType type, String sku, String lotNumber,
                       String fromLocation, String toLocation, int quantity, String status,
                       String toStatus, String referenceType, UUID referenceId, String reason, UUID actorId,
-                      java.time.Instant occurredAt, UUID requestedBy, UUID countedBy, String fromLpn, String toLpn) {
-
-        /** A line naming no carton on either side. */
-        public LedgerLine(UUID movementId, StockMovement.MovementType type, String sku, String lotNumber,
-                          String fromLocation, String toLocation, int quantity, String status, String toStatus,
-                          String referenceType, UUID referenceId, String reason, UUID actorId,
-                          java.time.Instant occurredAt, UUID requestedBy, UUID countedBy) {
-            this(movementId, type, sku, lotNumber, fromLocation, toLocation, quantity, status, toStatus, referenceType,
-                    referenceId, reason, actorId, occurredAt, requestedBy, countedBy, null, null);
-        }
+                      java.time.Instant occurredAt, UUID requestedBy, UUID countedBy, String lpn) {
     }
 
     default PageResponse<LedgerLine> ledger(String sku, String location, StockMovement.MovementType type,
