@@ -12,8 +12,6 @@ import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Repository;
 
 import java.util.Collection;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -28,14 +26,13 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
 
     @Override
     public void append(StockMovement m) {
-        // ck_stock_movement_names_carton: stock is whole cartons, so a line with no carton records nothing that can
-        // happen. Refused here by name rather than left to the constraint's message.
+        // stock_movement.stock_package_id is NOT NULL: stock is whole cartons, so a line with no carton records nothing
+        // that can happen. The record already refuses one; said here again, by name, where the row is written.
         if (m.stockPackage() == null) {
             throw new IllegalArgumentException("A ledger line names the carton it is about");
         }
         jpa.save(new StockMovementJpaEntity(m.id(), m.type(), m.sku().code(), m.lotNumber(),
                 m.from() == null ? null : m.from().code(), m.to() == null ? null : m.to().code(),
-                m.quantity(),
                 m.from() == null ? null : m.status(), m.to() == null ? null : m.toStatus(),
                 m.referenceType(), m.referenceId(), m.reason(), m.actorId(), m.occurredAt(), m.lotId(), m.orderId(),
                 m.stockPackage().value())
@@ -66,32 +63,10 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
     }
 
     @Override
-    public Optional<StockMovement> findLooseByReference(StockMovement.MovementType type,
-                                                        StockMovement.ReferenceType referenceType, UUID referenceId) {
-        return jpa.findFirstByMovementTypeAndReferenceTypeAndReferenceIdAndStockPackageIdIsNullOrderByIdAsc(
-                        type, referenceType, referenceId)
-                .map(StockMovementLogAdapter::toDomain);
-    }
-
-    @Override
-    public Map<UUID, StockMovement> findLooseByReferences(StockMovement.MovementType type,
-                                                          StockMovement.ReferenceType referenceType,
-                                                          Collection<UUID> referenceIds) {
-        if (referenceIds.isEmpty()) {
-            return Map.of();
-        }
-        Map<UUID, StockMovement> first = new LinkedHashMap<>();
-        // Ordered by id, so the first line met for a reference is the lowest, as findLooseByReference answers.
-        for (StockMovementJpaEntity row : jpa.findLooseByReferences(type, referenceType, referenceIds)) {
-            first.putIfAbsent(row.getReferenceId(), toDomain(row));
-        }
-        return first;
-    }
-
-    @Override
-    public int sumQuantityByReference(Collection<StockMovement.MovementType> types,
-                                      StockMovement.ReferenceType referenceType, UUID referenceId) {
-        return types.isEmpty() ? 0 : jpa.sumQuantityByReference(types, referenceType, referenceId);
+    public int countByReference(Collection<StockMovement.MovementType> types,
+                                StockMovement.ReferenceType referenceType, UUID referenceId) {
+        return types.isEmpty() ? 0 : Math.toIntExact(jpa.countByMovementTypeInAndReferenceTypeAndReferenceId(types,
+                referenceType, referenceId));
     }
 
     @Override
@@ -148,13 +123,11 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
         return new StockMovement(e.getId(), e.getMovementType(), new Sku(e.getSku()), e.getLotNumber(),
                 e.getFromLocationCode() == null ? null : new LocationId(e.getFromLocationCode()),
                 e.getToLocationCode() == null ? null : new LocationId(e.getToLocationCode()),
-                e.getQuantity(),
                 e.getFromStatus() != null ? e.getFromStatus() : e.getToStatus(),
                 e.getToStatus() != null ? e.getToStatus() : e.getFromStatus(),
                 e.getReferenceType(), e.getReferenceId(), e.getReason(), e.getActorId(), e.getOccurredAt(),
                 e.getLotId(), e.getOrderId(),
-                e.getStockPackageId() == null ? null
-                        : new com.stockflow.inventory.internal.domain.StockPackageId(e.getStockPackageId()),
+                new com.stockflow.inventory.internal.domain.StockPackageId(e.getStockPackageId()),
                 e.getRequestedBy(), e.getCountedBy());
     }
 }

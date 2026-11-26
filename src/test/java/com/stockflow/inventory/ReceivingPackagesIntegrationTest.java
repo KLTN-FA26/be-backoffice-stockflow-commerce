@@ -73,6 +73,14 @@ class ReceivingPackagesIntegrationTest {
                 packages.length == 0 ? null : carton, RECEIVING, List.of(packages), clerk));
     }
 
+    /** The units of the ledger line a move wrote: the line names a carton and no number (ADR-0011). */
+    private int unitsOfLine(StockMove move) {
+        return jdbc.queryForObject("""
+                select p.nominal_qty from inventory.stock_movement m
+                  join inventory.stock_package p on p.id = m.stock_package_id where m.id = ?""",
+                Integer.class, move.movementId());
+    }
+
     private StockMove receive(int quantity) {
         return inventory.receive(new ReceiveStockCommand(line, new Sku(sku), "LOT-FX", RECEIVING, quantity, clerk,
                 RECEIVED));
@@ -172,7 +180,8 @@ class ReceivingPackagesIntegrationTest {
 
         StockMove move = receive(2000);
 
-        assertThat(move.quantity()).as("the first carton's line is the move returned").isEqualTo(1000);
+        assertThat(unitsOfLine(move)).as("the first carton's line is the move returned: one carton of 1,000")
+                .isEqualTo(1000);
         assertThat(jdbc.queryForList("""
                 select status from inventory.stock_package where goods_receipt_line_id = ?""",
                 String.class, line)).containsExactly("IN_STOCK", "IN_STOCK");
@@ -188,11 +197,13 @@ class ReceivingPackagesIntegrationTest {
                 "1000:INBOUND:" + RECEIVING + ":carton of 1000",
                 "1000:INBOUND:" + RECEIVING + ":carton of 1000");
         assertThat(jdbc.query("""
-                select quantity, stock_package_id from inventory.stock_movement
-                 where movement_type = 'RECEIPT' and reference_type = 'GOODS_RECEIPT_LINE' and reference_id = ?
-                 order by quantity""",
-                (rs, n) -> rs.getInt("quantity") + ":" + (rs.getObject("stock_package_id") == null ? "loose" : "carton"),
-                line)).containsExactly("1000:carton", "1000:carton");
+                select p.nominal_qty as quantity, p.status
+                  from inventory.stock_movement m join inventory.stock_package p on p.id = m.stock_package_id
+                 where m.movement_type = 'RECEIPT' and m.reference_type = 'GOODS_RECEIPT_LINE' and m.reference_id = ?
+                 order by m.id""",
+                (rs, n) -> rs.getInt("quantity") + ":carton " + rs.getString("status"),
+                line)).as("one line per carton, each the carton whole")
+                .containsExactly("1000:carton IN_STOCK", "1000:carton IN_STOCK");
         Map<UUID, List<StockPackageView>> shown = inventory.receivingPackagesOf(List.of(line));
         assertThat(shown.get(line)).extracting(StockPackageView::status, StockPackageView::quantity)
                 .containsExactlyInAnyOrder(org.assertj.core.groups.Tuple.tuple("IN_STOCK", 1000),
@@ -255,7 +266,7 @@ class ReceivingPackagesIntegrationTest {
         StockMove again = receive(2000);
 
         assertThat(again.movementId()).isEqualTo(first.movementId());
-        assertThat(again.quantity()).isEqualTo(1000);
+        assertThat(unitsOfLine(again)).isEqualTo(1000);
         assertThat(stockRows()).isEqualTo(rows).isEqualTo(2);
         assertThat(receiptLines()).isEqualTo(ledger).isEqualTo(2);
         assertThat(cartons()).hasSize(2).allSatisfy(row -> assertThat(row).contains(":IN_STOCK:"));

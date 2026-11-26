@@ -143,7 +143,8 @@ values (?,?,?,'Move fixture','')
         assertThat(cartonAt(PACKING)).isEqualTo(10);
         assertThat(onHand(BIN)).as("the other carton beside it stays").isEqualTo(10);
         Map<String, Object> line = jdbc.queryForMap(
-                "SELECT * FROM inventory.stock_movement WHERE reference_type = 'MOVE_TASK' AND reference_id = ?",
+                "SELECT m.*, p.nominal_qty AS quantity FROM inventory.stock_movement m JOIN inventory.stock_package p "
+                        + "ON p.id = m.stock_package_id WHERE m.reference_type = 'MOVE_TASK' AND m.reference_id = ?",
                 requestId);
         assertThat(line)
                 .containsEntry("movement_type", "MOVE")
@@ -214,9 +215,9 @@ values (?,?,?,'Move fixture','')
         assertThat(
                         jdbc.queryForObject(
                                 """
-SELECT count(*) FROM inventory.stock_movement
-WHERE reference_type = 'STOCK_ADJUSTMENT' AND reference_id = ? AND movement_type = 'ADJUSTMENT'
-  AND from_location_code = ? AND to_location_code IS NULL AND quantity = 10""",
+SELECT count(*) FROM inventory.stock_movement m JOIN inventory.stock_package p ON p.id = m.stock_package_id
+WHERE m.reference_type = 'STOCK_ADJUSTMENT' AND m.reference_id = ? AND m.movement_type = 'ADJUSTMENT'
+  AND m.from_location_code = ? AND m.to_location_code IS NULL AND p.nominal_qty = 10""",
                                 Integer.class,
                                 requested.adjustmentId(),
                                 BIN))

@@ -38,30 +38,9 @@ public interface StockMovementLog {
                                                      StockMovement.ReferenceType referenceType, UUID referenceId);
 
     /**
-     * {@link #findByReference}, among the lines that name no carton: the lines of loose stock. History only - every
-     * line written since V20261230000200 names its carton ({@code ck_stock_movement_names_carton}), so this finds
-     * nothing newer. Kept for what still reads that history: a loose putaway task from before everything was boxed
-     * (V20261111000110) is located by its receipt line's loose RECEIPT line, and a lookup that also saw the same
-     * receipt line's carton lines (SCRUM-473: a line's cartons and its loose remainder shared one reference) would
-     * answer the wrong lot.
+     * Cartons a document's ledger lines of these types name, 0 when it has none: a line is one carton. Several types
+     * in one query, because a putaway writes a move, or an in-place status change, under one reference.
      */
-    Optional<StockMovement> findLooseByReference(StockMovement.MovementType type,
-                                                 StockMovement.ReferenceType referenceType, UUID referenceId);
-
-    /**
-     * {@link #findLooseByReference} for many documents at once: for each reference id that has a loose line, its
-     * first (lowest id); one query. A reference with none is absent.
-     */
-    java.util.Map<UUID, StockMovement> findLooseByReferences(StockMovement.MovementType type,
-                                                             StockMovement.ReferenceType referenceType,
-                                                             java.util.Collection<UUID> referenceIds);
-
-    /**
-     * Units a document's ledger lines of these types add up to, 0 when it has none: how much of a putaway task has
-     * been put away, counting every part, loose or in a carton. Several types in one query, because a putaway writes
-     * both moves and in-place status changes under one reference. A document booked in several steps - a return line
-     * whose goods came back in more than one parcel - recognises a retried step by the total it already reached.
-     */
-    int sumQuantityByReference(java.util.Collection<StockMovement.MovementType> types,
-                               StockMovement.ReferenceType referenceType, UUID referenceId);
+    int countByReference(java.util.Collection<StockMovement.MovementType> types,
+                         StockMovement.ReferenceType referenceType, UUID referenceId);
 }

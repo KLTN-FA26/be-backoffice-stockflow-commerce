@@ -7,7 +7,8 @@
 -- Why it matters: the stock summary report (GET /api/v1/reports/stock-summary) is the ledger summed - opening is every
 -- line before the period, closing every line up to its end (StockLedgerTotals). It is only true if every change of
 -- on hand wrote its ledger line (kltn-docs 20 BR-16). A ledger line changes warehouse W by
---   quantity * ([to_location in W] - [from_location in W])
+--   nominal_qty of its carton * ([to_location in W] - [from_location in W])
+-- (a ledger line is one whole carton and keeps no quantity of its own, ADR-0011, V20261230000400)
 -- where "in W" is the location code's prefix, the part before the first '-' (06 BR-13), so moves inside a warehouse
 -- count zero; summed over the whole ledger that is what W holds of the SKU now.
 --
@@ -23,10 +24,11 @@ WITH warehouses AS (
     SELECT upper(prefix) AS prefix FROM warehouse.warehouse
 ), ledger AS (
     SELECT w.prefix, m.sku,
-           SUM(m.quantity * ((CASE WHEN upper(split_part(m.to_location_code, '-', 1)) = w.prefix THEN 1 ELSE 0 END)
+           SUM(p.nominal_qty * ((CASE WHEN upper(split_part(m.to_location_code, '-', 1)) = w.prefix THEN 1 ELSE 0 END)
                            - (CASE WHEN upper(split_part(m.from_location_code, '-', 1)) = w.prefix THEN 1 ELSE 0 END)))
                AS ledger_units
       FROM inventory.stock_movement m
+      JOIN inventory.stock_package p ON p.id = m.stock_package_id
       JOIN warehouses w ON w.prefix IN (upper(split_part(m.to_location_code, '-', 1)),
                                         upper(split_part(m.from_location_code, '-', 1)))
      GROUP BY w.prefix, m.sku

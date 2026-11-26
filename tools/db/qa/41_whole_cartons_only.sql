@@ -138,44 +138,41 @@ SELECT pg_temp.expect_fail('WC11 VOID back to receiving', $q$
     UPDATE inventory.stock_package SET status = 'RECEIVING', closed_at = NULL WHERE id = md5('qa41:rcv')::uuid $q$);
 
 \echo '--- every unit received is in a carton (03 BR-12)'
--- Since V20261230000200 one rule says it for every kind of line: ck_stock_movement_names_carton (ADR-0011).
-SELECT pg_temp.expect_fail_by('WC12 a receipt line received loose', 'ck_stock_movement_names_carton', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, to_location_code, quantity, to_status,
+-- One rule says it for every kind of line: stock_movement.stock_package_id is NOT NULL (V20261230000400, ADR-0011).
+SELECT pg_temp.expect_fail_by('WC12 a receipt line received loose', 'null value in column "stock_package_id"', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, to_location_code, to_status,
                                           reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'RECEIPT', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-RCV01', 4, 'INBOUND',
+    VALUES (gen_random_uuid(), 'RECEIPT', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-RCV01', 'INBOUND',
             'GOODS_RECEIPT_LINE', gen_random_uuid(), NOW()) $q$);
 SELECT pg_temp.expect_ok('WC13 a receipt line received into its carton', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, to_location_code, quantity, to_status,
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, to_location_code, to_status,
                                           reference_type, reference_id, stock_package_id, occurred_at)
-    VALUES (gen_random_uuid(), 'RECEIPT', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-RCV01', 4, 'INBOUND',
+    VALUES (gen_random_uuid(), 'RECEIPT', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-RCV01', 'INBOUND',
             'GOODS_RECEIPT_LINE', gen_random_uuid(), md5('qa41:rcv')::uuid, NOW()) $q$);
 -- It was allowed while a return line could be counted in loose; returns come back as cartons, through a return receipt
 -- (4D-2, QA 52), and a line of loose stock is no longer written by anything.
-SELECT pg_temp.expect_fail_by('WC14 a customer return counted in loose is refused like any loose line', 'ck_stock_movement_names_carton', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, to_location_code, quantity, to_status,
+SELECT pg_temp.expect_fail_by('WC14 a customer return counted in loose is refused like any loose line', 'null value in column "stock_package_id"', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, to_location_code, to_status,
                                           reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'RETURN_IN', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-QC01', 1, 'QUARANTINE',
+    VALUES (gen_random_uuid(), 'RETURN_IN', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-QC01', 'QUARANTINE',
             'RETURN_REQUEST_LINE', gen_random_uuid(), NOW()) $q$);
 
 \echo '--- a person moves whole cartons, never one held for an order (11 BR-04, BR-05)'
-SELECT pg_temp.expect_fail_by('WC15 a move by hand of loose units', 'ck_stock_movement_names_carton', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
-                                          quantity, reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-2-B', 'HCM-A01-1-A', 1, 'MOVE_TASK',
+SELECT pg_temp.expect_fail_by('WC15 a move by hand of loose units', 'null value in column "stock_package_id"', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, reference_type, reference_id, occurred_at)
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-2-B', 'HCM-A01-1-A', 'MOVE_TASK',
             gen_random_uuid(), NOW()) $q$);
 -- There is no "one side only" any more (V20261230000200): the line names its carton once. What is still refused is a
 -- carton that stands at neither of the line's places (it is at HCM-A01-1-B).
 SELECT pg_temp.expect_fail_by('WC16 a move by hand naming a carton that stands at neither of its places', 'names a stock package at', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
-                                          quantity, reference_type, reference_id, stock_package_id, occurred_at)
-    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-2-B', 'HCM-A02-1-A', 4, 'MOVE_TASK',
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, reference_type, reference_id, stock_package_id, occurred_at)
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-2-B', 'HCM-A02-1-A', 'MOVE_TASK',
             gen_random_uuid(), md5('qa41:pk')::uuid, NOW()) $q$);
 SELECT pg_temp.expect_ok('WC17 a carton moved by hand, its line naming it', $q$
     UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-A' WHERE id = md5('qa41:pk')::uuid;
     UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-A' WHERE id = md5('qa41:pk:row')::uuid;
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
-                                          quantity, reference_type, reference_id, stock_package_id, occurred_at)
-    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-1-B', 'HCM-A01-1-A', 4, 'MOVE_TASK',
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, reference_type, reference_id, stock_package_id, occurred_at)
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-1-B', 'HCM-A01-1-A', 'MOVE_TASK',
             gen_random_uuid(), md5('qa41:pk')::uuid, NOW()) $q$);
 SELECT pg_temp.expect_ok('WC18 the carton allocated whole to the order (07 BR-03)', $q$
     UPDATE inventory.stock_item SET reserved = 4 WHERE id = md5('qa41:pk:row')::uuid;
@@ -187,9 +184,8 @@ SELECT pg_temp.expect_ok('WC18 the carton allocated whole to the order (07 BR-03
 SELECT pg_temp.expect_fail_by('WC19 the held carton moved by hand', 'it is not moved by hand', $q$
     UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-B' WHERE id = md5('qa41:pk')::uuid;
     UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-B' WHERE id = md5('qa41:pk:row')::uuid;
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
-                                          quantity, reference_type, reference_id, stock_package_id, occurred_at)
-    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-1-A', 'HCM-A01-1-B', 4, 'MOVE_TASK',
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, reference_type, reference_id, stock_package_id, occurred_at)
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-1-A', 'HCM-A01-1-B', 'MOVE_TASK',
             gen_random_uuid(), md5('qa41:pk')::uuid, NOW()) $q$);
 SELECT pg_temp.expect_fail('WC20 the allocation cut to part of its carton', $q$
     UPDATE inventory.stock_item SET reserved = 3 WHERE id = md5('qa41:pk:row')::uuid;
@@ -209,15 +205,13 @@ SELECT pg_temp.expect_ok('WC22 the held carton picked: the allocation consumed, 
      WHERE id = md5('qa41:pk')::uuid $q$);
 
 \echo '--- a putaway puts a carton away (05 BR-08)'
-SELECT pg_temp.expect_fail_by('WC23 a putaway of loose units', 'ck_stock_movement_names_carton', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
-                                          quantity, from_status, to_status, reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-RCV01', 'HCM-A01-1-A', 1, 'INBOUND',
+SELECT pg_temp.expect_fail_by('WC23 a putaway of loose units', 'null value in column "stock_package_id"', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, from_status, to_status, reference_type, reference_id, occurred_at)
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-RCV01', 'HCM-A01-1-A', 'INBOUND',
             'AVAILABLE', 'PUTAWAY_TASK', gen_random_uuid(), NOW()) $q$);
-SELECT pg_temp.expect_fail_by('WC24 a putaway in place of loose units', 'ck_stock_movement_names_carton', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
-                                          quantity, from_status, to_status, reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'STATUS_CHANGE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-1-A', 'HCM-A01-1-A', 1,
+SELECT pg_temp.expect_fail_by('WC24 a putaway in place of loose units', 'null value in column "stock_package_id"', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, from_status, to_status, reference_type, reference_id, occurred_at)
+    VALUES (gen_random_uuid(), 'STATUS_CHANGE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-1-A', 'HCM-A01-1-A',
             'INBOUND', 'AVAILABLE', 'PUTAWAY_TASK', gen_random_uuid(), NOW()) $q$);
 SELECT pg_temp.expect_true('WC25 a putaway task of a receipt line names its carton (checked for every new task)',
     EXISTS (SELECT 1 FROM pg_constraint
@@ -225,11 +219,12 @@ SELECT pg_temp.expect_true('WC25 a putaway task of a receipt line names its cart
                AND pg_get_constraintdef(oid) LIKE '%goods_receipt_line_id IS NULL%stock_package_id IS NOT NULL%'));
 
 \echo '--- the history written before stays as it was'
--- The ledger's three checks (a receipt, a move by hand, a putaway names a carton) are one since V20261230000200:
--- ck_stock_movement_names_carton, NOT VALID so that loose lines a hand-kept database has stay; the task's is validated.
-SELECT pg_temp.expect_true('WC26 the ledger''s carton check judges new lines only; the putaway task''s is validated',
-    (SELECT NOT convalidated FROM pg_constraint
-      WHERE conname = 'ck_stock_movement_names_carton' AND conrelid = 'inventory.stock_movement'::regclass)
+-- The ledger's three checks (a receipt, a move by hand, a putaway names a carton) became one in V20261230000200, and
+-- that one the column's NOT NULL in V20261230000400, when the loose lines of history went: every line is judged now.
+SELECT pg_temp.expect_true('WC26 every ledger line names a carton (NOT NULL); the putaway task''s check is validated',
+    (SELECT attnotnull FROM pg_attribute
+      WHERE attrelid = 'inventory.stock_movement'::regclass AND attname = 'stock_package_id')
+    AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_stock_movement_names_carton')
     AND (SELECT convalidated FROM pg_constraint WHERE conname = 'ck_putaway_task_receipt_carton')
     AND NOT EXISTS (SELECT 1 FROM pg_constraint
                      WHERE conname IN ('ck_stock_movement_receipt_in_carton', 'ck_stock_movement_move_task_carton',

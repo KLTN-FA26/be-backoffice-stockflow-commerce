@@ -242,8 +242,10 @@ class CountVarianceOfShortCartonIntegrationTest {
 
     private List<Map<String, Object>> ledgerOf(UUID adjustment) {
         return jdbc.queryForList("""
-                SELECT movement_type, quantity, stock_package_id, from_location_code, to_location_code
-                  FROM inventory.stock_movement WHERE reference_id = ? AND reference_type = 'STOCK_ADJUSTMENT'""",
+                SELECT m.movement_type, p.nominal_qty AS quantity, m.stock_package_id, m.from_location_code,
+                       m.to_location_code
+                  FROM inventory.stock_movement m JOIN inventory.stock_package p ON p.id = m.stock_package_id
+                 WHERE m.reference_id = ? AND m.reference_type = 'STOCK_ADJUSTMENT'""",
                 adjustment);
     }
 

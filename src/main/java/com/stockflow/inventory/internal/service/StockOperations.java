@@ -125,22 +125,14 @@ public interface StockOperations {
 
     /**
      * One line of the stock history, as the screen shows it. {@code lpn} names the carton the line is about
-     * (V20261230000200: one carton, where {@code fromLpn} / {@code toLpn} named one per side); null only on a line
-     * from before everything was boxed (V20261111000110).
+     * (V20261230000200: one carton, where {@code fromLpn} / {@code toLpn} named one per side) and {@code quantity} is
+     * that carton's standard count: the ledger keeps no quantity of its own (V20261230000400), a line is one whole
+     * carton.
      */
     record LedgerLine(UUID movementId, StockMovement.MovementType type, String sku, String lotNumber,
                       String fromLocation, String toLocation, int quantity, String status,
                       String toStatus, String referenceType, UUID referenceId, String reason, UUID actorId,
                       java.time.Instant occurredAt, UUID requestedBy, UUID countedBy, String lpn) {
-
-        /** A line naming no carton. */
-        public LedgerLine(UUID movementId, StockMovement.MovementType type, String sku, String lotNumber,
-                          String fromLocation, String toLocation, int quantity, String status, String toStatus,
-                          String referenceType, UUID referenceId, String reason, UUID actorId,
-                          java.time.Instant occurredAt, UUID requestedBy, UUID countedBy) {
-            this(movementId, type, sku, lotNumber, fromLocation, toLocation, quantity, status, toStatus, referenceType,
-                    referenceId, reason, actorId, occurredAt, requestedBy, countedBy, null);
-        }
     }
 
     default PageResponse<LedgerLine> ledger(String sku, String location, StockMovement.MovementType type,

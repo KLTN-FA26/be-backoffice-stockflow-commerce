@@ -36,9 +36,6 @@ public class StockMovementJpaEntity extends BaseEntity {
     @Column(name = "to_location_code", length = 64, updatable = false)
     private String toLocationCode;
 
-    @Column(name = "quantity", nullable = false, updatable = false)
-    private int quantity;
-
     @Enumerated(EnumType.STRING)
     @Column(name = "from_status", length = 32, updatable = false)
     private StockStatus fromStatus;
@@ -72,11 +69,11 @@ public class StockMovementJpaEntity extends BaseEntity {
     private UUID orderId;
 
     /**
-     * The carton the line is about (V20261230000200, ADR-0011): one column where there were two sides. Required on a
-     * new line by {@code ck_stock_movement_names_carton}; not {@code nullable = false} here, because that CHECK is
-     * NOT VALID on purpose - a line from before stock was only cartons may name none.
+     * The carton the line is about (ADR-0011): one column where there were two sides (V20261230000200), and the whole
+     * of what the line moved since the ledger keeps no quantity (V20261230000400) - its units are the carton's
+     * {@code nominal_qty}.
      */
-    @Column(name = "stock_package_id", updatable = false)
+    @Column(name = "stock_package_id", nullable = false, updatable = false)
     private UUID stockPackageId;
 
     /** WF-05 fix plan, section 8: who asked for the adjustment an ADJUSTMENT line posts; null on any other line. */
@@ -102,11 +99,11 @@ public class StockMovementJpaEntity extends BaseEntity {
 
     public StockMovementJpaEntity(UUID id, StockMovement.MovementType movementType, String sku,
                                   String lotNumber, String fromLocationCode, String toLocationCode,
-                                  int quantity, StockStatus fromStatus, StockStatus toStatus,
+                                  StockStatus fromStatus, StockStatus toStatus,
                                   StockMovement.ReferenceType referenceType, UUID referenceId,
                                   String reason, UUID actorId, Instant occurredAt, UUID lotId, UUID orderId,
                                   UUID stockPackageId) {
-        this(id, movementType, sku, lotNumber, fromLocationCode, toLocationCode, quantity, fromStatus, toStatus,
+        this(id, movementType, sku, lotNumber, fromLocationCode, toLocationCode, fromStatus, toStatus,
                 referenceType, referenceId, reason, actorId, occurredAt);
         this.lotId = lotId;
         this.orderId = orderId;
@@ -117,7 +114,7 @@ public class StockMovementJpaEntity extends BaseEntity {
 
     public StockMovementJpaEntity(UUID id, StockMovement.MovementType movementType, String sku,
                                   String lotNumber, String fromLocationCode, String toLocationCode,
-                                  int quantity, StockStatus fromStatus, StockStatus toStatus,
+                                  StockStatus fromStatus, StockStatus toStatus,
                                   StockMovement.ReferenceType referenceType, UUID referenceId,
                                   String reason, UUID actorId, Instant occurredAt) {
         super(id);
@@ -126,7 +123,6 @@ public class StockMovementJpaEntity extends BaseEntity {
         this.lotNumber = lotNumber;
         this.fromLocationCode = fromLocationCode;
         this.toLocationCode = toLocationCode;
-        this.quantity = quantity;
         this.fromStatus = fromStatus;
         this.toStatus = toStatus;
         this.referenceType = referenceType;
@@ -141,7 +137,6 @@ public class StockMovementJpaEntity extends BaseEntity {
     public String getLotNumber() { return lotNumber; }
     public String getFromLocationCode() { return fromLocationCode; }
     public String getToLocationCode() { return toLocationCode; }
-    public int getQuantity() { return quantity; }
     public StockStatus getFromStatus() { return fromStatus; }
     public StockStatus getToStatus() { return toStatus; }
     public StockMovement.ReferenceType getReferenceType() { return referenceType; }

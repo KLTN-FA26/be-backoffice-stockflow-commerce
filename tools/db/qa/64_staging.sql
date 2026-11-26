@@ -141,10 +141,10 @@ UPDATE inventory.stock_item SET location_code = 'HCM-A01-2-B' WHERE id = (SELECT
 CREATE FUNCTION pg_temp.move_sql(movement TEXT, from_loc TEXT, to_loc TEXT, ref_type TEXT, ref UUID, carton INT DEFAULT NULL,
                                  from_status TEXT DEFAULT NULL, to_status TEXT DEFAULT NULL) RETURNS TEXT LANGUAGE sql AS $$
     SELECT format($f$
-        INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, quantity,
+        INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
                                               from_status, to_status, reference_type, reference_id, occurred_at,
                                               stock_package_id)
-        SELECT gen_random_uuid(), %L, 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', %L, %L, coalesce(c.units, 1), %L, %L, %L,
+        SELECT gen_random_uuid(), %L, 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', %L, %L, %L, %L, %L,
                %L::uuid, NOW(), c.package_id
           FROM (SELECT 1) one LEFT JOIN qa64_carton c ON c.n = %s $f$,
         movement, from_loc, to_loc, from_status, to_status, ref_type, ref, coalesce(carton, 0))

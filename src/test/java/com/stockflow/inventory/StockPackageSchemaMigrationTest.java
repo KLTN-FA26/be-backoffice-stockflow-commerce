@@ -167,8 +167,8 @@ class StockPackageSchemaMigrationTest {
         try (Connection db = connect()) {
             String pkg = inStock(db, "LEDGER", unit(db, "LEDGER"), "HCM-A01-1-A");
             String row = "INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code,"
-                    + " to_location_code, quantity, reference_type, reference_id, occurred_at, stock_package_id)"
-                    + " VALUES (gen_random_uuid(), 'MOVE', '%s', '%s', '%s', 1, 'MOVE_TASK',"
+                    + " to_location_code, reference_type, reference_id, occurred_at, stock_package_id)"
+                    + " VALUES (gen_random_uuid(), 'MOVE', '%s', '%s', '%s', 'MOVE_TASK',"
                     + " gen_random_uuid(), NOW(), " + pkg + ")";   // a move by hand names its carton
 
             refused(db, "a stock package of another SKU",

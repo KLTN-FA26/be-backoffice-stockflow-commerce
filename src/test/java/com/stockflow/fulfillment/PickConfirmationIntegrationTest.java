@@ -484,8 +484,9 @@ class PickConfirmationIntegrationTest {
         assertThat(holdStatus(lineId)).isEqualTo("CONSUMED");
         assertThat(ledgerRows("PICK", lineId)).isEqualTo(1);
         assertThat(jdbc.queryForMap("""
-                SELECT from_location_code, to_location_code, quantity, actor_id, from_status FROM inventory.stock_movement
-                 WHERE reference_type = 'PICK_LINE' AND reference_id = ?::uuid""", lineId))
+                SELECT m.from_location_code, m.to_location_code, p.nominal_qty AS quantity, m.actor_id, m.from_status
+                  FROM inventory.stock_movement m JOIN inventory.stock_package p ON p.id = m.stock_package_id
+                 WHERE m.reference_type = 'PICK_LINE' AND m.reference_id = ?::uuid""", lineId))
                 .containsEntry("from_location_code", location).containsEntry("to_location_code", null)
                 .containsEntry("quantity", 1).containsEntry("actor_id", pickerHcm)
                 .containsEntry("from_status", "AVAILABLE");

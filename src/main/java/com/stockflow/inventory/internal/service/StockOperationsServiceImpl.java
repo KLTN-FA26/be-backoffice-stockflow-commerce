@@ -387,10 +387,10 @@ class StockOperationsServiceImpl implements StockOperations {
                 StockMovement.MovementType type = from.get(row.stockPackageId()).equals(to)
                         ? StockMovement.MovementType.STATUS_CHANGE : StockMovement.MovementType.MOVE;
                 ledger.append(new StockMovement(Identifiers.newId(), type, row.sku(),
-                        row.lotNumber(), from.get(row.stockPackageId()), to, row.onHand().value(), before,
+                        row.lotNumber(), from.get(row.stockPackageId()), to, before,
                         row.status(), StockMovement.ReferenceType.valueOf(reference.name()), referenceId, reason,
-                        actorId, now)
-                        .ofLot(row.lotId()).ofCarton(row.stockPackageId()));
+                        actorId, now, row.stockPackageId())
+                        .ofLot(row.lotId()));
             }
         }
         log.info("Moved {} carton(s) to {} ({} row(s){})", cartons.size(), to, rows.size(),
@@ -532,9 +532,10 @@ class StockOperationsServiceImpl implements StockOperations {
             if (row.onHand().value() > 0) {
                 onHand += row.onHand().value();
                 ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.STATUS_CHANGE,
-                        row.sku(), row.lotNumber(), from, to, row.onHand().value(), before, StockStatus.QUARANTINE,
-                        StockMovement.ReferenceType.STOCK_PACKAGE, carton.id().value(), reason, actorId, now)
-                        .ofLot(row.lotId()).ofCarton(carton.id()));
+                        row.sku(), row.lotNumber(), from, to, before, StockStatus.QUARANTINE,
+                        StockMovement.ReferenceType.STOCK_PACKAGE, carton.id().value(), reason, actorId, now,
+                        carton.id())
+                        .ofLot(row.lotId()));
             }
         }
         if (reportedShort) {
@@ -630,8 +631,8 @@ class StockOperationsServiceImpl implements StockOperations {
      * <p>Every unit goes into one of the line's RECEIVING cartons (kltn-docs 03 BR-12; team plan 4C-2) - one INBOUND
      * row per carton holding its standard count, the carton IN_STOCK and sealed, which is exactly what the commit-time
      * check of V20261020000200 wants of it. Nothing goes loose: cartons holding less than the line received are
-     * refused ({@code RECEIPT_LINE_NOT_IN_CARTONS}), as {@code ck_stock_movement_names_carton} refuses a
-     * ledger line naming no carton. The cartons are locked after the SKU, as every carton write locks them, and
+     * refused ({@code RECEIPT_LINE_NOT_IN_CARTONS}), as the ledger refuses a line naming no carton
+     * ({@code stock_movement.stock_package_id} is NOT NULL). The cartons are locked after the SKU, as every carton write locks them, and
      * checked before anything is written, so a refusal leaves no lot opened.</p>
      *
      * <p>A replay is recognised by the line's first RECEIPT ledger row, which is the move returned the first time:
@@ -690,7 +691,7 @@ class StockOperationsServiceImpl implements StockOperations {
             stockItems.save(StockItem.receiveInboundInto(carton.id(), command.sku(), location, lot,
                     Quantity.of(counted), command.receivedAt(), lotId));
             stockPackages.save(carton);
-            StockMovement line = receiptLine(command, lot, location, counted, lotId, now).ofCarton(carton.id());
+            StockMovement line = receiptLine(command, lot, location, carton.id(), lotId, now);
             ledger.append(line);
             if (first == null) {
                 first = toMove(line);
@@ -702,11 +703,11 @@ class StockOperationsServiceImpl implements StockOperations {
     }
 
     private static StockMovement receiptLine(ReceiveStockCommand command, String lot, LocationId location,
-                                             int quantity, UUID lotId, Instant now) {
+                                             StockPackageId carton, UUID lotId, Instant now) {
         return new StockMovement(Identifiers.newId(), StockMovement.MovementType.RECEIPT,
-                command.sku(), lot, null, location, quantity, StockStatus.INBOUND,
+                command.sku(), lot, null, location, StockStatus.INBOUND,
                 StockMovement.ReferenceType.GOODS_RECEIPT_LINE, command.receiptLineId(), null,
-                command.actorId(), now).ofLot(lotId);
+                command.actorId(), now, carton).ofLot(lotId);
     }
 
     // ------------------------------------------------------------------ cartons while receiving
@@ -1106,11 +1107,11 @@ class StockOperationsServiceImpl implements StockOperations {
             boolean down = change.delta() < 0;
             StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.ADJUSTMENT,
                     row.sku(), row.lotNumber(), down ? row.location() : null, down ? null : row.location(),
-                    Math.abs(change.delta()), row.status(), StockMovement.ReferenceType.STOCK_ADJUSTMENT,
-                    adjustment.id(), reason, approverId, now).ofLot(row.lotId())
+                    row.status(), StockMovement.ReferenceType.STOCK_ADJUSTMENT,
+                    adjustment.id(), reason, approverId, now, adjustment.stockPackageId()).ofLot(row.lotId())
                     // The ledger names both pairs of eyes, and the counter of a count's variance (section 8).
                     .askedBy(adjustment.requestedBy(), adjustment.countedBy());
-            ledger.append(line.ofCarton(adjustment.stockPackageId()));
+            ledger.append(line);
             // The holds the write-off gave up, if any: announced after the row is saved.
             events.publishEventsOf(row);
         }
@@ -1255,25 +1256,24 @@ class StockOperationsServiceImpl implements StockOperations {
         PageResponse<StockMovement> lines = Pages.toResponse(ledgerSearch.search(new StockLedgerSearch.Criteria(
                 filter.sku(), filter.location(), filter.type(), visibility.hidesCountedSlots(), from, before,
                 warehouse, carton), pageable));
-        Map<StockPackageId, String> lpns = lpnsOf(lines.items());
-        return new PageResponse<>(lines.items().stream().map(m -> toLine(m, lpns)).toList(), lines.page(),
+        Map<StockPackageId, StockPackage> cartons = cartonsOf(lines.items());
+        return new PageResponse<>(lines.items().stream().map(m -> toLine(m, cartons)).toList(), lines.page(),
                 lines.size(), lines.totalElements(), lines.totalPages(), lines.hasNext(), lines.hasPrevious());
     }
 
-    /** The LPN of every carton the page's lines name, in one read: never one per line. */
-    private Map<StockPackageId, String> lpnsOf(List<StockMovement> lines) {
+    /**
+     * Every carton the page's lines name, in one read: never one per line. A line shows its carton's LPN and, as its
+     * quantity, the carton's standard count - the ledger keeps no number of its own (ADR-0011).
+     */
+    private Map<StockPackageId, StockPackage> cartonsOf(List<StockMovement> lines) {
         Set<StockPackageId> ids = new HashSet<>();
-        for (StockMovement m : lines) {
-            if (m.stockPackage() != null) {
-                ids.add(m.stockPackage());
-            }
-        }
+        lines.forEach(m -> ids.add(m.stockPackage()));
         if (ids.isEmpty()) {
             return Map.of();
         }
-        Map<StockPackageId, String> lpns = new HashMap<>();
-        stockPackages.findAllById(ids).forEach(p -> lpns.put(p.id(), p.lpn()));
-        return lpns;
+        Map<StockPackageId, StockPackage> cartons = new HashMap<>();
+        stockPackages.findAllById(ids).forEach(p -> cartons.put(p.id(), p));
+        return cartons;
     }
 
     // ------------------------------------------------------------------ helpers
@@ -1315,16 +1315,18 @@ class StockOperationsServiceImpl implements StockOperations {
 
     private static StockMove toMove(StockMovement m) {
         return new StockMove(m.id(), m.sku().code(), m.lotNumber(), m.from() == null ? null : m.from().code(),
-                m.to() == null ? null : m.to().code(), m.quantity(), m.occurredAt());
+                m.to() == null ? null : m.to().code(), m.occurredAt());
     }
 
-    private static LedgerLine toLine(StockMovement m, Map<StockPackageId, String> lpns) {
+    private static LedgerLine toLine(StockMovement m, Map<StockPackageId, StockPackage> cartons) {
+        // The foreign key keeps the carton of every line (ON DELETE RESTRICT): it is always found.
+        StockPackage carton = cartons.get(m.stockPackage());
         return new LedgerLine(m.id(), m.type(), m.sku().code(), m.lotNumber(),
                 m.from() == null ? null : m.from().code(), m.to() == null ? null : m.to().code(),
-                m.quantity(), m.status() == null ? null : m.status().name(),
+                carton.nominalQty(), m.status() == null ? null : m.status().name(),
                 m.toStatus() == null ? null : m.toStatus().name(), m.referenceType().name(), m.referenceId(),
                 m.reason(), m.actorId(), m.occurredAt(), m.requestedBy(), m.countedBy(),
-                m.stockPackage() == null ? null : lpns.get(m.stockPackage()));
+                carton.lpn());
     }
 
     static StockAdjustmentSummary toSummary(StockAdjustment a) {

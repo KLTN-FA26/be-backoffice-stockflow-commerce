@@ -1,6 +1,6 @@
 # ADR-0011 — Stock is recorded as cartons, not as units
 
-* **Status:** Accepted — being carried out in steps; steps 1, 2 and 3a are done (see *Steps*). Amends kltn-docs 01 BR-09 and
+* **Status:** Accepted — being carried out in steps; steps 1, 2, 3a and 3b are done (see *Steps*). Amends kltn-docs 01 BR-09 and
   20 §1 ("base units are kept internally"), which must be reworded in the kltn-docs repository.
 * **Date:** 2026-11-26
 * **Deciders:** repository owner (Phương)
@@ -64,7 +64,7 @@ its own:
    (`WRITE_OFF` | `RESTOCK`) replace `quantityDelta`. A count line already answered `booked` / `found`.
 2. **Ledger** - done, `V20261230000200`: `stock_movement.stock_package_id` replaces `from_stock_package_id` and
    `to_stock_package_id`, and every new line must name its carton (`ck_stock_movement_names_carton`, NOT VALID so that
-   loose lines a hand-kept database has stay as they are). The four CHECKs that said "this kind of line names a carton"
+   loose lines a hand-kept database has stay as they are - until step 3b removed them). The four CHECKs that said "this kind of line names a carton"
    and `ck_stock_movement_package_side` went into that one rule; whether a carton arrived, moved or left is read from
    `movement_type` and the line's places. `quantity` stays until step 3.
    The HTTP contract changes with it: a ledger line (`GET /inventory/movements`) answers one `lpn` where it answered
@@ -79,6 +79,20 @@ its own:
      The contract changes with it: `countedAt` replaces `receivedQty` on a carton (`GET /inventory/stock-packages...`
      and a goods receipt line's `packages[]`), and on `inventory :: api` `StockPackageView`; the error code
      `RECEIPT_PACKAGE_NOT_STANDARD` is gone, nothing can raise it.
+   * **3b, the ledger line** - done, `V20261230000400`: `stock_movement.quantity` is dropped with
+     `ck_stock_movement_qty`; a line is its carton, whole, and `stock_package_id` is NOT NULL
+     (`ck_stock_movement_names_carton` went into it). The lines of loose stock that step 2 let stand are deleted, not
+     converted (QD-1); the migration refuses to run over a line whose quantity is not its carton's `nominal_qty`
+     rather than drop a number that said something. No function, view or trigger read the column
+     (`procurement.check_return_receipt_closed` already counted the ledger's lines against the cartons put into
+     stock). Whoever sums the ledger joins the carton: `StockLedgerTotalsAdapter`, the lot trace,
+     `tools/db/stock_ledger_balance.sql`. In the code `StockMovement` has no `quantity` and always a carton,
+     `StockMovementLog.findLooseByReference(s)` and `sumQuantityByReference` are gone (a putaway task is one carton:
+     `countByReference`), and so are the loose-task branches of `PutawayService` - a putaway task without a carton
+     cannot exist (`ck_putaway_task_source`, `ck_putaway_task_receipt_carton`).
+     No HTTP contract change: a ledger line (`GET /inventory/movements`) and a lot trace movement still answer
+     `quantity`, now the carton's `nominal_qty`. `inventory :: api` `StockMove` loses `quantity` (nothing outside
+     `inventory` read it).
 
 ## Decisions for the rest of step 3 (owner, 2026-11-27)
 

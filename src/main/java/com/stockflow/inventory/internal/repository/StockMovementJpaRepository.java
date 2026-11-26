@@ -15,36 +15,16 @@ interface StockMovementJpaRepository extends BaseJpaRepository<StockMovementJpaE
     java.util.List<StockMovementJpaEntity> findByMovementTypeAndReferenceTypeAndReferenceIdOrderByIdAsc(
             StockMovement.MovementType movementType, StockMovement.ReferenceType referenceType, UUID referenceId);
 
-    Optional<StockMovementJpaEntity>
-            findFirstByMovementTypeAndReferenceTypeAndReferenceIdAndStockPackageIdIsNullOrderByIdAsc(
-            StockMovement.MovementType movementType, StockMovement.ReferenceType referenceType, UUID referenceId);
-
-    @org.springframework.data.jpa.repository.Query("""
-            select m from StockMovementJpaEntity m
-            where m.movementType = :type and m.referenceType = :referenceType and m.referenceId in :referenceIds
-              and m.stockPackageId is null
-            order by m.id
-            """)
-    java.util.List<StockMovementJpaEntity> findLooseByReferences(
-            @org.springframework.data.repository.query.Param("type") StockMovement.MovementType type,
-            @org.springframework.data.repository.query.Param("referenceType") StockMovement.ReferenceType referenceType,
-            @org.springframework.data.repository.query.Param("referenceIds") java.util.Collection<UUID> referenceIds);
-
     @org.springframework.data.jpa.repository.Query("""
             select distinct m.stockPackageId, m.toLocationCode from StockMovementJpaEntity m
             where m.movementType = com.stockflow.inventory.internal.domain.StockMovement.MovementType.MOVE
-              and m.referenceType = :referenceType and m.referenceId = :referenceId and m.stockPackageId is not null
+              and m.referenceType = :referenceType and m.referenceId = :referenceId
             """)
     java.util.List<Object[]> cartonsMovedBy(
             @org.springframework.data.repository.query.Param("referenceType") StockMovement.ReferenceType referenceType,
             @org.springframework.data.repository.query.Param("referenceId") UUID referenceId);
 
-    @org.springframework.data.jpa.repository.Query("""
-            select coalesce(sum(m.quantity), 0) from StockMovementJpaEntity m
-            where m.movementType in :types and m.referenceType = :referenceType and m.referenceId = :referenceId
-            """)
-    int sumQuantityByReference(
-            @org.springframework.data.repository.query.Param("types") java.util.Collection<StockMovement.MovementType> types,
-            @org.springframework.data.repository.query.Param("referenceType") StockMovement.ReferenceType referenceType,
-            @org.springframework.data.repository.query.Param("referenceId") UUID referenceId);
+    long countByMovementTypeInAndReferenceTypeAndReferenceId(
+            java.util.Collection<StockMovement.MovementType> movementTypes,
+            StockMovement.ReferenceType referenceType, UUID referenceId);
 }

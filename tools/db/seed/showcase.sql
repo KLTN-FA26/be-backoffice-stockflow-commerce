@@ -1395,10 +1395,10 @@ SELECT c.stock_item_id, c.sku, o.wh || '-RCV01', o.po_code, c.upc, 0, 'INBOUND',
   FROM h_carton c JOIN h_received o ON o.key = c.key;
 
 INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, lot_id, from_location_code, to_location_code,
-                                      quantity, from_status, to_status, reference_type, reference_id, actor_id,
+                                      from_status, to_status, reference_type, reference_id, actor_id,
                                       stock_package_id, occurred_at, version, created_at, created_by)
 SELECT pg_temp.sid('ledger:receipt:' || c.key || ':' || c.n), 'RECEIPT', c.sku, o.po_code,
-       pg_temp.sid('lot:' || c.key || ':' || c.ln), NULL, o.wh || '-RCV01', c.upc, NULL, 'INBOUND', 'GOODS_RECEIPT_LINE',
+       pg_temp.sid('lot:' || c.key || ':' || c.ln), NULL, o.wh || '-RCV01', NULL, 'INBOUND', 'GOODS_RECEIPT_LINE',
        pg_temp.sid('receipt-goods-line:' || c.key || ':' || c.ln), pg_temp.staff(o.kho), c.package_id,
        pg_temp.at(o.r, '09:00'), 0, pg_temp.at(o.r, '09:00'), pg_temp.staff(o.kho)::text
   FROM h_carton c JOIN h_received o ON o.key = c.key;
@@ -1446,11 +1446,11 @@ UPDATE inventory.stock_item s
   FROM h_carton c JOIN h_received o ON o.key = c.key WHERE s.id = c.stock_item_id;
 
 INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, lot_id, from_location_code, to_location_code,
-                                      quantity, from_status, to_status, reference_type, reference_id, actor_id,
+                                      from_status, to_status, reference_type, reference_id, actor_id,
                                       stock_package_id, occurred_at, version, created_at,
                                       created_by)
 SELECT pg_temp.sid('ledger:putaway:' || c.key || ':' || c.n), 'MOVE', c.sku, o.po_code,
-       pg_temp.sid('lot:' || c.key || ':' || c.ln), o.wh || '-RCV01', c.bin, c.upc, 'INBOUND', 'AVAILABLE',
+       pg_temp.sid('lot:' || c.key || ':' || c.ln), o.wh || '-RCV01', c.bin, 'INBOUND', 'AVAILABLE',
        'PUTAWAY_TASK', c.task_id, pg_temp.staff(o.kho), c.package_id,
        pg_temp.at(o.r, '10:00') + (c.n || ' minutes')::interval, 0,
        pg_temp.at(o.r, '10:00') + (c.n || ' minutes')::interval, pg_temp.staff(o.kho)::text
@@ -1619,10 +1619,10 @@ SELECT c.*, o.d, o.kho, o.po_code, o.id AS order_id, pg_temp.at(o.d + 2, '08:00'
   FROM h_carton c JOIN h_picking o ON o.key = c.key WHERE c.picked;
 
 INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, lot_id, from_location_code, to_location_code,
-                                      quantity, from_status, to_status, reference_type, reference_id, actor_id,
+                                      from_status, to_status, reference_type, reference_id, actor_id,
                                       stock_package_id, order_id, occurred_at, version, created_at, created_by)
 SELECT pg_temp.sid('ledger:pick:' || c.key || ':' || c.n), 'PICK', c.sku, c.po_code,
-       pg_temp.sid('lot:' || c.key || ':' || c.ln), c.bin, NULL, c.upc, 'AVAILABLE', NULL, 'PICK_LINE', c.pick_line_id,
+       pg_temp.sid('lot:' || c.key || ':' || c.ln), c.bin, NULL, 'AVAILABLE', NULL, 'PICK_LINE', c.pick_line_id,
        pg_temp.staff(c.kho), c.package_id, c.order_id, c.at, 0, c.at, pg_temp.staff(c.kho)::text
   FROM h_picked c;
 
@@ -3977,11 +3977,11 @@ UPDATE inventory.stock_item s
   FROM x_iop_move m JOIN x_iop_carton x ON x.seq = m.seq AND x.n = m.n WHERE s.id = x.stock_item_id;
 
 INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, lot_id, from_location_code, to_location_code,
-                                      quantity, from_status, to_status, reference_type, reference_id, reason, actor_id,
+                                      from_status, to_status, reference_type, reference_id, reason, actor_id,
                                       stock_package_id, occurred_at, version, created_at,
                                       created_by)
 SELECT pg_temp.sid('iop:ledger:move:' || m.req || ':' || m.seq || ':' || m.n), 'MOVE', x.sku, x.lot_number, x.lot_id,
-       m.from_bin, m.to_bin, x.upc, 'AVAILABLE', 'AVAILABLE', 'MOVE_TASK', m.request_id, NULL,
+       m.from_bin, m.to_bin, 'AVAILABLE', 'AVAILABLE', 'MOVE_TASK', m.request_id, NULL,
        pg_temp.staff('kho.bd2'), x.package_id, m.at, 0, m.at, pg_temp.staff('kho.bd2')::text
   FROM x_iop_move m JOIN x_iop_carton x ON x.seq = m.seq AND x.n = m.n;
 
@@ -4059,11 +4059,10 @@ UPDATE inventory.stock_item s
   FROM x_iop_post x WHERE s.id = x.stock_item_id;
 
 INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, lot_id, from_location_code, to_location_code,
-                                      quantity, from_status, to_status, reference_type, reference_id, reason, actor_id,
+                                      from_status, to_status, reference_type, reference_id, reason, actor_id,
                                       stock_package_id, occurred_at, version, created_at,
                                       created_by, requested_by, counted_by)
-SELECT pg_temp.sid('iop:ledger:adjustment:V1'), 'ADJUSTMENT', x.sku, x.lot_number, x.lot_id, x.location_code, NULL,
-       x.upc, 'AVAILABLE', 'AVAILABLE', 'STOCK_ADJUSTMENT', x.adj_id, 'COUNT_VARIANCE: ' || x.note,
+SELECT pg_temp.sid('iop:ledger:adjustment:V1'), 'ADJUSTMENT', x.sku, x.lot_number, x.lot_id, x.location_code, NULL, 'AVAILABLE', 'AVAILABLE', 'STOCK_ADJUSTMENT', x.adj_id, 'COUNT_VARIANCE: ' || x.note,
        pg_temp.staff('quanly.bd'), x.package_id, pg_temp.at(1, '16:00'), 0, pg_temp.at(1, '16:00'),
        pg_temp.staff('quanly.bd')::text, x.requested_by, x.counted_by
   FROM x_iop_post x;
@@ -5694,10 +5693,9 @@ BEGIN
 END $$;
 
 INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, lot_id, from_location_code, to_location_code,
-                                      quantity, from_status, to_status, reference_type, reference_id, actor_id,
+                                      from_status, to_status, reference_type, reference_id, actor_id,
                                       order_id, stock_package_id, occurred_at, version, created_at, created_by)
-SELECT pg_temp.sid('dlf:ledger:return:' || c.key || ':' || c.n), 'RECEIPT', c.sku, s.lot_number, s.lot_id, NULL, c.area,
-       c.upc, 'QUARANTINE', 'QUARANTINE', 'GOODS_RECEIPT', c.receipt_id, pg_temp.staff(c.kho), c.order_id,
+SELECT pg_temp.sid('dlf:ledger:return:' || c.key || ':' || c.n), 'RECEIPT', c.sku, s.lot_number, s.lot_id, NULL, c.area, 'QUARANTINE', 'QUARANTINE', 'GOODS_RECEIPT', c.receipt_id, pg_temp.staff(c.kho), c.order_id,
        c.package_id, pg_temp.at(1, '17:10'), 0, pg_temp.at(1, '17:10'), pg_temp.staff(c.kho)::text
   FROM x_dlf_carton c JOIN inventory.stock_item s ON s.id = c.stock_item_id;
 
@@ -6177,11 +6175,11 @@ BEGIN
     PERFORM set_config('stockflow.same_receipt_merge', '', true);
 
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, lot_id, from_location_code,
-                                          to_location_code, quantity, from_status, to_status, reference_type,
+                                          to_location_code, from_status, to_status, reference_type,
                                           reference_id, actor_id, stock_package_id, order_id, occurred_at, version,
                                           created_at, created_by)
     SELECT pg_temp.sid('ret:ledger:return:' || c.key || ':' || c.n), 'RECEIPT', c.sku, r.po_code, c.lot_id, NULL,
-           r.qc_code, c.upc, NULL, 'QUARANTINE', 'GOODS_RECEIPT', c.receipt_id, pg_temp.staff(r.kho), c.package_id,
+           r.qc_code, NULL, 'QUARANTINE', 'GOODS_RECEIPT', c.receipt_id, pg_temp.staff(r.kho), c.package_id,
            r.order_id, pg_temp.at(c.day, '09:30'), 0, pg_temp.at(c.day, '09:30'), pg_temp.staff(r.kho)::text
       FROM x_ret_carton c JOIN x_ret r ON r.key = c.key
      WHERE c.parcel = rnd AND NOT c.opened;

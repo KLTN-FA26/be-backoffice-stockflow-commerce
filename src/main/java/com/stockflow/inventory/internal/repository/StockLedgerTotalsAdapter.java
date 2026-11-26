@@ -25,9 +25,11 @@ import java.util.Set;
  * {@link StockLedgerTotals}: one statement over {@code inventory.stock_movement}, the ledger every change of stock
  * writes a line to (kltn-docs 20 BR-16) and nothing ever updates ({@code tg_stock_movement_append_only}).
  *
- * <p>Each line is read as two signed sides: {@code +quantity} for the warehouse of {@code to_location_code},
- * {@code -quantity} for the warehouse of {@code from_location_code}, a side dropped when the other end is in the same
- * warehouse (or there is none). That is {@code delta_W = quantity × ([to in W] − [from in W])} without a row per
+ * <p>A line is one whole carton and keeps no quantity (ADR-0011, V20261230000400): its units are the
+ * {@code nominal_qty} of the carton it names, read through a join, so the totals stay in units for the report. Each
+ * line is read as two signed sides: {@code +units} for the warehouse of {@code to_location_code},
+ * {@code -units} for the warehouse of {@code from_location_code}, a side dropped when the other end is in the same
+ * warehouse (or there is none). That is {@code delta_W = units × ([to in W] − [from in W])} without a row per
  * warehouse, and it is why moves inside a warehouse - putaway, carton moves, status changes, picks to the staging
  * area, a put-back from staging - vanish without being named: they are the same warehouse at both ends. The kinds
  * are then told apart by movement type and reference, on the signed side:</p>
@@ -90,11 +92,12 @@ class StockLedgerTotalsAdapter implements StockLedgerTotals {
         }
         return jdbc.query("""
                 WITH moved AS (
-                    SELECT m.sku, m.movement_type, m.reference_type, m.quantity, m.occurred_at,
+                    SELECT m.sku, m.movement_type, m.reference_type, p.nominal_qty AS quantity, m.occurred_at,
                            m.from_location_code IS NULL AS from_nowhere,
                            upper(split_part(m.from_location_code, '-', 1)) AS from_warehouse,
                            upper(split_part(m.to_location_code, '-', 1)) AS to_warehouse
                       FROM inventory.stock_movement m
+                      JOIN inventory.stock_package p ON p.id = m.stock_package_id
                      WHERE m.occurred_at < :until
                        %s
                        %s

@@ -63,6 +63,10 @@ class StockLotReceiptOriginMigrationUpgradeTest {
                         "INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type) "
                                 + "VALUES (gen_random_uuid(), ?, 'UPG-LOT-2', NOW(), 'GOODS_RECEIPT')", SKU);
 
+                // The adapter is today's code and reads today's schema: its ledger sums go through the carton a line
+                // names (V20261230000400), which this old version does not have yet. The rest of the path is run
+                // first; the lot, its carton and its row are carried through it.
+                flyway(postgres, "latest").migrate();
                 var adapter = new LotTraceSearchAdapter(new JdbcTemplate(new DriverManagerDataSource(
                         postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())));
                 Optional<LotTrace.Summary> traced = adapter.lot(UUID.fromString(LOT), Set.of());

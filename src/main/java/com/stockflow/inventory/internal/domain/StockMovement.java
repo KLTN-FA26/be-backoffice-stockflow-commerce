@@ -6,24 +6,25 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * One line of the stock ledger ({@code inventory.stock_movement}): what moved, from where to
+ * One line of the stock ledger ({@code inventory.stock_movement}): which carton moved, from where to
  * where, and which document caused it. Append-only — a mistake is corrected by a new line, never by
  * editing an old one.
  *
  * @param from     null when stock arrived from outside (a receipt, a write-up)
  * @param to       null when stock left (a pick, a write-off)
- * @param status   the status the units had before the line; for a receipt, the status they arrived in
+ * @param status   the status the carton's units had before the line; for a receipt, the status they arrived in
  * @param toStatus the status they have after it. Equal to {@code status} except when a QC decision or
  *                 a putaway changes it on the way (INBOUND to QUARANTINE, BLOCKED or AVAILABLE)
  * @param lotId    the lot the units belong to (SCRUM-142); null lets the database resolve it from the stock row
  *                 the line touched, when that is unambiguous ({@code tg_stock_movement_lot})
  * @param orderId  the customer order the units left for or came back from (a pick, a put-back, a package),
  *                 so the lot trace reaches the order without reading another module's tables (SCRUM-153)
- * @param stockPackage the carton the line is about (ADR-0011, V20261230000200). One, not one per side: stock is whole
- *                 sealed cartons, so nothing is ever taken out of one carton into another, and whether the carton
- *                 arrived, moved or left is said by {@code type} and by which of {@code from} / {@code to} is set.
- *                 Every line written now names it ({@code ck_stock_movement_names_carton}); null only on a line read
- *                 back from before stock was only cartons
+ * @param stockPackage the carton the line is about, and the line's whole quantity (ADR-0011, V20261230000400): stock
+ *                 is whole sealed cartons, so a line is one carton and records no number of units - whoever wants
+ *                 units reads the carton's {@code nominal_qty}. One carton, not one per side: nothing is ever taken
+ *                 out of one carton into another, and whether the carton arrived, moved or left is said by
+ *                 {@code type} and by which of {@code from} / {@code to} is set. Never null
+ *                 ({@code stock_movement.stock_package_id} is NOT NULL)
  * @param requestedBy who asked for the adjustment an {@code ADJUSTMENT} line posts (WF-05 fix plan, section 8); null on
  *                 every other line. {@code actorId} is who approved it: the ledger alone then names both pairs of eyes
  * @param countedBy   who counted the line, when that adjustment is a cycle count's variance; null otherwise
@@ -35,7 +36,6 @@ public record StockMovement(
         String lotNumber,
         LocationId from,
         LocationId to,
-        int quantity,
         StockStatus status,
         StockStatus toStatus,
         ReferenceType referenceType,
@@ -52,10 +52,10 @@ public record StockMovement(
 
     /** A line that posts no adjustment: nobody requested or counted it. */
     public StockMovement(UUID id, MovementType type, Sku sku, String lotNumber, LocationId from, LocationId to,
-                         int quantity, StockStatus status, StockStatus toStatus, ReferenceType referenceType,
+                         StockStatus status, StockStatus toStatus, ReferenceType referenceType,
                          UUID referenceId, String reason, UUID actorId, Instant occurredAt, UUID lotId, UUID orderId,
                          StockPackageId stockPackage) {
-        this(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType, referenceId, reason,
+        this(id, type, sku, lotNumber, from, to, status, toStatus, referenceType, referenceId, reason,
                 actorId, occurredAt, lotId, orderId, stockPackage, null, null);
     }
 
@@ -64,26 +64,25 @@ public record StockMovement(
      * counted. Only an {@code ADJUSTMENT} line names them ({@code ck_stock_movement_adjustment_people}).
      */
     public StockMovement askedBy(UUID requester, UUID counter) {
-        return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
+        return new StockMovement(id, type, sku, lotNumber, from, to, status, toStatus, referenceType,
                 referenceId, reason, actorId, occurredAt, lotId, orderId, stockPackage, requester, counter);
     }
 
     /** The same line, of the lot {@code lot} (null keeps the database's resolution). */
     public StockMovement ofLot(UUID lot) {
-        return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
+        return new StockMovement(id, type, sku, lotNumber, from, to, status, toStatus, referenceType,
                 referenceId, reason, actorId, occurredAt, lot, orderId, stockPackage, requestedBy, countedBy);
     }
 
-    /** The same line, naming the customer order the units moved for. */
+    /** The same line, naming the customer order the carton moved for. */
     public StockMovement forOrder(UUID order) {
-        return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
+        return new StockMovement(id, type, sku, lotNumber, from, to, status, toStatus, referenceType,
                 referenceId, reason, actorId, occurredAt, lotId, order, stockPackage, requestedBy, countedBy);
     }
 
     public StockMovement {
-        if (quantity <= 0) {
-            throw new IllegalArgumentException("A ledger line moves a positive quantity");
-        }
+        // A line without a carton would record nothing: there is no quantity beside it to say what moved.
+        java.util.Objects.requireNonNull(stockPackage, "A ledger line names the carton it is about");
         // ck_stock_movement_adjustment_people: only the posting of an adjustment names who asked and who counted.
         if ((requestedBy != null || countedBy != null) && type != MovementType.ADJUSTMENT) {
             throw new IllegalArgumentException("Only an ADJUSTMENT line names who requested and who counted");
@@ -91,32 +90,21 @@ public record StockMovement(
         toStatus = toStatus == null ? status : toStatus;
     }
 
-    /**
-     * A line naming no customer order, whose lot the database resolves from the stock row it touched, and no carton
-     * yet: {@link #ofCarton} names it before the line is appended.
-     */
+    /** A line naming no customer order, whose lot the database resolves from the stock row it touched. */
     public StockMovement(UUID id, MovementType type, Sku sku, String lotNumber, LocationId from, LocationId to,
-                         int quantity, StockStatus status, StockStatus toStatus, ReferenceType referenceType,
-                         UUID referenceId, String reason, UUID actorId, Instant occurredAt) {
-        this(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType, referenceId, reason,
-                actorId, occurredAt, null, null, null);
+                         StockStatus status, StockStatus toStatus, ReferenceType referenceType,
+                         UUID referenceId, String reason, UUID actorId, Instant occurredAt,
+                         StockPackageId stockPackage) {
+        this(id, type, sku, lotNumber, from, to, status, toStatus, referenceType, referenceId, reason,
+                actorId, occurredAt, null, null, stockPackage);
     }
 
-    /**
-     * The same line, about this carton. There is no "leaving" and "arriving" carton any more (ADR-0011): a line is one
-     * whole carton, and {@code from} / {@code to} say which way it went.
-     */
-    public StockMovement ofCarton(StockPackageId carton) {
-        return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
-                referenceId, reason, actorId, occurredAt, lotId, orderId, carton, requestedBy, countedBy);
-    }
-
-    /** A line that does not change the status of what it moves. */
+    /** A line that does not change the status of the carton it moves. */
     public StockMovement(UUID id, MovementType type, Sku sku, String lotNumber, LocationId from, LocationId to,
-                         int quantity, StockStatus status, ReferenceType referenceType, UUID referenceId,
-                         String reason, UUID actorId, Instant occurredAt) {
-        this(id, type, sku, lotNumber, from, to, quantity, status, status, referenceType, referenceId, reason,
-                actorId, occurredAt);
+                         StockStatus status, ReferenceType referenceType, UUID referenceId,
+                         String reason, UUID actorId, Instant occurredAt, StockPackageId stockPackage) {
+        this(id, type, sku, lotNumber, from, to, status, status, referenceType, referenceId, reason,
+                actorId, occurredAt, stockPackage);
     }
 
     /** The subset of {@code ck_stock_movement_type} this module writes so far. */

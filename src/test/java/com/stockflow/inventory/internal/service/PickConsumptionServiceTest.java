@@ -91,28 +91,10 @@ class PickConsumptionServiceTest {
         }
 
         @Override
-        public Optional<StockMovement> findLooseByReference(StockMovement.MovementType type,
-                                                            StockMovement.ReferenceType referenceType, UUID referenceId) {
-            return ledgerRows.stream().filter(row -> row.stockPackage() == null)
-                    .filter(row -> row.type() == type && row.referenceType() == referenceType
-                            && row.referenceId().equals(referenceId)).findFirst();
-        }
-
-        @Override
-        public java.util.Map<UUID, StockMovement> findLooseByReferences(StockMovement.MovementType type,
-                StockMovement.ReferenceType referenceType, java.util.Collection<UUID> referenceIds) {
-            java.util.Map<UUID, StockMovement> first = new java.util.HashMap<>();
-            for (UUID id : referenceIds) {
-                findLooseByReference(type, referenceType, id).ifPresent(row -> first.put(id, row));
-            }
-            return first;
-        }
-
-        @Override
-        public int sumQuantityByReference(java.util.Collection<StockMovement.MovementType> types,
-                                          StockMovement.ReferenceType referenceType, UUID referenceId) {
-            return ledgerRows.stream().filter(row -> types.contains(row.type()) && row.referenceType() == referenceType
-                    && row.referenceId().equals(referenceId)).mapToInt(StockMovement::quantity).sum();
+        public int countByReference(java.util.Collection<StockMovement.MovementType> types,
+                                    StockMovement.ReferenceType referenceType, UUID referenceId) {
+            return (int) ledgerRows.stream().filter(row -> types.contains(row.type())
+                    && row.referenceType() == referenceType && row.referenceId().equals(referenceId)).count();
         }
     };
     private final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
@@ -151,16 +133,45 @@ class PickConsumptionServiceTest {
         return ((BusinessException) thrown).errorCode();
     }
 
-    /** An AVAILABLE stock row at {@code location} holding {@code held} units for one pinned hold. */
+    /**
+     * A row in no carton, as the domain still models one ({@code StockItem#isLoose}); the database holds none
+     * ({@code ck_stock_item_whole_cartons}). For the guards that refuse it.
+     */
+    private StockItem looseRowWithHold(LocationId location, int onHand, int held, ReservationStatus status,
+                                       UUID reservationId) {
+        Reservation hold = new Reservation(ReservationId.of(reservationId), UUID.randomUUID(), UUID.randomUUID(),
+                UUID.randomUUID(), Quantity.of(held), NOW.minusSeconds(3600), null, status, null,
+                status == ReservationStatus.HELD ? null : NOW.minusSeconds(60));
+        StockItem item = new StockItem(StockItemId.newId(), CUP, location, "LOT-1", Quantity.of(onHand),
+                StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400));
+        when(stockItems.findIdByReservationId(ReservationId.of(reservationId))).thenReturn(Optional.of(item.id()));
+        when(stockItems.findById(item.id())).thenReturn(Optional.of(item));
+        when(stockItems.findByReservationIdForUpdate(ReservationId.of(reservationId))).thenReturn(Optional.of(item));
+        when(stockItems.findByIdForUpdate(item.id())).thenReturn(Optional.of(item));
+        return item;
+    }
+
+    /**
+     * The AVAILABLE row of a carton of {@code onHand} units sealed at {@code location}, holding {@code held} of them
+     * for one pinned hold. In a carton, as all stock is: a ledger line names the carton its row is in.
+     */
     private StockItem stockWithHold(LocationId location, int onHand, int held, ReservationStatus status,
                                     UUID reservationId) {
         Reservation hold = new Reservation(ReservationId.of(reservationId), UUID.randomUUID(), UUID.randomUUID(),
                 UUID.randomUUID(), Quantity.of(held), NOW.minusSeconds(3600), null, status,
                 status == ReservationStatus.RELEASED ? ReleaseReason.ORDER_CANCELLED : null,
                 status == ReservationStatus.HELD ? null : NOW.minusSeconds(60));
-        StockItem item = new StockItem(StockItemId.newId(), CUP, location, "LOT-1", Quantity.of(onHand), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400));
+        StockPackageId cartonId = new StockPackageId(UUID.randomUUID());
+        StockPackage carton = new StockPackage(cartonId, "LPN-20261113-000009", UUID.randomUUID(), UUID.randomUUID(),
+                onHand, NOW.minusSeconds(7200), location, StockPackageStatus.IN_STOCK, null, null, 0L);
+        StockItem item = new StockItem(StockItemId.newId(), CUP, location, "LOT-1", Quantity.of(onHand),
+                StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400), null, cartonId);
+        when(stockItems.findIdByReservationId(ReservationId.of(reservationId))).thenReturn(Optional.of(item.id()));
+        when(stockItems.findById(item.id())).thenReturn(Optional.of(item));
         when(stockItems.findByReservationIdForUpdate(ReservationId.of(reservationId))).thenReturn(Optional.of(item));
         when(stockItems.findByIdForUpdate(item.id())).thenReturn(Optional.of(item));
+        when(stockPackages.findAllByIdForUpdate(any())).thenReturn(List.of(carton));
+        when(stockPackages.save(any())).thenAnswer(call -> call.getArgument(0));
         return item;
     }
 
@@ -169,17 +180,17 @@ class PickConsumptionServiceTest {
     class Deducting {
 
         @Test
-        @DisplayName("on_hand falls by the hold, the hold is consumed, one PICK ledger row names the line, StockDeducted goes out")
+        @DisplayName("on_hand falls by the hold, the hold is consumed, one PICK ledger row names the line and the carton, StockDeducted goes out")
         void deductsOnce() {
             UUID hold = UUID.randomUUID();
             UUID line = UUID.randomUUID();
-            StockItem item = stockWithHold(BIN, 10, 3, ReservationStatus.HELD, hold);
+            StockItem item = stockWithHold(BIN, 3, 3, ReservationStatus.HELD, hold);
 
             ConsumedPick consumed = service.consumeForPick(hold, line, PICKER);
 
             assertThat(consumed).isEqualTo(new ConsumedPick(hold, "LY-GIAY-DEMO-12OZ-XANH", "HCM-A01-2-B", "LOT-1", 3,
                     false));
-            assertThat(item.onHand()).isEqualTo(Quantity.of(7));
+            assertThat(item.onHand()).isEqualTo(Quantity.ZERO);
             assertThat(item.findReservation(ReservationId.of(hold)).orElseThrow().status())
                     .isEqualTo(ReservationStatus.CONSUMED);
             assertThat(saved).containsExactly(item);
@@ -189,7 +200,7 @@ class PickConsumptionServiceTest {
                 assertThat(row.referenceId()).isEqualTo(line);
                 assertThat(row.from()).isEqualTo(BIN);
                 assertThat(row.to()).isNull();
-                assertThat(row.quantity()).isEqualTo(3);
+                assertThat(row.stockPackage()).as("the line is the carton, whole").isEqualTo(item.stockPackageId());
                 assertThat(row.lotNumber()).isEqualTo("LOT-1");
                 assertThat(row.status()).isEqualTo(StockStatus.AVAILABLE);
                 assertThat(row.actorId()).isEqualTo(PICKER);
@@ -204,7 +215,7 @@ class PickConsumptionServiceTest {
         void alreadyConsumedByThisLine() {
             UUID hold = UUID.randomUUID();
             UUID line = UUID.randomUUID();
-            StockItem item = stockWithHold(BIN, 10, 3, ReservationStatus.HELD, hold);
+            StockItem item = stockWithHold(BIN, 3, 3, ReservationStatus.HELD, hold);
             service.consumeForPick(hold, line, PICKER);
             saved.clear();
 
@@ -212,7 +223,7 @@ class PickConsumptionServiceTest {
 
             assertThat(again.alreadyConsumed()).isTrue();
             assertThat(again.quantity()).isEqualTo(3);
-            assertThat(item.onHand()).isEqualTo(Quantity.of(7));
+            assertThat(item.onHand()).isEqualTo(Quantity.ZERO);
             assertThat(ledgerRows).hasSize(1);
             assertThat(saved).isEmpty();
         }
@@ -221,13 +232,13 @@ class PickConsumptionServiceTest {
         @DisplayName("a hold consumed by another line is not active: refused, nothing written")
         void consumedByAnotherLine() {
             UUID hold = UUID.randomUUID();
-            StockItem item = stockWithHold(BIN, 10, 3, ReservationStatus.HELD, hold);
+            StockItem item = stockWithHold(BIN, 3, 3, ReservationStatus.HELD, hold);
             service.consumeForPick(hold, UUID.randomUUID(), PICKER);
             saved.clear();
 
             assertThat(refusal(() -> service.consumeForPick(hold, UUID.randomUUID(), PICKER)))
                     .isEqualTo(ErrorCode.RESERVATION_NOT_ACTIVE);
-            assertThat(item.onHand()).isEqualTo(Quantity.of(7));
+            assertThat(item.onHand()).isEqualTo(Quantity.ZERO);
             assertThat(ledgerRows).hasSize(1);
             assertThat(saved).isEmpty();
         }
@@ -263,12 +274,12 @@ class PickConsumptionServiceTest {
         @DisplayName("the operations endpoint deducts the same way and names the order in the ledger")
         void byHand() {
             UUID hold = UUID.randomUUID();
-            StockItem item = stockWithHold(BIN, 10, 3, ReservationStatus.HELD, hold);
+            StockItem item = stockWithHold(BIN, 3, 3, ReservationStatus.HELD, hold);
             UUID order = item.findReservation(ReservationId.of(hold)).orElseThrow().orderId();
 
             service.consume(hold, PICKER);
 
-            assertThat(item.onHand()).isEqualTo(Quantity.of(7));
+            assertThat(item.onHand()).isEqualTo(Quantity.ZERO);
             assertThat(ledgerRows).singleElement().satisfies(row -> {
                 assertThat(row.type()).isEqualTo(StockMovement.MovementType.PICK);
                 assertThat(row.referenceType()).isEqualTo(StockMovement.ReferenceType.ORDER);
@@ -401,7 +412,6 @@ class PickConsumptionServiceTest {
                 assertThat(row.referenceId()).isEqualTo(line);
                 assertThat(row.from()).isNull();
                 assertThat(row.to()).isEqualTo(BIN);
-                assertThat(row.quantity()).isEqualTo(3);
                 assertThat(row.toStatus()).isEqualTo(StockStatus.AVAILABLE);
                 assertThat(row.lotNumber()).isEqualTo("LOT-1");
                 assertThat(row.stockPackage()).as("the ledger names the carton").isEqualTo(picked.carton().id());
@@ -616,9 +626,7 @@ class PickConsumptionServiceTest {
         @DisplayName("a pick of loose stock (no carton) is STOCK_PACKAGE_TAKEN_WHOLE: loose stock is not put back")
         void looseStockIsRefused() {
             UUID hold = UUID.randomUUID();
-            StockItem item = stockWithHold(BIN, 0, 3, ReservationStatus.CONSUMED, hold);
-            when(stockItems.findIdByReservationId(ReservationId.of(hold))).thenReturn(Optional.of(item.id()));
-            when(stockItems.findById(item.id())).thenReturn(Optional.of(item));
+            StockItem item = looseRowWithHold(BIN, 0, 3, ReservationStatus.CONSUMED, hold);
 
             assertThat(refusal(() -> service.putBack(command(UUID.randomUUID(), hold, BIN))))
                     .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
@@ -739,6 +747,7 @@ class PickConsumptionServiceTest {
             when(stockItems.findByReservationIdForUpdate(ReservationId.of(hold))).thenReturn(Optional.of(row));
             when(stockItems.findIdsInStockPackage(id)).thenReturn(List.of(row.id()));
             when(stockPackages.findAllByIdForUpdate(any())).thenReturn(List.of(carton));
+            when(stockPackages.findAllById(any())).thenReturn(List.of(carton));
             when(stockPackages.save(any())).thenAnswer(call -> call.getArgument(0));
             return new Held(row, carton, hold);
         }
@@ -769,7 +778,6 @@ class PickConsumptionServiceTest {
                 assertThat(row.referenceId()).isEqualTo(line);
                 assertThat(row.from()).isEqualTo(BIN);
                 assertThat(row.to()).isEqualTo(staging);
-                assertThat(row.quantity()).isEqualTo(6);
                 assertThat(row.stockPackage()).isEqualTo(held.carton().id());
             });
             verify(publisher, never()).publishEvent(any(Object.class));
@@ -799,6 +807,8 @@ class PickConsumptionServiceTest {
             StagedPick again = service.stage(stageCommand(line, held.hold()));
 
             assertThat(again.alreadyStaged()).isTrue();
+            assertThat(again.quantity()).as("read from the carton the line names: the ledger keeps no number")
+                    .isEqualTo(6);
             assertThat(again.stagingLocationCode()).isEqualTo(staging.code());
             assertThat(again.fromLocationCode()).isEqualTo(BIN.code());
             assertThat(ledgerRows).hasSize(1);
@@ -810,9 +820,7 @@ class PickConsumptionServiceTest {
         @DisplayName("stage: loose stock is STOCK_PACKAGE_TAKEN_WHOLE, nothing moves")
         void stageLooseRow() {
             UUID hold = UUID.randomUUID();
-            StockItem item = stockWithHold(BIN, 6, 6, ReservationStatus.HELD, hold);
-            when(stockItems.findIdByReservationId(ReservationId.of(hold))).thenReturn(Optional.of(item.id()));
-            when(stockItems.findById(item.id())).thenReturn(Optional.of(item));
+            StockItem item = looseRowWithHold(BIN, 6, 6, ReservationStatus.HELD, hold);
 
             assertThat(refusal(() -> service.stage(stageCommand(UUID.randomUUID(), hold))))
                     .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
@@ -922,7 +930,7 @@ class PickConsumptionServiceTest {
                 assertThat(row.referenceId()).isEqualTo(line);
                 assertThat(row.from()).isEqualTo(staging);
                 assertThat(row.to()).isNull();
-                assertThat(row.quantity()).isEqualTo(6);
+                assertThat(row.stockPackage()).as("the line is the carton, whole").isEqualTo(held.carton().id());
             });
         }
 

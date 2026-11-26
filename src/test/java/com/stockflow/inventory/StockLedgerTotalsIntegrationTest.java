@@ -150,18 +150,20 @@ class StockLedgerTotalsIntegrationTest {
     }
 
     /**
-     * A line into {@link #BIN} at {@code at}, naming a carton standing there as every ledger line must
-     * ({@code ck_stock_movement_names_carton}). The test that uses it reads the ledger's days and units, not the stock.
+     * A line into {@link #BIN} at {@code at}, naming a carton of {@code quantity} units standing there: a ledger line
+     * is its carton, whole, and counts for the carton's standard count (ADR-0011), so the carton is made of that size.
+     * The test that uses it reads the ledger's days and units, not the stock.
      */
     private void ledgerLine(int quantity, Instant at) {
         tx.executeWithoutResult(s -> {
-            UUID carton = CartonRows.stock(jdbc, sku, BIN, 1, PER_CARTON, goods.productionCode(), at).getFirst().id();
+            UUID carton = CartonRows.stockOfUnit(jdbc, sku, CartonRows.unitOf(jdbc, sku, quantity), BIN, 1,
+                    goods.productionCode(), at, "AVAILABLE").getFirst().id();
             jdbc.update("""
                     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
-                        to_location_code, quantity, to_status, reference_type, reference_id, occurred_at, version,
+                        to_location_code, to_status, reference_type, reference_id, occurred_at, version,
                         created_at, stock_package_id)
-                    VALUES (?, 'ADJUSTMENT', ?, ?, NULL, ?, ?, 'AVAILABLE', 'STOCK_ADJUSTMENT', ?, ?, 0, NOW(), ?)""",
-                    Identifiers.newId(), sku, goods.productionCode(), BIN, quantity, Identifiers.newId(),
+                    VALUES (?, 'ADJUSTMENT', ?, ?, NULL, ?, 'AVAILABLE', 'STOCK_ADJUSTMENT', ?, ?, 0, NOW(), ?)""",
+                    Identifiers.newId(), sku, goods.productionCode(), BIN, Identifiers.newId(),
                     OffsetDateTime.ofInstant(at, ZoneOffset.UTC), carton);
         });
     }

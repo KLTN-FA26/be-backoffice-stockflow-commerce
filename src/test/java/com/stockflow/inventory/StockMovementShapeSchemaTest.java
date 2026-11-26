@@ -26,10 +26,10 @@ class StockMovementShapeSchemaTest {
     private static final String OTHER_BIN = "HCM-A01-1-B";
     private static final String SKU = "LY-GIAY-DEMO-12OZ-XANH";
     private static final String INSERT = "INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code,"
-            + " to_location_code, quantity, reference_type, reference_id, occurred_at, stock_package_id)"
-            + " VALUES (gen_random_uuid(), ?, ?, ?, ?, 1, ?, gen_random_uuid(), NOW(), ?)";
+            + " to_location_code, reference_type, reference_id, occurred_at, stock_package_id)"
+            + " VALUES (gen_random_uuid(), ?, ?, ?, ?, ?, gen_random_uuid(), NOW(), ?)";
     /**
-     * The carton every line here names (V20261230000200: a line names its carton), standing at {@link #BIN}, which
+     * The carton every line here names (a line names its carton, and nothing else of what it moved), standing at {@link #BIN}, which
      * each allowed line has on one side: the refusals below are then the shape's, not the missing carton's.
      */
     private static final java.util.UUID CARTON = java.util.UUID.fromString("0198f000-0000-7000-8000-00000000c001");
@@ -65,11 +65,11 @@ class StockMovementShapeSchemaTest {
 
     /** Every rule of the shape, each allowed case next to the case it refuses. */
     private static void assertShape(Connection db) throws SQLException {
-        // Since 4C-4 a pick line's put-back names the carton it goes back into; since V20261230000200 every line names
-        // its carton (ck_stock_movement_names_carton), so the shape allows the put-back and the line without one is
+        // Since 4C-4 a pick line's put-back names the carton it goes back into; every line names its carton
+        // (stock_package_id NOT NULL, V20261230000400), so the shape allows the put-back and the line without one is
         // refused.
         update(db, INSERT, "PUT_BACK", SKU, null, BIN, "PICK_LINE", CARTON);
-        refusedBy(db, "ck_stock_movement_names_carton", "a pick line's put-back that names no carton", INSERT,
+        refusedBy(db, "null value in column \"stock_package_id\"", "a pick line's put-back that names no carton", INSERT,
                 "PUT_BACK", SKU, null, BIN, "PICK_LINE", null);
         update(db, INSERT, "PUT_BACK", SKU, OTHER_BIN, BIN, "MOVE_TASK", CARTON);
         refused(db, "a put-back from nowhere that is neither a pick line's nor an order's", INSERT, "PUT_BACK", SKU,

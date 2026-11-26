@@ -116,21 +116,23 @@ class ReportsHttpIntegrationTest {
     }
 
     /**
-     * A line into {@code location}. It names a carton standing there, as every ledger line must
-     * ({@code ck_stock_movement_names_carton}); the report under test sums the ledger's units, so the carton is only
-     * what the line needs to exist. Cartons of {@link #PER_CARTON}: both lines are whole cartons.
+     * {@code quantity} units into {@code location}: one ledger line per carton of {@link #PER_CARTON} standing there.
+     * A line names its carton and no number of units (ADR-0011); the report under test sums the cartons' standard
+     * counts.
      */
     private void ledgerLine(String location, int quantity) {
         tx.executeWithoutResult(s -> {
-            UUID carton = CartonRows.stock(jdbc, sku, location, 1, PER_CARTON, null, Instant.now()).getFirst().id();
-            jdbc.update("""
-                    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
-                        to_location_code, quantity, to_status, reference_type, reference_id, occurred_at, version,
-                        created_at, stock_package_id)
-                    VALUES (?, 'ADJUSTMENT', ?, 'UNTRACED', NULL, ?, ?, 'AVAILABLE', 'STOCK_ADJUSTMENT', ?, ?, 0, NOW(),
-                            ?)""",
-                    Identifiers.newId(), sku, location, quantity, Identifiers.newId(),
-                    OffsetDateTime.ofInstant(Instant.now(), ZoneOffset.UTC), carton);
+            for (var carton : CartonRows.stock(jdbc, sku, location, quantity / PER_CARTON, PER_CARTON, null,
+                    Instant.now())) {
+                jdbc.update("""
+                        INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
+                            to_location_code, to_status, reference_type, reference_id, occurred_at, version,
+                            created_at, stock_package_id)
+                        VALUES (?, 'ADJUSTMENT', ?, 'UNTRACED', NULL, ?, 'AVAILABLE', 'STOCK_ADJUSTMENT', ?, ?, 0, NOW(),
+                                ?)""",
+                        Identifiers.newId(), sku, location, Identifiers.newId(),
+                        OffsetDateTime.ofInstant(Instant.now(), ZoneOffset.UTC), carton.id());
+            }
         });
     }
 
@@ -213,8 +215,11 @@ class ReportsHttpIntegrationTest {
                         .param("warehouseId", WAREHOUSE_HCM.toString()).param("from", today.toString())
                         .param("to", today.toString()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.totalElements").value(1))
-                .andExpect(jsonPath("$.data.items[0].quantity").value(4));
+                // HCM's 4 pieces are two cartons of PER_CARTON, a line each (the other warehouse's three are left out);
+                // a line answers its carton's standard count.
+                .andExpect(jsonPath("$.data.totalElements").value(2))
+                .andExpect(jsonPath("$.data.items[0].quantity").value(PER_CARTON))
+                .andExpect(jsonPath("$.data.items[1].quantity").value(PER_CARTON));
         mvc.asRole(Role.WAREHOUSE_MANAGER, manager, get("/api/v1/inventory/movements")
                         .param("warehouseId", otherWarehouse.toString()))
                 .andExpect(status().isForbidden());

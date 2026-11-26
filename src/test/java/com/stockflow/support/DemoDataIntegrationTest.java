@@ -154,9 +154,10 @@ class DemoDataIntegrationTest {
 
         for (String sku : List.of(DemoData.SKU_STOCKED, DemoData.SKU_QUARANTINED)) {
             Integer ledger = jdbc.queryForObject("""
-                    SELECT COALESCE(SUM(quantity * ((to_location_code IS NOT NULL)::int
-                                                    - (from_location_code IS NOT NULL)::int)), 0)
-                      FROM inventory.stock_movement WHERE sku = ?
+                    SELECT COALESCE(SUM(p.nominal_qty * ((m.to_location_code IS NOT NULL)::int
+                                                         - (m.from_location_code IS NOT NULL)::int)), 0)
+                      FROM inventory.stock_movement m
+                      JOIN inventory.stock_package p ON p.id = m.stock_package_id WHERE m.sku = ?
                     """, Integer.class, sku);
             Integer onHand = jdbc.queryForObject(
                     "SELECT COALESCE(SUM(on_hand), 0) FROM inventory.stock_item WHERE sku = ?", Integer.class, sku);

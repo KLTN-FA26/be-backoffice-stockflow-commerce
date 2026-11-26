@@ -246,11 +246,12 @@ customer_order → production_order → goods receipt FOR UPDATE → SKU advisor
 ```
 
 Cartons move and change status whole, a list of LPNs per call (`moveStockPackages` / `reclassifyStockPackages`). A
-ledger line names the one carton it is about (`stock_movement.stock_package_id`, ADR-0011 step 2; required on every new
-line by `ck_stock_movement_names_carton`), and `movement_type` with `from_location_code` / `to_location_code` says
-whether it arrived, moved or left - there is no carton "side". Nothing writes a loose line any more;
-`StockMovementLog.findLooseByReference` (lines naming no carton) reads history only, for a loose putaway task from
-before everything was boxed. `LpnSequence.reserve` is `REQUIRES_NEW` so a sequence row held until
+ledger line is the one carton it is about (`stock_movement.stock_package_id`, NOT NULL; ADR-0011 steps 2 and 3b) and
+keeps no quantity: its units are that carton's `nominal_qty`, read through a join by whoever sums the ledger
+(`StockLedgerTotalsAdapter`, the lot trace, `tools/db/stock_ledger_balance.sql`). `movement_type` with
+`from_location_code` / `to_location_code` says whether it arrived, moved or left - there is no carton "side". The
+ledger lines of loose stock went with `V20261230000400`, and a putaway task without a carton cannot exist
+(`ck_putaway_task_source`). `LpnSequence.reserve` is `REQUIRES_NEW` so a sequence row held until
 commit cannot deadlock two receipts; it draws a line's LPNs as one block. Gaps in LPNs are the accepted price.
 Looking cartons up is `StockPackageLookup` (`/inventory/stock-packages/...`), one SQL statement per kind of fact. There
 is deliberately no endpoint to mark a carton LOST or found: that writes stock off, so it is only an approved count's

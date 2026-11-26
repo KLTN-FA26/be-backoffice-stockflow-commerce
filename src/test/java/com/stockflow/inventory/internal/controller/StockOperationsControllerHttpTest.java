@@ -137,10 +137,12 @@ class StockOperationsControllerHttpTest {
         when(identities.displayNames(any())).thenReturn(Map.of(clerk, "Nguyen Van Kho", approver, "Tran Thi Duyet"));
         StockOperations.LedgerLine adjustment = new StockOperations.LedgerLine(UUID.randomUUID(),
                 StockMovement.MovementType.ADJUSTMENT, "CUP_PET", "L1", "HCM-A01-1-A", null, -50, "AVAILABLE", null,
-                "ADJUSTMENT", UUID.randomUUID(), "DAMAGED", approver, java.time.Instant.now(), clerk, null);
+                "ADJUSTMENT", UUID.randomUUID(), "DAMAGED", approver, java.time.Instant.now(), clerk, null,
+                "LPN-261126-000001");
         StockOperations.LedgerLine system = new StockOperations.LedgerLine(UUID.randomUUID(),
                 StockMovement.MovementType.MOVE, "CUP_PET", "L1", "HCM-STG", "HCM-A01-1-A", 50, "AVAILABLE",
-                null, "PUTAWAY_TASK", UUID.randomUUID(), null, null, java.time.Instant.now(), null, null);
+                null, "PUTAWAY_TASK", UUID.randomUUID(), null, null, java.time.Instant.now(), null, null,
+                "LPN-261126-000002");
         when(operations.ledger(any(), anyInt(), anyInt(), any()))
                 .thenReturn(PageResponse.of(List.of(adjustment, system), 0, 20, 2));
 

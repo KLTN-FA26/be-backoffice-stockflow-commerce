@@ -209,7 +209,7 @@ class CartonQuarantineIntegrationTest {
                 .containsEntry("stock", "QUARANTINE").containsEntry("on_hand", 10);
         assertThat(jdbc.queryForList("""
                 SELECT m.movement_type, m.from_location_code, m.to_location_code, m.from_status, m.to_status,
-                       m.quantity, m.reference_type, m.reason
+                       p.nominal_qty AS quantity, m.reference_type, m.reason
                   FROM inventory.stock_movement m JOIN inventory.stock_package p ON p.id = m.stock_package_id
                  WHERE p.lpn = ?""", lpn)).singleElement().satisfies(line -> {
                     assertThat(line).containsEntry("movement_type", "STATUS_CHANGE")
@@ -365,8 +365,10 @@ class CartonQuarantineIntegrationTest {
 
         assertThat(cartonRow(lpn)).containsEntry("carton", "CONSUMED").containsEntry("on_hand", 0);
         assertThat(jdbc.queryForMap("""
-                SELECT m.movement_type, m.from_location_code, m.to_location_code, m.from_status, m.quantity
-                  FROM inventory.stock_movement m WHERE m.reference_type = 'STOCK_ADJUSTMENT' AND m.reference_id = ?""",
+                SELECT m.movement_type, m.from_location_code, m.to_location_code, m.from_status,
+                       p.nominal_qty AS quantity
+                  FROM inventory.stock_movement m JOIN inventory.stock_package p ON p.id = m.stock_package_id
+                 WHERE m.reference_type = 'STOCK_ADJUSTMENT' AND m.reference_id = ?""",
                 asked.adjustmentId())).containsEntry("movement_type", "ADJUSTMENT")
                 .containsEntry("from_location_code", quarantineArea).containsEntry("from_status", "QUARANTINE")
                 .containsEntry("quantity", 10);

@@ -107,8 +107,8 @@ class BlindCountIntegrationTest {
         lot = jdbc.queryForObject("select lot_id from inventory.stock_item where id = ?", UUID.class,
                 cartonB.stockItemId());
         tx.executeWithoutResult(s -> {
-            movement(BIN, BIN2, 4, cartonB.id());
-            movement(BIN2, BIN3, 2, cartonC.id());
+            movement(BIN, BIN2, cartonB.id());
+            movement(BIN2, BIN3, cartonC.id());
         });
         manualAdjustment = operations.requestPackageAdjustment(new StockOperations.PackageAdjustmentRequest(
                 cartonA.lpn(), AdjustmentDirection.WRITE_OFF, StockAdjustmentReason.DAMAGED, null, clerk))
@@ -120,13 +120,13 @@ class BlindCountIntegrationTest {
      * cartons by task; what this class reads is the ledger, and which
      * carton a line names is what hides it from a counter.
      */
-    private void movement(String from, String to, int quantity, UUID carton) {
+    private void movement(String from, String to, UUID carton) {
         jdbc.update("""
                 insert into inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
-                    to_location_code, quantity, from_status, to_status, reference_type, reference_id, occurred_at,
+                    to_location_code, from_status, to_status, reference_type, reference_id, occurred_at,
                     lot_id, stock_package_id)
-                values (?, 'MOVE', ?, 'L1', ?, ?, ?, 'AVAILABLE', 'AVAILABLE', 'ORDER', ?, now(), ?, ?)""",
-                Identifiers.newId(), sku, from, to, quantity, Identifiers.newId(), lot, carton);
+                values (?, 'MOVE', ?, 'L1', ?, ?, 'AVAILABLE', 'AVAILABLE', 'ORDER', ?, now(), ?, ?)""",
+                Identifiers.newId(), sku, from, to, Identifiers.newId(), lot, carton);
     }
 
     private UUID staff(String role) {

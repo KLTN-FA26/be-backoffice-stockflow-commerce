@@ -274,9 +274,11 @@ class ReturnsRound2IntegrationTest {
                     .containsEntry("return_ownership", "CUSTOMER_HELD").containsEntry("on_hand", 0);
         }
         assertThat(jdbc.queryForObject("""
-                SELECT count(*) FROM inventory.stock_movement WHERE reference_type = 'RETURN_REQUEST'
-                   AND reference_id = ? AND movement_type = 'ADJUSTMENT' AND quantity = ?
-                   AND from_location_code = ? AND to_location_code IS NULL""", Long.class, request.id(), CARTON,
+                SELECT count(*) FROM inventory.stock_movement m
+                  JOIN inventory.stock_package p ON p.id = m.stock_package_id
+                 WHERE m.reference_type = 'RETURN_REQUEST'
+                   AND m.reference_id = ? AND m.movement_type = 'ADJUSTMENT' AND p.nominal_qty = ?
+                   AND m.from_location_code = ? AND m.to_location_code IS NULL""", Long.class, request.id(), CARTON,
                 QUARANTINE)).as("one reversing line per carton").isEqualTo(2L);
         assertThat(code(catchThrowable(() -> asHcm(manager, () -> quarantine.release(d.lpn(0), manager)))))
                 .as("out of the books: nothing to release").isEqualTo(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION);

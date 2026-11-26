@@ -93,10 +93,11 @@ class LotTraceSearchAdapter implements LotTraceSearch {
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("lotId", lotId);
         String sql = """
                 SELECT m.order_id, max(m.order_number) AS order_number,
-                       sum(CASE WHEN m.movement_type IN ('PICK', 'CONSUMPTION') THEN m.quantity ELSE 0 END) AS picked,
-                       sum(CASE WHEN m.movement_type = 'PUT_BACK' THEN m.quantity ELSE 0 END) AS put_back,
+                       sum(CASE WHEN m.movement_type IN ('PICK', 'CONSUMPTION') THEN p.nominal_qty ELSE 0 END) AS picked,
+                       sum(CASE WHEN m.movement_type = 'PUT_BACK' THEN p.nominal_qty ELSE 0 END) AS put_back,
                        min(m.occurred_at) AS first_at, max(m.occurred_at) AS last_at
                   FROM inventory.stock_movement m
+                  JOIN inventory.stock_package p ON p.id = m.stock_package_id
                  WHERE m.lot_id = :lotId AND m.order_id IS NOT NULL""" + movementIn(warehouses, params)
                 + " GROUP BY m.order_id ORDER BY min(m.occurred_at), m.order_id";
         return jdbc.query(sql, params, (rs, i) -> new LotTrace.OrderLeg(uuid(rs, "order_id"),
@@ -120,10 +121,12 @@ class LotTraceSearchAdapter implements LotTraceSearch {
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("lotId", lotId)
                 .addValue("offset", offset).addValue("limit", limit);
         String sql = """
-                SELECT m.id, m.movement_type, m.from_location_code, m.to_location_code, m.quantity, m.from_status,
+                SELECT m.id, m.movement_type, m.from_location_code, m.to_location_code, p.nominal_qty AS quantity,
+                       m.from_status,
                        m.to_status, m.reference_type, m.reference_id, m.order_id, m.order_number, m.actor_id,
                        m.occurred_at, m.reason
                   FROM inventory.stock_movement m
+                  JOIN inventory.stock_package p ON p.id = m.stock_package_id
                  WHERE m.lot_id = :lotId""" + movementIn(warehouses, params) + window(from, to, params)
                 + outsideCountedSlots(hideCountedSlots) + " ORDER BY m.occurred_at, m.id LIMIT :limit OFFSET :offset";
         return jdbc.query(sql, params, (rs, i) -> new LotTrace.Movement(uuid(rs, "id"), rs.getString("movement_type"),
@@ -146,7 +149,8 @@ class LotTraceSearchAdapter implements LotTraceSearch {
         return """
                 SELECT l.id, l.sku, l.lot_number, l.received_at, l.origin_type,
                        l.warehouse_id, l.production_order_id, l.production_order_code,
-                       COALESCE((SELECT sum(m.quantity) FROM inventory.stock_movement m
+                       COALESCE((SELECT sum(p.nominal_qty) FROM inventory.stock_movement m
+                                    JOIN inventory.stock_package p ON p.id = m.stock_package_id
                                   WHERE m.lot_id = l.id AND m.movement_type = 'RECEIPT'""" + receipts + "), 0) AS received,"
                 + """
                        COALESCE((SELECT sum(si.on_hand) FROM inventory.stock_item si WHERE si.lot_id = l.id""" + items

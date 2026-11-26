@@ -215,7 +215,7 @@ class PutawayConfirmationIntegrationTest {
         assertThat(done.targetLocationCode()).isEqualTo(bin);
         assertThat(ledgerLines(cartonTask)).isEqualTo(1);
         assertThat(jdbc.queryForList("""
-                SELECT m.quantity, m.to_status, m.to_location_code, p.lpn
+                SELECT p.nominal_qty AS quantity, m.to_status, m.to_location_code, p.lpn
                   FROM inventory.stock_movement m
                   JOIN inventory.stock_package p ON p.id = m.stock_package_id
                  WHERE m.reference_type = 'PUTAWAY_TASK' AND m.reference_id = ?""", cartonTask))
@@ -442,7 +442,7 @@ class PutawayConfirmationIntegrationTest {
         assertThat(done.sourceLocationCode()).isEqualTo(bin);
         assertThat(ledgerLines(cartonTask)).as("no MOVE between two locations").isZero();
         assertThat(jdbc.queryForList("""
-                SELECT m.quantity, m.from_status, m.to_status, m.from_location_code, m.to_location_code,
+                SELECT p.nominal_qty AS quantity, m.from_status, m.to_status, m.from_location_code, m.to_location_code,
                        p.lpn
                   FROM inventory.stock_movement m
                   JOIN inventory.stock_package p ON p.id = m.stock_package_id

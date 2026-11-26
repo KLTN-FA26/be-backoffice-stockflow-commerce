@@ -141,9 +141,11 @@ class CountVarianceAdjustmentIntegrationTest {
 
     private List<Map<String, Object>> adjustmentLedger() {
         return jdbc.queryForList("""
-                select reference_id, quantity, from_location_code, to_location_code, stock_package_id
-                  from inventory.stock_movement where sku = ? and movement_type = 'ADJUSTMENT'
-                 order by occurred_at, quantity""", sku);
+                select m.reference_id, p.nominal_qty as quantity, m.from_location_code, m.to_location_code,
+                       m.stock_package_id
+                  from inventory.stock_movement m join inventory.stock_package p on p.id = m.stock_package_id
+                 where m.sku = ? and m.movement_type = 'ADJUSTMENT'
+                 order by m.occurred_at, m.id""", sku);
     }
 
     private UUID confirmedOrder() {
@@ -254,11 +256,11 @@ class CountVarianceAdjustmentIntegrationTest {
                 .containsEntry("actor_id", manager);
         // A ledger line of an adjustment that names other people than the adjustment does is refused.
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update("""
-                insert into inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, quantity,
+                insert into inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
                     from_status, reference_type, reference_id, actor_id, occurred_at, stock_package_id,
                     requested_by)
-                values (?, 'ADJUSTMENT', ?, ?, ?, ?, 'AVAILABLE', 'STOCK_ADJUSTMENT', ?, ?, now(), ?, ?)""",
-                Identifiers.newId(), sku, lot, BIN, CARTON_FACTOR, asked.adjustmentId(), manager, box, manager)))
+                values (?, 'ADJUSTMENT', ?, ?, ?, 'AVAILABLE', 'STOCK_ADJUSTMENT', ?, ?, now(), ?, ?)""",
+                Identifiers.newId(), sku, lot, BIN, asked.adjustmentId(), manager, box, manager)))
                 .hasMessageContaining("names who requested and who counted");
     }
 

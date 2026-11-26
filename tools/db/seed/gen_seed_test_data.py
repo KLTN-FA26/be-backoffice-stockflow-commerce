@@ -1111,7 +1111,7 @@ class ProductionOrder:
                 stock_package_id=pkg["id"], lot_id=row["lot_id"])
             ins("inventory.stock_movement", confirmed, id=uid("mv:receipt:" + pkg["id"]), movement_type="RECEIPT",
                 sku=ln["sku"], lot_number=self.code, from_location_code=None, to_location_code=rcv,
-                quantity=ln["per"], from_status=None, to_status="INBOUND", reference_type="GOODS_RECEIPT_LINE",
+                from_status=None, to_status="INBOUND", reference_type="GOODS_RECEIPT_LINE",
                 reference_id=pkg["line"], actor_id=manager, occurred_at=confirmed, stock_package_id=pkg["id"],
                 lot_id=row["lot_id"])
             pkg["row"] = row
@@ -1132,7 +1132,7 @@ class ProductionOrder:
                     status="DONE", source="RECEIPT")
                 ins("inventory.stock_movement", t, id=uid("mv:putaway:" + pkg["id"]), movement_type="MOVE",
                     sku=row["sku"], lot_number=row["lot"], from_location_code=rcv, to_location_code=to,
-                    quantity=row["on_hand"], from_status="INBOUND", to_status="AVAILABLE",
+                    from_status="INBOUND", to_status="AVAILABLE",
                     reference_type="PUTAWAY_TASK", reference_id=task, actor_id=staff, occurred_at=t,
                     stock_package_id=pkg["id"], lot_id=row["lot_id"])
                 upd("inventory.stock_package", pkg["id"], location_code=to)
@@ -1182,7 +1182,7 @@ class Pick:
     def _deduct(self, pl, when, frm):
         r, a = pl["row"], pl["alloc"]
         ins("inventory.stock_movement", when, id=uid("mv:pick:" + pl["id"]), movement_type="PICK", sku=r["sku"],
-            lot_number=r["lot"], from_location_code=frm, to_location_code=None, quantity=r["on_hand"],
+            lot_number=r["lot"], from_location_code=frm, to_location_code=None,
             from_status="AVAILABLE", to_status=None, reference_type="PICK_LINE", reference_id=pl["id"],
             actor_id=self.picker, occurred_at=when, stock_package_id=r["package"], lot_id=r["lot_id"],
             order_id=self.o.id)
@@ -1202,7 +1202,7 @@ class Pick:
             if self.staging:
                 ins("inventory.stock_movement", t, id=uid("mv:stage:" + pl["id"]), movement_type="MOVE",
                     sku=r["sku"], lot_number=r["lot"], from_location_code=r["loc"], to_location_code=self.staging,
-                    quantity=r["on_hand"], from_status="AVAILABLE", to_status="AVAILABLE", reference_type="PICK_LINE",
+                    from_status="AVAILABLE", to_status="AVAILABLE", reference_type="PICK_LINE",
                     reference_id=pl["id"], actor_id=self.picker, occurred_at=t, stock_package_id=r["package"],
                     lot_id=r["lot_id"], order_id=self.o.id)
                 upd("inventory.stock_package", r["package"], location_code=self.staging)
@@ -1670,7 +1670,7 @@ def return_request(o, key, when, reason, status, cartons=0, channel="PORTAL", no
             r.update(loc=qrt, on_hand=pk["qty"], status="QUARANTINE", consumed=False)
             ins("inventory.stock_movement", t, id=uid(f"mv:return:{gid}:{pk['id']}"), movement_type="RECEIPT",
                 sku=ln["sku"], lot_number=pk["lot"], from_location_code=None, to_location_code=qrt,
-                quantity=pk["qty"], from_status="QUARANTINE", to_status="QUARANTINE", reference_type="GOODS_RECEIPT",
+                from_status="QUARANTINE", to_status="QUARANTINE", reference_type="GOODS_RECEIPT",
                 reference_id=gid, actor_id=staff, occurred_at=t, stock_package_id=pk["package"],
                 lot_id=r["lot_id"], order_id=o.id)
         raw("SELECT set_config('stockflow.same_receipt_merge', '', true);")

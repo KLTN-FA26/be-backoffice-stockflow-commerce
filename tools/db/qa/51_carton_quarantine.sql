@@ -73,31 +73,27 @@ SELECT pg_temp.expect_ok('QR3 a free carton is quarantined, moved whole into the
 
 \echo '--- the ledger: one STATUS_CHANGE names where the carton was and the quarantine area (20 §4.8, BR-16)'
 SELECT pg_temp.expect_ok('QR4 a quarantine''s STATUS_CHANGE from the bin into the quarantine area', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
-                                          quantity, from_status, to_status, reference_type, reference_id, occurred_at,
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, from_status, to_status, reference_type, reference_id, occurred_at,
                                           stock_package_id)
-    VALUES (gen_random_uuid(), 'STATUS_CHANGE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-1-A', 'HCM-QC01', 4,
+    VALUES (gen_random_uuid(), 'STATUS_CHANGE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-1-A', 'HCM-QC01',
             'AVAILABLE', 'QUARANTINE', 'STOCK_PACKAGE', md5('qa51:qrn')::uuid, NOW(), md5('qa51:qrn')::uuid) $q$);
 SELECT pg_temp.expect_fail('QR5 a STATUS_CHANGE across two places for another document', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
-                                          quantity, from_status, to_status, reference_type, reference_id, occurred_at,
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, from_status, to_status, reference_type, reference_id, occurred_at,
                                           stock_package_id)
-    VALUES (gen_random_uuid(), 'STATUS_CHANGE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-1-A', 'HCM-QC01', 4,
+    VALUES (gen_random_uuid(), 'STATUS_CHANGE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-A01-1-A', 'HCM-QC01',
             'AVAILABLE', 'QUARANTINE', 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa51:qrn')::uuid) $q$);
 SELECT pg_temp.expect_fail('QR6 a STATUS_CHANGE across two places out of quarantine', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
-                                          quantity, from_status, to_status, reference_type, reference_id, occurred_at,
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, from_status, to_status, reference_type, reference_id, occurred_at,
                                           stock_package_id)
-    VALUES (gen_random_uuid(), 'STATUS_CHANGE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-QC01', 'HCM-A01-1-A', 4,
+    VALUES (gen_random_uuid(), 'STATUS_CHANGE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-QC01', 'HCM-A01-1-A',
             'QUARANTINE', 'AVAILABLE', 'STOCK_PACKAGE', gen_random_uuid(), NOW(), md5('qa51:qrn')::uuid) $q$);
 
 \echo '--- a damaged carton standing in a staging area is quarantined from it (WF04 G7; 11 BR-09, 20 BR-20)'
 -- Only the staging trigger's say is asked: the line may be refused by another rule, never by it.
 CREATE FUNCTION pg_temp.staging_verdict(from_code TEXT, to_code TEXT, ref TEXT) RETURNS TEXT LANGUAGE plpgsql AS $$
 BEGIN
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
-                                          quantity, from_status, to_status, reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'STATUS_CHANGE', 'SOFA-3S-GREY', 'UNTRACED', from_code, to_code, 1,
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, from_status, to_status, reference_type, reference_id, occurred_at)
+    VALUES (gen_random_uuid(), 'STATUS_CHANGE', 'SOFA-3S-GREY', 'UNTRACED', from_code, to_code,
             'AVAILABLE', 'QUARANTINE', ref, gen_random_uuid(), NOW());
     RETURN 'accepted';
 EXCEPTION WHEN OTHERS THEN
@@ -114,40 +110,37 @@ SELECT pg_temp.expect_true('QR4e ... and nothing enters a staging area this way'
 
 \echo '--- quarantined stock leaves only by an approved adjustment or its release''s putaway (20 BR-21, 05 BR-14)'
 SELECT pg_temp.expect_fail('QR7 quarantined stock picked for an order', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, quantity,
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
                                           from_status, to_status, reference_type, reference_id, occurred_at,
                                           stock_package_id)
-    VALUES (gen_random_uuid(), 'PICK', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-QC01', 4, 'QUARANTINE', 'QUARANTINE',
+    VALUES (gen_random_uuid(), 'PICK', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-QC01', 'QUARANTINE', 'QUARANTINE',
             'PICK_LINE', gen_random_uuid(), NOW(), md5('qa51:qrn')::uuid) $q$);
 SELECT pg_temp.expect_fail('QR8 quarantined stock made sellable by a hand move', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
-                                          quantity, from_status, to_status, reference_type, reference_id, occurred_at,
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, from_status, to_status, reference_type, reference_id, occurred_at,
                                           stock_package_id)
-    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-QC01', 'HCM-A01-1-A', 4, 'QUARANTINE',
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-QC01', 'HCM-A01-1-A', 'QUARANTINE',
             'AVAILABLE', 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa51:qrn')::uuid) $q$);
 SELECT pg_temp.expect_fail('QR9 quarantined stock written off without an adjustment (a scrap line)', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, quantity,
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
                                           from_status, to_status, reference_type, reference_id, occurred_at,
                                           stock_package_id)
-    VALUES (gen_random_uuid(), 'SCRAP', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-QC01', 4, 'QUARANTINE', 'QUARANTINE',
+    VALUES (gen_random_uuid(), 'SCRAP', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-QC01', 'QUARANTINE', 'QUARANTINE',
             'DAMAGE_REPORT', gen_random_uuid(), NOW(), md5('qa51:qrn')::uuid) $q$);
 SELECT pg_temp.expect_ok('QR10 quarantined stock written off by an approved adjustment', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, quantity,
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
                                           from_status, to_status, reference_type, reference_id, occurred_at,
                                           stock_package_id)
-    VALUES (gen_random_uuid(), 'ADJUSTMENT', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-QC01', 4, 'QUARANTINE', 'QUARANTINE',
+    VALUES (gen_random_uuid(), 'ADJUSTMENT', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-QC01', 'QUARANTINE', 'QUARANTINE',
             'STOCK_ADJUSTMENT', gen_random_uuid(), NOW(), md5('qa51:qrn')::uuid) $q$);
 SELECT pg_temp.expect_ok('QR11 a released carton put away into a bin as AVAILABLE', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
-                                          quantity, from_status, to_status, reference_type, reference_id, occurred_at,
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, from_status, to_status, reference_type, reference_id, occurred_at,
                                           stock_package_id)
-    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-QC01', 'HCM-A01-1-A', 4, 'QUARANTINE',
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-QC01', 'HCM-A01-1-A', 'QUARANTINE',
             'AVAILABLE', 'PUTAWAY_TASK', gen_random_uuid(), NOW(), md5('qa51:qrn')::uuid) $q$);
 SELECT pg_temp.expect_ok('QR12 a quarantined carton moved inside quarantine stays QUARANTINE', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
-                                          quantity, from_status, to_status, reference_type, reference_id, occurred_at,
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, from_status, to_status, reference_type, reference_id, occurred_at,
                                           stock_package_id)
-    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-QC01', 'HCM-RTV01', 4, 'QUARANTINE',
+    VALUES (gen_random_uuid(), 'MOVE', 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'HCM-QC01', 'HCM-RTV01', 'QUARANTINE',
             'QUARANTINE', 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa51:qrn')::uuid) $q$);
 
 \echo '--- putaway tasks: RECEIPT or QUARANTINE_RELEASE, each in its own shape (05 BR-01)'

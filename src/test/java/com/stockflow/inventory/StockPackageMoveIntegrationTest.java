@@ -117,8 +117,9 @@ class StockPackageMoveIntegrationTest {
         assertThat(jdbc.queryForObject("select id from inventory.stock_item where stock_package_id = ?", UUID.class,
                 cartonId)).as("the row is the same one").isEqualTo(row);
         assertThat(jdbc.query("""
-                select stock_package_id, quantity from inventory.stock_movement
-                 where movement_type = 'MOVE' and sku = ?""",
+                select m.stock_package_id, p.nominal_qty as quantity
+                  from inventory.stock_movement m join inventory.stock_package p on p.id = m.stock_package_id
+                 where m.movement_type = 'MOVE' and m.sku = ?""",
                 (rs, n) -> rs.getObject("stock_package_id", UUID.class) + "|" + rs.getInt("quantity"), sku))
                 .containsExactly(cartonId + "|1000");
     }

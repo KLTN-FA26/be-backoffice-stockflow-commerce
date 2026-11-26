@@ -189,10 +189,10 @@ public class CartonReturnService implements CartonReturns {
             }
             StockItem row = cartons.returnIntoQuarantine(seen.id(), to);
             ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.RECEIPT, row.sku(),
-                    row.lotNumber(), null, to, row.onHand().value(), StockStatus.QUARANTINE, StockStatus.QUARANTINE,
+                    row.lotNumber(), null, to, StockStatus.QUARANTINE, StockStatus.QUARANTINE,
                     StockMovement.ReferenceType.GOODS_RECEIPT, command.receiptId(), null, command.actorId(),
-                    command.receivedAt())
-                    .ofLot(row.lotId()).forOrder(command.orderId()).ofCarton(seen.id()));
+                    command.receivedAt(), seen.id())
+                    .ofLot(row.lotId()).forOrder(command.orderId()));
             stocked.add(seen.id());
             received.add(new ReturnedCarton(seen.id().value(), lpn, skuByLpn.get(lpn), row.lotNumber(),
                     row.onHand().value(), "IN_STOCK", to.code(), null,
@@ -249,10 +249,11 @@ public class CartonReturnService implements CartonReturns {
             // No stock-in entry stands for goods nobody agreed to take back (Q-4): the receipt's line is reversed, the
             // whole carton out of the quarantine area it stands in, naming the return.
             ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.ADJUSTMENT, row.sku(),
-                    row.lotNumber(), carton.location(), null, -change.delta(), StockStatus.QUARANTINE,
+                    row.lotNumber(), carton.location(), null, StockStatus.QUARANTINE,
                     StockStatus.QUARANTINE, StockMovement.ReferenceType.RETURN_REQUEST, returnRequestId,
-                    "Return did not refund these goods: the customer's, held for them (WF-05 Q-4)", actorId, at)
-                    .ofLot(row.lotId()).ofCarton(carton.id()));
+                    "Return did not refund these goods: the customer's, held for them (WF-05 Q-4)", actorId, at,
+                    carton.id())
+                    .ofLot(row.lotId()));
             log.info("Return {}: carton {} ({} x {}) not refunded - out of stock, held for the customer at {}",
                     returnRequestId, carton.lpn(), -change.delta(), row.sku(), carton.location());
         }
