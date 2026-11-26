@@ -140,6 +140,49 @@ class InventoryLevelTest {
     }
 
     @Test
+    @DisplayName("ADR-0011: a line is promised only cartons of its own count, per warehouse and system-wide")
+    void cartonsToPromiseOfOneCount() {
+        // HCM: 10 cartons of 100, 40 of 25, 4 of 50; HN: 2 of 50, one of them held there by SKU.
+        List<StockPackageRepository.Allocatable> free = new java.util.ArrayList<>();
+        java.util.function.BiConsumer<String, int[]> cartons = (location, countAndHowMany) -> {
+            for (int i = 0; i < countAndHowMany[1]; i++) {
+                free.add(new StockPackageRepository.Allocatable(new StockPackageId(java.util.UUID.randomUUID()),
+                        SKU.code(), location, countAndHowMany[0]));
+            }
+        };
+        cartons.accept("HCM-A01-1-01", new int[] {100, 10});
+        cartons.accept("HCM-A01-1-02", new int[] {25, 40});
+        cartons.accept("HCM-A01-1-03", new int[] {50, 4});
+        cartons.accept("HN-A01-2-03", new int[] {50, 2});
+        when(repository.findAllocatable(org.mockito.ArgumentMatchers.anyCollection())).thenReturn(free);
+        when(locations.pickable(org.mockito.ArgumentMatchers.anyCollection())).thenAnswer(c ->
+                c.<java.util.Collection<String>>getArgument(0).stream().collect(java.util.stream.Collectors.toMap(
+                        code -> code, code -> java.util.UUID.randomUUID())));
+        var hold = new com.stockflow.inventory.internal.domain.SkuReservationRepository.HeldCartons("HN", 50, 1);
+        when(skuReservations.heldCartonsOf(SKU.code())).thenReturn(List.of(hold));
+        when(skuReservations.heldCartonsBySku(org.mockito.ArgumentMatchers.anyCollection()))
+                .thenReturn(java.util.Map.of(SKU.code(), List.of(hold)));
+
+        // 2,200 free units at HCM would divide into 44 cartons of 50; only 4 such cartons exist there.
+        assertThat(service.cartonsToPromiseByWarehouse(SKU, 50))
+                .containsExactlyEntriesOf(new java.util.TreeMap<>(java.util.Map.of("HCM", 4, "HN", 1)));
+        assertThat(service.cartonsToPromiseByWarehouse(SKU, 100)).containsExactlyEntriesOf(java.util.Map.of("HCM", 10));
+        assertThat(service.cartonsToPromiseByWarehouse(SKU, 1000)).isEmpty();
+
+        // System-wide, every SKU asked is answered in the order asked: 6 cartons of 50 less the one held.
+        Sku other = new Sku("LY-GIAY-DEMO-16OZ-DO");
+        java.util.Map<Sku, Integer> asked = new java.util.LinkedHashMap<>();
+        asked.put(other, 50);
+        asked.put(SKU, 50);
+        assertThat(service.cartonsToPromise(asked)).containsExactly(
+                java.util.Map.entry(other, 0), java.util.Map.entry(SKU, 5));
+        assertThat(service.cartonsToPromise(java.util.Map.of(SKU, 25))).isEqualTo(java.util.Map.of(SKU, 40));
+        assertThat(service.cartonsToPromise(java.util.Map.of(SKU, 10))).isEqualTo(java.util.Map.of(SKU, 0));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.cartonsToPromiseByWarehouse(SKU, 0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     @DisplayName("ATP of one warehouse ignores the others; an unknown warehouse promises nothing")
     void atpPerWarehouse() {
         when(repository.findLevelLinesBySku(SKU))

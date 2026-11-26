@@ -9,6 +9,7 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
 import org.springframework.stereotype.Repository;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -106,15 +107,25 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
 
     @Override
     public List<HeldCartons> heldCartonsOf(String sku) {
+        return heldCartonsBySku(List.of(sku)).getOrDefault(sku, List.of());
+    }
+
+    @Override
+    public Map<String, List<HeldCartons>> heldCartonsBySku(Collection<String> skus) {
+        if (skus.isEmpty()) {
+            return Map.of();
+        }
         @SuppressWarnings("unchecked")
         List<Object[]> rows = entityManager.createNativeQuery("""
-                        select warehouse_code, units_per_carton, sum(cartons) from inventory.stock_reservation
-                         where sku = :sku and stock_package_id is null and status = 'HELD'
-                         group by warehouse_code, units_per_carton
+                        select sku, warehouse_code, units_per_carton, sum(cartons) from inventory.stock_reservation
+                         where sku in (:skus) and stock_package_id is null and status = 'HELD'
+                         group by sku, warehouse_code, units_per_carton
                         """)
-                .setParameter("sku", sku).getResultList();
-        return rows.stream().map(row -> new HeldCartons((String) row[0], ((Number) row[1]).intValue(),
-                ((Number) row[2]).longValue())).toList();
+                .setParameter("skus", skus).getResultList();
+        Map<String, List<HeldCartons>> held = new HashMap<>();
+        rows.forEach(row -> held.computeIfAbsent((String) row[0], sku -> new ArrayList<>()).add(new HeldCartons(
+                (String) row[1], ((Number) row[2]).intValue(), ((Number) row[3]).longValue())));
+        return held;
     }
 
     @Override

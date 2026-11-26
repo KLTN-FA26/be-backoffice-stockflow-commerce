@@ -18,7 +18,6 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -29,6 +28,7 @@ import java.util.stream.IntStream;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -88,8 +88,8 @@ class StorefrontAvailabilityServiceTest {
 
     @Test
     void wholeCartonsAgainstAThresholdInCartonsInTheOrderAsked() {
-        // CUP: 51 pieces = 5 cartons (at the threshold); BAG: 6 x 24 = 6 cartons; LID: 49 pieces is not one carton.
-        when(inventory.availableToPromise(any(Collection.class))).thenReturn(Map.of(CUP, 51, BAG, 144, LID, 49));
+        // Cartons of each SKU's own size (ADR-0011): CUP 5 (at the threshold), BAG 6, LID none.
+        when(inventory.cartonsToPromise(anyMap())).thenReturn(Map.of(CUP, 5, BAG, 6, LID, 0));
 
         List<SkuAvailability> result = service.availabilityOf(userId,
                 List.of("tui-acme-01", "LY12-ACME-01", " NAP-ACME-01 ", "TUI-ACME-01"));
@@ -98,13 +98,13 @@ class StorefrontAvailabilityServiceTest {
                 new SkuAvailability(BAG, Availability.IN_STOCK),
                 new SkuAvailability(CUP, Availability.LOW_STOCK),
                 new SkuAvailability(LID, Availability.OUT_OF_STOCK));
-        // One call for the whole page, with the duplicate already collapsed.
-        verify(inventory).availableToPromise(new LinkedHashSet<>(List.of(BAG, CUP, LID)));
+        // One call for the whole page, with the duplicate already collapsed, each SKU in its carton's size.
+        verify(inventory).cartonsToPromise(Map.of(BAG, 24, CUP, 10, LID, 50));
     }
 
     @Test
     void aSkuInventoryDoesNotMentionIsOutOfStock() {
-        when(inventory.availableToPromise(any(Collection.class))).thenReturn(Map.of());
+        when(inventory.cartonsToPromise(anyMap())).thenReturn(Map.of());
 
         assertThat(service.availabilityOf(userId, List.of(CUP.code())))
                 .containsExactly(new SkuAvailability(CUP, Availability.OUT_OF_STOCK));
@@ -112,7 +112,7 @@ class StorefrontAvailabilityServiceTest {
 
     @Test
     void onlyTheSkusAskedAreLookedUp() {
-        when(inventory.availableToPromise(any(Collection.class))).thenReturn(Map.of(CUP, 100));
+        when(inventory.cartonsToPromise(anyMap())).thenReturn(Map.of(CUP, 10));
 
         service.availabilityOf(userId, List.of("ly12-acme-01", "LY12-OTHER-01"));
 
@@ -128,11 +128,11 @@ class StorefrontAvailabilityServiceTest {
 
     @Test
     void aMixedRequestAnswersOnlyTheCallersOwnSkus() {
-        when(inventory.availableToPromise(any(Collection.class))).thenReturn(Map.of(CUP, 1_000, THEIRS, 1_000));
+        when(inventory.cartonsToPromise(anyMap())).thenReturn(Map.of(CUP, 100, THEIRS, 100));
 
         assertThat(service.availabilityOf(userId, List.of(THEIRS.code(), CUP.code(), VARIANT.code())))
                 .containsExactly(new SkuAvailability(CUP, Availability.IN_STOCK));
-        verify(inventory).availableToPromise(new LinkedHashSet<>(List.of(CUP)));
+        verify(inventory).cartonsToPromise(Map.of(CUP, 10));
     }
 
     @Test
@@ -141,11 +141,11 @@ class StorefrontAvailabilityServiceTest {
         declared.put(CUP.code(), List.<UomConversion>of());
         declared.put(BAG.code(), List.of(unit(BAG, "BOX", 12, true),
                 unit(BAG, "CARTON", 24, true)));
-        when(inventory.availableToPromise(any(Collection.class))).thenReturn(Map.of(LID, 500));
+        when(inventory.cartonsToPromise(anyMap())).thenReturn(Map.of(LID, 10));
 
         assertThat(service.availabilityOf(userId, List.of(CUP.code(), BAG.code(), LID.code())))
                 .containsExactly(new SkuAvailability(LID, Availability.IN_STOCK));
-        verify(inventory).availableToPromise(new LinkedHashSet<>(List.of(LID)));
+        verify(inventory).cartonsToPromise(Map.of(LID, 50));
     }
 
     @Test

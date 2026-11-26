@@ -328,6 +328,58 @@ class InventoryServiceImpl implements InventoryService {
         return byWarehouse;
     }
 
+    /** {@inheritDoc} Worked out as {@link #cartonsToPromiseAt} is, for every warehouse at once. */
+    @Override
+    @Transactional(readOnly = true)
+    public Map<String, Integer> cartonsToPromiseByWarehouse(Sku sku, int unitsPerCarton) {
+        requireCount(sku, unitsPerCarton);
+        Map<String, Integer> byWarehouse = new TreeMap<>();
+        cartonsToPromiseByWarehouseAndCount(sku, new PickableStock(stockPackages, locations, cycleCounts))
+                .forEach((warehouse, byCount) -> {
+                    long cartons = byCount.getOrDefault(unitsPerCarton, 0L);
+                    if (cartons > 0) {
+                        byWarehouse.put(warehouse, Math.toIntExact(cartons));
+                    }
+                });
+        return byWarehouse;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The system-wide figure of {@link #cartonsToPromiseAt}, per SKU: free cartons of the count over every
+     * warehouse less every live hold of that count, at a warehouse or (a hold of before 4B-7) at none. Two reads for
+     * all the SKUs, whatever their number.</p>
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public Map<Sku, Integer> cartonsToPromise(Map<Sku, Integer> unitsPerCarton) {
+        unitsPerCarton.forEach((sku, count) -> requireCount(sku, count == null ? 0 : count));
+        List<String> codes = unitsPerCarton.keySet().stream().map(Sku::code).distinct().toList();
+        if (codes.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Map<Integer, Long>> free = new PickableStock(stockPackages, locations, cycleCounts)
+                .allocatableCartonsBySkuAndCount(codes);
+        Map<String, List<SkuReservationRepository.HeldCartons>> held = skuReservations.heldCartonsBySku(codes);
+        Map<Sku, Integer> result = new LinkedHashMap<>();
+        unitsPerCarton.forEach((sku, count) -> {
+            long freeOfCount = free.getOrDefault(sku.code(), Map.of()).getOrDefault(count, 0L);
+            long heldOfCount = held.getOrDefault(sku.code(), List.of()).stream()
+                    .filter(hold -> hold.unitsPerCarton() == count)
+                    .mapToLong(SkuReservationRepository.HeldCartons::cartons).sum();
+            result.put(sku, Math.toIntExact(Math.max(0, freeOfCount - heldOfCount)));
+        });
+        return result;
+    }
+
+    private static void requireCount(Sku sku, int unitsPerCarton) {
+        if (unitsPerCarton < 1) {
+            throw new IllegalArgumentException("A count of cartons of %s must be at least 1: %d"
+                    .formatted(sku, unitsPerCarton));
+        }
+    }
+
     /**
      * {@inheritDoc}
      *
@@ -586,6 +638,18 @@ class InventoryServiceImpl implements InventoryService {
      * left of that count system-wide - summed over the counts. Absent keys mean none.
      */
     private Map<String, Integer> atpCartonsByWarehouse(Sku sku, PickableStock pickable) {
+        Map<String, Integer> atp = new TreeMap<>();
+        cartonsToPromiseByWarehouseAndCount(sku, pickable).forEach((warehouse, byCount) -> atp.put(warehouse,
+                Math.toIntExact(byCount.values().stream().mapToLong(Long::longValue).sum())));
+        return atp;
+    }
+
+    /**
+     * Per warehouse code and count, the cartons still to promise: for each count of the SKU's free cartons, what
+     * {@link #cartonsToPromiseAt} gives. One computation for the levels' ATP in cartons (the counts summed) and for a
+     * line's options ({@link #cartonsToPromiseByWarehouse}, one count). Absent keys mean none.
+     */
+    private Map<String, Map<Integer, Long>> cartonsToPromiseByWarehouseAndCount(Sku sku, PickableStock pickable) {
         Map<String, Map<Integer, Long>> free = pickable.allocatableCartonsByWarehouseAndCount(sku);
         Map<Integer, Long> freeSystemWide = new TreeMap<>();
         free.values().forEach(byCount -> byCount.forEach((count, n) -> freeSystemWide.merge(count, n, Long::sum)));
@@ -598,18 +662,18 @@ class InventoryServiceImpl implements InventoryService {
                         .merge(hold.unitsPerCarton(), hold.cartons(), Long::sum);
             }
         }
-        Map<String, Integer> atp = new TreeMap<>();
+        Map<String, Map<Integer, Long>> toPromise = new TreeMap<>();
         free.forEach((warehouse, byCount) -> {
-            long total = 0;
+            Map<Integer, Long> here = new TreeMap<>();
             for (Map.Entry<Integer, Long> entry : byCount.entrySet()) {
                 int count = entry.getKey();
-                long here = entry.getValue() - held.getOrDefault(warehouse, Map.of()).getOrDefault(count, 0L);
+                long unheld = entry.getValue() - held.getOrDefault(warehouse, Map.of()).getOrDefault(count, 0L);
                 long systemWide = freeSystemWide.get(count) - heldSystemWide.getOrDefault(count, 0L);
-                total += Math.max(0, Math.min(here, systemWide));
+                here.put(count, Math.max(0, Math.min(unheld, systemWide)));
             }
-            atp.put(warehouse, Math.toIntExact(total));
+            toPromise.put(warehouse, here);
         });
-        return atp;
+        return toPromise;
     }
 
     /**
