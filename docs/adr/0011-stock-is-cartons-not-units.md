@@ -117,6 +117,11 @@ its own:
      then held for fewer cartons than the units suggest, and `ShippingWarehouseService.giveUpUncovered` may cut a hold
      of a covered count before it reaches the short one. A line with no `units_per_carton` (the legacy redelivery
      path counts it one piece a carton) is held only from cartons of 1.
+     Since lifted where a line's cartons are promised: `SkuHoldCover` gives the free cartons per count and
+     `giveUpUncovered` cuts only holds of the short count; the shipping-warehouse options and the storefront stock
+     indicator ask `inventory :: api` for the cartons of the line's (or the SKU's) own count
+     (`cartonsToPromiseByWarehouse`, `cartonsToPromise`) instead of dividing units of every count by it. The unit
+     figures `availableToPromise*` stay sums over every count, which is what they say.
    * **3d, the carton is the stock** - done, `V20261231000600`: `stock_item`, `on_hand`, `reserved` and the view
      `stock_package_balance` are dropped. `stock_package` carries `stock_status` (set exactly while `IN_STOCK`,
      `ck_stock_package_stock_status`), `lot_id` (required once it has been in stock, `ck_stock_package_lot`) and

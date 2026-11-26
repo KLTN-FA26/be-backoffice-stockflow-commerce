@@ -101,6 +101,16 @@ final class PickableStock {
     }
 
     /**
+     * The cartons of several SKUs a release could allocate over every warehouse, per SKU code and count (ADR-0011): the
+     * cartons of {@link #allocatableBySku}, counted, for a figure promised in cartons of one count. Absent keys mean
+     * none.
+     */
+    Map<String, Map<Integer, Long>> allocatableCartonsBySkuAndCount(Collection<String> skus) {
+        return allocatable(skus).stream().collect(Collectors.groupingBy(StockPackageRepository.Allocatable::sku,
+                Collectors.groupingBy(StockPackageRepository.Allocatable::units, Collectors.counting())));
+    }
+
+    /**
      * WF4-COUNT-EDGE (a): the whole free cartons of {@code sku} on pickable, usable locations of {@code warehouseCode},
      * how many of each count - {@link #allocatableByWarehouse}'s, with the cartons a recount has frozen counted in: a
      * carton whose count is still pending is in doubt, not missing, and covers a hold until its own variance is decided.

@@ -199,6 +199,11 @@ public class ShippingWarehouseService {
      * The warehouses the order may ship from (17 §4.2 step 2), in the order C3 and 17 §4.2 step 2 suggest them
      * ({@link #RANKING}).
      *
+     * <p>A line is offered the cartons of its own count each warehouse can still promise
+     * ({@code cartonsToPromiseByWarehouse}), the figure the hold is taken against (ADR-0011): free cartons of another
+     * count never serve it, and their units divided by the line's count would show a warehouse as covering a line it
+     * cannot hold.</p>
+     *
      * @throws BusinessException {@code NOT_FOUND}; {@code ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED} for an order not of a
      *         contract
      */
@@ -207,9 +212,11 @@ public class ShippingWarehouseService {
         Order order = read(orderId);
         requireContract(order);
         List<OrderLine> lines = cartonLines(order);
+        // Cartons to promise by (SKU, count), then by warehouse: two lines of one SKU in one count ask once.
         Map<String, Map<String, Integer>> atp = new HashMap<>();
         for (OrderLine line : lines) {
-            atp.computeIfAbsent(line.sku().code(), sku -> inventory.availableToPromiseByWarehouse(new Sku(sku)));
+            atp.computeIfAbsent(atpKey(line), key -> inventory.cartonsToPromiseByWarehouse(line.sku(),
+                    line.unitsPerCarton()));
         }
         // What the order holds already is available to it at its shipping warehouse, though no longer to others.
         Map<UUID, Integer> own = heldUnitsByLine(order);
@@ -227,9 +234,9 @@ public class ShippingWarehouseService {
         List<Option> options = new ArrayList<>();
         for (WarehouseDirectory.Warehouse warehouse : active) {
             List<LineAvailability> availability = lines.stream().map(line -> new LineAvailability(line.id(),
-                    line.sku().code(), line.cartons(), (atp.get(line.sku().code()).getOrDefault(warehouse.code(), 0)
-                    + (warehouse.code().equals(chosen) ? own.getOrDefault(line.id(), 0) : 0))
-                    / line.unitsPerCarton())).toList();
+                    line.sku().code(), line.cartons(), atp.get(atpKey(line)).getOrDefault(warehouse.code(), 0)
+                    + (warehouse.code().equals(chosen) ? own.getOrDefault(line.id(), 0) / line.unitsPerCarton() : 0)))
+                    .toList();
             boolean every = availability.stream().allMatch(a -> a.availableCartons() >= a.cartons());
             int cartons = availability.stream().mapToInt(a -> Math.min(a.availableCartons(), a.cartons())).sum();
             options.add(option(warehouse, every, cartons, availability, boards.get(warehouse.id()), production,
@@ -237,6 +244,10 @@ public class ShippingWarehouseService {
         }
         options.sort(RANKING);
         return new Options(orderId, order.shippingWarehouseId(), true, options);
+    }
+
+    private static String atpKey(OrderLine line) {
+        return line.sku().code() + "/" + line.unitsPerCarton();
     }
 
     /**
