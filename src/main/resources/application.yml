@@ -738,10 +738,11 @@ stockflow:
     # @RequiresPermission is silently unenforced, which is worse than either being off.
     # Default is ON. Switch it off per profile, never here.
     enabled: true
-    # How long a sign-in lasts (ISO-8601, at most 24h). Each token has a server-side session that
+    # How long a sign-in lasts (ISO-8601, at most 7 days). Each token has a server-side session that
     # logout, "sign out other devices", a password change and a role change end immediately, so this
     # only bounds how long an abandoned or stolen device keeps working. Changing it affects tokens
-    # issued from then on; existing ones keep the lifetime they were signed with.
+    # issued from then on; existing ones keep the lifetime they were signed with. Every profile keeps this
+    # working-day default (kltn-docs 00: 8 hours) except dev, the shared staging server, which sets P7D.
     token-ttl: PT8H
     jwt:
       # The RSA key tokens are signed with (JwtSigningKey). key-path: a PKCS#8 PEM file, generated and written there

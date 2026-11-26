@@ -107,7 +107,12 @@ import java.util.Locale;
 @Transactional
 class IdentityServiceImpl implements IdentityService {
 
-    private static final Duration MAX_TOKEN_TTL = Duration.ofHours(24);
+    /**
+     * The longest sign-in the application accepts. The default (and prod) is 8 hours; the shared dev/staging server
+     * runs a week ({@code application-dev.yml}) so the team and the supervisor are not signed out mid-demo. Anything
+     * longer is refused at startup.
+     */
+    private static final Duration MAX_TOKEN_TTL = Duration.ofDays(7);
 
     /** The right to edit the matrix itself. Some role must always keep it. */
     private static final PermissionCode MANAGE_PERMISSIONS = PermissionCode.of("identity-rbac", Action.APPROVE);
@@ -141,7 +146,8 @@ class IdentityServiceImpl implements IdentityService {
     /**
      * How long a token, and its session, lives. It was a fixed hour because nothing could end a token
      * early; now that a session can be revoked (logout, password change, role change) the lifetime
-     * only bounds how long an abandoned or stolen device keeps working, so it can be a working day.
+     * only bounds how long an abandoned or stolen device keeps working, so it can be a working day
+     * (the default, {@code PT8H}) or, on the shared dev/staging server, a week ({@code P7D}).
      * Configured by {@code stockflow.security.token-ttl}.
      */
     private final Duration tokenTtl;
@@ -163,7 +169,7 @@ class IdentityServiceImpl implements IdentityService {
         if (tokenTtl == null || tokenTtl.isZero() || tokenTtl.isNegative()
                 || tokenTtl.compareTo(MAX_TOKEN_TTL) > 0) {
             throw new IllegalArgumentException(
-                    "stockflow.security.token-ttl must be positive and at most 24h, got " + tokenTtl);
+                    "stockflow.security.token-ttl must be positive and at most 7 days (P7D), got " + tokenTtl);
         }
         this.roles = roles;
         this.permissions = permissions;
