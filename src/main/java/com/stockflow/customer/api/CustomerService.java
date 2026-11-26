@@ -40,6 +40,14 @@ public interface CustomerService {
      */
     java.util.Map<UUID, CustomerLabel> labels(java.util.Collection<UUID> customerIds);
 
+    /**
+     * The province of each of these customers' default SHIPPING address (kltn-docs 18: one default per address type),
+     * in one query: a page of the customer list tells same-named customers apart without a call per row. A customer
+     * with no shipping address, and an unknown id, is absent; null or empty in, empty out. The caller decides whether
+     * its user may read addresses ({@code customer-addresses:READ}): this answers for any customer asked about.
+     */
+    java.util.Map<UUID, String> defaultShippingProvinceNames(java.util.Collection<UUID> customerIds);
+
     Optional<CustomerSummary> findByUserId(UUID userId);
 
     PageResponse<CustomerSummary> list(ListCustomersQuery query);

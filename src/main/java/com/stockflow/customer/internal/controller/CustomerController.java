@@ -14,6 +14,7 @@ import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.customer.api.ChangeCustomerStatusCommand;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerStatusEntry;
+import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.customer.api.ListCustomersQuery;
 import com.stockflow.customer.api.UpdateCustomerCommand;
 import com.stockflow.customer.internal.controller.dto.ChangeCustomerStatusRequest;
@@ -30,6 +31,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @RestController
@@ -120,7 +122,14 @@ class CustomerController {
         requireStaff(user);
         var query = new ListCustomersQuery(page, size == null ? Pages.DEFAULT_PAGE_SIZE : size,
                 search, status, sort, segmentId);
-        return ApiResponse.ok(customers.list(query).map(CustomerWebMapper::toMaskedResponse));
+        var rows = customers.list(query);
+        // The province is an address fact: only a caller who may read addresses is told it, so this list shows no more
+        // than GET /customers/{id}/addresses would (customer-addresses:READ).
+        Map<UUID, String> provinces = user.can(CustomerResources.ADDRESSES, Action.READ) && !rows.items().isEmpty()
+                ? customers.defaultShippingProvinceNames(rows.items().stream()
+                        .map(CustomerSummary::customerId).toList())
+                : Map.of();
+        return ApiResponse.ok(rows.map(row -> CustomerWebMapper.toListRow(row, provinces.get(row.customerId()))));
     }
 
     @GetMapping("/{customerId}")

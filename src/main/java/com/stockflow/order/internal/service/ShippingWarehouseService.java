@@ -129,9 +129,13 @@ public class ShippingWarehouseService {
                                 List<LineCoverage> lines) {
     }
 
-    /** Where an order's stock stands at its shipping warehouse: per line, and per delivery batch. */
-    public record Coverage(UUID orderId, UUID warehouseId, String warehouseCode, boolean fullyHeld,
-                           List<LineCoverage> lines, List<BatchCoverage> batches) {
+    /**
+     * Where an order's stock stands at its shipping warehouse: per line, and per delivery batch. {@code warehouseName}
+     * names {@code warehouseId} next to its code, so the order card can say "Kho Hà Nội" and not only "HAN" without
+     * reading the warehouse list; null where {@code warehouseCode} is.
+     */
+    public record Coverage(UUID orderId, UUID warehouseId, String warehouseCode, String warehouseName,
+                           boolean fullyHeld, List<LineCoverage> lines, List<BatchCoverage> batches) {
     }
 
     /** The delivery batch an order delivers next, and whether every carton of it is held (4A-6). */
@@ -327,7 +331,7 @@ public class ShippingWarehouseService {
                 }
             }
         }
-        return coverageOf(order, warehouse.code());
+        return coverageOf(order, warehouse);
     }
 
     /**
@@ -979,12 +983,12 @@ public class ShippingWarehouseService {
     public Coverage coverage(UUID orderId) {
         Order order = read(orderId);
         requireContract(order);
-        String code = order.shippingWarehouseId() == null ? null
-                : warehouses.codeOf(order.shippingWarehouseId()).orElse(null);
-        return coverageOf(order, code);
+        WarehouseDirectory.Warehouse warehouse = order.shippingWarehouseId() == null ? null
+                : warehouses.find(order.shippingWarehouseId()).orElse(null);
+        return coverageOf(order, warehouse);
     }
 
-    private Coverage coverageOf(Order order, String warehouseCode) {
+    private Coverage coverageOf(Order order, WarehouseDirectory.Warehouse warehouse) {
         Map<UUID, Integer> held = securedUnitsByLine(order);
         List<OrderLine> lines = cartonLines(order);
         Map<UUID, Integer> heldCartons = new HashMap<>();
@@ -1041,7 +1045,8 @@ public class ShippingWarehouseService {
             perLine = perLineFromBatches(perLine, batches);
         }
         List<LineCoverage> lineCover = perLine;
-        return new Coverage(order.id().value(), order.shippingWarehouseId(), warehouseCode,
+        return new Coverage(order.id().value(), order.shippingWarehouseId(),
+                warehouse == null ? null : warehouse.code(), warehouse == null ? null : warehouse.name(),
                 lineCover.stream().allMatch(l -> l.shortCartons() == 0), lineCover, batches);
     }
 

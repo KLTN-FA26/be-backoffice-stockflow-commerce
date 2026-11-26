@@ -305,13 +305,22 @@ class LoadPlanIntegrationTest {
         // Every shipping carton is a picked LPN carton (4C-6, 4C-7): order A has two, order B one.
         OrderSummary orderA = ftlOrder(2);
         OrderSummary orderB = ftlOrder(1);
+        // The orders of these fixtures carry no delivery address; give them one before the first label locks it (17 BR-16).
+        for (OrderSummary order : List.of(orderA, orderB)) {
+            tx.executeWithoutResult(s -> jdbc.update("""
+                    UPDATE ordering.customer_order
+                       SET shipping_recipient_name = 'Lê Quốc Việt', shipping_phone = '+84901000003',
+                           shipping_line1 = '88 Hai Bà Trưng', shipping_ward_code = '27139',
+                           shipping_ward_name = 'Phường Tân Định', shipping_province_code = '79',
+                           shipping_province_name = 'Thành phố Hồ Chí Minh', shipping_country_code = 'VN'
+                     WHERE id = ?""", order.orderId()));
+        }
         // The coordinator's advisory estimate of order A before packing (PR EST); order B has none.
         String estimateId = data(oc(body(post(BASE + "/load-estimates"), "{\"sources\":[{\"type\":\"ORDER\",\"id\":\""
                 + orderA.orderId() + "\"}],\"vehicleTypeIds\":[\"" + truck5t + "\"]}")).andExpect(status().isCreated()))
                 .path("id").asText();
         UUID shipmentA = packed(orderA)[0];
         UUID shipmentB = packed(orderB)[0];
-
         // Candidates: whole shipments waiting for dispatch with their cartons, sizes in mm (LP-5, LP2-1).
         JsonNode candidates = data(dispatch(get(BASE + "/load-plan-candidates?warehouseId=" + HCM))
                 .andExpect(status().isOk()));
@@ -320,6 +329,21 @@ class LoadPlanIntegrationTest {
         assertThat(byShipment).containsKeys(shipmentA.toString(), shipmentB.toString());
         assertThat(byShipment.get(shipmentA.toString()).path("packageCount").asInt()).isEqualTo(2);
         assertThat(byShipment.get(shipmentA.toString()).path("allowPartialShipment").asBoolean()).isFalse();
+        // What a dispatcher knows the shipment by (S16-2, S16-4): the customer, the delivery province and the product
+        // next to its SKU - the same facts the delivery note of the shipment shows.
+        String customerName = jdbc.queryForObject("SELECT full_name FROM customer.customer WHERE id = ?",
+                String.class, DemoData.CUSTOMER_ID);
+        String sku = cupOf(DemoData.CUSTOMER_ID).sku();
+        String productName = jdbc.queryForObject("SELECT name FROM product.variants WHERE sku = ?", String.class, sku);
+        for (UUID shipment : List.of(shipmentA, shipmentB)) {
+            JsonNode candidate = byShipment.get(shipment.toString());
+            assertThat(candidate.path("customerName").asText()).isEqualTo(customerName);
+            assertThat(candidate.path("deliveryProvinceName").asText()).isEqualTo("Thành phố Hồ Chí Minh");
+            candidate.path("packages").forEach(parcel -> {
+                assertThat(parcel.path("partName").asText()).isEqualTo(sku);
+                assertThat(parcel.path("productName").asText()).isEqualTo(productName).isNotBlank();
+            });
+        }
         JsonNode bigCarton = byShipment.get(shipmentB.toString()).path("packages").get(0);
         assertThat(bigCarton.path("lengthMm").asInt()).isEqualTo(2150);
         assertThat(bigCarton.path("widthMm").asInt()).isEqualTo(950);
@@ -331,6 +355,7 @@ class LoadPlanIntegrationTest {
         assertThat(plan.path("status").asText()).isEqualTo("DRAFT");
         assertThat(plan.path("code").asText()).startsWith("LP-");
         assertThat(plan.path("packageCount").asInt()).isEqualTo(3);
+        plan.path("packages").forEach(parcel -> assertThat(parcel.path("productName").asText()).isEqualTo(productName));
         assertThat(create(createBody(requestId, List.of(shipmentA, shipmentB), List.of(truck5t)))
                 .path("loadPlanId").asText()).isEqualTo(plan.path("loadPlanId").asText());
         String id = plan.path("loadPlanId").asText();

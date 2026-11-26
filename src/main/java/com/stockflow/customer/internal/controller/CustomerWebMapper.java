@@ -40,6 +40,13 @@ final class CustomerWebMapper {
         return toResponse(summary, maskTaxCode(summary.taxCode()));
     }
 
+    /** A row of the staff list: masked tax code, and the province of the default shipping address if it is known. */
+    static CustomerResponse toListRow(CustomerSummary summary, String defaultShippingProvinceName) {
+        return new CustomerResponse(summary.customerId(), summary.userId(), summary.fullName(),
+                summary.email(), summary.phone(), maskTaxCode(summary.taxCode()), summary.segmentId(),
+                summary.status(), summary.version(), summary.createdAt(), defaultShippingProvinceName);
+    }
+
     private static CustomerResponse toResponse(CustomerSummary summary, String taxCode) {
         return new CustomerResponse(summary.customerId(), summary.userId(), summary.fullName(),
                 summary.email(), summary.phone(), taxCode, summary.segmentId(), summary.status(),
