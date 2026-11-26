@@ -1,0 +1,11 @@
+HTTP/1.1 200 
+{
+ "success": true,
+ "data": {
+  "accessToken": "<redacted>",
+  "tokenType": "Bearer",
+  "expiresInSeconds": 28800,
+  "mustChangePassword": false
+ },
+ "timestamp": "2026-11-26T07:34:49.752527Z"
+}

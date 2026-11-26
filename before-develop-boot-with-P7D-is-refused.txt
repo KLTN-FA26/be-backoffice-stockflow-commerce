@@ -1,0 +1,1 @@
+Caused by: java.lang.IllegalArgumentException: stockflow.security.token-ttl must be positive and at most 24h, got PT168H

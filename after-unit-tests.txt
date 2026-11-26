@@ -1,0 +1,6 @@
+[INFO] Running com.stockflow.identity.internal.service.IdentitySessionServiceTest
+[INFO] Tests run: 19, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.802 s -- in com.stockflow.identity.internal.service.IdentitySessionServiceTest
+[INFO] Running com.stockflow.identity.internal.service.TokenTtlProfilesTest
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.312 s -- in com.stockflow.identity.internal.service.TokenTtlProfilesTest
+[INFO] Tests run: 22, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
