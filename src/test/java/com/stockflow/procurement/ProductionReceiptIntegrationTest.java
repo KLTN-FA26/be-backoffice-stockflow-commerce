@@ -232,7 +232,7 @@ class ProductionReceiptIntegrationTest {
 
     /**
      * A customer SKU as the design approval leaves it, made to a design the customer really confirmed, packed in its
-     * catalogue variant's CARTON of 50 (owner decision Q1, V20261231000700: the carton is the variant's, the customer's
+     * catalogue variant's CARTON of 50 (owner decision Q1, V20270104000100: the carton is the variant's, the customer's
      * SKU has none of its own).
      */
     private IssuedSku issueSku() throws Exception {

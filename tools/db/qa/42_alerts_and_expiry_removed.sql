@@ -152,7 +152,7 @@ SELECT pg_temp.expect_ok('AE20 a lot of the red cup', $q$
 -- AE23, AE24 (a stock row without a lot id finds the untraced lot of its SKU, number and receipt time) and AE25 (a row
 -- put in a lot of another lot number) were tg_stock_item_lot: a carton has no lot number of its own, so there is nothing
 -- to resolve a lot from or to disagree with it - the application names the lot (StockLots.openUntraced).
--- The red cup's carton of 500 is, since V20261231000700, a retired carton of the cup's variant (its stock keeps it):
+-- The red cup's carton of 500 is, since V20270104000100, a retired carton of the cup's variant (its stock keeps it):
 -- it is made the variant's active carton again for these cartons, as a person would before receiving in it (BR-03: one
 -- active at a time).
 UPDATE inventory.uom_conversions SET active = FALSE

@@ -63,7 +63,7 @@ public class InventoryPolicyRepository {
 
     /**
      * One inventory item, its logistics and the version, as they stood together, and the catalogue variant whose
-     * carton it is packed in ({@code variant_id}, V20261231000700).
+     * carton it is packed in ({@code variant_id}, V20270104000100).
      */
     public record ItemRow(java.util.UUID id, String sku, long version, ItemLogistics logistics, UUID variantId) {
     }

@@ -132,7 +132,7 @@ class LooseStockToCartonsIntegrationTest {
         all.addAll(quarantined);
         assertThat(all).extracting(c -> c.path("lpn").asText()).allMatch(lpn -> lpn.matches(LPN))
                 .doesNotHaveDuplicates();
-        // Q1 (V20261231000700): both cups are packed in their variant's one carton of 1,000 from now on; the red cup's
+        // Q1 (V20270104000100): both cups are packed in their variant's one carton of 1,000 from now on; the red cup's
         // cartons of 500 stay what they were counted in, a retired carton kept as history (BR-10).
         assertThat(cartonUnitFactors()).isEqualTo(Map.of(STOCKED, STOCKED_PER_CARTON, QUARANTINED, STOCKED_PER_CARTON));
         Map<String, Integer> perSku = Map.of(STOCKED, STOCKED_PER_CARTON, QUARANTINED, QUARANTINED_PER_CARTON);

@@ -63,7 +63,7 @@ class StockPackageSchemaMigrationTest {
         return id;
     }
 
-    /** The catalogue variant whose cartons an item is packed in (owner decision Q1, V20261231000700). */
+    /** The catalogue variant whose cartons an item is packed in (owner decision Q1, V20270104000100). */
     private static String variantOf(String item) {
         return "(SELECT variant_id FROM inventory.inventory_items WHERE id = " + item + ")";
     }

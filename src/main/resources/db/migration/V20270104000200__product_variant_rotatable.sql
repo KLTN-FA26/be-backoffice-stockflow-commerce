@@ -1,7 +1,7 @@
 -- Whether a carton may be turned belongs to the catalogue variant (owner decision Q9 of 2026-11-26).
 --
 -- inventory.inventory_items.rotatable was copied onto every customer's SKU at design approval with the carton
--- (ItemSpecificationsImpl.copy), and with the carton now the variant's (V20261231000700) the item has nothing left to
+-- (ItemSpecificationsImpl.copy), and with the carton now the variant's (V20270104000100) the item has nothing left to
 -- say about it. product.variants.rotatable takes the value of the variant's own item; inventory reads it through
 -- inventory :: spi (no cross-schema JOIN in application code), and the bin-fit trigger reads it directly.
 
@@ -12,7 +12,7 @@ UPDATE product.variants v
   FROM inventory.inventory_items i
  WHERE i.sku = v.sku;
 
-COMMENT ON COLUMN product.variants.rotatable IS 'Whether a carton of this variant may be turned any of 6 ways when a truck is loaded, and on the horizontal to fit a bin (kltn-docs 01, 06 BR-01; owner decision Q9). Every SKU of the variant follows it (V20261231000800).';
+COMMENT ON COLUMN product.variants.rotatable IS 'Whether a carton of this variant may be turned any of 6 ways when a truck is loaded, and on the horizontal to fit a bin (kltn-docs 01, 06 BR-01; owner decision Q9). Every SKU of the variant follows it (V20270104000200).';
 
 CREATE OR REPLACE FUNCTION inventory.check_stock_package_fits_bin() RETURNS trigger
     LANGUAGE plpgsql

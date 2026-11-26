@@ -44,7 +44,7 @@ END $$;
 
 \echo '--- live stock carries a lot: every SKU, configured or not'
 -- One carton of 5 for both SKUs. 01 BR-03: a variant has ONE active carton, and both cups are packed in their
--- variant's (V20261231000700); the demo seed's own is retired.
+-- variant's (V20270104000100); the demo seed's own is retired.
 UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND variant_id = (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
 INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor)

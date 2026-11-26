@@ -153,7 +153,7 @@ public final class CustomerSkuRows {
 
     /**
      * A SKU of {@code customerId} that handles like the catalogue SKU {@code like}: its variant turns the same way
-     * (rotatable, on the variant since V20261231000800), its carton has the same size and weight, and it has a barcode
+     * (rotatable, on the variant since V20270104000200), its carton has the same size and weight, and it has a barcode
      * of its own. The SKU is issued on a product of its own, so its variant's carton is set here and no other SKU's.
      * What a test of picking, packing or loading needs since every order is a contract's, whose lines are only ever the
      * customer's own SKUs (14 BR-04): the demo catalogue's goods, as the customer's.

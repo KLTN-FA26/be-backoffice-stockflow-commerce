@@ -51,7 +51,7 @@ public class VariantJpaEntity extends BaseEntity {
     private Instant obsoletedAt;
 
     /**
-     * Whether a carton of this variant may be turned (owner decision Q9, V20261231000800): every SKU of the variant is
+     * Whether a carton of this variant may be turned (owner decision Q9, V20270104000200): every SKU of the variant is
      * packed in its carton, so inventory and the load planner ask the variant, through {@code inventory :: spi}.
      */
     @Column(name = "rotatable", nullable = false)

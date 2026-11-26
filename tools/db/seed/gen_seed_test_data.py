@@ -524,7 +524,7 @@ def design(key, cust, blank, name, status, when, project=None):
 def customer_sku(cust, blank, suffix, name, when, project=None):
     """The customer's own SKU drawn on the blank once its design is approved (kltn-docs 12 §4.5, 01 BR-03), sold and
     stocked in its blank's carton: the carton is the catalogue variant's, declared once and shared by every customer
-    SKU drawn on it (owner decision Q1, V20261231000700)."""
+    SKU drawn on it (owner decision Q1, V20270104000100)."""
     v = VARIANT[blank]
     sku = f"{blank}-{suffix}"
     d = design("d:" + sku, cust, blank, name, "APPROVED", when, project)

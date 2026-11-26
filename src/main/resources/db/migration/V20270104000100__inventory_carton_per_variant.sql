@@ -35,7 +35,7 @@ ALTER TABLE inventory.inventory_items ALTER COLUMN variant_id SET NOT NULL;
 ALTER TABLE inventory.inventory_items
     ADD CONSTRAINT fk_inventory_items_carton_variant FOREIGN KEY (variant_id) REFERENCES product.variants(id);
 CREATE INDEX ix_inventory_items_variant ON inventory.inventory_items (variant_id);
-COMMENT ON COLUMN inventory.inventory_items.variant_id IS 'The catalogue variant whose carton this SKU is packed in: the source variant of a customer''s SKU, the variant itself for a catalogue variant (V20261231000700). Never changes.';
+COMMENT ON COLUMN inventory.inventory_items.variant_id IS 'The catalogue variant whose carton this SKU is packed in: the source variant of a customer''s SKU, the variant itself for a catalogue variant (V20270104000100). Never changes.';
 
 CREATE FUNCTION inventory.guard_item_variant_change() RETURNS trigger
     LANGUAGE plpgsql
@@ -126,7 +126,7 @@ ALTER TABLE inventory.uom_conversions
     ADD CONSTRAINT uk_uom_conversions_unit UNIQUE (variant_id, unit_of_measure);
 CREATE UNIQUE INDEX uk_uom_conversions_one_carton ON inventory.uom_conversions (variant_id) WHERE active;
 
-COMMENT ON TABLE inventory.uom_conversions IS 'The cartons of a catalogue variant (kltn-docs 01 BR-03; owner decision Q1 of 2026-11-26): pieces per carton (factor), size and full weight. Every SKU of the variant - its customers'' SKUs included - is packed in its one active carton; retired ones are kept for the documents and cartons that counted in them (BR-10). Keyed by variant since V20261231000700.';
+COMMENT ON TABLE inventory.uom_conversions IS 'The cartons of a catalogue variant (kltn-docs 01 BR-03; owner decision Q1 of 2026-11-26): pieces per carton (factor), size and full weight. Every SKU of the variant - its customers'' SKUs included - is packed in its one active carton; retired ones are kept for the documents and cartons that counted in them (BR-10). Keyed by variant since V20270104000100.';
 COMMENT ON COLUMN inventory.uom_conversions.variant_id IS 'The catalogue variant (never a customer''s SKU, tg_uom_conversions_catalogue_variant). Never changes once a document counts in the carton.';
 
 -- 4. Checks, now by variant -----------------------------------------------------------------------------------------

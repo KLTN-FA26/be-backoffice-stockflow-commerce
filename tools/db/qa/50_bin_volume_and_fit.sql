@@ -40,7 +40,7 @@ END $$;
 -- Fixtures: a carton unit of the blue cup measuring 60 x 50 x 40 cm and one nobody measured (the demo's own carton
 -- unit has its size since V20261128000100), the same 60 x 50 x 40 cm carton for the grey paper box, another catalogue
 -- variant, made one that may not be turned where the blue cup's may be (rotatable is the variant's since
--- V20261231000800, and a carton is its variant's since V20261231000700: the red cup shares the blue one's), each of its
+-- V20270104000200, and a carton is its variant's since V20270104000100: the red cup shares the blue one's), each of its
 -- variant's count (1,000 and 500),
 -- and two small bins on a new level of B01: N (0.55 x 0.55, too narrow either way) and T (0.6 wide x 0.5 long: only a
 -- carton turned on the horizontal fits), both on a level 0.45 m clear.

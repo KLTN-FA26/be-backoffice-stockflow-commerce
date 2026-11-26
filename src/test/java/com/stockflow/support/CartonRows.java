@@ -16,7 +16,7 @@ import java.util.UUID;
  * Written as rows, for a test whose subject is not receiving: the way
  * a receipt makes them is {@code ReceivingPackagesIntegrationTest}'s. The SKU's inventory item must exist.
  *
- * <p>A carton is its catalogue variant's (owner decision Q1, V20261231000700): every helper finds or makes the carton
+ * <p>A carton is its catalogue variant's (owner decision Q1, V20270104000100): every helper finds or makes the carton
  * on the variant of the SKU's item ({@code inventory_items.variant_id}), so a customer's SKU and its variant share it,
  * and a carton made "for" a customer's SKU is its variant's.</p>
  */

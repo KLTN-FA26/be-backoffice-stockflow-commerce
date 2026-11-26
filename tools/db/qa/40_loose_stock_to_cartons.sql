@@ -143,7 +143,7 @@ SELECT pg_temp.expect_fail_by('LC13 a STATUS_CHANGE that changes no status', 'ck
 
 \echo '--- every unit has a lot (20 BR-22): a carton in stock names one'
 -- 01 BR-03: a variant has ONE active carton, and the blue and the red cup are packed in their variant's
--- (V20261231000700). The demo seed's own is retired, so the fixture's carton below is the one, for both cups.
+-- (V20270104000100). The demo seed's own is retired, so the fixture's carton below is the one, for both cups.
 UPDATE inventory.uom_conversions SET active = FALSE
  WHERE active AND variant_id IN (SELECT variant_id FROM inventory.inventory_items WHERE sku IN ('LY-GIAY-DEMO-12OZ-XANH', 'LY-GIAY-DEMO-12OZ-DO'));
 INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor)

@@ -43,7 +43,7 @@ BEGIN
     RAISE NOTICE 'ok    %', label;
 END $$;
 
--- Fixtures. A carton unit of 6 blue cups (01 BR-03: a variant has ONE active carton, V20261231000700; the demo seed's own is retired), a
+-- Fixtures. A carton unit of 6 blue cups (01 BR-03: a variant has ONE active carton, V20270104000100; the demo seed's own is retired), a
 -- lot of them, and cartons of it named by what they are for:
 --   f1 f2 f3   free AVAILABLE cartons on a bin of HCM          blk    BLOCKED on that bin
 --   und        AVAILABLE, its receipt time not known           stg    AVAILABLE, standing in the staging area
