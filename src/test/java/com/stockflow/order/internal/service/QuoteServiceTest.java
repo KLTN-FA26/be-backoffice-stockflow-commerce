@@ -77,10 +77,12 @@ class QuoteServiceTest {
             mock(com.stockflow.order.internal.domain.SkuProductionHistory.class);
     private final com.stockflow.identity.api.IdentityService identities =
             mock(com.stockflow.identity.api.IdentityService.class);
+    private final com.stockflow.order.internal.domain.QuotePriceReviews priceReviews =
+            mock(com.stockflow.order.internal.domain.QuotePriceReviews.class);
     private final QuoteService service = new QuoteService(quotes, search, customers, units, quotedOrders,
             orders, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC), catalog, events, products, customerSkus,
             taxRates, production, mock(com.stockflow.design.api.SkuDesigns.class), identities,
-            new LineNames(products, customerSkus));
+            new LineNames(products, customerSkus), priceReviews, BigDecimal.TEN);
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();
@@ -100,6 +102,7 @@ class QuoteServiceTest {
                 customer, QuoteStatus.SENT, 1, NOW.plusSeconds(3600), NOW, null, NOW, "sales", 7)));
         when(search.history(any())).thenReturn(List.of());
         ownedByTheCustomer(SKU);
+        standardPriceOfOne(customerSkus, catalog);
         // 4B-3: the products are STANDARD (10%) unless a test says otherwise; every SKU was produced before. HĐ-7: the
         // rates of the quote's own day, whatever day that is here.
         when(taxRates.onDay(any())).thenReturn(Map.of("STANDARD", new BigDecimal("10.00"), "REDUCED", new BigDecimal("5.00"),
@@ -130,6 +133,25 @@ class QuoteServiceTest {
 
     /** The customer's own SKUs, as {@code CustomerSkus.ownersOf} answers them. */
     private final Map<String, UUID> owned = new java.util.HashMap<>();
+
+    /**
+     * 14 BR-10: every SKU here is drawn on a variant whose standard price is 1 VND a piece from 1 carton, so a quote
+     * priced as these tests price it is sent rather than held for the Sales Manager - QuotePriceReviewTest holds them.
+     */
+    static void standardPriceOfOne(com.stockflow.product.api.CustomerSkus customerSkus,
+                                   com.stockflow.catalog.api.CatalogService catalog) {
+        org.mockito.Mockito.lenient().when(customerSkus.sourceSkusOf(org.mockito.ArgumentMatchers.anyCollection()))
+                .thenAnswer(call -> {
+                    Map<String, String> found = new java.util.HashMap<>();
+                    for (Object code : (java.util.Collection<?>) call.getArgument(0)) {
+                        found.put((String) code, "BASE-VARIANT");
+                    }
+                    return found;
+                });
+        org.mockito.Mockito.lenient().when(catalog.standardPrice("BASE-VARIANT")).thenReturn(Optional.of(
+                new com.stockflow.catalog.api.PriceSchedule("BASE-VARIANT", 1, List.of(
+                        new com.stockflow.catalog.api.PriceSchedule.Tier(1, com.stockflow.common.domain.Money.vnd(1))))));
+    }
 
     private void ownedByTheCustomer(String sku) {
         owned.put(sku, customer);
@@ -219,10 +241,11 @@ class QuoteServiceTest {
     void aLineStartsFromTheCustomersOwnPrice() {
         when(quotes.findByRequestId(any())).thenReturn(Optional.empty());
         when(quotes.nextNumber(any())).thenReturn("QT-9");
-        // No price of the customer's own - and there is no other (13 BR-04): Sales enters the tiers.
+        // Neither a price of the customer's own nor a standard price behind the SKU (13 BR-04): Sales enters the tiers.
+        when(catalog.standardPrice("BASE-VARIANT")).thenReturn(Optional.empty());
         assertThatThrownBy(() -> service.create(sales, create(SKU, 20, null))).as("nothing to start from")
                 .extracting(QuoteServiceTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        verify(catalog).customerPrice(customer, SKU);
+        verify(catalog, org.mockito.Mockito.atLeastOnce()).customerPrice(customer, SKU);
 
         when(catalog.customerPrice(customer, SKU)).thenReturn(Optional.of(new PriceSchedule(SKU,
                 10, List.of(new PriceSchedule.Tier(10, Money.vnd(2100)),

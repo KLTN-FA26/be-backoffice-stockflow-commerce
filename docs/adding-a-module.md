@@ -409,7 +409,8 @@ class and the boundary — read it before changing the rule.
 - [ ] `@PermissionResource` + `@RequiresPermission(scope = ...)` on every endpoint
 - [ ] Paging through `Pages`, sorting through `SortWhitelist`
 - [ ] `@Auditable` on approvals, money, permissions, exports, deletes
-- [ ] `mvn test` green, including `ModularityTest` and `ArchitectureTest`
+- [ ] `ModularityTest`, `ArchitectureTest` and the module's own tests green locally; the full suite green in CI
+      (CLAUDE.md §1, "Locally, test what the change touches")
 
 ---
 

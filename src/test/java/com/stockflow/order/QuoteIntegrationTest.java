@@ -285,7 +285,9 @@ class QuoteIntegrationTest {
     @Test
     @DisplayName("below the list's first tier: Sales quotes the actual quantity at the agreed price, the customer accepts the latest revision, one order, no production before payment")
     void belowTheListTierSalesQuotesTheActualQuantity() throws Exception {
-        // The customer's own price starts at 10 cartons. The customer wants 4.
+        // The customer's own price starts at 10 cartons, and there is no standard price behind the SKU (13 BR-04). The
+        // customer wants 4.
+        CustomerSkuRows.withoutStandardPrice(jdbc, tx, sku);
         prices.create(customerId, sku, List.of(new CustomerPriceService.TierInput(10, new BigDecimal("2000"))), null);
 
         // A quote line left to the own price is refused rather than priced at the 10-carton tier.
@@ -308,7 +310,12 @@ class QuoteIntegrationTest {
             assertThat(line.proposedLineTotal()).as("4 cartons x 10 x 2,300").isEqualByComparingTo("92000");
         });
         assertThat(draft.proposedTotal()).isEqualByComparingTo("92000");
-        Quotes.QuoteView first = quotes.send(sales, draft.id(), draft.version());
+        // 4 cartons is below where the customer's own price starts, and no standard price stands behind the SKU: the
+        // break has no reference, so the Sales Manager approves it before the customer sees it (14 BR-10).
+        Quotes.QuoteView waiting = quotes.send(sales, draft.id(), draft.version());
+        assertThat(waiting.priceReviewPending()).isTrue();
+        CurrentUser manager = staff(Role.SALES_MANAGER);
+        Quotes.QuoteView first = quotes.approvePrice(manager, waiting.id(), waiting.version(), null);
 
         // Only this customer answers.
         assertThatThrownBy(() -> quotes.accept(sales, first.id(), new Quotes.Acceptance(first.version(), Map.of())))
@@ -369,7 +376,8 @@ class QuoteIntegrationTest {
                 });
         assertThat(quotes.get(sales, first.id()).status()).as("Sales still see their draft")
                 .isEqualTo(QuoteStatus.DRAFT);
-        Quotes.QuoteView second = quotes.send(sales, first.id(), edited.version());
+        Quotes.QuoteView secondWaiting = quotes.send(sales, first.id(), edited.version());
+        Quotes.QuoteView second = quotes.approvePrice(manager, first.id(), secondWaiting.version(), null);
         assertThat(second.revision()).isEqualTo(2);
         assertThatThrownBy(() -> quotes.accept(portal, first.id(), new Quotes.Acceptance(firstVersion, Map.of())))
                 .as("the revision-1 version").extracting(QuoteIntegrationTest::code)

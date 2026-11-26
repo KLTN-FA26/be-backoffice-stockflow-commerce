@@ -98,6 +98,7 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
         entity.apply(quote.status(), quote.revision(), offer.validUntil(), offer.terms(), quote.sentAt(), quote.sentBy(), quote.respondedAt(),
                 quote.respondedBy(), quote.customerFeedback(), quote.cancellationReason(), quote.convertedOrderId(),
                 quote.convertedAt(), offer.requestedDeliveryDate());
+        entity.priceReview(quote.priceReviewPending());
         Map<UUID, QuoteLineJpaEntity> existing = entity.getLines().stream()
                 .collect(Collectors.toMap(QuoteLineJpaEntity::getId, Function.identity()));
         // A revised draft may drop lines: they go (orphan removal), the others are written in place.
@@ -198,7 +199,10 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
                                 // (Quote#seenByCustomer).
                                 (root, query, cb) -> cb.and(root.get("status").in(QuoteStatus.CANCELLED,
                                         QuoteStatus.DRAFT), cb.isNotNull(root.get("sentAt"))))
-                        : null);
+                        : null)
+                // 14 BR-10: the Sales Manager's queue - drafts waiting for their prices to be approved.
+                .and(criteria.priceReviewPendingOnly()
+                        ? (root, query, cb) -> cb.equal(root.get("priceReview"), "PENDING") : null);
         return jpa.findAll(spec, pageable).map(QuoteRepositoryAdapter::toRow);
     }
 
@@ -340,7 +344,7 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
     private static Row toRow(QuoteJpaEntity e) {
         return new Row(e.getId(), e.getQuoteNumber(), e.getCustomerId(), e.getStatus(), e.getRevision(),
                 e.getValidUntil(), e.getSentAt(), e.getConvertedOrderId(), e.getCreatedAt(),
-                e.getCreatedBy(), e.getVersion());
+                e.getCreatedBy(), e.getVersion(), e.isPriceReviewPending());
     }
 
     static Quote toDomain(QuoteJpaEntity e) {
@@ -355,7 +359,7 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
         return Quote.restore(e.getId(), e.getQuoteNumber(), e.getRequestId(), e.getCustomerId(), e.getStatus(),
                 e.getRevision(), new Quote.Offer(e.getValidUntil(), e.getTerms(), e.getRequestedDeliveryDate(), lines, fees),
                 e.getSentAt(), e.getSentBy(), e.getRespondedAt(), e.getRespondedBy(), e.getCustomerFeedback(),
-                e.getCancellationReason(), e.getConvertedOrderId(), e.getConvertedAt());
+                e.getCancellationReason(), e.getConvertedOrderId(), e.getConvertedAt(), e.isPriceReviewPending());
     }
 
     private static QuoteLine toDomain(QuoteLineJpaEntity l) {

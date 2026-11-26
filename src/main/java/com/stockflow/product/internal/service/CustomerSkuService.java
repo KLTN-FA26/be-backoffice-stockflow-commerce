@@ -179,6 +179,29 @@ public class CustomerSkuService implements CustomerSkus {
 
     @Override
     @Transactional(readOnly = true)
+    public Map<String, String> sourceSkusOf(java.util.Collection<String> skus) {
+        if (skus == null || skus.isEmpty()) {
+            return Map.of();
+        }
+        List<VariantJpaEntity> owned = variants.findBySkuIn(skus).stream()
+                .filter(v -> v.getOwnerCustomerId() != null && v.getSourceVariantId() != null).toList();
+        if (owned.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, String> sources = variants.findAllById(owned.stream().map(VariantJpaEntity::getSourceVariantId)
+                .distinct().toList()).stream().collect(Collectors.toMap(VariantJpaEntity::getId, VariantJpaEntity::getSku));
+        Map<String, String> found = new java.util.HashMap<>();
+        for (VariantJpaEntity v : owned) {
+            String source = sources.get(v.getSourceVariantId());
+            if (source != null) {
+                found.put(v.getSku(), source);
+            }
+        }
+        return found;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Map<String, UUID> ownersOf(java.util.Collection<String> skus) {
         if (skus == null || skus.isEmpty()) {
             return Map.of();

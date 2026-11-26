@@ -189,6 +189,17 @@ public final class CustomerSkuRows {
         return issued;
     }
 
+    /**
+     * 14 BR-10 (2026-11-26): the variant {@code sku} was drawn on loses its standard price, so a quote line of it has
+     * nothing to start from but the customer's own price - what a test of "no price applies" needs.
+     */
+    public static void withoutStandardPrice(JdbcTemplate jdbc, TransactionTemplate tx, String sku) {
+        tx.executeWithoutResult(s -> jdbc.update("""
+                DELETE FROM catalog.standard_price p
+                 USING product.variants v JOIN product.variants s ON s.id = v.source_variant_id
+                 WHERE v.sku = ? AND p.sku = s.sku""", sku));
+    }
+
     /** The barcode of {@code sku}'s item. */
     public static String barcode(JdbcTemplate jdbc, String sku) {
         return jdbc.queryForObject("SELECT barcode FROM inventory.inventory_items WHERE sku = ?", String.class, sku);

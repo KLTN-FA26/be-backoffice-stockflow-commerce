@@ -44,6 +44,11 @@ public enum ErrorCode {
     PRODUCT_IN_USE("The product is referenced by stock, production orders, orders or designs", 409),
     PRICE_NOT_AVAILABLE("No selling price is available for this SKU", 409),
     CUSTOMER_PRICE_NOT_FOUND("This customer has no own price for the SKU", 404),
+    /** 13 BR-04 (2026-11-26): the variant has no standard price. */
+    STANDARD_PRICE_NOT_FOUND("This variant has no standard price", 404),
+    /** 13 BR-04, BR-05: a standard price is a catalogue variant's; a customer's own SKU has the customer's price. */
+    STANDARD_PRICE_VARIANT_REQUIRED("A standard price is set for a variant of the catalogue, not a customer's own SKU",
+            409),
     /** P7: a customer group (customer.segment) that does not exist. */
     SEGMENT_NOT_FOUND("Customer group not found", 404),
     MALFORMED_REQUEST("The request body could not be read", 400),
@@ -302,6 +307,16 @@ public enum ErrorCode {
             409),
     /** QD4 (kltn-docs 14 BR-17): the plate is charged once; a SKU produced since the draft was edited has none. */
     QUOTE_PLATE_FEE_REORDER("A SKU on this quote was produced before and still has a plate fee; edit the quote", 409),
+    /**
+     * 14 BR-10 (2026-11-26): a quote waiting for the Sales Manager to approve its prices is neither edited nor sent;
+     * Sales withdraws it first.
+     */
+    QUOTE_PRICE_REVIEW_PENDING("This quote is waiting for its prices to be approved; withdraw it to change it", 409),
+    /** 14 BR-10: there is no price approval waiting on this quote to approve, reject or withdraw. */
+    QUOTE_PRICE_REVIEW_NOT_PENDING("This quote is not waiting for its prices to be approved", 409),
+    /** 14 BR-10, as a product approval (01 §2): whoever sent a quote for approval does not approve or reject it. */
+    QUOTE_PRICE_REVIEW_SELF("The prices of a quote are approved by someone other than whoever sent it for approval",
+            403),
     /** 4B-4 (kltn-docs 14 §4.3): the order has no live sales contract, or no contract by that id. */
     SALES_CONTRACT_NOT_FOUND("No sales contract for this order", 404),
     /** 4B-4 (14 BR-12): one live contract per order. */

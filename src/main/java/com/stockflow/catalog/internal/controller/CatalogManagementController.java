@@ -13,8 +13,9 @@ import java.util.UUID;
 
 /**
  * A product's storefront listing in the back office: its SEO content and its publication. Existing publication URLs are
- * preserved. There is no base price to set any more (kltn-docs 13 BR-04, team plan 5-3): a variant has no price, and a
- * customer's own SKU is priced by the customer's internal price list ({@code /api/v1/catalog/customer-prices}).
+ * preserved. No price is set here: a variant's standard price is {@code /api/v1/catalog/standard-prices} (kltn-docs
+ * 13 BR-04 as changed on 2026-11-26), a customer's own SKU is priced by the customer's internal price list
+ * ({@code /api/v1/catalog/customer-prices}), and the storefront shows neither.
  */
 @RestController
 @RequestMapping("/api/v1/products/{productId}")

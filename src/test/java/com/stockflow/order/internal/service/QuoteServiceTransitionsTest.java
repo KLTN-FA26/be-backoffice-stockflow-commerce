@@ -64,13 +64,16 @@ class QuoteServiceTransitionsTest {
             mock(com.stockflow.product.api.CustomerSkus.class);
     private final com.stockflow.order.internal.domain.SkuProductionHistory production =
             mock(com.stockflow.order.internal.domain.SkuProductionHistory.class);
+    private final com.stockflow.catalog.api.CatalogService catalog = mock(com.stockflow.catalog.api.CatalogService.class);
+    private final com.stockflow.order.internal.domain.QuotePriceReviews priceReviews =
+            mock(com.stockflow.order.internal.domain.QuotePriceReviews.class);
     private final QuoteService service = new QuoteService(quotes, search, customers,
             mock(com.stockflow.inventory.api.UomConversionService.class), mock(QuotedOrders.class),
             mock(OrderService.class), new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC),
-            mock(com.stockflow.catalog.api.CatalogService.class), events, products, customerSkus,
+            catalog, events, products, customerSkus,
             mock(com.stockflow.order.internal.domain.TaxRates.class), production,
             mock(com.stockflow.design.api.SkuDesigns.class), mock(com.stockflow.identity.api.IdentityService.class),
-            new LineNames(products, customerSkus));
+            new LineNames(products, customerSkus), priceReviews, BigDecimal.TEN);
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();
@@ -97,6 +100,7 @@ class QuoteServiceTransitionsTest {
         when(products.lockedPurchasability(any())).thenReturn(Map.of());
         when(customerSkus.ownersOf(org.mockito.ArgumentMatchers.anyCollection()))
                 .thenReturn(Map.of("LY12-ACME-01", customer));
+        QuoteServiceTest.standardPriceOfOne(customerSkus, catalog);
     }
 
     private Quote stored(QuoteStatus status, Instant validUntil) {
