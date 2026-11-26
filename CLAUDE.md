@@ -38,9 +38,36 @@ A green run is evidence, not proof: the failures this stack produces are mostly 
 happy path passes most of them. Fixtures matter: a test that builds a world the migrations cannot produce proves
 nothing, so use `support/` (`DemoData`, `ReferenceRows`, `CartonStationSupport`, …) rather than inventing rows.
 
+### Locally, test what the change touches; CI runs the rest
+
+`build.yml` runs the whole suite on every pull request (6,242 tests, about 25 minutes on 24/11) and a red build blocks
+the merge. Running all of it again before every push buys nothing CI does not already give, so locally run only what
+bears on the change, then push and let CI cover the rest:
+
+1. `tools/verify.py`, always (under a second).
+2. The tests of the classes you changed and the integration test of the flow they sit in, by name pattern, never a
+   whole module: `mvn test -Dtest='QuoteService*Test,Quote*IntegrationTest' -Dsurefire.failIfNoSpecifiedTests=false`.
+   A new behaviour gets its new test run here too.
+3. Plus, by what the change is:
+
+   | Change | Also run |
+   |---|---|
+   | package, `allowedDependencies`, `@NamedInterface`, a type added to `api` | `ModularityTest,ArchitectureTest` |
+   | an endpoint or a permission | `PermissionMatrixTest` |
+   | an error code or a message bundle | `MessageBundleTest` |
+   | a migration | `RepositorySqlQaTest`, the `*MigrationUpgradeTest` if you wrote one, one integration test of the module |
+   | `common/` | `BaseLayerRegressionTest` |
+
+4. The full `mvn test` locally only when the change is cross-cutting (`common/`, a shared `support/` fixture, a
+   `contracts` event record, a lock order spanning modules) or to reproduce a red CI run.
+
+CI red is the same as local red: fix it before merging, never merge on "it passed locally". Say which tests you ran
+when you report the work, so nobody reads a targeted run as the whole suite.
+
 ```bash
 PYTHONUTF8=1 python -X utf8 tools/verify.py   # no Maven, no network, under a second
-mvn test                                  # everything (needs Docker)
+mvn test -Dtest='Foo*Test' -Dsurefire.failIfNoSpecifiedTests=false   # just the tests the change touches
+mvn test                                  # everything (needs Docker); CI runs it on every PR
 mvn test -Dtest=ModularityTest            # module boundaries only — run after ANY package change
 mvn test -Dtest=ArchitectureTest          # 19 layering/convention rules
 mvn verify                                # tests + JaCoCo
