@@ -92,6 +92,10 @@ public class SalesContractJpaEntity extends BaseEntity {
     @Column(name = "liquidated_at")
     private Instant liquidatedAt;
 
+    /** 15 BR-11 (V20270101000100): PENDING while the draft waits for accounting to approve the customer's credit. */
+    @Column(name = "credit_review", nullable = false, length = 16)
+    private String creditReview = "NONE";
+
     protected SalesContractJpaEntity() {
     }
 
@@ -139,6 +143,12 @@ public class SalesContractJpaEntity extends BaseEntity {
     }
 
     public Instant getLiquidatedAt() { return liquidatedAt; }
+
+    public void creditReview(boolean pending) {
+        this.creditReview = pending ? "PENDING" : "NONE";
+    }
+
+    public boolean isCreditReviewPending() { return "PENDING".equals(creditReview); }
     public String getContractNumber() { return contractNumber; }
     public UUID getOrderId() { return orderId; }
     public SalesContractStatus getStatus() { return status; }

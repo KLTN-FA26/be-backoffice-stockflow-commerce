@@ -154,7 +154,10 @@ class FullTruckloadOnCreditIntegrationTest {
     @Test
     @DisplayName("FTL-CREDIT: over the limit the order is held at signing like any other, and approval confirms it")
     void creditFullTruckloadOverTheLimitIsHeld() {
-        ConfirmedOrders.Signed signed = signed(5, share("After delivery", "AFTER_DELIVERY", "100", 30));  // 25M > 20M
+        // 25M > 20M at signing; sent while the limit still carried it, so it did not wait for accounting (15 BR-11).
+        ConfirmedOrders.Signed signed = confirmedOrders.signedHeldForCredit(customer,
+                List.of(share("After delivery", "AFTER_DELIVERY", "100", 30)), ConfirmedOrders.Line.cartons(sku, 5, PRICE));
+        placed.add(signed.orderId());
         assertThat(reload(signed.orderId()).status()).isEqualTo(OrderStatus.ON_HOLD);
 
         OrderSummary approved = creditHolds.approve(signed.orderId(), "approved over the limit", staff);

@@ -22,6 +22,11 @@ import java.util.UUID;
  * Cancelled before it is signed, with a reason; the order may then get a new one. A signed contract is never cancelled
  * here. The database keeps the same state machine ({@code tg_sales_contract_transition}) and the same rules over the
  * schedule and plan ({@code ordering.check_sales_contract_terms}).</p>
+ *
+ * <p>A draft whose credit check fails is not sent but waits for accounting (15 BR-11 as changed on 2026-11-26):
+ * {@link #submitForCreditReview} keeps it a DRAFT - so the customer, who never sees a draft, sees nothing of it - and
+ * locks it; {@link #approveCredit} sends it, {@link #refuseCredit} and {@link #withdrawCreditReview} hand it back to
+ * Sales. Only a draft waits ({@code ck_sales_contract_credit_review}).</p>
  */
 public final class SalesContract {
 
@@ -57,6 +62,8 @@ public final class SalesContract {
     private Instant completedAt;
     /** WF-05 Q-6: when it was liquidated; null otherwise. */
     private Instant liquidatedAt;
+    /** 15 BR-11: whether the draft waits for accounting to approve the customer's credit before it is sent. */
+    private boolean creditReviewPending;
     private final long version;
 
     private SalesContract(UUID id, String contractNumber, UUID orderId, SalesContractStatus status,
@@ -176,6 +183,7 @@ public final class SalesContract {
      */
     public void requireRevisable(Order order) {
         requireStatus(SalesContractStatus.DRAFT, "edited");
+        requireNoCreditReview();
         requireOrder(order);
         requireDraftOrder(order);
     }
@@ -189,6 +197,10 @@ public final class SalesContract {
      */
     public void send(Order order, Instant at, UUID by, String documentKey) {
         requireSendable(order, at);
+        markSent(at, by, documentKey);
+    }
+
+    private void markSent(Instant at, UUID by, String documentKey) {
         this.status = SalesContractStatus.SENT;
         this.sentAt = Objects.requireNonNull(at, "at");
         this.sentBy = Objects.requireNonNull(by, "by");
@@ -203,9 +215,78 @@ public final class SalesContract {
      */
     public void requireSendable(Order order, Instant at) {
         requireStatus(SalesContractStatus.DRAFT, "sent");
+        requireNoCreditReview();
+        requireSendableContent(order, at);
+    }
+
+    /**
+     * 15 BR-11 (2026-11-26): the draft, ready to be sent, waits for accounting instead - its credit check failed. It
+     * stays a DRAFT, locked against edits until approved, refused or withdrawn. Checked as {@link #send} is, so a
+     * contract that could not be sent is not put in front of accounting either.
+     *
+     * @throws BusinessException as {@link #send}; {@code CONTRACT_CREDIT_REVIEW_PENDING} when it waits already
+     */
+    public void submitForCreditReview(Order order, Instant at) {
+        requireSendable(order, at);
+        creditReviewPending = true;
+    }
+
+    /**
+     * Whether accounting may approve it now and so send it: it waits, and could be sent - the windows may have passed
+     * while it waited, and a refusal leaves it waiting. Checked before the PDF is drawn.
+     *
+     * @throws BusinessException {@code CONTRACT_CREDIT_REVIEW_NOT_PENDING}; as {@link #send}
+     */
+    public void requireCreditApprovable(Order order, Instant at) {
+        requireStatus(SalesContractStatus.DRAFT, "sent");
+        requireCreditReview();
+        requireSendableContent(order, at);
+    }
+
+    /**
+     * 15 BR-11: accounting approved the customer's credit; the contract is sent at once (decision 1 of the credit plan),
+     * as {@code sentBy} - the Sales account that asked, who follows it with the customer.
+     *
+     * @throws BusinessException as {@link #requireCreditApprovable}
+     */
+    public void approveCredit(Order order, Instant at, UUID sentBy, String documentKey) {
+        requireCreditApprovable(order, at);
+        creditReviewPending = false;
+        markSent(at, sentBy, documentKey);
+    }
+
+    /** 15 BR-11: accounting refused; the draft is Sales' to change - the payment plan, most likely - and send again. */
+    public void refuseCredit() {
+        requireCreditReview();
+        creditReviewPending = false;
+    }
+
+    /** 15 BR-11: Sales takes the draft back from accounting to change it. */
+    public void withdrawCreditReview() {
+        requireCreditReview();
+        creditReviewPending = false;
+    }
+
+    private void requireSendableContent(Order order, Instant at) {
         requireOrder(order);
         requireDraftOrder(order);
         ContractTerms.requireWindows(schedule, LocalDate.ofInstant(at, VIETNAM));
+    }
+
+    private void requireNoCreditReview() {
+        if (creditReviewPending) {
+            throw new BusinessException(ErrorCode.CONTRACT_CREDIT_REVIEW_PENDING, ("Contract %s is waiting for "
+                    + "accounting to approve the customer's credit; withdraw it first").formatted(contractNumber))
+                    .localized("refusal.contract.creditReviewPending", contractNumber);
+        }
+    }
+
+    private void requireCreditReview() {
+        if (!creditReviewPending) {
+            throw new BusinessException(ErrorCode.CONTRACT_CREDIT_REVIEW_NOT_PENDING, ("Contract %s is not waiting for "
+                    + "accounting to approve the customer's credit").formatted(contractNumber))
+                    .localized("refusal.contract.creditReviewNotPending", contractNumber);
+        }
     }
 
     /**
@@ -263,6 +344,8 @@ public final class SalesContract {
                     .localized("refusal.contract.cancellationReason", 500);
         }
         this.status = SalesContractStatus.CANCELLED;
+        // Cancelled while it waited, it waits no more: the adapter closes the review WITHDRAWN with this reason.
+        this.creditReviewPending = false;
         this.cancellationReason = reason.strip();
         this.cancelledAt = Objects.requireNonNull(at, "at");
         this.cancelledBy = Objects.requireNonNull(by, "by");
@@ -344,6 +427,15 @@ public final class SalesContract {
     public String cancellationReason() { return cancellationReason; }
     public Instant completedAt() { return completedAt; }
     public Instant liquidatedAt() { return liquidatedAt; }
+
+    /** 15 BR-11: whether the draft waits for accounting to approve the customer's credit. */
+    public boolean creditReviewPending() { return creditReviewPending; }
+
+    /** Rehydration of whether it waits for accounting (15 BR-11). */
+    public SalesContract restoreCreditReview(boolean pending) {
+        this.creditReviewPending = pending;
+        return this;
+    }
 
     /** Rehydration of when it was liquidated (WF-05 Q-6). */
     public SalesContract restoreLiquidated(Instant at) {

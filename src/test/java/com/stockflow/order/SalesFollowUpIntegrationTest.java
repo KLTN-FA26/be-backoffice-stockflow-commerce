@@ -73,7 +73,7 @@ class SalesFollowUpIntegrationTest {
     private UUID heldForCredit() {
         customers.saveCreditTerms(new SaveCreditTermsCommand(customer, new BigDecimal("1000000"), 30, "test terms",
                 accountant, null));
-        UUID order = confirmedOrders.signed(customer, List.of(new SalesContracts.Installment("After delivery",
+        UUID order = confirmedOrders.signedHeldForCredit(customer, List.of(new SalesContracts.Installment("After delivery",
                 "AFTER_DELIVERY", null, new BigDecimal("100"), 30, null)), ConfirmedOrders.Line.cartons(sku, 10, PRICE))
                 .orderId();
         assertThat(confirmedOrders.status(order)).isEqualTo(OrderStatus.ON_HOLD);

@@ -5,7 +5,6 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.IncomingFiles;
-import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.service.CreditHoldService;
@@ -50,10 +49,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <ol>
  *   <li>demo.sales opens the contract: the DRAFT reads creditWarning OVERDUE (14 §4.3 step 13: decide before sending);
- *       sends it - warned, never refused (15 BR-11).</li>
- *   <li>demo.sales uploads the signed scan: the order goes ON_HOLD for CREDIT, the check OVERDUE recorded, and lands in
- *       the accountant's queue; its instalments open, nothing is held.</li>
- *   <li>demo.ketoan approves with a note: PENDING_PAYMENT - the deposit is still owed (14 §5.3).</li>
+ *       sends it - and it is not sent: it waits for accounting, still a DRAFT, in the accountant's queue (15 BR-11 as
+ *       changed on 2026-11-26).</li>
+ *   <li>demo.ketoan approves with a note: the contract is sent at once, as demo.sales; the order PENDING_CONTRACT.</li>
+ *   <li>demo.sales uploads the signed scan: the check is still OVERDUE but no worse than approved, so the order is not
+ *       held - PENDING_PAYMENT, the deposit is still owed (14 §5.3), the check naming the approval; its instalments
+ *       open, nothing is held.</li>
  *   <li>demo.ketoan records the deposit: CONFIRMED by itself.</li>
  * </ol>
  *
@@ -87,8 +88,8 @@ class Wf02CreditExceptionSeedIntegrationTest {
             DataScope.ALL, Set.of(), Set.of());
 
     @Test
-    @DisplayName("DS-02b on the seed: overdue customer -> DRAFT warned OVERDUE -> sent, warned -> signed: ON_HOLD (CREDIT) "
-            + "-> approved with a note: PENDING_PAYMENT -> deposit recorded: CONFIRMED")
+    @DisplayName("DS-02b on the seed: overdue customer -> DRAFT warned OVERDUE -> send waits for accounting -> approved "
+            + "with a note: sent -> signed: PENDING_PAYMENT, not held -> deposit recorded: CONFIRMED")
     void ds02bOnTheSeed() {
         LocalDate today = LocalDate.now(VIETNAM);
         // 60 cartons x 1,000 cups x 1,200 = 72,000,000 + VAT at the STANDARD rate of the build day (8% through 2026).
@@ -108,32 +109,40 @@ class Wf02CreditExceptionSeedIntegrationTest {
         assertThat(drafted.creditWarning().outcome()).isEqualTo("OVERDUE");
         assertThat(drafted.creditWarning().creditLimit()).isEqualByComparingTo("300000000");
 
-        SalesContracts.ContractView sent = asSales(() -> contracts.send(sales, ORDER, drafted.version()));
+        SalesContracts.ContractView waiting = asSales(() -> contracts.send(sales, ORDER, drafted.version()));
+        assertThat(waiting.status()).as("not sent: it waits for accounting").isEqualTo("DRAFT");
+        assertThat(waiting.creditReview()).isEqualTo("PENDING");
+        assertThat(waiting.latestCreditReview().checkOutcome()).isEqualTo("OVERDUE");
+        assertThat(orders.findById(ORDER).orElseThrow().status()).isEqualTo(OrderStatus.DRAFT);
+        assertThat(contracts.creditReviewsWaiting(0, 200).items()).extracting(SalesContracts.CreditReviewWaiting::orderId)
+                .contains(ORDER);
+
+        // 2. Approved by the accountant with a note: sent at once, as demo.sales.
+        CurrentUser ketoan = new CurrentUser(ACCOUNTANT, "demo.ketoan", Set.of(Role.ACCOUNTANT), Set.of(),
+                DataScope.ALL, Set.of(), Set.of());
+        SalesContracts.ContractView sent = WithCurrentUser.call(ketoan, DataScope.ALL, () -> contracts.approveCredit(
+                ketoan, ORDER, waiting.version(), "Khách cam kết trả khoản quá hạn trong tuần này"));
         assertThat(sent.status()).isEqualTo("SENT");
-        assertThat(sent.creditWarning().outcome()).as("sent anyway, warned").isEqualTo("OVERDUE");
+        assertThat(sent.sentBy()).isEqualTo(SALES);
         assertThat(orders.findById(ORDER).orElseThrow().status()).isEqualTo(OrderStatus.PENDING_CONTRACT);
 
-        // 2. Signed: held for credit.
+        // 3. Signed: no worse than approved, so not held - the deposit is still owed.
         byte[] scan = TestPdfs.blank();
         SalesContracts.ContractView signed = asSales(() -> contracts.sign(sales, ORDER, sent.version(),
                 IncomingFiles.sent(List.of(new FileUpload("HD-20261202-900002-1-da-ky.pdf", "application/pdf",
                         scan.length, new ByteArrayInputStream(scan)))), today));
         assertThat(signed.status()).isEqualTo("SIGNED");
-        var held = orders.findById(ORDER).orElseThrow();
-        assertThat(held.status()).isEqualTo(OrderStatus.ON_HOLD);
-        assertThat(held.lifecycle().holdReason()).isEqualTo(HoldReason.CREDIT);
-        assertThat(jdbc.queryForObject("""
-                SELECT outcome FROM ordering.order_credit_check WHERE order_id = ?
-                ORDER BY checked_at DESC, created_at DESC LIMIT 1""", String.class, ORDER)).isEqualTo("OVERDUE");
-        assertThat(creditHolds.heldOrders(0, 200).items()).contains(ORDER);
+        assertThat(orders.findById(ORDER).orElseThrow().status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
+        assertThat(jdbc.queryForMap("""
+                SELECT outcome, pre_send_review_id FROM ordering.order_credit_check WHERE order_id = ?
+                ORDER BY checked_at DESC, created_at DESC LIMIT 1""", ORDER))
+                .containsEntry("outcome", "OVERDUE")
+                .containsEntry("pre_send_review_id", sent.latestCreditReview().id());
+        assertThat(creditHolds.heldOrders(0, 200).items()).doesNotContain(ORDER);
         assertThat(jdbc.queryForList("SELECT status FROM payment.installment WHERE order_id = ? ORDER BY seq",
                 String.class, ORDER)).containsExactly("DUE", "NOT_DUE", "NOT_DUE");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_reservation WHERE order_id = ?",
                 Long.class, ORDER)).as("nothing held").isZero();
-
-        // 3. Approved by the accountant: the deposit is still owed.
-        assertThat(creditHolds.approve(ORDER, "Khách cam kết trả khoản quá hạn trong tuần này", ACCOUNTANT).status())
-                .isEqualTo(OrderStatus.PENDING_PAYMENT);
 
         // 4. The deposit recorded: confirmed by itself.
         UUID onSigning = jdbc.queryForObject("SELECT id FROM payment.installment WHERE order_id = ? AND milestone = "
@@ -145,7 +154,8 @@ class Wf02CreditExceptionSeedIntegrationTest {
                 () -> orders.findById(ORDER).orElseThrow().status() == OrderStatus.CONFIRMED);
         assertThat(jdbc.queryForList("SELECT to_status FROM ordering.order_status_history WHERE order_id = ? "
                 + "ORDER BY occurred_at, created_at", String.class, ORDER))
-                .containsSubsequence("DRAFT", "PENDING_CONTRACT", "ON_HOLD", "PENDING_PAYMENT", "CONFIRMED");
+                .containsSubsequence("DRAFT", "PENDING_CONTRACT", "PENDING_PAYMENT", "CONFIRMED")
+                .doesNotContain("ON_HOLD");
     }
 
     private <T> T asSales(Supplier<T> call) {
