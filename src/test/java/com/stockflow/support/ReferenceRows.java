@@ -119,7 +119,30 @@ public final class ReferenceRows {
                 .setParameter(2, approver)
                 .setParameter(3, row.productId())
                 .executeUpdate();
+        standardPriceOfOne(em, row.sku());
         return row;
+    }
+
+    /**
+     * 14 BR-10 (2026-11-26): {@code variantSku} gets a standard price of 1 VND a piece from 1 carton, so a quote of a
+     * customer's SKU drawn on it, priced as a test prices it, is sent rather than held for the Sales Manager. Every
+     * {@link #approvedProduct} has it; a test of the approval removes or raises it. Nothing when it has one already.
+     */
+    public static void standardPriceOfOne(EntityManager em, String variantSku) {
+        em.createNativeQuery("""
+                        INSERT INTO catalog.standard_price (id, sku, currency, version, created_at, created_by)
+                        VALUES (?1, ?2, 'VND', 0, NOW(), 'fixture') ON CONFLICT (sku) DO NOTHING""")
+                .setParameter(1, Identifiers.newId())
+                .setParameter(2, variantSku)
+                .executeUpdate();
+        em.createNativeQuery("""
+                        INSERT INTO catalog.standard_price_tier (id, standard_price_id, min_quantity, unit_price, version,
+                            created_at, created_by)
+                        SELECT ?1, p.id, 1, 1, 0, NOW(), 'fixture' FROM catalog.standard_price p WHERE p.sku = ?2
+                        ON CONFLICT (standard_price_id, min_quantity) DO NOTHING""")
+                .setParameter(1, Identifiers.newId())
+                .setParameter(2, variantSku)
+                .executeUpdate();
     }
 
     /** Every fixture order number starts with this, after the date: real numbers never reach 9 followed by 11 digits. */

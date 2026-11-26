@@ -51,12 +51,28 @@ final class QuoteWebMapper {
                         t.fromStatus() == null ? null : t.fromStatus().name(), t.toStatus().name(), t.reason(),
                         t.changedAt(), t.changedBy(), t.changedByName())).toList(),
                 q.createdAt(), q.createdBy(), q.version(), q.customerName(), q.customerCode(), q.sentByName(),
-                q.respondedByName());
+                q.respondedByName(), q.priceReviewPending(),
+                q.priceReview() == null ? null : new QuoteResponse.PriceReview(q.priceReview().id(),
+                        q.priceReview().revision(), q.priceReview().outcome(), q.priceReview().thresholdPercent(),
+                        q.priceReview().submittedAt(), q.priceReview().submittedBy(),
+                        q.priceReview().submittedByName(), q.priceReview().decidedAt(), q.priceReview().decidedBy(),
+                        q.priceReview().decidedByName(), q.priceReview().reason(),
+                        checkLines(q.priceReview().lines())),
+                q.priceCheck() == null ? null : new QuoteResponse.PriceCheck(q.priceCheck().thresholdPercent(),
+                        q.priceCheck().needsApproval(), checkLines(q.priceCheck().lines())));
+    }
+
+    private static List<QuoteResponse.PriceCheckLine> checkLines(List<Quotes.PriceCheckLine> lines) {
+        return lines.stream().map(line -> new QuoteResponse.PriceCheckLine(line.lineNo(), line.sku(), line.cartons(),
+                line.needsApproval(), line.tiers().stream().map(tier -> new QuoteResponse.PriceCheckTier(
+                        tier.minQuantity(), tier.unitPrice(), tier.referencePrice(), tier.source(),
+                        tier.discountPercent(), tier.needsApproval())).toList())).toList();
     }
 
     static QuoteRowResponse toResponse(Quotes.Row r) {
         return new QuoteRowResponse(r.id(), r.quoteNumber(), r.customerId(), r.status().name(), r.revision(),
                 r.validUntil(), r.sentAt(), r.convertedOrderId(), r.createdAt(), r.version(), r.total(),
-                r.lineCount(), r.firstItemName(), r.customerName(), r.customerCode(), r.convertedOrderNumber());
+                r.lineCount(), r.firstItemName(), r.customerName(), r.customerCode(), r.convertedOrderNumber(),
+                r.priceReviewPending());
     }
 }

@@ -27,6 +27,11 @@ import java.util.UUID;
  * customer's own SKUs, which replaces every line; anything else about it ends as its status allows (cancelled,
  * expired).</p>
  *
+ * <p>A draft priced too far below its reference waits for the Sales Manager (kltn-docs 14 BR-10 as changed on
+ * 2026-11-26): {@link #submitForPriceReview} keeps it a DRAFT - so the customer, who never sees a draft, sees nothing of
+ * it - and locks it; {@link #approvePrice} sends it, {@link #rejectPrice} and {@link #withdrawPriceReview} hand it back
+ * to Sales. Which prices need it is the service's to measure ({@code QuotePriceCheck}); the quote only holds the state.</p>
+ *
  * <p>Every method checks before it changes anything, so a refused call leaves the quote as it was. The
  * CHECK constraints of {@code ordering.quote} mirror each invariant here.</p>
  */
@@ -185,6 +190,8 @@ public final class Quote {
     private String cancellationReason;
     private UUID convertedOrderId;
     private Instant convertedAt;
+    /** 14 BR-10: a draft waiting for the Sales Manager to approve its prices (ck_quote_price_review: only a DRAFT). */
+    private boolean priceReviewPending;
 
     private Quote(UUID id, String quoteNumber, UUID requestId, UUID customerId, QuoteStatus status, int revision,
                   Offer offer) {
@@ -213,7 +220,20 @@ public final class Quote {
                                 int revision, Offer offer, Instant sentAt, UUID sentBy, Instant respondedAt,
                                 UUID respondedBy, String customerFeedback, String cancellationReason,
                                 UUID convertedOrderId, Instant convertedAt) {
+        return restore(id, quoteNumber, requestId, customerId, status, revision, offer, sentAt, sentBy, respondedAt,
+                respondedBy, customerFeedback, cancellationReason, convertedOrderId, convertedAt, false);
+    }
+
+    /** Rehydration from the rows, with whether the draft waits for its prices to be approved (14 BR-10). */
+    public static Quote restore(UUID id, String quoteNumber, UUID requestId, UUID customerId, QuoteStatus status,
+                                int revision, Offer offer, Instant sentAt, UUID sentBy, Instant respondedAt,
+                                UUID respondedBy, String customerFeedback, String cancellationReason,
+                                UUID convertedOrderId, Instant convertedAt, boolean priceReviewPending) {
+        if (priceReviewPending && status != QuoteStatus.DRAFT) {
+            throw new IllegalArgumentException("Only a draft waits for its prices to be approved");
+        }
         Quote quote = new Quote(id, quoteNumber, requestId, customerId, status, revision, offer);
+        quote.priceReviewPending = priceReviewPending;
         quote.sentAt = sentAt;
         quote.sentBy = sentBy;
         quote.respondedAt = respondedAt;
@@ -234,6 +254,7 @@ public final class Quote {
     public void revise(Offer replacement) {
         Objects.requireNonNull(replacement, "replacement");
         requireStatus(QuoteStatus.DRAFT, "edit");
+        requireNoPriceReview("edited");
         replacement.requireMoq();
         offer = replacement;
     }
@@ -242,6 +263,55 @@ public final class Quote {
     public void send(UUID by, Instant now) {
         Objects.requireNonNull(by, "by");
         requireStatus(QuoteStatus.DRAFT, "send");
+        requireNoPriceReview("sent");
+        requireSendable(now);
+        status = QuoteStatus.SENT;
+        sentAt = now;
+        sentBy = by;
+    }
+
+    /**
+     * 14 BR-10: the draft, ready to be sent, waits for the Sales Manager instead - it stays a DRAFT, locked against
+     * edits until approved, rejected or withdrawn. Checked as {@link #send} is, so a quote that could not be sent is not
+     * put in front of the Sales Manager either.
+     */
+    public void submitForPriceReview(UUID by, Instant now) {
+        Objects.requireNonNull(by, "by");
+        requireStatus(QuoteStatus.DRAFT, "send");
+        requireNoPriceReview("sent");
+        requireSendable(now);
+        priceReviewPending = true;
+    }
+
+    /**
+     * 14 BR-10: the Sales Manager approved the prices; the quote is sent at once, as {@code sentBy} - the Sales account
+     * that asked, who follows it with the customer. Checked again as {@link #send}: the validity may have passed while it
+     * waited, and a refusal leaves it waiting.
+     */
+    public void approvePrice(UUID sentBy, Instant now) {
+        Objects.requireNonNull(sentBy, "sentBy");
+        requirePriceReview();
+        requireSendable(now);
+        priceReviewPending = false;
+        status = QuoteStatus.SENT;
+        sentAt = now;
+        this.sentBy = sentBy;
+    }
+
+    /** 14 BR-10: the Sales Manager rejected the prices; the draft is Sales' to edit again. */
+    public void rejectPrice() {
+        requirePriceReview();
+        priceReviewPending = false;
+    }
+
+    /** 14 BR-10: Sales takes the draft back from the Sales Manager to change it. */
+    public void withdrawPriceReview() {
+        requirePriceReview();
+        priceReviewPending = false;
+    }
+
+    /** What a quote must be to go to the customer: carton lines, priced and taxed, valid ahead, at or above the MOQ. */
+    private void requireSendable(Instant now) {
         requireCartonLines("sent");
         offer.requireMoq();
         for (QuoteLine line : offer.lines()) {
@@ -278,9 +348,22 @@ public final class Quote {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Quote " + quoteNumber + " would be sent expired")
                     .localized("refusal.quote.sentExpired", quoteNumber, VALID_UNTIL.format(offer.validUntil()));
         }
-        status = QuoteStatus.SENT;
-        sentAt = now;
-        sentBy = by;
+    }
+
+    private void requireNoPriceReview(String verb) {
+        if (priceReviewPending) {
+            throw new BusinessException(ErrorCode.QUOTE_PRICE_REVIEW_PENDING, ("Quote %s is waiting for its prices to "
+                    + "be approved: it is not %s; withdraw it first").formatted(quoteNumber, verb))
+                    .localized("refusal.quote.priceReviewPending", quoteNumber);
+        }
+    }
+
+    private void requirePriceReview() {
+        if (!priceReviewPending) {
+            throw new BusinessException(ErrorCode.QUOTE_PRICE_REVIEW_NOT_PENDING,
+                    "Quote %s is not waiting for its prices to be approved".formatted(quoteNumber))
+                    .localized("refusal.quote.priceReviewNotPending", quoteNumber);
+        }
     }
 
     /**
@@ -374,6 +457,7 @@ public final class Quote {
         }
         move(QuoteStatus.CANCELLED, "cancel");
         cancellationReason = text;
+        priceReviewPending = false;   // cancelled while it waited, it waits no more (the service closes the review)
     }
 
     /** ACCEPTED → CONVERTED: the one sales order this quote became. */
@@ -434,6 +518,9 @@ public final class Quote {
     public int revision() { return revision; }
     public Offer offer() { return offer; }
     public Instant sentAt() { return sentAt; }
+
+    /** 14 BR-10: whether this draft waits for the Sales Manager to approve its prices. */
+    public boolean priceReviewPending() { return priceReviewPending; }
 
     /**
      * Whether the customer has been shown this quote: everything once sent - an accepted quote Sales cancelled

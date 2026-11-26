@@ -4,9 +4,6 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 
 import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -26,8 +23,8 @@ import java.util.UUID;
  */
 public final class CustomerPrice {
 
-    /** Generous for a price list, small enough that a mistyped request cannot store thousands of rows. */
-    public static final int MAX_TIERS = 20;
+    /** {@link PriceTiers#MAX}. */
+    public static final int MAX_TIERS = PriceTiers.MAX;
 
     public record Tier(int minQuantity, BigDecimal unitPrice) {
         public Tier {
@@ -85,28 +82,11 @@ public final class CustomerPrice {
     }
 
     private static List<Tier> validated(List<Tier> tiers) {
-        if (tiers == null || tiers.isEmpty()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A customer price needs at least one tier");
-        }
-        if (tiers.size() > MAX_TIERS) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "At most " + MAX_TIERS + " price tiers");
-        }
-        var starts = new HashSet<Integer>();
-        for (Tier tier : tiers) {
-            if (!starts.add(Objects.requireNonNull(tier, "tier").minQuantity())) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                        "Two price tiers start at " + tier.minQuantity());
-            }
-        }
-        var sorted = new ArrayList<>(tiers);
-        sorted.sort(Comparator.comparingInt(Tier::minQuantity));
-        return List.copyOf(sorted);
+        return PriceTiers.sorted(tiers, Tier::minQuantity, "A customer price");
     }
 
     private static String noteOf(String note) {
-        if (note == null || note.isBlank()) return null;
-        if (note.length() > 500) throw new BusinessException(ErrorCode.VALIDATION_FAILED, "note is too long");
-        return note.strip();
+        return PriceTiers.note(note);
     }
 
     public UUID id() { return id; }

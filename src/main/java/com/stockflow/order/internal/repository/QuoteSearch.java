@@ -17,14 +17,28 @@ public interface QuoteSearch {
      *                            Sales' working copies and are not shown; one cancelled after it was sent is
      * @param now                 the moment the statuses are read at: a SENT quote whose validity ended by then is
      *                            EXPIRED for the filter, as every read reports it, before the sweep writes it down
+     * @param priceReviewPendingOnly 14 BR-10: only drafts waiting for the Sales Manager to approve their prices
      */
     record Criteria(UUID customerId, List<QuoteStatus> statuses, String number, boolean seenByCustomerOnly,
-                    Instant now) {
+                    Instant now, boolean priceReviewPendingOnly) {
+
+        public Criteria(UUID customerId, List<QuoteStatus> statuses, String number, boolean seenByCustomerOnly,
+                        Instant now) {
+            this(customerId, statuses, number, seenByCustomerOnly, now, false);
+        }
     }
 
+    /** @param priceReviewPending 14 BR-10: the draft waits for the Sales Manager to approve its prices */
     record Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
                Instant validUntil, Instant sentAt, UUID convertedOrderId,
-               Instant createdAt, String createdBy, long version) {
+               Instant createdAt, String createdBy, long version, boolean priceReviewPending) {
+
+        public Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
+                   Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt, String createdBy,
+                   long version) {
+            this(id, quoteNumber, customerId, status, revision, validUntil, sentAt, convertedOrderId, createdAt,
+                    createdBy, version, false);
+        }
     }
 
     record Transition(int revision, QuoteStatus fromStatus, QuoteStatus toStatus, String reason, String offer,

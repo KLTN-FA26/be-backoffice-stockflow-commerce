@@ -34,7 +34,8 @@ public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String
                             Instant respondedAt, UUID respondedBy, String customerFeedback, String cancellationReason,
                             Order convertedOrder, Instant convertedAt, List<Transition> history, Instant createdAt,
                             String createdBy, long version, String customerName, String customerCode,
-                            String sentByName, String respondedByName) {
+                            String sentByName, String respondedByName, boolean priceReviewPending,
+                            PriceReview priceReview, PriceCheck priceCheck) {
 
     /**
      * A line: cartons of the customer's own SKU, priced per piece (kltn-docs 14 BR-08). Ordered by the carton, shown
@@ -73,6 +74,33 @@ public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String
     }
 
     /** From {@code minQuantity} cartons (units on a legacy line) up, {@code unitPrice} VND per piece. */
+    /**
+     * 14 BR-10: one price break measured against its reference.
+     *
+     * @param source {@code CUSTOMER_PRICE} or {@code STANDARD_PRICE}; null with no reference
+     */
+    public record PriceCheckTier(int minQuantity, BigDecimal unitPrice, BigDecimal referencePrice, String source,
+                                 BigDecimal discountPercent, boolean needsApproval) {
+    }
+
+    public record PriceCheckLine(int lineNo, String sku, int cartons, boolean needsApproval,
+                                 List<PriceCheckTier> tiers) {
+    }
+
+    /** 14 BR-10: a draft's prices as they stand; null once sent and on the customer's copy. */
+    public record PriceCheck(BigDecimal thresholdPercent, boolean needsApproval, List<PriceCheckLine> lines) {
+    }
+
+    /**
+     * 14 BR-10: the latest submission of the prices to the Sales Manager; null when none and on the customer's copy.
+     *
+     * @param outcome {@code PENDING}, {@code APPROVED}, {@code REJECTED} or {@code WITHDRAWN}
+     */
+    public record PriceReview(UUID id, int revision, String outcome, BigDecimal thresholdPercent, Instant submittedAt,
+                              UUID submittedBy, String submittedByName, Instant decidedAt, UUID decidedBy,
+                              String decidedByName, String reason, List<PriceCheckLine> lines) {
+    }
+
     public record Tier(int minQuantity, BigDecimal unitPrice) {
     }
 

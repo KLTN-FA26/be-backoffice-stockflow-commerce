@@ -72,6 +72,13 @@ public interface CustomerSkus {
     java.util.Map<String, UUID> ownersOf(java.util.Collection<String> skus);
 
     /**
+     * The variant (quy cách) each of {@code skus} was drawn on, by SKU as stored, in two reads: whose standard price a
+     * quote line of the SKU starts from and is measured against when the customer has no price of its own (kltn-docs
+     * 13 BR-04, 14 BR-10 as changed on 2026-11-26). Ordinary and unknown SKUs are absent.
+     */
+    java.util.Map<String, String> sourceSkusOf(java.util.Collection<String> skus);
+
+    /**
      * Of {@code skus}, those that are {@code customerId}'s own and ACTIVE, in one read bounded by the SKUs asked: what a
      * customer may be told about (kltn-docs 13 BR-01, BR-02). Codes as stored; unknown, other customers' and retired
      * SKUs are absent.

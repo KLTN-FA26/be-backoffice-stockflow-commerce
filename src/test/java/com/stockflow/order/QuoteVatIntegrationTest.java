@@ -263,9 +263,9 @@ class QuoteVatIntegrationTest {
     }
 
     @Test
-    @DisplayName("D-1: a quote sent more than 10% below the customer's own price is told to the sales managers, once; "
-            + "5% below is not")
-    void aDeepDiscountIsToldToTheManagers() {
+    @DisplayName("14 BR-10 (2026-11-26, replacing D-1's alert after the send): a quote more than 10% below the customer's "
+            + "own price waits for the sales managers, who are told; 5% below is sent")
+    void aDeepDiscountWaitsForTheManagers() {
         UUID manager = new com.stockflow.support.StaffFixtures(jdbc, tx, entityManager).staff("SALES_MANAGER");
         String sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, 10).sku();
         tx.executeWithoutResult(s -> {
@@ -281,18 +281,18 @@ class QuoteVatIntegrationTest {
         Quotes.QuoteView near = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
                 new Quotes.Draft(Instant.now().plus(Duration.ofDays(7)), null, List.of(new Quotes.Line(sku, 3,
                         List.of(new Quotes.Tier(1, new BigDecimal("3800"))))), null, List.of())));
-        quotes.send(sales, near.id(), near.version());
+        assertThat(quotes.send(sales, near.id(), near.version()).status()).as("5% below is within the threshold")
+                .isEqualTo(QuoteStatus.SENT);
         Quotes.QuoteView deep = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
                 draft(sku, List.of())));
-        quotes.send(sales, deep.id(), deep.version());
+        Quotes.QuoteView waiting = quotes.send(sales, deep.id(), deep.version());
 
-        String title = "Báo giá " + deep.quoteNumber() + " đã gửi với giá thấp hơn giá riêng của khách";
+        assertThat(waiting.status()).isEqualTo(QuoteStatus.DRAFT);
+        assertThat(waiting.priceReviewPending()).isTrue();
+        String title = "Báo giá " + deep.quoteNumber() + " chờ duyệt giá";
         Await.until("the managers told", ASYNC, () -> new com.stockflow.support.StaffFixtures(jdbc, tx, entityManager).titles(manager).contains(title));
-        assertThat(jdbc.queryForObject("SELECT body FROM notification.user_notification WHERE recipient_id = ? AND"
-                + " dedupe_key LIKE ?", String.class, manager, "quote-discount:" + deep.id() + ":%"))
-                .contains(sku + ", 3 thùng: 3.000 đ/cái (giá riêng 4.000 đ)");
         assertThat(new com.stockflow.support.StaffFixtures(jdbc, tx, entityManager).titles(manager))
-                .as("5%% below is within the threshold").noneMatch(t -> t.contains(near.quoteNumber()));
+                .noneMatch(t -> t.contains(near.quoteNumber()));
     }
 
     @Test

@@ -138,8 +138,9 @@ public class CustomerPriceService {
     }
 
     /**
-     * The SKU no longer has a price of this customer's own - and there is no other (kltn-docs 13 BR-04): Sales enters
-     * the tiers on the next quote by hand (13 §4.2 step 5); quotes already sent keep theirs.
+     * The SKU no longer has a price of this customer's own: the next quote of it starts from the standard price of its
+     * variant, or unpriced when there is none (13 BR-04 as changed on 2026-11-26, §4.2 step 5); quotes already sent keep
+     * theirs.
      */
     @Auditable(action = AuditAction.DELETE, resourceType = "customer-price", resourceId = "#customerId",
             details = "{" + AUDITED_SKU + ", version: #expectedVersion}")

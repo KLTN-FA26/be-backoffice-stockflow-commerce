@@ -16,10 +16,12 @@ import java.util.UUID;
  * @param customerCode  that customer's code
  * @param convertedOrderNumber the number of the order {@code convertedOrderId} names; null when there is none, and on
  *                      the customer's copy while that order is still a DRAFT (its contract not yet sent, 17 §5.2)
+ * @param priceReviewPending 14 BR-10: the draft waits for the Sales Manager to approve its prices; false on the
+ *                      customer's copy
  */
 public record QuoteRowResponse(UUID id, String quoteNumber, UUID customerId, String status, int revision,
                                Instant validUntil, Instant sentAt, UUID convertedOrderId,
                                Instant createdAt, long version, BigDecimal total, Integer lineCount,
                                String firstItemName, String customerName, String customerCode,
-                               String convertedOrderNumber) {
+                               String convertedOrderNumber, boolean priceReviewPending) {
 }
