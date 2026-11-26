@@ -119,7 +119,11 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/chat/me/conversations/unread-count", "the caller's own chat badge (F-13): counts "
                     + "over the conversations of the token's customer profile, read by the token's subject"),
             Map.entry("POST /api/v1/chat/socket-tickets", "a socket ticket for the caller's own token (BE-12): it "
-                    + "carries that token's claims and nothing taken from the request"));
+                    + "carries that token's claims and nothing taken from the request"),
+            Map.entry("POST /api/v1/credit-requests", "QĐ-A: a credit request for the caller's own customer, resolved "
+                    + "from the token; a customerId in the body is ignored for a portal account"),
+            Map.entry("GET /api/v1/credit-requests/mine", "QĐ-A: the caller's own credit requests, selected by the "
+                    + "customer profile of the token"));
 
     /**
      * Handlers with neither {@code @RequiresPermission} nor {@code @PreAuthorize}. They are open to anyone signed in
@@ -302,6 +306,11 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/delivery-outcome", "fulfillment-delivery-outcomes:UPDATE"),
             Map.entry("POST /api/v1/customers/{customerId}/status", "customer-status:APPROVE"),
             Map.entry("GET /api/v1/catalog/products/availability", "catalog-storefront:READ"),
+            // QĐ-A (V20270102000100): born permission-guarded; listed so the guards cannot drift.
+            Map.entry("POST /api/v1/credit-requests/{id}/recommendation", "customer-credit-requests:UPDATE"),
+            Map.entry("POST /api/v1/credit-requests/{id}/approval", "customer-credit-requests:APPROVE"),
+            Map.entry("POST /api/v1/credit-requests/{id}/rejection", "customer-credit-requests:APPROVE"),
+            Map.entry("POST /api/v1/credit-requests/{id}/withdrawal", "customer-credit-requests:CREATE"),
             // Was sales-orders:READ + back office; its own code so ACCREAD does not open the queue.
             Map.entry("GET /api/v1/orders/cancellation-requests", "sales-order-cancellations:READ"));
 
@@ -405,6 +414,17 @@ class PermissionMatrixTest {
             // 2026-11-14 plan, BE2 (V20261126000100): the receipts' Excel file, for the accounting software (15 BR-06), is
             // the accountant's, as recording and voiding them are.
             Map.entry("payment-receipts:EXPORT", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            // QĐ-A (V20270102000100): the customer (OWN) and Sales ask for credit; Sales give their opinion; only the
+            // accountant decides; the back office opens the screens.
+            Map.entry("customer-credit-requests:VIEW_PAGE", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("customer-credit-requests:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("customer-credit-requests:CREATE", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("customer-credit-requests:UPDATE", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("customer-credit-requests:APPROVE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
             // BE2-B (15 §2, §4.3): receivables are read by the accountant, Sales and the Sales Manager; exported - every
             // customer's debt at once - by the accountant and the Sales Manager.
             Map.entry("reporting-receivables:VIEW_PAGE", Set.of(Role.ACCOUNTANT, Role.SALES_MANAGER,
@@ -619,7 +639,15 @@ class PermissionMatrixTest {
                 // F-13 (kltn-docs 16 BR-02): a conversation of the attacker's own, about the victim's order - only the
                 // owner check of the context can refuse it.
                 Map.entry("POST /api/v1/chat/me/conversations", "{\"contextKind\":\"ORDER\",\"contextId\":\""
-                        + victimOrder + "\",\"text\":\"stolen\"}"));
+                        + victimOrder + "\",\"text\":\"stolen\"}"),
+                // QĐ-A (V20270102000100): a well-formed credit request naming the victim - filed for the attacker's
+                // own customer whatever the body names, so the answer must not carry the victim's id; and valid
+                // bodies on someone else's request, so only the owner check can refuse them.
+                Map.entry("POST /api/v1/credit-requests", "{\"customerId\":\"" + victimCustomer
+                        + "\",\"requestedLimit\":1000,\"requestedTermDays\":30,\"salesNote\":\"stolen\"}"),
+                Map.entry("POST /api/v1/credit-requests/{id}/withdrawal", "{\"version\":0}"),
+                Map.entry("POST /api/v1/credit-requests/{id}/files/uploads", uploadSlot),
+                Map.entry("POST /api/v1/credit-requests/{id}/files", "{\"uploadId\":\"" + UUID.randomUUID() + "\"}"));
     }
 
 

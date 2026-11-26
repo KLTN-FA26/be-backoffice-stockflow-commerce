@@ -92,7 +92,7 @@ reshaped by the rescope (ADR-0010).
 | `inventory` | stock only as whole LPN cartons, holds and allocations, FIFO, putaway, counts and adjustments, quarantine, ledger |
 | `warehouse` | warehouses, zones, bins (capacity in m³, `STAGING`, `QUARANTINE`, `OVERFLOW`), putaway tasks |
 | `order` | quotes, sales contracts, orders, delivery batches, shipping-warehouse choice and release, production orders and producers, cancellations, return requests |
-| `payment` | installments of signed contracts, payment receipts, credit position, settlements, refund records (no money ledger) |
+| `payment` | installments of signed contracts, payment receipts, credit position, settlements, refund records (no money ledger), credit requests (the accountant approves; approving writes the customer's credit through `customer :: api`) |
 | `invoicing` | VAT e-invoices drawn up per delivery and issued through an e-invoice provider (kltn-docs 21) |
 | `fulfillment` | pick lists, staging, carton check and labelling, shipments, load plans, dispatch, carriers (Ahamove), proof of delivery |
 | `procurement` | goods receipts against production orders and return receipts (name kept; purchasing is gone) |

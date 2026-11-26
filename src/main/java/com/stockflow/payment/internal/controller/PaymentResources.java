@@ -14,6 +14,11 @@ final class PaymentResources {
     static final String RECEIPTS = "payment-receipts";
     /** 4B-9: what cancellations and closures left to refund, and the accountant's records of the refunds made. */
     static final String REFUNDS = "payment-refunds";
+    /**
+     * QĐ-A (2026-11-26): credit requests - filed by the customer (OWN) and Sales, Sales' opinion, the accountant's
+     * decision. Named for what is asked for, the customer's credit, though payment keeps them.
+     */
+    static final String CREDIT_REQUESTS = "customer-credit-requests";
 
     private PaymentResources() {
     }
