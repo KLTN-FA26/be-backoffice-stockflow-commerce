@@ -48,7 +48,7 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
      * The row is locked first with a native {@code FOR UPDATE} and the aggregate read afterwards, then refreshed: a
      * caller that queued behind another transaction must see what that transaction committed, and an entity already
      * in the persistence context would otherwise be returned as it was before the wait (the same reasoning as
-     * {@code StockItemRepositoryAdapter.findByIdForUpdate}).
+     * {@code StockPackageRepositoryAdapter.findAllByIdForUpdate}).
      */
     @Override
     public Optional<GoodsReceipt> findByIdForUpdate(UUID receiptId) {

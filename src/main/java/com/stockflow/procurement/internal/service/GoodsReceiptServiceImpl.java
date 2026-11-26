@@ -407,9 +407,8 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         for (ReceiptLine line : receipt.lines()) {
             List<StockPackageView> labelled = cartons.getOrDefault(line.id(), List.of()).stream()
                     .filter(carton -> "RECEIVING".equals(carton.status())).toList();
-            boolean standard = labelled.stream().allMatch(carton -> Objects.equals(carton.receivedQty(),
-                    carton.nominalQty()));
-            if (labelled.isEmpty() || !standard || countedIntoCartons(labelled) != line.receivedQuantity()) {
+            boolean counted = labelled.stream().allMatch(carton -> carton.countedAt() != null);
+            if (labelled.isEmpty() || !counted || countedIntoCartons(labelled) != line.receivedQuantity()) {
                 throw new BusinessException(ErrorCode.RECEIPT_CARTON_NOT_STANDARD, ("Receipt %s: a line of %d units has "
                         + "%d carton(s) holding %d; every unit is received in a carton of its standard count (BR-12, "
                         + "BR-13) - count the line again").formatted(receipt.number(), line.receivedQuantity(),
@@ -689,7 +688,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
 
     /** What was counted into a line's cartons: the line less this is its loose remainder (design §3 rule 5). */
     private static int countedIntoCartons(List<StockPackageView> cartons) {
-        return cartons.stream().mapToInt(c -> c.receivedQty() == null ? 0 : c.receivedQty()).sum();
+        return cartons.stream().mapToInt(StockPackageView::countedUnits).sum();
     }
 
     /** The item with this SKU, or empty for an unknown or malformed one. */
@@ -762,12 +761,12 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             InventoryItemPolicy item = items.get(line.inventoryItemId());
             List<PackageView> packages = cartons.getOrDefault(line.id(), List.of()).stream()
                     .map(c -> new PackageView(c.id(), c.lpn(), c.quantity() == null ? 0 : c.quantity(),
-                            c.receivedQty() == null ? 0 : c.receivedQty(), c.nominalQty(), c.status(),
+                            c.countedAt(), c.nominalQty(), c.status(),
                             c.locationCode()))
                     .toList();
             // Design §3 rule 5: loose is what was not counted into a carton. Not what is in the cartons now - a
             // confirmed receipt is frozen (BR-05), and units picked from a carton later were never loose.
-            int inCartons = packages.stream().mapToInt(PackageView::receivedQty).sum();
+            int inCartons = packages.stream().mapToInt(PackageView::countedUnits).sum();
             return new LineView(line.id(), line.inventoryItemId(), item == null ? null : item.sku(),
                     line.receivedQuantity(), line.lotNumber(), code(where, line.locationId()), line.note(),
                     line.receivedQuantity(),

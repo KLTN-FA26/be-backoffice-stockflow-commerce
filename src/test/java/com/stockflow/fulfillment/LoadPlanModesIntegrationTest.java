@@ -449,11 +449,10 @@ class LoadPlanModesIntegrationTest {
         OrderSummary order = order(1, 2);
         Set<String> allocated = new HashSet<>(jdbc.queryForList("""
                 SELECT sp.lpn FROM inventory.stock_reservation r
-                  JOIN inventory.stock_item si ON si.id = r.stock_item_id
-                  JOIN inventory.stock_package sp ON sp.id = si.stock_package_id
+                  JOIN inventory.stock_package sp ON sp.id = r.stock_package_id
                   JOIN ordering.order_line_reservation lr ON lr.reservation_id = r.id
                   JOIN ordering.order_line ol ON ol.id = lr.order_line_id
-                 WHERE ol.order_id = ? AND r.status = 'HELD' AND r.stock_item_id IS NOT NULL""", String.class,
+                 WHERE ol.order_id = ? AND r.status = 'HELD' AND r.stock_package_id IS NOT NULL""", String.class,
                 order.orderId()));
         assertThat(allocated).as("released: three whole cartons allocated").hasSize(3);
 

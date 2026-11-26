@@ -73,6 +73,11 @@ Enum inventory.cycle_count_trigger_type {
   MANUAL
 }
 
+Enum inventory.stock_adjustment_direction {
+  WRITE_OFF
+  RESTOCK
+}
+
 Enum inventory.stock_adjustment_reason_code {
   DAMAGED
   LOST
@@ -92,16 +97,6 @@ Enum inventory.stock_adjustment_status {
   REJECTED
   POSTED
   WITHDRAWN
-}
-
-Enum inventory.stock_item_status {
-  INBOUND
-  AVAILABLE
-  QUARANTINE
-  BLOCKED
-  DAMAGED
-  EXPIRED
-  IN_PRODUCTION
 }
 
 Enum inventory.stock_lot_origin_type {
@@ -160,6 +155,16 @@ Enum inventory.stock_package_status {
   CONSUMED
   LOST
   VOID
+}
+
+Enum inventory.stock_package_stock_status {
+  INBOUND
+  AVAILABLE
+  QUARANTINE
+  BLOCKED
+  DAMAGED
+  EXPIRED
+  IN_PRODUCTION
 }
 
 Enum inventory.stock_reservation_status {
@@ -1527,8 +1532,6 @@ Table inventory.cycle_count_line [headercolor: #3E7C4A] {
   location_code    varchar(64) [not null]
   sku              varchar(64) [not null]
   lot_number       varchar(64)
-  expected_qty     int [not null]
-  counted_qty      int
   counted_by       uuid
   counted_at       timestamptz
   recount_required boolean [not null, default: false]
@@ -1537,7 +1540,9 @@ Table inventory.cycle_count_line [headercolor: #3E7C4A] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
-  stock_package_id uuid
+  stock_package_id uuid [not null]
+  booked           boolean [not null]
+  found            boolean
 }
 
 Table inventory.inventory_items [headercolor: #3E7C4A] {
@@ -1559,7 +1564,6 @@ Table inventory.stock_adjustment [headercolor: #3E7C4A] {
   location_code       varchar(64) [not null]
   sku                 varchar(64) [not null]
   lot_number          varchar(64)
-  quantity_delta      int [not null]
   reason_code         inventory.stock_adjustment_reason_code [not null]
   note                varchar(1000)
   status              inventory.stock_adjustment_status [not null, default: 'PENDING_APPROVAL']
@@ -1577,26 +1581,9 @@ Table inventory.stock_adjustment [headercolor: #3E7C4A] {
   withdrawn_at        timestamptz
   received_at         timestamptz
   reservation_id      uuid
-  stock_package_id    uuid
+  stock_package_id    uuid [not null]
   counted_by          uuid
-}
-
-Table inventory.stock_item [headercolor: #3E7C4A] {
-  id               uuid [pk]
-  sku              varchar(64) [not null]
-  location_code    varchar(64) [not null]
-  lot_number       varchar(64) [not null]
-  on_hand          int [not null, default: 0]
-  reserved         int [not null, default: 0]
-  status           inventory.stock_item_status [not null]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-  received_at      timestamptz
-  stock_package_id uuid
-  lot_id           uuid [not null]
+  direction           inventory.stock_adjustment_direction [not null]
 }
 
 Table inventory.stock_lot [headercolor: #3E7C4A] {
@@ -1616,32 +1603,30 @@ Table inventory.stock_lot [headercolor: #3E7C4A] {
 }
 
 Table inventory.stock_movement [headercolor: #3E7C4A] {
-  id                    uuid [pk]
-  movement_type         inventory.stock_movement_movement_type [not null]
-  sku                   varchar(64) [not null]
-  lot_number            varchar(64)
-  from_location_code    varchar(64)
-  to_location_code      varchar(64)
-  quantity              int [not null]
-  from_status           varchar(32)
-  to_status             varchar(32)
-  reference_type        inventory.stock_movement_reference_type [not null]
-  reference_id          uuid [not null]
-  reason                varchar(500)
-  actor_id              uuid
-  occurred_at           timestamptz [not null]
-  version               bigint [not null, default: 0]
-  created_at            timestamptz [not null, default: `now()`]
-  created_by            varchar(100)
-  last_modified_at      timestamptz
-  last_modified_by      varchar(100)
-  from_stock_package_id uuid
-  to_stock_package_id   uuid
-  lot_id                uuid
-  order_id              uuid
-  order_number          varchar(32)
-  requested_by          uuid
-  counted_by            uuid
+  id                 uuid [pk]
+  movement_type      inventory.stock_movement_movement_type [not null]
+  sku                varchar(64) [not null]
+  lot_number         varchar(64)
+  from_location_code varchar(64)
+  to_location_code   varchar(64)
+  from_status        varchar(32)
+  to_status          varchar(32)
+  reference_type     inventory.stock_movement_reference_type [not null]
+  reference_id       uuid [not null]
+  reason             varchar(500)
+  actor_id           uuid
+  occurred_at        timestamptz [not null]
+  version            bigint [not null, default: 0]
+  created_at         timestamptz [not null, default: `now()`]
+  created_by         varchar(100)
+  last_modified_at   timestamptz
+  last_modified_by   varchar(100)
+  lot_id             uuid
+  order_id           uuid
+  order_number       varchar(32)
+  requested_by       uuid
+  counted_by         uuid
+  stock_package_id   uuid [not null]
 }
 
 Table inventory.stock_package [headercolor: #3E7C4A] {
@@ -1650,7 +1635,6 @@ Table inventory.stock_package [headercolor: #3E7C4A] {
   inventory_item_id     uuid [not null]
   uom_conversion_id     uuid [not null]
   nominal_qty           int [not null]
-  received_qty          int
   location_code         varchar(64) [not null]
   status                inventory.stock_package_status [not null, default: 'RECEIVING']
   goods_receipt_line_id uuid
@@ -1668,17 +1652,18 @@ Table inventory.stock_package [headercolor: #3E7C4A] {
   custody_ended_at      timestamptz
   custody_ended_by      uuid
   custody_note          varchar(500)
+  counted_at            timestamptz
+  stock_status          inventory.stock_package_stock_status
+  lot_id                uuid
+  received_at           timestamptz
 }
 
 Table inventory.stock_reservation [headercolor: #3E7C4A] {
   id                uuid [pk]
-  stock_item_id     uuid
   order_id          uuid [not null]
   root_request_id   uuid [not null]
   request_id        uuid [not null, unique]
-  quantity          int [not null]
   reserved_at       timestamptz [not null]
-  expires_at        timestamptz
   status            inventory.stock_reservation_status [not null]
   release_reason    varchar(32)
   closed_at         timestamptz
@@ -1686,6 +1671,9 @@ Table inventory.stock_reservation [headercolor: #3E7C4A] {
   allocated_from_id uuid
   order_number      varchar(32)
   warehouse_code    varchar(64)
+  cartons           int [not null]
+  units_per_carton  int [not null]
+  stock_package_id  uuid
 }
 
 Table inventory.uom_conversions [headercolor: #3E7C4A] {
@@ -3674,6 +3662,7 @@ Table design.design_project_quote_request [headercolor: #AA4A9E] {
   status                design.design_project_quote_request_status [not null, default: 'OPEN']
   closed_at             timestamptz
   closed_by             uuid
+  close_reason          varchar(1000)
 }
 
 Table design.design_project_quote_request_line [headercolor: #AA4A9E] {
@@ -4740,9 +4729,9 @@ Table chat.message [headercolor: #4C93A8] {
   deleted_at        timestamptz
   deleted_by        uuid
   indexes {
-    (conversation_id, seq) [unique]
-    (id, kind) [unique]
     (id, conversation_id) [unique]
+    (id, kind) [unique]
+    (conversation_id, seq) [unique]
   }
 }
 
@@ -5177,33 +5166,29 @@ Ref: inventory.stock_adjustment.requested_by > identity.app_user.id
 Ref: inventory.stock_adjustment.reservation_id > inventory.stock_reservation.id [delete: restrict]
 Ref: inventory.stock_adjustment.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_adjustment.stock_package_id > inventory.stock_package.id [delete: restrict]
-Ref: inventory.stock_item.location_code > warehouse.storage_location.location_code [delete: restrict]
-Ref: inventory.stock_item.lot_id > inventory.stock_lot.id [delete: restrict]
-Ref: inventory.stock_item.sku > inventory.inventory_items.sku [delete: restrict]
-Ref: inventory.stock_item.stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: inventory.stock_lot.production_order_id > ordering.production_order.id [delete: restrict]
 Ref: inventory.stock_lot.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_lot.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: inventory.stock_movement.actor_id > identity.app_user.id
 Ref: inventory.stock_movement.counted_by > identity.app_user.id
 Ref: inventory.stock_movement.from_location_code > warehouse.storage_location.location_code [delete: restrict]
-Ref: inventory.stock_movement.from_stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: inventory.stock_movement.lot_id > inventory.stock_lot.id [delete: restrict]
 Ref: inventory.stock_movement.order_id > ordering.customer_order.id [delete: restrict]
 Ref: inventory.stock_movement.requested_by > identity.app_user.id
 Ref: inventory.stock_movement.sku > inventory.inventory_items.sku [delete: restrict]
+Ref: inventory.stock_movement.stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: inventory.stock_movement.to_location_code > warehouse.storage_location.location_code [delete: restrict]
-Ref: inventory.stock_movement.to_stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: inventory.stock_package.custody_ended_by > identity.app_user.id
 Ref: inventory.stock_package.goods_receipt_line_id > procurement.goods_receipt_lines.id [delete: restrict]
 Ref: inventory.stock_package.inventory_item_id > inventory.inventory_items.id [delete: restrict]
 Ref: inventory.stock_package.location_code > warehouse.storage_location.location_code [delete: restrict]
+Ref: inventory.stock_package.lot_id > inventory.stock_lot.id [delete: restrict]
 Ref: inventory.stock_package.return_request_id > ordering.return_request.id [delete: restrict]
 Ref: inventory.stock_package.uom_conversion_id > inventory.uom_conversions.id [delete: restrict]
 Ref: inventory.stock_reservation.allocated_from_id > inventory.stock_reservation.id [delete: restrict]
 Ref: inventory.stock_reservation.order_id > ordering.customer_order.id [delete: restrict]
 Ref: inventory.stock_reservation.sku > inventory.inventory_items.sku [delete: restrict]
-Ref: inventory.stock_reservation.stock_item_id > inventory.stock_item.id [delete: cascade]
+Ref: inventory.stock_reservation.stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: inventory.stock_reservation.warehouse_code > warehouse.warehouse.prefix [delete: restrict]
 Ref: inventory.uom_conversions.inventory_item_id > inventory.inventory_items.id [delete: cascade]
 Ref: warehouse.area.location_id > warehouse.storage_location.id [delete: restrict]
@@ -5707,7 +5692,6 @@ TableGroup inventory_group [color: #3E7C4A] {
   inventory.cycle_count_line
   inventory.inventory_items
   inventory.stock_adjustment
-  inventory.stock_item
   inventory.stock_lot
   inventory.stock_movement
   inventory.stock_package

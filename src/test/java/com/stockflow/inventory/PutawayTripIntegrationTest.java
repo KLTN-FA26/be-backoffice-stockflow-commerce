@@ -299,8 +299,7 @@ class PutawayTripIntegrationTest {
         assertThat(tripApi.holds(warehouse, null)).isEmpty();
         assertThat(trips.current(clerk)).isEmpty();
         assertThat(jdbc.queryForList("""
-                SELECT p.lpn, s.status, s.location_code FROM inventory.stock_item s
-                  JOIN inventory.stock_package p ON p.id = s.stock_package_id
+                SELECT p.lpn, p.stock_status AS status, p.location_code FROM inventory.stock_package p
                  WHERE p.lpn IN (?, ?, ?)""", lpn1, lpn2, lpn3)).hasSize(3).allSatisfy(row ->
                 assertThat(row.get("status")).isEqualTo("AVAILABLE"));
         assertThat(jdbc.queryForObject("select location_code from inventory.stock_package where lpn = ?",

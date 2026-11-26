@@ -12,12 +12,12 @@ import java.util.UUID;
  * THE public API of the inventory module. Every other module talks to inventory through this
  * interface and nothing else.
  *
- * <p>What other modules deliberately cannot reach: {@code StockItem}, {@code StockItemRepository},
+ * <p>What other modules deliberately cannot reach: {@code StockPackage}, {@code StockPackageRepository},
  * the JPA entities, the controller. They all live under {@code inventory.internal}, and
  * {@code ModularityTest} fails the build if anyone imports them.</p>
  *
  * <p>The parameters and return types are records declared in this same package, never domain
- * objects. Handing another module a {@code StockItem} would let it call {@code allocate()} on the
+ * objects. Handing another module a {@code StockPackage} would let it call {@code allocate()} on the
  * aggregate directly, outside a transaction and outside the invariants.</p>
  */
 public interface InventoryService {
@@ -25,7 +25,7 @@ public interface InventoryService {
     /**
      * Available to promise for one SKU (docs 01): sellable units on hand — AVAILABLE — minus
      * every hold on them (allocations) minus the live SKU reservations (the holds Sales takes at a
-     * shipping warehouse), which sit on no stock item. Never negative.
+     * shipping warehouse), which sit on no carton. Never negative.
      */
     int availableToPromise(Sku sku);
 
@@ -77,8 +77,9 @@ public interface InventoryService {
     /**
      * 4B-7 (17 §4.2 step 3, BR-21; 20 §5.6, BR-17): hold, for an order of a contract, as many whole cartons of the SKU
      * as its shipping warehouse has available to promise, up to {@code cartons} - a SKU reservation at that warehouse,
-     * on no bin, with no deadline. What is not available is held later, when stock arrives; nothing is refused for a
-     * shortage. Joins the caller's transaction, under the SKU's advisory lock (take {@link #prepareReservation} first
+     * on no bin, with no deadline. Cartons of the command's {@code unitsPerCarton} only (ADR-0011): the hold counts
+     * cartons of that count, and a free carton of another count is neither promised to it nor taken by it. What is
+     * not available is held later, when stock arrives; nothing is refused for a shortage. Joins the caller's transaction, under the SKU's advisory lock (take {@link #prepareReservation} first
      * for several SKUs). Idempotent on the command's request id.
      */
     HoldStockResult holdAtWarehouse(HoldStockCommand command);
@@ -104,11 +105,14 @@ public interface InventoryService {
      * {@code keepUnits} is above zero, a new one of {@code keepUnits} is held at the same warehouse for the same order -
      * not checked against what is available, as it holds less than the one it replaces. Joins the caller's transaction,
      * under the SKU's advisory lock. Idempotent: called again for the same hold and size it answers the same.
+     * Units, because the caller counts in them; the hold counts cartons of one count (ADR-0011), so {@code keepUnits}
+     * must be a whole number of them.
      *
      * @return the new hold's id; empty when {@code keepUnits} is zero
      * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND} (not a SKU reservation at a
      *         warehouse), {@code RESERVATION_NOT_ACTIVE} (already closed, and not by this call),
-     *         {@code VALIDATION_FAILED} ({@code keepUnits} negative or not below the hold)
+     *         {@code VALIDATION_FAILED} ({@code keepUnits} negative, not below the hold, or not a whole number of
+     *         the hold's cartons)
      */
     Optional<UUID> shrinkHold(UUID reservationId, int keepUnits);
 
@@ -123,9 +127,10 @@ public interface InventoryService {
      * HELD → ALLOCATED (docs 03 §6, 04c F-FUL step 02): the order was released to a warehouse; each live SKU
      * reservation of the order becomes allocations of whole LPN cartons on pickable bins of that warehouse, one
      * allocation per carton, in the SKU's removal order - the earliest receipt first (FIFO, kltn-docs 07 BR-03) - and
-     * never on loose units, on a carton another order holds part of, or on blocked or non-pickable stock.
-     * Allocations are pinned (X-RESV: they do not expire). All or nothing: when the warehouse has too few whole
-     * cartons for every line, nothing is allocated (k &lt; N waits for {@code AWAITING_STOCK}, team plan 4A-6). Idempotent: an order with no SKU reservation left
+     * never on loose units, on a carton another order holds part of, or on blocked or non-pickable stock. A
+     * reservation takes cartons of its own count only (ADR-0011): one held in cartons of 1000 is never given a carton
+     * of another count, older or not. All or nothing: when the warehouse has too few whole
+     * cartons of that count for every line, nothing is allocated (k &lt; N waits for {@code AWAITING_STOCK}, team plan 4A-6). Idempotent: an order with no SKU reservation left
      * gets an empty result. Joins the caller's transaction; locks the SKUs, then the reservations, then the stock
      * rows in id order.
      *
@@ -218,7 +223,7 @@ public interface InventoryService {
 
     /**
      * Move labelled cartons whole (SCRUM-473; kltn-docs 11 BR-04): each carton and its rows change location together,
-     * keeping their ids, holds and sealed state; one MOVE ledger line per row names the carton on both sides. Only an
+     * keeping their ids, holds and sealed state; one MOVE ledger line per row names the carton. Only an
      * IN_STOCK carton moves, and all or none of them do (11 BR-07). A move a person asks for ({@link
      * MoveReference#MOVE_TASK}) never takes a carton held for an order (11 BR-05: the picker would find its bin empty)
      * nor one a cycle count holds, and is answered again, not repeated, for the same reference id. Locks, once for the
@@ -256,7 +261,7 @@ public interface InventoryService {
      * it (SCRUM-461): the item exists only because its variant was created (docs 01 BR-07), and the
      * variant cannot go while it stands. A SKU with no item is skipped.
      *
-     * <p>The caller asks {@link #skusInUse} first; this is the last line of defence: stock rows, movements,
+     * <p>The caller asks {@link #skusInUse} first; this is the last line of defence: cartons, movements,
      * adjustments, counts, purchase order and receipt lines, pick lines and putaway or move tasks
      * all point at an item through foreign keys, and any of them refuses the delete.</p>
      *

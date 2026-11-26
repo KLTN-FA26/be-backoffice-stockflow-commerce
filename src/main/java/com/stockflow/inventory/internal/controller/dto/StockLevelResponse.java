@@ -6,7 +6,8 @@ import io.swagger.v3.oas.annotations.media.Schema;
  * Inventory Level of one SKU in one warehouse — a computed roll-up, not an editable record.
  *
  * <p>Each quantity is in pieces and again in cartons (kltn-docs 01 BR-09): the warehouse handles only whole cartons,
- * and the pieces say how many units those cartons hold.</p>
+ * and the pieces say how many units those cartons hold. The cartons are counted, not divided out of the pieces
+ * (ADR-0011, step 3e), so a SKU with cartons of two counts, or with no carton unit, still has them.</p>
  */
 @Schema(name = "StockLevel", description = "Stock of one SKU in one warehouse, summed over its locations")
 public record StockLevelResponse(
@@ -36,20 +37,19 @@ public record StockLevelResponse(
         @Schema(description = "Available to promise: available minus reserved minus allocated, capped system-wide")
         int atp,
 
-        @Schema(description = "onHand in cartons; null when there is no carton unit or it is not a whole number of "
-                + "cartons", nullable = true)
+        @Schema(description = "The cartons in stock, counted (cartons of every count)")
         Integer onHandCartons,
 
-        @Schema(description = "available in cartons; null as for onHandCartons", nullable = true)
+        @Schema(description = "Of onHandCartons, those in AVAILABLE status")
         Integer availableCartons,
 
-        @Schema(description = "reserved in cartons; null as for onHandCartons", nullable = true)
+        @Schema(description = "Cartons held here and not allocated")
         Integer reservedCartons,
 
-        @Schema(description = "allocated in cartons; null as for onHandCartons", nullable = true)
+        @Schema(description = "Cartons allocated for picking; each allocation is one carton")
         Integer allocatedCartons,
 
-        @Schema(description = "atp in cartons; null as for onHandCartons", nullable = true)
+        @Schema(description = "Cartons still to promise, worked out per carton count as a hold is promised")
         Integer atpCartons
 ) {
 }

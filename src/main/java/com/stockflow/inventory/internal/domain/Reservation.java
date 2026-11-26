@@ -4,17 +4,18 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * One hold on stock, held by one order line inside one {@link StockItem}.
+ * One allocation: one carton ({@link StockPackage}) held for one order.
  *
  * <p><b>Why this class exists.</b> The first cut of this model kept {@code reserved} as a single
- * integer on the stock item. That number cannot answer three questions the business asks every
- * day: how much did <i>this</i> order reserve, how do we release exactly that order's share, and
- * what happens when a customer abandons checkout — the stock stayed locked forever. An entity
- * with an owner and an expiry answers all three.</p>
+ * integer beside the stock. That number cannot answer two questions the business asks every
+ * day: which order holds this, and how do we release exactly that order's hold. An
+ * entity with an owner answers both - and since V20261231000600 it is the only record that a carton is taken: the
+ * counter is gone, so it cannot drift from these rows. (It once carried a deadline too, for an abandoned checkout; no
+ * hold has had one since V20261117000300, and the column went with V20261231000500.)</p>
  *
  * <p><b>Entity, not aggregate root.</b> It has an identity that matters ({@link ReservationId})
  * but no independent life: it is created, consumed and released only through its
- * {@code StockItem}, which is what keeps {@code sum(active reservations) <= onHand} true. Loading
+ * {@code StockPackage}, which is what keeps a carton to at most one live allocation. Loading
  * a reservation on its own and mutating it would step around that invariant, so there is no
  * repository for this type.</p>
  *
@@ -31,81 +32,67 @@ public final class Reservation {
      *
      * <p>Kept alongside {@link #requestId} rather than instead of it because they answer different
      * questions. This one answers "has this caller's request already been served?", which must be
-     * asked <i>before</i> any lots are chosen. The derived one answers "has this exact stock item
-     * already been held for it?", and has to differ per stock item so the unique constraint does
-     * not reject the second lot.</p>
+     * asked <i>before</i> any cartons are chosen. The derived one answers "has this exact carton
+     * already been held for it?", and has to differ per carton so the unique constraint does
+     * not reject the second carton.</p>
      */
     private final UUID rootRequestId;
     private final UUID requestId;
-    /** Fixed when the hold is made: an allocation takes a carton whole, and a hold is released whole. */
-    private final Quantity quantity;
+    /**
+     * The count of the one carton this hold is (ADR-0011, V20261231000500): an allocation takes its carton
+     * whole and is released whole, so it stores no number of cartons - always one - and no units of its own.
+     */
+    private final int unitsPerCarton;
     private final Instant reservedAt;
-    /** Null once pinned: the order left PENDING_PAYMENT and the hold no longer expires (SCRUM-465). */
-    private Instant expiresAt;
 
     private ReservationStatus status;
     private ReleaseReason releaseReason;
     private Instant closedAt;
     /**
-     * The {@link SkuReservation} this hold was allocated from (F-FUL step 02), null for a checkout hold placed on a
-     * stock item before SKU reservations existed. An allocation never expires.
+     * The {@link SkuReservation} this hold was allocated from (F-FUL step 02), null for a checkout hold placed
+     * straight on stock before SKU reservations existed (history).
      */
     private final UUID allocatedFrom;
 
     /** An order's hold, as stored. */
     public Reservation(ReservationId id, UUID orderId, UUID rootRequestId, UUID requestId,
-                       Quantity quantity, Instant reservedAt, Instant expiresAt,
+                       int unitsPerCarton, Instant reservedAt,
                        ReservationStatus status, ReleaseReason releaseReason, Instant closedAt) {
-        this(id, orderId, rootRequestId, requestId, quantity, reservedAt, expiresAt, status, releaseReason, closedAt,
-                null);
+        this(id, orderId, rootRequestId, requestId, unitsPerCarton, reservedAt, status, releaseReason, closedAt, null);
     }
 
     /** Full constructor, used by the persistence mapper when rehydrating a stored row. */
     @SuppressWarnings("java:S107")
     public Reservation(ReservationId id, UUID orderId,
-                       UUID rootRequestId, UUID requestId, Quantity quantity, Instant reservedAt, Instant expiresAt,
+                       UUID rootRequestId, UUID requestId, int unitsPerCarton, Instant reservedAt,
                        ReservationStatus status, ReleaseReason releaseReason, Instant closedAt, UUID allocatedFrom) {
         this.id = java.util.Objects.requireNonNull(id, "id");
         if (status == ReservationStatus.ALLOCATED) {
-            throw new IllegalArgumentException("A hold on a stock item is never ALLOCATED; its SKU reservation is");
-        }
-        if (allocatedFrom != null && expiresAt != null) {
-            throw new IllegalArgumentException("An allocation does not expire");
+            throw new IllegalArgumentException("An allocation of a carton is never ALLOCATED; its SKU reservation is");
         }
         this.allocatedFrom = allocatedFrom;
         this.orderId = java.util.Objects.requireNonNull(orderId, "orderId");
         this.rootRequestId = java.util.Objects.requireNonNull(rootRequestId, "rootRequestId");
         this.requestId = java.util.Objects.requireNonNull(requestId, "requestId");
-        this.quantity = java.util.Objects.requireNonNull(quantity, "quantity");
+        this.unitsPerCarton = unitsPerCarton;
         this.reservedAt = java.util.Objects.requireNonNull(reservedAt, "reservedAt");
-        this.expiresAt = expiresAt;
         this.status = java.util.Objects.requireNonNull(status, "status");
         this.releaseReason = releaseReason;
         this.closedAt = closedAt;
-        if (quantity.isZero()) {
+        if (unitsPerCarton < 1) {
             throw new IllegalArgumentException("A reservation of zero units is meaningless");
         }
     }
 
     /**
-     * An allocation (F-FUL step 02): units of a {@link SkuReservation} placed on this stock item when the order was
-     * released to its warehouse. Pinned - an allocation has no {@code expires_at} (X-RESV). Package-private: only
-     * {@link StockItem} places one.
+     * An allocation (F-FUL step 02): one carton of a {@link SkuReservation}, given to the
+     * order when it was released to its warehouse. Package-private: only {@link StockPackage} places one.
      */
     static Reservation allocate(UUID orderId, UUID allocatedFrom, UUID rootRequestId, UUID requestId,
-                                Quantity quantity, Instant now) {
+                                int unitsPerCarton, Instant now) {
         return new Reservation(new ReservationId(com.stockflow.common.id.Identifiers.newId()), orderId,
-                rootRequestId, requestId, quantity, now, null, ReservationStatus.HELD, null, null,
+                rootRequestId, requestId, unitsPerCarton, now, ReservationStatus.HELD, null, null,
                 java.util.Objects.requireNonNull(allocatedFrom, "allocatedFrom"));
-    }
-
-    /** True once {@code expiresAt} has passed and nobody has consumed or released the hold. */
-    public boolean isExpiredAt(Instant now) {
-        return status.isActive() && expiresAt != null && !now.isBefore(expiresAt);
-    }
-
-    public boolean isPinned() {
-        return expiresAt == null;
     }
 
     void consume(Instant now) {
@@ -140,9 +127,11 @@ public final class Reservation {
     public UUID orderId() { return orderId; }
     public UUID rootRequestId() { return rootRequestId; }
     public UUID requestId() { return requestId; }
-    public Quantity quantity() { return quantity; }
+    /** The count of the carton held; the hold is always that one carton. */
+    public int unitsPerCarton() { return unitsPerCarton; }
+    /** The units the hold stands for, derived: its one carton's count. Nothing stores it. */
+    public Quantity quantity() { return Quantity.of(unitsPerCarton); }
     public Instant reservedAt() { return reservedAt; }
-    public Instant expiresAt() { return expiresAt; }
     public ReservationStatus status() { return status; }
     public ReleaseReason releaseReason() { return releaseReason; }
     public Instant closedAt() { return closedAt; }

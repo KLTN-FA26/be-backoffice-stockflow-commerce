@@ -7,7 +7,7 @@ import java.util.UUID;
  * What {@link InventoryService#allocate} did: for every SKU reservation of the order it allocated, the holds that
  * replace it — one per bin and lot, in the order a picker should take them (FEFO). Empty when the order had no
  * SKU reservation left: allocated already, or placed before SKU reservations existed (its holds already sit on
- * stock items).
+ * cartons).
  */
 public record AllocateStockResult(UUID orderId, String warehouseCode, List<Allocation> allocations) {
 

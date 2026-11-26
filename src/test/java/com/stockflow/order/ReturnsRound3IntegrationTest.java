@@ -258,15 +258,16 @@ class ReturnsRound3IntegrationTest {
 
     private Map<String, Object> carton(String lpn) {
         return jdbc.queryForMap("""
-                SELECT p.status, p.return_ownership, p.return_request_id, p.custody_choice, s.status AS stock,
-                       s.on_hand FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
+                SELECT p.status, p.return_ownership, p.return_request_id, p.custody_choice, p.stock_status AS stock,
+                       CASE WHEN p.status = 'IN_STOCK' THEN p.nominal_qty ELSE 0 END AS on_hand
+                  FROM inventory.stock_package p
                  WHERE p.lpn = ?""", lpn);
     }
 
     private long reversals(ReturnRequest request, String lpn) {
         return jdbc.queryForObject("""
                 SELECT count(*) FROM inventory.stock_movement m JOIN inventory.stock_package p
-                    ON p.id = m.from_stock_package_id
+                    ON p.id = m.stock_package_id
                  WHERE m.reference_type = 'RETURN_REQUEST' AND m.reference_id = ? AND p.lpn = ?""", Long.class,
                 request.id(), lpn);
     }

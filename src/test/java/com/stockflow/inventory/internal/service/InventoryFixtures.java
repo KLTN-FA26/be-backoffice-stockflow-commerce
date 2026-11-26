@@ -4,9 +4,9 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.inventory.internal.domain.LocationId;
-import com.stockflow.inventory.internal.domain.Quantity;
-import com.stockflow.inventory.internal.domain.StockItem;
-import com.stockflow.inventory.internal.domain.StockItemId;
+import com.stockflow.inventory.internal.domain.StockPackage;
+import com.stockflow.inventory.internal.domain.StockPackageId;
+import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 
 import java.time.Instant;
@@ -30,22 +30,30 @@ final class InventoryFixtures {
     private InventoryFixtures() {
     }
 
-    /** A sellable (AVAILABLE) row holding {@code onHand} units at {@code location}, received a minute apart. */
-    static StockItem available(String sku, String location, String lot, int onHand) {
-        StockItem item = new StockItem(StockItemId.newId(), new Sku(sku), new LocationId(location), lot, Quantity.of(onHand), StockStatus.QUARANTINE, List.of(), 0L);
-        item.releaseFromQuarantine();
-        item.pullDomainEvents();
-        return item;
+    /**
+     * A sellable (AVAILABLE) carton of {@code units} in stock at {@code location}, held by no order, of a lot of its
+     * own numbered {@code lot} ({@code UNTRACED} when null); its receipt time is not known.
+     */
+    static StockPackage available(String sku, String location, String lot, int units) {
+        return availableReceived(sku, location, lot, units, null);
     }
 
-    /** As above, with the receipt time a FIFO policy ranks by. */
-    static StockItem availableReceived(String sku, String location, String lot, int onHand,
-                                       Instant receivedAt) {
-        return new StockItem(StockItemId.newId(), new Sku(sku), new LocationId(location), lot, Quantity.of(onHand), StockStatus.AVAILABLE, List.of(), 0L, receivedAt);
+    /** As above, with the receipt time FIFO ranks by. */
+    static StockPackage availableReceived(String sku, String location, String lot, int units, Instant receivedAt) {
+        return carton(sku, location, lot, units, receivedAt, StockStatus.AVAILABLE);
     }
 
-    static StockItem available(String location, int onHand) {
-        return available(SKU.code(), location, null, onHand);
+    /** A carton of {@code units} in stock at {@code location} in stock status {@code status}. */
+    static StockPackage carton(String sku, String location, String lot, int units, Instant receivedAt,
+                               StockStatus status) {
+        return new StockPackage(new StockPackageId(UUID.randomUUID()), "LPN-T-%06d".formatted(SEQ.incrementAndGet()),
+                new Sku(sku), UUID.randomUUID(), UUID.randomUUID(), units, NOW, new LocationId(location),
+                StockPackageStatus.IN_STOCK, status, UUID.randomUUID(), lot == null ? "UNTRACED" : lot, receivedAt,
+                null, null, List.of(), 0L);
+    }
+
+    static StockPackage available(String location, int units) {
+        return available(SKU.code(), location, null, units);
     }
 
     static UUID id() {

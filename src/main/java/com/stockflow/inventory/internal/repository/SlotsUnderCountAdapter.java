@@ -21,22 +21,22 @@ class SlotsUnderCountAdapter implements SlotsUnderCount {
     }
 
     @Override
-    public Set<UUID> stockItemsUnderCount(Collection<UUID> stockItemIds) {
-        if (stockItemIds.isEmpty()) {
+    public Set<UUID> cartonsUnderCount(Collection<UUID> stockPackageIds) {
+        if (stockPackageIds.isEmpty()) {
             return Set.of();
         }
         return new HashSet<>(jdbc.queryForList("""
-                SELECT s.id FROM inventory.stock_item s
-                 WHERE s.id IN (:ids) AND %s""".formatted(CountBusy.stockRowInBusySlot("s")),
-                new MapSqlParameterSource("ids", Set.copyOf(stockItemIds)), UUID.class));
+                SELECT p.id FROM inventory.stock_package p
+                 WHERE p.id IN (:ids) AND %s""".formatted(CountBusy.cartonInBusySlot("p.id")),
+                new MapSqlParameterSource("ids", Set.copyOf(stockPackageIds)), UUID.class));
     }
 
-    /** {@code stock_adjustment} names its slot with the same columns as a stock row. */
+    /** An adjustment is in the slot of the carton it names. */
     @Override
     public boolean adjustmentUnderCount(UUID adjustmentId) {
         Boolean held = jdbc.queryForObject("""
                 SELECT EXISTS (SELECT 1 FROM inventory.stock_adjustment a WHERE a.id = :id AND %s)""".formatted(
-                        CountBusy.stockRowInBusySlot("a")), new MapSqlParameterSource("id", adjustmentId),
+                        CountBusy.cartonInBusySlot("a.stock_package_id")), new MapSqlParameterSource("id", adjustmentId),
                 Boolean.class);
         return Boolean.TRUE.equals(held);
     }
@@ -44,8 +44,8 @@ class SlotsUnderCountAdapter implements SlotsUnderCount {
     @Override
     public Set<String> locationsUnderCount(UUID lotId) {
         return new HashSet<>(jdbc.queryForList("""
-                SELECT DISTINCT s.location_code FROM inventory.stock_item s
-                 WHERE s.lot_id = :lotId AND %s""".formatted(CountBusy.stockRowInBusySlot("s")),
+                SELECT DISTINCT p.location_code FROM inventory.stock_package p
+                 WHERE p.lot_id = :lotId AND %s""".formatted(CountBusy.cartonInBusySlot("p.id")),
                 new MapSqlParameterSource("lotId", lotId), String.class));
     }
 }

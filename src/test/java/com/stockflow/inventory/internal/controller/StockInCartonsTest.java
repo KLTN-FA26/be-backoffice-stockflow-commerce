@@ -13,27 +13,24 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** kltn-docs 01 BR-09: stock goes out in pieces and again in cartons of the SKU's carton unit, never rounded. */
+/** kltn-docs 01 BR-09: stock goes out in pieces and again in cartons, counted from the cartons (ADR-0011, 3e). */
 class StockInCartonsTest {
 
     private final InventoryWebMapper mapper = new InventoryWebMapperImpl();
 
     @Test
-    @DisplayName("pieces become cartons only when the division is exact and the SKU has a carton unit")
+    @DisplayName("a one-carton row is one carton while it holds units, none at zero, unknown while withheld")
     void cartonCount() {
-        assertThat(CartonCount.of(3000, 1000)).isEqualTo(3);
-        assertThat(CartonCount.of(0, 1000)).isZero();
-        assertThat(CartonCount.of(1500, 1000)).isNull();
-        assertThat(CartonCount.of(3000, null)).isNull();
-        assertThat(CartonCount.of(3000, 0)).isNull();
-        assertThat(CartonCount.of(null, 1000)).isNull();
+        assertThat(CartonCount.ofOneCarton(1000)).isEqualTo(1);
+        assertThat(CartonCount.ofOneCarton(0)).isZero();
+        assertThat(CartonCount.ofOneCarton(null)).isNull();
     }
 
     @Test
-    @DisplayName("a stock level carries every quantity in cartons beside the pieces")
+    @DisplayName("a stock level carries the cartons it counted beside the pieces")
     void level() {
-        var response = mapper.toLevelResponses(List.of(new StockLevel("CUP", "HCM", 5000, 4000, 1000, 2000, 1000)),
-                1000).getFirst();
+        var response = mapper.toLevelResponses(List.of(new StockLevel("CUP", "HCM", 5000, 4000, 1000, 2000, 1000,
+                5, 4, 1, 2, 1)), 1000).getFirst();
 
         assertThat(response.unitsPerCarton()).isEqualTo(1000);
         assertThat(response.onHand()).isEqualTo(5000);
@@ -45,14 +42,14 @@ class StockInCartonsTest {
     }
 
     @Test
-    @DisplayName("a SKU with no carton unit has pieces only")
+    @DisplayName("ADR-0011 3e: cartons of two counts, or no carton unit, still have their cartons")
     void levelWithoutCartonUnit() {
-        var response = mapper.toResponse(new StockLevel("CUP", "HCM", 5000, 4000, 0, 0, 4000), null);
+        var response = mapper.toResponse(new StockLevel("CUP", "HCM", 1500, 1500, 0, 0, 1500, 2, 2, 0, 0, 2), null);
 
         assertThat(response.unitsPerCarton()).isNull();
-        assertThat(response.onHand()).isEqualTo(5000);
-        assertThat(response.onHandCartons()).isNull();
-        assertThat(response.atpCartons()).isNull();
+        assertThat(response.onHand()).isEqualTo(1500);
+        assertThat(response.onHandCartons()).isEqualTo(2);
+        assertThat(response.atpCartons()).isEqualTo(2);
     }
 
     @Test

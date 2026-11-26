@@ -18,6 +18,11 @@ package com.stockflow.inventory.api;
  *   <li>{@code atp} — {@code available - reserved - allocated}, capped by what is still promisable system-wide once
  *       SKU reservations are counted: what may still be promised to a customer.</li>
  * </ul>
+ *
+ * <p>Each figure again in cartons, counted (ADR-0011, step 3e): the warehouse handles whole cartons only, and the units
+ * cannot be divided back into them once cartons of two counts of the SKU stand in one warehouse. {@code atpCartons}
+ * is worked out count by count, as a hold is promised (a hold is served only by cartons of its own count), then
+ * summed.</p>
  */
 public record StockLevel(
         String sku,
@@ -26,6 +31,11 @@ public record StockLevel(
         int available,
         int reserved,
         int allocated,
-        int atp
+        int atp,
+        int onHandCartons,
+        int availableCartons,
+        int reservedCartons,
+        int allocatedCartons,
+        int atpCartons
 ) {
 }
