@@ -157,7 +157,8 @@ class AccountantSeesCustomerNameApiIntegrationTest {
         customers.saveCreditTerms(new SaveCreditTermsCommand(customer, new BigDecimal("1000000"), 30, "small limit",
                 accountant, null));
         var sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 50);
-        var held = confirmedOrders.signed(customer, List.of(new com.stockflow.order.internal.service.SalesContracts
+        // Sent while the limit carried it (else it waits for accounting before sending, 15 BR-11), signed over it.
+        var held = confirmedOrders.signedHeldForCredit(customer, List.of(new com.stockflow.order.internal.service.SalesContracts
                         .Installment("After delivery", "AFTER_DELIVERY", null, new BigDecimal("100"), 30, null)),
                 ConfirmedOrders.Line.cartons(sku, 10, 40_000));
 
