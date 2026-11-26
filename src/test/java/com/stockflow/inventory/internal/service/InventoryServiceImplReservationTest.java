@@ -582,6 +582,10 @@ class InventoryServiceImplReservationTest {
             assertThat(cover.heldUnits()).isEqualTo(55);
             assertThat(cover.uncoveredUnits()).as("two cartons of 10 short, whatever the cartons of 25 hold")
                     .isEqualTo(20);
+            assertThat(cover.uncoveredCartonsByCount()).as("only the count of 10 is short")
+                    .containsExactly(java.util.Map.entry(10, 2));
+            assertThat(cover.holds()).extracting(com.stockflow.inventory.api.SkuHoldCover.Hold::unitsPerCarton)
+                    .containsExactlyInAnyOrder(10, 25);
         }
 
         @Test

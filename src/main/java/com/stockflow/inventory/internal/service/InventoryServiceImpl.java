@@ -397,7 +397,8 @@ class InventoryServiceImpl implements InventoryService {
      * cartons of 1000. While every count's holds are covered, {@code coverableUnits} is the units of every free carton
      * there, as it was; once some count is short it is the units that do cover a hold, so that
      * {@code uncoveredUnits()} is exactly the cartons short, times their count - free cartons of another count do not
-     * make a shortage up.</p>
+     * make a shortage up. Each hold carries its count and the free cartons are given per count, so the caller gives up
+     * holds of the short count only ({@code SkuHoldCover.uncoveredCartonsByCount}).</p>
      */
     @Override
     @Transactional(propagation = Propagation.REQUIRED, readOnly = true)
@@ -416,9 +417,12 @@ class InventoryServiceImpl implements InventoryService {
                         * Math.min(want.getValue(), free.getOrDefault(want.getKey(), 0L))).sum();
         List<com.stockflow.inventory.api.SkuHoldCover.Hold> holds = held.stream()
                 .map(r -> new com.stockflow.inventory.api.SkuHoldCover.Hold(r.id().value(), r.orderId(),
-                        r.quantity().value(), r.reservedAt()))
+                        r.quantity().value(), r.unitsPerCarton(), r.reservedAt()))
                 .toList();
-        return new com.stockflow.inventory.api.SkuHoldCover(sku.code(), warehouse, Math.toIntExact(coverable), holds);
+        Map<Integer, Integer> freeCartons = new TreeMap<>();
+        free.forEach((count, cartons) -> freeCartons.put(count, Math.toIntExact(cartons)));
+        return new com.stockflow.inventory.api.SkuHoldCover(sku.code(), warehouse, Math.toIntExact(coverable),
+                freeCartons, holds);
     }
 
     /**
