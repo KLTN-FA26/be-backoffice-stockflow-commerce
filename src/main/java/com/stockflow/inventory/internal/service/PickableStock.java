@@ -91,6 +91,16 @@ final class PickableStock {
     }
 
     /**
+     * The cartons of one SKU a release could allocate, per warehouse code and count (ADR-0011, step 3e): the
+     * cartons of {@link #allocatableByWarehouse}, counted, for the levels' ATP in cartons. Absent keys mean none.
+     */
+    Map<String, Map<Integer, Long>> allocatableCartonsByWarehouseAndCount(Sku sku) {
+        return allocatable(List.of(sku.code())).stream().collect(Collectors.groupingBy(
+                row -> new com.stockflow.inventory.internal.domain.LocationId(row.locationCode()).warehouseCode(),
+                Collectors.groupingBy(StockPackageRepository.Allocatable::units, Collectors.counting())));
+    }
+
+    /**
      * WF4-COUNT-EDGE (a): the whole free cartons of {@code sku} on pickable, usable locations of {@code warehouseCode},
      * how many of each count - {@link #allocatableByWarehouse}'s, with the cartons a recount has frozen counted in: a
      * carton whose count is still pending is in doubt, not missing, and covers a hold until its own variance is decided.

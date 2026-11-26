@@ -144,8 +144,22 @@ its own:
      Contract: `inventory :: api`, `inventory :: consumption`, the events and every HTTP field keep their shape;
      fields named `stockItemId` carry the carton's id, and unit fields are cartons times `nominal_qty`. Noticeable:
      stock listings no longer show the zero rows of cartons that left stock (`availabilityOf`, levels), and a held
-     carton is held whole in the lot trace. Cartons in the API is step 3e; `lot_number` on count lines and
-     adjustments may go in a later step.
+     carton is held whole in the lot trace. `lot_number` on count lines and adjustments may go in a later step.
+   * **3e, cartons in the API** - done, no migration. Owner decision 2026-11-26: **add** carton figures beside the
+     unit ones, remove nothing, so the frontend keeps working and moves to the carton fields at its own pace; the unit
+     fields may be dropped once it has. The cartons are now **counted**, not divided out of the units by the SKU's
+     standard count (`CartonCount.of`, gone), which gave no figure (null) as soon as cartons of two counts of a SKU
+     stood in one warehouse or the SKU had no carton unit:
+     - Inventory Level (`GET /inventory/stock-levels`, `inventory :: api` `StockLevel`): `onHandCartons`,
+       `availableCartons`, `reservedCartons`, `allocatedCartons` are counted from the cartons in stock and the
+       allocations naming them (`StockLevelLine.cartons` / `heldCartons`, `StockPackageRepository.Allocated`);
+       `atpCartons` is worked out count by count as a hold is promised - free cartons of that count on pickable bins,
+       less those held at the warehouse, never more than is left of that count system-wide - then summed. The five
+       stay nullable in the schema for compatibility but are always set.
+     - A stock row (`StockItemResponse`, `WarehouseStockItemResponse`) is one carton: its carton fields are 1 or 0
+       (`CartonCount.ofOneCarton`), null only while withheld from a blind counter.
+     - A hold (`GET /inventory/reservations`) answers `cartons` beside `quantity`.
+     The unit figures are unchanged, and so are `inventory :: consumption`, the events and every other module.
 
 ## Decisions for the rest of step 3 (owner, 2026-11-27)
 

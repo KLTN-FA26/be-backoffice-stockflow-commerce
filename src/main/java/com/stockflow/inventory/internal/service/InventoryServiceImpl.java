@@ -511,30 +511,40 @@ class InventoryServiceImpl implements InventoryService {
      * in units of their counts (a carton out of stock adds nothing, and no line), as Inventory Level shows them. {@code scoped}: only the warehouses a warehouse-bound caller may see.
      */
     private List<StockLevel> levels(Sku sku, boolean scoped) {
-        record Totals(int onHand, int available, int reserved, int atp) {
+        record Totals(int onHand, int available, int reserved, int atp, int cartons, int availableCartons,
+                      int heldCartons) {
             static Totals of(StockLevelLine line) {
-                int sellable = line.status() == StockStatus.AVAILABLE ? line.onHand() : 0;
-                return new Totals(line.onHand(), sellable, line.reserved(), 0);
+                boolean sellable = line.status() == StockStatus.AVAILABLE;
+                return new Totals(line.onHand(), sellable ? line.onHand() : 0, line.reserved(), 0, line.cartons(),
+                        sellable ? line.cartons() : 0, line.heldCartons());
             }
 
             Totals plus(Totals other) {
                 return new Totals(onHand + other.onHand, available + other.available,
                         reserved + other.reserved,
-                        atp + other.atp);
+                        atp + other.atp, cartons + other.cartons, availableCartons + other.availableCartons,
+                        heldCartons + other.heldCartons);
+            }
+
+            Totals withAtp(int units) {
+                return new Totals(onHand, available, reserved, units, cartons, availableCartons, heldCartons);
             }
         }
         Map<String, Totals> byWarehouse = new TreeMap<>();
         for (StockLevelLine line : stockPackages.findLevelLinesBySku(sku)) {
             byWarehouse.merge(line.location().warehouseCode(), Totals.of(line), Totals::plus);
         }
-        Map<String, Long> allocatable = new PickableStock(stockPackages, locations, cycleCounts).allocatableByWarehouse(sku);
-        byWarehouse.replaceAll((code, totals) -> new Totals(totals.onHand(), totals.available(), totals.reserved(),
-                Math.toIntExact(allocatable.getOrDefault(code, 0L))));
+        PickableStock pickable = new PickableStock(stockPackages, locations, cycleCounts);
+        Map<String, Long> allocatable = pickable.allocatableByWarehouse(sku);
+        byWarehouse.replaceAll((code, totals) -> totals.withAtp(Math.toIntExact(allocatable.getOrDefault(code, 0L))));
+        Map<String, Integer> atpCartons = atpCartonsByWarehouse(sku, pickable);
         // Allocations are holds on these same cartons: counted in reserved above, shown apart below (glossary: a
         // reservation is a soft hold on the SKU, an allocation a hard hold on a bin), so the two never add up twice.
-        Map<String, Integer> allocatedByWarehouse = new TreeMap<>();
-        stockPackages.findAllocatedBySku(sku).forEach((locationCode, units) ->
-                allocatedByWarehouse.merge(new LocationId(locationCode).warehouseCode(), units, Integer::sum));
+        Map<String, StockPackageRepository.Allocated> allocatedByWarehouse = new TreeMap<>();
+        stockPackages.findAllocatedBySku(sku).forEach((locationCode, allocated) ->
+                allocatedByWarehouse.merge(new LocationId(locationCode).warehouseCode(), allocated,
+                        (a, b) -> new StockPackageRepository.Allocated(a.units() + b.units(),
+                                a.cartons() + b.cartons())));
         // A SKU reservation of before 4B-7 named no warehouse and was promised against the whole system (SCRUM-152):
         // no warehouse can promise more than is left system-wide once every SKU reservation is counted - from these
         // same lines and this same day.
@@ -543,8 +553,8 @@ class InventoryServiceImpl implements InventoryService {
                 .getOrDefault(sku.code(), 0L));
         // 4B-7 (20 BR-17): what an order of a contract holds at a warehouse is promised from that warehouse.
         skuReservations.heldBySkuAt(sku.code()).forEach((code, units) -> byWarehouse.computeIfPresent(code,
-                (key, totals) -> new Totals(totals.onHand(), totals.available(), totals.reserved(),
-                        (int) Math.max(0, totals.atp() - units))));
+                (key, totals) -> totals.withAtp((int) Math.max(0, totals.atp() - units))));
+        StockPackageRepository.Allocated none = new StockPackageRepository.Allocated(0, 0);
         return byWarehouse.entrySet().stream()
                 // BR-SEC-002: a warehouse-bound caller sees their own warehouses' levels only.
                 .filter(entry -> !scoped || com.stockflow.common.security.WarehouseScope.restriction()
@@ -552,13 +562,50 @@ class InventoryServiceImpl implements InventoryService {
                         .orElse(true))
                 .map(entry -> {
                     Totals totals = entry.getValue();
-                    int allocated = Math.min(allocatedByWarehouse.getOrDefault(entry.getKey(), 0), totals.reserved());
+                    StockPackageRepository.Allocated found = allocatedByWarehouse.getOrDefault(entry.getKey(), none);
+                    int allocated = Math.min(found.units(), totals.reserved());
+                    int allocatedCartons = Math.min(found.cartons(), totals.heldCartons());
                     return new StockLevel(sku.code(), entry.getKey(),
                             totals.onHand(), totals.available(),
                             totals.reserved() - allocated, allocated,
-                            Math.min(totals.atp(), systemWide));
+                            Math.min(totals.atp(), systemWide),
+                            totals.cartons(), totals.availableCartons(),
+                            totals.heldCartons() - allocatedCartons, allocatedCartons,
+                            atpCartons.getOrDefault(entry.getKey(), 0));
                 })
                 .toList();
+    }
+
+    /**
+     * ATP in cartons per warehouse code (ADR-0011, step 3e): for each count of the SKU's free cartons, what
+     * {@link #cartonsToPromiseAt} gives - the free cartons of that count less those held there, never more than is
+     * left of that count system-wide - summed over the counts. Absent keys mean none.
+     */
+    private Map<String, Integer> atpCartonsByWarehouse(Sku sku, PickableStock pickable) {
+        Map<String, Map<Integer, Long>> free = pickable.allocatableCartonsByWarehouseAndCount(sku);
+        Map<Integer, Long> freeSystemWide = new TreeMap<>();
+        free.values().forEach(byCount -> byCount.forEach((count, n) -> freeSystemWide.merge(count, n, Long::sum)));
+        Map<String, Map<Integer, Long>> held = new TreeMap<>();
+        Map<Integer, Long> heldSystemWide = new TreeMap<>();
+        for (SkuReservationRepository.HeldCartons hold : skuReservations.heldCartonsOf(sku.code())) {
+            heldSystemWide.merge(hold.unitsPerCarton(), hold.cartons(), Long::sum);
+            if (hold.warehouseCode() != null) {
+                held.computeIfAbsent(hold.warehouseCode(), code -> new TreeMap<>())
+                        .merge(hold.unitsPerCarton(), hold.cartons(), Long::sum);
+            }
+        }
+        Map<String, Integer> atp = new TreeMap<>();
+        free.forEach((warehouse, byCount) -> {
+            long total = 0;
+            for (Map.Entry<Integer, Long> entry : byCount.entrySet()) {
+                int count = entry.getKey();
+                long here = entry.getValue() - held.getOrDefault(warehouse, Map.of()).getOrDefault(count, 0L);
+                long systemWide = freeSystemWide.get(count) - heldSystemWide.getOrDefault(count, 0L);
+                total += Math.max(0, Math.min(here, systemWide));
+            }
+            atp.put(warehouse, Math.toIntExact(total));
+        });
+        return atp;
     }
 
     /**

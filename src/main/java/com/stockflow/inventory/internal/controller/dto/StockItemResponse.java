@@ -46,14 +46,14 @@ public record StockItemResponse(
                 + "hiddenDuringCount", nullable = true)
         Integer available,
 
-        @Schema(description = "onHand in cartons; null while hiddenDuringCount, when there is no carton unit, or when "
-                + "it is not a whole number of cartons", nullable = true)
+        @Schema(description = "The row's carton: 1 while it is in stock, 0 once it is not; null while "
+                + "hiddenDuringCount", nullable = true)
         Integer onHandCartons,
 
-        @Schema(description = "reserved in cartons; null as for onHandCartons", nullable = true)
+        @Schema(description = "1 while an order holds the carton, else 0; null while hiddenDuringCount", nullable = true)
         Integer reservedCartons,
 
-        @Schema(description = "available in cartons; null as for onHandCartons", nullable = true)
+        @Schema(description = "1 while the carton may still be promised, else 0; null while hiddenDuringCount", nullable = true)
         Integer availableCartons,
 
         @Schema(example = "AVAILABLE")

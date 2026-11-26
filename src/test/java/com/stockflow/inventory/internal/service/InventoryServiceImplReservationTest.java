@@ -135,7 +135,8 @@ class InventoryServiceImplReservationTest {
      */
     private List<StockPackageRepository.Allocatable> levelAtHcmIs(int... cartons) {
         when(repository.findLevelLinesBySku(CUP)).thenReturn(List.of(new StockLevelLine(
-                new LocationId("HCM-A01-1-A"), StockStatus.AVAILABLE, java.util.Arrays.stream(cartons).sum(), 0)));
+                new LocationId("HCM-A01-1-A"), StockStatus.AVAILABLE, java.util.Arrays.stream(cartons).sum(), 0,
+                cartons.length, 0)));
         List<StockPackageRepository.Allocatable> allocatable = java.util.Arrays.stream(cartons)
                 .mapToObj(units -> new StockPackageRepository.Allocatable(new StockPackageId(UUID.randomUUID()), CUP.code(), "HCM-A01-1-A",
                         units))
@@ -278,7 +279,7 @@ class InventoryServiceImplReservationTest {
         @DisplayName("a carton on a location no release allocates from is on hand, never promised (review C4 P-1)")
         void cartonOffThePickableBinsIsNotPromised() {
             when(repository.findLevelLinesBySku(CUP)).thenReturn(List.of(
-                    new StockLevelLine(new LocationId("HCM-QC01"), StockStatus.AVAILABLE, 50, 0)));
+                    new StockLevelLine(new LocationId("HCM-QC01"), StockStatus.AVAILABLE, 50, 0, 1, 0)));
             when(repository.findAllocatable(anyCollection())).thenReturn(List.of(
                     new StockPackageRepository.Allocatable(new StockPackageId(UUID.randomUUID()), CUP.code(), "HCM-QC01", 50)));
 

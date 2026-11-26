@@ -21,7 +21,7 @@ import java.util.UUID;
 public interface StockBrowseSearch {
 
     record ReservationRow(UUID reservationId, UUID orderId, UUID stockItemId, String sku, String locationCode,
-                          String lotNumber, int quantity, ReservationStatus status, Instant reservedAt,
+                          String lotNumber, int quantity, int cartons, ReservationStatus status, Instant reservedAt,
                           ReleaseReason releaseReason, Instant closedAt, String orderNumber) {
     }
 

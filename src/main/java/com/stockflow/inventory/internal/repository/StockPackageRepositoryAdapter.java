@@ -280,32 +280,36 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
     public List<StockLevelLine> findLevelLinesBySku(Sku sku) {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = entityManager.createNativeQuery("""
-                        select p.location_code, p.stock_status, sum(p.nominal_qty),
-                               coalesce(sum(p.nominal_qty) filter (where exists (
-                                   select 1 from inventory.stock_reservation a
-                                    where a.stock_package_id = p.id and a.status = 'HELD')), 0)
-                          from inventory.stock_package p
-                          join inventory.inventory_items i on i.id = p.inventory_item_id
-                         where i.sku = :sku and p.status = 'IN_STOCK'
-                         group by p.location_code, p.stock_status""")
+                        select l.location_code, l.stock_status, sum(l.nominal_qty),
+                               coalesce(sum(l.nominal_qty) filter (where l.held), 0),
+                               count(*), count(*) filter (where l.held)
+                          from (select p.location_code, p.stock_status, p.nominal_qty,
+                                       exists (select 1 from inventory.stock_reservation a
+                                                where a.stock_package_id = p.id and a.status = 'HELD') as held
+                                  from inventory.stock_package p
+                                  join inventory.inventory_items i on i.id = p.inventory_item_id
+                                 where i.sku = :sku and p.status = 'IN_STOCK') l
+                         group by l.location_code, l.stock_status""")
                 .setParameter("sku", sku.code()).getResultList();
         return rows.stream().map(row -> new StockLevelLine(new LocationId((String) row[0]),
-                StockStatus.valueOf((String) row[1]), ((Number) row[2]).intValue(), ((Number) row[3]).intValue()))
+                StockStatus.valueOf((String) row[1]), ((Number) row[2]).intValue(), ((Number) row[3]).intValue(),
+                ((Number) row[4]).intValue(), ((Number) row[5]).intValue()))
                 .toList();
     }
 
     @Override
-    public Map<String, Integer> findAllocatedBySku(Sku sku) {
+    public Map<String, Allocated> findAllocatedBySku(Sku sku) {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = entityManager.createNativeQuery("""
-                        select p.location_code, sum(r.cartons * r.units_per_carton)
+                        select p.location_code, sum(r.cartons * r.units_per_carton), sum(r.cartons)
                           from inventory.stock_reservation r
                           join inventory.stock_package p on p.id = r.stock_package_id
                          where r.sku = :sku and r.status = 'HELD' and r.allocated_from_id is not null
                          group by p.location_code""")
                 .setParameter("sku", sku.code()).getResultList();
-        Map<String, Integer> allocated = new TreeMap<>();
-        rows.forEach(row -> allocated.put((String) row[0], ((Number) row[1]).intValue()));
+        Map<String, Allocated> allocated = new TreeMap<>();
+        rows.forEach(row -> allocated.put((String) row[0],
+                new Allocated(((Number) row[1]).intValue(), ((Number) row[2]).intValue())));
         return allocated;
     }
 

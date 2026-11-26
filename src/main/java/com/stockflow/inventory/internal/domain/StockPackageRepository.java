@@ -129,15 +129,20 @@ public interface StockPackageRepository {
 
     /**
      * Per (location, stock status) subtotals of one SKU's cartons in stock, in units, every status included; feeds
-     * Inventory Level. {@code reserved} is the units of the cartons a live allocation names.
+     * Inventory Level. {@code reserved} is the units of the cartons a live allocation names; each line counts its
+     * cartons too.
      */
     List<StockLevelLine> findLevelLinesBySku(Sku sku);
 
     /**
-     * Units of one SKU allocated for picking, per location code: the cartons a live allocation names. The
-     * {@code reserved} of {@link #findLevelLinesBySku}, per location.
+     * What of one SKU is allocated for picking, per location code: the cartons a live allocation names, in units and
+     * counted. The {@code reserved} of {@link #findLevelLinesBySku}, per location.
      */
-    Map<String, Integer> findAllocatedBySku(Sku sku);
+    Map<String, Allocated> findAllocatedBySku(Sku sku);
+
+    /** Allocated stock at one location: {@code units} of {@code cartons} cartons. */
+    record Allocated(int units, int cartons) {
+    }
 
     /**
      * The carton's stock status as the table has it now, read as a scalar - never the copy this transaction may

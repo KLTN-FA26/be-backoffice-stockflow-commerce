@@ -31,6 +31,8 @@ class InventoryLevelTest {
     private final StockPackageRepository repository = mock(StockPackageRepository.class);
     private final com.stockflow.inventory.internal.domain.LocationDirectory locations =
             mock(com.stockflow.inventory.internal.domain.LocationDirectory.class);
+    private final com.stockflow.inventory.internal.domain.SkuReservationRepository skuReservations =
+            mock(com.stockflow.inventory.internal.domain.SkuReservationRepository.class);
     private final InventoryServiceImpl service =
             new InventoryServiceImpl(
                     mock(InventoryEventPublisher.class),
@@ -38,7 +40,7 @@ class InventoryLevelTest {
                     mock(com.stockflow.inventory.internal.domain.InventoryItemDirectory.class),
                     Clock.systemUTC(),
                     mock(InventoryPolicyRepository.class),
-                        mock(com.stockflow.inventory.internal.domain.SkuReservationRepository.class),
+                        skuReservations,
                         locations,
                         mock(com.stockflow.inventory.internal.domain.CycleCountRepository.class),
                     repository);
@@ -58,8 +60,8 @@ class InventoryLevelTest {
     }
 
     private static StockLevelLine line(
-            String location, StockStatus status, int onHand, int reserved) {
-        return new StockLevelLine(new LocationId(location), status, onHand, reserved);
+            String location, StockStatus status, int onHand, int reserved, int cartons, int heldCartons) {
+        return new StockLevelLine(new LocationId(location), status, onHand, reserved, cartons, heldCartons);
     }
 
     @Test
@@ -69,17 +71,19 @@ class InventoryLevelTest {
         when(repository.findLevelLinesBySku(SKU))
                 .thenReturn(
                         List.of(
-                                line("HN-A01-2-03", StockStatus.AVAILABLE, 10, 4),
-                                line("HN-A01-2-04", StockStatus.AVAILABLE, 5, 0),
-                                line("HN-QC01", StockStatus.QUARANTINE, 7, 0),
-                                line("HCM-A01-1-01", StockStatus.AVAILABLE, 3, 1)));
+                                line("HN-A01-2-03", StockStatus.AVAILABLE, 10, 4, 2, 1),
+                                line("HN-A01-2-04", StockStatus.AVAILABLE, 5, 0, 1, 0),
+                                line("HN-QC01", StockStatus.QUARANTINE, 7, 0, 1, 0),
+                                line("HCM-A01-1-01", StockStatus.AVAILABLE, 3, 1, 3, 1)));
         allocatable(java.util.Map.of("HN-A01-2-03", 6, "HN-A01-2-04", 5, "HCM-A01-1-01", 2));
 
         List<StockLevel> levels = service.levelsOf(SKU);
 
         assertThat(levels).extracting(StockLevel::warehouseCode).containsExactly("HCM", "HN");
-        assertThat(levels.get(0)).isEqualTo(new StockLevel("LY-GIAY-DEMO-12OZ-XANH", "HCM", 3, 3, 1, 0, 2));
-        assertThat(levels.get(1)).isEqualTo(new StockLevel("LY-GIAY-DEMO-12OZ-XANH", "HN", 22, 15, 4, 0, 11));
+        assertThat(levels.get(0)).isEqualTo(
+                new StockLevel("LY-GIAY-DEMO-12OZ-XANH", "HCM", 3, 3, 1, 0, 2, 3, 3, 1, 0, 1));
+        assertThat(levels.get(1)).isEqualTo(
+                new StockLevel("LY-GIAY-DEMO-12OZ-XANH", "HN", 22, 15, 4, 0, 11, 4, 3, 1, 0, 2));
     }
 
     @Test
@@ -88,17 +92,51 @@ class InventoryLevelTest {
         when(repository.findLevelLinesBySku(SKU))
                 .thenReturn(
                         List.of(
-                                line("HN-A01-2-03", StockStatus.AVAILABLE, 10, 4),
-                                line("HN-A01-2-04", StockStatus.AVAILABLE, 5, 2),
-                                line("HCM-A01-1-01", StockStatus.AVAILABLE, 3, 1)));
+                                line("HN-A01-2-03", StockStatus.AVAILABLE, 10, 4, 2, 1),
+                                line("HN-A01-2-04", StockStatus.AVAILABLE, 5, 2, 1, 1),
+                                line("HCM-A01-1-01", StockStatus.AVAILABLE, 3, 1, 3, 1)));
         when(repository.findAllocatedBySku(SKU))
-                .thenReturn(java.util.Map.of("HN-A01-2-03", 3, "HN-A01-2-04", 2));
+                .thenReturn(java.util.Map.of("HN-A01-2-03", new StockPackageRepository.Allocated(3, 1),
+                        "HN-A01-2-04", new StockPackageRepository.Allocated(2, 1)));
         allocatable(java.util.Map.of("HN-A01-2-03", 6, "HN-A01-2-04", 3, "HCM-A01-1-01", 2));
 
         List<StockLevel> levels = service.levelsOf(SKU);
 
-        assertThat(levels.get(0)).isEqualTo(new StockLevel("LY-GIAY-DEMO-12OZ-XANH", "HCM", 3, 3, 1, 0, 2));
-        assertThat(levels.get(1)).isEqualTo(new StockLevel("LY-GIAY-DEMO-12OZ-XANH", "HN", 15, 15, 1, 5, 9));
+        assertThat(levels.get(0)).isEqualTo(
+                new StockLevel("LY-GIAY-DEMO-12OZ-XANH", "HCM", 3, 3, 1, 0, 2, 3, 3, 1, 0, 1));
+        assertThat(levels.get(1)).isEqualTo(
+                new StockLevel("LY-GIAY-DEMO-12OZ-XANH", "HN", 15, 15, 1, 5, 9, 3, 3, 0, 2, 2));
+    }
+
+    @Test
+    @DisplayName("ADR-0011 3e: cartons are counted, and ATP in cartons is worked out per count as a hold is promised")
+    void cartonsOfTwoCounts() {
+        when(repository.findLevelLinesBySku(SKU)).thenReturn(List.of(
+                line("HN-A01-2-03", StockStatus.AVAILABLE, 2000, 0, 2, 0),
+                line("HN-A01-2-04", StockStatus.AVAILABLE, 500, 0, 1, 0)));
+        when(repository.findAllocatable(org.mockito.ArgumentMatchers.anyCollection())).thenReturn(List.of(
+                new StockPackageRepository.Allocatable(new StockPackageId(java.util.UUID.randomUUID()), SKU.code(),
+                        "HN-A01-2-03", 1000),
+                new StockPackageRepository.Allocatable(new StockPackageId(java.util.UUID.randomUUID()), SKU.code(),
+                        "HN-A01-2-03", 1000),
+                new StockPackageRepository.Allocatable(new StockPackageId(java.util.UUID.randomUUID()), SKU.code(),
+                        "HN-A01-2-04", 500)));
+        when(locations.pickable(org.mockito.ArgumentMatchers.anyCollection())).thenAnswer(c ->
+                c.<java.util.Collection<String>>getArgument(0).stream().collect(java.util.stream.Collectors.toMap(
+                        code -> code, code -> java.util.UUID.randomUUID())));
+        // Two holds of cartons of 1000 at HN take both of that count: the carton of 500 is all that is left to
+        // promise, although 2500 - 2000 units would divide into no whole number of either count.
+        when(skuReservations.heldCartonsOf(SKU.code())).thenReturn(List.of(
+                new com.stockflow.inventory.internal.domain.SkuReservationRepository.HeldCartons("HN", 1000, 2)));
+        when(skuReservations.heldBySkuAt(SKU.code())).thenReturn(java.util.Map.of("HN", 2000L));
+
+        StockLevel level = service.levelsOf(SKU).getFirst();
+
+        assertThat(level.onHand()).isEqualTo(2500);
+        assertThat(level.onHandCartons()).isEqualTo(3);
+        assertThat(level.availableCartons()).isEqualTo(3);
+        assertThat(level.atp()).isEqualTo(500);
+        assertThat(level.atpCartons()).isEqualTo(1);
     }
 
     @Test
@@ -107,8 +145,8 @@ class InventoryLevelTest {
         when(repository.findLevelLinesBySku(SKU))
                 .thenReturn(
                         List.of(
-                                line("HN-A01-2-03", StockStatus.AVAILABLE, 10, 4),
-                                line("HCM-A01-1-01", StockStatus.AVAILABLE, 3, 1)));
+                                line("HN-A01-2-03", StockStatus.AVAILABLE, 10, 4, 2, 1),
+                                line("HCM-A01-1-01", StockStatus.AVAILABLE, 3, 1, 3, 1)));
         allocatable(java.util.Map.of("HN-A01-2-03", 6, "HCM-A01-1-01", 2));
 
         assertThat(service.availableToPromise(SKU, "hn")).isEqualTo(6);

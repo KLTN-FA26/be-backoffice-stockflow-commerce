@@ -84,8 +84,8 @@ class StockBrowseSearchAdapter implements StockBrowseSearch {
             CriteriaBuilder cb, Root<ReservationJpaEntity> root, Join<ReservationJpaEntity, StockPackageJpaEntity> stock) {
         return cb.construct(ReservationRow.class, root.get("id"), root.get("orderId"), stock.get("id"),
                 root.get("sku"), stock.get("locationCode"), stock.get("lotNumber"),
-                // The row keeps cartons and their count; the screen reads units (ADR-0011).
-                cb.prod(root.<Integer>get("cartons"), root.<Integer>get("unitsPerCarton")),
+                // The row keeps cartons and their count; the screen reads both (ADR-0011, step 3e).
+                cb.prod(root.<Integer>get("cartons"), root.<Integer>get("unitsPerCarton")), root.get("cartons"),
                 root.get("status"), root.get("reservedAt"), root.get("releaseReason"),
                 root.get("closedAt"), root.get("orderNumber"));
     }

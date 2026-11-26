@@ -116,7 +116,7 @@ class StockBrowsingImpl implements StockBrowsing {
 
     private static Reservation toView(StockBrowseSearch.ReservationRow r) {
         return new Reservation(r.reservationId(), r.orderId(), r.stockItemId(), r.sku(), r.locationCode(),
-                r.lotNumber(), r.quantity(), r.status(), r.reservedAt(), r.releaseReason(),
+                r.lotNumber(), r.quantity(), r.cartons(), r.status(), r.reservedAt(), r.releaseReason(),
                 r.closedAt(), r.orderNumber());
     }
 }
