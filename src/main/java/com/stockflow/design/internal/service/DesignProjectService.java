@@ -1,6 +1,5 @@
 package com.stockflow.design.internal.service;
 
-import com.stockflow.common.api.FieldError;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
@@ -44,10 +43,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * A customer's design projects (kltn-docs 12 §4.9, §5.4; BR-17, BR-22; B42): created, renamed and closed by their owner,
- * holding designs of that customer - at most {@value DesignProjectRules#MAX_DESIGNS}, archived ones not counted. Every
- * new design is written into a project (BR-23.2, BR-23.3): one started in it, or a revision or a clone the caller
- * puts in it or that follows its source there. An existing design joins when its owner adds it, from no project or
- * moved from another open project of theirs. It never leaves for no project: a design is taken out of one only by
+ * holding designs of that customer - at most {@value DesignProjectRules#MAX_DESIGNS}, archived ones not counted. A
+ * project is optional (BR-17): a design started without one stands alone, and so do the revisions and clones of a
+ * design that stands alone. A design started in a project, or a revision or a clone the caller puts in one or that
+ * follows its source into one, is in it from its first version (BR-23.3). An existing design joins when its owner
+ * adds it, from no project or moved from another open project of theirs. It never leaves for no project: a design is taken out of one only by
  * moving it into another (BR-23.4). A design waiting for review, or named by an open quote request of its
  * project, stays where it is. Joining or moving changes nothing else about the design.
  *
@@ -272,10 +272,11 @@ public class DesignProjectService {
     }
 
     /**
-     * The project a new design is started in (§4.1 step 3, BR-23.2), locked in the caller's transaction before the
+     * The project a new design is started in (§4.1 step 3), locked in the caller's transaction before the
      * design is written: the owner's, of {@code customerId}, open and with room. Checked first so that a design is
-     * never left without a project because its project refused it after it was saved; and locked before the
-     * customer's draft limit is, the order every path that writes a new design into a project keeps.
+     * never left without the project it was started in because that project refused it after it was saved; and
+     * locked before the customer's draft limit is, the order every path that writes a new design into a project
+     * keeps.
      */
     DesignProjectJpaEntity lockForNewDesign(UUID projectId, UUID actor, UUID customerId) {
         DesignProjectJpaEntity project = lock(projectId, actor);
@@ -288,11 +289,16 @@ public class DesignProjectService {
     }
 
     /**
-     * Writes a new design into the project {@link #lockForNewDesign} locked for it: in it from its first version, so it
-     * is never, even within its own transaction, a design of no project, and its version starts at 0 as any new
-     * design's does.
+     * Writes a new design into the project {@link #lockForNewDesign} locked for it: in it from its first version, so a
+     * design that belongs to a project is never, even within its own transaction, a design of no project, and its
+     * version starts at 0 as any new design's does. A {@code null} project is a stand-alone design (kltn-docs 12
+     * BR-17), written as it is.
      */
     void writeNew(DesignProjectJpaEntity project, DesignDraftJpaEntity draft, UUID actor) {
+        if (project == null) {
+            drafts.saveAndFlush(draft);
+            return;
+        }
         draft.joinProject(project.getId());
         drafts.saveAndFlush(draft);
         decide(draft, actor, DesignDecisionType.ADDED_TO_PROJECT, "Project " + project.getId());
@@ -304,13 +310,13 @@ public class DesignProjectService {
      * written: {@code requested} when the caller names one, any open project of theirs with room, the source's or
      * another; otherwise the source's own while it is open and has room. A closed or full source project refuses the
      * new design, naming itself in {@code details.projectId} so the studio can offer another. Nothing is written then:
-     * a new design never stands in no project, where B42 as first built let a revision or a clone stand alone when
-     * its source's project was closed or full.
+     * a revision or a clone of a design in a project never stands alone, where B42 as first built let one stand alone
+     * when its source's project was closed or full.
      *
      * <p>Which project the source is in is read again under that project's lock, which moving a design takes too: a
      * source moved meanwhile is a conflict to try again, rather than a second project locked out of order. A source in
-     * no project - a design started before every design had to be in one - has none to lend, so the caller names one.
-     * </p>
+     * no project (a project is optional, kltn-docs 12 BR-17, §4.7) has none to lend: unless the caller names one, the
+     * new design stands alone as its source does, and the result is null.</p>
      */
     DesignProjectJpaEntity lockForCopy(UUID sourceId, UUID requested, UUID actor, UUID customerId) {
         if (requested != null) {
@@ -318,9 +324,7 @@ public class DesignProjectService {
         }
         UUID sourceProject = drafts.projectIdOf(sourceId);
         if (sourceProject == null) {
-            String message = "The design is in no project; projectId names the project to write the new design into";
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, message,
-                    List.of(new FieldError("projectId", message, "NotNull")));
+            return null;
         }
         DesignProjectJpaEntity project = projects.lockById(sourceProject)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
