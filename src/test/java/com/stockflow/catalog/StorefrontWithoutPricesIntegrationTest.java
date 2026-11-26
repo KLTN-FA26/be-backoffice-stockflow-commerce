@@ -467,7 +467,7 @@ class StorefrontWithoutPricesIntegrationTest {
 
     /**
      * {@code pieces} of {@code sku}, sellable, at {@code location}, received a while ago: whole cartons of the SKU's
-     * carton unit ({@link #CARTON}), since stock is kept in cartons only (ck_stock_item_whole_cartons).
+     * carton unit ({@link #CARTON}), since stock is cartons and nothing else (ADR-0011).
      */
     private void stock(String location, String sku, int pieces) {
         tx.executeWithoutResult(s -> CartonRows.stock(jdbc, sku, location, pieces / CARTON, CARTON, null,

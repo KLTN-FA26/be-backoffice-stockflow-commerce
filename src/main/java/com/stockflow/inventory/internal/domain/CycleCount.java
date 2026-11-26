@@ -34,8 +34,8 @@ public final class CycleCount extends AggregateRoot {
     /** The longest note the column holds. */
     private static final int NOTE_MAX = 1000;
 
-    /** A carton to count and the units the books held of it when it was planned (0 or its standard count). */
-    public record CountLineDraft(CountSlot slot, int expectedQty) { }
+    /** A carton to count and whether the books had it at its bin when it was planned. */
+    public record CountLineDraft(CountSlot slot, boolean booked) { }
 
     private final UUID id;
     private final String number;
@@ -92,7 +92,7 @@ public final class CycleCount extends AggregateRoot {
             if (!seen.add(draft.slot().lockKey())) {
                 throw new IllegalArgumentException("Slot planned twice: " + draft.slot().lockKey());
             }
-            built.add(new CycleCountLine(draft.slot(), draft.expectedQty()));
+            built.add(new CycleCountLine(draft.slot(), draft.booked()));
         }
         return new CycleCount(Identifiers.newId(), number, warehouseId, trigger, CycleCountStatus.PLANNED, blind,
                 assignedUserId, plannedDate, null, null, blankToNull(note), Instant.now(), built, 0L);
@@ -102,10 +102,10 @@ public final class CycleCount extends AggregateRoot {
      * The recount a short pick opens on its slot. Blind and unassigned: whoever walks over to the bin
      * must not be told what the books expect, and the manager hands it out.
      */
-    public static CycleCount shortPick(String number, UUID warehouseId, CountSlot slot, int expectedQty,
+    public static CycleCount shortPick(String number, UUID warehouseId, CountSlot slot, boolean booked,
                                        String note, LocalDate day) {
         return plan(number, warehouseId, CycleCountTrigger.SHORT_PICK, true, null, day, note,
-                List.of(new CountLineDraft(slot, expectedQty)));
+                List.of(new CountLineDraft(slot, booked)));
     }
 
     /** Hands the count to a counter; only before counting starts, so a half-counted sheet keeps its counter. */
@@ -144,14 +144,13 @@ public final class CycleCount extends AggregateRoot {
      * The carton of a line was scanned at its bin, or not found there (20 §4.2 b4).
      *
      * @param booked whether the books have it at the line's bin now (BR-09)
-     * @param units  its standard count
      */
-    public CycleCountLine count(UUID lineId, boolean found, boolean booked, int units, UUID by, Instant at) {
+    public CycleCountLine count(UUID lineId, boolean found, boolean booked, UUID by, Instant at) {
         requireOpen();
         CycleCountLine line = lines.stream().filter(l -> l.id().equals(lineId)).findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No such line on this count"));
         requireMayCount(line, by);
-        line.count(found, booked, units, by, at);
+        line.count(found, booked, by, at);
         start(at);
         return line;
     }
@@ -173,12 +172,11 @@ public final class CycleCount extends AggregateRoot {
      * a LOST carton found again is the surplus this records.
      *
      * @param booked   whether the books have it at that bin now
-     * @param units    its standard count
      * @param maxLines the most lines a count holds (20 BR-12: 500), planned and found together
      * @throws BusinessException {@code CYCLE_COUNT_TOO_LARGE} when the count is full; {@code CYCLE_COUNT_SLOT_BUSY}
      *         when the carton is already on it
      */
-    public CycleCountLine addLine(CountSlot slot, boolean booked, int units, UUID by, Instant at, int maxLines) {
+    public CycleCountLine addLine(CountSlot slot, boolean booked, UUID by, Instant at, int maxLines) {
         requireOpen();
         if (lines.size() >= maxLines) {
             // The cap of a plan holds for what is found on the shelf too: one submission raises at most that many
@@ -190,8 +188,8 @@ public final class CycleCount extends AggregateRoot {
         if (lines.stream().anyMatch(l -> l.slot().lockKey().equals(slot.lockKey()))) {
             throw new BusinessException(ErrorCode.CYCLE_COUNT_SLOT_BUSY, "This carton is already on the count");
         }
-        CycleCountLine line = new CycleCountLine(slot, booked ? units : 0);
-        line.count(true, booked, units, by, at);
+        CycleCountLine line = new CycleCountLine(slot, booked);
+        line.count(true, booked, by, at);
         lines.add(line);
         start(at);
         return line;

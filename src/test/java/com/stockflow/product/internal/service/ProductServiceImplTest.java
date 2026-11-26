@@ -383,7 +383,7 @@ class ProductServiceImplTest {
     @DisplayName("delete: a foreign key still holding an inventory item is PRODUCT_IN_USE, and the rows stay")
     void deleteRefusedByInventoryForeignKey() {
         Product product = locked(ProductStatus.DRAFT, 3, ProductStatus.DRAFT);
-        var held = new DataIntegrityViolationException("fk_stock_item_inventory_item");
+        var held = new DataIntegrityViolationException("fk_stock_package_item");
         org.mockito.Mockito.doThrow(held).when(inventory).deleteUnusedItems(anyCollection());
 
         BusinessException refused = refusal(catchThrowable(() -> service.deleteDraft(product.id().value(), 3)));

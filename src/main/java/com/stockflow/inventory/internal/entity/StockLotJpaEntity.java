@@ -11,8 +11,8 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * {@code inventory.stock_lot} (SCRUM-142): a lot as received. Written once when a receipt opens it (or by the
- * database for stock that arrived without one, as UNTRACED) and never changed, so there are no setters. A lot of goods
+ * {@code inventory.stock_lot} (SCRUM-142): a lot as received. Written once when a receipt opens it (UNTRACED for
+ * stock that arrived with no production order) and never changed, so there are no setters. A lot of goods
  * received against a production order (4A-5) is the production order's, opened by its first receipt.
  */
 @Entity
@@ -68,6 +68,16 @@ public class StockLotJpaEntity extends BaseEntity {
         lot.origin = Origin.PRODUCTION_ORDER;
         lot.productionOrderId = productionOrderId;
         lot.productionOrderCode = productionOrderCode;
+        return lot;
+    }
+
+    /** The lot of goods received with no production order behind them: only what the receipt line said. */
+    public static StockLotJpaEntity untraced(UUID id, String sku, String lotNumber, Instant receivedAt) {
+        StockLotJpaEntity lot = new StockLotJpaEntity(id);
+        lot.sku = sku;
+        lot.lotNumber = lotNumber;
+        lot.receivedAt = receivedAt;
+        lot.origin = Origin.UNTRACED;
         return lot;
     }
 

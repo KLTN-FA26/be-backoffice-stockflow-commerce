@@ -5,8 +5,8 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Move labelled cartons whole to another location of their warehouse (SCRUM-473): each carton, its stock rows and
- * their holds go together, and the carton stays unopened. Cartons are named by LPN because a move named by
+ * Move labelled cartons whole to another location of their warehouse (SCRUM-473): each carton and
+ * its hold go together, and the carton stays unopened. Cartons are named by LPN because a move named by
  * (SKU, location, lot) cannot tell one carton of a receipt from another.
  *
  * <p>Several at once because a document moves a line's cartons together: one call takes the

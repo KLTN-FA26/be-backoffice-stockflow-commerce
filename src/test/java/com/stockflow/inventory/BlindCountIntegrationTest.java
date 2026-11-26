@@ -44,7 +44,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * SCRUM-146, owner decision BLIND (28/10), by carton since team plan 4C-3 (kltn-docs 20 §4.2, BR-07): the books of a
  * carton a cycle count holds - open, or submitted with its
  * variance still pending approval - are for who holds {@code inventory-cycle-counts:APPROVE}, in every stock screen
- * and not just on the count screen. For everyone else the stock rows of the slot lose their quantities
+ * and not just on the count screen. For everyone else the stock lines of the slot lose their quantities
  * ({@code hiddenDuringCount}), and its ledger lines and adjustments are left out.
  *
  * <p>The HTTP tests go through the real filter chain with the seeded grants: the warehouse staff read stock, the
@@ -104,11 +104,11 @@ class BlindCountIntegrationTest {
         cartonA = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN2, 1, CARTON, "L1", received)).getFirst();
         cartonB = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN, 1, CARTON, "L1", received)).getFirst();
         cartonC = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN3, 1, CARTON, "L1", received)).getFirst();
-        lot = jdbc.queryForObject("select lot_id from inventory.stock_item where id = ?", UUID.class,
-                cartonB.stockItemId());
+        lot = jdbc.queryForObject("select lot_id from inventory.stock_package where id = ?", UUID.class,
+                cartonB.id());
         tx.executeWithoutResult(s -> {
-            movement(BIN, BIN2, 4, cartonB.id());
-            movement(BIN2, BIN3, 2, null);
+            movement(BIN, BIN2, cartonB.id());
+            movement(BIN2, BIN3, cartonC.id());
         });
         manualAdjustment = operations.requestPackageAdjustment(new StockOperations.PackageAdjustmentRequest(
                 cartonA.lpn(), AdjustmentDirection.WRITE_OFF, StockAdjustmentReason.DAMAGED, null, clerk))
@@ -116,17 +116,17 @@ class BlindCountIntegrationTest {
     }
 
     /**
-     * A ledger line moved for a document, naming {@code carton} when given. Not a move by hand: a person moves whole
-     * cartons by task ({@code ck_stock_movement_move_task_carton}); what this class reads is the ledger, and which
+     * A ledger line moved for a document, naming {@code carton}, as every line does. Not a move by hand: a person moves whole
+     * cartons by task; what this class reads is the ledger, and which
      * carton a line names is what hides it from a counter.
      */
-    private void movement(String from, String to, int quantity, UUID carton) {
+    private void movement(String from, String to, UUID carton) {
         jdbc.update("""
                 insert into inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
-                    to_location_code, quantity, from_status, to_status, reference_type, reference_id, occurred_at,
-                    lot_id, from_stock_package_id, to_stock_package_id)
-                values (?, 'MOVE', ?, 'L1', ?, ?, ?, 'AVAILABLE', 'AVAILABLE', 'ORDER', ?, now(), ?, ?, ?)""",
-                Identifiers.newId(), sku, from, to, quantity, Identifiers.newId(), lot, carton, carton);
+                    to_location_code, from_status, to_status, reference_type, reference_id, occurred_at,
+                    lot_id, stock_package_id)
+                values (?, 'MOVE', ?, 'L1', ?, ?, 'AVAILABLE', 'AVAILABLE', 'ORDER', ?, now(), ?, ?)""",
+                Identifiers.newId(), sku, from, to, Identifiers.newId(), lot, carton);
     }
 
     private UUID staff(String role) {
@@ -172,7 +172,7 @@ class BlindCountIntegrationTest {
         cycleCounts.count(count.id(), lineOf(count, cartonB.id()), false, null, clerk, false);
     }
 
-    // ------------------------------------------------------------------ stock rows
+    // ------------------------------------------------------------------ stock lines
 
     @Test
     @DisplayName("stock by SKU: while a count holds the bin's cartons the counter's rows have no quantity; the "
@@ -285,9 +285,9 @@ class BlindCountIntegrationTest {
         asStaff(get(INVENTORY + "/adjustments/" + manualAdjustment)).andExpect(status().isOk());
         asManager(get(list)).andExpect(jsonPath("$.data.totalElements").value(2));
         asManager(get(INVENTORY + "/adjustments/" + variance)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.quantityDelta").value(-CARTON));
+                .andExpect(jsonPath("$.data.direction").value("WRITE_OFF"));
 
-        // Approving the variance frees the carton: the delta is now history, and visible.
+        // Approving the variance frees the carton: the variance is now history, and visible.
         mvc.asRole(Role.WAREHOUSE_MANAGER, approver, post(INVENTORY + "/adjustments/" + variance + "/approval"))
                 .andExpect(status().isOk());
 

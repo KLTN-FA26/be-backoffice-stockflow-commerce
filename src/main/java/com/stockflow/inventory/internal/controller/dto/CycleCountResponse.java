@@ -46,6 +46,9 @@ public record CycleCountResponse(UUID id, String countNumber, UUID warehouseId, 
     }
 
     @Schema(name = "CycleCountLineAdjustment")
-    public record Adjustment(UUID id, String number, int quantityDelta, String status) {
+    public record Adjustment(UUID id, String number,
+                             @Schema(description = "WRITE_OFF for a carton not found, RESTOCK for a LOST carton "
+                                     + "found", allowableValues = {"WRITE_OFF", "RESTOCK"})
+                             String direction, String status) {
     }
 }

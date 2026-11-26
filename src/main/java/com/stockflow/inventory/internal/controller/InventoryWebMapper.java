@@ -28,23 +28,22 @@ interface InventoryWebMapper {
 
     ReservationRowResponse toResponse(StockBrowsing.Reservation reservation);
 
-    // The stock responses below are written by hand: each quantity goes out in pieces and again in cartons of the SKU's
-    // carton unit (kltn-docs 01 BR-09), which the source types do not carry.
+    // The stock responses below are written by hand: each quantity goes out in pieces and again in cartons
+    // (kltn-docs 01 BR-09), counted from the cartons (ADR-0011, step 3e), not divided out of the pieces.
 
-    /** A row of {@code availabilityOf}; its SKU's carton holds {@code unitsPerCarton} pieces, null: none. */
+    /** A row of {@code availabilityOf}, one carton; its SKU's carton unit holds {@code unitsPerCarton} pieces. */
     default StockItemResponse toResponse(StockAvailability row, Integer unitsPerCarton) {
-        return new StockItemResponse(row.stockItemId(), row.sku(), row.locationCode(), row.lotNumber(), unitsPerCarton,
+        return new StockItemResponse(row.stockPackageId(), row.sku(), row.locationCode(), row.lotNumber(), unitsPerCarton,
                 row.onHand(), row.reserved(), row.available(),
-                CartonCount.of(row.onHand(), unitsPerCarton), CartonCount.of(row.reserved(), unitsPerCarton),
-                CartonCount.of(row.available(), unitsPerCarton), "AVAILABLE", false);
+                CartonCount.ofOneCarton(row.onHand()), CartonCount.ofOneCarton(row.reserved()),
+                CartonCount.ofOneCarton(row.available()), "AVAILABLE", false);
     }
 
     default StockLevelResponse toResponse(StockLevel level, Integer unitsPerCarton) {
         return new StockLevelResponse(level.sku(), level.warehouseCode(), unitsPerCarton,
                 level.onHand(), level.available(), level.reserved(), level.allocated(), level.atp(),
-                CartonCount.of(level.onHand(), unitsPerCarton), CartonCount.of(level.available(), unitsPerCarton),
-                CartonCount.of(level.reserved(), unitsPerCarton), CartonCount.of(level.allocated(), unitsPerCarton),
-                CartonCount.of(level.atp(), unitsPerCarton));
+                level.onHandCartons(), level.availableCartons(), level.reservedCartons(), level.allocatedCartons(),
+                level.atpCartons());
     }
 
     default List<StockLevelResponse> toLevelResponses(List<StockLevel> levels, Integer unitsPerCarton) {
@@ -56,8 +55,8 @@ interface InventoryWebMapper {
         Integer per = row.unitsPerCarton();
         return new WarehouseStockItemResponse(row.stockItemId(), row.sku(), row.locationCode(), row.lotNumber(), per,
                 row.onHand(), row.reserved(), row.available(),
-                CartonCount.of(row.onHand(), per), CartonCount.of(row.reserved(), per),
-                CartonCount.of(row.available(), per),
+                CartonCount.ofOneCarton(row.onHand()), CartonCount.ofOneCarton(row.reserved()),
+                CartonCount.ofOneCarton(row.available()),
                 row.status() == null ? null : row.status().name(), row.receivedAt(), row.hiddenDuringCount());
     }
 }

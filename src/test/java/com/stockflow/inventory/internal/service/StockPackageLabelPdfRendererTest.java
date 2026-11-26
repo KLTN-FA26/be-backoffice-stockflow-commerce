@@ -28,8 +28,8 @@ class StockPackageLabelPdfRendererTest {
 
     private final StockPackageLabelPdfRenderer renderer = new StockPackageLabelPdfRenderer(new LabelFonts());
 
-    private static StockPackageLabel label(String lpn, int received) {
-        return new StockPackageLabel(lpn, "CUP-12OZ", "Paper cup 12oz", "PRD-20261111-0001", received, 1000, "CARTON");
+    private static StockPackageLabel label(String lpn, int units) {
+        return new StockPackageLabel(lpn, "CUP-12OZ", "Paper cup 12oz", "PRD-20261111-0001", true, units, "CARTON");
     }
 
     private PDDocument render(List<StockPackageLabel> labels, LabelFormat format) throws IOException {
@@ -55,7 +55,7 @@ class StockPackageLabelPdfRendererTest {
     void theLabelSaysTheSkuNameLotAndWhatWasCountedOutOfNominal() throws IOException {
         try (PDDocument doc = render(List.of(label("LPN-20261026-000002", 980)), LabelFormat.THERMAL_ROLL)) {
             String text = new PDFTextStripper().getText(doc);
-            assertThat(text).contains("LPN-20261026-000002", "CUP-12OZ", "980 / 1000 CARTON", "Paper cup 12oz",
+            assertThat(text).contains("LPN-20261026-000002", "CUP-12OZ", "980 / 980 CARTON", "Paper cup 12oz",
                     "PRD-20261111-0001", "SKU", "ITEM", "LOT");
         }
     }
@@ -64,7 +64,7 @@ class StockPackageLabelPdfRendererTest {
     void aLongNameTakesTwoLinesAndTheRestIsCutAndTheLabelStillScans() throws IOException {
         String name = "Paper cup 500ml printed both sides for a tea shop with a very long name that goes on and on and on";
         var long_ = new StockPackageLabel("LPN-20261026-000001", "CUP12-0312345678-01", name, "PRD-20261111-0001",
-                50, 50, "CARTON");
+                true, 50, "CARTON");
         for (LabelFormat format : LabelFormat.values()) {
             try (PDDocument doc = render(List.of(long_), format)) {
                 String text = new PDFTextStripper().getText(doc);
@@ -79,7 +79,7 @@ class StockPackageLabelPdfRendererTest {
 
     @Test
     void aLabelWithoutNameOrLotLeavesThoseFieldsOut() throws IOException {
-        var bare = new StockPackageLabel("LPN-20261026-000001", "CUP-12OZ", null, null, null, 1000, "CARTON");
+        var bare = new StockPackageLabel("LPN-20261026-000001", "CUP-12OZ", null, null, false, 1000, "CARTON");
         try (PDDocument doc = render(List.of(bare), LabelFormat.THERMAL_ROLL)) {
             String text = new PDFTextStripper().getText(doc);
             assertThat(text).contains("CUP-12OZ", "- / 1000 CARTON").doesNotContain("ITEM", "LOT");
@@ -88,11 +88,11 @@ class StockPackageLabelPdfRendererTest {
 
     @Test
     void theNotCountedNoteIsBilingualWhenItFitsAndVietnameseAloneWhenNot() throws IOException {
-        var small = new StockPackageLabel("LPN-20261026-000001", "CUP-12OZ", null, null, null, 50, "CARTON");
+        var small = new StockPackageLabel("LPN-20261026-000001", "CUP-12OZ", null, null, false, 50, "CARTON");
         try (PDDocument doc = render(List.of(small), LabelFormat.A4_SHEET)) {
             assertThat(new PDFTextStripper().getText(doc)).contains(NOT_COUNTED_VI + " / NOT COUNTED");
         }
-        var wide = new StockPackageLabel("LPN-20261026-000001", "CUP-12OZ", null, null, null, 1000, "CARTON");
+        var wide = new StockPackageLabel("LPN-20261026-000001", "CUP-12OZ", null, null, false, 1000, "CARTON");
         try (PDDocument doc = render(List.of(wide), LabelFormat.THERMAL_ROLL)) {
             assertThat(new PDFTextStripper().getText(doc)).contains(NOT_COUNTED_VI)
                     .doesNotContain("NOT COUNTED", "…");
@@ -101,7 +101,7 @@ class StockPackageLabelPdfRendererTest {
 
     @Test
     void aBlankLotIsLeftOutLikeAMissingOne() throws IOException {
-        var blank = new StockPackageLabel("LPN-20261026-000001", "CUP-12OZ", null, "  ", 50, 50, "CARTON");
+        var blank = new StockPackageLabel("LPN-20261026-000001", "CUP-12OZ", null, "  ", true, 50, "CARTON");
         try (PDDocument doc = render(List.of(blank), LabelFormat.THERMAL_ROLL)) {
             assertThat(new PDFTextStripper().getText(doc)).contains("CUP-12OZ").doesNotContain("LOT");
         }
@@ -112,7 +112,7 @@ class StockPackageLabelPdfRendererTest {
         String composed = "Ly giấy in logo";
         String decomposed = java.text.Normalizer.normalize(composed, java.text.Normalizer.Form.NFD);
         assertThat(decomposed).isNotEqualTo(composed);
-        var label = new StockPackageLabel("LPN-20261026-000001", "CUP-12OZ", decomposed, null, 50, 50, "CARTON");
+        var label = new StockPackageLabel("LPN-20261026-000001", "CUP-12OZ", decomposed, null, true, 50, "CARTON");
         try (PDDocument doc = render(List.of(label), LabelFormat.THERMAL_ROLL)) {
             assertThat(new PDFTextStripper().getText(doc)).contains(composed);
         }
@@ -132,7 +132,7 @@ class StockPackageLabelPdfRendererTest {
 
     @Test
     void aBadgeLeavingNoRoomDropsTheNoteRatherThanRunIntoTheQrCode() throws IOException {
-        var wide = new StockPackageLabel("LPN-20261026-000001", "CUP-12OZ", null, null, null, 1000000,
+        var wide = new StockPackageLabel("LPN-20261026-000001", "CUP-12OZ", null, null, false, 1000000,
                 "CTN-24X500ML-PRT"); // the longest unit code (16) and a seven-digit count fill the header
 
         try (PDDocument doc = render(List.of(wide), LabelFormat.THERMAL_ROLL)) {
@@ -145,7 +145,7 @@ class StockPackageLabelPdfRendererTest {
 
     @Test
     void aSkuTheFontCannotDrawStillPrints() throws IOException {
-        var odd = new StockPackageLabel("LPN-20261026-000001", "CUP	🧊", "Cup 🧊", null, null, 1000, "CARTON");
+        var odd = new StockPackageLabel("LPN-20261026-000001", "CUP	🧊", "Cup 🧊", null, false, 1000, "CARTON");
         try (PDDocument doc = render(List.of(odd), LabelFormat.THERMAL_ROLL)) {
             assertThat(new PDFTextStripper().getText(doc)).contains("CUP ?", "Cup ?", "- / 1000 CARTON");
         }

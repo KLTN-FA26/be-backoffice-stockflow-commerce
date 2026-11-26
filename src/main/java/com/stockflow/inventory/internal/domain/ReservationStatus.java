@@ -9,7 +9,7 @@ package com.stockflow.inventory.internal.domain;
  *     ├──allocate───▶ ALLOCATED    (a SKU reservation only: the order was released to a warehouse and
  *     │                             bins and lots were chosen; the hold lives on as allocations)
  *     ├──release────▶ RELEASED     (order cancelled / payment failed / manual override)
- *     └──sweep──────▶ EXPIRED      (the hold outlived its expiresAt)
+ *     └──sweep──────▶ EXPIRED      (history: the hold outlived a deadline; none has one since V20261117000300)
  * </pre>
  *
  * <p>Two kinds of row share this lifecycle (docs 01, "Reserved" vs "Allocated"). A {@link SkuReservation}

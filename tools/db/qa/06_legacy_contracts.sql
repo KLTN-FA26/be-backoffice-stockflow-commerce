@@ -58,8 +58,8 @@ SELECT pg_temp.expect_fail('design draft of no product', $q$
 
 \echo '--- C2: the map is the only location model'
 SELECT pg_temp.expect_fail('stock at a location the map does not have', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version, created_at)
-    VALUES (gen_random_uuid(), 'LY-GIAY-DEMO-12OZ-XANH', 'NOWHERE-1', 'QA-LOT', 1, 0, 'AVAILABLE', 0, NOW()) $q$);
+    UPDATE inventory.stock_package SET location_code = 'NOWHERE-1'
+     WHERE id = (SELECT id FROM inventory.stock_package WHERE status = 'IN_STOCK' ORDER BY lpn LIMIT 1) $q$);
 SELECT pg_temp.expect_fail('warehouse without a map frame', $q$
     UPDATE warehouse.warehouse SET map_width = NULL WHERE prefix = 'HCM' $q$);
 SELECT pg_temp.expect_true('putaway targets a storage location', $q$
@@ -68,9 +68,11 @@ SELECT pg_temp.expect_true('putaway targets a storage location', $q$
 
 \echo '--- C3: stock and putaway are of known inventory items'
 SELECT pg_temp.expect_fail('stock of a SKU with no inventory item', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version, created_at)
-    SELECT gen_random_uuid(), 'NO-ITEM-SKU', location_code, 'QA-LOT', 1, 0, 'AVAILABLE', 0, NOW()
-      FROM warehouse.storage_location LIMIT 1 $q$);
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, counted_at,
+                                         location_code, status, stock_status, lot_id)
+    SELECT gen_random_uuid(), 'QA06-NO-ITEM', gen_random_uuid(), p.uom_conversion_id, p.nominal_qty, NOW(),
+           p.location_code, 'IN_STOCK', 'AVAILABLE', p.lot_id
+      FROM inventory.stock_package p WHERE p.status = 'IN_STOCK' ORDER BY p.lpn LIMIT 1 $q$);
 
 \echo '--- C4: putaway has exactly one source'
 SELECT pg_temp.expect_fail('putaway task with no source line', $q$

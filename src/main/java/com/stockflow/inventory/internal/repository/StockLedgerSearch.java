@@ -20,8 +20,7 @@ public interface StockLedgerSearch {
      * @param occurredBefore lines before this instant; null for no upper bound - the stock summary drills down to the
      *                 lines of its period (2026-11-14 plan, BE2-C)
      * @param warehousePrefix lines with either side in this warehouse (its location-code prefix); null for any
-     * @param stockPackageId lines with this carton on either side ({@code from_stock_package_id} or
-     *                 {@code to_stock_package_id}, each indexed); null for any
+     * @param stockPackageId the lines about this carton ({@code stock_package_id}, indexed); null for any
      */
     record Criteria(String sku, String location, StockMovement.MovementType type, boolean hideCountedSlots,
                     java.time.Instant occurredFrom, java.time.Instant occurredBefore, String warehousePrefix,

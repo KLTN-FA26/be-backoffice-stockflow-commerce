@@ -633,7 +633,10 @@ SELLER = dict(seller_name="Công ty TNHH StockFlow Commerce", seller_tax_code="0
               seller_representative="Võ Hoàng Minh", seller_representative_title="Giám đốc")
 STAFF_OF = {"HAN": ("quanly.hn", "kho.hn1", "kho.hn2"), "BDG": ("quanly.bd", "kho.bd1", "kho.bd2")}
 NEXT_BIN = {"HAN": 0, "BDG": 0}
-STOCK = {}          # stock row id -> facts (sku, warehouse, location, on_hand, reserved, package, lpn, lot, status)
+# The stock, in memory: one entry per carton in or out of stock. The carton IS the stock (ADR-0011, V20261231000600):
+# the database keeps a stock status, a lot and a receipt date on inventory.stock_package and no quantity; on_hand and
+# reserved here are the generator's own arithmetic (a carton's count while it is in stock / while an order holds it).
+STOCK = {}          # key -> facts (sku, warehouse, location, on_hand, reserved, package, lpn, lot, status)
 ORDERS = []
 
 
@@ -849,9 +852,10 @@ class Order:
                 if qty <= 0:
                     continue
                 rid = uid(f"hold:{self.key}:{b['seq']}:{ln['id']}:{len(ln['holds'])}")
-                ins("inventory.stock_reservation", id=rid, stock_item_id=None, order_id=self.id, root_request_id=rid,
-                    request_id=rid, quantity=qty, reserved_at=when, expires_at=None, status="HELD", sku=ln["sku"],
-                    warehouse_code=self.p)
+                # A hold counts cartons of the line's count (ADR-0011, V20261231000500); its units are derived.
+                ins("inventory.stock_reservation", id=rid, stock_package_id=None, order_id=self.id, root_request_id=rid,
+                    request_id=rid, cartons=qty // ln["per"], units_per_carton=ln["per"], reserved_at=when,
+                    status="HELD", sku=ln["sku"], warehouse_code=self.p)
                 ins("ordering.order_line_reservation", order_line_id=ln["id"], reservation_id=rid)
                 ins("ordering.delivery_batch_hold", when, reservation_id=rid, delivery_batch_id=b["id"],
                     order_id=self.id, order_line_id=ln["id"])
@@ -874,16 +878,16 @@ class Order:
             for h in [h for h in ln["holds"] if h["batch"] == seq and h["status"] == "HELD"]:
                 rows = sorted((r for r in STOCK.values() if r["sku"] == ln["sku"] and r["wh"] == self.p
                                and r["status"] == "AVAILABLE" and r["reserved"] == 0 and not r["staged"]
-                               and r["on_hand"] > 0), key=lambda r: (r["received"], r["lpn"]))
+                               and r["on_hand"] == ln["per"]), key=lambda r: (r["received"], r["lpn"]))
                 need = h["qty"]
                 for r in rows:
                     if need <= 0:
                         break
                     aid = uid(f"alloc:{h['id']}:{r['id']}")
-                    ins("inventory.stock_reservation", id=aid, stock_item_id=r["id"], order_id=self.id,
-                        root_request_id=h["id"], request_id=aid, quantity=r["on_hand"], reserved_at=when,
-                        expires_at=None, status="HELD", sku=ln["sku"], allocated_from_id=h["id"])
-                    upd("inventory.stock_item", r["id"], reserved=r["on_hand"])
+                    # The allocation names its carton; while it is HELD the carton is taken (no counter beside it).
+                    ins("inventory.stock_reservation", id=aid, stock_package_id=r["package"], order_id=self.id,
+                        root_request_id=h["id"], request_id=aid, cartons=1, units_per_carton=r["on_hand"],
+                        reserved_at=when, status="HELD", sku=ln["sku"], allocated_from_id=h["id"])
                     r["reserved"] = r["on_hand"]
                     need -= r["on_hand"]
                     ins("ordering.delivery_batch_hold", when, reservation_id=aid, delivery_batch_id=b["id"],
@@ -1082,7 +1086,7 @@ class ProductionOrder:
             for _ in range(n):
                 pkg = dict(id=uid(f"pkg:{rl}:{len(cartons)}"), lpn=lpn(when.date()), line=rl, ln=ln, pl=pl)
                 ins("inventory.stock_package", when, id=pkg["id"], lpn=pkg["lpn"], inventory_item_id=item,
-                    uom_conversion_id=ln["s"]["unit"], nominal_qty=ln["per"], received_qty=ln["per"],
+                    uom_conversion_id=ln["s"]["unit"], nominal_qty=ln["per"], counted_at=when,
                     location_code=rcv, status="RECEIVING", goods_receipt_line_id=rl)
                 cartons.append(pkg)
             pl["received"] += n
@@ -1101,18 +1105,17 @@ class ProductionOrder:
                     production_order_id=self.id, production_order_code=self.code)
         for pkg in cartons:
             ln = pkg["ln"]
-            upd("inventory.stock_package", pkg["id"], status="IN_STOCK")
+            # RECEIVING -> IN_STOCK: this is when a carton gets its stock status, its lot and its FIFO date.
+            upd("inventory.stock_package", pkg["id"], status="IN_STOCK", stock_status="INBOUND",
+                lot_id=pkg["pl"]["lot"], received_at=when)
             row = dict(id=uid("stock:" + pkg["id"]), sku=ln["sku"], wh=p, loc=rcv, on_hand=ln["per"], reserved=0,
                        status="INBOUND", package=pkg["id"], lpn=pkg["lpn"], lot=self.code, lot_id=pkg["pl"]["lot"],
                        received=when, staged=False)
             STOCK[row["id"]] = row
-            ins("inventory.stock_item", confirmed, id=row["id"], sku=ln["sku"], location_code=rcv,
-                lot_number=self.code, on_hand=ln["per"], reserved=0, status="INBOUND", received_at=when,
-                stock_package_id=pkg["id"], lot_id=row["lot_id"])
             ins("inventory.stock_movement", confirmed, id=uid("mv:receipt:" + pkg["id"]), movement_type="RECEIPT",
                 sku=ln["sku"], lot_number=self.code, from_location_code=None, to_location_code=rcv,
-                quantity=ln["per"], from_status=None, to_status="INBOUND", reference_type="GOODS_RECEIPT_LINE",
-                reference_id=pkg["line"], actor_id=manager, occurred_at=confirmed, to_stock_package_id=pkg["id"],
+                from_status=None, to_status="INBOUND", reference_type="GOODS_RECEIPT_LINE",
+                reference_id=pkg["line"], actor_id=manager, occurred_at=confirmed, stock_package_id=pkg["id"],
                 lot_id=row["lot_id"])
             pkg["row"] = row
         for pl in self.lines:
@@ -1132,11 +1135,10 @@ class ProductionOrder:
                     status="DONE", source="RECEIPT")
                 ins("inventory.stock_movement", t, id=uid("mv:putaway:" + pkg["id"]), movement_type="MOVE",
                     sku=row["sku"], lot_number=row["lot"], from_location_code=rcv, to_location_code=to,
-                    quantity=row["on_hand"], from_status="INBOUND", to_status="AVAILABLE",
+                    from_status="INBOUND", to_status="AVAILABLE",
                     reference_type="PUTAWAY_TASK", reference_id=task, actor_id=staff, occurred_at=t,
-                    from_stock_package_id=pkg["id"], to_stock_package_id=pkg["id"], lot_id=row["lot_id"])
-                upd("inventory.stock_package", pkg["id"], location_code=to)
-                upd("inventory.stock_item", row["id"], location_code=to, status="AVAILABLE")
+                    stock_package_id=pkg["id"], lot_id=row["lot_id"])
+                upd("inventory.stock_package", pkg["id"], location_code=to, stock_status="AVAILABLE")
                 row.update(loc=to, status="AVAILABLE")
             else:
                 ins("warehouse.putaway_task", confirmed, id=task, goods_receipt_id=gid,
@@ -1182,13 +1184,13 @@ class Pick:
     def _deduct(self, pl, when, frm):
         r, a = pl["row"], pl["alloc"]
         ins("inventory.stock_movement", when, id=uid("mv:pick:" + pl["id"]), movement_type="PICK", sku=r["sku"],
-            lot_number=r["lot"], from_location_code=frm, to_location_code=None, quantity=r["on_hand"],
+            lot_number=r["lot"], from_location_code=frm, to_location_code=None,
             from_status="AVAILABLE", to_status=None, reference_type="PICK_LINE", reference_id=pl["id"],
-            actor_id=self.picker, occurred_at=when, from_stock_package_id=r["package"], lot_id=r["lot_id"],
+            actor_id=self.picker, occurred_at=when, stock_package_id=r["package"], lot_id=r["lot_id"],
             order_id=self.o.id)
         upd("inventory.stock_reservation", a["id"], status="CONSUMED", closed_at=when)
-        upd("inventory.stock_item", r["id"], on_hand=0, reserved=0)
-        upd("inventory.stock_package", r["package"], status="CONSUMED", closed_at=when)
+        # Out of stock, so no stock status; the lot and the receipt date stay with the carton.
+        upd("inventory.stock_package", r["package"], status="CONSUMED", stock_status=None, closed_at=when)
         r.update(on_hand=0, reserved=0, consumed=True)
 
     def pick(self, when, count=None):
@@ -1202,11 +1204,10 @@ class Pick:
             if self.staging:
                 ins("inventory.stock_movement", t, id=uid("mv:stage:" + pl["id"]), movement_type="MOVE",
                     sku=r["sku"], lot_number=r["lot"], from_location_code=r["loc"], to_location_code=self.staging,
-                    quantity=r["on_hand"], from_status="AVAILABLE", to_status="AVAILABLE", reference_type="PICK_LINE",
-                    reference_id=pl["id"], actor_id=self.picker, occurred_at=t, from_stock_package_id=r["package"],
-                    to_stock_package_id=r["package"], lot_id=r["lot_id"], order_id=self.o.id)
+                    from_status="AVAILABLE", to_status="AVAILABLE", reference_type="PICK_LINE",
+                    reference_id=pl["id"], actor_id=self.picker, occurred_at=t, stock_package_id=r["package"],
+                    lot_id=r["lot_id"], order_id=self.o.id)
                 upd("inventory.stock_package", r["package"], location_code=self.staging)
-                upd("inventory.stock_item", r["id"], location_code=self.staging)
                 r.update(loc=self.staging, staged=True)
                 upd("fulfillment.pick_line", pl["id"], status="STAGED", staged_at=t,
                     staged_location_code=self.staging, **scanned)
@@ -1662,18 +1663,16 @@ def return_request(o, key, when, reason, status, cartons=0, channel="PORTAL", no
         commit()
         for pk in back:
             r = pk["row"]
-            raw(f"SELECT set_config('stockflow.same_receipt_merge', '{r['id']}', true);")
-            # WF-05 Q-4 (V20261223000300): back on a return, the carton waits for the refund decision.
-            upd("inventory.stock_package", pk["package"], status="IN_STOCK", location_code=qrt, closed_at=None,
-                return_request_id=rid, return_ownership="PENDING")
-            upd("inventory.stock_item", r["id"], location_code=qrt, on_hand=pk["qty"], status="QUARANTINE")
+            # WF-05 Q-4 (V20261223000300): back on a return, the carton waits for the refund decision - in stock again
+            # as QUARANTINE (the status is named by what brings a carton back), with the lot and date it had.
+            upd("inventory.stock_package", pk["package"], status="IN_STOCK", stock_status="QUARANTINE",
+                location_code=qrt, closed_at=None, return_request_id=rid, return_ownership="PENDING")
             r.update(loc=qrt, on_hand=pk["qty"], status="QUARANTINE", consumed=False)
             ins("inventory.stock_movement", t, id=uid(f"mv:return:{gid}:{pk['id']}"), movement_type="RECEIPT",
                 sku=ln["sku"], lot_number=pk["lot"], from_location_code=None, to_location_code=qrt,
-                quantity=pk["qty"], from_status="QUARANTINE", to_status="QUARANTINE", reference_type="GOODS_RECEIPT",
-                reference_id=gid, actor_id=staff, occurred_at=t, to_stock_package_id=pk["package"],
+                from_status="QUARANTINE", to_status="QUARANTINE", reference_type="GOODS_RECEIPT",
+                reference_id=gid, actor_id=staff, occurred_at=t, stock_package_id=pk["package"],
                 lot_id=r["lot_id"], order_id=o.id)
-        raw("SELECT set_config('stockflow.same_receipt_merge', '', true);")
         upd("procurement.goods_receipts", gid, status="CLOSED", confirmed_at=t + timedelta(hours=1),
             confirmed_by=U[STAFF_OF[p][0]], closed_at=t + timedelta(hours=1))
         # The return takes the goods in the receipt's own transaction (audit round 2 M1): no commit in between.

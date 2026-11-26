@@ -83,8 +83,8 @@ Types named there: `Sku` (from `common`), `StockAvailability`, `ReserveStockResu
 `ReserveStockCommand`. Open `ReserveStockResult` and it holds a `List<StockReservation>`, which
 drags in `StockReservation`. That is five files, and five files are what `inventory/api` contains.
 
-`StockItem` — the aggregate, the most important class in the module — is not among them, because it
-appears in no signature. Neither does `Quantity`, `ReservationStatus`, or `StockItemRepository`.
+`StockPackage` — the aggregate, the most important class in the module — is not among them, because it
+appears in no signature. Neither does `Quantity`, `ReservationStatus`, or `StockPackageRepository`.
 
 The rule also tells you when something has to *move*. `release` currently takes a `String reason`,
 which is why `internal/domain/ReleaseReason` can stay private. Change the signature to
@@ -119,12 +119,12 @@ a method on it can open a transaction.
 | Module entry point | `<Module>Service` | `InventoryService`, `OrderService` |
 | Its implementation | `<Module>ServiceImpl` | `InventoryServiceImpl`, `OrderServiceImpl` |
 | REST controller | `<Aggregate>Controller` | `InventoryController`, `OrderController` |
-| Spring Data repository | `<Aggregate>JpaRepository` | `StockItemJpaRepository` |
-| JPA entity | `<Aggregate>JpaEntity` | `StockItemJpaEntity`, `OrderJpaEntity` |
-| Port implementation | `<Aggregate>RepositoryAdapter` | `StockItemRepositoryAdapter` |
-| Entity ⇄ domain mapper | `<Aggregate>PersistenceMapper` | `StockItemPersistenceMapper` |
+| Spring Data repository | `<Aggregate>JpaRepository` | `StockPackageJpaRepository` |
+| JPA entity | `<Aggregate>JpaEntity` | `StockPackageJpaEntity`, `OrderJpaEntity` |
+| Port implementation | `<Aggregate>RepositoryAdapter` | `StockPackageRepositoryAdapter` |
+| Entity ⇄ domain mapper | `<Aggregate>PersistenceMapper` | `CycleCountPersistenceMapper` |
 | DTO ⇄ api mapper | `<Module>WebMapper` | `InventoryWebMapper`, `OrderWebMapper` |
-| Query projection | `<Noun>Row` | `AvailabilityRow` |
+| Query projection | `<Noun>Row` | `RoleGrantRow` |
 | Scheduled job | `<Noun>Sweeper` / `<Noun>Retention` | `ReservationSweeper`, `AuditRetention` |
 | Event listener | `<SourceModule>EventListener` | `PaymentEventListener` |
 | Event publisher | `<Module>EventPublisher` | `OrderEventPublisher` |
@@ -139,7 +139,7 @@ Aggregates, value objects, and the records crossing a boundary are named for **w
 the language of the business. No `...Dto`, no `...Model`, no `...VO`.
 
 ```java
-StockItem item;        // "the stock on one shelf"      NOT StockItemModel
+StockPackage carton;   // "a carton of stock"           NOT StockPackageModel
 Quantity quantity;     // "a quantity"                  NOT QuantityValueObject
 StockAvailability row; // "what is available"           NOT AvailabilityDto
 ```

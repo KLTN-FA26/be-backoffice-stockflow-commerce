@@ -60,13 +60,11 @@ class BinOccupancyGroupIntegrationTest {
 
     /**
      * The cartons are committed into a demo bin other tests resize and count on
-     * ({@code BinResizeStrandingIntegrationTest}), so they leave it as they found it: stock rows first, then the
-     * cartons they point at.
+     * ({@code BinResizeStrandingIntegrationTest}), so they leave it as they found it.
      */
     @AfterEach
     void removeCartons() {
         tx.executeWithoutResult(s -> {
-            jdbc.update("delete from inventory.stock_item where sku in (?, ?)", sku1, sku2);
             jdbc.update("delete from inventory.stock_package where inventory_item_id in"
                     + " (select id from inventory.inventory_items where sku in (?, ?))", sku1, sku2);
         });
