@@ -7,15 +7,21 @@ import java.util.Set;
 /**
  * The eleven states of a conversation and the moves between them, kltn-docs 16 §5. Mapped {@code EnumType.STRING}.
  *
- * <p>The move table is stated here and again in {@code chat.check_conversation_lifecycle()} (V20261124000200), the
- * database's last word on it; the two must agree, and {@code ConversationStatusTest} sweeps every pair. Who may make a
- * move - the customer, the agent, the supervisor, the system - is {@link Conversation}'s business, not this table's.</p>
+ * <p>The move table is stated here and again in {@code chat.check_conversation_lifecycle()} (V20261124000300,
+ * V20270128000200), the database's last word on it; the two must agree, and {@code ConversationLifecycleTest} sweeps
+ * every pair. Who may make a move - the customer, the agent, the supervisor, the system - is {@link Conversation}'s
+ * business, not this table's. The move back to QUEUED from an open state is the system's alone, when the agent's
+ * account stops working (BR-S08, {@link Conversation#requeueFrom}); the database accepts it only with the conversation
+ * flagged ({@code requeued_at}).</p>
  */
 public enum ConversationStatus {
 
     /** Just opened; no agent yet. */
     NEW,
-    /** Waiting for an agent: none was routed, or out of hours, or the supervisor is to assign one. */
+    /**
+     * Waiting for an agent: the customer has no Sales owner at work (16 §4.1), or the agent's account was locked or
+     * disabled while the conversation was open (BR-S08, flagged first in the queue).
+     */
     QUEUED,
     /** An agent has it and has not answered yet. */
     ASSIGNED,
@@ -39,13 +45,13 @@ public enum ConversationStatus {
     private static final Map<ConversationStatus, Set<ConversationStatus>> MOVES = Map.ofEntries(
             Map.entry(NEW, EnumSet.of(QUEUED, ASSIGNED)),
             Map.entry(QUEUED, EnumSet.of(ASSIGNED)),
-            Map.entry(ASSIGNED, EnumSet.of(ACTIVE)),
-            Map.entry(ACTIVE, EnumSet.of(WAITING_ON_CUSTOMER, WAITING_ON_INTERNAL, ESCALATED, RESOLVED)),
-            Map.entry(WAITING_ON_CUSTOMER, EnumSet.of(ACTIVE, AUTO_CLOSED)),
-            Map.entry(WAITING_ON_INTERNAL, EnumSet.of(ACTIVE)),
-            Map.entry(ESCALATED, EnumSet.of(ACTIVE, RESOLVED)),
+            Map.entry(ASSIGNED, EnumSet.of(ACTIVE, QUEUED)),
+            Map.entry(ACTIVE, EnumSet.of(WAITING_ON_CUSTOMER, WAITING_ON_INTERNAL, ESCALATED, RESOLVED, QUEUED)),
+            Map.entry(WAITING_ON_CUSTOMER, EnumSet.of(ACTIVE, AUTO_CLOSED, QUEUED)),
+            Map.entry(WAITING_ON_INTERNAL, EnumSet.of(ACTIVE, QUEUED)),
+            Map.entry(ESCALATED, EnumSet.of(ACTIVE, RESOLVED, QUEUED)),
             Map.entry(RESOLVED, EnumSet.of(REOPENED, CLOSED)),
-            Map.entry(REOPENED, EnumSet.of(ACTIVE)),
+            Map.entry(REOPENED, EnumSet.of(ACTIVE, QUEUED)),
             Map.entry(AUTO_CLOSED, EnumSet.of(REOPENED, CLOSED)),
             Map.entry(CLOSED, EnumSet.noneOf(ConversationStatus.class)));
 

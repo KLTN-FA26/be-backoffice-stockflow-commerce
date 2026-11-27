@@ -110,6 +110,9 @@ public class ConversationJpaEntity extends BaseEntity {
     @Column(name = "merged_into_id")
     private UUID mergedIntoId;
 
+    @Column(name = "requeued_at")
+    private Instant requeuedAt;
+
     protected ConversationJpaEntity() {
     }
 
@@ -130,7 +133,8 @@ public class ConversationJpaEntity extends BaseEntity {
                       Instant resolutionDueAt, Instant resolutionAlertedAt, String escalationReason,
                       UUID escalatedToId, Instant resolvedAt, UUID resolvedBy, Instant autoClosedAt, Instant closedAt,
                       Instant reopenUntil, Instant lastCustomerMessageAt, Instant lastMessageAt, long lastMessageSeq,
-                      Integer csatScore, String csatComment, Instant csatSubmittedAt, UUID mergedIntoId) {
+                      Integer csatScore, String csatComment, Instant csatSubmittedAt, UUID mergedIntoId,
+                      Instant requeuedAt) {
         this.status = status;
         this.assignedAgentId = assignedAgentId;
         this.assignedAt = assignedAt;
@@ -154,6 +158,7 @@ public class ConversationJpaEntity extends BaseEntity {
         this.csatComment = csatComment;
         this.csatSubmittedAt = csatSubmittedAt;
         this.mergedIntoId = mergedIntoId;
+        this.requeuedAt = requeuedAt;
     }
 
     public UUID getCustomerId() { return customerId; }
@@ -185,4 +190,5 @@ public class ConversationJpaEntity extends BaseEntity {
     public Instant getCsatSubmittedAt() { return csatSubmittedAt; }
     public UUID getContinuedFromId() { return continuedFromId; }
     public UUID getMergedIntoId() { return mergedIntoId; }
+    public Instant getRequeuedAt() { return requeuedAt; }
 }
