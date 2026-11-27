@@ -18,7 +18,6 @@ public record ProductResponse(
         String code,
 
         String name,
-        String nameEn,
 
         @Schema(description = "Storefront slug; edited with the selling content, fixed once ever published")
         String slug,
@@ -31,7 +30,6 @@ public record ProductResponse(
 
         String shortDescription,
         String description,
-        String descriptionEn,
         TaxClass taxClass,
         ProductKind kind,
 

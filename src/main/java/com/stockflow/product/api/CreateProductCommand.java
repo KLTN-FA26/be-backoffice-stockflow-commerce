@@ -15,12 +15,10 @@ import java.util.UUID;
 public record CreateProductCommand(
         String code,
         String name,
-        String nameEn,
         UUID brandId,
         UUID categoryId,
         String shortDescription,
         String description,
-        String descriptionEn,
         TaxClass taxClass,
         List<Axis> axes
 ) {

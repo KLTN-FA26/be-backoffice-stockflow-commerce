@@ -11,12 +11,10 @@ public record UpdateProductCommand(
         UUID productId,
         long version,
         String name,
-        String nameEn,
         UUID brandId,
         UUID categoryId,
         String shortDescription,
         String description,
-        String descriptionEn,
         TaxClass taxClass
 ) {
 }

@@ -11,8 +11,9 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * The private originals of the product images a variant still shows, for the orphaned-file sweep: an image removed
- * from its gallery leaves its original behind, which is the file the sweep removes.
+ * The private originals of the product images a variant still shows, and of each product's own image
+ * (V20270106000100), for the orphaned-file sweep: an image removed from its gallery, or replaced on its product,
+ * leaves its original behind, which is the file the sweep removes.
  */
 @Component
 class ProductMediaFileReferences implements StoredFileReferences {
@@ -34,6 +35,8 @@ class ProductMediaFileReferences implements StoredFileReferences {
             return Set.of();
         }
         return new HashSet<>(jdbc.queryForList("""
-                SELECT storage_key FROM product.media WHERE storage_key IN (:keys)""", Map.of("keys", keys), String.class));
+                SELECT storage_key FROM product.media WHERE storage_key IN (:keys)
+                UNION
+                SELECT image_key FROM product.products WHERE image_key IN (:keys)""", Map.of("keys", keys), String.class));
     }
 }

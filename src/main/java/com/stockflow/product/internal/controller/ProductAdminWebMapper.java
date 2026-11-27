@@ -6,9 +6,11 @@ import com.stockflow.product.internal.controller.dto.CategoryResponse;
 import com.stockflow.product.internal.controller.dto.GeneratedVariantsResponse;
 import com.stockflow.product.internal.controller.dto.ImageDownloadResponse;
 import com.stockflow.product.internal.controller.dto.MediaResponse;
+import com.stockflow.product.internal.controller.dto.ProductImageResponse;
 import com.stockflow.product.internal.controller.dto.PublicGalleryResponse;
 import com.stockflow.product.internal.controller.dto.VariantOptionResponse;
 import com.stockflow.product.internal.controller.dto.VariantResponse;
+import com.stockflow.product.internal.service.ProductImageService;
 import com.stockflow.product.internal.service.ProductMediaService;
 import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.product.internal.service.ProductVariantService;
@@ -27,7 +29,7 @@ class ProductAdminWebMapper {
         return new VariantResponse(v.id(), v.productId(), v.sku(), v.name(), v.status().name(), v.defaultVariant(),
                 v.attributeSignature(), v.position(), v.obsoletedAt(), v.version(),
                 v.options().stream().map(o -> new VariantOptionResponse(o.attributeId(), o.attributeCode(),
-                        o.valueId(), o.valueCode(), o.label())).toList(), v.rotatable());
+                        o.valueId(), o.valueCode(), o.label())).toList(), v.rotatable(), v.description());
 
     }
 
@@ -45,6 +47,15 @@ class ProductAdminWebMapper {
                         r.file().contentType(), r.file().sizeBytes(), m.renditionUrls().get(r.edge()))).toList(),
                 m.altText(), m.sortOrder(), m.primary(), m.published(), m.publishedAt(), m.publishedBy(),
                 m.uploadedBy(), m.uploadedAt(), m.version(), uploadedByName, publishedByName);
+    }
+
+    ProductImageResponse toResponse(ProductImageService.ProductImageView i) {
+        var file = i.original();
+        return new ProductImageResponse(i.productId(), file.originalName(), file.contentType(), file.sizeBytes(),
+                file.storedAt(), i.altText(), i.renditions().stream()
+                .map(r -> new ProductImageResponse.Rendition(r.edge(), r.width(), r.height(), r.file().contentType(),
+                        r.file().sizeBytes(), i.renditionUrls().get(r.edge())))
+                .toList());
     }
 
     PublicGalleryResponse toResponse(ProductMediaService.PublicGallery g) {

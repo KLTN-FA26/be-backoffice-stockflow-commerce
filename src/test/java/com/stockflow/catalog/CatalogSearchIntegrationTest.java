@@ -644,8 +644,8 @@ class CatalogSearchIntegrationTest {
         UUID id = publish("Nắp " + m, null, sku(m, 1));
         addVariant(id, sku(m, 2), "Nắp cũ", 1, "https://example.test/old.jpg", false, 0);
         tx.executeWithoutResult(s -> {
-            // self-approved image (creator = approver) never reaches the storefront; an OBSOLETE variant is not sold
-            jdbc.update("update product.media set created_by = published_by::text where variant_id in"
+            // an image taken off the storefront is not shown; an OBSOLETE variant is not sold
+            jdbc.update("update product.media set is_published = false where variant_id in"
                     + " (select id from product.variants where product_id=?)", id);
             jdbc.update("update product.variants set status='OBSOLETE', obsoleted_at=now() where sku=?", sku(m, 2));
         });

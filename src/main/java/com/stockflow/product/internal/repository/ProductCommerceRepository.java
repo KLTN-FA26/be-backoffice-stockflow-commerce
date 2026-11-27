@@ -40,7 +40,7 @@ public class ProductCommerceRepository {
                                 new PublicationProduct(
                                         id,
                                         r.getString("name"),
-                                        r.getString("description"),
+                                        textOf(r.getString("description")),
                                         null,
                                         status(r.getString("status")),
                                         List.of(),
@@ -189,8 +189,44 @@ order by pc.is_primary desc, pc.id limit 1
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
     }
 
+    /** A product's description HTML, brand and primary category, as its storefront page shows them. */
+    public record StorefrontFacts(String descriptionHtml, com.stockflow.product.api.StorefrontProduct.Brand brand,
+                                  com.stockflow.product.api.StorefrontProduct.Category category) {}
+
+    /** {@link StorefrontFacts} in one query; empty for an unknown product. */
+    public java.util.Optional<StorefrontFacts> storefrontFacts(UUID id) {
+        return jdbc.query(
+                        """
+select p.description, b.id, b.name, b.slug, b.logo_url, c.id, c.name, c.slug
+from product.products p
+left join product.brands b on b.id = p.brand_id
+left join product.product_categories pc on pc.product_id = p.id and pc.is_primary
+left join product.categories c on c.id = pc.category_id
+where p.id = ?
+""",
+                        (r, n) -> new StorefrontFacts(
+                                r.getString(1),
+                                r.getObject(2) == null ? null : new com.stockflow.product.api.StorefrontProduct.Brand(
+                                        r.getObject(2, UUID.class), r.getString(3), r.getString(4), r.getString(5)),
+                                r.getObject(6) == null ? null : new com.stockflow.product.api.StorefrontProduct.Category(
+                                        r.getObject(6, UUID.class), r.getString(7), r.getString(8))),
+                        id)
+                .stream()
+                .findFirst();
+    }
+
     /** A catalogue variant's id and SKU, and whether it is OBSOLETE. */
     public record VariantSku(UUID variantId, String sku, boolean obsolete) {}
+
+    /**
+     * The text of a description, tags gone: a description is the editor's HTML (ADR-0013), and what reads it through
+     * {@code PublicationProduct} - the catalog's search - wants words, not markup.
+     */
+    private static String textOf(String html) {
+        if (html == null || html.isBlank()) return null;
+        String text = org.jsoup.Jsoup.parseBodyFragment(html).body().text().strip();
+        return text.isEmpty() ? null : text;
+    }
 
     public ProductEcommerce ecommerce(UUID id) {
         return jdbc

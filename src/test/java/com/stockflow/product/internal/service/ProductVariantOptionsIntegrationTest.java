@@ -110,8 +110,7 @@ class ProductVariantOptionsIntegrationTest {
 
     private UUID product(String code) {
         newCode = code;
-        return products.create(new CreateProductCommand(code, "Ly giay", "Paper cup", brand, category, null, null,
-                null, TaxClass.STANDARD, List.of())).productId();
+        return products.create(new CreateProductCommand(code, "Ly giay", brand, category, null, null, TaxClass.STANDARD, List.of())).productId();
     }
 
     private UUID productWithAxes() {
@@ -386,8 +385,7 @@ class ProductVariantOptionsIntegrationTest {
 
     private UUID createWithAxes(String code, List<CreateProductCommand.Axis> axes) {
         newCode = code;
-        return products.create(new CreateProductCommand(code, "Ly giay", "Paper cup", null, category, null, null,
-                null, TaxClass.STANDARD, axes)).productId();
+        return products.create(new CreateProductCommand(code, "Ly giay", null, category, null, null, TaxClass.STANDARD, axes)).productId();
     }
 
     @Test

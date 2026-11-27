@@ -6,8 +6,9 @@ import java.util.List;
  * What a storefront list card needs of one published product, read for a whole page in one go
  * ({@link ProductPublication#cards}); the card then needs no detail or gallery call of its own.
  *
- * @param primaryImageUrl the same public URL kind the gallery returns for the image: the product's
- *                        primary published image, else its first one; null when it has none
+ * @param primaryImageUrl the product's own image (ADR-0012), else the same public URL kind the gallery
+ *                        returns for its variants' lead image: the primary published one, else the first;
+ *                        null when it has neither
  * @param skus            the product's ACTIVE variants, in display order (the ones the detail page sells)
  * @param kind            always CUSTOMIZABLE since 5-9 (kltn-docs 01 BR-19): printed to the customer's design
  */
