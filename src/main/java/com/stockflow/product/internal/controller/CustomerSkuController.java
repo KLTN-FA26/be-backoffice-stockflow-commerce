@@ -1,6 +1,9 @@
 package com.stockflow.product.internal.controller;
 
 import com.stockflow.common.api.ApiResponse;
+import com.stockflow.common.api.FieldError;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.product.internal.controller.dto.CustomerSkuResponse;
@@ -47,14 +50,36 @@ class CustomerSkuController {
         this.lifecycle = lifecycle;
     }
 
+    /**
+     * Two questions, told apart by {@code customerId}. With it: a customer's own SKUs, narrowed to a product and a
+     * catalogue variant when those are given - a list, as the quote editor has always read it. Without it: every
+     * customer's SKU drawn on {@code productId} or on the variant {@code variantId}, whoever owns it - what the product
+     * page shows before a blank is blocked or the product discontinued - a page, since a common blank may carry many.
+     * One of the three is required, so the whole table is never returned.
+     */
     @GetMapping
-    @Operation(summary = "A customer's own SKUs, of one product when productId is given, each with the pieces per carton "
-            + "and the VAT rate a quote line of it copies today")
+    @Operation(summary = "Customer SKUs: a customer's own (customerId, a list), or every customer's drawn on a product "
+            + "or a catalogue variant (productId / variantId without customerId, a page)",
+            description = "Each with the pieces per carton, the VAT rate a quote line of it copies today and its owner's "
+                    + "name and code. With customerId the body is a list, narrowed by productId and variantId when "
+                    + "given; without it, a PageResponse (page, size) of every customer's SKU on the product or "
+                    + "variant. 400 VALIDATION_FAILED when none of the three is given.")
     @RequiresPermission(resource = ProductResources.VARIANTS, action = Action.READ)
-    public ApiResponse<List<CustomerSkuResponse>> list(@RequestParam UUID customerId,
-                                                       @RequestParam(required = false) UUID productId) {
-        return ApiResponse.ok(listing.ownedBy(customerId, productId).stream()
-                .map(CustomerSkuController::response).toList());
+    public ApiResponse<?> list(@RequestParam(required = false) UUID customerId,
+                               @RequestParam(required = false) UUID productId,
+                               @RequestParam(required = false) UUID variantId,
+                               @RequestParam(defaultValue = "0") int page,
+                               @RequestParam(defaultValue = "20") int size) {
+        if (customerId == null && productId == null && variantId == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Name a customer, a product or a catalogue variant to list customer SKUs of",
+                    List.of(FieldError.of("customerId", "customerId, productId or variantId is required")));
+        }
+        if (customerId != null) {
+            return ApiResponse.ok(listing.ownedBy(customerId, productId, variantId).stream()
+                    .map(CustomerSkuController::response).toList());
+        }
+        return ApiResponse.ok(listing.drawnOn(productId, variantId, page, size).map(CustomerSkuController::response));
     }
 
     @PostMapping("/{id}/activation")
@@ -86,6 +111,7 @@ class CustomerSkuController {
         return new CustomerSkuResponse(listed.sku().id(), listed.sku().productId(), listed.sku().sku(),
                 listed.sku().name(), listed.sku().ownerCustomerId(), listed.sku().designSnapshotId(),
                 listed.sku().sourceVariantId(), listed.sku().sourceSku(), listed.sku().status(),
-                listed.unitsPerCarton(), listed.taxClass(), listed.taxRate());
+                listed.unitsPerCarton(), listed.taxClass(), listed.taxRate(), listed.ownerName(),
+                listed.ownerCode());
     }
 }

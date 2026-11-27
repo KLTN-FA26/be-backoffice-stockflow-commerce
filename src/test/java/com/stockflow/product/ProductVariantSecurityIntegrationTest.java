@@ -83,6 +83,29 @@ class ProductVariantSecurityIntegrationTest {
         return "Bearer " + token;
     }
 
+    /**
+     * The customer SKU listing is staff's ({@code product-variants:READ}): a customer's token never reaches it, so
+     * naming a product cannot show another customer's SKUs (13 BR-02); the portal lists a customer's own SKUs
+     * elsewhere. A reader naming nothing to list by is refused before any query.
+     */
+    @Test
+    void theCustomerSkuListingIsStaffsAndNamesWhatItLists() throws Exception {
+        String customer = com.stockflow.support.TestTokens.bearer(decoder, UUID.randomUUID(),
+                com.stockflow.common.security.Role.CUSTOMER);
+        mvc.perform(get("/api/v1/customer-skus").param("productId", UUID.randomUUID().toString())
+                .header("Authorization", customer)).andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/customer-skus").param("customerId", UUID.randomUUID().toString())
+                .header("Authorization", customer)).andExpect(status().isForbidden());
+
+        String reader = token("product-variants:READ");
+        mvc.perform(get("/api/v1/customer-skus").header("Authorization", reader))
+                .andExpect(status().isBadRequest())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.errorCode")
+                        .value("VALIDATION_FAILED"));
+        mvc.perform(get("/api/v1/customer-skus").param("productId", UUID.randomUUID().toString())
+                .header("Authorization", reader)).andExpect(status().isOk());
+    }
+
     @Test
     void anonymousIsUnauthorised() throws Exception {
         mvc.perform(get("/api/v1/products/{id}/variants", UUID.randomUUID())).andExpect(status().isUnauthorized());

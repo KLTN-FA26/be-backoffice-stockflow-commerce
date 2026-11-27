@@ -224,6 +224,21 @@ public class CustomerSkuService implements CustomerSkus {
         return views(customerSkus.ownedBy(customerId, productId));
     }
 
+    /**
+     * Every customer's SKU drawn on {@code productId}, or on the catalogue variant {@code variantId}, whoever owns it,
+     * a page at a time by code: what the product page shows before a blank is blocked or the product discontinued.
+     * Staff only - the controller's permission keeps it from a customer (13 BR-02). Not on {@link CustomerSkus}: no
+     * other module needs it.
+     */
+    @Transactional(readOnly = true)
+    public com.stockflow.common.api.PageResponse<CustomerSku> drawnOn(UUID productId, UUID variantId, int page,
+                                                                      int size) {
+        var found = customerSkus.drawnOn(productId, variantId, com.stockflow.common.persistence.Pages.of(page, size));
+        List<CustomerSku> views = views(found.getContent());
+        return com.stockflow.common.api.PageResponse.of(views, found.getNumber(), found.getSize(),
+                found.getTotalElements());
+    }
+
     @Override
     @Transactional(readOnly = true)
     public Optional<CustomerSku> ofSnapshot(UUID designSnapshotId) {

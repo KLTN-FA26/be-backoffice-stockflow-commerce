@@ -1,6 +1,9 @@
 package com.stockflow.product.internal.service;
 
+import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.domain.Sku;
+import com.stockflow.customer.api.CustomerSummaries;
+import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.api.UomConversionService;
 import com.stockflow.product.api.CustomerSku;
@@ -22,7 +25,8 @@ import org.springframework.transaction.annotation.Transactional;
  * reads them - the carton is the SKU's one carton unit ({@link UomConversion#cartonOf}, 01 BR-03), the rate its
  * product's tax class's rate today (14 BR-21) - so the figure shown is the one the saved line gets. A handful of
  * statements whatever the count: the SKUs and their source variants, their tax classes, their units (the source
- * variant's cartons: the SKU needs no inventory item for that, V20270105000100), the rates.
+ * variant's cartons: the SKU needs no inventory item for that, V20270105000100), the rates, and the owners' names
+ * and codes ({@code customer :: api}, one read for the page: a product's SKUs belong to many customers).
  */
 @Service
 @Transactional(readOnly = true)
@@ -32,13 +36,18 @@ public class CustomerSkuListing {
     private final ProductService products;
     private final UomConversionService units;
     private final ObjectProvider<TaxRatesToday> rates;
+    private final CustomerSkuService issued;
+    private final ObjectProvider<CustomerSummaries> customers;
 
     CustomerSkuListing(CustomerSkus customerSkus, ProductService products, UomConversionService units,
-                       ObjectProvider<TaxRatesToday> rates) {
+                       ObjectProvider<TaxRatesToday> rates, CustomerSkuService issued,
+                       ObjectProvider<CustomerSummaries> customers) {
         this.customerSkus = customerSkus;
         this.products = products;
         this.units = units;
         this.rates = rates;
+        this.issued = issued;
+        this.customers = customers;
     }
 
     /**
@@ -46,12 +55,23 @@ public class CustomerSkuListing {
      *                       with {@code CARTON_SPEC_MISSING})
      * @param taxClass       its product's tax class; null while it has none
      * @param taxRate        that class's rate today, a percentage; null without a class, or where no module keeps rates
+     * @param ownerName      the owner customer's name; null where the customer module does not answer (a module test)
+     * @param ownerCode      the owner as a document code spells them ({@code CustomerSummary.code()}); null likewise
      */
-    public record Listed(CustomerSku sku, Integer unitsPerCarton, String taxClass, BigDecimal taxRate) {
+    public record Listed(CustomerSku sku, Integer unitsPerCarton, String taxClass, BigDecimal taxRate,
+                         String ownerName, String ownerCode) {
     }
 
-    public List<Listed> ownedBy(UUID customerId, UUID productId) {
-        return listed(customerSkus.ownedBy(customerId, productId));
+    /** A customer's own SKUs, of one product and of one catalogue variant when those are given. */
+    public List<Listed> ownedBy(UUID customerId, UUID productId, UUID variantId) {
+        return listed(customerSkus.ownedBy(customerId, productId).stream()
+                .filter(sku -> variantId == null || variantId.equals(sku.sourceVariantId())).toList());
+    }
+
+    /** Every customer's SKU drawn on a product or on one catalogue variant, a page at a time ({@link CustomerSkuService#drawnOn}). */
+    public PageResponse<Listed> drawnOn(UUID productId, UUID variantId, int page, int size) {
+        PageResponse<CustomerSku> found = issued.drawnOn(productId, variantId, page, size);
+        return PageResponse.of(listed(found.items()), found.page(), found.size(), found.totalElements());
     }
 
     /** One SKU as {@link #ownedBy} lists it: what a lifecycle move answers with. */
@@ -68,12 +88,17 @@ public class CustomerSkuListing {
         Map<String, List<UomConversion>> declared = units.conversionsOf(codes.stream().map(Sku::new).toList());
         TaxRatesToday source = rates.getIfAvailable();
         Map<String, BigDecimal> today = classes.isEmpty() || source == null ? Map.of() : source.today();
+        CustomerSummaries summaries = customers.getIfAvailable();
+        Map<UUID, CustomerSummary> owners = summaries == null ? Map.of()
+                : summaries.summariesOf(owned.stream().map(CustomerSku::ownerCustomerId).distinct().toList());
         return owned.stream().map(sku -> {
             TaxClass taxClass = classes.get(sku.sku());
             Integer perCarton = UomConversion.cartonOf(declared.getOrDefault(sku.sku(), List.of()))
                     .map(UomConversion::factor).orElse(null);
+            CustomerSummary owner = owners.get(sku.ownerCustomerId());
             return new Listed(sku, perCarton, taxClass == null ? null : taxClass.name(),
-                    taxClass == null ? null : today.get(taxClass.name()));
+                    taxClass == null ? null : today.get(taxClass.name()), owner == null ? null : owner.fullName(),
+                    owner == null ? null : owner.code());
         }).toList();
     }
 }

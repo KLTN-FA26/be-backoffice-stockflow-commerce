@@ -43,6 +43,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -287,6 +288,60 @@ class CustomerSkuIntegrationTest {
                 + "product_id, sku, name, attribute_signature) VALUES (gen_random_uuid(), ?, ?, 'x', 'S-X')", productId,
                 sku.sku())))
                 .hasMessageContaining("is a customer's SKU");
+    }
+
+    /**
+     * What the product page lists before a blank is blocked or the product discontinued: every customer's SKU drawn on
+     * the product, or on one catalogue variant of it, a page at a time, each with its owner's name and code. Two
+     * customers on one product, one of them also on a second variant.
+     */
+    @Test
+    void everyCustomersSkusOfAProductOrOfOneVariantArePagedWithTheirOwners() throws Exception {
+        ReferenceRows.ProductRow product = tx.execute(s -> ReferenceRows.approvedProduct(entityManager));
+        UUID secondVariant = com.stockflow.common.id.Identifiers.newId();
+        String secondSku = product.sku() + "-B";
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature,
+                    position, version, created_at)
+                VALUES (?, ?, ?, 'Second blank', 'ACTIVE', FALSE, 'SECOND', 1, 0, NOW())""", secondVariant,
+                product.productId(), secondSku));
+        UUID first = tx.execute(s -> ReferenceRows.customer(entityManager));
+        UUID second = tx.execute(s -> ReferenceRows.customer(entityManager));
+        String a = com.stockflow.support.CustomerSkuRows.issueOn(jdbc, tx, first, product, 10).sku();
+        String b = com.stockflow.support.CustomerSkuRows.issueOn(jdbc, tx, second, product, 10).sku();
+        String c = com.stockflow.support.CustomerSkuRows.issueOn(jdbc, tx, second,
+                new ReferenceRows.ProductRow(product.productId(), secondVariant, secondSku), 10).sku();
+
+        mvc.perform(get("/api/v1/customer-skus").param("productId", product.productId().toString())
+                        .param("size", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(3))
+                .andExpect(jsonPath("$.data.items.length()").value(2))
+                .andExpect(jsonPath("$.data.items[0].ownerCustomerName").value("Test customer"))
+                .andExpect(jsonPath("$.data.items[0].ownerCustomerCode").isNotEmpty());
+        String all = mvc.perform(get("/api/v1/customer-skus").param("productId", product.productId().toString()))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertThat(all).contains(a, b, c).contains(first.toString(), second.toString());
+
+        String onSecond = mvc.perform(get("/api/v1/customer-skus").param("productId", product.productId().toString())
+                        .param("variantId", secondVariant.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].sku").value(c))
+                .andExpect(jsonPath("$.data.items[0].sourceVariantId").value(secondVariant.toString()))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(onSecond).doesNotContain(a, b);
+        mvc.perform(get("/api/v1/customer-skus").param("variantId", secondVariant.toString()))
+                .andExpect(jsonPath("$.data.totalElements").value(1));
+
+        // With the customer the answer is that customer's list, as the quote editor has always read it.
+        mvc.perform(get("/api/v1/customer-skus").param("customerId", second.toString())
+                        .param("variantId", secondVariant.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].sku").value(c));
+        mvc.perform(get("/api/v1/customer-skus")).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
     }
 
     @Test
