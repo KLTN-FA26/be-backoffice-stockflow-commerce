@@ -100,16 +100,43 @@ class LeadRepositoryAdapter implements LeadRepository {
         record(change);
     }
 
+    @Override
+    public long countResubmissionsSince(UUID leadId, Instant since) {
+        Long count = jdbc.queryForObject("""
+                SELECT count(*) FROM customer.lead_history
+                 WHERE lead_id = :lead AND kind = 'RESUBMITTED' AND changed_at >= :since""",
+                new MapSqlParameterSource("lead", leadId).addValue("since", Timestamp.from(since)), Long.class);
+        return count == null ? 0 : count;
+    }
+
+    @Override
+    public boolean claimExistingCustomerNotice(UUID customerId, Instant at, Instant since) {
+        return !jdbc.queryForList("""
+                INSERT INTO customer.lead_form_existing_customer AS seen (customer_id, last_at)
+                VALUES (:customer, :at)
+                ON CONFLICT (customer_id) DO UPDATE SET last_at = EXCLUDED.last_at
+                 WHERE seen.last_at < :since
+                RETURNING customer_id""",
+                new MapSqlParameterSource("customer", customerId).addValue("at", Timestamp.from(at))
+                        .addValue("since", Timestamp.from(since)), UUID.class).isEmpty();
+    }
+
+    @Override
+    public void append(LeadChange entry) {
+        record(entry);
+    }
+
     private void record(LeadChange change) {
         jdbc.update("""
                 INSERT INTO customer.lead_history (id, lead_id, from_status, to_status, from_user_id, to_user_id, note,
-                                                   changed_by, changed_at, version, created_at, created_by)
-                VALUES (:id, :lead, :from, :to, :fromUser, :toUser, :note, :by, :at, 0, :at, :creator)""",
+                                                   changed_by, changed_at, kind, version, created_at, created_by)
+                VALUES (:id, :lead, :from, :to, :fromUser, :toUser, :note, :by, :at, :kind, 0, :at, :creator)""",
                 new MapSqlParameterSource("id", change.id()).addValue("lead", change.leadId())
                         .addValue("from", change.fromStatus() == null ? null : change.fromStatus().name())
                         .addValue("to", change.toStatus().name()).addValue("fromUser", change.fromUserId())
                         .addValue("toUser", change.toUserId()).addValue("note", change.note())
                         .addValue("by", change.changedBy()).addValue("at", Timestamp.from(change.changedAt()))
+                        .addValue("kind", change.kind().name())
                         .addValue("creator", change.changedBy() == null ? "system" : change.changedBy().toString()));
     }
 
@@ -125,6 +152,22 @@ class LeadRepositoryAdapter implements LeadRepository {
                                        OR (CAST(:email AS varchar) IS NOT NULL AND lower(email) = lower(:email))))""",
                 new MapSqlParameterSource("taxCode", taxCode).addValue("email", email)
                         .addValue("since", Timestamp.from(since)), Boolean.class));
+    }
+
+    @Override
+    public Optional<Lead> latestSubmittedSince(String taxCode, String email, Instant since) {
+        if (taxCode == null && email == null) {
+            return Optional.empty();
+        }
+        return jdbc.query("SELECT " + COLUMNS + " " + """
+                         FROM customer.lead
+                        WHERE submitted_at >= :since
+                          AND ((CAST(:taxCode AS varchar) IS NOT NULL AND tax_code = :taxCode)
+                               OR (CAST(:email AS varchar) IS NOT NULL AND lower(email) = lower(:email)))
+                        ORDER BY submitted_at DESC, id DESC
+                        LIMIT 1""",
+                new MapSqlParameterSource("taxCode", taxCode).addValue("email", email)
+                        .addValue("since", Timestamp.from(since)), LEAD).stream().findFirst();
     }
 
     @Override
@@ -155,14 +198,14 @@ class LeadRepositoryAdapter implements LeadRepository {
     @Override
     public List<LeadChange> history(UUID leadId) {
         return jdbc.query("""
-                SELECT id, lead_id, from_status, to_status, from_user_id, to_user_id, note, changed_by, changed_at
+                SELECT id, lead_id, from_status, to_status, from_user_id, to_user_id, note, changed_by, changed_at, kind
                   FROM customer.lead_history WHERE lead_id = :lead ORDER BY changed_at, id""",
                 new MapSqlParameterSource("lead", leadId), (rs, row) -> new LeadChange(
                         rs.getObject("id", UUID.class), rs.getObject("lead_id", UUID.class),
                         status(rs.getString("from_status")), status(rs.getString("to_status")),
                         rs.getObject("from_user_id", UUID.class), rs.getObject("to_user_id", UUID.class),
                         rs.getString("note"), rs.getObject("changed_by", UUID.class),
-                        rs.getTimestamp("changed_at").toInstant()));
+                        rs.getTimestamp("changed_at").toInstant(), LeadChange.Kind.valueOf(rs.getString("kind"))));
     }
 
     @Override

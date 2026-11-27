@@ -42,9 +42,9 @@ import java.util.stream.Collectors;
  *
  * <h2>The public form tells nobody anything</h2>
  * <p>Whatever happens to a submission, the sender gets the same answer: a lead made, a repeat of one from the last
- * {@link #DUPLICATE_WINDOW} (same tax code or e-mail) dropped, a honeypot caught, or the tax code of an existing
- * customer - whose responsible salesperson is told instead ({@link LeadFormFromExistingCustomer}), so a customer cannot
- * pose as a new business to reach another salesperson. The endpoint is rate-limited by address.</p>
+ * {@link #DUPLICATE_WINDOW} (same tax code or e-mail) kept on that lead's history, a honeypot caught, or the tax code of
+ * an existing customer - whose responsible salesperson is told instead ({@link LeadFormFromExistingCustomer}), so a
+ * customer cannot pose as a new business to reach another salesperson. The endpoint is rate-limited by address.</p>
  *
  * <h2>Who does what</h2>
  * <p>A manager (a holder of {@code customer-sales-owners:UPDATE}, the FE's "manager" too) sees every lead, assigns and
@@ -59,6 +59,15 @@ public class LeadService {
 
     /** Plan §10.7: a second submission with the same tax code or e-mail within this window makes no new lead. */
     static final Duration DUPLICATE_WINDOW = Duration.ofHours(24);
+
+    /**
+     * P5: how many repeats of the form one lead keeps per window. Enough for a business and whoever posed as it to be
+     * seen side by side; a flood beyond it (the form is limited per address, not per tax code) is dropped.
+     */
+    static final int RESUBMISSIONS_KEPT = 10;
+
+    /** {@code customer.lead_history.note}: what a history entry holds. */
+    private static final int NOTE_MAX = 1000;
 
     private final LeadRepository leads;
     private final CustomerRepository customers;
@@ -85,10 +94,13 @@ public class LeadService {
                           String disqualifyReason, UUID customerId, Instant createdAt, long version) {
     }
 
-    /** One row of a lead's history. */
+    /**
+     * One row of a lead's history. {@code kind} RESUBMITTED: the same business sent the form again (P5), what it said
+     * is the note, and the status and Sales did not change.
+     */
     public record HistoryRow(LeadStatus fromStatus, LeadStatus toStatus, UUID fromUserId, String fromName,
                              UUID toUserId, String toName, String note, UUID changedById, String changedByName,
-                             Instant changedAt) {
+                             Instant changedAt, LeadChange.Kind kind) {
     }
 
     /** Why a submission made no lead; for the log and the tests, never for the sender. */
@@ -97,34 +109,97 @@ public class LeadService {
     /**
      * The public form.
      *
+     * <p>Finding S1: every step that reads the form - normalising it, building the lead and its checks - runs before
+     * anything that depends on who the business is, so a body that is refused is refused the same way whether its tax
+     * code is a customer's or not; and the controller answers the same {@code 202} for whatever happens after the body
+     * was accepted. The branches then are:</p>
+     * <ul>
+     *   <li>the honeypot filled in: nothing;</li>
+     *   <li>the tax code of a customer: its salesperson is told ({@link LeadFormFromExistingCustomer}) at most once per
+     *       {@link #DUPLICATE_WINDOW} per customer (finding S4: the window that limits leads limits these notices
+     *       too);</li>
+     *   <li>the same tax code or e-mail as a lead still open from the last {@link #DUPLICATE_WINDOW}: no second lead,
+     *       but the later form is kept on that lead's history (finding P5), at most {@link #RESUBMISSIONS_KEPT}
+     *       times;</li>
+     *   <li>otherwise a new lead.</li>
+     * </ul>
+     *
      * @param honeypot the hidden {@code website} field: a person never fills it in
      */
     public Outcome submit(Lead.Form form, String honeypot) {
         Instant now = clock.instant();
+        Lead.Form stored = normalised(form);
+        Lead.Submitted submitted = Lead.submit(stored, now);
+        String resubmission = resubmissionNote(stored);
         if (honeypot != null && !honeypot.isBlank()) {
             log.info("Lead form dropped: the honeypot was filled in");
             return Outcome.HONEYPOT;
         }
-        String taxCode = form.taxCode() == null ? null : TaxCode.normalise(form.taxCode());
-        String email = form.email() == null ? null : form.email().strip().toLowerCase(Locale.ROOT);
-        Optional<UUID> existing = customers.idByTaxCode(taxCode);
+        Instant since = now.minus(DUPLICATE_WINDOW);
+        Optional<UUID> existing = customers.idByTaxCode(stored.taxCode());
         if (existing.isPresent()) {
-            events.publishEvent(new LeadFormFromExistingCustomer(existing.get(), now));
-            log.info("Lead form named the tax code of customer {}: its salesperson is told, no lead", existing.get());
+            if (leads.claimExistingCustomerNotice(existing.get(), now, since)) {
+                events.publishEvent(new LeadFormFromExistingCustomer(existing.get(), now));
+                log.info("Lead form named the tax code of customer {}: its salesperson is told, no lead",
+                        existing.get());
+            } else {
+                log.info("Lead form named the tax code of customer {} again within 24 hours: nobody told again",
+                        existing.get());
+            }
             return Outcome.EXISTING_CUSTOMER;
         }
-        if (leads.submittedSince(taxCode, email, now.minus(DUPLICATE_WINDOW))) {
-            log.info("Lead form dropped: the same tax code or e-mail was submitted in the last 24 hours");
+        Optional<Lead> earlier = leads.latestSubmittedSince(stored.taxCode(), stored.email(), since);
+        if (earlier.isPresent() && earlier.get().isOpen()) {
+            Lead lead = earlier.get();
+            if (leads.countResubmissionsSince(lead.id(), since) < RESUBMISSIONS_KEPT) {
+                leads.append(lead.resubmitted(resubmission, now));
+                log.info("Lead form repeated lead {} within 24 hours: kept on its history", lead.id());
+            } else {
+                log.info("Lead form repeated lead {} within 24 hours past {} repeats: dropped", lead.id(),
+                        RESUBMISSIONS_KEPT);
+            }
             return Outcome.DUPLICATE;
         }
-        String phone = form.phone() == null ? null : VietnamPhoneValidator.normalise(form.phone());
-        Lead.Form stored = new Lead.Form(form.companyName().strip(), taxCode, form.contactName().strip(),
-                form.contactTitle(), phone, email, form.province(), form.interests(), form.monthlyVolume(),
-                form.note());
-        Lead.Submitted submitted = Lead.submit(stored, now);
         leads.insert(submitted.lead(), submitted.change());
         events.publishEvent(new SalesLeadSubmitted(submitted.lead().id(), now));
         return Outcome.CREATED;
+    }
+
+    /** The form as stored: tax code, e-mail and phone in their canonical forms. */
+    private static Lead.Form normalised(Lead.Form form) {
+        String taxCode = form.taxCode() == null ? null : TaxCode.normalise(form.taxCode());
+        String email = form.email() == null ? null : form.email().strip().toLowerCase(Locale.ROOT);
+        String phone = form.phone() == null ? null : VietnamPhoneValidator.normalise(form.phone());
+        return new Lead.Form(form.companyName().strip(), taxCode, form.contactName().strip(), form.contactTitle(),
+                phone, email, form.province(), form.interests(), form.monthlyVolume(), form.note());
+    }
+
+    /**
+     * What a repeated form said, for the lead's history (P5). A stored note, so its labels are English like every
+     * system note of a history; the values are the sender's, as on the lead itself.
+     */
+    static String resubmissionNote(Lead.Form form) {
+        StringBuilder note = new StringBuilder("The form was sent again: company ").append(form.companyName());
+        appendIf(note, "tax code", form.taxCode());
+        note.append("; contact ").append(form.contactName());
+        if (form.contactTitle() != null && !form.contactTitle().isBlank()) {
+            note.append(" (").append(form.contactTitle().strip()).append(')');
+        }
+        appendIf(note, "phone", form.phone());
+        appendIf(note, "e-mail", form.email());
+        appendIf(note, "province", form.province());
+        if (!form.interests().isEmpty()) {
+            appendIf(note, "interests", form.interests().stream().map(Enum::name).collect(Collectors.joining(", ")));
+        }
+        appendIf(note, "monthly volume", form.monthlyVolume());
+        appendIf(note, "note", form.note());
+        return note.length() <= NOTE_MAX ? note.toString() : note.substring(0, NOTE_MAX);
+    }
+
+    private static void appendIf(StringBuilder note, String label, String value) {
+        if (value != null && !value.isBlank()) {
+            note.append("; ").append(label).append(' ').append(value.strip());
+        }
     }
 
     /** A manager sees every lead; anyone else, the leads given to them ({@code assignedTo} is ignored for them). */
@@ -155,7 +230,8 @@ public class LeadService {
                 java.util.stream.Stream.of(change.fromUserId(), change.toUserId(), change.changedBy())).toList());
         return changes.stream().map(change -> new HistoryRow(change.fromStatus(), change.toStatus(),
                 change.fromUserId(), names.get(change.fromUserId()), change.toUserId(), names.get(change.toUserId()),
-                change.note(), change.changedBy(), names.get(change.changedBy()), change.changedAt())).toList();
+                change.note(), change.changedBy(), names.get(change.changedBy()), change.changedAt(), change.kind()))
+                .toList();
     }
 
     /**

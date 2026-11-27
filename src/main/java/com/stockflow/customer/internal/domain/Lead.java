@@ -25,14 +25,18 @@ public final class Lead extends AggregateRoot {
     /** What the form offers as interests (the storefront's values, API contract "Additions from the storefront"). */
     public enum Interest { CUP, BOX, BAG, BOWL }
 
-    /** The form as submitted; every text already within the form's limits (the endpoint validates them). */
+    /**
+     * The form as submitted; every text already within the form's limits (the endpoint validates them). A null among
+     * the interests is dropped here rather than left for the database to refuse: the public form must answer the same
+     * for every well-formed body (finding S1), and a null that reached the insert failed only for a new business.
+     */
     public record Form(String companyName, String taxCode, String contactName, String contactTitle, String phone,
                        String email, String province, List<Interest> interests, String monthlyVolume, String note) {
 
         public Form {
             Objects.requireNonNull(companyName, "companyName");
             Objects.requireNonNull(contactName, "contactName");
-            interests = interests == null ? List.of() : interests.stream().distinct().toList();
+            interests = interests == null ? List.of() : interests.stream().filter(Objects::nonNull).distinct().toList();
             if (phone == null && email == null) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Give a phone number or an e-mail address");
             }
@@ -167,6 +171,19 @@ public final class Lead extends AggregateRoot {
         convertedAt = at;
         return new LeadChange(Identifiers.newId(), id, before, LeadStatus.CONVERTED, assignedTo, assignedTo, null, by,
                 at);
+    }
+
+    /**
+     * The same business sent the form again within the duplicate window (plan §10.7, finding P5): nothing about the
+     * lead changes, but the later submission is kept as an entry of its history, so a first submission by someone
+     * posing as the business cannot silently drop the real one - its Sales and the managers see both.
+     *
+     * @param note what the later form said (the service writes it)
+     */
+    public LeadChange resubmitted(String note, Instant at) {
+        Objects.requireNonNull(note, "note");
+        return new LeadChange(Identifiers.newId(), id, status, status, assignedTo, assignedTo, note, null, at,
+                LeadChange.Kind.RESUBMITTED);
     }
 
     /** Whether the lead is still being worked on: NEW, ASSIGNED or CONTACTED. */

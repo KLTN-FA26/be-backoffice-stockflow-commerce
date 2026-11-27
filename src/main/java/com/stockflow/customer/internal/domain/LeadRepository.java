@@ -25,6 +25,25 @@ public interface LeadRepository {
      */
     boolean submittedSince(String taxCode, String email, Instant since);
 
+    /**
+     * The newest lead with this tax code or this e-mail (case-insensitive) submitted at or after {@code since}, if any:
+     * where a repeat of the form within the window goes (finding P5). Null values match nothing.
+     */
+    Optional<Lead> latestSubmittedSince(String taxCode, String email, Instant since);
+
+    /** How many {@link LeadChange.Kind#RESUBMITTED} entries the lead got at or after {@code since}. */
+    long countResubmissionsSince(UUID leadId, Instant since);
+
+    /**
+     * The public form named an existing customer's tax code: whether its salesperson is to be told now. True, and the
+     * time kept, when the customer's last such notice is older than {@code since} (or there is none); false within the
+     * window (finding S4). Atomic: two forms at once tell once.
+     */
+    boolean claimExistingCustomerNotice(UUID customerId, Instant at, Instant since);
+
+    /** Appends a history entry that changes nothing on the lead (a {@link LeadChange.Kind#RESUBMITTED} entry). */
+    void append(LeadChange entry);
+
     /** One page of leads, newest first; null filters match everything. */
     List<Lead> list(LeadStatus status, UUID assignedTo, int page, int size);
 

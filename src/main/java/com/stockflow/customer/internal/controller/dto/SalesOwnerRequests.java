@@ -78,7 +78,7 @@ public final class SalesOwnerRequests {
             @VietnamPhone String phone,
             @Email @Size(max = 254) String email,
             @Size(max = 100) String province,
-            @Size(max = 4) List<Lead.Interest> interests,
+            @Size(max = 4) List<Lead.@NotNull Interest> interests,
             @Size(max = 100) String monthlyVolume,
             @Size(max = 1000) String note,
             @NotNull @AssertTrue Boolean consent,

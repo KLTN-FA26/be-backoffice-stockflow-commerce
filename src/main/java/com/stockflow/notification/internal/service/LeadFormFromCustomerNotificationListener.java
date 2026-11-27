@@ -1,5 +1,6 @@
 package com.stockflow.notification.internal.service;
 
+import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.contracts.LeadFormFromExistingCustomer;
 import com.stockflow.notification.api.CustomerContact;
 import com.stockflow.notification.api.CustomerDirectory;
@@ -19,7 +20,9 @@ import java.util.ResourceBundle;
  * The public "open a business account" form named the tax code of a business that is already a customer (kltn-docs 18
  * §4.6 step 27; 00 §6): no lead was made, and whoever looks after that customer is told instead - its owner, the
  * owner's cover, or with no active owner the Sales Managers marked "cần phân công" ({@link SalesNotices}). In-app only,
- * once per form sent ({@code lead-form-existing:<customer>:<at>}).
+ * at most once per customer and business day ({@code lead-form-existing:<customer>:<day>}, finding S4): the form is
+ * open to anyone, and a notice per submission let a stranger fill a salesperson's inbox with one customer's tax code.
+ * The customer module already tells at most once per 24 hours; the key holds the line for a retried event too.
  *
  * <p>The notice names the customer by the name on its profile, read when it is written; what the form said is in
  * neither the event nor the notice.</p>
@@ -66,6 +69,6 @@ class LeadFormFromCustomerNotificationListener {
         return new InboxMessage(CATEGORY, InboxSeverity.INFO, title,
                 texts.getString("inbox.lead.existingCustomer.body"), "/admin/customers/" + event.customerId(),
                 "CUSTOMER_PROFILE", event.customerId().toString(),
-                "lead-form-existing:%s:%d".formatted(event.customerId(), event.at().toEpochMilli()));
+                "lead-form-existing:%s:%s".formatted(event.customerId(), BusinessCalendar.date(event.at())));
     }
 }

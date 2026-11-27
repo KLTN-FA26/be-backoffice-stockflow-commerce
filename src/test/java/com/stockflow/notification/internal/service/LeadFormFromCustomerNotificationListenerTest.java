@@ -51,7 +51,7 @@ class LeadFormFromCustomerNotificationListenerTest {
     }
 
     @Test
-    @DisplayName("18 §4.6 step 27: the customer's owner is told, by the customer's name, once per form sent")
+    @DisplayName("18 §4.6 step 27, finding S4: the customer's owner is told, by the customer's name, once per business day")
     void theOwnerIsTold() {
         UUID owner = UUID.randomUUID();
         when(audiences.ofCustomer(customer)).thenReturn(Optional.of(new SalesAudience(List.of(owner), false)));
@@ -64,8 +64,14 @@ class LeadFormFromCustomerNotificationListenerTest {
         assertThat(message.title()).isEqualTo("Khách Cong ty In Ly A vừa gửi form yêu cầu tư vấn từ website");
         assertThat(message.body()).doesNotContain("Cần phân công");
         assertThat(message.link()).isEqualTo("/admin/customers/" + customer);
-        assertThat(message.dedupeKey()).isEqualTo("lead-form-existing:" + customer + ":"
-                + event.at().toEpochMilli());
+        assertThat(message.dedupeKey()).isEqualTo("lead-form-existing:" + customer + ":2026-11-28");
+        assertThat(LeadFormFromCustomerNotificationListener.message(new LeadFormFromExistingCustomer(customer,
+                Instant.parse("2026-11-28T16:59:00Z")), "A").dedupeKey())
+                .as("S4: a second form later the same Vietnamese business day shares the key")
+                .isEqualTo(message.dedupeKey());
+        assertThat(LeadFormFromCustomerNotificationListener.message(new LeadFormFromExistingCustomer(customer,
+                Instant.parse("2026-11-28T17:00:00Z")), "A").dedupeKey())
+                .as("the next business day (00:00 in Vietnam) is a new notice").endsWith(":2026-11-29");
     }
 
     @Test

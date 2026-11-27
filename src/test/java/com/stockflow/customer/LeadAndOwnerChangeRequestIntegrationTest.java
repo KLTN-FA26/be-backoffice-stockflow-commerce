@@ -141,6 +141,94 @@ class LeadAndOwnerChangeRequestIntegrationTest {
     }
 
     @Test
+    @DisplayName("Finding S1: a customer's tax code and a newcomer's get the same status and body, whatever the body")
+    void theFormNeverTellsACustomerFromANewcomer() throws Exception {
+        UUID customer = customer();
+        String customerCode = taxCode();
+        write("UPDATE customer.customer SET tax_code = ? WHERE id = ?", customerCode, customer);
+
+        List<java.util.function.Consumer<Map<String, Object>>> oddities = List.of(
+                form -> form.put("interests", java.util.Arrays.asList((Object) null)),
+                form -> form.put("interests", java.util.Arrays.asList("CUP", null)),
+                form -> form.put("interests", List.of("CUP", "CUP", "BOX")),
+                form -> form.put("interests", List.of()),
+                form -> form.put("contactTitle", "   "),
+                form -> form.put("companyName", "  Cong ty co khoang trang  "),
+                form -> form.put("email", "  MIXED.Case@Example.TEST "),
+                form -> form.remove("email"),
+                form -> form.put("phone", "+84 912 345 678"));
+        for (var oddity : oddities) {
+            Map<String, Object> asCustomer = form(customerCode);
+            oddity.accept(asCustomer);
+            Map<String, Object> asNewcomer = form(taxCode());
+            oddity.accept(asNewcomer);
+            var customerAnswer = submit(asCustomer, address()).andReturn().getResponse();
+            var newcomerAnswer = submit(asNewcomer, address()).andReturn().getResponse();
+
+            assertThat(newcomerAnswer.getStatus()).as("status for %s", asCustomer)
+                    .isEqualTo(customerAnswer.getStatus());
+            assertThat(comparable(newcomerAnswer.getContentAsString())).as("body for %s", asCustomer)
+                    .isEqualTo(comparable(customerAnswer.getContentAsString()));
+        }
+        assertThat(leadsWithTaxCode(customerCode)).isZero();
+    }
+
+    @Test
+    @DisplayName("Finding S4: a customer's tax code tells its salesperson once per 24 hours, not once per form")
+    void aCustomersTaxCodeTellsOncePerWindow() throws Exception {
+        UUID customer = customer();
+        String code = taxCode();
+        write("UPDATE customer.customer SET tax_code = ? WHERE id = ?", code, customer);
+        events.clear();
+
+        for (int i = 0; i < 3; i++) {
+            submit(form(code), address()).andExpect(status().isAccepted());
+        }
+        assertThat(events.stream(LeadFormFromExistingCustomer.class).filter(e -> e.customerId().equals(customer)))
+                .hasSize(1);
+
+        write("UPDATE customer.lead_form_existing_customer SET last_at = NOW() - INTERVAL '25 hours' "
+                + "WHERE customer_id = ?", customer);
+        submit(form(code), address()).andExpect(status().isAccepted());
+        assertThat(events.stream(LeadFormFromExistingCustomer.class).filter(e -> e.customerId().equals(customer)))
+                .as("after 24 hours the salesperson is told again").hasSize(2);
+    }
+
+    @Test
+    @DisplayName("Finding P5: a repeat within 24 hours is kept on the open lead's history, so Sales see both senders")
+    void aRepeatIsKeptOnTheLeadsHistory() throws Exception {
+        String code = taxCode();
+        submit(form(code), address()).andExpect(status().isAccepted());
+        UUID lead = leadWithTaxCode(code);
+
+        Map<String, Object> real = form(code);
+        real.put("contactName", "Tran Thi B");
+        real.put("email", "purchasing-" + code + "@real.example.test");
+        real.put("phone", "0987654321");
+        submit(real, address()).andExpect(status().isAccepted()).andExpect(jsonPath("$.data.received").value(true));
+
+        assertThat(leadsWithTaxCode(code)).as("still one lead").isEqualTo(1);
+        JsonNode history = data(as(Role.SALES_MANAGER, manager, get("/api/v1/leads/" + lead + "/history"), null)
+                .andExpect(status().isOk()));
+        assertThat(history).hasSize(2);
+        assertThat(history.at("/0/kind").asText()).isEqualTo("CHANGE");
+        assertThat(history.at("/1/kind").asText()).isEqualTo("RESUBMITTED");
+        assertThat(history.at("/1/fromStatus").asText()).isEqualTo("NEW");
+        assertThat(history.at("/1/toStatus").asText()).isEqualTo("NEW");
+        assertThat(history.at("/1/note").asText()).contains("Tran Thi B", "purchasing-" + code, "+84987654321");
+        assertThat(jdbc.queryForObject("SELECT status FROM customer.lead WHERE id = ?", String.class, lead))
+                .isEqualTo("NEW");
+
+        UUID a = staff.staff("SALES_STAFF");
+        as(Role.SALES_MANAGER, manager, put("/api/v1/leads/" + lead + "/assignment"), Map.of("salesUserId", a))
+                .andExpect(status().isOk());
+        as(Role.SALES_STAFF, a, post("/api/v1/leads/" + lead + "/disqualification"), Map.of("reason", "a fake"))
+                .andExpect(status().isOk());
+        submit(real, address()).andExpect(status().isAccepted());
+        assertThat(leadsWithTaxCode(code)).as("a repeat of a closed lead is a lead of its own").isEqualTo(2);
+    }
+
+    @Test
     @DisplayName("§10.7: the form is rate-limited per address; a malformed form (no consent, no contact, bad interest) is 400")
     void theFormIsLimitedAndValidated() throws Exception {
         String one = address();
@@ -391,6 +479,15 @@ class LeadAndOwnerChangeRequestIntegrationTest {
 
     private JsonNode data(ResultActions result) throws Exception {
         return mapper.readTree(result.andReturn().getResponse().getContentAsString()).at("/data");
+    }
+
+    /** A response body without what differs between any two requests (the correlation id, the time). */
+    private JsonNode comparable(String body) throws Exception {
+        JsonNode node = mapper.readTree(body);
+        if (node instanceof com.fasterxml.jackson.databind.node.ObjectNode object) {
+            object.remove(List.of("correlationId", "timestamp", "traceId", "path"));
+        }
+        return node;
     }
 
     private static List<String> ids(JsonNode rows) {

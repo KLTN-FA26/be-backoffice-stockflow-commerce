@@ -16,6 +16,8 @@ import com.stockflow.customer.internal.domain.Lead;
 import com.stockflow.customer.internal.domain.LeadStatus;
 import com.stockflow.customer.internal.service.LeadService;
 import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -35,13 +37,18 @@ import java.util.UUID;
  * <p>The form is anonymous ({@code permitAll} for POST in the security configuration), limited per address, and always
  * answers {@code 202 {received: true}} once the body is well formed - whether a lead was made, a repeat dropped, the
  * honeypot caught, or the tax code found to be a customer's - so it tells nobody whether a business is a customer. A
- * malformed body (no consent, a field past its limit) is a 400, which says nothing about anyone.</p>
+ * malformed body (no consent, a field past its limit, a null among the interests) is a 400, decided before anything
+ * depends on who the business is, so it says nothing about anyone. Whatever goes wrong after that - even a server
+ * error - is logged and answered {@code 202} too (finding S1): an error only one of the two paths could raise would
+ * otherwise tell a customer's tax code from a newcomer's.</p>
  *
  * <p>Back office: {@code sales-leads:READ} / {@code UPDATE}; a manager sees and assigns every lead, a salesperson works
  * the leads given to them (checked in {@link LeadService}).</p>
  */
 @RestController
 class LeadController {
+
+    private static final Logger log = LoggerFactory.getLogger(LeadController.class);
 
     private final LeadService leads;
 
@@ -53,10 +60,21 @@ class LeadController {
     @ResponseStatus(HttpStatus.ACCEPTED)
     @RateLimit(limit = 5, perSeconds = 600, key = RateLimit.Key.IP)
     public ApiResponse<SalesOwnerRequests.LeadReceipt> submit(@Valid @RequestBody SalesOwnerRequests.SubmitLead request) {
-        leads.submit(new Lead.Form(request.companyName().strip(), blankToNull(request.taxCode()),
+        Lead.Form form = new Lead.Form(request.companyName().strip(), blankToNull(request.taxCode()),
                 request.contactName().strip(), blankToNull(request.contactTitle()), blankToNull(request.phone()),
                 blankToNull(request.email()), blankToNull(request.province()), request.interests(),
-                blankToNull(request.monthlyVolume()), blankToNull(request.note())), request.website());
+                blankToNull(request.monthlyVolume()), blankToNull(request.note()));
+        try {
+            leads.submit(form, request.website());
+        } catch (RuntimeException failed) {
+            // Class names only: a database error's detail can carry what the sender typed.
+            Throwable root = failed;
+            while (root.getCause() != null && root.getCause() != root) {
+                root = root.getCause();
+            }
+            log.error("Lead form failed after it was accepted ({}, caused by {}); the sender is answered as always",
+                    failed.getClass().getName(), root.getClass().getName());
+        }
         return ApiResponse.ok(new SalesOwnerRequests.LeadReceipt(true));
     }
 
