@@ -1525,11 +1525,9 @@ Table product.products [headercolor: #2E86AB] {
   brand_id            uuid
   code                varchar(50) [not null, unique]
   name                varchar(255) [not null]
-  name_en             varchar(300)
   slug                varchar(255) [not null, unique]
   short_description   text
   description         text
-  description_en      text
   tax_class           product.products_tax_class
   kind                varchar(16) [not null, default: 'CUSTOMIZABLE']
   status              product.products_status [not null, default: 'DRAFT']

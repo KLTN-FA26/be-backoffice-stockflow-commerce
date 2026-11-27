@@ -33,7 +33,7 @@ public enum ErrorCode {
     /** SCRUM-461, kltn-docs 01 §3: a product is identified by its brand too, so it is chosen before approval. */
     PRODUCT_BRAND_REQUIRED("A brand is required before submitting for approval", 409),
     /** SCRUM-87: the request requires them, so a product reaching approval without them is a legacy row. */
-    PRODUCT_DETAILS_REQUIRED("An English name and a tax class are required before submitting for approval", 409),
+    PRODUCT_DETAILS_REQUIRED("A tax class is required before submitting for approval", 409),
     /** SCRUM-87: a retired brand stays on the products that chose it, but no product newly chooses it. */
     BRAND_INACTIVE("This brand is inactive and cannot be chosen for a product", 409),
     /** SCRUM-87: a retired category stays on the products that chose it, but no product newly chooses it. */

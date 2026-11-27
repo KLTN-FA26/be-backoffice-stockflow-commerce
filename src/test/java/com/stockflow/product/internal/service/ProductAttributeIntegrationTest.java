@@ -77,8 +77,8 @@ class ProductAttributeIntegrationTest {
         UUID category = taxonomy.createCategory("CAT-" + suffix, null,
                 new ProductTaxonomyService.CategoryDetails("Ly", 0, null, null, null, true)).id();
         UUID brand = taxonomy.createBrand("BR-" + suffix, "Brand " + suffix, null).id();
-        return products.create(new CreateProductCommand("ATTR-" + suffix, "Ten " + suffix, "Name " + suffix, brand,
-                category, null, null, null, TaxClass.STANDARD, List.of())).productId();
+        return products.create(new CreateProductCommand("ATTR-" + suffix, "Ten " + suffix, brand,
+                category, null, null, TaxClass.STANDARD, List.of())).productId();
     }
 
     private static ErrorCode errorOf(Supplier<?> call) {

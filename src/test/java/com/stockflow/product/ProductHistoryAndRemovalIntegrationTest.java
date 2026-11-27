@@ -198,11 +198,11 @@ class ProductHistoryAndRemovalIntegrationTest {
         UUID id = created.productId();
         UUID defaultId = defaultVariant(id);
 
-        ProductSummary renamed = products.update(new UpdateProductCommand(id, created.version(), "Ly giấy mới", "Fixture " + suffix,
-                tax.brandId(), tax.categoryId(), "Mô tả ngắn", null, null, TaxClass.STANDARD));
+        ProductSummary renamed = products.update(new UpdateProductCommand(id, created.version(), "Ly giấy mới",
+                tax.brandId(), tax.categoryId(), "Mô tả ngắn", null, TaxClass.STANDARD));
         // Nothing changed, nothing recorded.
-        products.update(new UpdateProductCommand(id, renamed.version(), "Ly giấy mới", "Fixture " + suffix, tax.brandId(),
-                tax.categoryId(), "Mô tả ngắn", null, null, TaxClass.STANDARD));
+        products.update(new UpdateProductCommand(id, renamed.version(), "Ly giấy mới", tax.brandId(),
+                tax.categoryId(), "Mô tả ngắn", null, TaxClass.STANDARD));
 
         var extra = variants.add(id, new NewVariant("FX-" + suffix + "-16", "16oz", null, null));
         variants.update(id, extra.id(), new NewVariant(extra.sku(), "16oz renamed", null, null));
@@ -481,7 +481,7 @@ class ProductHistoryAndRemovalIntegrationTest {
         ProductSummary suspended = products.suspend(id, "recall", approved.version());
 
         assertThat(refusal(org.assertj.core.api.Assertions.catchThrowable(() -> products.update(new UpdateProductCommand(id,
-                suspended.version(), "x", "x", tax.brandId(), tax.categoryId(), null, null, null, TaxClass.STANDARD))))
+                suspended.version(), "x", tax.brandId(), tax.categoryId(), null, null, TaxClass.STANDARD))))
                 .errorCode()).isEqualTo(ErrorCode.INVALID_PRODUCT_STATUS_TRANSITION);
         var draftVariant = variants.add(id, new NewVariant("FX-" + suffix + "-S", "S", null, null));
         assertThat(refusal(org.assertj.core.api.Assertions.catchThrowable(() -> variants.activate(id, draftVariant.id()))).errorCode())
@@ -590,8 +590,8 @@ class ProductHistoryAndRemovalIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM product.product_categories WHERE product_id = ?", Long.class, id)).isZero();
         keys.forEach(key -> assertThat(stored(key)).as(key).isFalse());
         // The product's code and SKU can be used again.
-        ProductSummary again = products.create(new com.stockflow.product.api.CreateProductCommand(created.code(), "Again", "Again",
-                tax.brandId(), tax.categoryId(), null, null, null, TaxClass.STANDARD, null));
+        ProductSummary again = products.create(new com.stockflow.product.api.CreateProductCommand(created.code(), "Again",
+                tax.brandId(), tax.categoryId(), null, null, TaxClass.STANDARD, null));
         assertThat(again.status()).isEqualTo(ProductStatus.DRAFT);
     }
 

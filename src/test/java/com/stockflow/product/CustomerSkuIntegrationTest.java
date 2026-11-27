@@ -84,8 +84,8 @@ class CustomerSkuIntegrationTest {
         when(users.current()).thenReturn(Optional.of(new CurrentUser(editor, "test-" + editor, Set.of(), Set.of(),
                 DataScope.ALL, Set.of())));
         productCode = "CSKU-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
-        productId = products.create(new CreateProductCommand(productCode, "Ly giấy 12oz", "Paper cup 12oz", null,
-                null, "Ly", null, null, TaxClass.STANDARD, List.of())).productId();
+        productId = products.create(new CreateProductCommand(productCode, "Ly giấy 12oz", null,
+                null, "Ly", null, TaxClass.STANDARD, List.of())).productId();
         sourceSku = variants.list(productId, 0, 1).items().getFirst().sku();
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE product.products SET status = 'APPROVED', submitted_by = ?, submitted_at = NOW(), "

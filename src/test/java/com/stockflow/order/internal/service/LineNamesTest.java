@@ -28,7 +28,7 @@ class LineNamesTest {
     private final LineNames names = new LineNames(products, customerSkus);
 
     private static ProductSummary product(UUID id, String name) {
-        return new ProductSummary(id, "LY12", name, null, "ly12", null, null, null, null, null, null, null, null,
+        return new ProductSummary(id, "LY12", name, "ly12", null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, 1, null, null, null, null);
     }
 

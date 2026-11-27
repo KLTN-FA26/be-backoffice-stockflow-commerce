@@ -87,8 +87,8 @@ class ProductImageIntegrationTest {
     UUID createProduct() {
         var category = taxonomy.createCategory("CAT-" + suffix, null, new CategoryDetails("Ly", 0, null, null, null, true));
         var brand = taxonomy.createBrand("BR-" + suffix, "Brand " + suffix, null);
-        return products.create(new CreateProductCommand("CUP-" + suffix, "Ly giấy 12oz", "Paper cup 12oz", brand.id(),
-                category.id(), "Ly in logo", null, null, TaxClass.STANDARD, List.of())).productId();
+        return products.create(new CreateProductCommand("CUP-" + suffix, "Ly giấy 12oz", brand.id(),
+                category.id(), "Ly in logo", null, TaxClass.STANDARD, List.of())).productId();
     }
 
     @Test

@@ -103,13 +103,13 @@ class ProductBusinessRulesIntegrationTest {
 
     private static String createBody(String code, String name, UUID brand, UUID category) {
         return """
-                {"code":"%s","name":"%s","nameEn":"Product %s","taxClass":"STANDARD","brandId":"%s","categoryId":"%s"}"""
-                .formatted(code, name, code, brand, category);
+                {"code":"%s","name":"%s","taxClass":"STANDARD","brandId":"%s","categoryId":"%s"}"""
+                .formatted(code, name, brand, category);
     }
 
     private static String updateBody(String name, UUID brand, UUID category, long version) {
         return """
-                {"name":"%s","nameEn":"Product","taxClass":"STANDARD","brandId":"%s","categoryId":"%s","version":%d}"""
+                {"name":"%s","taxClass":"STANDARD","brandId":"%s","categoryId":"%s","version":%d}"""
                 .formatted(name, brand, category, version);
     }
 
