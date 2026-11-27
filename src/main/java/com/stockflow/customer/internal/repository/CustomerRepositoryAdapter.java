@@ -106,6 +106,11 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
     }
 
     @Override
+    public Optional<UUID> idByTaxCode(String taxCode) {
+        return taxCode == null ? Optional.empty() : customers.findIdByTaxCode(taxCode);
+    }
+
+    @Override
     public Optional<Customer> findByEmail(String email) {
         return customers.findByEmailIgnoreCase(email).map(this::withAddresses);
     }
@@ -161,6 +166,13 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
 
     @Override
     public Page<CustomerSummary> search(String search, String status, UUID segmentId, Pageable pageable) {
+        return search(search, status, segmentId, null, null, false, pageable);
+    }
+
+    @Override
+    public Page<CustomerSummary> search(String search, String status, UUID segmentId, UUID salesOwnerId,
+                                        com.stockflow.customer.api.SalesOwnerState salesOwnerState,
+                                        boolean taxCodeMissing, Pageable pageable) {
         Specification<CustomerJpaEntity> specification = Specification
                 .<CustomerJpaEntity>where(Specs.contains("fullName", search))
                 .or(Specs.contains("email", search))
@@ -170,6 +182,15 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
                 .or(taxCodeIs(search));
         if (segmentId != null) {
             specification = specification.and(Specs.eq("segmentId", segmentId));
+        }
+        if (salesOwnerId != null) {
+            specification = specification.and(Specs.eq("salesOwnerId", salesOwnerId));
+        }
+        if (salesOwnerState != null) {
+            specification = specification.and(Specs.eq("salesOwnerState", salesOwnerState));
+        }
+        if (taxCodeMissing) {
+            specification = specification.and((root, query, cb) -> cb.isNull(root.get("taxCode")));
         }
         if (status != null && !status.isBlank()) {
             try {

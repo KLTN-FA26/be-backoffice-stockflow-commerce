@@ -15,6 +15,9 @@ public interface CustomerRepository extends AggregateRepository<Customer, UUID> 
     /** BR-01 (decided 16/10/2026): another customer holds this normalised tax code, in any status. */
     boolean isTaxCodeTaken(String taxCode, UUID exceptCustomerId);
 
+    /** The customer holding this normalised tax code, in any status (the code is unique). */
+    Optional<UUID> idByTaxCode(String taxCode);
+
     /**
      * The stored Sales owner of each of these customers that exists, in one query without loading the customers
      * (ResponsibleSales asks for a page of them at once). Unknown ids are left out.

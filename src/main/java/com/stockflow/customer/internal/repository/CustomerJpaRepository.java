@@ -52,6 +52,9 @@ interface CustomerJpaRepository extends BaseJpaRepository<CustomerJpaEntity> {
             """)
     boolean existsTaxCode(@Param("taxCode") String taxCode, @Param("exceptId") UUID exceptId);
 
+    @Query("select c.id from CustomerJpaEntity c where c.taxCode = :taxCode")
+    Optional<UUID> findIdByTaxCode(@Param("taxCode") String taxCode);
+
     /** {@code [segmentId, count]} for every group that holds a customer. */
     @Query("select c.segmentId, count(c) from CustomerJpaEntity c where c.segmentId is not null group by c.segmentId")
     java.util.List<Object[]> countBySegment();
