@@ -65,7 +65,7 @@ class LeadFormFromCustomerNotificationListener {
         }
         return new InboxMessage(CATEGORY, InboxSeverity.INFO, title,
                 texts.getString("inbox.lead.existingCustomer.body"), "/admin/customers/" + event.customerId(),
-                "CUSTOMER", event.customerId().toString(),
+                "CUSTOMER_PROFILE", event.customerId().toString(),
                 "lead-form-existing:%s:%d".formatted(event.customerId(), event.at().toEpochMilli()));
     }
 }
