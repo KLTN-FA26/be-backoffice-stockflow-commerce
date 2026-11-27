@@ -408,6 +408,9 @@ class SalesContractService implements SalesContracts {
             details = "{orderId: #orderId}")
     public ContractView withdrawCreditReview(CurrentUser user, UUID orderId, long version) {
         Order order = lockInScope(orderId);
+        // 14 BR-25: withdrawing puts the contract back in Sales' hands, so it is the owner's step, as sending it was
+        // (a salesperson who lost the customer no longer pulls back what was sent for approval).
+        ownership.requireMayActFor(user, order.customerId());
         SalesContract contract = live(order, version);
         ContractCreditReviews.Review review = waitingReview(contract);
         contract.withdrawCreditReview();

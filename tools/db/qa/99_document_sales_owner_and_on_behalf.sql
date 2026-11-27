@@ -3,7 +3,9 @@
 -- (sales-owner plan 2026-11-28; kltn-docs 14 BR-26, 17 BR-32; V20270128000300, V20270128000310).
 --   DS  ordering.quote / ordering.sales_contract .sales_owner_id: a real account (FK); once set, never changed
 --       (tg_quote_sales_owner_fixed, tg_sales_contract_sales_owner_fixed); the backfill gave the demo documents a
---       salesperson sender's id only
+--       salesperson sender's id only; writing nothing but the owner does not judge a contract's terms again
+--       (tg_sales_contract_terms_update's WHEN, so the backfill passes over a contract older than today's rules),
+--       any other change still does
 --   OB  ordering.order_on_behalf_action: a known action (ck_order_on_behalf_action_action); nobody acts on their own
 --       behalf (ck_order_on_behalf_action_other); real accounts and order (FKs); append-only, rows leave only with
 --       their order
@@ -99,6 +101,32 @@ SELECT pg_temp.expect_true('DS8 the backfill gave no demo document a sender who 
                      WHERE k.sales_owner_id IS NOT NULL AND k.id NOT IN (pg_temp.id('k'), pg_temp.id('k2'))
                        AND NOT EXISTS (SELECT 1 FROM identity.user_role ur JOIN identity.app_role r ON r.id = ur.role_id
                                         WHERE ur.user_id = k.sales_owner_id AND r.code = 'SALES_STAFF')));
+
+-- A signed contract older than today's rules: no delivery batch, no installment (written as rows written before).
+SET LOCAL session_replication_role = replica;
+INSERT INTO ordering.customer_order (id, order_number, request_id, customer_id, status, total_amount, currency,
+                                     placed_at, created_at)
+VALUES (pg_temp.id('o3'), 'QA-DO-O3', pg_temp.id('o3-request'), pg_temp.id('c'), 'DRAFT', 1000000, 'VND', NOW(),
+        NOW());
+INSERT INTO ordering.sales_contract (id, contract_number, order_id, status, seller_name, seller_tax_code,
+                                     seller_address, seller_representative, seller_representative_title, buyer_name,
+                                     buyer_address, buyer_representative, buyer_representative_title,
+                                     free_sample_rounds, sent_at, sent_by, sent_document_key, signed_at, signed_by,
+                                     signed_on, signed_file_key, signed_file_name)
+VALUES (pg_temp.id('k3'), 'QA-DO-K3', pg_temp.id('o3'), 'SIGNED', 'Seller', '0312345678', 'Addr', 'Rep', 'Director',
+        'Buyer', 'Addr', 'Rep', 'Director', 0, '2026-11-01 03:00+00', pg_temp.id('a'), 'contracts/k3.pdf',
+        '2026-11-01 03:00+00', pg_temp.id('a'), DATE '2026-11-01', 'contracts/s3.pdf', 'signed.pdf');
+SET LOCAL session_replication_role = origin;
+SELECT pg_temp.expect_ok('DS9 writing only the owner of a contract older than today''s terms is not judged again',
+    format('UPDATE ordering.sales_contract SET sales_owner_id = %L WHERE id = %L', pg_temp.id('a'), pg_temp.id('k3')));
+SELECT pg_temp.expect_fail_like('DS10 ... any other change to it still is (14 BR-23)', '14 BR-23',
+    format('UPDATE ordering.sales_contract SET version = version + 1 WHERE id = %L', pg_temp.id('k3')));
+SELECT pg_temp.expect_fail_like('DS11 ... and a new contract is judged when inserted (14 BR-23)', '14 BR-23',
+    format('INSERT INTO ordering.sales_contract (id, contract_number, order_id, status, seller_name, seller_tax_code, '
+           'seller_address, seller_representative, seller_representative_title, buyer_name, buyer_address, '
+           'buyer_representative, buyer_representative_title, free_sample_rounds) VALUES (gen_random_uuid(), '
+           '''QA-DO-K4'', %L, ''DRAFT'', ''Seller'', ''0312345678'', ''Addr'', ''Rep'', ''Director'', ''Buyer'', '
+           '''Addr'', ''Rep'', ''Director'', 0)', pg_temp.id('o2')));
 
 \echo '--- OB: work done on another salesperson''s behalf (17 BR-32)'
 SELECT pg_temp.expect_ok('OB1 an entry: B chose the warehouse for A',

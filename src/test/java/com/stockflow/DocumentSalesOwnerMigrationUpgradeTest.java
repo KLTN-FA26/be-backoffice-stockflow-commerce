@@ -24,7 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class DocumentSalesOwnerMigrationUpgradeTest {
 
-    private static final String BEFORE = "20270128000145";
+    private static final String BEFORE = "20270128000200";
     private static final String TARGET = "20270128000310";
 
     private static final UUID SALES = UUID.randomUUID();
@@ -38,6 +38,8 @@ class DocumentSalesOwnerMigrationUpgradeTest {
     private static final UUID NEVER_SENT = UUID.randomUUID();
     private static final UUID CONTRACT_SENT = UUID.randomUUID();
     private static final UUID CONTRACT_BY_MANAGER = UUID.randomUUID();
+    /** Signed long ago and failing today's terms (no batch, no installment): the backfill must not judge it again. */
+    private static final UUID CONTRACT_SIGNED_OLD_TERMS = UUID.randomUUID();
 
     private static final Instant T1 = Instant.parse("2026-11-01T03:00:00Z");
 
@@ -63,6 +65,12 @@ class DocumentSalesOwnerMigrationUpgradeTest {
                 assertThat(contractOwner(db, CONTRACT_SENT)).isEqualTo(SALES.toString());
                 assertThat(contractOwner(db, CONTRACT_BY_MANAGER)).as("D42: a manager never owns")
                         .isEqualTo("null");
+                assertThat(contractOwner(db, CONTRACT_SIGNED_OLD_TERMS))
+                        .as("review fix 5: filled though its terms fail today's tg_sales_contract_terms")
+                        .isEqualTo(SALES.toString());
+                RawSql.refusedBy(db, "14 BR-23", "any other change to that contract is still judged",
+                        "UPDATE ordering.sales_contract SET version = version + 1 WHERE id = ?",
+                        CONTRACT_SIGNED_OLD_TERMS);
 
                 RawSql.refusedBy(db, "immutable once set", "BR-26: a quote's owner never moves",
                         "UPDATE ordering.quote SET sales_owner_id = ? WHERE id = ?", MANAGER, SENT_BY_SALES);
@@ -96,6 +104,7 @@ class DocumentSalesOwnerMigrationUpgradeTest {
         quote(db, NEVER_SENT, "DRAFT", null);
         contract(db, CONTRACT_SENT, SALES);
         contract(db, CONTRACT_BY_MANAGER, MANAGER);
+        signedContract(db, CONTRACT_SIGNED_OLD_TERMS, SALES);
         RawSql.update(db, "SET session_replication_role = origin");
     }
 
@@ -128,6 +137,27 @@ class DocumentSalesOwnerMigrationUpgradeTest {
                 + "sent_by, sent_document_key, cancelled_at, cancelled_by, cancellation_reason) VALUES (?, ?, ?, "
                 + "'CANCELLED', 'Seller', '0312345678', 'Addr', 'Rep', 'Director', 'Buyer', 'Addr', 'Rep', 'Director', 0, "
                 + "?, ?, 'contracts/k.pdf', ?, ?, 'redrawn')",
+                id, "HD-" + order.toString().substring(0, 12), order, Timestamp.from(T1), sender, Timestamp.from(T1),
+                sender);
+    }
+
+    /**
+     * A SIGNED contract with no delivery batch and no installment: written before the terms were checked as they are
+     * now (14 BR-13, BR-23), so any trigger that judges it again raises - as the backfill's UPDATE used to, through the
+     * deferred tg_sales_contract_terms that SET CONSTRAINTS ALL IMMEDIATE fired, aborting the deploy.
+     */
+    private static void signedContract(Connection db, UUID id, UUID sender) throws SQLException {
+        UUID order = UUID.randomUUID();
+        RawSql.update(db, "INSERT INTO ordering.customer_order (id, order_number, request_id, customer_id, status, "
+                + "total_amount, currency, placed_at, created_at) VALUES (?, ?, gen_random_uuid(), ?, 'DRAFT', "
+                + "1000000, 'VND', NOW(), NOW())", order, "SO-" + order.toString().substring(0, 12), CUSTOMER);
+        RawSql.update(db, "INSERT INTO ordering.sales_contract (id, contract_number, order_id, status, seller_name, "
+                + "seller_tax_code, seller_address, seller_representative, seller_representative_title, buyer_name, "
+                + "buyer_address, buyer_representative, buyer_representative_title, free_sample_rounds, sent_at, "
+                + "sent_by, sent_document_key, signed_at, signed_by, signed_on, signed_file_key, signed_file_name) "
+                + "VALUES (?, ?, ?, 'SIGNED', 'Seller', '0312345678', 'Addr', 'Rep', 'Director', 'Buyer', 'Addr', "
+                + "'Rep', 'Director', 0, ?, ?, 'contracts/k.pdf', ?, ?, DATE '2026-11-01', 'contracts/s.pdf', "
+                + "'signed.pdf')",
                 id, "HD-" + order.toString().substring(0, 12), order, Timestamp.from(T1), sender, Timestamp.from(T1),
                 sender);
     }

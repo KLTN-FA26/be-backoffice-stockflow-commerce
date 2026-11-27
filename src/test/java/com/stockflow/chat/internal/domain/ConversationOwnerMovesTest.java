@@ -138,6 +138,46 @@ class ConversationOwnerMovesTest {
                 .extracting("errorCode").isEqualTo(ErrorCode.CHAT_TRANSITION_NOT_ALLOWED);
     }
 
+    @Test
+    @DisplayName("Review fix 2 / 16 §5: a reopened conversation goes to the acting salesperson; with none, a gone agent "
+            + "gives it to the queue flagged; an agent still at work keeps it; nothing before it is reopened")
+    void aReopenedConversationGoesToWhoeverLooksAfterTheCustomer() {
+        Conversation transferred = reopened();
+        assertThat(transferred.rerouteOnReopen(OTHER.userId(), true, T0)).isTrue();
+        assertThat(transferred.status()).isEqualTo(ConversationStatus.REOPENED);
+        assertThat(transferred.assignedAgentId()).isEqualTo(OTHER.userId());
+        assertThat(transferred.pullLog()).singleElement().satisfies(line -> {
+            assertThat(line.type()).isEqualTo(ConversationEventType.TRANSFERRED);
+            assertThat(line.note()).isEqualTo(Conversation.REOPEN_REROUTED_NOTE);
+        });
+        assertThat(transferred.rerouteOnReopen(OTHER.userId(), true, T0)).as("theirs already").isFalse();
+
+        Conversation queued = reopened();
+        assertThat(queued.rerouteOnReopen(null, false, T0.plusSeconds(5))).isTrue();
+        assertThat(queued.status()).isEqualTo(ConversationStatus.QUEUED);
+        assertThat(queued.assignedAgentId()).isNull();
+        assertThat(queued.requeuedAt()).as("BR-S08: shown first").isEqualTo(T0.plusSeconds(5));
+
+        Conversation kept = reopened();
+        assertThat(kept.rerouteOnReopen(null, true, T0)).isFalse();
+        assertThat(kept.assignedAgentId()).isEqualTo(AGENT.userId());
+
+        Conversation resolved = in(ConversationStatus.ACTIVE);
+        resolved.changeStatus(AGENT, ConversationStatus.RESOLVED, null, T0, WINDOW);
+        assertThat(resolved.rerouteOnReopen(OTHER.userId(), true, T0)).as("not reopened").isFalse();
+        assertThat(resolved.assignedAgentId()).isEqualTo(AGENT.userId());
+    }
+
+    /** AGENT's conversation, resolved and reopened by the customer; its log emptied. */
+    private static Conversation reopened() {
+        Conversation c = in(ConversationStatus.ACTIVE);
+        c.changeStatus(AGENT, ConversationStatus.RESOLVED, null, T0, WINDOW);
+        c.reopen(PORTAL, T0.plusSeconds(1));
+        assertThat(c.status()).isEqualTo(ConversationStatus.REOPENED);
+        c.pullLog();
+        return c;
+    }
+
     private static Conversation requeued() {
         Conversation c = in(ConversationStatus.ACTIVE);
         c.requeueFrom(AGENT.userId(), T0);

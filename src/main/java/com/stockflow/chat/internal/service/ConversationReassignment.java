@@ -5,10 +5,13 @@ import com.stockflow.chat.internal.domain.ChatMessage;
 import com.stockflow.chat.internal.domain.Conversation;
 import com.stockflow.chat.internal.domain.ConversationRepository;
 import com.stockflow.chat.internal.domain.Visibility;
+import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.CustomerSalesOwnerChanged;
 import com.stockflow.contracts.StaffAccountDeactivated;
 import com.stockflow.customer.api.CustomerSalesOwner;
+import com.stockflow.customer.api.Responsible;
+import com.stockflow.customer.api.ResponsibleSales;
 import com.stockflow.customer.api.SalesOwnerState;
 import com.stockflow.customer.api.SalesOwnership;
 import org.slf4j.Logger;
@@ -57,9 +60,13 @@ public class ConversationReassignment {
     private final SalesOwnership ownership;
     private final AgentDirectory agents;
     private final SalesOwnerNotices notices;
+    /** The owner read again once the conversations are locked: a statement of its own, never a cached entity. */
+    private final ResponsibleSales responsible;
 
     public ConversationReassignment(ConversationRepository conversations, ConversationWriter writer,
-                                    SalesOwnership ownership, AgentDirectory agents, SalesOwnerNotices notices) {
+                                    SalesOwnership ownership, AgentDirectory agents, SalesOwnerNotices notices,
+                                    ResponsibleSales responsible) {
+        this.responsible = responsible;
         this.conversations = conversations;
         this.writer = writer;
         this.ownership = ownership;
@@ -92,8 +99,14 @@ public class ConversationReassignment {
             String line = staffLine(changed, names, toName);
             String detail = "{\"salesOwnerFrom\":" + quoted(changed.fromUserId()) + ",\"salesOwnerTo\":"
                     + quoted(changed.toUserId()) + ",\"reason\":\"" + changed.reason().name() + "\"}";
-            for (UUID id : conversations.openOf(changed.customerId())) {
-                Conversation c = writer.lock(id);
+            List<Conversation> locked = conversations.openOf(changed.customerId()).stream().map(writer::lock)
+                    .toList();
+            if (!stillOwnedBy(changed)) {
+                log.info("Owner change of customer {} at {} went stale while its conversations were locked: nothing"
+                        + " moved", changed.customerId(), changed.at());
+                return 0;
+            }
+            for (Conversation c : locked) {
                 UUID before = c.assignedAgentId();
                 if (c.followOwner(changed.toUserId(), FOLLOWED_OWNER_NOTE, detail, now)) {
                     writer.save(c, before);
@@ -143,6 +156,20 @@ public class ConversationReassignment {
         }
         notices.requeued(agentId, requeued, deactivated.at());
         return requeued;
+    }
+
+    /**
+     * Whether {@code changed.toUserId()} is still the customer's owner, read once this transaction holds the
+     * conversations' locks. The first check reads before any lock: a later change can commit, and the chat apply it,
+     * between that read and the locks - and moving the conversations then would hand them back to the earlier owner
+     * (A to B, then B to C: B's change, late, would leave them with B). A later change applied before our locks
+     * committed is seen here; one committing after this read waits for our locks and moves them after us. Read through
+     * {@link ResponsibleSales}, a query of its own, because {@link SalesOwnership#ownerOf} answers from the entity this
+     * transaction already loaded.
+     */
+    private boolean stillOwnedBy(CustomerSalesOwnerChanged changed) {
+        return responsible.responsibleFor(changed.customerId(), BusinessCalendar.date(writer.now()))
+                .map(Responsible::ownerId).filter(changed.toUserId()::equals).isPresent();
     }
 
     /** "Chuyển từ A sang B: lý do" for the staff; "Giao cho B: lý do" when the customer had no owner before. */

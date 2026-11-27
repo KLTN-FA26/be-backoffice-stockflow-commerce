@@ -111,6 +111,10 @@ class NoRoleNameAccessTest {
                     "who is told the projected free room turned negative: kltn-docs 00 §6 picks recipients by role "
                             + "and warehouse at send time, and C42 names only the receiving warehouse's Warehouse "
                             + "Manager - it addresses a message, it grants no access"),
+            new Allowed("notification/internal/service/SalesNotices.java",
+                    ".filter(member -> member.roles().stream().allMatch(role -> SalesStaff.SALES_ROLES.contains(",
+                    "17 BR-30 (2026-11-28): a delay alert drops only the plain salespeople who do not look after the "
+                            + "customer; one who also holds another role is told as that role - recipients, not access"),
             // ---- checks on the user an action is about, not on the caller
             new Allowed("fulfillment/internal/service/FulfillmentServiceImpl.java",
                     "Role.WAREHOUSE_STAFF.authority(), Role.WAREHOUSE_MANAGER.authority()",

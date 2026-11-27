@@ -53,12 +53,15 @@ public class ConversationWriter {
     private final ChatProperties properties;
     private final ChatNotifier notifier;
     private final SalesOwnerNotices ownerNotices;
+    private final AgentDirectory agents;
     private final Clock clock;
 
     public ConversationWriter(ConversationRepository conversations, ChatMessageRepository messages,
                               ReadMarkers markers, ConversationRouter router, ChatBroadcaster broadcaster,
                               ChatViews views, CustomerService customers, ChatProperties properties,
-                              ChatNotifier notifier, SalesOwnerNotices ownerNotices, Clock clock) {
+                              ChatNotifier notifier, SalesOwnerNotices ownerNotices, AgentDirectory agents,
+                              Clock clock) {
+        this.agents = agents;
         this.notifier = notifier;
         this.ownerNotices = ownerNotices;
         this.conversations = conversations;
@@ -182,6 +185,9 @@ public class ConversationWriter {
         conversations.save(c);
         ChatMessage stored = messages.save(message);
         conversations.append(c.pullLog());
+        if (before.isEnded()) {
+            rerouteReopened(c);
+        }
         if (sender.type() != SenderType.SYSTEM) {
             markers.advance(c.id(), sender.userId(), sender.type(), seq, stored.sentAt());
         }
@@ -196,6 +202,32 @@ public class ConversationWriter {
             broadcaster.inbox(new ChatEvent(ChatEvent.CONVERSATION_UPDATED, c.id(), staffRow(c), clock.instant()));
         }
         return new Posted(stored, false);
+    }
+
+    /**
+     * A conversation the customer has just reopened, stored as REOPENED, goes to whoever looks after the customer now
+     * ({@link Conversation#rerouteOnReopen}): the router's answer for a new conversation, and whether the agent it kept
+     * still answers customers. Stored in a second write, so the database judges RESOLVED to REOPENED, then REOPENED to
+     * QUEUED. A reopened conversation sent to the queue is told to the supervisors, as a new one is.
+     *
+     * @return whether it changed hands (the caller tells the clients)
+     */
+    public boolean rerouteReopened(Conversation c) {
+        if (c.status() != ConversationStatus.REOPENED) {
+            return false;
+        }
+        UUID agent = c.assignedAgentId();
+        UUID acting = router.agentFor(c).orElse(null);
+        boolean answers = agent == null || agent.equals(acting) || agents.answersCustomers(agent);
+        if (!c.rerouteOnReopen(acting, answers, clock.instant())) {
+            return false;
+        }
+        conversations.save(c);
+        conversations.append(c.pullLog());
+        if (c.status() == ConversationStatus.QUEUED) {
+            ownerNotices.queued(c);
+        }
+        return true;
     }
 
     /** Saves a change of the conversation that posted no message (a claim, an assignment, a status), and tells. */

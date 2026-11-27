@@ -116,7 +116,8 @@ class OverdueInstallmentNoticeIntegrationTest {
         confirmedOrders.legalProfile(customer);
         LocalDate today = LocalDate.now(ConfirmedOrders.VIETNAM);
         UUID line = jdbc.queryForObject("SELECT id FROM ordering.order_line WHERE order_id = ?", UUID.class, orderId);
-        var sales = confirmedOrders.sales();
+        // Strict mode (14 BR-25): the customer's owner draws its contract up.
+        var sales = com.stockflow.support.SalesOwners.caller(salesA, com.stockflow.common.security.Role.SALES_STAFF);
         SalesContracts.ContractView sent = WithCurrentUser.call(sales, DataScope.ALL, () -> {
             SalesContracts.ContractView drafted = contracts.create(sales, orderId, new SalesContracts.Draft(null,
                     List.of(new SalesContracts.Batch(today.plusDays(21), today.plusDays(23),
