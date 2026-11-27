@@ -40,20 +40,27 @@ interface StaffCoverJpaRepository extends BaseJpaRepository<StaffCoverJpaEntity>
     @Query("select c from StaffCoverJpaEntity c where c.coverUserId = :coverUserId and c.status = 'ACTIVE' order by c.id")
     List<StaffCoverJpaEntity> lockActiveStandingIn(@Param("coverUserId") UUID coverUserId);
 
-    /** Every cover, or one absent person's (a null {@code userId}), newest first. */
+    /**
+     * Every cover, or one absent person's ({@code everyone} false), newest first; with {@code anyone} false only those in
+     * which {@code viewer} is the absent person or the stand-in (finding S3).
+     */
     @Query("""
             select c from StaffCoverJpaEntity c
             where (:everyone = true or c.userId = :userId)
+              and (:anyone = true or c.userId = :viewer or c.coverUserId = :viewer)
             order by c.fromDate desc, c.id desc
             """)
-    List<StaffCoverJpaEntity> list(@Param("everyone") boolean everyone, @Param("userId") UUID userId, Pageable page);
+    List<StaffCoverJpaEntity> list(@Param("everyone") boolean everyone, @Param("userId") UUID userId,
+                                   @Param("anyone") boolean anyone, @Param("viewer") UUID viewer, Pageable page);
 
     /** {@link #list} of the covers not cancelled that end on {@code activeOn} or later. */
     @Query("""
             select c from StaffCoverJpaEntity c
             where (:everyone = true or c.userId = :userId) and c.status = 'ACTIVE' and c.toDate >= :activeOn
+              and (:anyone = true or c.userId = :viewer or c.coverUserId = :viewer)
             order by c.fromDate desc, c.id desc
             """)
     List<StaffCoverJpaEntity> listActive(@Param("everyone") boolean everyone, @Param("userId") UUID userId,
+                                         @Param("anyone") boolean anyone, @Param("viewer") UUID viewer,
                                          @Param("activeOn") LocalDate activeOn, Pageable page);
 }

@@ -69,11 +69,22 @@ class StaffCoverRepositoryAdapter implements StaffCoverRepository {
 
     @Override
     public List<StaffCover> list(UUID userId, LocalDate activeOn, int limit) {
+        return listed(null, userId, activeOn, limit);
+    }
+
+    @Override
+    public List<StaffCover> listInvolving(UUID involved, UUID userId, LocalDate activeOn, int limit) {
+        return listed(Objects.requireNonNull(involved, "involved"), userId, activeOn, limit);
+    }
+
+    private List<StaffCover> listed(UUID involved, UUID userId, LocalDate activeOn, int limit) {
         PageRequest page = PageRequest.of(0, Math.max(1, limit));
         // A placeholder id when everyone is asked: the parameter is never compared then, but it must have a type.
         UUID who = userId == null ? new UUID(0, 0) : userId;
-        List<StaffCoverJpaEntity> rows = activeOn == null ? covers.list(userId == null, who, page)
-                : covers.listActive(userId == null, who, activeOn, page);
+        UUID viewer = involved == null ? new UUID(0, 0) : involved;
+        List<StaffCoverJpaEntity> rows = activeOn == null
+                ? covers.list(userId == null, who, involved == null, viewer, page)
+                : covers.listActive(userId == null, who, involved == null, viewer, activeOn, page);
         return rows.stream().map(StaffCoverRepositoryAdapter::toDomain).toList();
     }
 

@@ -479,7 +479,7 @@ class SalesOwnerEndpointsIntegrationTest {
                 "from", from.plusDays(5).toString(), "to", from.plusDays(6).toString()))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("STAFF_COVER_OVERLAP"));
 
-        JsonNode listed = data(as(Role.SALES_STAFF, other, get("/api/v1/staff-covers").param("userId", away.toString())
+        JsonNode listed = data(as(Role.SALES_STAFF, standIn, get("/api/v1/staff-covers").param("userId", away.toString())
                 .param("active", "true"), null).andExpect(status().isOk()));
         assertThat(listed.size()).isEqualTo(1);
 
@@ -490,6 +490,42 @@ class SalesOwnerEndpointsIntegrationTest {
                 .andExpect(jsonPath("$.data.cancelledAt").isNotEmpty());
         as(Role.WAREHOUSE_STAFF, staff.staff("WAREHOUSE_STAFF"), get("/api/v1/staff-covers"), null)
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("Finding S3: a Sales sees only the covers they are in, and their reasons; a manager sees every one")
+    void aSalesSeesOnlyTheirOwnCovers() throws Exception {
+        UUID away = staff.staff("SALES_STAFF");
+        UUID standIn = staff.staff("SALES_STAFF");
+        UUID colleague = staff.staff("SALES_STAFF");
+        LocalDate from = today().plusDays(1);
+        String coverId = data(as(Role.SALES_STAFF, away, post("/api/v1/staff-covers"), Map.of("userId", away,
+                "coverUserId", standIn, "from", from.toString(), "to", from.plusDays(2).toString(),
+                "reason", "medical leave")).andExpect(status().isCreated())).at("/id").asText();
+
+        for (UUID involved : List.of(away, standIn)) {
+            JsonNode row = rowWithId(data(as(Role.SALES_STAFF, involved, get("/api/v1/staff-covers"), null)
+                    .andExpect(status().isOk())), coverId);
+            assertThat(row).as("listed to %s", involved).isNotNull();
+            assertThat(row.at("/reason").asText()).isEqualTo("medical leave");
+        }
+        assertThat(rowWithId(data(as(Role.SALES_STAFF, colleague, get("/api/v1/staff-covers"), null)
+                .andExpect(status().isOk())), coverId)).as("a colleague does not see it").isNull();
+        assertThat(rowWithId(data(as(Role.SALES_STAFF, colleague, get("/api/v1/staff-covers")
+                .param("userId", away.toString()), null).andExpect(status().isOk())), coverId))
+                .as("not even by naming the absent person").isNull();
+        JsonNode managers = rowWithId(data(as(Role.SALES_MANAGER, manager, get("/api/v1/staff-covers")
+                .param("userId", away.toString()), null).andExpect(status().isOk())), coverId);
+        assertThat(managers.at("/reason").asText()).isEqualTo("medical leave");
+    }
+
+    private static JsonNode rowWithId(JsonNode rows, String id) {
+        for (JsonNode row : rows) {
+            if (row.at("/id").asText().equals(id)) {
+                return row;
+            }
+        }
+        return null;
     }
 
     // -------------------------------------------------------------------------------------------------------------

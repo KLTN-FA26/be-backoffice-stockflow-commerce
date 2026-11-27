@@ -28,4 +28,7 @@ public interface StaffCoverRepository extends AggregateRepository<StaffCover, UU
      * those in force on that day or later (still to come or running).
      */
     List<StaffCover> list(UUID userId, LocalDate activeOn, int limit);
+
+    /** {@link #list}, kept to the covers in which {@code involved} is the absent person or the stand-in. */
+    List<StaffCover> listInvolving(UUID involved, UUID userId, LocalDate activeOn, int limit);
 }

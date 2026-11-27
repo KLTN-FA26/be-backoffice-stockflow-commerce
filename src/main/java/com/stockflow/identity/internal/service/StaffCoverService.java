@@ -148,6 +148,23 @@ public class StaffCoverService implements StaffCovers {
     }
 
     /**
+     * {@link #list} as {@code viewer} may see it (finding S3): a manager ({@code seesEveryone}) every cover; anyone else
+     * only the covers in which they are the absent person or the stand-in. A salesperson needs to know who stands in for
+     * them and for whom they stand in - not their colleagues' leave, nor why.
+     */
+    @Transactional(readOnly = true)
+    public List<CoverView> listFor(UUID viewer, boolean seesEveryone, UUID userId, boolean activeOnly) {
+        if (seesEveryone) {
+            return list(userId, activeOnly);
+        }
+        if (viewer == null) {
+            return List.of();
+        }
+        return covers.listInvolving(viewer, userId, activeOnly ? today() : null, MAX_LISTED).stream()
+                .map(StaffCoverService::view).toList();
+    }
+
+    /**
      * BR-S08: the account {@code coverUserId} stopped working, so no cover can rely on it any more. Joins the caller's
      * transaction (the status change), so a lock that rolls back cancels nothing.
      *
@@ -183,6 +200,15 @@ public class StaffCoverService implements StaffCovers {
     /** {@link CoverView}s as rows: the people named in one query, the phase from today's date. */
     @Transactional(readOnly = true)
     public List<CoverRow> rows(List<CoverView> views) {
+        return rows(views, null, true);
+    }
+
+    /**
+     * {@link #rows(List)} for {@code viewer}: the {@code reason} of a cover (often why someone is away) only to the two
+     * people it is about and to a manager ({@code seesEveryone}); left out for anyone else (finding S3).
+     */
+    @Transactional(readOnly = true)
+    public List<CoverRow> rows(List<CoverView> views, UUID viewer, boolean seesEveryone) {
         java.util.Set<UUID> people = new java.util.HashSet<>();
         views.forEach(view -> {
             people.add(view.userId());
@@ -198,7 +224,9 @@ public class StaffCoverService implements StaffCovers {
         }
         LocalDate today = today();
         return views.stream().map(view -> new CoverRow(view.id(), view.userId(), names.get(view.userId()),
-                view.coverUserId(), names.get(view.coverUserId()), view.from(), view.to(), view.reason(),
+                view.coverUserId(), names.get(view.coverUserId()), view.from(), view.to(),
+                seesEveryone || (viewer != null && (viewer.equals(view.userId()) || viewer.equals(view.coverUserId())))
+                        ? view.reason() : null,
                 phase(view, today), view.arrangedBy(), names.get(view.arrangedBy()), view.cancelledAt(),
                 view.cancelReason(), view.version())).toList();
     }

@@ -41,14 +41,21 @@ class StaffCoverController {
         this.covers = covers;
     }
 
-    /** @param active only covers not cancelled whose last day has not passed */
+    /**
+     * A manager sees every cover; anyone else the covers in which they are the absent person or the stand-in, and a
+     * reason only on those (finding S3).
+     *
+     * @param active only covers not cancelled whose last day has not passed
+     */
     @GetMapping
     @RequiresPermission(resource = IdentityResources.STAFF_COVERS, action = Action.READ)
     public ApiResponse<List<StaffCoverService.CoverRow>> list(@AuthenticatedUser CurrentUser user,
                                                               @RequestParam(required = false) UUID userId,
                                                               @RequestParam(defaultValue = "false") boolean active) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(covers.rows(covers.list(userId, active)));
+        boolean manager = managesOwners(user);
+        return ApiResponse.ok(covers.rows(covers.listFor(user.userId(), manager, userId, active), user.userId(),
+                manager));
     }
 
     @PostMapping
@@ -59,7 +66,7 @@ class StaffCoverController {
         ScopeGuards.requireBackOffice(user);
         var arranged = covers.arrange(new StaffCoverService.ArrangeCover(request.userId(), request.coverUserId(),
                 request.from(), request.to(), request.reason()), user.userId(), managesOwners(user));
-        return ApiResponse.ok(covers.rows(List.of(arranged)).get(0));
+        return ApiResponse.ok(covers.rows(List.of(arranged), user.userId(), managesOwners(user)).get(0));
     }
 
     @PostMapping("/{coverId}/cancellation")
@@ -68,7 +75,7 @@ class StaffCoverController {
                                                           @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         var cancelled = covers.cancel(coverId, user.userId(), managesOwners(user));
-        return ApiResponse.ok(covers.rows(List.of(cancelled)).get(0));
+        return ApiResponse.ok(covers.rows(List.of(cancelled), user.userId(), managesOwners(user)).get(0));
     }
 
     private static boolean managesOwners(CurrentUser user) {
