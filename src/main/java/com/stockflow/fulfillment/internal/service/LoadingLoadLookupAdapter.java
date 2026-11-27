@@ -28,7 +28,8 @@ class LoadingLoadLookupAdapter implements LoadingLoadLookup {
                   FROM fulfillment.dispatch_load l
                   JOIN fulfillment.dispatch_load_shipment ls ON ls.load_id = l.id AND ls.active
                   JOIN fulfillment.shipment s ON s.id = ls.shipment_id
-                 WHERE l.status = 'LOADING' AND s.order_id IN (:orderIds)
+                 WHERE l.status IN ('PLANNED', 'VEHICLE_BOOKED', 'LOADING')
+                   AND s.order_id IN (:orderIds)
                  ORDER BY l.code
                 """, Map.of("orderIds", orderIds), String.class);
     }
