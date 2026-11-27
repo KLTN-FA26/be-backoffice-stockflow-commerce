@@ -192,6 +192,8 @@ WITH reviewed(col, why) AS (
     ('ordering.quote.quote_number', 'the row''s own business number'),
     ('ordering.return_request.rma_number', 'the row''s own business number'),
     ('ordering.sales_contract.contract_number', 'the row''s own business number'),
+    ('warehouse.move_task.task_number', 'the row''s own business number'),
+    ('assistant.tool_call.call_id', 'the language model''s own id for one call in its turn, pairing the call with its result'),
     ('payment.bank_transaction.provider_transaction_id', 'an external system''s id: SePay''s, for one transfer'),
     ('payment.bank_transaction.account_number', 'the bank account SePay reported, kept verbatim'),
     ('payment.bank_transaction.payment_code', 'what SePay read out of the transfer''s content, kept verbatim')

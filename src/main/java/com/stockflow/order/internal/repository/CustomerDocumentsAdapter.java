@@ -127,6 +127,24 @@ class CustomerDocumentsAdapter implements CustomerDocuments {
                 customerId, limit);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Map<UUID, UUID> contractSalespeople(java.util.Collection<UUID> contractIds) {
+        if (contractIds == null || contractIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, UUID> found = new java.util.HashMap<>();
+        jdbc.query("""
+                SELECT k.id, COALESCE(k.sent_by, k.signed_by) AS sales
+                  FROM ordering.sales_contract k
+                 WHERE k.id IN (:ids) AND COALESCE(k.sent_by, k.signed_by) IS NOT NULL""",
+                Map.of("ids", java.util.Set.copyOf(contractIds)),
+                rs -> {
+                    found.put(rs.getObject("id", UUID.class), rs.getObject("sales", UUID.class));
+                });
+        return found;
+    }
+
     private Optional<CustomerDocument> one(String sql, UUID id) {
         if (id == null) {
             return Optional.empty();

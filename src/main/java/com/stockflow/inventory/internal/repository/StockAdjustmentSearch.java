@@ -11,10 +11,17 @@ public interface StockAdjustmentSearch {
     /**
      * @param hideCountedSlots leave out the adjustments of slots a cycle count holds, the pending variance of the
      *                         count included: its delta against the books would give the book quantity away (SCRUM-146)
+     * @param warehousePrefix  only the adjustments of locations in this warehouse (its code prefix, 06 BR-13); null for
+     *                         any
      */
-    record Criteria(AdjustmentStatus status, String sku, String location, boolean hideCountedSlots) {
+    record Criteria(AdjustmentStatus status, String sku, String location, boolean hideCountedSlots,
+                    String warehousePrefix) {
         public Criteria(AdjustmentStatus status, String sku, String location) {
             this(status, sku, location, false);
+        }
+
+        public Criteria(AdjustmentStatus status, String sku, String location, boolean hideCountedSlots) {
+            this(status, sku, location, hideCountedSlots, null);
         }
     }
 

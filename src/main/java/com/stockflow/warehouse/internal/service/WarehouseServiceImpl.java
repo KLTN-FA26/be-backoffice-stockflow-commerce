@@ -34,9 +34,19 @@ import java.util.UUID;
 class WarehouseServiceImpl implements WarehouseService {
 
     private final LocationLookupRepository locations;
+    private final com.stockflow.warehouse.internal.domain.WarehouseRepository warehouses;
 
-    WarehouseServiceImpl(LocationLookupRepository locations) {
+    WarehouseServiceImpl(LocationLookupRepository locations,
+                         com.stockflow.warehouse.internal.domain.WarehouseRepository warehouses) {
         this.locations = locations;
+        this.warehouses = warehouses;
+    }
+
+    /** Prefixes are stored upper-case ({@code ck_warehouse_prefix}). */
+    @Override
+    public boolean isWarehousePrefix(String prefix) {
+        return prefix != null && !prefix.isBlank()
+                && warehouses.existsByPrefix(prefix.strip().toUpperCase(Locale.ROOT));
     }
 
     /** Upper-cased first: every part of a code is {@code [A-Z0-9]} (BR-10), and scanners and people disagree on case. */

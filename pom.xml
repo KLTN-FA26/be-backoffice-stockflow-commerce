@@ -67,6 +67,8 @@
     <!-- Location labels (SCRUM-97): ZXing encodes Code 128 / QR, PDFBox draws the PDF. -->
     <zxing.version>3.5.3</zxing.version>
     <pdfbox.version>3.0.6</pdfbox.version>
+    <!-- The back-office assistant's model provider (ADR-0011): Anthropic's official Java SDK. -->
+    <anthropic-java.version>2.34.0</anthropic-java.version>
     <!--
       Report exports (2026-11-14 plan, BE2): Apache POI writes XLSX, streamed with SXSSF. 5.4.0 carries the fix of
       CVE-2025-31672 (duplicate zip entries in OOXML), which every earlier 5.x lacks. Its commons-io, commons-compress
@@ -269,6 +271,17 @@
       <version>${shedlock.version}</version>
     </dependency>
 
+    <!-- ==================== the assistant's model provider ==================== -->
+    <!--
+      ADR-0011. Only com.stockflow.assistant uses it, behind the LanguageModel port; nothing in mvn test calls the
+      provider. Its Jackson and Kotlin dependencies resolve to the Boot BOM's versions.
+    -->
+    <dependency>
+      <groupId>com.anthropic</groupId>
+      <artifactId>anthropic-java</artifactId>
+      <version>${anthropic-java.version}</version>
+    </dependency>
+
     <!-- ==================== outbound resilience ==================== -->
     <!--
       @Retryable for outbound calls. Managed by the Boot BOM. A circuit breaker (Resilience4j) is
@@ -409,6 +422,46 @@
   </dependencies>
 
   <build>
+    <resources>
+      <!--
+        spring-boot-starter-parent's two entries, restated because declaring <resources> replaces them: the
+        application*.yml/properties files filtered for @..@ placeholders, everything else copied as is.
+      -->
+      <resource>
+        <directory>${basedir}/src/main/resources</directory>
+        <filtering>true</filtering>
+        <includes>
+          <include>**/application*.yml</include>
+          <include>**/application*.yaml</include>
+          <include>**/application*.properties</include>
+        </includes>
+      </resource>
+      <resource>
+        <directory>${basedir}/src/main/resources</directory>
+        <excludes>
+          <exclude>**/application*.yml</exclude>
+          <exclude>**/application*.yaml</exclude>
+          <exclude>**/application*.properties</exclude>
+        </excludes>
+      </resource>
+      <!--
+        The assistant's retrieval corpus (design §6.2): the kltn-docs chapters a back-office user asks about and the
+        glossary, copied into docs/kltn-snapshot by tools/sync_kltn_docs.py (its README records the kltn-docs commit),
+        so the index follows the analysis on every build. KnowledgeService indexes the documents index.txt lists, and
+        only those: an earlier build may have left the superseded docs/business-design files in target/classes.
+      -->
+      <resource>
+        <directory>docs/kltn-snapshot</directory>
+        <targetPath>knowledge</targetPath>
+        <includes>
+          <include>*.md</include>
+          <include>index.txt</include>
+        </includes>
+        <excludes>
+          <exclude>README.md</exclude>
+        </excludes>
+      </resource>
+    </resources>
     <plugins>
       <plugin>
         <groupId>org.springframework.boot</groupId>

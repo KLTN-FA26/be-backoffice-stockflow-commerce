@@ -17,7 +17,10 @@ import java.util.HexFormat;
  * <p>Stripe's, and it is the right one: <b>if the client sends an idempotency key, we honour it;
  * if it does not, we do not.</b> No annotation, no per-endpoint configuration, no list of paths
  * that somebody has to remember to update. A client that cares about not double-charging sends the
- * header; one that does not, does not pay for the machinery.</p>
+ * header; one that does not, does not pay for the machinery. The one exception is a stream of server-sent events,
+ * which can be neither held back nor replayed: the filter lets it through untouched
+ * ({@code IdempotencyFilter#asksForStream}), and an endpoint whose retry must not run twice refuses the header
+ * instead (the assistant's stream answers 400).</p>
  *
  * <p>The alternative — marking endpoints {@code @Idempotent} — puts the decision in the wrong
  * place. Whether a retry is safe is a property of the <i>caller's</i> situation (a flaky mobile

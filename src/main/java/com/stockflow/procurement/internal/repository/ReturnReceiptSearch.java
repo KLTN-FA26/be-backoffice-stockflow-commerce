@@ -21,4 +21,15 @@ public interface ReturnReceiptSearch {
     }
 
     Page<Row> search(Criteria criteria, Pageable pageable);
+
+    /**
+     * The DRAFT return receipts that list the carton, the newest first, within the caller's warehouses: where a carton
+     * back from a customer waits before it is quarantined.
+     */
+    List<CartonReceipt> draftsListing(UUID stockPackageId);
+
+    /** A return receipt as a carton's investigation names it. */
+    record CartonReceipt(UUID id, String number, GoodsReceiptStatus status, UUID warehouseId,
+                         UUID quarantineLocationId) {
+    }
 }

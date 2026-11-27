@@ -27,6 +27,7 @@ import com.stockflow.identity.internal.entity.UserWarehouseJpaEntity;
 import com.stockflow.warehouse.api.WarehouseService;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.common.security.Roles;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Sort;
 import com.stockflow.identity.api.IdentityService;
@@ -64,6 +65,7 @@ import com.stockflow.common.security.PermissionCode;
 import com.stockflow.common.security.RoleMatrixAssembler;
 import com.stockflow.common.security.RoleMatrixView;
 import com.stockflow.common.security.SessionValidator;
+import com.stockflow.contracts.CredentialsReset;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.AuditorAware;
 
@@ -133,6 +135,7 @@ class IdentityServiceImpl implements IdentityService {
     private final UserWarehouseJpaRepository userWarehouses;
     private final WarehouseService warehouses;
     private final UserStatusChangeJpaRepository statusChanges;
+    private final ApplicationEventPublisher events;
 
     private static final SortWhitelist USER_SORT =
             SortWhitelist.of("username", "fullName", "status", "lastLoginAt", "createdAt")
@@ -159,6 +162,7 @@ class IdentityServiceImpl implements IdentityService {
                         AuditorAware<String> auditor, UserJpaRepository users, PrivilegeGuard guard,
                         LoginAttempts loginAttempts, UserWarehouseJpaRepository userWarehouses,
                         WarehouseService warehouses, UserStatusChangeJpaRepository statusChanges,
+                        ApplicationEventPublisher events,
                         @Value("${stockflow.security.token-ttl:PT8H}") Duration tokenTtl) {
         if (tokenTtl == null || tokenTtl.isZero() || tokenTtl.isNegative()
                 || tokenTtl.compareTo(MAX_TOKEN_TTL) > 0) {
@@ -183,6 +187,7 @@ class IdentityServiceImpl implements IdentityService {
         this.userWarehouses = userWarehouses;
         this.warehouses = warehouses;
         this.statusChanges = statusChanges;
+        this.events = events;
         this.tokenTtl = tokenTtl;
         this.dummyPasswordHash = passwordEncoder.encode(Identifiers.newId().toString());
     }
@@ -820,6 +825,8 @@ class IdentityServiceImpl implements IdentityService {
         user.resetPassword(passwordEncoder.encode(password), clock.instant());
         userRepository.save(user);
         int ended = sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.PASSWORD_RESET);
+        // The sessions end here; credentials held elsewhere (personal MCP tokens) end with this event (ADR-0017).
+        events.publishEvent(new CredentialsReset(userId, CredentialsReset.Cause.ADMINISTRATOR_RESET, clock.instant()));
         return new PasswordReset(temporary, ended);
     }
 
@@ -1099,10 +1106,14 @@ class IdentityServiceImpl implements IdentityService {
         boolean forced = user.mustChangePassword();
         user.changePasswordHash(passwordEncoder.encode(command.newPassword()));
         userRepository.save(user);
-        return forced || command.logoutOtherDevices()
-                ? sessions.revokeLive(command.userId(), command.currentSessionId(), clock.instant(),
-                        SessionEndReason.PASSWORD_CHANGED)
-                : 0;
+        if (!forced && !command.logoutOtherDevices()) {
+            return 0;
+        }
+        // Signing out everywhere else covers the personal MCP tokens too (ADR-0017); a plain change keeps them.
+        events.publishEvent(new CredentialsReset(command.userId(),
+                CredentialsReset.Cause.CHANGED_SIGNING_OUT_ELSEWHERE, clock.instant()));
+        return sessions.revokeLive(command.userId(), command.currentSessionId(), clock.instant(),
+                SessionEndReason.PASSWORD_CHANGED);
     }
 
     @Override
