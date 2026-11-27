@@ -1183,6 +1183,31 @@ public enum ErrorCode {
     /** kltn-docs 18 §5: only onboarding enters PENDING_ACTIVATION, only activation leaves it for ACTIVE. */
     INVALID_CUSTOMER_STATUS_TRANSITION("This customer cannot move to that status", 409),
 
+    // Sales owner of a customer (sales-owner plan 2026-11-28, API contract "Error codes").
+    /** BR-S12 (strict mode): only the owner, the owner's cover or a manager acts for a customer another Sales owns. */
+    CUSTOMER_OWNED_BY_OTHER_SALES("This customer is looked after by another salesperson", 409),
+    /** BR-S04: an owner, a cover or a lead's Sales is an ACTIVE account holding a Sales role. */
+    SALES_OWNER_NOT_ASSIGNABLE("This person cannot look after customers", 422),
+    /** Two managers changing one customer's owner at once (case 15): the later one reloads. */
+    SALES_OWNER_VERSION_CONFLICT("The customer's salesperson was changed meanwhile; reload and try again", 409),
+    /** BR-S03: every change of owner says why; OTHER also needs a note. */
+    SALES_OWNER_CHANGE_REASON_REQUIRED("Give a reason for changing the customer's salesperson", 400),
+    /** BR-S07: one cover at a time for an absent person. */
+    STAFF_COVER_OVERLAP("This person already has a cover on some of these days", 409),
+    /** BR-S07 / D7: a cover lasts at most 60 days. */
+    STAFF_COVER_TOO_LONG("A cover lasts at most 60 days", 422),
+    STAFF_COVER_SELF("Nobody covers for themselves", 422),
+    STAFF_COVER_NOT_FOUND("Cover not found", 404),
+    /** Plan §10.5: one pending request per customer. */
+    OWNER_CHANGE_REQUEST_PENDING("A request to change the salesperson is already waiting", 409),
+    /** Plan §10.5 / D12: 30 days after a decision before the next request. */
+    OWNER_CHANGE_REQUEST_COOLDOWN("A new request to change the salesperson can be sent 30 days after the last decision", 409),
+    /** BR-S14 / D4: a business customer is created with its tax code, unless a manager allows an exemption. */
+    CUSTOMER_TAX_CODE_REQUIRED("The tax code is required", 400),
+    LEAD_ALREADY_HANDLED("This lead was already handled", 409),
+    /** BR-S05, case 18: only a customer with no active owner can be claimed from the queue. */
+    CUSTOMER_UNASSIGNED_CLAIM_ONLY("Only a customer with no salesperson can be claimed", 409),
+
     /** Checkout needs somewhere to deliver: no shipping address was chosen and none is the default. */
     SHIPPING_ADDRESS_REQUIRED("Add a shipping address before placing an order", 409),
 
