@@ -760,6 +760,11 @@ class PermissionMatrixTest {
     }
 
     Object value(Class<?> type, String name, Handler h) {
+        // A batched read over many customers (GET /orders/sales-contacts) binds its ids before any guard runs: "x" would
+        // be a 400 from binding and prove nothing, so it is asked about the victim, as a single customerId is.
+        if (java.util.Collection.class.isAssignableFrom(type) && name.equals("customerIds")) {
+            return victimCustomer.toString();
+        }
         if (type == UUID.class || type == String.class) {
             UUID v = switch (name) {
                 case "customerId" -> victimCustomer;
