@@ -1207,6 +1207,15 @@ public enum ErrorCode {
     LEAD_ALREADY_HANDLED("This lead was already handled", 409),
     /** BR-S05, case 18: only a customer with no active owner can be claimed from the queue. */
     CUSTOMER_UNASSIGNED_CLAIM_ONLY("Only a customer with no salesperson can be claimed", 409),
+    LEAD_NOT_FOUND("Lead not found", 404),
+    /** Plan §10.7: a lead becomes a customer through its Sales, so a lead nobody was given yet cannot be converted. */
+    LEAD_NOT_ASSIGNED("This lead has no salesperson yet", 409),
+    OWNER_CHANGE_REQUEST_NOT_FOUND("Request to change the salesperson not found", 404),
+    /** Plan §10.5: a request is decided once. */
+    OWNER_CHANGE_REQUEST_ALREADY_DECIDED("This request to change the salesperson was already decided", 409),
+    SALES_OWNER_TRANSFER_NOT_FOUND("Transfer of customers not found", 404),
+    /** Plan §10.1: only a temporary transfer is returned, and only once. */
+    SALES_OWNER_TRANSFER_NOT_RETURNABLE("Only a temporary transfer can be returned", 409),
 
     /** Checkout needs somewhere to deliver: no shipping address was chosen and none is the default. */
     SHIPPING_ADDRESS_REQUIRED("Add a shipping address before placing an order", 409),
