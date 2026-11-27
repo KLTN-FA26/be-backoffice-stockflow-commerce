@@ -3,9 +3,12 @@ package com.stockflow.order.internal.controller;
 import com.stockflow.order.internal.controller.dto.QuoteRequests;
 import com.stockflow.order.internal.controller.dto.QuoteResponse;
 import com.stockflow.order.internal.controller.dto.QuoteRowResponse;
+import com.stockflow.order.internal.controller.dto.QuoteStatusCountsResponse;
 import com.stockflow.order.internal.service.Quotes;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /** Between the quote DTOs and the application records; no rule lives here. */
 final class QuoteWebMapper {
@@ -73,6 +76,12 @@ final class QuoteWebMapper {
         return new QuoteRowResponse(r.id(), r.quoteNumber(), r.customerId(), r.status().name(), r.revision(),
                 r.validUntil(), r.sentAt(), r.convertedOrderId(), r.createdAt(), r.version(), r.total(),
                 r.lineCount(), r.firstItemName(), r.customerName(), r.customerCode(), r.convertedOrderNumber(),
-                r.priceReviewPending());
+                r.priceReviewPending(), r.convertedOrderStatus() == null ? null : r.convertedOrderStatus().name());
+    }
+
+    static QuoteStatusCountsResponse toResponse(Quotes.StatusCounts counts) {
+        Map<String, Long> byStatus = new LinkedHashMap<>();
+        counts.byStatus().forEach((status, count) -> byStatus.put(status.name(), count));
+        return new QuoteStatusCountsResponse(byStatus, counts.total(), counts.priceReviewPending());
     }
 }
