@@ -139,6 +139,31 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
     }
 
     @Override
+    public Map<UUID, Owing> owing(Collection<UUID> customerIds, LocalDate today) {
+        if (customerIds == null || customerIds.isEmpty()) {
+            return Map.of();
+        }
+        // afterDeliveryUnpaid and overdue above as two FILTERs of one pass, grouped by customer: the rows both read are
+        // the installments not PAID or CANCELLED, so the outer WHERE is theirs and each FILTER is the rest of one.
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT customer_id,
+                               COALESCE(SUM(amount - reduced_amount - paid_amount) FILTER (WHERE milestone IN
+                                   ('AFTER_DELIVERY', 'CANCELLATION_FEE', 'FAILED_TRIP_FEE')), 0),
+                               COALESCE(SUM(amount - reduced_amount - paid_amount) FILTER (WHERE due_date < :today), 0),
+                               MIN(due_date) FILTER (WHERE due_date < :today)
+                          FROM payment.installment
+                         WHERE customer_id IN (:customers)
+                           AND status NOT IN ('PAID', 'CANCELLED')
+                         GROUP BY customer_id""")
+                .setParameter("customers", customerIds)
+                .setParameter("today", today)
+                .getResultList();
+        return rows.stream().collect(Collectors.toMap(row -> (UUID) row[0],
+                row -> new Owing(decimal(row[1]), new Overdue(decimal(row[2]), localDate(row[3])))));
+    }
+
+    @Override
     public boolean markOverdueAnnounced(UUID installmentId, LocalDate dueDate) {
         return entityManager.createNativeQuery("""
                         UPDATE payment.installment SET overdue_announced_for = :due

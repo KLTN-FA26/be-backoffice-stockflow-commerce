@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -59,6 +60,20 @@ public interface InstallmentBook {
      * nightly job would have to keep (WF-05 fix plan, section 8).
      */
     Overdue overdue(UUID customerId, LocalDate today);
+
+    /** {@link #afterDeliveryUnpaid} and {@link #overdue} of one customer, read together for many. */
+    record Owing(BigDecimal afterDeliveryUnpaid, Overdue overdue) {
+
+        /** A customer with no installment still owing. */
+        public static final Owing NOTHING = new Owing(BigDecimal.ZERO, new Overdue(BigDecimal.ZERO, null));
+    }
+
+    /**
+     * {@link #afterDeliveryUnpaid} and {@link #overdue} of every customer given, in one statement grouped by customer:
+     * the same two sums over the same rows, so a list shows what {@code creditPosition} of each row would. A customer
+     * with nothing owing is absent.
+     */
+    Map<UUID, Owing> owing(Collection<UUID> customerIds, LocalDate today);
 
     /**
      * WF-05 BE-49: writes down that the installment was announced overdue for {@code dueDate} - only while that is
