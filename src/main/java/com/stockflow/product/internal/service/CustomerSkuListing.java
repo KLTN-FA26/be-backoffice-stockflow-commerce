@@ -68,7 +68,7 @@ public class CustomerSkuListing {
                 .filter(sku -> variantId == null || variantId.equals(sku.sourceVariantId())).toList());
     }
 
-    /** Every customer's SKU drawn on a product or on one catalogue variant, a page at a time ({@link CustomerSkuService#drawnOn}). */
+    /** Every customer's SKU drawn on a product, or on one of its catalogue variants, a page at a time ({@link CustomerSkuService#drawnOn}). */
     public PageResponse<Listed> drawnOn(UUID productId, UUID variantId, int page, int size) {
         PageResponse<CustomerSku> found = issued.drawnOn(productId, variantId, page, size);
         return PageResponse.of(listed(found.items()), found.page(), found.size(), found.totalElements());

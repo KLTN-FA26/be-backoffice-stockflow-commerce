@@ -291,9 +291,10 @@ class CustomerSkuIntegrationTest {
     }
 
     /**
-     * What the product page lists before a blank is blocked or the product discontinued: every customer's SKU drawn on
-     * the product, or on one catalogue variant of it, a page at a time, each with its owner's name and code. Two
-     * customers on one product, one of them also on a second variant.
+     * What the product page lists before a blank is blocked or the product discontinued
+     * ({@code GET /products/{id}/customer-skus}): every customer's SKU drawn on the product, or on one of its catalogue
+     * variants, a page at a time, each with its owner's name and code. Two customers on one product, one of them also
+     * on a second variant.
      */
     @Test
     void everyCustomersSkusOfAProductOrOfOneVariantArePagedWithTheirOwners() throws Exception {
@@ -312,36 +313,40 @@ class CustomerSkuIntegrationTest {
         String c = com.stockflow.support.CustomerSkuRows.issueOn(jdbc, tx, second,
                 new ReferenceRows.ProductRow(product.productId(), secondVariant, secondSku), 10).sku();
 
-        mvc.perform(get("/api/v1/customer-skus").param("productId", product.productId().toString())
-                        .param("size", "2"))
+        String base = "/api/v1/products/" + product.productId() + "/customer-skus";
+        mvc.perform(get(base).param("size", "2"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(3))
                 .andExpect(jsonPath("$.data.items.length()").value(2))
                 .andExpect(jsonPath("$.data.items[0].ownerCustomerName").value("Test customer"))
                 .andExpect(jsonPath("$.data.items[0].ownerCustomerCode").isNotEmpty());
-        String all = mvc.perform(get("/api/v1/customer-skus").param("productId", product.productId().toString()))
-                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String all = mvc.perform(get(base)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         assertThat(all).contains(a, b, c).contains(first.toString(), second.toString());
 
-        String onSecond = mvc.perform(get("/api/v1/customer-skus").param("productId", product.productId().toString())
-                        .param("variantId", secondVariant.toString()))
+        String onSecond = mvc.perform(get(base).param("variantId", secondVariant.toString()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(1))
                 .andExpect(jsonPath("$.data.items[0].sku").value(c))
                 .andExpect(jsonPath("$.data.items[0].sourceVariantId").value(secondVariant.toString()))
                 .andReturn().getResponse().getContentAsString();
         assertThat(onSecond).doesNotContain(a, b);
-        mvc.perform(get("/api/v1/customer-skus").param("variantId", secondVariant.toString()))
-                .andExpect(jsonPath("$.data.totalElements").value(1));
 
-        // With the customer the answer is that customer's list, as the quote editor has always read it.
+        // A variant of another product, or an unknown product, is named as not found rather than answered empty.
+        UUID elsewhere = tx.execute(s -> ReferenceRows.product(entityManager)).variantId();
+        mvc.perform(get(base).param("variantId", elsewhere.toString())).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("VARIANT_NOT_FOUND"));
+        mvc.perform(get("/api/v1/products/" + UUID.randomUUID() + "/customer-skus")).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("PRODUCT_NOT_FOUND"));
+
+        // The customer's own list keeps its contract: customerId required, a list, narrowed by product and variant.
         mvc.perform(get("/api/v1/customer-skus").param("customerId", second.toString())
                         .param("variantId", secondVariant.toString()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(1))
-                .andExpect(jsonPath("$.data[0].sku").value(c));
-        mvc.perform(get("/api/v1/customer-skus")).andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+                .andExpect(jsonPath("$.data[0].sku").value(c))
+                .andExpect(jsonPath("$.data[0].ownerCustomerName").value("Test customer"));
+        mvc.perform(get("/api/v1/customer-skus").param("productId", product.productId().toString()))
+                .andExpect(status().isBadRequest());
     }
 
     @Test

@@ -84,26 +84,29 @@ class ProductVariantSecurityIntegrationTest {
     }
 
     /**
-     * The customer SKU listing is staff's ({@code product-variants:READ}): a customer's token never reaches it, so
+     * Both customer SKU listings are staff's ({@code product-variants:READ}): a customer's token reaches neither, so
      * naming a product cannot show another customer's SKUs (13 BR-02); the portal lists a customer's own SKUs
-     * elsewhere. A reader naming nothing to list by is refused before any query.
+     * elsewhere. A reader gets past security - an unknown product then answers 404, not 403.
      */
     @Test
-    void theCustomerSkuListingIsStaffsAndNamesWhatItLists() throws Exception {
+    void theCustomerSkuListingsAreStaffs() throws Exception {
         String customer = com.stockflow.support.TestTokens.bearer(decoder, UUID.randomUUID(),
                 com.stockflow.common.security.Role.CUSTOMER);
-        mvc.perform(get("/api/v1/customer-skus").param("productId", UUID.randomUUID().toString())
-                .header("Authorization", customer)).andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/products/{id}/customer-skus", UUID.randomUUID()).header("Authorization", customer))
+                .andExpect(status().isForbidden());
         mvc.perform(get("/api/v1/customer-skus").param("customerId", UUID.randomUUID().toString())
                 .header("Authorization", customer)).andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/products/{id}/customer-skus", UUID.randomUUID()))
+                .andExpect(status().isUnauthorized());
 
         String reader = token("product-variants:READ");
-        mvc.perform(get("/api/v1/customer-skus").header("Authorization", reader))
-                .andExpect(status().isBadRequest())
-                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.errorCode")
-                        .value("VALIDATION_FAILED"));
-        mvc.perform(get("/api/v1/customer-skus").param("productId", UUID.randomUUID().toString())
+        mvc.perform(get("/api/v1/products/{id}/customer-skus", UUID.randomUUID()).header("Authorization", reader))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/customer-skus").param("customerId", UUID.randomUUID().toString())
                 .header("Authorization", reader)).andExpect(status().isOk());
+        String other = token("product-variants:UPDATE");
+        mvc.perform(get("/api/v1/products/{id}/customer-skus", UUID.randomUUID()).header("Authorization", other))
+                .andExpect(status().isForbidden());
     }
 
     @Test

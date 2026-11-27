@@ -49,13 +49,13 @@ public interface CustomerSkuJpaRepository extends BaseJpaRepository<CustomerSkuJ
     List<CustomerSkuJpaEntity> ownedBy(@Param("customerId") UUID customerId, @Param("productId") UUID productId);
 
     /**
-     * Every customer's SKU drawn on a product, or on one catalogue variant of it, by code: what the product page lists
-     * before a blank is blocked or the product discontinued. At least one of the two is given (the caller checks).
+     * Every customer's SKU drawn on a product, or on one of its catalogue variants when {@code variantId} is given,
+     * by code: what the product page lists before a blank is blocked or the product discontinued.
      */
-    @Query(value = "select c from CustomerSkuJpaEntity c where (:productId is null or c.productId = :productId) "
+    @Query(value = "select c from CustomerSkuJpaEntity c where c.productId = :productId "
             + "and (:variantId is null or c.variantId = :variantId) order by c.sku, c.id",
-            countQuery = "select count(c) from CustomerSkuJpaEntity c where (:productId is null or c.productId = "
-                    + ":productId) and (:variantId is null or c.variantId = :variantId)")
+            countQuery = "select count(c) from CustomerSkuJpaEntity c where c.productId = :productId "
+                    + "and (:variantId is null or c.variantId = :variantId)")
     org.springframework.data.domain.Page<CustomerSkuJpaEntity> drawnOn(@Param("productId") UUID productId,
             @Param("variantId") UUID variantId, org.springframework.data.domain.Pageable pageable);
 

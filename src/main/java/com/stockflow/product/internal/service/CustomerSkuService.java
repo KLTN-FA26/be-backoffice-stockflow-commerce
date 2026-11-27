@@ -225,14 +225,24 @@ public class CustomerSkuService implements CustomerSkus {
     }
 
     /**
-     * Every customer's SKU drawn on {@code productId}, or on the catalogue variant {@code variantId}, whoever owns it,
-     * a page at a time by code: what the product page shows before a blank is blocked or the product discontinued.
-     * Staff only - the controller's permission keeps it from a customer (13 BR-02). Not on {@link CustomerSkus}: no
-     * other module needs it.
+     * Every customer's SKU drawn on {@code productId}, or on its catalogue variant {@code variantId} when given,
+     * whoever owns it, a page at a time by code: what the product page shows before a blank is blocked or the product
+     * discontinued. Staff only - the controller's permission keeps it from a customer (13 BR-02). Not on
+     * {@link CustomerSkus}: no other module needs it.
+     *
+     * @throws BusinessException {@code PRODUCT_NOT_FOUND} for an unknown product; {@code VARIANT_NOT_FOUND} for a
+     *         variant that is not one of the product's own
      */
     @Transactional(readOnly = true)
     public com.stockflow.common.api.PageResponse<CustomerSku> drawnOn(UUID productId, UUID variantId, int page,
                                                                       int size) {
+        if (!products.existsById(productId)) {
+            throw new BusinessException(ErrorCode.PRODUCT_NOT_FOUND, "No product " + productId);
+        }
+        if (variantId != null && variants.findByIdAndProductId(variantId, productId).isEmpty()) {
+            throw new BusinessException(ErrorCode.VARIANT_NOT_FOUND,
+                    "Variant %s is not a variant of product %s".formatted(variantId, productId));
+        }
         var found = customerSkus.drawnOn(productId, variantId, com.stockflow.common.persistence.Pages.of(page, size));
         List<CustomerSku> views = views(found.getContent());
         return com.stockflow.common.api.PageResponse.of(views, found.getNumber(), found.getSize(),
