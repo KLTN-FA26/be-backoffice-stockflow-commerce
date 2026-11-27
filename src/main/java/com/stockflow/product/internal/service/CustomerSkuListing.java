@@ -36,11 +36,11 @@ public class CustomerSkuListing {
     private final ProductService products;
     private final UomConversionService units;
     private final ObjectProvider<TaxRatesToday> rates;
-    private final CustomerSkuService issued;
+    private final ProductCustomerSkus issued;
     private final ObjectProvider<CustomerSummaries> customers;
 
     CustomerSkuListing(CustomerSkus customerSkus, ProductService products, UomConversionService units,
-                       ObjectProvider<TaxRatesToday> rates, CustomerSkuService issued,
+                       ObjectProvider<TaxRatesToday> rates, ProductCustomerSkus issued,
                        ObjectProvider<CustomerSummaries> customers) {
         this.customerSkus = customerSkus;
         this.products = products;
@@ -68,7 +68,7 @@ public class CustomerSkuListing {
                 .filter(sku -> variantId == null || variantId.equals(sku.sourceVariantId())).toList());
     }
 
-    /** Every customer's SKU drawn on a product, or on one of its catalogue variants, a page at a time ({@link CustomerSkuService#drawnOn}). */
+    /** Every customer's SKU drawn on a product, or on one of its catalogue variants, a page at a time ({@link ProductCustomerSkus#drawnOn}). */
     public PageResponse<Listed> drawnOn(UUID productId, UUID variantId, int page, int size) {
         PageResponse<CustomerSku> found = issued.drawnOn(productId, variantId, page, size);
         return PageResponse.of(listed(found.items()), found.page(), found.size(), found.totalElements());
