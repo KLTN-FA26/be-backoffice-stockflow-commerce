@@ -63,6 +63,13 @@ class PaymentServiceImpl implements PaymentService {
 
     @Override
     @Transactional(readOnly = true)
+    public java.util.Map<UUID, com.stockflow.payment.api.OrderPaymentAmounts> paymentAmounts(
+            java.util.Collection<UUID> orderIds) {
+        return installments.amounts(orderIds);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public java.math.BigDecimal dueBeforeHandover(UUID orderId, UUID deliveryBatchId) {
         return installments.dueBeforeHandover(orderId, deliveryBatchId);
     }

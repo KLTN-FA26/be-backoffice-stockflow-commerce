@@ -35,6 +35,14 @@ public interface PaymentService {
     java.util.Map<UUID, InstallmentStanding> installmentStandings(java.util.Collection<UUID> orderIds);
 
     /**
+     * Audit bo-17: what each of {@code orderIds} has paid, still owes and owes past its due day, from one read of all
+     * their installments, by order id - for a page of the back-office order list. Overdue is read on the business day
+     * of today. An order without installments (no contract signed yet) is not a key: it has no figures, which is not
+     * the same as owing nothing.
+     */
+    java.util.Map<UUID, OrderPaymentAmounts> paymentAmounts(java.util.Collection<UUID> orderIds);
+
+    /**
      * 4B-8 (15 BR-08, 09 BR-18, 17 §4.5): what must be paid before the goods of one delivery batch leave - the
      * installments on signing, and those before delivery tied to that batch or to none. A batch's handover waits for
      * its own installment, not for those of the batches after it.

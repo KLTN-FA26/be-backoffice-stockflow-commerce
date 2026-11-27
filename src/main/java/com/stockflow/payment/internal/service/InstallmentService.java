@@ -377,11 +377,38 @@ public class InstallmentService {
             return java.util.Map.of();
         }
         List<UUID> ids = orderIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
-        java.util.Map<UUID, List<Installment>> byOrder = book.ofOrders(ids).stream()
-                .collect(java.util.stream.Collectors.groupingBy(Installment::orderId));
+        java.util.Map<UUID, List<Installment>> byOrder = ofOrders(ids);
         java.util.Map<UUID, InstallmentStanding> standings = new java.util.HashMap<>();
         ids.forEach(id -> standings.put(id, standingOf(id, byOrder.getOrDefault(id, List.of()))));
         return standings;
+    }
+
+    /**
+     * {@link com.stockflow.payment.api.PaymentService#paymentAmounts}: one read of the orders' installments, whatever
+     * their number. Paid and outstanding are {@link #standingOf}'s, so the order list says what the order's installments
+     * screen says; overdue is {@link Installment#overdue} on {@link #today}, each installment for what it still owes.
+     */
+    @Transactional(readOnly = true)
+    public java.util.Map<UUID, com.stockflow.payment.api.OrderPaymentAmounts> amounts(
+            java.util.Collection<UUID> orderIds) {
+        if (orderIds == null || orderIds.isEmpty()) {
+            return java.util.Map.of();
+        }
+        LocalDate today = today();
+        java.util.Map<UUID, com.stockflow.payment.api.OrderPaymentAmounts> amounts = new java.util.HashMap<>();
+        ofOrders(orderIds.stream().filter(java.util.Objects::nonNull).distinct().toList()).forEach((orderId, rows) -> {
+            InstallmentStanding standing = standingOf(orderId, rows);
+            BigDecimal overdue = rows.stream().filter(i -> i.overdue(today)).map(Installment::outstanding)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            amounts.put(orderId, new com.stockflow.payment.api.OrderPaymentAmounts(orderId, standing.paid(),
+                    standing.outstanding(), overdue));
+        });
+        return amounts;
+    }
+
+    /** The installments of {@code orderIds} by order, from one statement; an order without any is not a key. */
+    private java.util.Map<UUID, List<Installment>> ofOrders(List<UUID> orderIds) {
+        return book.ofOrders(orderIds).stream().collect(java.util.stream.Collectors.groupingBy(Installment::orderId));
     }
 
     static InstallmentStanding standingOf(UUID orderId, List<Installment> installments) {
