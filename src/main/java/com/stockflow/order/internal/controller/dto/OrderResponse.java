@@ -162,8 +162,64 @@ public record OrderResponse(
         String warehouseCode,
 
         @Schema(description = "That warehouse's name; set where warehouseCode is")
-        String warehouseName
+        String warehouseName,
+
+        @Schema(description = "Audit bo-17: what has been paid on the order's installments - the paid of GET "
+                + "/api/v1/installments/orders/{orderId}. " + PAYMENT_FIGURES)
+        BigDecimal paidAmount,
+
+        @Schema(description = "Audit bo-17: what the order's installments not cancelled still owe - the outstanding of "
+                + "GET /api/v1/installments/orders/{orderId}. " + PAYMENT_FIGURES)
+        BigDecimal outstandingAmount,
+
+        @Schema(description = "Audit bo-17: what of outstandingAmount is past its due day on the business day of "
+                + "today, every milestone included; overdue is worked out from the due day, there is no OVERDUE "
+                + "status. 0 when nothing is overdue. " + PAYMENT_FIGURES)
+        BigDecimal overdueAmount
 ) {
+
+    /** When the three payment figures are set, and why they are null otherwise. */
+    static final String PAYMENT_FIGURES = "Set on the back-office order list only, for a caller who also reads "
+            + "installments (payment-installments:READ). Null on every other answer (GET /orders/{orderId} included: "
+            + "its installments are GET /api/v1/installments/orders/{orderId}), for a caller who does not read "
+            + "installments, and for an order with no installments yet (no contract signed): such an order has no "
+            + "figures, which is not the same as owing nothing, so it is null rather than 0.";
+
+    /** Without the payment figures: what was answered before audit bo-17. */
+    public OrderResponse(UUID orderId, String orderNumber, UUID customerId, String customerName, String customerCode,
+                         String status, BigDecimal totalAmount, String currency, List<Line> lines, Instant placedAt,
+                         String createdBy, Instant lastModifiedAt, String lastModifiedBy, String contactName,
+                         String contactEmail, String contactPhone, Address shippingAddress, Address billingAddress,
+                         UUID warehouseId, Instant releasedAt, Cancellation cancellation, String holdReason,
+                         String statusBeforeHold, String holdReasonPublic, String holdNote, Instant packedAt,
+                         Instant firstLabeledAt, Instant shippedAt, Instant deliveredAt, String deliveryFailureReason,
+                         Instant completedAt, Instant closedAt, BigDecimal effectiveTotal,
+                         BigDecimal amountDueBeforeHandover, List<Shipment> shipments, Boolean allowPartialShipment,
+                         Boolean printLinesReady, BigDecimal netAmount, BigDecimal taxAmount, List<Fee> fees,
+                         UUID sourceQuoteId, String sourceQuoteNumber, Instant refundedAt,
+                         SettlementReadiness settlementReadiness, Long version, String warehouseCode,
+                         String warehouseName) {
+        this(orderId, orderNumber, customerId, customerName, customerCode, status, totalAmount, currency, lines,
+                placedAt, createdBy, lastModifiedAt, lastModifiedBy, contactName, contactEmail, contactPhone,
+                shippingAddress, billingAddress, warehouseId, releasedAt, cancellation, holdReason, statusBeforeHold,
+                holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt, deliveryFailureReason,
+                completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments, allowPartialShipment,
+                printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber, refundedAt,
+                settlementReadiness, version, warehouseCode, warehouseName, null, null, null);
+    }
+
+    /**
+     * This response with the order's payment figures (audit bo-17); all three null for an order without installments.
+     */
+    public OrderResponse withPayment(BigDecimal paid, BigDecimal outstanding, BigDecimal overdue) {
+        return new OrderResponse(orderId, orderNumber, customerId, customerName, customerCode, status, totalAmount,
+                currency, lines, placedAt, createdBy, lastModifiedAt, lastModifiedBy, contactName, contactEmail,
+                contactPhone, shippingAddress, billingAddress, warehouseId, releasedAt, cancellation, holdReason,
+                statusBeforeHold, holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt,
+                deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
+                allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
+                refundedAt, settlementReadiness, version, warehouseCode, warehouseName, paid, outstanding, overdue);
+    }
 
     /** Without the version: what was answered before WF-05 Q-12. */
     public OrderResponse(UUID orderId, String orderNumber, UUID customerId, String customerName, String customerCode,
@@ -195,7 +251,8 @@ public record OrderResponse(
                 statusBeforeHold, holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt,
                 deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
                 allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
-                refundedAt, settlementReadiness, version, warehouseCode, warehouseName);
+                refundedAt, settlementReadiness, version, warehouseCode, warehouseName, paidAmount, outstandingAmount,
+                overdueAmount);
     }
 
     /** This response naming its warehouse: {@code code} and {@code name} of {@code warehouseId}, or nulls. */
@@ -206,7 +263,7 @@ public record OrderResponse(
                 statusBeforeHold, holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt,
                 deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
                 allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
-                refundedAt, settlementReadiness, version, code, name);
+                refundedAt, settlementReadiness, version, code, name, paidAmount, outstandingAmount, overdueAmount);
     }
 
     /**
@@ -244,7 +301,8 @@ public record OrderResponse(
                 statusBeforeHold, holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt,
                 deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
                 allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
-                refunded, readiness, version, warehouseCode, warehouseName);
+                refunded, readiness, version, warehouseCode, warehouseName, paidAmount, outstandingAmount,
+                overdueAmount);
     }
 
     /** With the quote it came from, without F-1's facts. */

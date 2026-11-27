@@ -58,7 +58,7 @@ class OrderHistoryEntryTypeTest {
                 org.mockito.Mockito.mock(com.stockflow.order.internal.service.OrderWarehouseVisibility.class);
         when(visibility.visible(any(), any())).thenReturn(true);
         OrderController controller = new OrderController(orders, null, null, identities, decisions,
-                mock(ShippingAddressChanges.class), visibility, null, settlements(), null);
+                mock(ShippingAddressChanges.class), visibility, null, settlements(), null, null);
         CurrentUser staff = new CurrentUser(UUID.randomUUID(), "sales1", Set.of(Role.SALES_STAFF), Set.of(),
                 DataScope.ALL, Set.of());
 
@@ -98,7 +98,7 @@ class OrderHistoryEntryTypeTest {
                 org.mockito.Mockito.mock(com.stockflow.order.internal.service.OrderWarehouseVisibility.class);
         when(visibility.visible(any(), any())).thenReturn(true);
         OrderController controller = new OrderController(orders, null, null, identities, decisions,
-                mock(ShippingAddressChanges.class), visibility, null, settlements(), null);
+                mock(ShippingAddressChanges.class), visibility, null, settlements(), null, null);
         CurrentUser staff = new CurrentUser(UUID.randomUUID(), "sales1", Set.of(Role.SALES_STAFF), Set.of(),
                 DataScope.ALL, Set.of());
 
@@ -135,7 +135,7 @@ class OrderHistoryEntryTypeTest {
                 Instant.parse("2026-11-20T02:00:00Z"))));
         OrderController controller = new OrderController(orders, customers, null, mock(IdentityService.class),
                 mock(PartialShipments.class), mock(ShippingAddressChanges.class),
-                mock(com.stockflow.order.internal.service.OrderWarehouseVisibility.class), null, settlements(), null);
+                mock(com.stockflow.order.internal.service.OrderWarehouseVisibility.class), null, settlements(), null, null);
         CurrentUser customer = new CurrentUser(userId, "cust", Set.of(Role.CUSTOMER), Set.of(), DataScope.OWN, Set.of());
 
         List<OrderStatusChangeResponse> history = controller.history(orderId, customer).data();
@@ -169,7 +169,7 @@ class OrderHistoryEntryTypeTest {
                 org.mockito.Mockito.mock(com.stockflow.order.internal.service.OrderWarehouseVisibility.class);
         when(visibility.visible(any(), any())).thenReturn(true);
         OrderController controller = new OrderController(orders, null, null, identities, mock(PartialShipments.class),
-                addresses, visibility, null, settlements(), null);
+                addresses, visibility, null, settlements(), null, null);
         CurrentUser staff = new CurrentUser(UUID.randomUUID(), "sales1", Set.of(Role.SALES_STAFF), Set.of(),
                 DataScope.ALL, Set.of());
 
