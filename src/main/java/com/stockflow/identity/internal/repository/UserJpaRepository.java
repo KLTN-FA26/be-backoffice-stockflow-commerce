@@ -109,6 +109,43 @@ public interface UserJpaRepository extends BaseJpaRepository<UserJpaEntity> {
             """, nativeQuery = true)
     List<UserJpaEntity> findActiveStaffNamed(@Param("pattern") String pattern, @Param("limit") int limit);
 
+    /**
+     * The ACTIVE accounts holding at least one of the roles, whatever their data scope or warehouses, by name; never
+     * one that also holds CUSTOMER. For the sales-owner plan: who may look after customers, who the managers are.
+     */
+    @Query("""
+            select u from UserJpaEntity u
+            where u.status = com.stockflow.identity.internal.domain.UserStatus.ACTIVE
+              and exists (select 1 from UserRoleJpaEntity ur, RoleJpaEntity r
+                          where ur.userId = u.id and r.id = ur.roleId and r.code in :roleCodes)
+              and not exists (select 1 from UserRoleJpaEntity uc, RoleJpaEntity c
+                              where uc.userId = u.id and c.id = uc.roleId and c.code = 'CUSTOMER')
+            order by lower(coalesce(u.fullName, u.username)), u.id
+            """)
+    List<UserJpaEntity> findActiveStaffHoldingAnyRole(@Param("roleCodes") Collection<String> roleCodes);
+
+    /** {@link #findActiveStaffHoldingAnyRole} for one account: whether it would be among them. */
+    @Query("""
+            select count(u) > 0 from UserJpaEntity u
+            where u.id = :userId and u.status = com.stockflow.identity.internal.domain.UserStatus.ACTIVE
+              and exists (select 1 from UserRoleJpaEntity ur, RoleJpaEntity r
+                          where ur.userId = u.id and r.id = ur.roleId and r.code in :roleCodes)
+              and not exists (select 1 from UserRoleJpaEntity uc, RoleJpaEntity c
+                              where uc.userId = u.id and c.id = uc.roleId and c.code = 'CUSTOMER')
+            """)
+    boolean isActiveStaffHoldingAnyRole(@Param("userId") UUID userId,
+                                        @Param("roleCodes") Collection<String> roleCodes);
+
+    /** Whether the account is ACTIVE and one of its roles grants {@code permission} ({@code resource:ACTION}). */
+    @Query(value = """
+            SELECT EXISTS (SELECT 1 FROM identity.app_user u
+                             JOIN identity.user_role ur ON ur.user_id = u.id
+                             JOIN identity.role_permission rp ON rp.role_id = ur.role_id
+                             JOIN identity.permission p ON p.id = rp.permission_id
+                            WHERE u.id = :userId AND u.status = 'ACTIVE' AND p.code = :permission)
+            """, nativeQuery = true)
+    boolean isActiveAndHolds(@Param("userId") UUID userId, @Param("permission") String permission);
+
     /** The "must change password" flag alone, for the per-request gate: no entity, no joins. Empty for an unknown id. */
     @Query("select u.mustChangePassword from UserJpaEntity u where u.id = :id")
     java.util.Optional<Boolean> findMustChangePassword(@Param("id") UUID id);

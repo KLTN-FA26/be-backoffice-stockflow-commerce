@@ -749,7 +749,25 @@ class IdentityServiceImpl implements IdentityService {
         } else if (change == UserStatusChange.DISABLE) {
             sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.ACCOUNT_DISABLED);
         }
+        publishActivityChange(userId, before, user.status(), actor.map(com.stockflow.common.security.CurrentUser::userId)
+                .orElse(null));
         return user(userId);
+    }
+
+    /**
+     * Sales-owner plan BR-S08 / BR-S10: tells the other modules that a staff account stopped or started working again.
+     * Only a real change of whether the account works counts - ACTIVE to LOCKED or DISABLED, or back to ACTIVE - so a
+     * locked account being disabled, or an unlock that only ends a wrong-password lockout, says nothing. Published in
+     * this transaction: identity's own listener cancels the covers the account stood in for before the commit, the
+     * other modules hear it after.
+     */
+    private void publishActivityChange(UUID userId, UserStatus before, UserStatus after, UUID byUserId) {
+        if (before == UserStatus.ACTIVE && after != UserStatus.ACTIVE) {
+            events.publishEvent(new com.stockflow.contracts.StaffAccountDeactivated(userId, after.name(), byUserId,
+                    clock.instant()));
+        } else if (before != UserStatus.ACTIVE && after == UserStatus.ACTIVE) {
+            events.publishEvent(new com.stockflow.contracts.StaffAccountReactivated(userId, byUserId, clock.instant()));
+        }
     }
 
     /**
