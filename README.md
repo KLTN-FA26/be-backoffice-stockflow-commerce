@@ -91,7 +91,8 @@ com.stockflow
 ├── design/          Design studio, templates, snapshots, print jobs  → schema design
 ├── chat/            Conversations, messages, agent assignment        → schema chat
 ├── notification/    Templates, preferences, delivery log             → schema notification
-└── reporting/       Read models and dashboards                       → schema reporting
+├── reporting/       Read models and dashboards                       → schema reporting
+└── assistant/       Read-only AI assistant, 15 tools (ADR-0014..16)  → schema assistant
 ```
 
 ### The layers, and where they live
@@ -375,3 +376,6 @@ places: `StockPackage.allocate` and `uk_stock_reservation_live_carton`.
 4. [`docs/adding-a-module.md`](docs/adding-a-module.md) — the recipe for the next module, and what not to rebuild
 5. The kltn-docs repository (`docs/`) — the current business analysis; `docs/business-design/` is the pre-rescope version, marked superseded
 6. `ModularityTest` — the twenty lines that keep all of the above true
+7. [`docs/assistant-design.md`](docs/assistant-design.md) (Vietnamese) — the back-office AI assistant: its 15 read-only
+   tools, each guarded exactly as the screen it mirrors, the roles that may use them, and its rule search over the
+   kltn-docs snapshot in `docs/kltn-snapshot/`; [ADR-0014](docs/adr/0014-assistant-tool-calling-agent.md) is the decision

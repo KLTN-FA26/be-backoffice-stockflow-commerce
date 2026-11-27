@@ -109,9 +109,19 @@ class StockAdjustmentRepositoryAdapter implements StockAdjustmentRepository, Sto
                 .<StockAdjustmentJpaEntity>where(Specs.eq("status", criteria.status()))
                 .and(Specs.eq("sku", upper(criteria.sku())))
                 .and(Specs.eq("locationCode", upper(criteria.location())))
+                .and(inWarehouse(criteria.warehousePrefix()))
                 .and(com.stockflow.common.security.WarehouseScope.locationsIn("locationCode"))
                 .and(UnderCountSpecs.unless(criteria.hideCountedSlots(), UnderCountSpecs.adjustmentsOutsideCountedSlots()));
         return jpa.findAll(spec, pageable).map(StockAdjustmentRepositoryAdapter::toDomain);
+    }
+
+    /** Locations of one warehouse, by the prefix every one of its codes starts with; null for no filter. */
+    private static Specification<StockAdjustmentJpaEntity> inWarehouse(String prefix) {
+        if (prefix == null || prefix.isBlank()) {
+            return null;
+        }
+        return (root, query, cb) -> cb.like(root.get("locationCode"),
+                com.stockflow.common.security.WarehouseScope.locationPattern(prefix.strip()), '\\');
     }
 
     private static String upper(String value) {

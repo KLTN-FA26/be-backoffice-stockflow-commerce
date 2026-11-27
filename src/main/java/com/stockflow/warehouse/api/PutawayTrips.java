@@ -36,6 +36,14 @@ public interface PutawayTrips {
     Optional<PutawayTripView> lockTripCarrying(UUID putawayTaskId);
 
     /**
+     * Where the open trip carrying the task means to put its carton: the bin assigned to it when the trip started,
+     * or reassigned since. Read only, no lock and no route worked out: for someone looking for the carton (the
+     * assistant's carton investigation), for whom the bin a clerk is walking to is the first place to look. Empty when
+     * no open trip carries the task, or the trip has not started.
+     */
+    Optional<UUID> assignedLocationOf(UUID putawayTaskId);
+
+    /**
      * Takes the task's carton onto the cart of a {@code LOADING} trip.
      *
      * @throws com.stockflow.common.error.BusinessException {@code PUTAWAY_TRIP_INVALID_STATE};

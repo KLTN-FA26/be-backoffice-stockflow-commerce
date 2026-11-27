@@ -369,6 +369,21 @@ class InventoryServiceImpl implements InventoryService {
 
     @Override
     @Transactional(readOnly = true)
+    public Map<String, Integer> orderHoldsByWarehouse(Sku sku) {
+        Map<String, Integer> held = new TreeMap<>();
+        // The very figure levels() takes off each warehouse's ATP, and limited the way levelsOf is (BR-SEC-002).
+        skuReservations.heldBySkuAt(sku.code()).forEach((code, units) -> {
+            boolean visible = com.stockflow.common.security.WarehouseScope.restriction()
+                    .map(allowed -> allowed.prefixes().contains(code)).orElse(true);
+            if (visible && units > 0) {
+                held.put(code, Math.toIntExact(units));
+            }
+        });
+        return held;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Map<String, Integer> availableToPromiseByWarehouse(Sku sku) {
         Map<String, Integer> byWarehouse = new TreeMap<>();
         levels(sku, false).forEach(level -> byWarehouse.put(level.warehouseCode(), level.atp()));

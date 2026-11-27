@@ -226,6 +226,21 @@ public class CustomerSkuService implements CustomerSkus {
 
     @Override
     @Transactional(readOnly = true)
+    public Optional<DrawnSkus> drawnOn(String sourceSku, int limit) {
+        if (limit < 1 || limit > 100) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "limit must be between 1 and 100, not " + limit);
+        }
+        if (sourceSku == null || sourceSku.isBlank()) {
+            return Optional.empty();
+        }
+        return variants.findBySku(sourceSku.strip().toUpperCase(Locale.ROOT)).map(variant -> new DrawnSkus(
+                views(customerSkus.findByVariantIdOrderBySkuAscIdAsc(variant.getId(),
+                        org.springframework.data.domain.PageRequest.of(0, limit))),
+                customerSkus.countByVariantId(variant.getId())));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Optional<CustomerSku> ofSnapshot(UUID designSnapshotId) {
         return customerSkus.findByDesignSnapshotId(designSnapshotId).map(this::view);
     }

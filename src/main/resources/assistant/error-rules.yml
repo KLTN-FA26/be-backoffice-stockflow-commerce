@@ -1,0 +1,272 @@
+# Why a business error happened and what to do next: GET /api/v1/assistant/error-explanations/{errorCode}
+# (docs/assistant-work-features-fe-contract.md §4.1, ErrorExplanations).
+#
+# Curated by hand, for the refusals people meet in daily work. Each entry names:
+#   rules     - the kltn-docs rules behind the refusal, as the knowledge corpus anchors them ("15 BR-08": chapter 15,
+#               rule BR-08). The rule text shown is read from the indexed passages, never copied here, so it follows
+#               docs/kltn-snapshot on every sync. Only rules that really are the reason: an empty list is better than
+#               a guess.
+#   nextSteps - one to three things the user can do now, in Vietnamese (what the screens show), naming the screen or
+#               the role that acts. No figures, no record codes: the explanation knows the error, not the record.
+#
+# A code not listed here is explained with its message alone. ErrorRulesTest checks that every code exists in
+# ErrorCode and every rule exists in the snapshot; add an entry by reading the code's javadoc and the rule it cites.
+errors:
+
+  # ---- Orders: shipping warehouse, holds, release, handover
+  ORDER_STOCK_NOT_HELD:
+    rules: ["17 BR-02", "17 BR-22"]
+    nextSteps:
+      - "Sale chọn kho xuất cho đơn ở chi tiết đơn hàng; hệ thống giữ hàng tại kho đó ngay khi chọn."
+      - "Đơn phải ở trạng thái Đã xác nhận (hợp đồng đã ký, đợt trả khi ký đã thu đủ) mới chọn được kho xuất."
+  ORDER_SHIPPING_WAREHOUSE_LOCKED:
+    rules: ["17 BR-22", "20 BR-17"]
+    nextSteps:
+      - "Kho xuất chỉ đổi được khi đơn chưa giữ thùng nào; muốn đổi, Sale nhả hàng đang giữ của đơn trước."
+  DELIVERY_BATCH_NOT_NEXT:
+    rules: ["17 BR-29"]
+    nextSteps:
+      - "Release đợt giao sớm nhất chưa release của đơn trước; đợt sau chỉ release khi đợt trước đã bàn giao."
+  DELIVERY_BATCH_WINDOW_NOT_OPEN:
+    rules: ["09 BR-04", "17 BR-29", "17 BR-28"]
+    nextSteps:
+      - "Chờ tới ngày bắt đầu cửa sổ giao của đợt giao."
+      - "Nếu khách đồng ý nhận sớm, Sale dời cửa sổ giao của đợt (chỉ khi đợt chưa có thùng nào bàn giao)."
+  LOAD_HANDOVER_BLOCKED:
+    rules: ["09 BR-18", "09 BR-04", "15 BR-08"]
+    nextSteps:
+      - "Xem danh sách đơn bị chặn trong thông báo lỗi: mỗi đơn ghi lý do và số tiền còn thiếu."
+      - "Đợt trả trước giao chưa thu đủ thì Kế toán ghi phiếu thu khi tiền về; đơn đang treo thì người có quyền gỡ treo."
+      - "Hoặc bỏ shipment của đơn đó khỏi kế hoạch chuyến xe để bàn giao phần còn lại."
+  ORDER_BALANCE_NOT_PAID:
+    rules: ["15 BR-08", "09 BR-04"]
+    nextSteps:
+      - "Kế toán kiểm tra đợt thanh toán trước giao của đơn và ghi phiếu thu khi tiền về tài khoản."
+      - "Sale nhắc khách chuyển khoản đúng nội dung để giao dịch tự khớp với đợt."
+  PICK_ORDER_ON_HOLD:
+    rules: ["17 BR-17", "17 BR-08"]
+    nextSteps:
+      - "Thùng của đơn vẫn ở khu chờ xuất; chờ người có quyền gỡ treo đơn rồi chuyển task sang khu xuất hàng."
+      - "Xem lý do treo ở chi tiết đơn hàng để biết ai cần xử lý (Sale, Kế toán hay kho)."
+  ORDER_CREDIT_HOLD_USE_APPROVAL:
+    rules: ["17 BR-17", "15 BR-11"]
+    nextSteps:
+      - "Đơn treo vì tín dụng chỉ được gỡ ở màn duyệt công nợ, do Kế toán duyệt."
+  ORDER_ADDRESS_LOCKED:
+    rules: ["14 BR-16", "17 BR-12"]
+    nextSteps:
+      - "Địa chỉ giao khoá khi một thùng của đơn đã dán nhãn giao hàng, hoặc khi trạng thái đơn không còn cho đổi địa chỉ."
+      - "Xem trạng thái đơn ở chi tiết đơn hàng; thông báo lỗi ghi rõ đơn bị khoá vì lý do nào."
+  ORDER_NOT_CANCELLABLE:
+    rules: ["17 BR-12", "17 BR-09"]
+    nextSteps:
+      - "Từ khi một thùng của đơn đã dán nhãn giao hàng, đơn không huỷ được nữa; khách tạo yêu cầu trả hàng sau khi nhận."
+  CANCELLATION_NEEDS_STAFF:
+    rules: ["17 BR-11"]
+    nextSteps:
+      - "Đơn đã bắt đầu in hàng loạt nên Sale quyết định việc huỷ và phí huỷ; khách liên hệ Sale qua chat."
+  ORDER_CANCELLATION_REQUEST_PENDING:
+    rules: ["17 BR-14"]
+    nextSteps:
+      - "Chờ yêu cầu huỷ hiện có được quyết định; yêu cầu không còn quyết được sẽ tự hết hạn."
+  INSUFFICIENT_STOCK:
+    rules: ["20 BR-01", "07 BR-03", "17 BR-21"]
+    nextSteps:
+      - "Kho xuất chưa có đủ thùng tự do đúng số cái / thùng của dòng đơn; xem tồn khả dụng của SKU tại kho đó."
+      - "Thùng ở khu nhận hàng, khu cách ly hay khu chờ xuất không được tính; chờ cất xong hoặc gỡ cách ly."
+      - "Thiếu hẳn thì Điều phối sản xuất lập Đơn sản xuất cho phần thiếu của đợt giao."
+
+  # ---- Quotes and prices
+  QUOTE_EXPIRED:
+    rules: ["14 BR-06", "14 BR-24"]
+    nextSteps:
+      - "Sale mở lại báo giá, sửa ngày hiệu lực rồi gửi lại cho khách."
+  QUOTE_BELOW_MOQ:
+    rules: ["14 BR-07", "13 BR-05"]
+    nextSteps:
+      - "Tăng số thùng của dòng lên ít nhất bậc giá thấp nhất của báo giá (MOQ tính theo thùng)."
+  QUOTE_NOT_PRICED:
+    rules: ["14 BR-10"]
+    nextSteps:
+      - "Sale nhập đơn giá theo cái cho dòng chưa có giá trước khi gửi báo giá."
+  QUOTE_PRICE_REVIEW_PENDING:
+    rules: ["14 BR-24", "14 BR-10"]
+    nextSteps:
+      - "Chờ Quản lý kinh doanh duyệt giá; duyệt xong báo giá được gửi khách ngay."
+      - "Muốn sửa thì rút lại đề nghị duyệt giá trước."
+  QUOTE_PRICE_REVIEW_SELF:
+    rules: ["14 BR-24"]
+    nextSteps:
+      - "Nhờ một người khác có quyền duyệt giá báo giá (mặc định Quản lý kinh doanh) duyệt hoặc từ chối."
+  SKU_NOT_SELLABLE:
+    rules: ["14 BR-05"]
+    nextSteps:
+      - "Đổi dòng sang một SKU riêng đang hoạt động của khách, hoặc nhờ Quản lý kinh doanh kiểm tra trạng thái SKU."
+  CUSTOMER_SKU_REQUIRED:
+    rules: ["14 BR-04", "13 BR-02"]
+    nextSteps:
+      - "Chọn SKU riêng của chính khách này; quy cách của catalog không được báo giá trực tiếp."
+  CUSTOMER_NOT_ACTIVE:
+    rules: ["14 BR-01", "18 BR-09"]
+    nextSteps:
+      - "Xem trạng thái khách ở hồ sơ khách hàng; khách phải Đang hoạt động mới nhận báo giá, hợp đồng hay đơn mới."
+      - "Đơn và hợp đồng đang chạy vẫn xử lý bình thường."
+
+  # ---- Contracts and credit
+  CUSTOMER_LEGAL_PROFILE_MISSING:
+    rules: ["18 BR-05"]
+    nextSteps:
+      - "Khai báo địa chỉ đăng ký kinh doanh, người đại diện và chức vụ ở hồ sơ khách rồi lập lại hợp đồng."
+  SALES_CONTRACT_STATUS_INVALID:
+    rules: ["14 BR-14"]
+    nextSteps:
+      - "Hợp đồng đã gửi hoặc đã ký thì không sửa nội dung; xem trạng thái hợp đồng ở chi tiết đơn hàng."
+  CONTRACT_CREDIT_REVIEW_PENDING:
+    rules: ["15 BR-11"]
+    nextSteps:
+      - "Chờ Kế toán duyệt công nợ; duyệt xong hợp đồng được gửi ngay."
+      - "Muốn sửa hợp đồng thì Sale rút đề nghị duyệt trước."
+  CONTRACT_CREDIT_REVIEW_SELF:
+    rules: ["15 BR-11"]
+    nextSteps:
+      - "Nhờ một người khác có quyền duyệt công nợ của hợp đồng quyết định."
+  PAYMENT_SCHEDULE_NEEDS_CREDIT:
+    rules: ["18 BR-03", "14 BR-13", "15 BR-10"]
+    nextSteps:
+      - "Đổi các đợt trả sau giao sang trả khi ký hoặc trước giao."
+      - "Hoặc gửi đề nghị cấp hạn mức cho khách; khi Kế toán duyệt hạn mức lớn hơn 0 thì lịch có đợt trả sau giao mới lưu được."
+  CREDIT_REQUEST_SELF_DECISION:
+    rules: ["15 BR-21", "18 BR-03"]
+    nextSteps:
+      - "Đề nghị cấp hạn mức phải do một Kế toán khác với người gửi và người ghi ý kiến Sale quyết định."
+
+  # ---- Installments, receipts, refunds
+  INSTALLMENT_NOT_PAYABLE:
+    rules: ["15 BR-05"]
+    nextSteps:
+      - "Đợt đã trả đủ hoặc đã huỷ; ghi phiếu thu cho đợt khác còn phải thu của cùng khách."
+      - "Tiền không gắn được với đợt nào thì xử lý ở phần mềm kế toán."
+  PAYMENT_RECEIPT_EXCEEDS_OUTSTANDING:
+    rules: ["15 BR-05", "15 BR-06"]
+    nextSteps:
+      - "Ghi mỗi dòng không quá số còn phải thu của đợt; phần còn lại ghi cho đợt khác của cùng khách."
+      - "Tiền chuyển thừa không ghi vào hệ thống; xử lý ở phần mềm kế toán."
+  PAYMENT_RECEIPT_REFERENCE_IN_USE:
+    rules: ["15 BR-03"]
+    nextSteps:
+      - "Dòng sao kê này đã có phiếu thu; tìm phiếu đó theo mã tham chiếu thay vì ghi lại."
+      - "Phiếu cũ ghi sai thì huỷ phiếu cũ (có lý do) rồi lập phiếu mới."
+  PAYMENT_RECEIPT_VOID_NEEDS_HOLD:
+    rules: ["15 BR-13", "15 BR-04"]
+    nextSteps:
+      - "Xác nhận treo đơn (lý do thanh toán) khi huỷ phiếu thu; đơn chỉ được gỡ treo khi tiền đã đủ lại."
+  PAYMENT_RECEIPT_VOID_AFTER_HANDOVER:
+    rules: ["15 BR-04", "15 BR-08"]
+    nextSteps:
+      - "Phiếu thu đã cho hàng rời kho nên không huỷ được; sửa sai bằng chứng từ điều chỉnh ở phần mềm kế toán."
+  BANK_TRANSACTION_OVER_ASSIGNED:
+    rules: ["15 BR-05", "15 BR-02"]
+    nextSteps:
+      - "Giảm số tiền gán cho các đợt để tổng không vượt số tiền của giao dịch."
+  REFUND_EXCEEDS_REFUNDABLE:
+    rules: ["15 BR-14"]
+    nextSteps:
+      - "Ghi số tiền hoàn không quá số đơn còn phải hoàn (xem ở chi tiết đơn hàng)."
+
+  # ---- Stock, cartons, counts
+  STOCK_NOT_IN_CARTON:
+    rules: ["20 BR-14"]
+    nextSteps:
+      - "Điều chỉnh theo từng thùng bằng mã LPN; thùng tìm thấy lại được ghi tăng qua kiểm kê."
+  STOCK_PACKAGE_HELD:
+    rules: ["20 BR-14", "17 BR-21"]
+    nextSteps:
+      - "Thùng đang giữ hoặc phân bổ cho đơn; nhả hoặc phân bổ lại khoản giữ của đơn trước khi di chuyển hay ghi giảm."
+  STOCK_PACKAGE_QUARANTINED:
+    rules: ["20 BR-21"]
+    nextSteps:
+      - "Thùng đã ở khu cách ly; Quản lý kho quyết định gỡ cách ly để cất lại hoặc ghi giảm."
+  STAGING_MOVE_NOT_ALLOWED:
+    rules: ["20 BR-20", "17 BR-08"]
+    nextSteps:
+      - "Hàng ở khu chờ xuất chỉ rời khu khi Quản lý kho chuyển task sang khu xuất hàng, hoặc khi cất lại vì đơn bị huỷ."
+  ADJUSTMENT_SELF_APPROVAL:
+    rules: ["20 BR-05"]
+    nextSteps:
+      - "Nhờ Quản lý kho khác (không phải người đề nghị hay người đếm) duyệt hoặc từ chối điều chỉnh."
+  STOCK_PACKAGE_ADJUSTMENT_PENDING:
+    rules: ["20 BR-05", "20 BR-10"]
+    nextSteps:
+      - "Chờ điều chỉnh đang chờ duyệt của thùng này được quyết định rồi mới đề nghị điều chỉnh mới."
+  COUNT_VARIANCE_NOT_WITHDRAWABLE:
+    rules: ["20 BR-06", "20 BR-08"]
+    nextSteps:
+      - "Chênh lệch kiểm kê chỉ được duyệt hoặc từ chối; nhờ Quản lý kho quyết định."
+  CYCLE_COUNT_SLOT_BUSY:
+    rules: ["20 BR-10"]
+    nextSteps:
+      - "Thùng đang nằm trong một phiếu kiểm kê khác hoặc có điều chỉnh chờ duyệt; chờ phiếu đó hoàn tất."
+  CYCLE_COUNT_STALE:
+    rules: ["20 BR-09"]
+    nextSteps:
+      - "Tồn của thùng đã đổi sau lúc đếm; kiểm lại dòng đó rồi nộp phiếu."
+
+  # ---- Picking, putaway, receiving
+  PICK_ITEM_MISMATCH:
+    rules: ["07 BR-10"]
+    nextSteps:
+      - "Quét mã LPN trên chính thùng của dòng lấy hàng; mã SKU, mã vạch hay LPN thùng khác đều bị từ chối."
+      - "Không tìm thấy thùng thì báo thiếu kèm lý do."
+  PICK_LOCATION_MISMATCH:
+    rules: ["07 BR-02"]
+    nextSteps:
+      - "Đi tới đúng vị trí ghi trên dòng lấy hàng và quét mã vị trí đó."
+  PUTAWAY_OVERFLOW_NOT_ALLOWED:
+    rules: ["05 BR-13"]
+    nextSteps:
+      - "Vẫn còn bin nhận được thùng này; cất vào bin hệ thống gợi ý hoặc một bin cho phép cất khác."
+  CARTON_DOES_NOT_FIT_BIN:
+    rules: ["05 BR-04", "07 BR-12"]
+    nextSteps:
+      - "Chọn bin lớn hơn hoặc theo gợi ý của hệ thống; không còn bin nào vừa thì cất vào khu OVERFLOW."
+  RECEIPT_EXCEEDS_PRODUCTION_ORDER:
+    rules: ["03 BR-02"]
+    nextSteps:
+      - "Giảm số thùng nhận cho không vượt số thùng còn lại của dòng Đơn sản xuất (tính cả phiếu nháp)."
+      - "Hàng giao dư báo Điều phối sản xuất xử lý với đơn vị sản xuất."
+  RECEIPT_CARTON_NOT_STANDARD:
+    rules: ["03 BR-13", "03 BR-12"]
+    nextSteps:
+      - "Mỗi thùng nhận phải đúng số cái chuẩn / thùng của SKU; thùng lệch không nhận, báo Điều phối sản xuất."
+  PRODUCTION_ORDER_NOT_RECEIVABLE:
+    rules: ["03 BR-15", "03 BR-01"]
+    nextSteps:
+      - "Đơn sản xuất phải đang sản xuất hoặc đã nhận một phần; nếu cần duyệt mẫu in thì khách duyệt mẫu trước."
+
+  # ---- Production orders
+  PRODUCTION_ORDER_STATUS_INVALID:
+    rules: ["17 BR-06"]
+    nextSteps:
+      - "Xem trạng thái của Đơn sản xuất; huỷ chỉ khi chưa in hàng loạt, sau đó chỉ đóng phần còn lại."
+  PRODUCTION_ORDER_NOTHING_SHORT:
+    rules: ["17 BR-05"]
+    nextSteps:
+      - "Đợt giao đã đủ hàng (đang giữ hoặc đang về); không cần lập thêm Đơn sản xuất."
+  PRODUCTION_ORDER_EXCEEDS_SHORTAGE:
+    rules: ["17 BR-05"]
+    nextSteps:
+      - "Giảm số thùng của dòng cho không vượt phần đợt giao còn thiếu sau khi trừ hàng đang giữ."
+  PRODUCTION_ORDER_SAMPLE_REQUIRED:
+    rules: ["17 BR-24"]
+    nextSteps:
+      - "Chờ khách duyệt mẫu in trên cổng khách hàng; Sale có thể nhắc khách qua chat."
+
+  # ---- Permissions
+  FORBIDDEN:
+    rules: []
+    nextSteps:
+      - "Vai trò của bạn chưa có quyền này; nhờ Quản trị hệ thống cấp quyền cho vai trò trong ma trận phân quyền nếu công việc cần."
+  OUT_OF_DATA_SCOPE:
+    rules: ["20 BR-19"]
+    nextSteps:
+      - "Bạn chỉ thao tác được trên dữ liệu của kho được gán; nhờ Quản trị hệ thống gán thêm kho nếu công việc cần."

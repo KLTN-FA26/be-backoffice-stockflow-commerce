@@ -3,6 +3,7 @@ package com.stockflow.inventory.internal.repository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -23,4 +24,10 @@ public interface InventoryItemSearch {
 
     /** Ordered by SKU, which is unique, so a page boundary never moves between two reads. */
     Page<Row> items(Criteria criteria, Pageable pageable);
+
+    /**
+     * The SKUs whose item carries exactly this barcode, in either case: one at most, as barcodes are unique
+     * ({@code uk_inventory_items_barcode}), but a list so that a case-only twin is not hidden.
+     */
+    List<String> skusWithBarcode(String barcode);
 }

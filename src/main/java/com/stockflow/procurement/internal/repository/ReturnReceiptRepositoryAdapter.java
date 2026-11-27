@@ -162,6 +162,17 @@ class ReturnReceiptRepositoryAdapter implements ReturnReceiptRepository, ReturnR
                 e.getReceivedBy(), e.getClosedAt(), counts.getOrDefault(e.getId(), 0)));
     }
 
+    @Override
+    public List<CartonReceipt> draftsListing(UUID stockPackageId) {
+        java.util.Optional<java.util.Set<UUID>> allowed = WarehouseScope.restriction()
+                .map(com.stockflow.common.security.AssignedWarehouses::ids);
+        return jpa.draftsListing(stockPackageId, GoodsReceiptStatus.DRAFT).stream()
+                .filter(r -> allowed.map(ids -> ids.contains(r.getWarehouseId())).orElse(true))
+                .map(r -> new CartonReceipt(r.getId(), r.getReceiptNumber(), r.getStatus(), r.getWarehouseId(),
+                        r.getQuarantineLocationId()))
+                .toList();
+    }
+
     static ReturnReceipt toDomain(ReturnReceiptJpaEntity e) {
         List<ReturnReceipt.Carton> cartons = e.getCartons().stream()
                 .sorted(java.util.Comparator.comparing(ReturnReceiptCartonJpaEntity::getId))
