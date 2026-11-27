@@ -632,9 +632,26 @@ class IdentityServiceImpl implements IdentityService {
             return java.util.Map.of();
         }
         var names = new java.util.HashMap<UUID, String>();
-        users.findAllById(ids).forEach(user -> names.put(user.getId(),
-                user.getFullName() == null || user.getFullName().isBlank() ? user.getUsername() : user.getFullName()));
+        users.findAllById(ids).forEach(user -> names.put(user.getId(), displayName(user)));
         return names;
+    }
+
+    /** Full name, or the username when none was given: the one rule {@link #displayNames} and {@link #userLabels} share. */
+    private static String displayName(UserJpaEntity user) {
+        return user.getFullName() == null || user.getFullName().isBlank() ? user.getUsername() : user.getFullName();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<UUID, com.stockflow.identity.api.UserLabel> userLabels(java.util.Collection<UUID> userIds) {
+        var ids = userIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) {
+            return java.util.Map.of();
+        }
+        var labels = new java.util.HashMap<UUID, com.stockflow.identity.api.UserLabel>();
+        users.findAllById(ids).forEach(user -> labels.put(user.getId(), new com.stockflow.identity.api.UserLabel(
+                user.getId(), displayName(user), user.getStatus() == UserStatus.ACTIVE)));
+        return labels;
     }
 
     @Override
