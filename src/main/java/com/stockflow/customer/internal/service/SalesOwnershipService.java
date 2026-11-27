@@ -3,7 +3,6 @@ package com.stockflow.customer.internal.service;
 import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.contracts.CustomerNeedsSalesOwner;
 import com.stockflow.contracts.CustomerSalesOwnerChanged;
 import com.stockflow.contracts.SalesOwnerChangeReason;
 import com.stockflow.customer.api.AssignSalesOwnerCommand;
@@ -50,7 +49,8 @@ import java.util.stream.Collectors;
  *   <li>the aggregate decides ({@code Customer.assignSalesOwner} and siblings): version, reason, whether anything
  *       changes at all;</li>
  *   <li>the customer and its history row are written in this transaction (the history is append-only);</li>
- *   <li>{@code CustomerSalesOwnerChanged} / {@code CustomerNeedsSalesOwner} is published, delivered after commit.</li>
+ *   <li>{@code CustomerSalesOwnerChanged} is published, delivered after commit (a released book is told once, as
+ *       {@code CustomersNeedSalesOwner}, by the deactivation listener).</li>
  * </ol>
  *
  * <p>Whether a person may look after customers (BR-S04) is asked of identity ({@link SalesStaff}), with the account
@@ -264,13 +264,13 @@ public class SalesOwnershipService implements SalesOwnership, ResponsibleSales {
 
     /**
      * BR-S08: the account {@code formerOwnerId} stopped working. Every customer it owned waits for an owner (the former
-     * owner kept), one history row each, and the managers learn it per customer. Customers are locked one by one in id
-     * order. A retried event finds none left to mark.
+     * owner kept), one history row each; the caller tells the managers once for the whole book. Customers are locked
+     * one by one in id order. A retried event finds none left to mark.
      *
-     * @return how many customers were marked
+     * @return the customers marked, in id order
      */
-    public int releaseCustomersOf(UUID formerOwnerId, UUID byUserId) {
-        int marked = 0;
+    public List<UUID> releaseCustomersOf(UUID formerOwnerId, UUID byUserId) {
+        List<UUID> marked = new java.util.ArrayList<>();
         for (UUID customerId : customers.idsOwnedBy(formerOwnerId, SalesOwnerState.ASSIGNED)) {
             Customer customer = customers.findForUpdate(customerId).orElse(null);
             if (customer == null) {
@@ -280,12 +280,11 @@ public class SalesOwnershipService implements SalesOwnership, ResponsibleSales {
             if (change.isPresent()) {
                 customers.save(customer);
                 history.record(change.get());
-                events.publishEvent(new CustomerNeedsSalesOwner(customerId, formerOwnerId, change.get().changedAt()));
-                marked++;
+                marked.add(customerId);
             }
         }
-        if (marked > 0) {
-            log.info("{} customer(s) of account {} now need a sales owner", marked, formerOwnerId);
+        if (!marked.isEmpty()) {
+            log.info("{} customer(s) of account {} now need a sales owner", marked.size(), formerOwnerId);
         }
         return marked;
     }

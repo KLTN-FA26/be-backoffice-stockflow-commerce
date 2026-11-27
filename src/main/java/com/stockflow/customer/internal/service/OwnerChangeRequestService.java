@@ -5,6 +5,7 @@ import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.contracts.OwnerChangeRequestDecided;
 import com.stockflow.contracts.OwnerChangeRequested;
 import com.stockflow.contracts.SalesOwnerChangeReason;
 import com.stockflow.customer.api.AssignSalesOwnerCommand;
@@ -50,6 +51,8 @@ import java.util.stream.Collectors;
  *       (and so its conversations) assigned to them - a sign of canvassing.</li>
  *   <li>Approval changes the owner through {@code SalesOwnership} (reason CUSTOMER_REQUEST, the customer told in the
  *       chat). Lock order: customer, then request.</li>
+ *   <li>Every decision publishes {@link OwnerChangeRequestDecided} (§10.5 step 4, finding C1): on approval both
+ *       salespeople are told, on rejection the customer is told to read the answer.</li>
  * </ul>
  */
 @Service
@@ -167,10 +170,14 @@ public class OwnerChangeRequestService {
                     "That salesperson already looks after the customer; reject the request instead");
         }
         Instant now = clock.instant();
+        UUID previousOwner = customer.salesOwner().state() == SalesOwnerState.UNASSIGNED ? null
+                : customer.salesOwner().userId();
         request.approve(newSalesOwnerId, note, actor, now);
         ownership.assign(new AssignSalesOwnerCommand(customer.id(), newSalesOwnerId,
                 SalesOwnerChangeReason.CUSTOMER_REQUEST, request.decisionNote(), true, customer.version(), actor));
         requests.update(request);
+        events.publishEvent(new OwnerChangeRequestDecided(request.id(), customer.id(), true, previousOwner,
+                newSalesOwnerId, now));
         return managerRows(List.of(requests.findById(requestId).orElseThrow())).get(0);
     }
 
@@ -183,8 +190,12 @@ public class OwnerChangeRequestService {
     @Auditable(action = AuditAction.REJECT, resourceType = "sales-owner-change-request", resourceId = "#requestId")
     public ManagerRow reject(UUID requestId, String note, UUID actor) {
         OwnerChangeRequest request = lockWithCustomer(requestId);
-        request.reject(note, actor, clock.instant());
+        Instant now = clock.instant();
+        request.reject(note, actor, now);
         requests.update(request);
+        SalesOwner owner = customers.findById(request.customerId()).orElseThrow().salesOwner();
+        events.publishEvent(new OwnerChangeRequestDecided(request.id(), request.customerId(), false,
+                owner.state() == SalesOwnerState.UNASSIGNED ? null : owner.userId(), null, now));
         return managerRows(List.of(requests.findById(requestId).orElseThrow())).get(0);
     }
 

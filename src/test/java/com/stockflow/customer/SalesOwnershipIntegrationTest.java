@@ -3,7 +3,7 @@ package com.stockflow.customer;
 import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.contracts.CustomerNeedsSalesOwner;
+import com.stockflow.contracts.CustomersNeedSalesOwner;
 import com.stockflow.contracts.CustomerSalesOwnerChanged;
 import com.stockflow.contracts.SalesOwnerChangeReason;
 import com.stockflow.contracts.StaffAccountDeactivated;
@@ -428,14 +428,22 @@ class SalesOwnershipIntegrationTest {
                     owner + ">null:NEEDS_ASSIGNMENT:STAFF_LEFT:null");
         }
         assertThat(state(colleagues)).isEqualTo("ASSIGNED");
-        assertThat(recorded.matching(CustomerNeedsSalesOwner.class, e -> e.formerUserId().equals(owner)))
-                .extracting(CustomerNeedsSalesOwner::customerId).containsExactlyInAnyOrder(first, second);
+        Await.until("the managers' event is out", Duration.ofSeconds(20), () -> !recorded.matching(
+                CustomersNeedSalesOwner.class, e -> e.formerUserId().equals(owner)).isEmpty());
+        assertThat(recorded.matching(CustomersNeedSalesOwner.class, e -> e.formerUserId().equals(owner)))
+                .as("C1: one event for the whole book, not one per customer").singleElement()
+                .satisfies(released -> {
+                    assertThat(released.customerIds()).containsExactlyInAnyOrder(first, second);
+                    assertThat(released.cause()).isEqualTo("LOCKED");
+                });
         assertThat(responsible.responsibleFor(colleagues, today()).orElseThrow().kind())
                 .as("the cancelled cover no longer acts").isEqualTo(ResponsibleKind.OWNER);
 
-        // Delivered twice: nothing more happens.
+        // Delivered twice: nothing more happens, and the managers are not told again.
+        recorded.clear();
         deactivationListener.on(new StaffAccountDeactivated(owner, "LOCKED", null, clock.instant()));
         assertThat(history(first)).hasSize(2);
+        assertThat(recorded.matching(CustomersNeedSalesOwner.class, e -> e.formerUserId().equals(owner))).isEmpty();
     }
 
     @Test

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.security.Role;
 import com.stockflow.contracts.LeadFormFromExistingCustomer;
+import com.stockflow.contracts.OwnerChangeRequestDecided;
 import com.stockflow.contracts.OwnerChangeRequested;
 import com.stockflow.contracts.QuoteStatusChanged;
 import com.stockflow.contracts.SalesLeadAssigned;
@@ -382,6 +383,17 @@ class LeadAndOwnerChangeRequestIntegrationTest {
                 SELECT reason FROM customer.customer_sales_owner_history WHERE customer_id = ?
                  ORDER BY changed_at DESC, id DESC LIMIT 1""", String.class, portal.customer()))
                 .isEqualTo("CUSTOMER_REQUEST");
+        assertThat(events.stream(OwnerChangeRequestDecided.class)
+                .filter(e -> e.customerId().equals(portal.customer()))).singleElement().satisfies(decided -> {
+                    assertThat(decided.approved()).isTrue();
+                    assertThat(decided.previousOwnerId()).isEqualTo(owner);
+                    assertThat(decided.newOwnerId()).isEqualTo(preferred);
+                });
+        Await.until("C1 / §10.5 step 4: both salespeople are told", Duration.ofSeconds(20),
+                () -> notices(owner, "owner-change-approved:" + asked.at("/id").asText()) == 1
+                        && notices(preferred, "owner-change-approved:" + asked.at("/id").asText()) == 1);
+        assertThat(notices(manager, "owner-change-requested:" + asked.at("/id").asText()))
+                .as("C1: the managers were told of the request").isEqualTo(1);
         as(Role.SALES_MANAGER, manager, post(decide + "/rejection"), Map.of("note", "late"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("OWNER_CHANGE_REQUEST_ALREADY_DECIDED"));
@@ -428,6 +440,9 @@ class LeadAndOwnerChangeRequestIntegrationTest {
         JsonNode own = data(as(Role.CUSTOMER, portal.user(), get(mine), null));
         assertThat(own.at("/0/status").asText()).isEqualTo("REJECTED");
         assertThat(own.at("/0/decisionNote").asText()).isEqualTo("your salesperson stays");
+        Await.until("C1 / §10.5 step 4: the customer is told to read the answer", Duration.ofSeconds(20),
+                () -> notices(portal.user(), "owner-change-rejected:" + id) == 1);
+        assertThat(notices(owner, "owner-change-approved:" + id)).isZero();
         as(Role.SALES_MANAGER, manager, post("/api/v1/sales-owner-change-requests/" + UUID.randomUUID()
                 + "/rejection"), Map.of("note", "x")).andExpect(status().isNotFound());
     }
@@ -479,6 +494,11 @@ class LeadAndOwnerChangeRequestIntegrationTest {
 
     private JsonNode data(ResultActions result) throws Exception {
         return mapper.readTree(result.andReturn().getResponse().getContentAsString()).at("/data");
+    }
+
+    private long notices(UUID recipient, String dedupeKey) {
+        return jdbc.queryForObject("SELECT count(*) FROM notification.user_notification WHERE recipient_id = ? "
+                + "AND dedupe_key = ?", Long.class, recipient, dedupeKey);
     }
 
     /** A response body without what differs between any two requests (the correlation id, the time). */

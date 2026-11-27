@@ -71,6 +71,15 @@ class SalesNotices {
         return List.copyOf(told);
     }
 
+    /**
+     * The active Sales Managers, else the System Admins (plan §4 case 25): who is told what only a manager decides - a
+     * released book, a new lead, a request to change salesperson. Never every salesperson (D6).
+     */
+    List<UUID> managers() {
+        List<UUID> managers = salesStaff.activeSalesManagers();
+        return managers.isEmpty() ? salesStaff.activeSystemAdmins() : managers;
+    }
+
     /** {@code message} with the "cần phân công" line when the customer has no active owner. */
     static InboxMessage marked(InboxMessage message, boolean needsAssignment) {
         if (!needsAssignment) {

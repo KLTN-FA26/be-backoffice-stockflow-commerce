@@ -11,7 +11,7 @@ import java.util.UUID;
  * the new owner through {@code ResponsibleSales}.
  *
  * <p>Not published when a departed owner's customer is only marked as needing an owner: that is
- * {@link CustomerNeedsSalesOwner}. Published inside the transaction that writes the change and its history row,
+ * {@link CustomersNeedSalesOwner}. Published inside the transaction that writes the change and its history row,
  * delivered after commit; keyed by {@code (customerId, at)}.</p>
  *
  * @param fromUserId     the previous owner (or former owner who left), null when the customer never had one
