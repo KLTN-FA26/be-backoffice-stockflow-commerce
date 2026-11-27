@@ -47,6 +47,19 @@ class NoRoleNameAccessTest {
     }
 
     private static final List<Allowed> ALLOWED = List.of(
+            // D42 (owner decision 2026-11-28, kltn-docs 18 BR-13): a customer's Sales owner and a cover are, by
+            // definition, accounts holding the Sales Staff role - a business role, not an access check; the database
+            // triggers on customer.customer and identity.staff_cover state the same rule. Who may ACT is still read
+            // from permissions (customer-sales-owners:UPDATE, requireMayActFor).
+            new Allowed("identity/api/SalesStaff.java", "Set<String> SALES_ROLES = Set.of(",
+                    "D42: an owner or a cover is a Sales Staff account (who is eligible, not who may act)"),
+            new Allowed("identity/internal/service/SalesStaffDirectory.java",
+                    "held.values().forEach(list -> list.sort(Comparator.comparing(StaffMember.Role::code)));",
+                    "sorts the roles shown beside a name in the Sales pickers; no access decision"),
+            new Allowed("identity/internal/service/SalesStaffDirectory.java", "return ids(Set.of(Roles.SALES_MANAGER));",
+                    "D6: who is told when a customer has no active owner (recipients, not access)"),
+            new Allowed("identity/internal/service/SalesStaffDirectory.java", "return ids(Set.of(Roles.SYSTEM_ADMIN));",
+                    "plan case 25: the last fallback recipients when no Sales Manager is active (recipients, not access)"),
             // ---- the security layer: converting a token, and the one data-scope test that has to name CUSTOMER
             new Allowed("assistant/internal/controller/dto/NextStepsResponse.java",
                     "allowableValues = {\"CUSTOMER\", \"SALES\", \"ACCOUNTANT\", \"WAREHOUSE\",",
