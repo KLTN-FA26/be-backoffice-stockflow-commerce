@@ -82,7 +82,8 @@ SELECT pg_temp.expect_fail_like('SO3 NEEDS_ASSIGNMENT without a date', 'ck_custo
     format('UPDATE customer.customer SET sales_owner_state = ''NEEDS_ASSIGNMENT'', sales_owner_id = %L WHERE id = %L',
            pg_temp.id('a'), pg_temp.id('c1')));
 SELECT pg_temp.expect_fail_like('SO4 a state outside the three', 'ck_customer_sales_owner_state',
-    format('UPDATE customer.customer SET sales_owner_state = ''ORPHANED'' WHERE id = %L', pg_temp.id('c1')));
+    format('UPDATE customer.customer SET sales_owner_state = ''ORPHANED'', sales_owner_id = %L, '
+           'sales_owner_since = NOW() WHERE id = %L', pg_temp.id('b'), pg_temp.id('c1')));
 SELECT pg_temp.expect_fail_like('SO5 BR-S04: a locked account is not assigned', 'must be an active salesperson',
     format('UPDATE customer.customer SET sales_owner_state = ''ASSIGNED'', sales_owner_id = %L, '
            'sales_owner_since = NOW() WHERE id = %L', pg_temp.id('locked'), pg_temp.id('c1')));
@@ -126,7 +127,7 @@ SELECT pg_temp.expect_fail_like('SH5 NEEDS_ASSIGNMENT names who left and nobody 
            '''STAFF_LEFT'', NOW(), NOW())', pg_temp.id('c1'), pg_temp.id('a'), pg_temp.id('b')));
 SELECT pg_temp.expect_fail_like('SH6 a change never makes a customer UNASSIGNED', 'ck_customer_sales_owner_history_target',
     format('INSERT INTO customer.customer_sales_owner_history (id, customer_id, from_user_id, to_state, reason, '
-           'changed_at, created_at) VALUES (gen_random_uuid(), %L, %L, ''UNASSIGNED'', ''OTHER'', NOW(), NOW())',
+           'changed_at, created_at) VALUES (gen_random_uuid(), %L, %L, ''UNASSIGNED'', ''WORKLOAD'', NOW(), NOW())',
            pg_temp.id('c1'), pg_temp.id('a')));
 SELECT pg_temp.expect_fail_like('SH7 BR-S03: OTHER needs a note', 'ck_customer_sales_owner_history_note',
     format('INSERT INTO customer.customer_sales_owner_history (id, customer_id, from_user_id, to_user_id, to_state, '
