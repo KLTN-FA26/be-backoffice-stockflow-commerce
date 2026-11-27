@@ -83,9 +83,9 @@ class SalesOwnerOrderIntegrationTest {
     void setUp() {
         owners = new SalesOwners(context);
         confirmedOrders = new ConfirmedOrders(context);
-        // The fixture's own salesperson draws up the orders the operational tests need; it is a manager (strict mode
-        // never blocks one), so the owner here is a plain salesperson of the test's own.
-        owner = SalesOwners.caller(owners.salesperson(), Role.SALES_STAFF);
+        // The fixture's own salesperson - a plain one - draws up the orders the operational tests need, as the owner
+        // of the customers it draws for: so it is the owner here.
+        owner = confirmedOrders.sales();
         other = SalesOwners.caller(owners.salesperson(), Role.SALES_STAFF);
         manager = SalesOwners.caller(owners.account("SALES_MANAGER"), Role.SALES_MANAGER);
         customer = tx.execute(s -> ReferenceRows.customer(entityManager));
@@ -265,6 +265,22 @@ class SalesOwnerOrderIntegrationTest {
                     waiting.version()));
             assertThat(withdrawn.creditReview()).isEqualTo("NONE");
         }
+    }
+
+    @Test
+    @DisplayName("Review fix 4: the fixture's salesperson is a plain salesperson, held to strict mode like any - it "
+            + "draws no contract for a customer someone else owns")
+    void theFixturesSalespersonIsHeldToStrictMode() {
+        UUID theirs = tx.execute(s -> ReferenceRows.customer(entityManager));
+        owners.own(theirs, other.userId());
+        CustomerSkuRows.Issued itsSku = CustomerSkuRows.issue(jdbc, tx, entityManager, theirs, 10);
+        confirmedOrders.legalProfile(theirs);
+        UUID order = confirmedOrders.draft(theirs, List.of(ConfirmedOrders.Line.cartons(itsSku, 10, PRICE)));
+        CurrentUser fixture = confirmedOrders.sales();
+
+        refused(() -> as(fixture, () -> contracts.create(fixture, order, draftOf(order))));
+        assertThat(jdbc.queryForList("SELECT r.code FROM identity.user_role ur JOIN identity.app_role r ON r.id = "
+                + "ur.role_id WHERE ur.user_id = ?", String.class, fixture.userId())).containsExactly("SALES_STAFF");
     }
 
     // ---- BR-32: operational work done for another ------------------------------------------------------------------

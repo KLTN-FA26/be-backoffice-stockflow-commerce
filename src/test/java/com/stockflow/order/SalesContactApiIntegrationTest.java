@@ -129,6 +129,9 @@ class SalesContactApiIntegrationTest {
         CustomerSkuRows.Issued sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, 10);
         CurrentUser sales = new CurrentUser(salesA, "sales-" + salesA, Set.of(Role.SALES_STAFF), Set.of(),
                 DataScope.ALL, Set.of(), Set.of());
+        // Strict mode (14 BR-25): Sales A works on the customer as its owner; the fixture takes it back for Sales B
+        // when it draws its contract - the customer moving between the two, as a reassignment does.
+        new com.stockflow.support.SalesOwners(context).own(customerId, salesA);
         Quotes.QuoteView drafted = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
                 new Quotes.Draft(Instant.now().plus(Duration.ofDays(7)), null, List.of(new Quotes.Line(sku.sku(), 3,
                         List.of(new Quotes.Tier(2, new BigDecimal("3000"))))), null, List.of())));
