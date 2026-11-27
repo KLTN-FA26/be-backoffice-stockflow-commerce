@@ -139,7 +139,7 @@ public class ChatViews {
                 row.resolutionDueAt(), row.resolutionOverdue(), row.reopenUntil(), row.continuedFromId(),
                 row.createdAt(), row.lastMessageAt(), row.lastSeq(), row.unread(), row.lastMessage(), about, read,
                 row.withinBusinessHours(), row.expectedResponseAt(), row.resolvedAt(), row.canRate(), row.csatScore(), row.csatComment(), row.csatSubmittedAt(),
-                row.canReply(), row.canClaim(), row.canAssign());
+                row.canReply(), row.canClaim(), row.canAssign(), row.priority());
     }
 
     public List<ChatLogEntryView> log(List<LogEntry> entries) {
@@ -179,7 +179,7 @@ public class ChatViews {
                 s.resolvedAt(), s.status() == ConversationStatus.RESOLVED && s.csatSubmittedAt() == null, s.csatScore(),
                 staff == null ? null : s.csatComment(), s.csatSubmittedAt(),
                 viewer ? c.answerableBy(staff) : null, viewer ? c.claimableBy(staff) : null,
-                viewer ? c.assignableBy(staff) : null);
+                viewer ? c.assignableBy(staff) : null, staff != null && s.requeuedAt() != null);
     }
 
     private ChatMessageView message(ChatMessage m, Map<UUID, String> names) {
