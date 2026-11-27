@@ -124,9 +124,9 @@ class InventoryCatalogIntegrationTest {
                 "/" + code);
         write(
                 """
-insert into product.products(id,code,name,name_en,tax_class,slug,status,submitted_by,submitted_at,approved_by,approved_at,discontinued_at,
+insert into product.products(id,code,name,tax_class,slug,status,submitted_by,submitted_at,approved_by,approved_at,discontinued_at,
                              discontinue_reason)
-values (?,?,?,'Paper cup','STANDARD',?,?,md5('demo:user:editor')::uuid,now(),
+values (?,?,?,'STANDARD',?,?,md5('demo:user:editor')::uuid,now(),
         md5('demo:user:approver')::uuid,now(),case when ?='DISCONTINUED' then now() end,
         case when ?='DISCONTINUED' then 'test fixture' end)
 """,
@@ -448,12 +448,10 @@ values (?,?,'https://example.test/cover.jpg',true,now(),md5('demo:user:approver'
     }
 
     @Test
-    void publicationRejectsSelfApprovedMediaAndBlockedVariantsCannotBePurchased() {
+    void publicationNeedsAPublishedImageAndBlockedVariantsCannotBePurchased() {
         var f = fixture("APPROVED");
         gallery(f);
-        write(
-                "update product.media set created_by=published_by::text where variant_id=?",
-                f.skuId());
+        write("update product.media set is_published=false where variant_id=?", f.skuId());
         catalog.edit(f.product(), 0, "media-" + f.sku(), null, null);
         assertThatThrownBy(() -> catalog.publish(f.product()))
                 .isInstanceOfSatisfying(
@@ -461,16 +459,9 @@ values (?,?,'https://example.test/cover.jpg',true,now(),md5('demo:user:approver'
                         e ->
                                 assertThat(e.errorCode())
                                         .isEqualTo(ErrorCode.PRODUCT_GALLERY_REQUIRED));
-        write("update product.media set created_by='demo.approver' where variant_id=?", f.skuId());
-        assertThatThrownBy(() -> catalog.publish(f.product()))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        e ->
-                                assertThat(e.errorCode())
-                                        .isEqualTo(ErrorCode.PRODUCT_GALLERY_REQUIRED));
+        // An image its own uploader published counts: no second person since ADR-0012.
         write(
-                "update product.media set created_by=md5('demo:user:editor')::uuid::text where"
-                        + " variant_id=?",
+                "update product.media set is_published=true, created_by=published_by::text where variant_id=?",
                 f.skuId());
         catalog.publish(f.product());
         projection.project(f.product());
