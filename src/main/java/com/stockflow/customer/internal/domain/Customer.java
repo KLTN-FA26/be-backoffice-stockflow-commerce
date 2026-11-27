@@ -86,6 +86,21 @@ public final class Customer extends AggregateRoot {
     }
 
     /**
+     * {@link #onboard} under the rule of the sales-owner plan (BR-S14, D4): a new business customer has a tax code,
+     * unless a Sales Manager exempted it (who may is the service's check; it needs the caller's permissions).
+     *
+     * @throws BusinessException {@code CUSTOMER_TAX_CODE_REQUIRED} without a tax code and without an exemption
+     */
+    public static Customer onboardBusiness(UUID id, UUID userId, String companyName, String email, String phone,
+                                           String taxCode, boolean exempted) {
+        boolean missing = taxCode == null || taxCode.isBlank();
+        if (missing && !exempted) {
+            throw new BusinessException(ErrorCode.CUSTOMER_TAX_CODE_REQUIRED);
+        }
+        return onboard(id, userId, companyName, email, phone, missing ? null : taxCode);
+    }
+
+    /**
      * The contact redeemed the invitation. Only a pending customer activates: a blocked or closed
      * one stays as it is - activating an account must not lift a staff decision.
      *

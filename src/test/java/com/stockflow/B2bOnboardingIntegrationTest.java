@@ -527,9 +527,11 @@ class B2bOnboardingIntegrationTest {
         create(sales, json(Map.of("companyName", "Around the block", "taxCode", mst, "contactName", "E",
                 "email", unique("mst-blocked"))), null).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("CUSTOMER_TAX_CODE_ALREADY_EXISTS"));
-        // Without a tax code (a household business, a small shop) nothing is constrained.
+        // Without a tax code (a household business, a small shop) nothing is constrained - once a Sales Manager has
+        // exempted it (sales-owner plan BR-S14, D4: the tax code is required otherwise).
         for (String who : List.of("mst-none-1", "mst-none-2")) {
-            create(sales, json(Map.of("companyName", "Quan nho", "contactName", "F", "email", unique(who))), null)
+            create(ecommerceAdmin, json(Map.of("companyName", "Quan nho", "contactName", "F", "email", unique(who),
+                    "taxCodeExemption", true, "taxCodeExemptionReason", "Household business")), null)
                     .andExpect(status().isCreated());
         }
 
@@ -695,8 +697,9 @@ class B2bOnboardingIntegrationTest {
     @Test
     void aShopWithoutATaxCodeIsOnboardedActivatesAndOrdersOnItsOwn() throws Exception {
         String email = unique("shop");
-        String created = create(sales, json(Map.of("companyName", "Quan ca phe Nho", "contactName", "Chu quan",
-                "email", email)), null)
+        // Sales-owner plan BR-S14 / D4: without a tax code only a Sales Manager's exemption onboards it.
+        String created = create(ecommerceAdmin, json(Map.of("companyName", "Quan ca phe Nho", "contactName", "Chu quan",
+                "email", email, "taxCodeExemption", true, "taxCodeExemptionReason", "No tax code yet")), null)
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.customer.taxCode").doesNotExist())
                 .andExpect(jsonPath("$.data.customer.status").value("PENDING_ACTIVATION"))
@@ -850,8 +853,8 @@ class B2bOnboardingIntegrationTest {
     @Test
     void onboardingSetsNoCreditAndCreditStaysWithTheApprover() throws Exception {
         String email = unique("credit");
-        String created = create(sales, json(Map.of("companyName", "Cong ty Cong No", "contactName", "Chi B",
-                "email", email)), null)
+        String created = create(sales, json(Map.of("companyName", "Cong ty Cong No", "taxCode", mst(),
+                "contactName", "Chi B", "email", email)), null)
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
         UUID customerId = UUID.fromString(mapper.readTree(created).at("/data/customer/customerId").asText());
         String profile = "/api/v1/customers/" + customerId + "/credit-profile";
@@ -1057,6 +1060,94 @@ class B2bOnboardingIntegrationTest {
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.errorCode").value("SALES_OWNER_NOT_ASSIGNABLE"));
         assertThat(count("customer.customer")).as("nothing is left behind").isEqualTo(customers);
+    }
+
+    /**
+     * Sales-owner plan BR-S14 / D4: a new customer needs its tax code (400 CUSTOMER_TAX_CODE_REQUIRED); only a Sales
+     * Manager exempts one, with a reason kept in customer_tax_code_exemption; an exemption with a tax code is refused.
+     */
+    @Test
+    @org.junit.jupiter.api.DisplayName("BR-S14 / D4: the tax code is required; only a manager exempts a customer, with a reason")
+    void theTaxCodeIsRequiredUnlessAManagerExempts() throws Exception {
+        StaffAccount salesperson = staffAccount("SALES_STAFF");
+        StaffAccount manager = staffAccount("SALES_MANAGER");
+        long customers = count("customer.customer");
+
+        create(salesperson.token(), json(Map.of("companyName", "No Code Co", "contactName", "A",
+                "email", unique("nocode"))), null)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("CUSTOMER_TAX_CODE_REQUIRED"));
+        create(salesperson.token(), json(Map.of("companyName", "No Code Co", "contactName", "A",
+                "email", unique("nocode"), "taxCodeExemption", true, "taxCodeExemptionReason", "household")), null)
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+        create(manager.token(), json(Map.of("companyName", "No Code Co", "contactName", "A",
+                "email", unique("nocode"), "taxCodeExemption", true)), null)
+                .andExpect(status().isBadRequest());
+        create(manager.token(), json(Map.of("companyName", "No Code Co", "contactName", "A", "taxCode", mst(),
+                "email", unique("nocode"), "taxCodeExemption", true, "taxCodeExemptionReason", "x")), null)
+                .andExpect(status().isBadRequest());
+        assertThat(count("customer.customer")).as("nothing is left behind").isEqualTo(customers);
+
+        UUID exempted = customerId(create(manager.token(), json(Map.of("companyName", "Ho kinh doanh A",
+                "contactName", "A", "email", unique("exempt"), "taxCodeExemption", true,
+                "taxCodeExemptionReason", " Household business, code pending ")), null)
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.customer.taxCodeMissing").value(true)));
+        assertThat(jdbc.queryForObject("""
+                SELECT reason || ':' || granted_by FROM customer.customer_tax_code_exemption WHERE customer_id = ?""",
+                String.class, exempted)).isEqualTo("Household business, code pending:" + manager.id());
+    }
+
+    /**
+     * Sales-owner plan 10.7: a lead becomes a customer through its salesperson, who becomes the owner (LEAD_CONVERTED),
+     * and the lead is CONVERTED naming it, in one transaction. A lead nobody was given, another salesperson's lead, or
+     * a converted one is refused, and nothing is written.
+     */
+    @Test
+    @org.junit.jupiter.api.DisplayName("10.7: converting a lead makes its salesperson the owner and the lead CONVERTED")
+    void aLeadIsConvertedIntoACustomer() throws Exception {
+        StaffAccount assignee = staffAccount("SALES_STAFF");
+        StaffAccount colleague = staffAccount("SALES_STAFF");
+        StaffAccount manager = staffAccount("SALES_MANAGER");
+        UUID lead = leadRow("ASSIGNED", assignee.id());
+        UUID waiting = leadRow("NEW", null);
+        long customers = count("customer.customer");
+
+        create(colleague.token(), json(Map.of("companyName", "Lead Co", "taxCode", mst(), "contactName", "A",
+                "email", unique("lead-other"), "leadId", lead)), null)
+                .andExpect(status().isForbidden());
+        create(manager.token(), json(Map.of("companyName", "Lead Co", "taxCode", mst(), "contactName", "A",
+                "email", unique("lead-new"), "leadId", waiting)), null)
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("LEAD_NOT_ASSIGNED"));
+        create(assignee.token(), json(Map.of("companyName", "Lead Co", "taxCode", mst(), "contactName", "A",
+                "email", unique("lead-owner"), "leadId", lead, "salesOwnerId", colleague.id())), null)
+                .andExpect(status().isBadRequest());
+        assertThat(count("customer.customer")).as("nothing is left behind").isEqualTo(customers);
+
+        UUID customer = customerId(create(manager.token(), json(Map.of("companyName", "Lead Co", "taxCode", mst(),
+                "contactName", "A", "email", unique("lead-ok"), "leadId", lead)), null)
+                .andExpect(status().isCreated()));
+        assertThat(owner(customer)).as("the lead's salesperson, not the manager who converted it")
+                .isEqualTo(assignee.id() + ":ASSIGNED");
+        assertThat(jdbc.queryForObject("SELECT reason FROM customer.customer_sales_owner_history WHERE customer_id = ?",
+                String.class, customer)).isEqualTo("LEAD_CONVERTED");
+        assertThat(jdbc.queryForObject("SELECT status || ':' || converted_customer_id FROM customer.lead WHERE id = ?",
+                String.class, lead)).isEqualTo("CONVERTED:" + customer);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM customer.lead_history WHERE lead_id = ? "
+                + "AND to_status = 'CONVERTED'", Long.class, lead)).isEqualTo(1);
+        create(assignee.token(), json(Map.of("companyName", "Lead Co", "taxCode", mst(), "contactName", "A",
+                "email", unique("lead-again"), "leadId", lead)), null)
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("LEAD_ALREADY_HANDLED"));
+    }
+
+    private UUID leadRow(String status, UUID sales) {
+        UUID id = Identifiers.newId();
+        new TransactionTemplate(transactions).executeWithoutResult(tx -> jdbc.update("""
+                INSERT INTO customer.lead (id, company_name, contact_name, phone, consent_at, submitted_at, status,
+                                           assigned_to, assigned_at, created_at)
+                VALUES (?, 'Lead Co', 'Contact', '+84901234567', NOW(), NOW(), ?, ?,
+                        CASE WHEN ? THEN NOW() END, NOW())""", id, status, sales, sales != null));
+        return id;
     }
 
     private record StaffAccount(UUID id, String token) {

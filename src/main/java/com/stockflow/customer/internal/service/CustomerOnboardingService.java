@@ -12,7 +12,9 @@ import com.stockflow.customer.internal.domain.CustomerRepository;
 import com.stockflow.customer.internal.domain.CustomerStatus;
 import com.stockflow.customer.internal.domain.CustomerStatusChange;
 import com.stockflow.customer.internal.domain.CustomerStatusHistory;
+import com.stockflow.customer.internal.domain.Lead;
 import com.stockflow.customer.internal.domain.TaxCode;
+import com.stockflow.customer.internal.domain.TaxCodeExemptions;
 import com.stockflow.identity.api.InviteCustomerAccountCommand;
 import com.stockflow.identity.api.PortalAccountService;
 import com.stockflow.identity.api.PortalInvitationLink;
@@ -66,6 +68,8 @@ public class CustomerOnboardingService {
     private final CustomerRepository customers;
     private final CustomerStatusHistory history;
     private final SalesOwnershipService ownership;
+    private final LeadService leads;
+    private final TaxCodeExemptions exemptions;
     private final SalesStaff salesStaff;
     private final PortalAccountService accounts;
     private final NotificationService notifications;
@@ -74,13 +78,16 @@ public class CustomerOnboardingService {
     private final String activationUrl;
 
     CustomerOnboardingService(CustomerRepository customers, CustomerStatusHistory history,
-                              SalesOwnershipService ownership, SalesStaff salesStaff, PortalAccountService accounts,
+                              SalesOwnershipService ownership, LeadService leads, TaxCodeExemptions exemptions,
+                              SalesStaff salesStaff, PortalAccountService accounts,
                               NotificationService notifications, PlatformTransactionManager transactionManager,
                               Clock clock,
                               @Value("${stockflow.customer.portal-activation-url:}") String activationUrl) {
         this.customers = customers;
         this.history = history;
         this.ownership = ownership;
+        this.leads = leads;
+        this.exemptions = exemptions;
         this.salesStaff = salesStaff;
         this.accounts = accounts;
         this.notifications = notifications;
@@ -90,21 +97,28 @@ public class CustomerOnboardingService {
     }
 
     /**
-     * What Sales enters. {@code companyName} names the customer; {@code taxCode} identifies it (BR-01) but
-     * is optional - household businesses and small shops may supply it later (decision 2026-10-12);
-     * {@code contactName} is the person invited; {@code actorUserId} is the Sales account, recorded on
-     * the invitation and in the status history.
+     * What Sales enters. {@code companyName} names the customer; {@code taxCode} identifies it (BR-01) and is required
+     * (sales-owner plan BR-S14, D4) unless a Sales Manager exempts the customer ({@code taxCodeExemption}, with
+     * {@code taxCodeExemptionReason}); {@code contactName} is the person invited; {@code actorUserId} is the Sales
+     * account, recorded on the invitation and in the status history.
      *
      * <p>{@code salesOwnerId} (sales-owner plan BR-S02): null for the default - the creating salesperson owns the
      * customer, a Sales Manager (a holder of {@code customer-sales-owners:UPDATE}) leaves it unassigned - or the
-     * salesperson a manager chose.</p>
+     * salesperson a manager chose. {@code leadId} (plan 10.7): the lead the customer is made from; its salesperson
+     * is the owner (LEAD_CONVERTED) and the lead becomes CONVERTED in the same transaction.</p>
      */
     public record CreateBusinessCustomer(String companyName, String taxCode, String contactName, String email,
-                                         String phone, UUID actorUserId, UUID salesOwnerId) {
+                                         String phone, UUID actorUserId, UUID salesOwnerId, boolean taxCodeExemption,
+                                         String taxCodeExemptionReason, UUID leadId) {
 
         public CreateBusinessCustomer(String companyName, String taxCode, String contactName, String email,
                                       String phone, UUID actorUserId) {
             this(companyName, taxCode, contactName, email, phone, actorUserId, null);
+        }
+
+        public CreateBusinessCustomer(String companyName, String taxCode, String contactName, String email,
+                                      String phone, UUID actorUserId, UUID salesOwnerId) {
+            this(companyName, taxCode, contactName, email, phone, actorUserId, salesOwnerId, false, null, null);
         }
     }
 
@@ -125,7 +139,11 @@ public class CustomerOnboardingService {
     }
 
     /**
-     * @throws BusinessException {@code VALIDATION_FAILED} (malformed tax code when one is given, or phone);
+     * @throws BusinessException {@code VALIDATION_FAILED} (malformed tax code when one is given, or phone; an exemption
+     *         with a tax code or without a reason; a lead with another owner named); {@code CUSTOMER_TAX_CODE_REQUIRED}
+     *         without a tax code or an exemption; {@code FORBIDDEN} for an exemption asked by someone who is not a
+     *         manager; the lead's refusals ({@code LEAD_NOT_FOUND}, {@code LEAD_ALREADY_HANDLED},
+     *         {@code LEAD_NOT_ASSIGNED}, {@code FORBIDDEN} for another salesperson's lead);
      *         {@code CUSTOMER_TAX_CODE_ALREADY_EXISTS} for a pending or active customer with this tax
      *         code; {@code CUSTOMER_EMAIL_ALREADY_EXISTS}; {@code USER_EMAIL_ALREADY_EXISTS} for any
      *         account - staff or customer - with this e-mail; {@code PORTAL_INVITATION_UNAVAILABLE} when
@@ -144,6 +162,7 @@ public class CustomerOnboardingService {
         } catch (IllegalArgumentException invalid) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, invalid.getMessage());
         }
+        String exemptionReason = exemption(command, taxCode);
         record Created(CustomerSummary customer, PortalInvitationLink link) {
         }
         Created created = writeRejectingDuplicates(() -> transactions.execute(status -> {
@@ -153,27 +172,71 @@ public class CustomerOnboardingService {
             if (customers.findByEmail(email).isPresent()) {
                 throw new BusinessException(ErrorCode.CUSTOMER_EMAIL_ALREADY_EXISTS);
             }
-            UUID owner = firstOwner(command);
+            Lead lead = command.leadId() == null ? null : leads.lockForConversion(command.leadId(),
+                    command.actorUserId());
+            if (lead != null && command.salesOwnerId() != null && !command.salesOwnerId().equals(lead.assignedTo())) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                        "A customer made from a lead is looked after by the lead's salesperson");
+            }
+            UUID owner = lead != null ? lead.assignedTo() : firstOwner(command);
             PortalInvitationLink link = accounts.invite(new InviteCustomerAccountCommand(email,
                     command.contactName().trim(), command.actorUserId()));
             Customer customer;
             try {
-                customer = Customer.onboard(Identifiers.newId(), link.userId(), command.companyName(), email,
-                        command.phone(), taxCode);
+                customer = Customer.onboardBusiness(Identifiers.newId(), link.userId(), command.companyName(), email,
+                        command.phone(), taxCode, exemptionReason != null);
             } catch (IllegalArgumentException invalid) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED, invalid.getMessage());
             }
             Customer stored = customers.save(customer);
             history.record(new CustomerStatusChange(Identifiers.newId(), customer.id(), null,
                     CustomerStatus.PENDING_ACTIVATION, null, command.actorUserId(), clock.instant()));
+            if (exemptionReason != null) {
+                exemptions.grant(stored.id(), exemptionReason, command.actorUserId(), clock.instant());
+            }
             if (owner != null) {
-                stored = ownership.assignAtCreation(stored, owner, SalesOwnerChangeReason.CREATED_BY_SALES,
-                        command.actorUserId());
+                stored = ownership.assignAtCreation(stored, owner, lead != null ? SalesOwnerChangeReason.LEAD_CONVERTED
+                        : SalesOwnerChangeReason.CREATED_BY_SALES, command.actorUserId());
+            }
+            if (lead != null) {
+                leads.converted(lead, stored.id(), command.actorUserId());
             }
             CustomerSummary saved = CustomerServiceImpl.toSummary(stored);
             return new Created(saved, link);
         }));
         return invited(created.customer(), created.link());
+    }
+
+    /**
+     * BR-S14 / D4: without a tax code, a Sales Manager's exemption with its reason; checked before anything is written.
+     *
+     * @return the exemption's reason, or null when the customer has a tax code
+     * @throws BusinessException {@code CUSTOMER_TAX_CODE_REQUIRED}; {@code FORBIDDEN}; {@code VALIDATION_FAILED}
+     */
+    private String exemption(CreateBusinessCustomer command, String taxCode) {
+        if (taxCode != null) {
+            if (command.taxCodeExemption()) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                        "An exemption is for a customer without a tax code");
+            }
+            return null;
+        }
+        if (!command.taxCodeExemption()) {
+            throw new BusinessException(ErrorCode.CUSTOMER_TAX_CODE_REQUIRED);
+        }
+        UUID actor = command.actorUserId();
+        if (actor == null || !salesStaff.holdsPermission(actor, SalesOwnershipService.MANAGES_OWNERS)) {
+            throw new BusinessException(ErrorCode.FORBIDDEN,
+                    "Only a Sales Manager creates a customer without a tax code");
+        }
+        String reason = command.taxCodeExemptionReason();
+        if (reason == null || reason.isBlank()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Say why the customer has no tax code");
+        }
+        if (reason.strip().length() > 500) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The reason is at most 500 characters");
+        }
+        return reason.strip();
     }
 
     /**
