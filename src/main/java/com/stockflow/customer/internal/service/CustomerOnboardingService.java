@@ -151,7 +151,8 @@ public class CustomerOnboardingService {
      *         no activation address is configured, before anything is written; {@code FORBIDDEN} for a
      *         salesperson naming another owner; {@code SALES_OWNER_REQUIRED} for someone who is not a salesperson
      *         naming no owner and no lead; {@code SALES_OWNER_NOT_ASSIGNABLE} for an owner who is not an active
-     *         salesperson
+     *         salesperson; {@code CUSTOMER_OWNED_BY_OTHER_SALES} for a salesperson creating a unit (or the company) of
+     *         an organisation another salesperson looks after (P4)
      */
     @Auditable(action = AuditAction.CREATE, resourceType = "customer", resourceId = "#result?.customer()?.customerId()")
     public Invited create(CreateBusinessCustomer command) {
@@ -174,6 +175,7 @@ public class CustomerOnboardingService {
             if (customers.findByEmail(email).isPresent()) {
                 throw new BusinessException(ErrorCode.CUSTOMER_EMAIL_ALREADY_EXISTS);
             }
+            requireMayTakeTheOrganisation(taxCode, command.actorUserId());
             Lead lead = command.leadId() == null ? null : leads.lockForConversion(command.leadId(),
                     command.actorUserId());
             if (lead != null && command.salesOwnerId() != null && !command.salesOwnerId().equals(lead.assignedTo())) {
@@ -205,6 +207,23 @@ public class CustomerOnboardingService {
             return new Created(saved, link);
         }));
         return invited(created.customer(), created.link());
+    }
+
+    /**
+     * Finding P4: a salesperson could create a dependent unit ({@code 0123456789-001}) of a company another salesperson
+     * looks after - or the company of a unit - and become its owner. When the 10-digit root is a customer's with a
+     * working owner other than the one creating, only a manager goes on (and names the owner, as always for a manager).
+     *
+     * @throws BusinessException {@code CUSTOMER_OWNED_BY_OTHER_SALES} naming the owner
+     */
+    private void requireMayTakeTheOrganisation(String taxCode, UUID actor) {
+        String root = TaxCode.root(taxCode);
+        if (root == null || actor == null) {
+            return;
+        }
+        for (UUID related : customers.idsWithTaxCodeRoot(root)) {
+            ownership.requireMayTakeRelated(actor, related);
+        }
     }
 
     /**

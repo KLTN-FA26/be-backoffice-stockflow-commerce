@@ -18,8 +18,11 @@ public interface SalesOwnerBook {
 
     /**
      * How many customers each of {@code userIds} was given since {@code since} - assigned, transferred, claimed or
-     * created by them (the history's rows naming them as the new owner), the backfill excepted: what a monthly capacity
-     * is measured against (D13). People given none are absent.
+     * created by them (the history's rows naming them as the new owner): what a monthly capacity is measured against
+     * (D13). Not counted (review finding P3): the backfill, and the customers a salesperson only holds for an absent
+     * colleague (TEMPORARY_LEAVE) or gets back from one (RETURN_FROM_LEAVE) - neither is a new customer to them, and
+     * counting them made a stand-in look full and a returning salesperson look as if they had been given their own book
+     * again. People given none are absent.
      */
     Map<UUID, Integer> assignedSince(Collection<UUID> userIds, Instant since);
 

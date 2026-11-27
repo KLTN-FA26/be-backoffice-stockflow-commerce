@@ -52,8 +52,12 @@ import java.util.UUID;
 @Transactional
 public class SalesOwnerTransferService {
 
-    /** The most customers one request may name or move; a salesperson's book is far smaller. */
-    static final int MAX_CUSTOMERS = 2000;
+    /**
+     * The most customers one request may name or move (finding P2): one transaction holds each moved customer's row
+     * lock until it commits, and publishes an event per customer. A salesperson's book is usually far smaller; a larger
+     * one is moved in several requests, each naming its customers ({@code SALES_OWNER_TRANSFER_TOO_LARGE} says so).
+     */
+    static final int MAX_CUSTOMERS = 500;
 
     /** The most targets one request spreads customers over. */
     static final int MAX_TARGETS = 50;
@@ -122,7 +126,12 @@ public class SalesOwnerTransferService {
         SalesOwnerTransfers.Batch batch = new SalesOwnerTransfers.Batch(Identifiers.newId(), request.requestId(),
                 request.fromUserId(), request.reason(), blankToNull(request.note()), request.temporary(), null,
                 request.notifyCustomer(), 0, 0, actorUserId, now, List.of());
-        if (!transfers.claim(batch)) {
+        String fingerprint = fingerprint(request, targets);
+        if (!transfers.claim(batch, fingerprint)) {
+            if (!transfers.fingerprintOf(request.requestId()).map(fingerprint::equals).orElse(true)) {
+                throw new BusinessException(ErrorCode.SALES_OWNER_TRANSFER_REQUEST_REUSED,
+                        "Request %s was a different transfer".formatted(request.requestId()));
+            }
             return replay(request.requestId());
         }
         SalesOwnersTransferPlan plan = plan(request);
@@ -270,8 +279,13 @@ public class SalesOwnerTransferService {
                     "Name one to %d salespeople other than the one the customers leave".formatted(MAX_TARGETS));
         }
         if (request.customerIds() != null && request.customerIds().size() > MAX_CUSTOMERS) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "At most %d customers at once".formatted(MAX_CUSTOMERS));
+            throw new BusinessException(ErrorCode.SALES_OWNER_TRANSFER_TOO_LARGE,
+                    "%d customers named; at most %d at once".formatted(request.customerIds().size(), MAX_CUSTOMERS));
+        }
+        if ((request.customerIds() == null || request.customerIds().isEmpty())
+                && customers.countOwnedBy(request.fromUserId()) > MAX_CUSTOMERS) {
+            throw new BusinessException(ErrorCode.SALES_OWNER_TRANSFER_TOO_LARGE,
+                    "The salesperson has more than %d customers; name them in several transfers".formatted(MAX_CUSTOMERS));
         }
         if (identity.userLabels(List.of(request.fromUserId())).isEmpty()) {
             throw new BusinessException(ErrorCode.USER_NOT_FOUND);
@@ -285,6 +299,27 @@ public class SalesOwnerTransferService {
         if (!salesStaff.lockActiveSalesAgent(userId)) {
             throw new BusinessException(ErrorCode.SALES_OWNER_NOT_ASSIGNABLE,
                     "Account %s is not an active salesperson".formatted(userId));
+        }
+    }
+
+    /**
+     * What the request asked, hashed (P1): the source, the targets in their order (it decides who gets which), the
+     * customers named as a set or "all", the reason, the note, temporary and notify. The same request retried has the
+     * same fingerprint; anything else sent with its id does not.
+     */
+    static String fingerprint(Transfer request, List<UUID> targets) {
+        List<UUID> named = request.customerIds() == null ? List.of()
+                : request.customerIds().stream().filter(Objects::nonNull).distinct()
+                        .sorted(Identifiers.DATABASE_ORDER).toList();
+        String canonical = String.join("|", String.valueOf(request.fromUserId()), targets.toString(),
+                named.isEmpty() ? "*" : named.toString(), String.valueOf(request.reason()),
+                String.valueOf(blankToNull(request.note())), String.valueOf(request.temporary()),
+                String.valueOf(request.notifyCustomer()));
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.getBytes(StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
         }
     }
 

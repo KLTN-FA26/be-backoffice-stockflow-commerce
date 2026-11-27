@@ -26,4 +26,13 @@ public interface CustomerRepository extends AggregateRepository<Customer, UUID> 
 
     /** The ids of the customers whose stored owner is {@code userId} in {@code state}, in id order. */
     java.util.List<UUID> idsOwnedBy(UUID userId, com.stockflow.customer.api.SalesOwnerState state);
+
+    /**
+     * The customers whose tax code has this 10-digit root - the organisation itself and its dependent units - in id
+     * order (finding P4).
+     */
+    java.util.List<UUID> idsWithTaxCodeRoot(String root);
+
+    /** How many customers are {@code userId}'s: assigned to them, or waiting for an owner after they left. */
+    long countOwnedBy(UUID userId);
 }

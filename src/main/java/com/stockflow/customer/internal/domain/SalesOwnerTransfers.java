@@ -74,6 +74,15 @@ public interface SalesOwnerTransfers {
      */
     boolean claim(Batch batch);
 
+    /**
+     * {@link #claim} for a manager's request, keeping {@code fingerprint} - what the request asked, hashed - so a retry
+     * can be told from another request sent with the same id (finding P1).
+     */
+    boolean claim(Batch batch, String fingerprint);
+
+    /** The fingerprint the request was claimed with; empty for an unknown request or one kept without (a return). */
+    Optional<String> fingerprintOf(UUID requestId);
+
     Optional<Batch> findByRequestId(UUID requestId);
 
     Optional<Batch> findById(UUID batchId);

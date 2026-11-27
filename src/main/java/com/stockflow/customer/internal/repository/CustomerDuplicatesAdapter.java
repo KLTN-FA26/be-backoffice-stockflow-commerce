@@ -2,6 +2,7 @@ package com.stockflow.customer.internal.repository;
 
 import com.stockflow.customer.api.SalesOwnerState;
 import com.stockflow.customer.internal.domain.CustomerDuplicates;
+import com.stockflow.customer.internal.domain.TaxCode;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -37,19 +38,24 @@ class CustomerDuplicatesAdapter implements CustomerDuplicates {
                 SELECT * FROM (
                     SELECT c.id, c.full_name, c.sales_owner_id, c.sales_owner_state,
                            (CAST(:taxCode AS varchar) IS NOT NULL AND c.tax_code = :taxCode) AS on_tax_code,
+                           (CAST(:taxRoot AS varchar) IS NOT NULL AND c.tax_code <> :taxCode
+                            AND (c.tax_code = :taxRoot OR c.tax_code LIKE CAST(:taxRoot AS varchar) || '-%'))
+                               AS on_tax_code_root,
                            (CAST(:phone AS varchar) IS NOT NULL AND c.phone = :phone) AS on_phone,
                            (CAST(:email AS varchar) IS NOT NULL AND lower(c.email) = :email) AS on_email,
                            (CAST(:name AS varchar) IS NOT NULL AND WANTED <> '' AND FOLDED = WANTED) AS on_name
                       FROM customer.customer c) m
-                 WHERE on_tax_code OR on_phone OR on_email OR on_name
-                 ORDER BY on_tax_code DESC, full_name, id
+                 WHERE on_tax_code OR on_tax_code_root OR on_phone OR on_email OR on_name
+                 ORDER BY on_tax_code DESC, on_tax_code_root DESC, full_name, id
                  LIMIT :limit""".replace("WANTED", wanted).replace("FOLDED", folded);
         return jdbc.query(sql,
-                new MapSqlParameterSource("taxCode", taxCode).addValue("phone", phone).addValue("email", email)
+                new MapSqlParameterSource("taxCode", taxCode).addValue("taxRoot", TaxCode.root(taxCode))
+                        .addValue("phone", phone).addValue("email", email)
                         .addValue("name", name).addValue("limit", limit).addValue("legalForms", LEGAL_FORMS),
                 (rs, row) -> {
                     Set<On> on = EnumSet.noneOf(On.class);
                     if (rs.getBoolean("on_tax_code")) on.add(On.TAX_CODE);
+                    if (rs.getBoolean("on_tax_code_root")) on.add(On.TAX_CODE_ROOT);
                     if (rs.getBoolean("on_phone")) on.add(On.PHONE);
                     if (rs.getBoolean("on_email")) on.add(On.EMAIL);
                     if (rs.getBoolean("on_name")) on.add(On.NAME);

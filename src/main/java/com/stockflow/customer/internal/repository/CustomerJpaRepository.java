@@ -37,6 +37,17 @@ interface CustomerJpaRepository extends BaseJpaRepository<CustomerJpaEntity> {
             + "where c.salesOwnerId = :userId and c.salesOwnerState = :state order by c.id")
     java.util.List<UUID> findIdsOwnedBy(@Param("userId") UUID userId,
                                         @Param("state") com.stockflow.customer.api.SalesOwnerState state);
+
+    /** The organisation {@code root} and its dependent units ({@code root-NNN}), in id order. */
+    @org.springframework.data.jpa.repository.Query("select c.id from CustomerJpaEntity c "
+            + "where c.taxCode = :root or c.taxCode like :branches order by c.id")
+    java.util.List<UUID> findIdsWithTaxCodeRoot(@Param("root") String root, @Param("branches") String branches);
+
+    /** The customers assigned to {@code userId} or waiting for an owner after they left. */
+    @org.springframework.data.jpa.repository.Query("select count(c) from CustomerJpaEntity c "
+            + "where c.salesOwnerId = :userId "
+            + "and c.salesOwnerState <> com.stockflow.customer.api.SalesOwnerState.UNASSIGNED")
+    long countOwnedBy(@Param("userId") UUID userId);
     Optional<CustomerJpaEntity> findByUserId(UUID userId);
     Optional<CustomerJpaEntity> findByEmailIgnoreCase(String email);
 

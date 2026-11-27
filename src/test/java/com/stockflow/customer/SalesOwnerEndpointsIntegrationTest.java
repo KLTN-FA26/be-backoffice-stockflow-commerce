@@ -28,6 +28,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -65,6 +66,7 @@ class SalesOwnerEndpointsIntegrationTest {
     @Autowired SalesOwnerTransferService transfers;
     @Autowired StaffCoverService covers;
     @Autowired Clock clock;
+    @Autowired com.stockflow.customer.api.SalesOwnerBook book;
 
     private SecuredMvc http;
     private StaffFixtures staff;
@@ -339,6 +341,87 @@ class SalesOwnerEndpointsIntegrationTest {
                 .andExpect(status().isForbidden());
     }
 
+    @Test
+    @DisplayName("Finding P1: a request id sent again with another body is 409, never the first request's result")
+    void aReusedRequestIdIsRefused() throws Exception {
+        UUID leaving = staff.staff("SALES_STAFF");
+        UUID b = staff.staff("SALES_STAFF");
+        UUID c = staff.staff("SALES_STAFF");
+        UUID customer = customerOwnedBy(leaving);
+        Map<String, Object> body = transferBody(leaving, List.of(b), List.of(customer), "WORKLOAD", false);
+        String batchId = data(as(Role.SALES_MANAGER, manager, post("/api/v1/customers/sales-owner-transfers"), body)
+                .andExpect(status().isOk())).at("/batchId").asText();
+
+        Map<String, Object> other = new HashMap<>(body);
+        other.put("toUserIds", List.of(c));
+        as(Role.SALES_MANAGER, manager, post("/api/v1/customers/sales-owner-transfers"), other)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("SALES_OWNER_TRANSFER_REQUEST_REUSED"));
+        Map<String, Object> otherNote = new HashMap<>(body);
+        otherNote.put("note", "something else");
+        as(Role.SALES_MANAGER, manager, post("/api/v1/customers/sales-owner-transfers"), otherNote)
+                .andExpect(status().isConflict());
+        assertThat(owner(customer)).isEqualTo(b + ":ASSIGNED");
+
+        assertThat(data(as(Role.SALES_MANAGER, manager, post("/api/v1/customers/sales-owner-transfers"), body)
+                .andExpect(status().isOk())).at("/batchId").asText()).as("the same body is a retry").isEqualTo(batchId);
+    }
+
+    @Test
+    @DisplayName("Finding P2: a transfer moves at most 500 customers; a larger book is refused whole, nothing moves")
+    void aTransferIsBounded() throws Exception {
+        UUID leaving = staff.staff("SALES_STAFF");
+        UUID target = staff.staff("SALES_STAFF");
+        write("""
+                INSERT INTO customer.customer (id, full_name, email, status, version, created_at, sales_owner_id,
+                                               sales_owner_state, sales_owner_since)
+                SELECT gen_random_uuid(), 'P2 book ' || n, 'p2-' || gen_random_uuid() || '@example.test', 'ACTIVE', 0,
+                       NOW(), ?, 'ASSIGNED', NOW()
+                  FROM generate_series(1, 501) AS n""", leaving);
+
+        as(Role.SALES_MANAGER, manager, post("/api/v1/customers/sales-owner-transfers"),
+                transferBody(leaving, List.of(target), null, "STAFF_LEFT", false))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("SALES_OWNER_TRANSFER_TOO_LARGE"));
+        List<UUID> named = jdbc.queryForList("SELECT id FROM customer.customer WHERE sales_owner_id = ?", UUID.class,
+                leaving);
+        as(Role.SALES_MANAGER, manager, post("/api/v1/customers/sales-owner-transfers"),
+                transferBody(leaving, List.of(target), named, "STAFF_LEFT", false))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("SALES_OWNER_TRANSFER_TOO_LARGE"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM customer.customer WHERE sales_owner_id = ?", Long.class,
+                target)).isZero();
+
+        JsonNode half = data(as(Role.SALES_MANAGER, manager, post("/api/v1/customers/sales-owner-transfers"),
+                transferBody(leaving, List.of(target), named.subList(0, 500), "STAFF_LEFT", false))
+                .andExpect(status().isOk()));
+        assertThat(half.at("/moved").asInt()).as("500 named customers move in one request").isEqualTo(500);
+    }
+
+    @Test
+    @DisplayName("Finding P3: customers held for a colleague on leave, or given back, are not new customers")
+    void aTemporaryHoldIsNoNewCustomer() throws Exception {
+        UUID away = staff.staff("SALES_STAFF");
+        UUID holder = staff.staff("SALES_STAFF");
+        customerOwnedBy(away);
+        customerOwnedBy(away);
+        Instant since = clock.instant().minusSeconds(60);
+        String batchId = data(as(Role.SALES_MANAGER, manager, post("/api/v1/customers/sales-owner-transfers"),
+                transferBody(away, List.of(holder), null, "TEMPORARY_LEAVE", true)).andExpect(status().isOk()))
+                .at("/batchId").asText();
+        assertThat(book.assignedSince(List.of(holder), since)).as("held for the colleague on leave").isEmpty();
+
+        as(Role.SALES_MANAGER, manager, post("/api/v1/customers/sales-owner-transfers/" + batchId + "/return"), null)
+                .andExpect(status().isOk());
+        assertThat(book.assignedSince(List.of(away), since).getOrDefault(away, 0))
+                .as("their own book given back: the two customers given at the start only").isEqualTo(2);
+
+        customerOwnedBy(away);
+        as(Role.SALES_MANAGER, manager, post("/api/v1/customers/sales-owner-transfers"),
+                transferBody(away, List.of(holder), null, "WORKLOAD", false)).andExpect(status().isOk());
+        assertThat(book.assignedSince(List.of(holder), since)).containsEntry(holder, 3);
+    }
+
     // -------------------------------------------------------------------------------------------------------------
     // Pickers, settings, lock dialog, duplicates
     // -------------------------------------------------------------------------------------------------------------
@@ -444,6 +527,13 @@ class SalesOwnerEndpointsIntegrationTest {
 
         as(Role.CUSTOMER, portalAccount(), get("/api/v1/customers/duplicates").param("taxCode", code), null)
                 .andExpect(status().isForbidden());
+
+        JsonNode byRoot = data(as(Role.SALES_STAFF, a, get("/api/v1/customers/duplicates")
+                .param("taxCode", code + "-005"), null).andExpect(status().isOk()));
+        assertThat(byRoot.size()).as("Finding P4: a unit of the same organisation").isEqualTo(1);
+        assertThat(byRoot.at("/0/customerId").asText()).isEqualTo(customer.toString());
+        assertThat(byRoot.at("/0/matchedOn/0").asText()).isEqualTo("TAX_CODE_ROOT");
+        assertThat(byRoot.at("/0/salesOwnerName").asText()).isNotBlank();
     }
 
     // -------------------------------------------------------------------------------------------------------------

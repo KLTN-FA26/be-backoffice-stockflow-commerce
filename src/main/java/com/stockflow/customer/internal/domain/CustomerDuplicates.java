@@ -13,8 +13,11 @@ import java.util.UUID;
  */
 public interface CustomerDuplicates {
 
-    /** What matched. */
-    enum On { TAX_CODE, PHONE, EMAIL, NAME }
+    /**
+     * What matched. {@code TAX_CODE_ROOT} (finding P4): another unit of the same organisation - the same 10-digit root,
+     * the tax code itself differing (the company of a unit, or another unit).
+     */
+    enum On { TAX_CODE, TAX_CODE_ROOT, PHONE, EMAIL, NAME }
 
     record Match(UUID customerId, String fullName, Set<On> matchedOn, UUID salesOwnerId, SalesOwnerState state) {
     }

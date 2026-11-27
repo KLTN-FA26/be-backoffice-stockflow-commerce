@@ -1064,6 +1064,44 @@ class B2bOnboardingIntegrationTest {
         assertThat(count("customer.customer")).as("nothing is left behind").isEqualTo(customers);
     }
 
+    @Test
+    @org.junit.jupiter.api.DisplayName("Finding P4: a unit of a company another salesperson looks after is refused "
+            + "CUSTOMER_OWNED_BY_OTHER_SALES; its owner and a manager go on")
+    void aUnitOfAnotherSalespersonsCompanyIsRefused() throws Exception {
+        StaffAccount owner = staffAccount("SALES_STAFF");
+        StaffAccount other = staffAccount("SALES_STAFF");
+        StaffAccount manager = staffAccount("SALES_MANAGER");
+        String company = mst();
+        customerId(create(owner.token(), json(Map.of("companyName", "Parent Co", "taxCode", company,
+                "contactName", "A", "email", unique("parent"))), null).andExpect(status().isCreated()));
+
+        long customers = count("customer.customer");
+        create(other.token(), json(Map.of("companyName", "Branch Co", "taxCode", company + "-001",
+                "contactName", "B", "email", unique("branch"))), null)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CUSTOMER_OWNED_BY_OTHER_SALES"))
+                .andExpect(jsonPath("$.details.salesOwnerId").value(owner.id().toString()))
+                .andExpect(jsonPath("$.details.salesOwnerName").isNotEmpty());
+        assertThat(count("customer.customer")).as("nothing is left behind").isEqualTo(customers);
+
+        UUID ownBranch = customerId(create(owner.token(), json(Map.of("companyName", "Branch 2 Co",
+                "taxCode", company + "-002", "contactName", "C", "email", unique("branch2"))), null)
+                .andExpect(status().isCreated()));
+        assertThat(owner(ownBranch)).isEqualTo(owner.id() + ":ASSIGNED");
+        UUID managersBranch = customerId(create(manager.token(), json(Map.of("companyName", "Branch 3 Co",
+                "taxCode", company + "-003", "contactName", "D", "email", unique("branch3"),
+                "salesOwnerId", other.id())), null).andExpect(status().isCreated()));
+        assertThat(owner(managersBranch)).as("a manager goes on, naming the owner").isEqualTo(other.id() + ":ASSIGNED");
+
+        String unitOnly = mst();
+        create(owner.token(), json(Map.of("companyName", "Unit Co", "taxCode", unitOnly + "-001",
+                "contactName", "E", "email", unique("unit"))), null).andExpect(status().isCreated());
+        create(other.token(), json(Map.of("companyName", "Head Co", "taxCode", unitOnly, "contactName", "F",
+                "email", unique("head"))), null)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CUSTOMER_OWNED_BY_OTHER_SALES"));
+    }
+
     /**
      * Owner decision 2026-11-28: no new customer without an owner. A Sales Manager or a System Admin who names nobody
      * and no lead is refused with 400 SALES_OWNER_REQUIRED before anything is written - no customer, no portal account,

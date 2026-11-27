@@ -81,6 +81,16 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
     }
 
     @Override
+    public java.util.List<UUID> idsWithTaxCodeRoot(String root) {
+        return root == null ? java.util.List.of() : customers.findIdsWithTaxCodeRoot(root, root + "-%");
+    }
+
+    @Override
+    public long countOwnedBy(UUID userId) {
+        return userId == null ? 0 : customers.countOwnedBy(userId);
+    }
+
+    @Override
     public Optional<Customer> findById(UUID id) {
         return customers.findById(id).map(this::withAddresses);
     }

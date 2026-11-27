@@ -1221,6 +1221,17 @@ public enum ErrorCode {
     SALES_OWNER_TRANSFER_NOT_FOUND("Transfer of customers not found", 404),
     /** Plan §10.1: only a temporary transfer is returned, and only once. */
     SALES_OWNER_TRANSFER_NOT_RETURNABLE("Only a temporary transfer can be returned", 409),
+    /**
+     * BR-S09 idempotency (review finding P1): a transfer's {@code requestId} names one request; sent again with another
+     * body it would silently answer the first request's result as if it were this one's.
+     */
+    SALES_OWNER_TRANSFER_REQUEST_REUSED("This request id was already used for another transfer; send a new one", 409),
+    /**
+     * Review finding P2: one transfer moves at most 500 customers, in one transaction holding their row locks; a larger
+     * book is moved in several transfers, each naming its customers.
+     */
+    SALES_OWNER_TRANSFER_TOO_LARGE("A transfer moves at most 500 customers; split it into several naming the customers",
+            422),
 
     /** Checkout needs somewhere to deliver: no shipping address was chosen and none is the default. */
     SHIPPING_ADDRESS_REQUIRED("Add a shipping address before placing an order", 409),

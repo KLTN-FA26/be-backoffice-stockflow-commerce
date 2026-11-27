@@ -110,11 +110,34 @@ public class SalesOwnershipService implements SalesOwnership, ResponsibleSales {
         if (refusal.isEmpty()) {
             return;
         }
-        UUID ownerId = refusal.get().ownerId();
+        throw ownedByOther(customerId, refusal.get().ownerId());
+    }
+
+    /**
+     * Finding P4: {@code userId} is about to become the owner of a customer of the same organisation as
+     * {@code relatedCustomerId} (a dependent unit of it, or the organisation of a unit). Allowed when that customer has
+     * no working owner, when it is {@code userId}'s, or for a manager; refused otherwise - stricter than
+     * {@link #requireMayActFor}: a cover acts for the absent owner's customers, it does not take the company's other
+     * units for itself.
+     *
+     * @throws BusinessException {@code CUSTOMER_OWNED_BY_OTHER_SALES} naming the owner
+     */
+    @Transactional(readOnly = true)
+    public void requireMayTakeRelated(UUID userId, UUID relatedCustomerId) {
+        SalesOwner owner = customers.salesOwners(List.of(relatedCustomerId)).get(relatedCustomerId);
+        if (owner == null || owner.state() != SalesOwnerState.ASSIGNED || owner.userId().equals(userId)
+                || !isWorking(owner.userId())
+                || (userId != null && salesStaff.holdsPermission(userId, MANAGES_OWNERS))) {
+            return;
+        }
+        throw ownedByOther(relatedCustomerId, owner.userId());
+    }
+
+    private BusinessException ownedByOther(UUID customerId, UUID ownerId) {
         String name = ownerId == null ? "?" : identity.displayNames(List.of(ownerId)).getOrDefault(ownerId, "?");
         Map<String, Object> details = ownerId == null ? Map.of()
                 : Map.of("salesOwnerId", ownerId, "salesOwnerName", name);
-        throw new BusinessException(ErrorCode.CUSTOMER_OWNED_BY_OTHER_SALES,
+        return new BusinessException(ErrorCode.CUSTOMER_OWNED_BY_OTHER_SALES,
                 "Customer %s is looked after by %s".formatted(customerId, ownerId), List.of(), details)
                 .localized("refusal.customer.ownedByOtherSales", name);
     }

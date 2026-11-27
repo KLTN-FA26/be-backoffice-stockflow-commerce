@@ -42,16 +42,31 @@ class SalesOwnerTransfersAdapter implements SalesOwnerTransfers {
 
     @Override
     public boolean claim(Batch batch) {
+        return claim(batch, null);
+    }
+
+    @Override
+    public Optional<String> fingerprintOf(UUID requestId) {
+        return jdbc.queryForList("SELECT request_fingerprint FROM customer.sales_owner_transfer_batch "
+                        + "WHERE request_id = :request", new MapSqlParameterSource("request", requestId), String.class)
+                .stream().filter(java.util.Objects::nonNull).findFirst();
+    }
+
+    @Override
+    public boolean claim(Batch batch, String fingerprint) {
         return jdbc.update("""
                 INSERT INTO customer.sales_owner_transfer_batch (id, request_id, from_user_id, reason, note, temporary,
-                        returns_batch_id, notify_customer, requested_by, requested_at, version, created_at, created_by)
-                VALUES (:id, :request, :from, :reason, :note, :temporary, :returns, :notify, :by, :at, 0, :at, :creator)
+                        returns_batch_id, notify_customer, requested_by, requested_at, request_fingerprint, version,
+                        created_at, created_by)
+                VALUES (:id, :request, :from, :reason, :note, :temporary, :returns, :notify, :by, :at, :fingerprint, 0,
+                        :at, :creator)
                 ON CONFLICT (request_id) DO NOTHING""",
                 new MapSqlParameterSource("id", batch.id()).addValue("request", batch.requestId())
                         .addValue("from", batch.fromUserId()).addValue("reason", batch.reason().name())
                         .addValue("note", batch.note()).addValue("temporary", batch.temporary())
                         .addValue("returns", batch.returnsBatchId()).addValue("notify", batch.notifyCustomer())
                         .addValue("by", batch.requestedBy()).addValue("at", Timestamp.from(batch.requestedAt()))
+                        .addValue("fingerprint", fingerprint)
                         .addValue("creator", String.valueOf(batch.requestedBy()))) == 1;
     }
 

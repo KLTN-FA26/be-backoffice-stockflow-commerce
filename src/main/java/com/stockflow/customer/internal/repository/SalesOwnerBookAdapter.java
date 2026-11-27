@@ -53,7 +53,8 @@ class SalesOwnerBookAdapter implements SalesOwnerBook {
         jdbc.query("""
                         SELECT to_user_id, count(DISTINCT customer_id) AS given
                           FROM customer.customer_sales_owner_history
-                         WHERE to_user_id IN (:users) AND changed_at >= :since AND reason <> 'BACKFILL'
+                         WHERE to_user_id IN (:users) AND changed_at >= :since
+                           AND reason NOT IN ('BACKFILL', 'TEMPORARY_LEAVE', 'RETURN_FROM_LEAVE')
                          GROUP BY to_user_id""",
                 Map.of("users", Set.copyOf(userIds), "since", Timestamp.from(since)),
                 rs -> {

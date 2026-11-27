@@ -4,6 +4,7 @@
 --       no actor; a CHANGE still changes something
 --   LF  customer.lead_form_existing_customer (S4): one row per customer, gone with it
 --   TR  the assignability triggers, rewritten to take the account FOR SHARE (C2), still refuse and accept as before
+--   TF  customer.sales_owner_transfer_batch.request_fingerprint (P1): a SHA-256 in hex, or nothing
 -- Needs the demo seed. Fixture rows are made here and everything is rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
@@ -118,5 +119,21 @@ SELECT pg_temp.expect_fail_like('TR3 a locked salesperson stands in for nobody',
 SELECT pg_temp.expect_true('TR4 the functions lock the account they read',
     (SELECT bool_and(prosrc LIKE '%FOR SHARE%') FROM pg_proc
       WHERE proname IN ('check_sales_owner_assignable', 'check_staff_cover_stand_in')));
+
+\echo '--- TF: a transfer request''s fingerprint'
+SELECT pg_temp.expect_ok('TF1 P1: a batch with its request''s fingerprint',
+    format('INSERT INTO customer.sales_owner_transfer_batch (id, request_id, from_user_id, reason, temporary, '
+           'notify_customer, requested_by, requested_at, request_fingerprint, created_at) VALUES (gen_random_uuid(), '
+           'gen_random_uuid(), %L, ''WORKLOAD'', false, false, %L, NOW(), %L, NOW())', pg_temp.id('a'),
+           pg_temp.id('manager'), repeat('ab', 32)));
+SELECT pg_temp.expect_ok('TF2 a batch without one (made before P1, or a return)',
+    format('INSERT INTO customer.sales_owner_transfer_batch (id, request_id, from_user_id, reason, temporary, '
+           'notify_customer, requested_by, requested_at, created_at) VALUES (gen_random_uuid(), gen_random_uuid(), '
+           '%L, ''WORKLOAD'', false, false, %L, NOW(), NOW())', pg_temp.id('a'), pg_temp.id('manager')));
+SELECT pg_temp.expect_fail_like('TF3 a fingerprint that is no SHA-256', 'ck_sales_owner_transfer_batch_fingerprint',
+    format('INSERT INTO customer.sales_owner_transfer_batch (id, request_id, from_user_id, reason, temporary, '
+           'notify_customer, requested_by, requested_at, request_fingerprint, created_at) VALUES (gen_random_uuid(), '
+           'gen_random_uuid(), %L, ''WORKLOAD'', false, false, %L, NOW(), ''the body'', NOW())', pg_temp.id('a'),
+           pg_temp.id('manager')));
 
 ROLLBACK;
