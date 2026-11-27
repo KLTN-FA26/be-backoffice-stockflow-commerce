@@ -35,7 +35,7 @@ public class AssistantAnswerFeedbackJpaEntity extends BaseEntity implements Scop
     @Column(name = "reason", length = 500)
     private String reason;
 
-    /** The rater's roles when they rated, '+'-joined; null on a verdict given before V20270107000400. */
+    /** The rater's roles when they rated, '+'-joined; null on a verdict given before V20270120001300. */
     @Column(name = "rater_roles", length = 200)
     private String raterRoles;
 

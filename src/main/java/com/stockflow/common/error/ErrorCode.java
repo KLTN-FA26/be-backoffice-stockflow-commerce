@@ -33,7 +33,7 @@ public enum ErrorCode {
     /** SCRUM-461, kltn-docs 01 §3: a product is identified by its brand too, so it is chosen before approval. */
     PRODUCT_BRAND_REQUIRED("A brand is required before submitting for approval", 409),
     /** SCRUM-87: the request requires them, so a product reaching approval without them is a legacy row. */
-    PRODUCT_DETAILS_REQUIRED("An English name and a tax class are required before submitting for approval", 409),
+    PRODUCT_DETAILS_REQUIRED("A tax class is required before submitting for approval", 409),
     /** SCRUM-87: a retired brand stays on the products that chose it, but no product newly chooses it. */
     BRAND_INACTIVE("This brand is inactive and cannot be chosen for a product", 409),
     /** SCRUM-87: a retired category stays on the products that chose it, but no product newly chooses it. */
@@ -1153,15 +1153,15 @@ public enum ErrorCode {
     DESIGN_CLONE_TARGET_INVALID("This design cannot be cloned onto that variant", 409),
     /** The same idempotency key is still being processed. The client should poll, not retry blindly. */
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
-    /** ADR-0011: a question in this conversation is still being answered; its turns must not interleave. */
+    /** ADR-0014: a question in this conversation is still being answered; its turns must not interleave. */
     ASSISTANT_BUSY("The assistant is still answering in this conversation", 409),
-    /** ADR-0012: a suggestion of the assistant is open for a day; an older one is asked for again, not confirmed. */
+    /** ADR-0015: a suggestion of the assistant is open for a day; an older one is asked for again, not confirmed. */
     ASSISTANT_ACTION_EXPIRED("This suggestion has expired; ask the assistant again", 409),
-    /** ADR-0012: a suggestion already dismissed, or one already confirmed that a dismissal would not undo. */
+    /** ADR-0015: a suggestion already dismissed, or one already confirmed that a dismissal would not undo. */
     ASSISTANT_ACTION_CLOSED("This suggestion has already been decided", 409),
-    /** ADR-0014: a credential that outlives the session (an MCP token) is made only just after signing in. */
+    /** ADR-0017: a credential that outlives the session (an MCP token) is made only just after signing in. */
     RECENT_SIGN_IN_REQUIRED("Sign in again to do this", 403),
-    /** ADR-0014: a user holds at most ten live MCP tokens; one they no longer use is revoked first. */
+    /** ADR-0017: a user holds at most ten live MCP tokens; one they no longer use is revoked first. */
     ASSISTANT_MCP_TOKEN_LIMIT("You already have as many MCP tokens as allowed; revoke one first", 409),
     PRODUCT_CODE_ALREADY_EXISTS("A product with this code already exists", 409),
     BRAND_CODE_ALREADY_EXISTS("A brand with this code or slug already exists", 409),
@@ -1373,10 +1373,10 @@ public enum ErrorCode {
 
     // ---- 429
     RATE_LIMITED("Too many requests", 429),
-    /** ADR-0011: the per-user daily cap on assistant questions ({@code stockflow.assistant.daily-message-limit}). */
+    /** ADR-0014: the per-user daily cap on assistant questions ({@code stockflow.assistant.daily-message-limit}). */
     ASSISTANT_DAILY_LIMIT("You have asked the assistant as many questions as allowed today", 429),
     /**
-     * ADR-0011: the model provider's own quota is used up — a daily quota, or a wait longer than
+     * ADR-0014: the model provider's own quota is used up — a daily quota, or a wait longer than
      * a minute — for every model the assistant routes to ({@code stockflow.assistant.routing}).
      * Not retryable: the same question meets the same refusal until the provider renews a quota,
      * hours later. While one model still has a quota, a spent one is reported as
@@ -1402,18 +1402,18 @@ public enum ErrorCode {
      *  which is why this is a 503 and not a 401 that would sign the user out. */
     AUTHORIZATION_UNAVAILABLE("Permissions cannot be checked right now, please retry", 503),
     /**
-     * ADR-0011: the assistant's model provider could not be reached, timed out, or failed (a 5xx,
+     * ADR-0014: the assistant's model provider could not be reached, timed out, or failed (a 5xx,
      * a per-minute 429) after the adapter's own retries. Retryable.
      */
     ASSISTANT_UNAVAILABLE("The assistant cannot answer right now, please retry", 503),
     /**
-     * ADR-0011: the model provider refused the key, the model name, the account or the request
+     * ADR-0014: the model provider refused the key, the model name, the account or the request
      * itself (400, 401, 402, 403, 404). Not retryable: nothing changes until an administrator
      * fixes the configuration.
      */
     ASSISTANT_MISCONFIGURED("The assistant is not set up correctly; please tell an administrator",
             503),
-    /** ADR-0011: the assistant is switched off, or has no credentials, in this deployment. Not retryable. */
+    /** ADR-0014: the assistant is switched off, or has no credentials, in this deployment. Not retryable. */
     ASSISTANT_DISABLED("The assistant is not available in this deployment", 503);
 
     private final String defaultMessage;

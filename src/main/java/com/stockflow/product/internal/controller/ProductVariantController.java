@@ -5,6 +5,7 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.product.internal.controller.dto.DescriptionRequest;
 import com.stockflow.product.internal.controller.dto.GenerateVariantsRequest;
 import com.stockflow.product.internal.controller.dto.GeneratedVariantsResponse;
 import com.stockflow.product.internal.controller.dto.VariantRequest;
@@ -116,6 +117,17 @@ class ProductVariantController {
     public ApiResponse<VariantResponse> update(@PathVariable UUID productId, @PathVariable UUID variantId,
                                                @Valid @RequestBody VariantRequest request) {
         return ApiResponse.ok(mapper.toResponse(variants.update(productId, variantId, command(request))));
+    }
+
+    @PutMapping("/{variantId}/description")
+    @Operation(summary = "The variant's own description: the rich-text editor's HTML, cleaned by the server",
+            description = "Null or an empty editor removes it; the storefront then shows the product's description. "
+                    + "Allowed in any variant status while the product takes changes (not while it is under review "
+                    + "or discontinued).")
+    @RequiresPermission(resource = ProductResources.VARIANTS, action = Action.UPDATE)
+    public ApiResponse<VariantResponse> describe(@PathVariable UUID productId, @PathVariable UUID variantId,
+                                                 @Valid @RequestBody DescriptionRequest request) {
+        return ApiResponse.ok(mapper.toResponse(variants.describe(productId, variantId, request.html())));
     }
 
     @PostMapping("/{variantId}/activation")

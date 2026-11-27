@@ -10,7 +10,7 @@ import java.util.UUID;
  * order's stock coverage screen shows it ({@code GET /api/v1/orders/{orderId}/stock-coverage}, 4B-7, kltn-docs 17 §4.2
  * step 3).
  *
- * <p>Published for the back-office assistant (ADR-0011), whose answer to "why has this order not moved?" needs the one
+ * <p>Published for the back-office assistant (ADR-0014), whose answer to "why has this order not moved?" needs the one
  * fact no other {@code api} gives: an order is released one delivery batch at a time, and only once every carton of
  * that batch is held at the shipping warehouse (17 BR-29). The screen's record is internal; this is the same figures,
  * named.</p>

@@ -1,7 +1,7 @@
 /**
  * <b>The back-office AI assistant</b>
  *
- * <p>ADR-0011 · design {@code docs/assistant-design.md} · database schema {@code assistant}</p>
+ * <p>ADR-0014 · design {@code docs/assistant-design.md} · database schema {@code assistant}</p>
  *
  * <p>One agent that answers staff questions in Vietnamese by calling tools, each a thin wrapper over a read method of
  * another module's {@code api}. Every tool carries the permission of the screen that shows the same data, so the

@@ -1,11 +1,11 @@
-# ADR-0012: Trợ lý đề xuất, người dùng xác nhận; model không bao giờ ghi
+# ADR-0015: Trợ lý đề xuất, người dùng xác nhận; model không bao giờ ghi
 
 Trạng thái: **không còn áp dụng trên thực tế từ 2026-11-16** (superseded in practice): cả hai loại đề xuất mà ADR này
 quản lý, đề xuất PO của `proposeReorder` và phiếu nhập nháp từ ảnh phiếu giao hàng, đã bỏ cùng đợt dọn phạm vi của
 `develop` ([ADR-0010 rescope](0010-rescope-b2b-printed-goods.md)); xem "Sửa đổi ngày 16/11/2026" ở cuối. Trước đó: đề
 xuất (2026-11-04), chờ team chấp nhận; đã xây dựng trên nhánh `feature/ai-assistant`. Thiết kế:
 [`docs/assistant-design.md`](../assistant-design.md) §8 (từ 16/11 chỉ còn bảng tóm tắt những gì đã bỏ). Bổ sung cho
-ADR-0011, không thay nó.
+ADR-0014, không thay nó.
 
 ## Bối cảnh
 
@@ -105,7 +105,7 @@ lệnh sản xuất, đếm theo thùng nguyên và dán nhãn LPN lúc đếm. 
   `AssistantActionController`, `procurement :: api` `GoodsReceiptDrafting`. Method ghi counter `assistant.actions`
   (`AssistantTelemetry.action`) còn trong code lúc viết nhưng không còn ai gọi.
 
-Trợ lý giờ không tạo chứng từ nào, kể cả bản nháp; câu trả lời chỉ ra màn hình làm việc (ADR-0011, sửa đổi 16/11).
+Trợ lý giờ không tạo chứng từ nào, kể cả bản nháp; câu trả lời chỉ ra màn hình làm việc (ADR-0014, sửa đổi 16/11).
 ADR này **không bị bác bỏ**: nếu sau này trợ lý được đề xuất một chứng từ (ví dụ một lệnh sản xuất nháp cho phần đợt giao
 còn thiếu), các quyết định trên vẫn là cách làm: model không có tool ghi, đề xuất là dòng của chính người hỏi, chứng từ
 chỉ tạo khi người đó bấm, qua endpoint mang đúng guard của màn chứng từ, đúng một lần, chỉ bản nháp. Khi đó cần một

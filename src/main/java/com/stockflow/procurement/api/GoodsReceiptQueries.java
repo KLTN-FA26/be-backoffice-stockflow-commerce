@@ -7,7 +7,7 @@ import java.util.UUID;
 
 /**
  * Goods receipts for other modules to show, read through the list the receipt screen reads
- * ({@code GET /api/v1/goods-receipts}). The back-office assistant (ADR-0011) answers receiving's daily questions
+ * ({@code GET /api/v1/goods-receipts}). The back-office assistant (ADR-0014) answers receiving's daily questions
  * with it - which receipts are still being counted, which wait to be put away - that no other {@code api} could:
  * receipts are otherwise this module's alone ({@code GoodsReceipts} drives them, and stays internal).
  *

@@ -1,7 +1,7 @@
-# ADR-0016: Câu hỏi bằng giọng nói: chép lời rồi người nói tự sửa và gửi
+# ADR-0019: Câu hỏi bằng giọng nói: chép lời rồi người nói tự sửa và gửi
 
 Trạng thái: đề xuất (2026-11-06), chờ team chấp nhận; đã xây dựng trên nhánh `feature/ai-assistant`. Thiết kế:
-[`docs/assistant-design.md`](../assistant-design.md) §8.3. Dựa trên ADR-0011 (trợ lý gọi tool), ADR-0015 (danh sách
+[`docs/assistant-design.md`](../assistant-design.md) §8.3. Dựa trên ADR-0014 (trợ lý gọi tool), ADR-0018 (danh sách
 nơi nhận dữ liệu) và câu hỏi mở AQ-01 (doanh nghiệp có đồng ý gửi dữ liệu cho nhà cung cấp cloud không). Sửa đổi ngày
 16/11/2026 theo đợt dọn phạm vi (ADR-0010 rescope), ở cuối.
 
@@ -41,7 +41,7 @@ cũng hướng mã sang công cụ quét `lookupScan` (C9): mã lấy từ máy 
 
 - `stockflow.assistant.voice.enabled` mặc định `false`. Profile `local` và playground bật nó.
 - `stockflow.assistant.voice.model` được đọc như một model định tuyến (`ModelCatalog`), nên `data-policy`,
-  `allowed-providers` và `allowed-hosts` của `DataBoundary` (ADR-0015) quyết định được gọi hay không.
+  `allowed-providers` và `allowed-hosts` của `DataBoundary` (ADR-0018) quyết định được gọi hay không.
 - Ở `LOCAL_ONLY`, lựa chọn duy nhất còn lại là một server Whisper trong mạng công ty, ví dụ `openai/whisper-small` trên
   server kiểu OpenAI.
 - Để trống thì dùng tuyến model của chat (`routing.models`): các model Gemini được phép, theo thứ tự, và chuyển sang

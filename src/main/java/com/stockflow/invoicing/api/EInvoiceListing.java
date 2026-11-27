@@ -11,7 +11,7 @@ import java.util.UUID;
 
 /**
  * The accountant's list of VAT e-invoices ({@code GET /api/v1/einvoices}, WF-05 E2, kltn-docs 21) for another module
- * to show: the back-office assistant (ADR-0011) is asked "hoá đơn nào còn chưa phát hành?", "đơn SO-… đã xuất hoá đơn
+ * to show: the back-office assistant (ADR-0014) is asked "hoá đơn nào còn chưa phát hành?", "đơn SO-… đã xuất hoá đơn
  * chưa?". The screen filters by the order's id, which nobody outside it can read; this filters by its number, which
  * every invoice carries as printed.
  *

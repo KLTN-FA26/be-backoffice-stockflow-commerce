@@ -10,7 +10,7 @@ import java.util.UUID;
  * saw ({@code KH-1}), never the names: a review becomes a golden-set case committed to the repository.
  *
  * @param givenAt    when the verdict was last given (a second verdict replaces the first)
- * @param rater      who gave it, by role; null for a verdict given before the roles were recorded (V20270107000400)
+ * @param rater      who gave it, by role; null for a verdict given before the roles were recorded (V20270120001300)
  * @param question   the question answered; null when none precedes it (never for an answer the panel produced)
  * @param tools      every tool call made for the answer, in order
  */

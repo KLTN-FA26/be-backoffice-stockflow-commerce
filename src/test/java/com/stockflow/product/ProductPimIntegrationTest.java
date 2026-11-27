@@ -94,8 +94,8 @@ class ProductPimIntegrationTest {
     }
 
     ProductSummary create(UUID brand, UUID category) {
-        return products.create(new CreateProductCommand("CUP-" + suffix, "Ly giấy 12oz", "Paper cup 12oz", brand,
-                category, "Ly in logo", null, null, TaxClass.STANDARD, List.of()));
+        return products.create(new CreateProductCommand("CUP-" + suffix, "Ly giấy 12oz", brand,
+                category, "Ly in logo", null, TaxClass.STANDARD, List.of()));
     }
 
     @Test
@@ -138,8 +138,8 @@ class ProductPimIntegrationTest {
         assertThatThrownBy(() -> create(UUID.randomUUID(), null)).isInstanceOfSatisfying(BusinessException.class,
                 e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.BRAND_NOT_FOUND));
 
-        var updated = products.update(new UpdateProductCommand(created.productId(), created.version(), "Ly giấy 16oz", "Paper cup 16oz",
-                null, root.id(), null, null, null, TaxClass.REDUCED));
+        var updated = products.update(new UpdateProductCommand(created.productId(), created.version(), "Ly giấy 16oz",
+                null, root.id(), null, null, TaxClass.REDUCED));
         assertThat(updated.categoryId()).isEqualTo(root.id());
         assertThat(updated.brandId()).isNull();
         assertThat(updated.slug()).isEqualTo(created.slug());
@@ -206,8 +206,8 @@ class ProductPimIntegrationTest {
     }
 
     @Test
-    @DisplayName("an uploaded image reaches the storefront only when someone else publishes it")
-    void imagesArePublishedByASecondPerson() throws Exception {
+    @DisplayName("an uploaded image reaches the storefront once published, by its own uploader too (ADR-0012)")
+    void imagesArePublishedByHand() throws Exception {
         var category = taxonomy.createCategory("CAT-" + suffix, null, new CategoryDetails("Ly", 0, null, null, null, true));
         var brand = taxonomy.createBrand("BR-" + suffix, "Brand " + suffix, null);
         var created = create(brand.id(), category.id());
@@ -222,23 +222,19 @@ class ProductPimIntegrationTest {
         assertThat(media.upload(productId, variantId, png(), editor, "upload-" + suffix).id()).isEqualTo(second.id());
         assertThat(media.list(productId, variantId)).hasSize(2);
 
-        // Not before the product is approved, and never by the uploader.
+        // Not before the product is approved.
         actAs(approver);
         assertThatThrownBy(() -> media.publish(productId, variantId, List.of(image.id()), approver))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PRODUCT_NOT_APPROVED));
         products.submit(productId, editor);
         products.approve(productId, approver);
+        // No second person any more: the uploader publishes their own image.
         actAs(editor);
-        assertThatThrownBy(() -> media.publish(productId, variantId, List.of(image.id()), editor))
-                .isInstanceOfSatisfying(BusinessException.class,
-                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.SELF_APPROVAL_NOT_ALLOWED));
-
-        actAs(approver);
-        var published = media.publish(productId, variantId, List.of(image.id()), approver);
+        var published = media.publish(productId, variantId, List.of(image.id()), editor);
         assertThat(published).singleElement().satisfies(m -> {
             assertThat(m.published()).isTrue();
-            assertThat(m.publishedBy()).isEqualTo(approver);
+            assertThat(m.publishedBy()).isEqualTo(editor);
         });
         // The product itself is not published yet: the storefront sees nothing of it.
         assertThatThrownBy(() -> publication.publishedImages(productId)).isInstanceOf(BusinessException.class);

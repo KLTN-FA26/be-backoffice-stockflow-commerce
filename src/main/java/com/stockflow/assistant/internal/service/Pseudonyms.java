@@ -16,7 +16,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * The customer aliases of one conversation while a question of it is answered (ADR-0015): what is sent to the model
+ * The customer aliases of one conversation while a question of it is answered (ADR-0018): what is sent to the model
  * provider instead of a customer's name ({@code KH#3}), and which customer each stands for.
  *
  * <p><b>Why {@code KH#n}.</b> Staff write customer codes as {@code KH-012} or {@code KH001} (MISA's habit); an alias in

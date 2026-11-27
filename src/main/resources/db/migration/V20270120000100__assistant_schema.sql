@@ -1,5 +1,5 @@
 -- =============================================================================
--- Assistant: the back-office AI assistant's conversations (ADR-0011, docs/assistant-design.md §2).
+-- Assistant: the back-office AI assistant's conversations (ADR-0014, docs/assistant-design.md §2).
 -- Module: assistant
 --
 -- A conversation belongs to the one user who opened it and is read with scope OWN. Its turns are

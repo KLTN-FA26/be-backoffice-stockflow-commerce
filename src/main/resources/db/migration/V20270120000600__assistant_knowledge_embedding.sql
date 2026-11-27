@@ -1,5 +1,5 @@
 -- =============================================================================
--- Assistant: search the rules by meaning as well as by their words (ADR-0011, docs/assistant-design.md §6.4).
+-- Assistant: search the rules by meaning as well as by their words (ADR-0014, docs/assistant-design.md §6.4).
 -- Module: assistant
 --
 -- The rules and the glossary are written in English and the staff ask in Vietnamese, so a question

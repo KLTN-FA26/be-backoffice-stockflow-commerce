@@ -15,7 +15,7 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Chooses the {@link SpeechTranscriber} (ADR-0016), as the chat chooses its model:
+ * Chooses the {@link SpeechTranscriber} (ADR-0019), as the chat chooses its model:
  * on the chat's switch and settings, and only when {@value #ENABLED} is true as well.
  *
  * <p><b>Off unless asked for.</b> A recording is someone's voice, and what they say may name a customer or an amount;

@@ -49,7 +49,7 @@ import java.util.Optional;
  *
  * <p><b>The customer</b> is resolved by {@link CustomerMatch}: a caller who may list customers is offered the names a
  * fragment matches; one who may not names the customer exactly. Only the company name and the account status come
- * back - no contact, e-mail, phone or tax code - and the name goes to the model as an alias (ADR-0015).</p>
+ * back - no contact, e-mail, phone or tax code - and the name goes to the model as an alias (ADR-0018).</p>
  *
  * <p><b>What the numbers count.</b> Every price counts whole cartons now - a customer price names only the customer's
  * own SKU ({@code catalog.check_customer_price_own_sku}) and a standard price counts cartons by definition - while

@@ -1,7 +1,7 @@
-# ADR-0013: Việc chạy nền của trợ lý chạy bằng quyền của chính người nhận
+# ADR-0016: Việc chạy nền của trợ lý chạy bằng quyền của chính người nhận
 
 Trạng thái: đề xuất (2026-11-05), chờ team chấp nhận; đã xây dựng trên nhánh `feature/ai-assistant`. Thiết kế:
-[`docs/assistant-design.md`](../assistant-design.md) §9.1. Bổ sung cho ADR-0008 (quyền tính ở server) và ADR-0012.
+[`docs/assistant-design.md`](../assistant-design.md) §9.1. Bổ sung cho ADR-0008 (quyền tính ở server) và ADR-0015.
 Sửa đổi ngày 16/11/2026 theo đợt dọn phạm vi (ADR-0010 rescope), ở cuối.
 
 ## Bối cảnh
@@ -58,7 +58,7 @@ của một module không có identity vẫn phải chạy được.
 - Người không có quyền dùng trợ lý (`assistant-conversations:CREATE`) không được xem hộ.
 - Câu trả lời chủ động đi qua `AssistantService.askProactively`, có `@RequiresPermission` như một câu hỏi, và chỉ được
   đưa các tool câu đó cần. Lời gọi tới tool khác bị từ chối mà không chạy (`NOT_OFFERED`). Đề xuất nhập hàng trong đó
-  thành đề xuất của chính người đó và chờ họ xác nhận (ADR-0012).
+  thành đề xuất của chính người đó và chờ họ xác nhận (ADR-0015).
 - Tầm nhìn của người dùng (scope, kho) được lưu cùng trạng thái theo dõi. Khi nó đổi, lần nhìn sau chỉ ghi nhận, nên quản
   lý chuyển kho không nhận tin cũ của kho mới.
 - Job không bao giờ chạy khi tắt security: lúc đó không có data scope nào, và quyền đọc được không phải quyền thật.
@@ -86,4 +86,4 @@ người đó tự đọc được. Theo đợt dọn phạm vi của `develop` 
   không được báo, trừ khi doanh nghiệp đổi cấu hình.
 - **Câu trả lời chủ động** cho đơn bị giữ chỉ được đưa `findOrders` và `findOrder` (trước đó thêm `getCustomerCredit`,
   đã bỏ). Câu "đề xuất nhập hàng trong đó thành đề xuất của chính người đó" ở mục Quyết định không còn áp dụng: trợ lý
-  không còn đề xuất nào (ADR-0012, sửa đổi 16/11).
+  không còn đề xuất nào (ADR-0015, sửa đổi 16/11).

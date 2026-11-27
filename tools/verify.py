@@ -226,7 +226,7 @@ for f in files:
 
 # 10. permission catalog consistency
 #     Compared by the resource CODE the constants hold, not by the constants' names. The assistant's tools
-#     (ADR-0011) guard with other modules' resources, whose constants are internal to those modules, so the
+#     (ADR-0014) guard with other modules' resources, whose constants are internal to those modules, so the
 #     same code reaches @RequiresPermission under another name: ToolPermissions.INVENTORY_ALERTS is
 #     InventoryResources.ALERTS, both "inventory-alerts". Comparing names reported those as undeclared, and
 #     would equally have passed two different codes that happen to share a constant name.

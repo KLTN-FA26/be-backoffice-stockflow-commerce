@@ -84,8 +84,7 @@ class InventoryItemMasterDataIntegrationTest {
         when(users.current()).thenReturn(Optional.of(new CurrentUser(editor, "test-" + editor, Set.of(), Set.of(),
                 DataScope.ALL, Set.of())));
         suffix = UUID.randomUUID().toString().substring(0, 6).toUpperCase();
-        ProductSummary created = products.create(new CreateProductCommand("CUP-" + suffix, "Ly giấy 12oz",
-                "Paper cup 12oz", null, null, "Ly", null, null, TaxClass.STANDARD, List.of()));
+        ProductSummary created = products.create(new CreateProductCommand("CUP-" + suffix, "Ly giấy 12oz", null, null, "Ly", null, TaxClass.STANDARD, List.of()));
         productId = created.productId();
         variantId = variants.list(productId, 0, 1).items().getFirst().id();
         variantSku = "CUP-" + suffix;

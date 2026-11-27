@@ -32,7 +32,7 @@ import java.util.stream.Stream;
  *
  * <p><b>The buyer</b> is named as the invoice names it, which the screen shows to everyone who may read invoices, and
  * as a {@link CustomerName}, so the model provider sees the conversation's alias rather than the company's name
- * (ADR-0015). The buyer's tax code and address stay out: the invoice holds them for the tax authority, and no question
+ * (ADR-0018). The buyer's tax code and address stay out: the invoice holds them for the tax authority, and no question
  * about where an invoice stands needs them. A customer named in the question is resolved by {@link CustomerMatch}, as
  * the order and price tools do: a caller who may list customers is offered the names a fragment matches, one who may
  * not names the customer exactly or by tax code.</p>

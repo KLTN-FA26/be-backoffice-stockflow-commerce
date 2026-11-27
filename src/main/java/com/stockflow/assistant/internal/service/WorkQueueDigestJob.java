@@ -39,7 +39,7 @@ import java.util.UUID;
  * and warehouses as stored now, exactly as their own request to {@code GET /work-queue} reads it: a warehouse manager
  * is told about their warehouses' batches, never the company's. A user who may not use the assistant
  * ({@code assistant-conversations:READ}, the widget's permission) is skipped; {@code RunAs} refuses a disabled, locked
- * or portal account before anything is read. Acting for a user outside a request is reviewed per caller (ADR-0013):
+ * or portal account before anything is read. Acting for a user outside a request is reviewed per caller (ADR-0016):
  * {@code ArchitectureTest.onlyTheAssistantsWatchActsForAUser} names this job beside the watch.</p>
  *
  * <p><b>Once per user per day</b>: the message's dedupe key is the business day, and the inbox posts a key to a

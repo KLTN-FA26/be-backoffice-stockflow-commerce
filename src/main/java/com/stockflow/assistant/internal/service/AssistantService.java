@@ -164,7 +164,7 @@ public class AssistantService {
      * @param telemetry  where each answer's span, the parent of its model calls and tools, is recorded
      * @param parallel   runs a step's calls at once, in the order the model asked for them
      * @param background the models the watch's questions go to
-     * @param pseudonyms the customer aliases the model provider is sent instead of names (ADR-0015)
+     * @param pseudonyms the customer aliases the model provider is sent instead of names (ADR-0018)
      */
     @Autowired
     AssistantService(ConversationService conversations, ModelRouter models, AssistantTools tools,
@@ -234,7 +234,7 @@ public class AssistantService {
 
     /**
      * A question the assistant's watch asks for {@code user}, in a proactive conversation of theirs (design §9.1,
-     * ADR-0013): answered as a question of theirs is — their tools, their scope, their proposals becoming suggestions
+     * ADR-0016): answered as a question of theirs is — their tools, their scope, their proposals becoming suggestions
      * of theirs — on the background models, and not counted against their daily limit (the watch has its own). Called
      * through the proxy, as the user {@code RunAs} acts for, on the watch's own thread.
      *
@@ -280,7 +280,7 @@ public class AssistantService {
     }
 
     /**
-     * The answer with its customers' names back (ADR-0015). It is stored already: a failure to read the names shows the
+     * The answer with its customers' names back (ADR-0018). It is stored already: a failure to read the names shows the
      * aliases rather than an error, and the transcript reads them again when it is reopened.
      */
     private Answer revealed(UUID conversationId, Pseudonyms aliases, Answer answer) {
@@ -327,7 +327,7 @@ public class AssistantService {
         if (channel == ToolChannel.CHAT) {
             conversations.requireAskable(conversationId);
         }
-        // A customer the conversation already calls KH#n is sent by that alias when the user names it (ADR-0015): the
+        // A customer the conversation already calls KH#n is sent by that alias when the user names it (ADR-0018): the
         // question is stored so, and read back with the name.
         Pseudonyms aliases = pseudonyms.forQuestion(conversationId);
         Turn.Question turn = new Turn.Question(aliases == null ? question : aliases.hideNames(question),
@@ -1011,7 +1011,7 @@ public class AssistantService {
                          List<String> unverifiedCodes, List<String> instructionLike,
                          List<FollowUps.FollowUp> followUps) {
 
-        /** With the customers' names put back where the model was given aliases (ADR-0015). */
+        /** With the customers' names put back where the model was given aliases (ADR-0018). */
         Answer revealed(java.util.function.UnaryOperator<String> reveal) {
             return new Answer(messageId, reveal.apply(text), toolCalls, cutShort, usage, citations,
                     tables.stream().map(table -> table.revealed(reveal)).toList(), unverifiedNumbers, unverifiedCodes,

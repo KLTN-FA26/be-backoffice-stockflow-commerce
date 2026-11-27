@@ -1,4 +1,4 @@
--- Personal tokens for the assistant's MCP endpoint (design §7, ADR-0014), and the permission that opens MCP per role.
+-- Personal tokens for the assistant's MCP endpoint (design §7, ADR-0017), and the permission that opens MCP per role.
 --
 -- An AI client (Claude Code, Claude Desktop, Cursor) is set up once and runs for weeks; the sign-in token lives eight
 -- hours and is the user's whole session. A personal token is made for one client, accepted on the MCP endpoint only,

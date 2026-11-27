@@ -1,7 +1,7 @@
-# ADR-0015: Bí danh khách hàng, danh sách nơi nhận dữ liệu, và đánh dấu ghi chú dạng mệnh lệnh
+# ADR-0018: Bí danh khách hàng, danh sách nơi nhận dữ liệu, và đánh dấu ghi chú dạng mệnh lệnh
 
 Trạng thái: đề xuất (2026-11-05), chờ team chấp nhận; đã xây dựng trên nhánh `feature/ai-assistant`. Thiết kế:
-[`docs/assistant-design.md`](../assistant-design.md) §5.5, §5.6. Dựa trên ADR-0011 (trợ lý gọi tool) và câu hỏi mở
+[`docs/assistant-design.md`](../assistant-design.md) §5.5, §5.6. Dựa trên ADR-0014 (trợ lý gọi tool) và câu hỏi mở
 AQ-01 (doanh nghiệp có đồng ý gửi dữ liệu cho nhà cung cấp cloud không). Sửa đổi ngày 16/11/2026 theo đợt dọn phạm vi
 (ADR-0010 rescope), ở cuối.
 
@@ -123,6 +123,6 @@ phạm vi của chúng hẹp lại:
   ứng viên của `CustomerMatch`, vẫn dưới dạng `KH#n`. "Tên nhà cung cấp" (mục không che) không còn xuất hiện vì không
   còn nhà cung cấp; tên nhà sản xuất trên phiếu nhập (`findGoodsReceipts`) là đối tác, không che, cùng lý do.
 - **Danh sách nơi nhận dữ liệu.** Đọc ảnh phiếu giao hàng đã bỏ, nên `DataBoundary` giờ kiểm chat, model định tuyến,
-  embedding, reranker và chép lời giọng nói (ADR-0016). Câu về "phần đọc ảnh phiếu giao hàng" ở mục 3 không còn áp dụng.
+  embedding, reranker và chép lời giọng nói (ADR-0019). Câu về "phần đọc ảnh phiếu giao hàng" ở mục 3 không còn áp dụng.
 - **Ghi chú dạng mệnh lệnh.** Không đổi; chữ người gõ tới model qua `findOrder`, `findOrders` và
   `findPendingAdjustments`.

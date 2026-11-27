@@ -1,10 +1,10 @@
 -- =============================================================================
 -- assistant-conversations:VIEW_PAGE, READ, CREATE for WAREHOUSE_STAFF
--- (ADR-0011, docs/assistant-design.md §2 and §13 AQ-02, review finding ROLE-10).
--- Module: identity (grants) for assistant. Written with the module, as V20270106000200 was: the repository owner's
+-- (ADR-0014, docs/assistant-design.md §2 and §13 AQ-02, review finding ROLE-10).
+-- Module: identity (grants) for assistant. Written with the module, as V20270120000200 was: the repository owner's
 -- decision of 2026-10-24, the exception to the schema owner's flow.
 --
--- Like V20270106000200, this opens the assistant panel and grants no data. Every tool still carries the permission of
+-- Like V20270120000200, this opens the assistant panel and grants no data. Every tool still carries the permission of
 -- the screen that shows the same data, and the role is limited to the warehouses it is assigned to (data scope
 -- WAREHOUSE), so a floor user learns through the assistant only what their own screens already show them, in their
 -- own warehouses: stock levels and lots, a lot's trace, cartons and locations scanned, the pick tasks assigned to them

@@ -129,7 +129,7 @@ public final class ResultTable {
 
         /**
          * With every text cell passed through {@code reveal}: the customers' names put back where the model was given
-         * aliases (ADR-0015). Rows keep their columns' order.
+         * aliases (ADR-0018). Rows keep their columns' order.
          */
         Table revealed(java.util.function.UnaryOperator<String> reveal) {
             List<Map<String, Object>> shown = rows.stream().map(row -> {

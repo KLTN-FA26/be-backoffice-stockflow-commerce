@@ -45,7 +45,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * The assistant's watch for one user (design §9.1, ADR-0013): reads a few of their lists as them, records what it saw,
+ * The assistant's watch for one user (design §9.1, ADR-0016): reads a few of their lists as them, records what it saw,
  * tells them in the in-app inbox what is new, and may answer a fixed question about it in a conversation of theirs.
  *
  * <p><b>As the user, never as the system.</b> Each look runs inside {@link RunAs}: the user's roles, grants, scope and

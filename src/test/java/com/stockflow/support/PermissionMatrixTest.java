@@ -315,7 +315,7 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/credit-requests/{id}/withdrawal", "customer-credit-requests:CREATE"),
             // Was sales-orders:READ + back office; its own code so ACCREAD does not open the queue.
             Map.entry("GET /api/v1/orders/cancellation-requests", "sales-order-cancellations:READ"),
-            // Contract §4.1, §5 (V20270107000400): born permission-guarded; listed so the guards cannot drift. The
+            // Contract §4.1, §5 (V20270120001300): born permission-guarded; listed so the guards cannot drift. The
             // explanation of an error code reveals no data, so the panel's permission is enough; the review of other
             // people's answers and the usage counts have resources of their own.
             Map.entry("GET /api/v1/assistant/error-explanations/{errorCode}", "assistant-conversations:READ"),
@@ -573,7 +573,7 @@ class PermissionMatrixTest {
             // BE3-B (V20261127000100, kltn-docs 00 §2.5): the audit trail names people - the System Admin alone reads it.
             Map.entry("platform-audit-logs:READ", Set.of(Role.SYSTEM_ADMIN)),
             Map.entry("platform-audit-logs:VIEW_PAGE", Set.of(Role.SYSTEM_ADMIN)),
-            // AQ-16, contract §5 (V20270107000400): other people's questions are the System Admin's alone; the usage
+            // AQ-16, contract §5 (V20270120001300): other people's questions are the System Admin's alone; the usage
             // counts, which name nobody, the Sales Manager's too.
             Map.entry("assistant-feedback:READ", Set.of(Role.SYSTEM_ADMIN)),
             Map.entry("assistant-usage:READ", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)));

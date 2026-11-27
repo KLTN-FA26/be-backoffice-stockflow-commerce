@@ -59,7 +59,7 @@ public class ConversationService {
 
     /**
      * @param pseudonyms the customer aliases answers were written with, stored with them and read back as names
-     *                   (ADR-0015)
+     *                   (ADR-0018)
      */
     @org.springframework.beans.factory.annotation.Autowired
     ConversationService(ConversationRepository conversations, AnswerFeedbackRepository verdicts, Clock clock,
@@ -168,7 +168,7 @@ public class ConversationService {
             entries.add(TranscriptEntry.question(message));
         }
         answer(asked, exchange, earlier, entries);
-        // Checked as stored, with the aliases the model saw; shown with the names (ADR-0015).
+        // Checked as stored, with the aliases the model saw; shown with the names (ADR-0018).
         java.util.function.UnaryOperator<String> reveal = pseudonyms.revealer(conversationId);
         return withVerdicts(entries.stream().map(entry -> entry.revealed(reveal)).toList());
     }
@@ -264,7 +264,7 @@ public class ConversationService {
 
     /**
      * @param aliases the customer aliases the question's tools gave out, stored in this transaction: an answer stored
-     *                with "KH#3" always has the customer it stands for (ADR-0015); null for none
+     *                with "KH#3" always has the customer it stands for (ADR-0018); null for none
      */
     public List<Message> appendAndRelease(UUID conversationId, UUID ownerUserId, Instant claimedAt,
                                           List<PendingMessage> produced, ToolChannel channel, Pseudonyms aliases) {
@@ -411,7 +411,7 @@ public class ConversationService {
             return turns;
         }
 
-        /** With the customers' names put back where the model was given aliases (ADR-0015). */
+        /** With the customers' names put back where the model was given aliases (ADR-0018). */
         TranscriptEntry revealed(java.util.function.UnaryOperator<String> reveal) {
             return new TranscriptEntry(messageId, sequence, role, reveal.apply(text), at, toolCalls, cutShort,
                     citations, tables.stream().map(table -> table.revealed(reveal)).toList(),

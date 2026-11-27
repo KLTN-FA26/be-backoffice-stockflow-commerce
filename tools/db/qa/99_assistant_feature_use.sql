@@ -1,5 +1,5 @@
 -- =============================================================================
--- The assistant's feature-use counts and the rater's roles on a verdict (V20270107000400; contract §5): the checks of
+-- The assistant's feature-use counts and the rater's roles on a verdict (V20270120001300; contract §5): the checks of
 -- assistant.feature_use and the new columns of assistant.answer_feedback, and who holds assistant-feedback and
 -- assistant-usage. Needs any staff user (the demo seed has them). Rolled back at the end.
 -- =============================================================================

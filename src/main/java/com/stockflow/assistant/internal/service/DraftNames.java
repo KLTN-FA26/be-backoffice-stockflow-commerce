@@ -14,7 +14,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * The names a draft's text must not carry to the model provider (ADR-0015), and how they come back: the customer as
+ * The names a draft's text must not carry to the model provider (ADR-0018), and how they come back: the customer as
  * {@code KH#1}, each of its contact people as {@code LH#1}, {@code LH#2}, ... ({@link DraftWriter#names}).
  *
  * <p><b>More than the registered name, written whole.</b> People do not write a customer's registered name in a chat:

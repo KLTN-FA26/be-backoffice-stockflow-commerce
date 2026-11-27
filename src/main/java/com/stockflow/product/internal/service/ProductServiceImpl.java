@@ -93,12 +93,15 @@ class ProductServiceImpl implements ProductService {
     private final CurrentUserProvider users;
     private final List<SkuReferenceProbe> probes;
     private final Clock clock;
+    /** The description is the back office editor's HTML, cleaned before it is stored (ADR-0013). */
+    private final RichTextPolicy richText;
 
     ProductServiceImpl(ProductRepository products, ProductSearchRepository search, ProductVariantService variants,
                        ProductMediaService media, ProductAttributeService attributes, ProductEventPublisher events,
                        ProductChangeLogRepository history, ProductCommerceRepository commerce,
                        InventoryService inventory, IdentityService identity, CurrentUserProvider users,
-                       List<SkuReferenceProbe> probes, Clock clock) {
+                       List<SkuReferenceProbe> probes, RichTextPolicy richText, Clock clock) {
+        this.richText = richText;
         this.products = products;
         this.search = search;
         this.variants = variants;
@@ -166,8 +169,8 @@ class ProductServiceImpl implements ProductService {
             throw new BusinessException(ErrorCode.VARIANT_SKU_ALREADY_EXISTS,
                     "SKU " + command.code() + " already belongs to another product's variant");
         }
-        Product product = Product.draft(command.code(), command.name(), command.nameEn(), command.brandId(),
-                command.categoryId(), command.shortDescription(), command.description(), command.descriptionEn(),
+        Product product = Product.draft(command.code(), command.name(), command.brandId(),
+                command.categoryId(), command.shortDescription(), richText.clean(command.description(), "description"),
                 command.taxClass());
         products.save(product);
         UUID productId = product.id().value();
@@ -216,8 +219,8 @@ class ProductServiceImpl implements ProductService {
         Product product = requireProductForUpdate(command.productId());
         product.requireVersion(command.version());
         requireReferences(command.brandId(), command.categoryId(), product.brandId(), product.categoryId());
-        List<String> changed = product.updateDetails(command.name(), command.nameEn(), command.brandId(),
-                command.categoryId(), command.shortDescription(), command.description(), command.descriptionEn(),
+        List<String> changed = product.updateDetails(command.name(), command.brandId(),
+                command.categoryId(), command.shortDescription(), richText.clean(command.description(), "description"),
                 command.taxClass());
         products.save(product);
         if (!changed.isEmpty()) {

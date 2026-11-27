@@ -1,7 +1,7 @@
 # Trợ lý back-office: thiết kế
 
 Trạng thái: **đã xây dựng phase 1 và phase 2** trên nhánh `feature/ai-assistant` (2026-10-25), đi cùng
-[ADR-0011](adr/0011-assistant-tool-calling-agent.md). Dựa trên `develop` `92bcd760`. Tài liệu mô tả đúng code
+[ADR-0014](adr/0014-assistant-tool-calling-agent.md). Dựa trên `develop` `92bcd760`. Tài liệu mô tả đúng code
 đã viết; chỗ nào khác bản đề xuất ban đầu được ghi rõ. Đã qua hai vòng rà soát độc lập: vòng nghiệp vụ ngày 25/10
 (§15) và vòng sáu chiều ngày 28–29/10 (§16). Hai mục đó ghi các lỗi tìm thấy, cách sửa và phần còn mở. Ngày 29/10 có
 thêm một vòng tối ưu (§16, mục "Tối ưu vòng 2"): một phần phase 3 đã làm (thẻ "hôm nay" §9, tìm theo nghĩa §6.4,
@@ -28,7 +28,7 @@ khách, không bao giờ dùng trợ lý). Code của trợ lý đã đi theo; c
   trong hệ thống đã bỏ; bản mới đọc lệnh sản xuất của module `order`), `getCustomerCredit` và `findOverdueCustomers`
   (sổ công nợ cũ đã bỏ; tiền là đợt thanh toán của hợp đồng), `findTransferOrders` (không còn chuyển kho),
   `findReturns` (luồng đổi trả cũ đã thay bằng yêu cầu trả hàng và phiếu nhập hàng hoàn). Cùng với chúng: đề xuất PO
-  và phiếu nhập nháp từ ảnh phiếu giao hàng (§8, ADR-0012), bảng `assistant.action`, các phần "hàng thiếu", "lô sắp
+  và phiếu nhập nháp từ ảnh phiếu giao hàng (§8, ADR-0015), bảng `assistant.action`, các phần "hàng thiếu", "lô sắp
   hết hạn", "PO trễ", "LSX trễ" của thẻ "hôm nay" (§9) và hai danh sách theo dõi `lowStock`, `overduePurchaseOrders`
   (§9.1).
 - **Kho tri thức** là bản chụp kltn-docs (`docs/kltn-snapshot`, `tools/sync_kltn_docs.py`, §6.1); mã quy định có
@@ -86,7 +86,7 @@ ca của bộ câu hỏi chuẩn (§10.1).
 | U14 | SALES_STAFF, SALES_MANAGER | "Khách hàng demo lấy 60 thùng LY-GIAY-DEMO-12OZ-XANH thì giá một ly bao nhiêu?" | giá riêng của khách cho SKU đó (không có giá niêm yết hay giá nhóm phía sau), các bậc giá tính theo **thùng** với SKU riêng của khách, đơn giá theo **cái**, MOQ là bậc đầu, bậc áp dụng cho số lượng hỏi hoặc "dưới MOQ", trạng thái tài khoản khách | `getCustomerPrice` |
 | U16 | WAREHOUSE_MANAGER, WAREHOUSE_STAFF | "Kho mình còn task nhặt nào đang làm dở?", "Phiếu nhập nào đang chờ cất hàng?" | hàng đợi task nhặt theo quy tắc thấy task của màn hình (kèm `visibility`), trạng thái kiểm thùng; hàng đợi phiếu nhập từ nhà sản xuất theo trạng thái; chỉ kho của mình | `findFulfillmentTasks`, `findGoodsReceipts` |
 | U17 | WAREHOUSE_MANAGER, WAREHOUSE_STAFF | "Điều chỉnh tồn nào đang chờ duyệt?", "Chuyến giao nào đang giao không thành công?" | hàng đợi điều chỉnh chờ duyệt (cũ nhất trước, ai phải duyệt); chuyến giao theo trạng thái, nguyên xe, không thu hộ, không mã vận đơn | `findPendingAdjustments`, `findShipments` |
-| U18 | SALES_STAFF (gõ một phần tên được), ACCOUNTANT, PRODUCTION_COORDINATOR, WAREHOUSE_MANAGER (phải gõ đúng tên hoặc mã số thuế) | "Đơn của Khách hàng demo là những đơn nào?" | các đơn của một khách; tên khách đi tới model dưới bí danh `KH#n` (ADR-0015) | `findOrders` |
+| U18 | SALES_STAFF (gõ một phần tên được), ACCOUNTANT, PRODUCTION_COORDINATOR, WAREHOUSE_MANAGER (phải gõ đúng tên hoặc mã số thuế) | "Đơn của Khách hàng demo là những đơn nào?" | các đơn của một khách; tên khách đi tới model dưới bí danh `KH#n` (ADR-0018) | `findOrders` |
 | U19 | WAREHOUSE_MANAGER, WAREHOUSE_STAFF | "HCM-A01-2-B" (một nhãn quét) | thùng LPN: SKU, lô, số trong thùng, đang phân bổ, vị trí, trạng thái tồn của hàng trong thùng; vị trí: từng SKU, lô, trạng thái với số thùng và tổng; mã vạch: SKU | `lookupScan` |
 | U22 | SALES_STAFF, ACCOUNTANT | "Đơn SO-… đã kiểm thùng xong sao chưa xuất?", "Đơn SO-20261120-900001 khách phải trả gì chưa?" | `dueBeforeHandover` > 0 thì hàng chưa được rời kho tới khi kế toán ghi nhận thanh toán (15 BR-07, BR-08); hợp đồng chưa ký thì chưa có gì đến hạn | `findOrder` |
 | — (đang làm) | dự kiến: ai có quyền xem lệnh sản xuất | "Đơn SO-… đang in ở nhà sản xuất nào, bao giờ xong?" | lệnh sản xuất của đơn hay của đợt giao | `findProductionOrders` (đang làm) |
@@ -111,7 +111,7 @@ dữ liệu nào. Các biến thể này nằm trong bộ câu hỏi chuẩn (§
 Ai được dùng tool nào phụ thuộc vào quyền seed hiện có, không phải vào trợ lý. Danh sách đúng lúc chạy không
 được viết tay ở đâu cả: `GET /api/v1/assistant/capabilities` (§7) đọc nó từ chính khai báo của các tool, và
 ngữ cảnh của mỗi câu hỏi đưa đúng danh sách đó cho model (§3.3, §5.7). Bảng dưới là ảnh chụp ngày 16/11/2026, tính từ
-quyền trong `V20261111000000__baseline.sql` cộng các migration sau nó, cùng `V20270106000200` và `V20270106000500`
+quyền trong `V20261111000000__baseline.sql` cộng các migration sau nó, cùng `V20270120000200` và `V20270120000500`
 cho chính trợ lý; hai dòng SALES_MANAGER và ACCOUNTANT cập nhật 27/11 theo các quyền đọc `develop` cấp thêm
 (`V20261209000200`, `V20261222000100`, `V20261227000400` = QĐ14, QĐ15).
 
@@ -149,7 +149,7 @@ com.stockflow.assistant/
 └── internal/
     ├── controller/          AssistantController, AssistantPanelController (GET /capabilities, GET /today),
     │                        AssistantMcpController + McpServer + McpOriginFilter (MCP, §7),
-    │                        AssistantMcpTokenController (token cá nhân, ADR-0014), VoiceController (§8.3),
+    │                        AssistantMcpTokenController (token cá nhân, ADR-0017), VoiceController (§8.3),
     │                        AssistantResources, AssistantWebMapper, dto/ (CapabilitiesResponse, TableResponse,
     │                        TodayResponse, FeedbackRequest, TranscriptionResponse, McpTokenResponse, Mcp*)
     ├── service/             AssistantService (vòng lặp), ModelRouter + ModelRoutingProperties + ModelCatalog,
@@ -195,7 +195,7 @@ Các helper, mỗi cái một việc:
 - `KnownSkus`: kiểm một SKU model gõ có inventory item không, trước khi đọc tồn kho (§4.1).
 - `Packing`: quy đổi một số lượng ra thùng theo quy cách của SKU (`...Packed`), khác số thùng thật của `lookupScan`.
 - `TypedText`: che số điện thoại, e-mail và mã số thuế trong chữ tự do trước khi gửi đi (§5.5); `InstructionLikeText`
-  đánh dấu ghi chú đọc như mệnh lệnh (ADR-0015).
+  đánh dấu ghi chú đọc như mệnh lệnh (ADR-0018).
 - `ToolDates`: đọc ngày `YYYY-MM-DD` từ tham số tool.
 - `CustomerMatch`: một khách hàng tìm theo chữ người gõ, qua `CustomerService.list`. Đúng tên đầy đủ hoặc đúng mã số
   thuế thì lấy. Người có `customer-customers:READ` được chọn khi chỉ một khách khớp một phần tên, hoặc nhận tối đa 5
@@ -203,7 +203,7 @@ Các helper, mỗi cái một việc:
   hỏi lại. Người không có quyền đó phải gõ đúng, không bao giờ nhận danh sách. Chỉ chép tên và trạng thái tài khoản;
   mã số thuế người gõ chỉ dùng để so, không trả lại. Tìm qua `Specs.contains` dưới collation ICU gốc (`und-x-icu`),
   nên tên đăng ký bằng chữ hoa có dấu tìm được; chưa bỏ dấu (`unaccent`), nên gõ không dấu thì không khớp (§16).
-  Tên đi tới model dưới bí danh `KH#n` (`CustomerPseudonyms`, ADR-0015). `SupplierMatch` (nhà cung cấp) đã bỏ cùng
+  Tên đi tới model dưới bí danh `KH#n` (`CustomerPseudonyms`, ADR-0018). `SupplierMatch` (nhà cung cấp) đã bỏ cùng
   việc mua hàng.
 - `ResultTable`: bảng dưới câu trả lời, dựng từ kết quả tool đã lưu (§7).
 - `AnswerNumbers`, `AnswerCodes`: kiểm số và mã của mọi câu trả lời lúc chạy, cùng định nghĩa với bộ câu hỏi chuẩn
@@ -229,20 +229,20 @@ ra ngoài (`NotificationSender` là tiền lệ). Test thay port `LanguageModel`
 | `knowledge_source` | bản build nào đánh chỉ mục mỗi tài liệu lần cuối | để một bản build cũ khởi động sau không ghi đè quy định mới hơn (§6.2) |
 | `answer_feedback` | đánh giá của người dùng cho một câu trả lời (§7), thêm 29/10 | một dòng cho mỗi câu trả lời (`uk_answer_feedback_message`); `verdict` UP/DOWN, `reason` tối đa 500 ký tự; FK tới `message` ON DELETE CASCADE nên bị xóa cùng hội thoại; `ScopedEntity`, đọc với scope OWN; `message` vẫn chỉ ghi thêm |
 | `watch_state`, `watch_item` | lớp theo dõi đã thấy gì, cho ai (§9.1) | một trạng thái cho mỗi người và mỗi danh sách; từ 16/11 chỉ còn danh sách `heldOrders` |
-| `mcp_token` | token cá nhân cho client MCP (ADR-0014) | chỉ lưu hash; thu hồi được từng cái |
-| `customer_alias` | bí danh `KH#n` của khách trong một hội thoại (ADR-0015) | |
+| `mcp_token` | token cá nhân cho client MCP (ADR-0017) | chỉ lưu hash; thu hồi được từng cái |
+| `customer_alias` | bí danh `KH#n` của khách trong một hội thoại (ADR-0018) | |
 
 Bảng `assistant.action` (đề xuất PO và phiếu nhập nháp chờ xác nhận, §8.2) **không còn**: migration của nó
 (`V20261105000900__assistant_action.sql`) bị bỏ cùng đợt dọn 16/11, trước khi nhánh merge, vì cả hai loại đề xuất đều
 dựa trên mua hàng.
 
 Migration của trợ lý, đã đổi số ngày 16/11 lên trên baseline của `develop` (`V20261111000000`) và trên migration mới
-nhất của `develop` lúc gộp: `V20270106000100__assistant_schema.sql`, `V20270106000200__assistant_grants.sql`,
-`V20270106000300__assistant_knowledge.sql`, `V20270106000400__assistant_answer_feedback.sql`,
-`V20270106000500__assistant_floor_grants.sql`, `V20270106000600__assistant_knowledge_embedding.sql`,
-`V20270106000700__assistant_tool_call_channel.sql`, `V20270106000800__assistant_knowledge_flow.sql`,
-`V20270106001000__assistant_watch.sql`, `V20270106001100__assistant_mcp_tokens.sql`,
-`V20270106001200__assistant_customer_alias.sql`. Hai migration cấp quyền giờ dùng vai trò của đợt dọn và tăng
+nhất của `develop` lúc gộp: `V20270120000100__assistant_schema.sql`, `V20270120000200__assistant_grants.sql`,
+`V20270120000300__assistant_knowledge.sql`, `V20270120000400__assistant_answer_feedback.sql`,
+`V20270120000500__assistant_floor_grants.sql`, `V20270120000600__assistant_knowledge_embedding.sql`,
+`V20270120000700__assistant_tool_call_channel.sql`, `V20270120000800__assistant_knowledge_flow.sql`,
+`V20270120001000__assistant_watch.sql`, `V20270120001100__assistant_mcp_tokens.sql`,
+`V20270120001200__assistant_customer_alias.sql`. Hai migration cấp quyền giờ dùng vai trò của đợt dọn và tăng
 `identity.app_role.version` của đúng các vai trò đó trong cùng file. Chủ repo cho phép viết migration của trợ lý cùng
 module (quyết định 2026-10-24); từ 13/11 CLAUDE.md cho mọi người viết migration cùng tính năng, chủ schema review.
 Trước khi mở PR, số phiên bản vẫn phải lớn hơn migration mới nhất của mọi nhánh đã merge, vì Flyway không chạy
@@ -252,8 +252,8 @@ migration cũ hơn bản đã áp; sau khi merge, sinh lại `schema.dbml` bằn
 
 | Resource | Action | Cấp cho |
 |---|---|---|
-| `assistant-conversations` | `VIEW_PAGE`, `READ`, `CREATE` | WAREHOUSE_MANAGER, SALES_STAFF, SALES_MANAGER, PRODUCTION_COORDINATOR, ACCOUNTANT, SYSTEM_ADMIN (`V20270106000200`); WAREHOUSE_STAFF (`V20270106000500`). **Không bao giờ** cấp cho CUSTOMER. |
-| `assistant-mcp` | `CREATE` | chỉ SYSTEM_ADMIN (`V20270106001100`); doanh nghiệp chọn vai trò nào giữ nó (AQ-17) |
+| `assistant-conversations` | `VIEW_PAGE`, `READ`, `CREATE` | WAREHOUSE_MANAGER, SALES_STAFF, SALES_MANAGER, PRODUCTION_COORDINATOR, ACCOUNTANT, SYSTEM_ADMIN (`V20270120000200`); WAREHOUSE_STAFF (`V20270120000500`). **Không bao giờ** cấp cho CUSTOMER. |
+| `assistant-mcp` | `CREATE` | chỉ SYSTEM_ADMIN (`V20270120001100`); doanh nghiệp chọn vai trò nào giữ nó (AQ-17) |
 
 Trước đợt dọn, quyền được cấp cho INVENTORY_PLANNER, PROCUREMENT_STAFF, ORDER_COORDINATOR, QC_STAFF và
 PRODUCTION_STAFF; năm vai trò này không còn (baseline `V20261111000000`), nên hai migration cấp quyền được viết lại theo
@@ -429,7 +429,7 @@ chính xác, đọc lại được bằng `Instant.parse` (trước 16/11 `Answe
   dùng gọi tên sản phẩm thì gọi `searchCatalog` trước rồi dùng SKU nó trả về. Nhiều SKU thì hỏi lại; không thấy thì
   xin SKU, vì catalog chỉ có sản phẩm đã đăng trên storefront. Câu hỏi chỉ là một mã như nhãn vừa quét (LPN-…, mã vị
   trí, mã vạch) thì gọi `lookupScan` với nguyên mã đó; `NOT_FOUND` mà mã có thể là SKU thì gọi `getStockLevels`.
-  Bí danh khách `KH#n` viết đúng như tool trả, một lần, không kèm tên (ADR-0015);
+  Bí danh khách `KH#n` viết đúng như tool trả, một lần, không kèm tên (ADR-0018);
 - `NOT_PERMITTED`: nói bằng lời thường, kèm mã quyền sau một nhãn dễ hiểu, ví dụ "tồn kho và lô
   (inventory-stock-items:READ)", không nêu vai trò hay người cấp. Lần từ chối chỉ áp cho dữ liệu của tool đó: phần
   khác của câu hỏi vẫn dùng tool khác, nhưng không lấy dữ liệu bị từ chối qua tool khác. `NOT_FOUND` với một SKU thì
@@ -919,7 +919,7 @@ quyết định của AQ-01.
 
 Key của nhà cung cấp này không bao giờ được gửi tới nhà cung cấp kia (§11).
 
-**Bí danh khách hàng (5/11, ADR-0015).** Từ 5/11 tên khách trong kết quả tool không còn tới nhà cung cấp model:
+**Bí danh khách hàng (5/11, ADR-0018).** Từ 5/11 tên khách trong kết quả tool không còn tới nhà cung cấp model:
 `getCustomerPrice`, `findOrders` và danh sách ứng viên của `CustomerMatch` ghi `KH#1`, `KH#2`... (kiểu `CustomerName`;
 tới 16/11 cả `getCustomerCredit` và `findOverdueCustomers`, nay đã bỏ). Bảng đối chiếu `assistant.customer_alias` nằm trong database của công ty, cố định suốt
 một hội thoại, được lưu cùng transaction với câu trả lời và bị xóa theo hội thoại. Câu trả lời, bảng dưới nó và
@@ -930,7 +930,7 @@ vẹn trong câu hỏi hay nằm trong ghi chú của kết quả tool cũng đ�
 cấp: tên một khách khi người dùng gõ lần đầu, tên ngắn dưới 6 ký tự, tên nhà cung cấp, tên sản phẩm. MCP và thẻ "hôm nay" vẫn nhận tên thật (không qua model của ứng dụng). Tắt bằng
 `stockflow.assistant.pseudonymise-customers=false`.
 
-**Danh sách nơi nhận dữ liệu (5/11, ADR-0015).** `stockflow.assistant.allowed-providers` (`anthropic`, `gemini`,
+**Danh sách nơi nhận dữ liệu (5/11, ADR-0018).** `stockflow.assistant.allowed-providers` (`anthropic`, `gemini`,
 `openai`) và `allowed-hosts` (host ngoài mạng công ty), trống là không giới hạn. `DataBoundary` là phép kiểm chung của
 chat, model định tuyến, embedding, reranker và chép lời (tới 16/11 cả đọc ảnh): thứ tự là `data-policy`, rồi endpoint trong mạng công ty (luôn được
 phép), rồi nhà cung cấp, rồi host. Liệt kê nhà cung cấp mà không ghi host thì chỉ host API chính thức của các hãng đó
@@ -951,7 +951,7 @@ Những gì thêm ngày 29/10:
   ba mới; với gói miễn phí, tài liệu nghiệp vụ thật cũng có thể bị dùng để cải thiện sản phẩm (AQ-01). Với
   `provider=anthropic` không có gì gửi sang Google.
 - **Ảnh phiếu giao hàng** (§8.1) từng rời hệ thống khi endpoint được bật; tính năng đã bỏ ngày 16/11, nên không còn
-  ảnh nào được gửi. **Giọng nói** (§8.3, ADR-0016) thì có: khi bật, bản ghi âm tới model chép lời, không lưu ở đâu.
+  ảnh nào được gửi. **Giọng nói** (§8.3, ADR-0019) thì có: khi bật, bản ghi âm tới model chép lời, không lưu ở đâu.
 - **Qua MCP** (§7), kết quả tool đi tới nhà cung cấp model của client mà người dùng tự chọn (Claude Desktop với tài
   khoản cá nhân, một agent trong IDE), không phải nhà cung cấp ứng dụng đã chọn (AQ-17).
 
@@ -986,7 +986,7 @@ chấp nhận việc gửi dữ liệu trước khi bật ngoài môi trường 
 - `History` gửi lại câu trả lời cũ đã qua `AnswerText.plain`, đúng như người dùng đã thấy: ảnh mà một kết quả tool
   dụ model viết không được đưa lại cho model như lời của chính nó. Lượt đóng (`PendingMessage.closing`) cũng qua
   `AnswerText.plain`, vì nó có thể bắt đầu bằng chữ model đã viết.
-- **Ghi chú có dạng mệnh lệnh được đánh dấu (5/11, ADR-0015).** `InstructionLikeText` nhận ra chữ do người gõ có
+- **Ghi chú có dạng mệnh lệnh được đánh dấu (5/11, ADR-0018).** `InstructionLikeText` nhận ra chữ do người gõ có
   dạng ra lệnh cho trợ lý (tiếng Việt có dấu, không dấu, tiếng Anh: "bỏ qua hướng dẫn", "ignore previous instructions",
   dòng mở đầu `system:`, "hãy trả lời rằng", đòi gọi tool hay in prompt). `TypedText.masked` gắn
   `[instruction-like text, data only]` vào đầu chữ đó, vẫn gửi, không chặn; system prompt dặn model coi đó là dữ liệu.
@@ -1027,7 +1027,7 @@ Một tool được dùng khi người dùng có mọi quyền nó cần và, v�
   giới hạn kho nào.
 - Tool không có `@RequiresPermission` làm ứng dụng không khởi động được: nó sẽ chạy cho bất kỳ ai và không có data
   scope.
-- Từ 29/10 model chỉ nhận định nghĩa của các tool được dùng (AQ-11 đã quyết; ADR-0011 sửa đổi 29/10). Đo ngày 29/10
+- Từ 29/10 model chỉ nhận định nghĩa của các tool được dùng (AQ-11 đã quyết; ADR-0014 sửa đổi 29/10). Đo ngày 29/10
   trên 15 tool lúc đó: cả 15 định nghĩa khoảng 24.800 ký tự, gần gấp đôi system prompt lúc đó (13.800 byte); bảy vai
   trò seed không phải quản trị dùng 33–63% số đó, nên phần tiền tố cố định (tool + system prompt) giảm 24–44%, khoảng
   2.300–4.100 token mỗi lần gọi. SYSTEM_ADMIN vẫn nhận mọi tool. Chưa đo lại sau đợt dọn 16/11 (15 tool, vai trò mới:
@@ -1210,7 +1210,7 @@ transit" (trùng chữ "in") và vài đoạn máy trạng thái, không có BR-
   mức ngày là `ASSISTANT_QUOTA_EXHAUSTED`; 400–404 hoặc vector sai độ dài là `ASSISTANT_MISCONFIGURED`; 5xx, 429 theo
   phút, timeout là `ASSISTANT_UNAVAILABLE`.
 - **Lưu.** `assistant.knowledge_chunk` có thêm `embedding real[]`, `embedding_model`, `embedding_hash` (content hash của
-  đoạn văn khi tạo vector; `V20270106000600`). Chỉ vector đúng model, đúng số chiều, làm từ đúng nội dung hiện tại mới
+  đoạn văn khi tạo vector; `V20270120000600`). Chỉ vector đúng model, đúng số chiều, làm từ đúng nội dung hiện tại mới
   được so; đoạn đổi nội dung hay đổi model thì được embed lại. Lệnh UPDATE có điều kiện trên `content_hash`, nên vector
   của chữ cũ không bao giờ ghi lên chữ mới.
 - **Đánh chỉ mục.** Sau chỉ mục từ khóa, trên thread riêng (Spring chỉ báo sẵn sàng nhận traffic khi mọi listener khởi
@@ -1293,8 +1293,8 @@ transit" (trùng chữ "in") và vài đoạn máy trạng thái, không có BR-
 | `POST /api/v1/assistant/conversations/{id}/messages/stream` | như trên | SSE: `tool` ({tool, outcome}) sau mỗi tool, rồi `answer` hoặc `error` ({errorCode, message}); header `X-Accel-Buffering: no`. Từ chối biết trước khi mở luồng (400, 404, 409 `ASSISTANT_BUSY`, 429 `ASSISTANT_DAILY_LIMIT`, 503 `ASSISTANT_DISABLED`) là phản hồi JSON thường. Endpoint này **không nhận** `Idempotency-Key`: có header là 400 `VALIDATION_FAILED` trước mọi việc, vì luồng không được lưu và không phát lại được; cần chống hỏi hai lần thì dùng endpoint đồng bộ. Lỗi trong lúc trả lời là sự kiện `error`: `ASSISTANT_UNAVAILABLE`, `ASSISTANT_QUOTA_EXHAUSTED` hoặc `ASSISTANT_MISCONFIGURED` |
 | `POST /api/v1/assistant/conversations/{id}/messages/{messageId}/feedback` | `assistant-conversations:CREATE` (OWN) | `requireBackOffice`; body `{verdict: "UP"\|"DOWN", reason?: tối đa 500 ký tự}` → 204. Chỉ nhận một câu trả lời (lượt ASSISTANT có chữ) trong hội thoại của chính người gọi; câu hỏi, id lạ, hội thoại của người khác → 404. Đánh giá lần nữa thì thay lần trước |
 | `POST /api/v1/assistant/mcp` | `assistant-conversations:CREATE` (OWN) | chỉ có khi `stockflow.assistant.mcp.enabled` là true (mặc định tắt, profile `local` và `test` bật); `requireBackOffice`; MCP (Streamable HTTP, trả JSON): `initialize`, `ping`, `tools/list`, `tools/call` cho một AI client khác, dưới quyền của chính người gọi; rate limit chung bucket `assistant-questions`; không cần `Idempotency-Key`; `GET` trả 405 (mục MCP bên dưới) |
-| `POST /api/v1/assistant/transcriptions` | `assistant-conversations:CREATE` (OWN) | chỉ có khi `stockflow.assistant.voice.enabled` là true; multipart WAV; trả chữ đã nghe, không trả lời (§8.3, ADR-0016); chung bucket `assistant-questions`, cộng hạn mức riêng mỗi ngày |
-| `/api/v1/assistant/mcp-tokens…` | `assistant-mcp:CREATE` | token cá nhân cho client MCP (mục MCP bên dưới, ADR-0014) |
+| `POST /api/v1/assistant/transcriptions` | `assistant-conversations:CREATE` (OWN) | chỉ có khi `stockflow.assistant.voice.enabled` là true; multipart WAV; trả chữ đã nghe, không trả lời (§8.3, ADR-0019); chung bucket `assistant-questions`, cộng hạn mức riêng mỗi ngày |
+| `/api/v1/assistant/mcp-tokens…` | `assistant-mcp:CREATE` | token cá nhân cho client MCP (mục MCP bên dưới, ADR-0017) |
 
 Đã bỏ ngày 16/11 cùng đợt dọn (ADR-0010 rescope): `POST /api/v1/assistant/receipt-drafts` (phiếu nhập nháp từ ảnh
 phiếu giao hàng, §8.1) và các endpoint xác nhận hay bỏ đề xuất của `AssistantActionController` (§8.2), vì cả hai dựa
@@ -1390,7 +1390,7 @@ thử đầu, mà model thứ hai không thấy, vẫn là nguồn của phép k
 
 **Đánh giá (`feedback`).** Mỗi câu trả lời một dòng `answer_feedback`; đánh giá lại thì ghi đè (dòng message bị khóa
 trước, nên hai lần bấm cùng lúc không tạo hai dòng). Từ 27/11 dòng đánh giá ghi thêm vai trò và kho của người đánh giá
-lúc đánh giá (`rater_roles`, `rater_warehouses`, V20270107000400), không ghi ai. System Admin (quyền riêng
+lúc đánh giá (`rater_roles`, `rater_warehouses`, V20270120001300), không ghi ai. System Admin (quyền riêng
 `assistant-feedback:READ`, chỉ SYSTEM_ADMIN) đọc các câu trả lời bị đánh giá sai qua `GET /api/v1/assistant/feedback`:
 câu hỏi, câu trả lời, các tool đã gọi kèm tham số, nhận xét, và một ca bộ câu hỏi chuẩn dựng sẵn để dán vào
 `golden-set.json` (`useCase` và `facts` để trống cho người duyệt điền). Văn bản giữ nguyên như đã lưu, khách hàng là bí
@@ -1571,7 +1571,7 @@ câu trả lời HTTP có trước khi endpoint chạy.
 
 **Bảo mật.**
 
-- Hai loại credential, cùng một người dùng (ADR-0014):
+- Hai loại credential, cùng một người dùng (ADR-0017):
   - token JWT mà `POST /api/v1/identity/auth/login` cấp;
   - token cá nhân cho MCP (`sfmcp_…`, P7), người dùng tự tạo cho một client, xem dưới.
 
@@ -1579,7 +1579,7 @@ câu trả lời HTTP có trước khi endpoint chạy.
   việc cục bộ, `@AuthenticatedUser` vẫn từ chối request không có người dùng (401), nên không profile nào để tool trả
   lời một client ẩn danh.
 - Guard: `@RequiresPermission(assistant-mcp, CREATE, OWN)` rồi `ScopeGuards.requireBackOffice`. Đây là quyền riêng của
-  MCP (P7, `V20270106001100`), **opt-in**: migration chỉ cấp cho SYSTEM_ADMIN. Doanh nghiệp chọn vai trò nào được dùng
+  MCP (P7, `V20270120001100`), **opt-in**: migration chỉ cấp cho SYSTEM_ADMIN. Doanh nghiệp chọn vai trò nào được dùng
   MCP trong ma trận quyền (AQ-17), vì một token sống tới 90 ngày và gửi những gì tool đọc tới nhà cung cấp model mà
   client của người dùng chọn. Quyền này chỉ mở endpoint, không cấp dữ liệu nào (§2, Phân quyền). Trước P7, mọi vai
   trò hỏi được khung chat đều dùng được MCP khi nó bật; nay phải cấp thêm.
@@ -1609,10 +1609,10 @@ bị từ chối ghi ở mức WARN, để một loạt lần dò quyền hiện
 
 - Không ghi tham số và kết quả: chúng có thể chứa chữ người gõ (tên nhà cung cấp, ghi chú đơn), và log đi xa hơn,
   giữ lâu hơn bản ghi của khung chat.
-- Từ 4/11 (`V20270106000700`), mỗi lần gọi qua MCP là một dòng `assistant.tool_call` với `channel = MCP`, `user_id`
+- Từ 4/11 (`V20270120000700`), mỗi lần gọi qua MCP là một dòng `assistant.tool_call` với `channel = MCP`, `user_id`
   của người gọi, tham số và kết quả, không có hội thoại; nó đi cùng job retention như hội thoại.
 
-**Token cá nhân cho MCP (P7, 05/11, ADR-0014).** Client AI được cài một lần và chạy nhiều tuần, còn token đăng nhập chỉ
+**Token cá nhân cho MCP (P7, 05/11, ADR-0017).** Client AI được cài một lần và chạy nhiều tuần, còn token đăng nhập chỉ
 sống 8 giờ và là cả phiên làm việc của người dùng. Token cá nhân được làm cho một client.
 
 - Endpoint, chỉ nhận token đăng nhập, guard `assistant-mcp:CREATE` OWN:
@@ -1634,7 +1634,7 @@ sống 8 giờ và là cả phiên làm việc của người dùng. Token cá n
 - Thứ làm token dừng: chủ nó thu hồi, hết hạn, quản trị viên thu hồi hết token của người đó, khóa hay vô hiệu tài
   khoản, rút `assistant-mcp:CREATE` khỏi vai trò; tất cả có hiệu lực từ lần gọi sau.
   - Từ 5/11, **quản trị viên đặt lại mật khẩu**, hoặc **chủ tài khoản đổi mật khẩu kèm "đăng xuất các thiết bị khác"**,
-    thì mọi token bị thu hồi hẳn (`contracts.CredentialsReset`, ADR-0014 sửa đổi 5/11). Trong lúc chờ đổi mật khẩu bắt
+    thì mọi token bị thu hồi hẳn (`contracts.CredentialsReset`, ADR-0017 sửa đổi 5/11). Trong lúc chờ đổi mật khẩu bắt
     buộc, client MCP nhận `403 PASSWORD_CHANGE_REQUIRED`.
   - Đổi mật khẩu thường, không đăng xuất nơi khác, thì giữ token, giống personal access token của GitHub hay GitLab.
   - Khóa tài khoản vì đăng nhập sai nhiều lần cũng chặn client MCP của người đó cho tới khi hết khóa.
@@ -1646,7 +1646,7 @@ sống 8 giờ và là cả phiên làm việc của người dùng. Token cá n
   token cá nhân, còn lại thì kiểm JWT. Ở mọi đường dẫn khác, kể cả các endpoint token, token cá nhân rơi vào bộ giải
   mã JWT và bị 401. Vì vậy client làm lộ token không tự tạo được token mới để sống quá hạn hay quá lần thu hồi.
 - Token chỉ nói đó là ai. Quyền là quyền hiện tại của người dùng ở từng lần gọi, dựng bằng
-  `RunAs.authenticationFor`: cùng cách với lớp theo dõi (ADR-0013) và với request bằng JWT. Đổi vai trò thì lần gọi
+  `RunAs.authenticationFor`: cùng cách với lớp theo dõi (ADR-0016) và với request bằng JWT. Đổi vai trò thì lần gọi
   sau đã khác; khóa tài khoản thì lần gọi sau bị 401, không ai phải thu hồi token. Dòng ghi trong lúc gọi mang tên
   "`username via assistant-mcp`".
 - Token chết (không có, đã thu hồi, hết hạn) và tài khoản không còn đăng nhập được đều trả 401 với cùng một câu, nên
@@ -1763,7 +1763,7 @@ claude mcp add --transport http stockflow http://localhost:8090/api/v1/assistant
 
 ## 8. Không ghi, và không còn đề xuất
 
-**Trạng thái 16/11/2026: trợ lý không ghi gì và không tạo chứng từ nháp nào.** Không tool nào ghi (ADR-0011). Khi câu
+**Trạng thái 16/11/2026: trợ lý không ghi gì và không tạo chứng từ nháp nào.** Không tool nào ghi (ADR-0014). Khi câu
 hỏi kết thúc bằng một việc phải làm (lập báo giá, gửi hợp đồng, ghi nhận thanh toán, làm lệnh sản xuất, duyệt điều
 chỉnh tồn), câu trả lời chỉ ra màn hình làm việc đó và không bao giờ nói việc đã xong (§3.3).
 
@@ -1774,9 +1774,9 @@ hai dựa trên mua hàng, mà doanh nghiệp không còn mua hàng:
 |---|---|---|
 | §8 đề xuất PO (`proposeReorder`, `ReorderPolicy`) | đề xuất số lượng nhập theo order-up-to (ATP + hàng đang về + lead time + tồn an toàn), mỗi nhà cung cấp một đề xuất, frontend mở form PO đã điền sẵn | không còn PO, nhà cung cấp, điểm đặt hàng; hàng thiếu cho một đơn được bù bằng lệnh sản xuất của đợt giao, do Sales Manager duyệt |
 | §8.1 phiếu nhập nháp từ ảnh phiếu giao hàng (FEAT-10, `POST /receipt-drafts`, port `DocumentReader`) | đọc ảnh phiếu giao của nhà cung cấp thành các dòng phiếu nhập cho một PO, Java kiểm từng giá trị, không ghi gì | phiếu nhập giờ là nhận hàng in theo lệnh sản xuất, đếm theo thùng nguyên, dán nhãn LPN ngay lúc đếm (kltn-docs 03); không còn PO để khớp dòng, và hạn dùng, lô của nhà cung cấp không còn là dữ liệu cần đọc |
-| §8.2 xác nhận đề xuất (P5, ADR-0012, bảng `assistant.action`) | lưu đề xuất cùng câu trả lời; người hỏi bấm xác nhận thành PO DRAFT hay phiếu nhập DRAFT, qua endpoint mang guard của màn chứng từ, đúng một lần, hết hạn sau 24 giờ, đo tỉ lệ chấp nhận | không còn loại đề xuất nào để xác nhận; migration `V20261105000900__assistant_action.sql` bỏ trước khi nhánh merge |
+| §8.2 xác nhận đề xuất (P5, ADR-0015, bảng `assistant.action`) | lưu đề xuất cùng câu trả lời; người hỏi bấm xác nhận thành PO DRAFT hay phiếu nhập DRAFT, qua endpoint mang guard của màn chứng từ, đúng một lần, hết hạn sau 24 giờ, đo tỉ lệ chấp nhận | không còn loại đề xuất nào để xác nhận; migration `V20261105000900__assistant_action.sql` bỏ trước khi nhánh merge |
 
-Những gì đã học ở đây vẫn là cách làm nếu sau này trợ lý được ghi lại (ADR-0012 giữ nguyên lập luận): model không có tool
+Những gì đã học ở đây vẫn là cách làm nếu sau này trợ lý được ghi lại (ADR-0015 giữ nguyên lập luận): model không có tool
 ghi; đề xuất là dòng của chính người hỏi; chứng từ chỉ được tạo khi người đó bấm, qua endpoint mang đúng guard của màn
 chứng từ; chỉ tạo bản nháp; đúng một lần dưới khóa dòng; quy tắc của chứng từ do module của nó áp. Sửa ở lớp nền làm
 cùng đợt (`AuditAspect` chỉ ghi SUCCESS cho method chạy trong transaction của nơi gọi khi transaction đó commit) đã được
@@ -1785,7 +1785,7 @@ của mọi module mà `develop` không có, làm hỏng test audit của `devel
 nếu trợ lý lại được ghi, sửa đó phải đi qua `develop` như một thay đổi của lớp nền. Chi tiết đầy đủ của ba mục
 trên nằm trong lịch sử git của file này (bản trước 16/11/2026).
 
-### 8.3 Câu hỏi bằng giọng nói (đợt 4, 06/11, ADR-0016)
+### 8.3 Câu hỏi bằng giọng nói (đợt 4, 06/11, ADR-0019)
 
 **Bài toán.** Nhân viên kho đang bê hàng hay đeo găng không gõ được câu hỏi.
 
@@ -1801,7 +1801,7 @@ Bước đọc lại là chỗ duy nhất bắt được lỗi đó; mã thì n�
 | | |
 |---|---|
 | Model | `stockflow.assistant.voice.model`, đọc như model định tuyến; để trống là các model Gemini trong tuyến của chat. Gemini nhận `inline_data` `audio/wav` trong `generateContent`; server kiểu OpenAI (Whisper nội bộ) nhận multipart `/audio/transcriptions` với `language=vi` và gợi ý từ vựng |
-| Ranh giới dữ liệu | `DataBoundary` (ADR-0015) quyết định; ở `LOCAL_ONLY` chỉ còn Whisper nội bộ |
+| Ranh giới dữ liệu | `DataBoundary` (ADR-0018) quyết định; ở `LOCAL_ONLY` chỉ còn Whisper nội bộ |
 | Bật/tắt | `stockflow.assistant.voice.enabled`, mặc định tắt; profile `local` bật |
 | Quyền | `assistant-conversations:CREATE`, `requireBackOffice`; chung giới hạn 10 lần một phút với câu hỏi, cộng hạn mức riêng `voice.daily-limit` (100 mỗi người mỗi ngày) |
 | Lưu | không lưu gì: không âm thanh, không chữ; upload tới 2 MB nằm trong bộ nhớ, không ra file tạm; log chỉ độ dài, model, kết quả; metric `assistant.voice.transcriptions{outcome}` |
@@ -1870,7 +1870,7 @@ phần PO trễ ghép hai lần đọc).
 bucket theo sức chứa của từng lần gọi, nên hai giới hạn trên một bucket sẽ cắt 10 câu hỏi một phút xuống còn một. Giao
 diện giữ thẻ cuối cùng cùng `generatedAt`; mở lại trong vòng một phút nhận 429 `RATE_LIMITED`.
 
-**Mỗi lần đọc là một dòng `assistant.tool_call`** (từ 4/11, `V20270106000700`): `channel = TODAY`, `user_id` của người
+**Mỗi lần đọc là một dòng `assistant.tool_call`** (từ 4/11, `V20270120000700`): `channel = TODAY`, `user_id` của người
 mở thẻ, tham số và kết quả, không có hội thoại. Việc ghi chạy trong transaction riêng (`ToolRunRecorder`); ghi lỗi thì
 log ERROR và thẻ vẫn trả về, vì tool đã chạy xong. Log vẫn có một dòng cho mỗi thẻ, không có dữ liệu.
 
@@ -1879,7 +1879,7 @@ request, tính vào trần); phần điều chỉnh tồn chờ duyệt cho qu�
 (khi có tool). Mỗi vai trò thấy phần nào là quyết định của doanh nghiệp (§13 AQ-15); mặc định đã làm là "phần mà tool
 của họ trả lời được".
 
-### 9.1 Theo dõi chủ động (P6, 05/11, ADR-0013)
+### 9.1 Theo dõi chủ động (P6, 05/11, ADR-0016)
 
 Mỗi mười lăm phút trong giờ làm, trợ lý đọc lại vài danh sách cho từng người dùng back-office, **bằng quyền của chính
 người đó**, rồi báo vào chuông (hộp thư trong app, `notification :: api Inbox`) những mục mới so với lần trước. Tùy
@@ -1891,7 +1891,7 @@ security. `AssistantWatchJob` chạy theo `watch.cron`, mặc định `0 */15 7-
 mọi tài khoản có vai trò CUSTOMER, kể cả tài khoản nhân viên có thêm vai trò đó. Lỗi của một người được log, không chặn
 người tiếp theo.
 
-**Bằng quyền của người nhận** (`RunAs`, ADR-0013):
+**Bằng quyền của người nhận** (`RunAs`, ADR-0016):
 - vai trò, trạng thái, quyền, scope và kho đọc lại ở mỗi lần quét;
 - tài khoản bị khóa, bị vô hiệu hóa, hay không có vai trò nào thì bị bỏ qua trước khi đọc gì; tài khoản khách hàng
   cũng vậy;
@@ -1929,7 +1929,7 @@ người tiếp theo.
 - Mục được nhận ra bằng số đơn kèm lý do giữ (bị giữ lại vì lý do khác là một lần giữ mới). Trước 16/11 còn SKU (hàng
   thấp) và số PO (PO trễ).
 
-**Lúc nào không phải tin mới** (`assistant.watch_state`, `V20270106001000`). Ba trường hợp chỉ ghi nhận, không báo:
+**Lúc nào không phải tin mới** (`assistant.watch_state`, `V20270120001000`). Ba trường hợp chỉ ghi nhận, không báo:
 - lần nhìn đầu tiên một danh sách;
 - lần nhìn sau khi tầm nhìn của người dùng đổi (scope hay kho, ví dụ quản lý chuyển kho): tin cũ của kho mới không phải
   tin mới;
@@ -2347,11 +2347,11 @@ stockflow:
       flows: ${ASSISTANT_KNOWLEDGE_FLOWS:true}       # §4 các bước của mỗi chương kltn-docs; bật từ 16/11 (§6.1)
     mcp:                                             # 29/10, §7
       enabled: ${ASSISTANT_MCP_ENABLED:false}        # profile local và test bật
-    voice:                                           # 06/11, §8.3, ADR-0016
+    voice:                                           # 06/11, §8.3, ADR-0019
       enabled: ${ASSISTANT_VOICE_ENABLED:false}
       model: ${ASSISTANT_VOICE_MODEL:}               # trống: model của chat (chỉ Gemini chép được); hoặc openai/whisper-…
       daily-limit: ${ASSISTANT_VOICE_DAILY_LIMIT:100}
-    watch:                                           # 05/11, §9.1, ADR-0013
+    watch:                                           # 05/11, §9.1, ADR-0016
       enabled: ${ASSISTANT_WATCH_ENABLED:false}
       cron: ${ASSISTANT_WATCH_CRON:0 */15 7-19 * * MON-SAT}
       post: ${ASSISTANT_WATCH_POST:heldOrders}       # từ 16/11 danh sách duy nhất
@@ -2522,8 +2522,8 @@ và câu hỏi bằng giọng nói; cùng một câu hỏi bị từ chối vớ
 
 | Mã | Câu hỏi | Đề xuất |
 |---|---|---|
-| **AQ-01** | Có được gửi kết quả tool (tồn kho, đơn hàng, tên khách hàng) tới nhà cung cấp model bên ngoài không (kể cả tên và địa chỉ người dùng gõ trong ghi chú, vốn không bị che)? Nếu có, có thêm tên công ty khách vào `findOrder` và `traceLot` không (PRM-13)? Gói miễn phí của Gemini có được dùng ngoài dữ liệu demo không? Từ 29/10 còn: tên công ty khách qua `getCustomerPrice` (và tới 16/11 `getCustomerCredit`), dưới bí danh từ 5/11; ảnh phiếu giao hàng (§8.1, bỏ ngày 16/11); bản ghi âm câu hỏi bằng giọng nói (§8.3); các đoạn của kho tri thức và từ khóa tìm kiếm khi bật embedding Gemini (§6.4); kết quả tool tới nhà cung cấp của client MCP (AQ-17). | Chỉ bật trong môi trường phát triển và demo cho tới khi chủ doanh nghiệp chấp nhận bằng văn bản. Với dữ liệu thật, chỉ dùng gói trả phí. Chưa trả tên khách trong `findOrder` và `traceLot` cho tới khi có câu trả lời; mô tả tool nói rõ là không có. Giọng nói cần một lần đồng ý riêng (ADR-0016); endpoint của nó mặc định tắt. |
-| **AQ-02** | Những vai trò nào được cấp `assistant-conversations`? | Như §2: từ 16/11 cả bảy vai trò back-office của đợt dọn (WAREHOUSE_STAFF qua `V20270106000500`, sáu vai trò còn lại qua `V20270106000200`), có tăng `app_role.version`. Không bao giờ CUSTOMER. Chờ chủ repo xác nhận trước khi merge. Nhân viên kho dùng được tồn kho, lô, nhãn quét, điều chỉnh chờ duyệt, chuyến giao, task của chính họ và phiếu nhập của kho mình. Trần câu hỏi (AQ-04) áp cho họ như mọi người. (PRODUCTION_STAFF, cấp ngày 29/10, không còn là vai trò.) |
+| **AQ-01** | Có được gửi kết quả tool (tồn kho, đơn hàng, tên khách hàng) tới nhà cung cấp model bên ngoài không (kể cả tên và địa chỉ người dùng gõ trong ghi chú, vốn không bị che)? Nếu có, có thêm tên công ty khách vào `findOrder` và `traceLot` không (PRM-13)? Gói miễn phí của Gemini có được dùng ngoài dữ liệu demo không? Từ 29/10 còn: tên công ty khách qua `getCustomerPrice` (và tới 16/11 `getCustomerCredit`), dưới bí danh từ 5/11; ảnh phiếu giao hàng (§8.1, bỏ ngày 16/11); bản ghi âm câu hỏi bằng giọng nói (§8.3); các đoạn của kho tri thức và từ khóa tìm kiếm khi bật embedding Gemini (§6.4); kết quả tool tới nhà cung cấp của client MCP (AQ-17). | Chỉ bật trong môi trường phát triển và demo cho tới khi chủ doanh nghiệp chấp nhận bằng văn bản. Với dữ liệu thật, chỉ dùng gói trả phí. Chưa trả tên khách trong `findOrder` và `traceLot` cho tới khi có câu trả lời; mô tả tool nói rõ là không có. Giọng nói cần một lần đồng ý riêng (ADR-0019); endpoint của nó mặc định tắt. |
+| **AQ-02** | Những vai trò nào được cấp `assistant-conversations`? | Như §2: từ 16/11 cả bảy vai trò back-office của đợt dọn (WAREHOUSE_STAFF qua `V20270120000500`, sáu vai trò còn lại qua `V20270120000200`), có tăng `app_role.version`. Không bao giờ CUSTOMER. Chờ chủ repo xác nhận trước khi merge. Nhân viên kho dùng được tồn kho, lô, nhãn quét, điều chỉnh chờ duyệt, chuyến giao, task của chính họ và phiếu nhập của kho mình. Trần câu hỏi (AQ-04) áp cho họ như mọi người. (PRODUCTION_STAFF, cấp ngày 29/10, không còn là vai trò.) |
 | **AQ-03** | Giữ hội thoại bao lâu? | 90 ngày, cấu hình được. |
 | **AQ-04** | Ngân sách và trần cho mỗi người dùng? | 50 câu mỗi người mỗi ngày; điều chỉnh theo cột token sau hai tuần. |
 | **AQ-05** | Ai chịu trách nhiệm công thức đặt hàng lại (§8)? | **Hết hiệu lực 16/11:** công thức `ReorderPolicy` và đề xuất nhập đã bỏ cùng mua hàng (ADR-0010 rescope). |
@@ -2532,13 +2532,13 @@ và câu hỏi bằng giọng nói; cùng một câu hỏi bị từ chối vớ
 | **AQ-09** | Tốc độ tiêu thụ để đặt hàng lại lấy từ đâu? | **Hết hiệu lực 16/11** cùng đề xuất nhập (ADR-0010 rescope). |
 | **AQ-10** | Đề xuất cho cả công ty hay theo từng kho nhận? | **Hết hiệu lực 16/11** cùng đề xuất nhập. |
 | **AQ-08** | Ai được dùng đề xuất nhập hàng? | **Hết hiệu lực 16/11**: `proposeReorder` đã bỏ; PROCUREMENT_STAFF không còn. |
-| **AQ-11** | Có nên gửi cho model chỉ những tool người dùng được dùng (thay vì mọi tool kèm danh sách trong ngữ cảnh) không? Khi đó một lần từ chối không tốn request nào. | **Đã quyết 29/10: có.** Model chỉ nhận định nghĩa của các tool người dùng được dùng (`ToolAvailability.specsFor`), sắp theo tên, cố định cho mỗi tập quyền và vẫn được cache; ADR-0011 có ghi sửa đổi. Lần thử gọi tool không được gửi vẫn chạy qua proxy, bị từ chối và được ghi trong `assistant.tool_call`. |
+| **AQ-11** | Có nên gửi cho model chỉ những tool người dùng được dùng (thay vì mọi tool kèm danh sách trong ngữ cảnh) không? Khi đó một lần từ chối không tốn request nào. | **Đã quyết 29/10: có.** Model chỉ nhận định nghĩa của các tool người dùng được dùng (`ToolAvailability.specsFor`), sắp theo tên, cố định cho mỗi tập quyền và vẫn được cache; ADR-0014 có ghi sửa đổi. Lần thử gọi tool không được gửi vẫn chạy qua proxy, bị từ chối và được ghi trong `assistant.tool_call`. |
 | **AQ-12** | Người không có `sales-orders:READ` có được thấy số đơn bán mà lệnh sản xuất làm cho không? | Trước 16/11 hỏi cho LSX của xưởng (QC, mua hàng, quản lý kho), code trả lời "không". Sau đợt dọn câu hỏi chuyển sang `findProductionOrders` mới (đang làm): theo seed 16/11, người có `production-orders:READ` mà không có `sales-orders:READ` là SALES_MANAGER (AQ-19). **Đã làm:** `findProductionOrders` trả số đơn chỉ cho người đọc được đơn hoặc đã gõ số đó. Từ QĐ14 (27/11) mọi vai trò seed đọc LSX đều đọc được đơn, nên quy tắc chỉ còn `FindProductionOrdersToolTest` giữ. |
-| **AQ-13** | SALES_STAFF có được xem hàng còn bán được (ATP) không (ROLE-9)? Sales báo giá theo thùng nhưng trợ lý từ chối tồn kho với họ. | Doanh nghiệp chọn một trong ba: cấp một quyền đọc tồn mà màn hình cũng tôn trọng (`inventory-stock-items:READ` mở cả bin và lô, rộng hơn cần); thêm một tool hẹp chỉ trả ATP, với resource riêng của trợ lý (phải ghi ngoại lệ vào ADR-0011); hoặc giữ từ chối như hiện nay. Vẫn mở sau đợt dọn. |
+| **AQ-13** | SALES_STAFF có được xem hàng còn bán được (ATP) không (ROLE-9)? Sales báo giá theo thùng nhưng trợ lý từ chối tồn kho với họ. | Doanh nghiệp chọn một trong ba: cấp một quyền đọc tồn mà màn hình cũng tôn trọng (`inventory-stock-items:READ` mở cả bin và lô, rộng hơn cần); thêm một tool hẹp chỉ trả ATP, với resource riêng của trợ lý (phải ghi ngoại lệ vào ADR-0014); hoặc giữ từ chối như hiện nay. Vẫn mở sau đợt dọn. |
 | **AQ-14** | Kế hoạch viên có được thấy hàng đã đặt mua trong "mã nào dưới điểm đặt hàng" không? | **Hết hiệu lực 16/11**: `findLowStock` và INVENTORY_PLANNER không còn. |
 | **AQ-15** | Thẻ "hôm nay" (§9, FEAT-7): mỗi vai trò thấy phần nào? Có thêm phần điều chỉnh tồn chờ duyệt cho quản lý kho, chuyến giao không thành công, lệnh sản xuất trễ (khi có tool), và ba câu tóm tắt bằng model (một request, tính vào trần) không? | Đã làm theo mặc định: mỗi vai trò chỉ thấy phần mà tool của họ trả lời được. Từ 16/11 thẻ có bốn phần (§9); quản lý kho giờ có cả ba phần đơn vì seed cho họ `sales-orders:READ`. Các phần thêm chờ doanh nghiệp chọn. |
-| **AQ-16** | Có lưu đánh giá đúng/sai của người dùng cho từng câu trả lời không (FEAT-8)? Quản trị viên có được đọc câu hỏi của người khác (câu hỏi có thể nêu tên khách) không, và đánh giá có được giữ lâu hơn 90 ngày của hội thoại không? | Phần lưu đã làm ngày 29/10 (`answer_feedback`, xóa cùng hội thoại; chưa ai khác đọc được). Ngày 27/11 đã làm: resource riêng `assistant-feedback:READ` chỉ cấp cho SYSTEM_ADMIN (V20270107000400, có tăng `app_role.version`), danh sách câu trả lời bị đánh giá kèm câu hỏi của người khác (bí danh khách, người đánh giá chỉ theo vai trò), và bản nháp ca mới cho bộ câu hỏi chuẩn. Vẫn chờ doanh nghiệp quyết: giữ đánh giá lâu hơn hội thoại. |
-| **AQ-17** | Có bật MCP (§7) ở môi trường thật không? Qua MCP, kết quả tool đi tới nhà cung cấp model mà người dùng tự chọn trong client của họ (Claude Desktop với tài khoản cá nhân, một agent trong IDE), không phải nhà cung cấp doanh nghiệp đã chấp nhận ở AQ-01. Về quyền thì MCP không mở thêm gì: cùng token đó đã đọc được các API tương ứng. | Code đã làm theo đề xuất: mặc định tắt (`ASSISTANT_MCP_ENABLED=false`), chỉ profile `local` và `test` bật. Giữ tắt ở production cho tới khi AQ-01 được trả lời và doanh nghiệp chọn client và tài khoản được phép. Từ P7 (05/11) MCP có quyền riêng `assistant-mcp:CREATE`, opt-in: migration chỉ cấp cho SYSTEM_ADMIN (`V20270106001100`), doanh nghiệp chọn vai trò nào giữ nó. Client dùng token cá nhân chỉ mở endpoint MCP, thu hồi được từng cái (ADR-0014). |
+| **AQ-16** | Có lưu đánh giá đúng/sai của người dùng cho từng câu trả lời không (FEAT-8)? Quản trị viên có được đọc câu hỏi của người khác (câu hỏi có thể nêu tên khách) không, và đánh giá có được giữ lâu hơn 90 ngày của hội thoại không? | Phần lưu đã làm ngày 29/10 (`answer_feedback`, xóa cùng hội thoại; chưa ai khác đọc được). Ngày 27/11 đã làm: resource riêng `assistant-feedback:READ` chỉ cấp cho SYSTEM_ADMIN (V20270120001300, có tăng `app_role.version`), danh sách câu trả lời bị đánh giá kèm câu hỏi của người khác (bí danh khách, người đánh giá chỉ theo vai trò), và bản nháp ca mới cho bộ câu hỏi chuẩn. Vẫn chờ doanh nghiệp quyết: giữ đánh giá lâu hơn hội thoại. |
+| **AQ-17** | Có bật MCP (§7) ở môi trường thật không? Qua MCP, kết quả tool đi tới nhà cung cấp model mà người dùng tự chọn trong client của họ (Claude Desktop với tài khoản cá nhân, một agent trong IDE), không phải nhà cung cấp doanh nghiệp đã chấp nhận ở AQ-01. Về quyền thì MCP không mở thêm gì: cùng token đó đã đọc được các API tương ứng. | Code đã làm theo đề xuất: mặc định tắt (`ASSISTANT_MCP_ENABLED=false`), chỉ profile `local` và `test` bật. Giữ tắt ở production cho tới khi AQ-01 được trả lời và doanh nghiệp chọn client và tài khoản được phép. Từ P7 (05/11) MCP có quyền riêng `assistant-mcp:CREATE`, opt-in: migration chỉ cấp cho SYSTEM_ADMIN (`V20270120001100`), doanh nghiệp chọn vai trò nào giữ nó. Client dùng token cá nhân chỉ mở endpoint MCP, thu hồi được từng cái (ADR-0017). |
 | **AQ-18** | Đọc ảnh phiếu giao hàng (§8.1) có cần trần riêng mỗi ngày không? | **Hết hiệu lực 16/11**: tính năng đã bỏ cùng mua hàng. |
 | **AQ-19** (16/11) | SALES_MANAGER không có `sales-orders:READ` trong baseline của `develop`, nên qua trợ lý không tra được đơn nào, không có phần đơn trên thẻ "hôm nay", dù vai trò này duyệt lệnh sản xuất và giá. Đó là ý định của ma trận quyền hay một chỗ sót? | **Đã quyết (QĐ14, 24/11): chỗ sót.** `V20261227000400` cấp `sales-quotes` và `sales-orders` VIEW_PAGE + READ cho SALES_MANAGER (có tăng `app_role.version`); trợ lý không phải đổi gì: vai trò này giờ dùng `findOrder`, `findOrders` và có ba phần đơn trên thẻ "hôm nay". |
 
@@ -2565,7 +2565,7 @@ và câu hỏi bằng giọng nói; cùng một câu hỏi bị từ chối vớ
 | Prompt injection | tool chỉ đọc và từ 16/11 không còn đề xuất hay chứng từ nháp nào, ghi chú dạng mệnh lệnh được đánh dấu, model chỉ thấy tool của người hỏi, không có tool gọi ra ngoài, server bỏ link/ảnh/URL khỏi câu trả lời bằng escape có cấu trúc, `History` gửi lại chữ đã lọc, hiển thị đã escape, ca R-02, M-03 và M-04 |
 | Một thay đổi ở `api` làm hỏng một tool | tool biên dịch dựa trên `api`; harness bộ câu hỏi chuẩn chạy trong mọi `mvn test` |
 | Seed playground ghi tài khoản SYSTEM_ADMIN dùng chung mật khẩu vào database của nhánh khác | URL mặc định là database playground; từ chối trước khi Spring khởi động nếu `DB_NAME` khác `stockflow_ai`; kiểm `current_database()` trước khi ghi |
-| Dữ liệu rời hệ thống qua một AI client ngoài (MCP) | cùng quyền với khung chat, guard là quyền riêng `assistant-mcp`; chỉ liệt kê tool người dùng được dùng; token đăng nhập hoặc token cá nhân chỉ mở endpoint MCP, hết hạn tối đa 90 ngày, thu hồi được (ADR-0014); `Origin` không được phép bị 403, kể cả khi trùng `Host`; rate limit chung; mặc định tắt, bật hay tắt không cần phát hành lại; AQ-17 |
+| Dữ liệu rời hệ thống qua một AI client ngoài (MCP) | cùng quyền với khung chat, guard là quyền riêng `assistant-mcp`; chỉ liệt kê tool người dùng được dùng; token đăng nhập hoặc token cá nhân chỉ mở endpoint MCP, hết hạn tối đa 90 ngày, thu hồi được (ADR-0017); `Origin` không được phép bị 403, kể cả khi trùng `Host`; rate limit chung; mặc định tắt, bật hay tắt không cần phát hành lại; AQ-17 |
 | Đọc sai ảnh phiếu giao hàng; ảnh tải lên làm sập ứng dụng | **không còn áp dụng từ 16/11**: đọc ảnh đã bỏ cùng mua hàng (§8); giọng nói thì file WAV được kiểm định dạng, độ dài và kích thước trước khi gửi (§8.3) |
 
 ---
@@ -2738,16 +2738,16 @@ trong lần `mvn test` đầy đủ sau khi gộp (mục "Kiểm chứng" dướ
 
 **Mỗi gói làm gì:**
 
-- P1: chỉ gửi model định nghĩa các tool người dùng được dùng (`ToolAvailability.specsFor`; AQ-11, ADR-0011 sửa đổi
+- P1: chỉ gửi model định nghĩa các tool người dùng được dùng (`ToolAvailability.specsFor`; AQ-11, ADR-0014 sửa đổi
   29/10), và `findOrder` kèm khối `picking` để "vì sao bị giữ, thiếu ở đâu" chỉ cần một lần tra (§4.2, §5.7).
 - P2: định tuyến model (`ModelRouter`, `ModelRoutingProperties`): rẻ trước, sang model kế tiếp khi hết hạn mức hay
   không kết nối được, leo thang một lần khi không ra câu trả lời dùng được; lịch sử được dựng lại cho đúng model được
   gọi (§3.1, §3.4, §11).
 - P3: bảng dưới câu trả lời (`ResultTable`), kiểm số lúc chạy (`AnswerNumbers`), câu hỏi gợi ý (`FollowUps`), lưu đánh
-  giá (`answer_feedback`, `V20270106000400`), và system prompt bảo model không chép dòng của bảng (§3.3, §7).
+  giá (`answer_feedback`, `V20270120000400`), và system prompt bảo model không chép dòng của bảng (§3.3, §7).
 - P4: bốn tool `getCustomerPrice`, `getCustomerCredit`, `findFulfillmentTasks`, `findGoodsReceipts`, `GoodsReceiptQueries`
-  trong `procurement :: api`, và trợ lý cho WAREHOUSE_STAFF, PRODUCTION_STAFF (`V20270106000500`) (§1, §4.2, §4.3).
-- P5: tìm theo nghĩa bằng embedding Gemini, lưu `real[]`, gộp RRF với tìm từ khóa (`V20270106000600`, §6.4).
+  trong `procurement :: api`, và trợ lý cho WAREHOUSE_STAFF, PRODUCTION_STAFF (`V20270120000500`) (§1, §4.2, §4.3).
+- P5: tìm theo nghĩa bằng embedding Gemini, lưu `real[]`, gộp RRF với tìm từ khóa (`V20270120000600`, §6.4).
 - P6: endpoint MCP `POST /api/v1/assistant/mcp` cho một AI client khác, dưới quyền của người đăng nhập (§7).
 - P7: thẻ "hôm nay" `GET /api/v1/assistant/today`, thay bản tin buổi sáng (§9).
 - P8: phiếu nhập nháp từ ảnh phiếu giao hàng, `POST /api/v1/assistant/receipt-drafts`, port `DocumentReader` (§8.1).
@@ -2781,11 +2781,11 @@ trong lần `mvn test` đầy đủ sau khi gộp (mục "Kiểm chứng" dướ
    `assistant.today.denied=Tài khoản của bạn không có quyền xem phần này.`).
 10. `PlaygroundSeed` tạo thêm hai tài khoản tầng xưởng, giá riêng, điều khoản tín dụng và công nợ của khách demo, và
     giao task nhặt của đơn bị giữ cho `play.nvkho.hcm` (§10.3).
-11. Ba migration của vòng này: `V20270106000400` (đánh giá), `V20270106000500` (quyền tầng xưởng, tăng
-    `identity.app_role.version`) và `V20270106000600` (embedding). Ngày 5/11, khi gộp `develop`, cả 11 migration của trợ
-    lý được đổi số thành `V20270106000100`–`V20270106001200`, giữ nguyên thứ tự, vì migration mới nhất của `develop` lúc
+11. Ba migration của vòng này: `V20270120000400` (đánh giá), `V20270120000500` (quyền tầng xưởng, tăng
+    `identity.app_role.version`) và `V20270120000600` (embedding). Ngày 5/11, khi gộp `develop`, cả 11 migration của trợ
+    lý được đổi số thành `V20270120000100`–`V20270120001200`, giữ nguyên thứ tự, vì migration mới nhất của `develop` lúc
     đó là `V20261103000100`. Nếu `develop` có migration mới hơn trước khi PR được gộp, phải đổi số lần nữa (§2).
-12. ADR-0011 có mục sửa đổi ngày 29/10: chỉ gửi tool được dùng, tìm theo nghĩa, định tuyến model, MCP.
+12. ADR-0014 có mục sửa đổi ngày 29/10: chỉ gửi tool được dùng, tìm theo nghĩa, định tuyến model, MCP.
 
 **Rà soát nghiệp vụ sau khi gộp.** Bản gộp được rà soát thêm một lần theo nghiệp vụ thật, rồi phiên chính sửa. Những
 mục dưới thắng nội dung của từng gói.

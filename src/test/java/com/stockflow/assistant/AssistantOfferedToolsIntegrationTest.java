@@ -47,7 +47,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * What the model is offered, against the seeded role matrix, the real permission aspect and the real tools (ADR-0011,
+ * What the model is offered, against the seeded role matrix, the real permission aspect and the real tools (ADR-0014,
  * amended 29/10/2026; design §5.7): each persona is offered exactly the tools the panel says it may use, sorted by
  * name and the same on every call of an answer, and a tool it was not offered still refuses it, through its own guard,
  * when a model calls it anyway.
@@ -98,7 +98,7 @@ class AssistantOfferedToolsIntegrationTest {
      */
     static Stream<Persona> personas() {
         return Stream.of(new Persona(Role.SYSTEM_ADMIN, false), new Persona(Role.WAREHOUSE_MANAGER, true),
-                // V20270106000500: warehouse staff may open the assistant too.
+                // V20270120000500: warehouse staff may open the assistant too.
                 new Persona(Role.WAREHOUSE_STAFF, true), new Persona(Role.SALES_STAFF, false),
                 new Persona(Role.SALES_MANAGER, false), new Persona(Role.ACCOUNTANT, false),
                 new Persona(Role.PRODUCTION_COORDINATOR, false));

@@ -3,7 +3,7 @@ package com.stockflow.assistant.internal.controller.dto;
 import java.util.List;
 
 /**
- * A spoken question written down (ADR-0016): for the person who spoke to read, correct and send as their question.
+ * A spoken question written down (ADR-0019): for the person who spoke to read, correct and send as their question.
  * Nothing was kept and nothing was asked yet. Show {@code text} as plain text in the question box, and mark the
  * {@code codes} and {@code numbers} in it: a misheard digit names another real carton, lot or order, so those are what
  * to check against the label, or to scan instead of saying.

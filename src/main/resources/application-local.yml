@@ -96,5 +96,5 @@ stockflow:
       # On a laptop and in the assistant playground; off by default elsewhere (application.yml, AQ-17).
       enabled: ${ASSISTANT_MCP_ENABLED:true}
     voice:
-      # The same: off by default elsewhere (application.yml, ADR-0016).
+      # The same: off by default elsewhere (application.yml, ADR-0019).
       enabled: ${ASSISTANT_VOICE_ENABLED:true}

@@ -92,7 +92,7 @@ com.stockflow
 ├── chat/            Conversations, messages, agent assignment        → schema chat
 ├── notification/    Templates, preferences, delivery log             → schema notification
 ├── reporting/       Read models and dashboards                       → schema reporting
-└── assistant/       Read-only AI assistant, 15 tools (ADR-0011..16)  → schema assistant
+└── assistant/       Read-only AI assistant, 15 tools (ADR-0014..16)  → schema assistant
 ```
 
 ### The layers, and where they live
@@ -378,4 +378,4 @@ places: `StockPackage.allocate` and `uk_stock_reservation_live_carton`.
 6. `ModularityTest` — the twenty lines that keep all of the above true
 7. [`docs/assistant-design.md`](docs/assistant-design.md) (Vietnamese) — the back-office AI assistant: its 15 read-only
    tools, each guarded exactly as the screen it mirrors, the roles that may use them, and its rule search over the
-   kltn-docs snapshot in `docs/kltn-snapshot/`; [ADR-0011](docs/adr/0011-assistant-tool-calling-agent.md) is the decision
+   kltn-docs snapshot in `docs/kltn-snapshot/`; [ADR-0014](docs/adr/0014-assistant-tool-calling-agent.md) is the decision

@@ -3,7 +3,7 @@ package com.stockflow.inventory.api;
 import com.stockflow.common.api.PageResponse;
 
 /**
- * Stock adjustments for other modules (the assistant, ADR-0011): the list the adjustment screen shows, the approver's
+ * Stock adjustments for other modules (the assistant, ADR-0014): the list the adjustment screen shows, the approver's
  * queue of PENDING_APPROVAL among them (SCRUM-145).
  *
  * <p><b>Scope.</b> The caller's warehouse limit is applied exactly as on {@code GET /api/v1/inventory/adjustments}: a

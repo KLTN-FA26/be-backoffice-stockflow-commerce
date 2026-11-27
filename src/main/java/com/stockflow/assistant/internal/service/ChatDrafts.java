@@ -45,7 +45,7 @@ import java.util.regex.Pattern;
 /**
  * The staff chat's two model-backed helpers (contract §1.2, §1.3): a reply <b>to the customer</b> for Sales to edit and
  * send, and a summary of a conversation handed over or escalated, for the colleague who picks it up. Nothing is posted:
- * the draft goes back to the screen, and the person sends it through the chat's own action (rule 1, ADR-0012).
+ * the draft goes back to the screen, and the person sends it through the chat's own action (rule 1, ADR-0015).
  *
  * <p><b>What a reply may say.</b> A draft goes to the customer, so it is built only from what the customer may already
  * read about their own documents, gathered here deterministically and given to the model as the only facts it may use:
@@ -64,7 +64,7 @@ import java.util.regex.Pattern;
  * ({@code sales-order-delivery-batches:READ}); without them the draft knows the order's status and money only, as
  * the chat's customer panel shows them.</p>
  *
- * <p><b>Pseudonymised</b> ({@link DraftNames}, ADR-0015). The model sees the customer as {@code KH#1} in the facts, and
+ * <p><b>Pseudonymised</b> ({@link DraftNames}, ADR-0018). The model sees the customer as {@code KH#1} in the facts, and
  * in the messages wherever one of its names appears - the registered one, its legal profile's company name, or the
  * distinctive part of either ("bên Minh Phát") - and its contact people as {@code LH#n}; the names are put back in what
  * comes out. Typed text goes through {@link TypedText} first: contacts masked, text that reads like an instruction

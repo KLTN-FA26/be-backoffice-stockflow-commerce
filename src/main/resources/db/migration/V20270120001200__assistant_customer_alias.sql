@@ -1,4 +1,4 @@
--- Customer aliases (design §5.5, ADR-0015): the model provider is sent "KH#1", "KH#2" where a tool result names a
+-- Customer aliases (design §5.5, ADR-0018): the model provider is sent "KH#1", "KH#2" where a tool result names a
 -- customer, and the panel shows the real name. Which customer an alias stands for is kept here, inside the company's
 -- database, and never sent anywhere: the provider learns that a customer owes 120 million, not which one.
 --

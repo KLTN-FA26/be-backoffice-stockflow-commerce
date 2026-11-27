@@ -1,19 +1,19 @@
 package com.stockflow.assistant.internal.controller;
 
 /**
- * The permission resources of the assistant's endpoints, seeded by V20270106000200, V20270106001100 and
- * V20270107000400, and their shared rate limits.
+ * The permission resources of the assistant's endpoints, seeded by V20270120000200, V20270120001100 and
+ * V20270120001300, and their shared rate limits.
  */
 final class AssistantResources {
 
     static final String CONVERSATIONS = "assistant-conversations";
 
-    /** The MCP endpoint and its personal tokens (ADR-0014), granted per role apart from the chat (AQ-17). */
+    /** The MCP endpoint and its personal tokens (ADR-0017), granted per role apart from the chat (AQ-17). */
     static final String MCP = "assistant-mcp";
 
     /**
      * The answers people marked wrong, with other people's questions (contract §5.1, AQ-16): System Admin only
-     * (V20270107000400).
+     * (V20270120001300).
      */
     static final String FEEDBACK = "assistant-feedback";
 

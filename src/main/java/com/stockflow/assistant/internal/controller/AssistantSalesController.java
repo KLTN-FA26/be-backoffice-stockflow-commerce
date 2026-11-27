@@ -40,7 +40,7 @@ import java.util.UUID;
  * finds it for the caller, so a document out of their reach is 404 as on the screen.</p>
  *
  * <p><b>Nothing is written.</b> A draft is returned for the person to edit and send through the chat's own action
- * (ADR-0012). The two model-backed handlers spend the questions' rate limit ({@link AssistantResources#QUESTIONS_BUCKET});
+ * (ADR-0015). The two model-backed handlers spend the questions' rate limit ({@link AssistantResources#QUESTIONS_BUCKET});
  * the deterministic ones have their own, and never call a model.</p>
  *
  * <p><b>Counted once answered.</b> Each handler counts its feature's use ({@link FeatureUse}, contract §5.2) after the

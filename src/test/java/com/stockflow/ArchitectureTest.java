@@ -417,7 +417,7 @@ class ArchitectureTest {
     }
 
     /**
-     * {@code RunAs} builds an authorization that no request carried (ADR-0013). Every caller is one more way to act for
+     * {@code RunAs} builds an authorization that no request carried (ADR-0016). Every caller is one more way to act for
      * someone without them, so each is added here on purpose, reviewed as such: the assistant's watch, and the work
      * queue's morning digest ({@code WorkQueueDigestJob}), which reads each user's queue as that user - so a warehouse
      * manager is told about their warehouses only - posts one inbox message of section titles and counts, and asks no
@@ -430,19 +430,19 @@ class ArchitectureTest {
                 .and().haveNameNotMatching(
                         "com\\.stockflow\\.assistant\\.internal\\.service\\.WorkQueueDigestJob(\\$.*)?")
                 .and().haveNameNotMatching("com\\.stockflow\\.common\\.security\\.RunAs(\\$.*)?")
-                // A personal token's request is authenticated with the same authorization (ADR-0014); the chain
+                // A personal token's request is authenticated with the same authorization (ADR-0017); the chain
                 // that builds the provider only hands RunAs over.
                 .and().doNotHaveFullyQualifiedName("com.stockflow.common.security.PersonalTokenAuthenticationProvider")
                 .and().doNotHaveFullyQualifiedName("com.stockflow.common.security.ResourceServerSecurityConfig")
                 .should().dependOnClassesThat()
                 .haveNameMatching("com\\.stockflow\\.common\\.security\\.RunAs(\\$.*)?")
-                .because("acting for a user outside a request is reviewed per caller (ADR-0013, ADR-0014)");
+                .because("acting for a user outside a request is reviewed per caller (ADR-0016, ADR-0017)");
         rule.check(CLASSES);
     }
 
     /**
      * An authorization is built in two places only: from a request's token, and by {@code RunAs}. A third would be a
-     * way round both, and is reviewed as one (ADR-0008, ADR-0013).
+     * way round both, and is reviewed as one (ADR-0008, ADR-0016).
      */
     @Test
     void onlyTheConverterAndRunAsBuildAnAuthorization() {
@@ -484,7 +484,7 @@ class ArchitectureTest {
                         "com.stockflow.assistant.internal.service.AssistantWatchProperties")
                 .should().dependOnClassesThat()
                 .haveNameMatching("com\\.stockflow\\.assistant\\.internal\\.service\\.AssistantWatch(\\$.*)?")
-                .because("the watch acts for whichever user it is handed (ADR-0013)");
+                .because("the watch acts for whichever user it is handed (ADR-0016)");
         rule.check(CLASSES);
     }
 

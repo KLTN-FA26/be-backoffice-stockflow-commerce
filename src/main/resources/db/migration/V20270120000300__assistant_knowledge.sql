@@ -1,5 +1,5 @@
 -- =============================================================================
--- Assistant: the retrieval corpus (ADR-0011, docs/assistant-design.md §6).
+-- Assistant: the retrieval corpus (ADR-0014, docs/assistant-design.md §6).
 -- Module: assistant
 --
 -- One row per business rule, glossary term or state-machine passage, indexed from docs/business-design

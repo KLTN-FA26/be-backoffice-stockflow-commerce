@@ -42,7 +42,7 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * My personal tokens for the assistant's MCP endpoint (design §7, ADR-0014): made for one AI client, shown once,
+ * My personal tokens for the assistant's MCP endpoint (design §7, ADR-0017): made for one AI client, shown once,
  * revoked on their own.
  *
  * <p><b>The sign-in token only.</b> These endpoints are not among a personal token's paths, so the API chain refuses

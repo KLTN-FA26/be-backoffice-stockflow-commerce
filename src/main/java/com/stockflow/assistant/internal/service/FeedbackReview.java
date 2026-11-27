@@ -38,7 +38,7 @@ import java.util.Set;
  * right answer must hold are exactly what the marked answer got wrong. A verdict given before raters were recorded has
  * persona {@code TODO}.</p>
  *
- * <p><b>Text as stored, with the aliases the model saw</b> ({@code KH-1}, ADR-0015): the case is committed to the
+ * <p><b>Text as stored, with the aliases the model saw</b> ({@code KH-1}, ADR-0018): the case is committed to the
  * repository, where a customer's real name has no business, and the fixtures of the golden set name their own
  * customers anyway. A question naming a customer the conversation had not met yet was stored as typed
  * ({@code CustomerPseudonyms}), and a comment always is: the reviewer reads both before committing a case. The answer

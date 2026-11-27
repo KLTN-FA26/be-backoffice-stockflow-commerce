@@ -43,7 +43,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 /**
- * {@link LanguageModel} on Anthropic's Messages API, through the official Java SDK (ADR-0011).
+ * {@link LanguageModel} on Anthropic's Messages API, through the official Java SDK (ADR-0014).
  *
  * <p><b>Replay is byte-faithful.</b> A reply is stored as {@code Message.toParam()} serialised by the SDK's own
  * mapper, and read back by the same mapper into a {@code MessageParam}. Nothing in between edits it: the model's

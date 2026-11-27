@@ -4,7 +4,7 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * A text the model drafted for a person to edit and send through the screen's own action (ADR-0012: the assistant never
+ * A text the model drafted for a person to edit and send through the screen's own action (ADR-0015: the assistant never
  * sends), with what it was drafted from and what in it nothing it was given holds
  * ({@code docs/assistant-work-features-fe-contract.md} §0, "Draft"). The one record of every model-backed draft - the
  * reply and the summary in the staff chat, the payment reminder, the message to a producer - all written by

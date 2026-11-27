@@ -6,7 +6,7 @@ import java.util.List;
  * The storefront search (ADR-0009) for other modules: published products matching a text, best match first.
  *
  * <p>The same search {@code GET /api/v1/catalog/products} runs — accents and case ignored, typo-tolerant, exact SKU
- * first — so a product the assistant (ADR-0011) finds is one a signed-in user would find on the storefront. No price
+ * first — so a product the assistant (ADR-0014) finds is one a signed-in user would find on the storefront. No price
  * and no stock: those stay with the customer-only endpoints.</p>
  */
 public interface CatalogSearch {

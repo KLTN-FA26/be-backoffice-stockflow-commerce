@@ -20,7 +20,7 @@ import java.util.function.Function;
 import java.util.regex.Pattern;
 
 /**
- * Runs work as one user, outside any request: the only place that builds an authorization no request carried (ADR-0013).
+ * Runs work as one user, outside any request: the only place that builds an authorization no request carried (ADR-0016).
  *
  * <p><b>What the user holds now, nothing more.</b> A background job that acts for someone (the assistant's watch, which
  * reads that person's own lists to tell them what is new) must see exactly what that person sees on their screens. A
@@ -45,7 +45,7 @@ import java.util.regex.Pattern;
  * on a scheduler thread) is put back afterwards, and the data scope is restored as found, so nothing of this user
  * outlives the call. Work handed to another thread inherits nothing unless it is carried ({@code ThreadContext}).</p>
  *
- * <p><b>Also for a personal token</b> ({@link PersonalTokens}, ADR-0014): a request that carries one instead of a JWT
+ * <p><b>Also for a personal token</b> ({@link PersonalTokens}, ADR-0017): a request that carries one instead of a JWT
  * is authenticated with {@link #authenticationFor}, the same authorization built the same way, which the request then
  * carries as any other. The token says only whose it is.</p>
  */

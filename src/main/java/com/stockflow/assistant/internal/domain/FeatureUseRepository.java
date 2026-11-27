@@ -6,7 +6,7 @@ import java.util.Objects;
 
 /**
  * How often each assistant feature was used, per feature, role and business day ({@code assistant.feature_use},
- * V20270107000400; contract §5.2). Aggregates only: nothing here names a user or holds what they asked. Runs inside
+ * V20270120001300; contract §5.2). Aggregates only: nothing here names a user or holds what they asked. Runs inside
  * the caller's transaction.
  */
 public interface FeatureUseRepository {

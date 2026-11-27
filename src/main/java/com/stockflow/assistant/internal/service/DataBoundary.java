@@ -11,7 +11,7 @@ import java.util.regex.Pattern;
 
 /**
  * Where the assistant may send what it reads, written down ({@code stockflow.assistant.data-policy},
- * {@code allowed-providers}, {@code allowed-hosts}; design §5.5, ADR-0015): the one check every adapter that sends
+ * {@code allowed-providers}, {@code allowed-hosts}; design §5.5, ADR-0018): the one check every adapter that sends
  * tool results, passages, photos or voice to a model passes before it is built.
  *
  * <p><b>Why a list, beside the policy.</b> {@link DataPolicy} has two answers, any cloud or none. A deployment

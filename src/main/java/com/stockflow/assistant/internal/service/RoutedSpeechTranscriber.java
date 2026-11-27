@@ -7,7 +7,7 @@ import com.stockflow.common.error.ErrorCode;
 import java.util.List;
 
 /**
- * Voice over the chat's route (ADR-0016): when {@code voice.model} is unset, a recording goes to the first model of
+ * Voice over the chat's route (ADR-0019): when {@code voice.model} is unset, a recording goes to the first model of
  * {@code stockflow.assistant.routing.models} that can hear, and to the next when that one's quota is spent. Pinned to
  * the first model, every transcription would fail for the rest of the day once its free quota ran out, while questions
  * moved on to the next model.

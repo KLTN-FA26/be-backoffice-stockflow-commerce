@@ -16,10 +16,6 @@ public record UpdateProductRequest(
         @Size(max = 255, message = "name must be at most 255 characters")
         String name,
 
-        @NotBlank(message = "nameEn is required")
-        @Size(max = 300, message = "nameEn must be at most 300 characters")
-        String nameEn,
-
         UUID brandId,
 
         UUID categoryId,
@@ -27,8 +23,6 @@ public record UpdateProductRequest(
         String shortDescription,
 
         String description,
-
-        String descriptionEn,
 
         @NotNull(message = "taxClass is required")
         TaxClass taxClass,

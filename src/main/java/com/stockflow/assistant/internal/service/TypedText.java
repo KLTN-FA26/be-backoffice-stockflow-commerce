@@ -110,7 +110,7 @@ final class TypedText {
         masked = EMAIL_ADDRESS.matcher(masked).replaceAll(Matcher.quoteReplacement(EMAIL));
         masked = MOBILE_NUMBER.matcher(masked).replaceAll(Matcher.quoteReplacement(PHONE));
         masked = PHONE_NUMBER.matcher(masked).replaceAll(Matcher.quoteReplacement(PHONE));
-        // Typed text shaped like a customer alias ("KH#12") must not be read back as one (ADR-0015).
+        // Typed text shaped like a customer alias ("KH#12") must not be read back as one (ADR-0018).
         return ALIAS_SHAPED.matcher(masked).replaceAll("$1 ");
     }
 

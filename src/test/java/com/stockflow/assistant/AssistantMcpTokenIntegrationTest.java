@@ -47,7 +47,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Personal MCP tokens end to end (ADR-0014), with the real security chain: a token made with the sign-in token opens
+ * Personal MCP tokens end to end (ADR-0017), with the real security chain: a token made with the sign-in token opens
  * the MCP endpoint and nothing else, carries its owner's grants as they stand at each call, and stops when revoked,
  * expired, or when its owner's account may not sign in any more. Also the protocol's structured results, against the
  * schema the server lists, and the Origin a page made to resolve to this server sends.
@@ -77,7 +77,7 @@ class AssistantMcpTokenIntegrationTest {
         http = new SecuredMvc(mockMvc, decoder);
         // As the real decoder: a personal token is not a JWT.
         when(decoder.decode(startsWith("sfmcp_"))).thenThrow(new BadJwtException("Malformed token"));
-        // Opt-in (V20270106001100): the roles these cases sign in with, as an administrator would grant them.
+        // Opt-in (V20270120001100): the roles these cases sign in with, as an administrator would grant them.
         RoleGrants.grant(jdbc, tx, "assistant-mcp:CREATE", "SYSTEM_ADMIN", "SALES_STAFF", "WAREHOUSE_STAFF");
         // One whole carton of 10 at an HCM bin: stock is LPN cartons only since the rescope.
         AssistantStock stock = new AssistantStock(jdbc, tx, entityManager);
@@ -190,7 +190,7 @@ class AssistantMcpTokenIntegrationTest {
     }
 
     @Test
-    @DisplayName("an administrator's password reset revokes the owner's tokens for good (ADR-0014): a token minted by "
+    @DisplayName("an administrator's password reset revokes the owner's tokens for good (ADR-0017): a token minted by "
             + "whoever knew the old password does not come back when the owner sets a new one")
     void aPasswordResetRevokesTheTokens() throws Exception {
         UUID admin = staff("SYSTEM_ADMIN");

@@ -39,7 +39,7 @@ import java.util.UUID;
  * The assistant's help with money, inside the screens the Accountant and Sales already work in
  * ({@code docs/assistant-work-features-fe-contract.md} §2): where to look for a bank transfer the feed could not match,
  * which installments to chase first, and a reminder to send for one. Read-only: the Accountant assigns the transfer and
- * the reminder is sent by whoever edits it, each through their own screen (ADR-0012).
+ * the reminder is sent by whoever edits it, each through their own screen (ADR-0015).
  *
  * <p><b>The screen's permission, the screen's scope.</b> The suggestions are guarded as the bank transfer's review
  * screen ({@code payment-bank-transactions:READ}), the list and the reminder as the installment list

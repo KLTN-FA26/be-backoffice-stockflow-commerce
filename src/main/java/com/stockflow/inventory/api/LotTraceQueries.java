@@ -5,7 +5,7 @@ import java.util.List;
 /**
  * The lot traceability report (SCRUM-153) for other modules, looked up by the lot number people read off a carton.
  *
- * <p>The back office's lot screen asks by id, which nobody outside that screen knows; the assistant (ADR-0011) is
+ * <p>The back office's lot screen asks by id, which nobody outside that screen knows; the assistant (ADR-0014) is
  * asked "where did lot L-2310 go?". This is the same report, reached by the number instead.</p>
  *
  * <p><b>Scope.</b> The caller's warehouse limit (BR-SEC-002) is applied exactly as on

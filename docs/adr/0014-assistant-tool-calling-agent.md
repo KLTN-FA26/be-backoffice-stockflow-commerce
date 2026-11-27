@@ -1,4 +1,4 @@
-# ADR-0011: Trợ lý back-office là một agent gọi tool trên API của các module
+# ADR-0014: Trợ lý back-office là một agent gọi tool trên API của các module
 
 Trạng thái: đề xuất (2026-10-24), chờ team chấp nhận; phase 1 và 2 đã xây dựng trên nhánh
 `feature/ai-assistant` (2026-10-25); sửa sau vòng rà soát 28–29/10 (tài liệu thiết kế §16); sửa đổi ngày 29/10/2026
@@ -276,7 +276,7 @@ Những gì đổi theo nghiệp vụ mới ([ADR-0010](0010-rescope-b2b-printed
   tồn là thùng LPN nguyên xuất theo nhập trước xuất trước, giá là giá riêng của khách, phiếu nhập là hàng in nhận theo
   lệnh sản xuất. Đang làm: `findProductionOrders` mới (lệnh sản xuất gửi nhà sản xuất ngoài, module `order`),
   `findEInvoices` và khối `blockers` của `findOrder`.
-- **"Model chỉ đọc" giờ chặt hơn.** Đề xuất PO và phiếu nhập nháp từ ảnh (mục "Model chỉ đọc" ở trên, ADR-0012) đã bỏ:
+- **"Model chỉ đọc" giờ chặt hơn.** Đề xuất PO và phiếu nhập nháp từ ảnh (mục "Model chỉ đọc" ở trên, ADR-0015) đã bỏ:
   trợ lý không còn tạo cả chứng từ nháp. Câu trả lời chỉ ra màn hình làm việc đó.
 - **Vai trò.** `assistant-conversations` cấp cho WAREHOUSE_STAFF, WAREHOUSE_MANAGER, SALES_STAFF, SALES_MANAGER,
   PRODUCTION_COORDINATOR, ACCOUNTANT, SYSTEM_ADMIN; không bao giờ CUSTOMER. Năm vai trò cũ (INVENTORY_PLANNER,

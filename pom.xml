@@ -75,6 +75,12 @@
       and xmlbeans are the only ones on the classpath (nothing else here brings them at compile scope).
     -->
     <poi.version>5.4.0</poi.version>
+    <!--
+      Rich-text descriptions (ADR-0013): the back office writes product and variant descriptions with Tiptap, whose
+      HTML jsoup cleans to a fixed allow-list before it is stored. The client's DOMPurify is not a defence: anyone can
+      call the API without the editor.
+    -->
+    <jsoup.version>1.21.1</jsoup.version>
 
     <!--
       Recorded in build-info.properties and served at /actuator/info. CI overrides them with
@@ -132,6 +138,11 @@
       <groupId>com.drewnoakes</groupId>
       <artifactId>metadata-extractor</artifactId>
       <version>2.19.0</version>
+    </dependency>
+    <dependency>
+      <groupId>org.jsoup</groupId>
+      <artifactId>jsoup</artifactId>
+      <version>${jsoup.version}</version>
     </dependency>
     <dependency>
       <groupId>com.google.zxing</groupId>

@@ -23,13 +23,13 @@ import java.util.UUID;
  * A payment reminder for the customer to edit and send (2026-11-27 work features 2.2): Sales or the Accountant chasing
  * an installment gets a polite Vietnamese message that names the contract, the installment, what it still owes, its
  * due day and what to write in the transfer - and nothing else. Sending stays theirs, through their own mail or chat
- * (ADR-0012).
+ * (ADR-0015).
  *
  * <p><b>What the model is given is what the customer may read.</b> The facts are the installment's own, read through
  * {@code payment :: api} ({@link CustomerInstallments#transfer}: what it still owes by the installment's own rule,
  * whether it is overdue): the contract and order numbers, the installment's name, the amount, the due day, how late,
  * the transfer reference. No hold note, no credit position, no other customer, no staff name. The customer is
- * {@code KH#1} to the model (ADR-0015, {@link DraftNames}) and its name is put back into the draft afterwards; the
+ * {@code KH#1} to the model (ADR-0018, {@link DraftNames}) and its name is put back into the draft afterwards; the
  * installment's name, which Sales typed, goes through {@link TypedText} like any typed text, the customer's names in it
  * hidden.</p>
  *

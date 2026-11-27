@@ -7,7 +7,7 @@ import java.util.UUID;
 /**
  * Which stock rows' books the caller may not read because a cycle count holds their slot (kltn-docs 20 BR-07,
  * SCRUM-146): the rule the stock screens apply, for another module that shows the same rows
- * ({@link InventoryService#availabilityOf}) to a person - the assistant (ADR-0011).
+ * ({@link InventoryService#availabilityOf}) to a person - the assistant (ADR-0014).
  *
  * <p>{@code availabilityOf} stays a plain read with every figure, because releases and holds plan over it with no
  * person behind them. A module showing its rows to someone asks here which of them to show without quantities, as

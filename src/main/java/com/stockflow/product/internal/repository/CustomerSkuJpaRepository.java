@@ -54,6 +54,17 @@ public interface CustomerSkuJpaRepository extends BaseJpaRepository<CustomerSkuJ
 
     long countByVariantId(UUID variantId);
 
+    /**
+     * Every customer's SKU drawn on a product, or on one of its catalogue variants when {@code variantId} is given,
+     * by code: what the product page lists before a blank is blocked or the product discontinued.
+     */
+    @Query(value = "select c from CustomerSkuJpaEntity c where c.productId = :productId "
+            + "and (:variantId is null or c.variantId = :variantId) order by c.sku, c.id",
+            countQuery = "select count(c) from CustomerSkuJpaEntity c where c.productId = :productId "
+                    + "and (:variantId is null or c.variantId = :variantId)")
+    org.springframework.data.domain.Page<CustomerSkuJpaEntity> drawnOn(@Param("productId") UUID productId,
+            @Param("variantId") UUID variantId, org.springframework.data.domain.Pageable pageable);
+
     /** Every customer's SKU of a product, by code: what discontinuing the product retires with its variants. */
     List<CustomerSkuJpaEntity> findByProductIdOrderBySkuAscIdAsc(UUID productId);
 

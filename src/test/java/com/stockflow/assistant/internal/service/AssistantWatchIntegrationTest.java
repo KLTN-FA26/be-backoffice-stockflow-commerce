@@ -46,7 +46,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * The assistant's watch with the real security chain, grants, tools, inbox and database (design §9.1, ADR-0013): it
+ * The assistant's watch with the real security chain, grants, tools, inbox and database (design §9.1, ADR-0016): it
  * looks as each user, tells them once what is new on their own list - the orders put on hold, the one list watched
  * since the rescope (ADR-0010) - and stops for whoever may no longer be acted for.
  *

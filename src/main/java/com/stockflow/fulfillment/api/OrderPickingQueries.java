@@ -6,7 +6,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * An order's pick task and what happened on each line, for other modules (the assistant, ADR-0011): the detail
+ * An order's pick task and what happened on each line, for other modules (the assistant, ADR-0014): the detail
  * behind "why is this order on hold" when the reason is a short pick.
  *
  * <p>The same visibility as {@code GET /api/v1/fulfillment/tasks/{taskId}/pick-lines}: the caller must be allowed to

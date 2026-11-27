@@ -2,7 +2,7 @@
 -- Assistant: reviewing the answers people marked wrong, and counting which assistant features are used
 -- (docs/assistant-work-features-fe-contract.md §5; docs/assistant-design.md §7, AQ-16).
 -- Module: assistant (tables), identity (permissions and grants) for assistant. Written with the module, as
--- V20270106000200 was (the repository owner's decision of 2026-10-24).
+-- V20270120000200 was (the repository owner's decision of 2026-10-24).
 --
 -- 1. assistant.answer_feedback gains who rated, by role: the roles and the warehouses of the person when they gave
 --    the verdict. The System Admin turns a wrong answer into a golden-set case (src/test/resources/assistant/

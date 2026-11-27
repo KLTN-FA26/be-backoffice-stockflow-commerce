@@ -9,7 +9,7 @@ import java.util.List;
 
 /**
  * A text the assistant drafted for the user to edit and send through the screen's own action; it sends nothing itself
- * (ADR-0012). The contract's {@code Draft}: the one shape of all four model-backed drafts - the reply and the summary
+ * (ADR-0015). The contract's {@code Draft}: the one shape of all four model-backed drafts - the reply and the summary
  * in the staff chat, the payment reminder, the message to a producer.
  */
 @JsonInclude(JsonInclude.Include.ALWAYS)

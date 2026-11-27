@@ -33,7 +33,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * The lot lookup, the adjustment list and the blind-count rows the assistant needs (ADR-0011): each asks the same
+ * The lot lookup, the adjustment list and the blind-count rows the assistant needs (ADR-0014): each asks the same
  * internal service its screen uses - so the warehouse rule and the blind count's hiding stay in one place - classifies
  * the caller by the screens' own rule (kltn-docs 20 BR-07), and only reshapes what comes back.
  */

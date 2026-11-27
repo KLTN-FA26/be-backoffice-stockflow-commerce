@@ -13,7 +13,7 @@ spring:
       max-file-size: 50MB
       max-request-size: 51MB
       # Uploads up to 2 MB stay in memory instead of a temp file (Spring's default threshold is 0): a spoken question
-      # (ADR-0016, at most 2 MB) is then never written to disk, not even while the speech model is called.
+      # (ADR-0019, at most 2 MB) is then never written to disk, not even while the speech model is called.
       file-size-threshold: 2MB
   application:
     name: stockflow-monolith
@@ -552,11 +552,11 @@ stockflow:
     # How often the SLA, auto-close and close jobs run.
     sla-job-interval: ${CHAT_SLA_JOB_INTERVAL:PT1M}
 
-  # The back-office AI assistant (ADR-0011, docs/assistant-design.md §11). Off by default; with no key it still starts
+  # The back-office AI assistant (ADR-0014, docs/assistant-design.md §11). Off by default; with no key it still starts
   # and answers 503 ASSISTANT_DISABLED. The key comes from the environment only, never from this file.
   assistant:
     enabled: ${ASSISTANT_ENABLED:false}
-    # anthropic (ADR-0011), gemini, or openai: any server speaking OpenAI's chat-completions API, such as Ollama on
+    # anthropic (ADR-0014), gemini, or openai: any server speaking OpenAI's chat-completions API, such as Ollama on
     # this machine (openai-compatible below). The key is the chosen provider's.
     provider: ${ASSISTANT_PROVIDER:anthropic}
     # ASSISTANT_API_KEY, or else the chosen provider's own variable below - never another vendor's: one vendor's key
@@ -580,7 +580,7 @@ stockflow:
     # embedding server or speech model outside them is refused when the application starts, and the log says why.
     allowed-providers: ${ASSISTANT_ALLOWED_PROVIDERS:}
     allowed-hosts: ${ASSISTANT_ALLOWED_HOSTS:}
-    # Customers go to the model provider as KH#1, KH#2 instead of their names; the panel shows the names (ADR-0015).
+    # Customers go to the model provider as KH#1, KH#2 instead of their names; the panel shows the names (ADR-0018).
     pseudonymise-customers: ${ASSISTANT_PSEUDONYMISE_CUSTOMERS:true}
     model: ${ASSISTANT_MODEL:claude-opus-5-5}
     daily-message-limit: ${ASSISTANT_DAILY_LIMIT:50}
@@ -647,7 +647,7 @@ stockflow:
     # provider that client uses. Off unless asked for until the business decides AQ-17; the local profile turns it on.
     mcp:
       enabled: ${ASSISTANT_MCP_ENABLED:false}
-    # POST /api/v1/assistant/transcriptions (ADR-0016): a spoken question, written down for the speaker to correct and
+    # POST /api/v1/assistant/transcriptions (ADR-0019): a spoken question, written down for the speaker to correct and
     # send. The recording goes to the speech model and is kept nowhere. Off unless asked for, as MCP is.
     voice:
       enabled: ${ASSISTANT_VOICE_ENABLED:false}
@@ -661,7 +661,7 @@ stockflow:
     digest:
       enabled: ${ASSISTANT_DIGEST_ENABLED:false}
       cron: ${ASSISTANT_DIGEST_CRON:0 30 7 * * MON-SAT}
-    # The watch (design §9.1, ADR-0013): every few minutes it reads, AS EACH back-office USER (their roles, scope and
+    # The watch (design §9.1, ADR-0016): every few minutes it reads, AS EACH back-office USER (their roles, scope and
     # warehouses now), the lists below that are theirs to act on, and posts what is new to their inbox. Off unless asked
     # for; never with security off. post: lists whose news is posted (heldOrders, the one list since the rescope,
     # ADR-0010). roles: per list, the roles it is posted to (a business decision, design §13; Sales handle holds,

@@ -4,7 +4,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Which customer each alias of a conversation stands for ({@code assistant.customer_alias}, ADR-0015): kept in the
+ * Which customer each alias of a conversation stands for ({@code assistant.customer_alias}, ADR-0018): kept in the
  * company's database, never sent to a model provider.
  */
 public interface CustomerAliasRepository {

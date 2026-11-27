@@ -33,7 +33,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * A spoken question written down (ADR-0016) through the real security chain and grants: the question's guard, a
+ * A spoken question written down (ADR-0019) through the real security chain and grants: the question's guard, a
  * portal customer refused, the recording checked before it could leave, and the codes and numbers to check marked.
  * The speech model is a test double; nothing it hears is stored anywhere.
  */

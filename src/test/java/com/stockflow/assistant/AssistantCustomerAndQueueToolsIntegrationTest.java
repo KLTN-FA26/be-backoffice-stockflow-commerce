@@ -415,7 +415,7 @@ class AssistantCustomerAndQueueToolsIntegrationTest {
     // ------------------------------------------------------------------------------------------------- AQ-02
 
     @Test
-    @DisplayName("warehouse staff (V20270106000500) and the production coordinator (V20270106000200) may open the "
+    @DisplayName("warehouse staff (V20270120000500) and the production coordinator (V20270120000200) may open the "
             + "assistant; a portal customer still may not")
     void theFloorRolesMayAsk() throws Exception {
         for (String role : List.of("WAREHOUSE_STAFF", "PRODUCTION_COORDINATOR")) {
@@ -576,7 +576,7 @@ class AssistantCustomerAndQueueToolsIntegrationTest {
     }
 
     /**
-     * The customer an alias of the conversation stands for, by its name (ADR-0015): what a tool result sends the model
+     * The customer an alias of the conversation stands for, by its name (ADR-0018): what a tool result sends the model
      * provider instead.
      */
     private String named(String conversation, String alias) {

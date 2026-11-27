@@ -33,7 +33,7 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 
 /**
- * The personal tokens of the assistant's MCP endpoint (design §7, ADR-0014): made, listed and revoked by their owner,
+ * The personal tokens of the assistant's MCP endpoint (design §7, ADR-0017): made, listed and revoked by their owner,
  * and checked for the API chain ({@link PersonalTokens}).
  *
  * <p><b>What a token is.</b> {@value #PREFIX} and 32 random bytes in URL-safe Base64, 256 bits that nobody guesses.

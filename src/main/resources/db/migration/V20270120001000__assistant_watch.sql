@@ -1,4 +1,4 @@
--- The assistant's watch (design §9.1, ADR-0013): every few minutes it reads, as each back-office user, a list of theirs
+-- The assistant's watch (design §9.1, ADR-0016): every few minutes it reads, as each back-office user, a list of theirs
 -- (the orders on hold, the one list left since the rescope) and tells them in the in-app inbox what is new since it last
 -- looked. Optionally it also answers a fixed question about the new items in a conversation
 -- of theirs, which they find in their own list.

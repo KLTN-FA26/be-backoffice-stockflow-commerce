@@ -13,7 +13,7 @@ import java.util.UUID;
  * ({@code GET /api/v1/production-orders}, 4A-2, kltn-docs 17 §4.3, §5.3), named instead of by id.
  *
  * <p>The screen names a production order's sales order, delivery batch, producer and warehouse by id, which nobody
- * outside it can read; the back-office assistant (ADR-0011) is asked "LSX của đơn SO-… tới đâu rồi?" and "nhà sản xuất
+ * outside it can read; the back-office assistant (ADR-0014) is asked "LSX của đơn SO-… tới đâu rồi?" and "nhà sản xuất
  * nào đang trễ?". These are the same rows, with the order number, the batch's number, the producer's name and lead
  * time and the warehouse's code read beside them, and what the print sample rounds and the receipts have done so
  * far.</p>

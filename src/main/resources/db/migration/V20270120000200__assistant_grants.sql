@@ -1,5 +1,5 @@
 -- =============================================================================
--- assistant-conversations:VIEW_PAGE, READ, CREATE (ADR-0011, docs/assistant-design.md §2).
+-- assistant-conversations:VIEW_PAGE, READ, CREATE (ADR-0014, docs/assistant-design.md §2).
 -- Module: identity (permissions and grants) for assistant
 --
 -- Holding this resource opens the assistant panel and nothing else. It grants no data: every tool the

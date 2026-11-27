@@ -8,7 +8,7 @@ import java.util.UUID;
  * Published by the <b>identity</b> module when an account's password was replaced in a way that also ends its other
  * sessions: an administrator reset it, or its owner changed it and asked to sign out everywhere else (a forced change
  * always does). Whatever still holds a credential issued before, other than a sign-in session, must stop honouring
- * it: the assistant revokes the account's personal MCP tokens (ADR-0014). Identity ends the sign-in sessions itself.
+ * it: the assistant revokes the account's personal MCP tokens (ADR-0017). Identity ends the sign-in sessions itself.
  *
  * <p>Why an event and not a call: the token store belongs to the assistant, which depends on identity, not the other
  * way round. Published inside the transaction that replaces the password, it is delivered after that commits and

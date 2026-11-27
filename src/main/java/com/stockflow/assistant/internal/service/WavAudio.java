@@ -11,7 +11,7 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * A spoken question as it is accepted (ADR-0016): a WAV file of 16-bit PCM, at most {@value #MAX_BYTES} bytes and
+ * A spoken question as it is accepted (ADR-0019): a WAV file of 16-bit PCM, at most {@value #MAX_BYTES} bytes and
  * {@value #MAX_SECONDS} seconds, judged by its own header rather than by what the upload claims.
  *
  * <p><b>Why WAV only.</b> Both providers read it, a browser makes it without a codec library (the playground resamples

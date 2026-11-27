@@ -64,7 +64,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <p>{@link #GRANTED} is the matrix of the seeded grants for the tools that existed when it was last brought up to date
  * (the 2026-11 rescope, ADR-0010: the eight roles of the baseline, warehouse staff opened to the assistant by
- * V20270106000500, findProductionOrders against outside producers and findEInvoices added; the low-stock, expiry,
+ * V20270120000500, findProductionOrders against outside producers and findEInvoices added; the low-stock, expiry,
  * purchasing, supplier, reorder, credit, transfer and return tools gone with the features they read). A tool added
  * later is still covered by the context and the enforcement cases, which compare against the endpoint's own answer;
  * add it to the tables when its grants are decided.</p>
@@ -121,8 +121,8 @@ class AssistantCapabilitiesIntegrationTest {
 
     /**
      * The tools of {@link #KNOWN} each seeded persona may use (identity.role_permission of the baseline after the
-     * rescope, the read grants of V20261209000200, V20261222000100 and V20261227000400, plus V20270106000200 and
-     * V20270106000500).
+     * rescope, the read grants of V20261209000200, V20261222000100 and V20261227000400, plus V20270120000200 and
+     * V20270120000500).
      */
     private static final Map<Persona, Set<String>> GRANTED = granted();
 
@@ -155,7 +155,7 @@ class AssistantCapabilitiesIntegrationTest {
                 "findOrder", "findOrders", "findPendingAdjustments", "findProductionOrders", "findShipments",
                 "getOrderPicking", "getSalesSummary", "getStockLevels", "getStockLots", "investigateCarton",
                 "lookupScan", "searchCatalog", "searchKnowledge", "traceLot"));
-        // Floor staff read stock and their own tasks, never orders (V20270106000500).
+        // Floor staff read stock and their own tasks, never orders (V20270120000500).
         granted.put(new Persona(Role.WAREHOUSE_STAFF, true), Set.of("findFulfillmentTasks", "findGoodsReceipts",
                 "findPendingAdjustments", "findShipments", "getOrderPicking", "getStockLevels", "getStockLots",
                 "investigateCarton", "lookupScan", "searchCatalog", "searchKnowledge", "traceLot"));

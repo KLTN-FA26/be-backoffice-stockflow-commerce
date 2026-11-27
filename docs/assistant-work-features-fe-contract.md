@@ -11,7 +11,7 @@ Every REST answer is the envelope `{success, data, errorCode, message}`; times a
 ## 0. Rules every feature keeps
 
 1. **Read-only.** Nothing here writes business data. A draft is returned to the user, who edits it and sends it through
-   the screen's own action (ADR-0012). No endpoint posts a chat message, records a receipt or approves anything.
+   the screen's own action (ADR-0015). No endpoint posts a chat message, records a receipt or approves anything.
 2. **The screen's permission, the screen's scope.** Each endpoint is guarded by the permission of the screen the button
    sits on (column "Permission"), with the same data scope (warehouse, own). A user who cannot open the screen gets 403;
    a document outside their scope is 404, as on the screen.

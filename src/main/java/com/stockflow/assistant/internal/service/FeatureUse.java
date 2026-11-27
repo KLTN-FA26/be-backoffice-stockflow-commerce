@@ -35,7 +35,7 @@ import java.util.stream.Collectors;
 /**
  * Counts the use of each assistant feature per feature key, role and business day (contract §5.2), so the System Admin
  * and the Sales Manager see which features people actually use and can drop the ones nobody does. Counts only: no user
- * id, no content ({@code assistant.feature_use}, V20270107000400).
+ * id, no content ({@code assistant.feature_use}, V20270120001300).
  *
  * <p><b>Counted in memory, written about once a minute.</b> {@link #record} adds one to a counter and returns: no
  * database, no lock, no allocation once the day's key exists, so it neither slows nor can fail the request that uses a
