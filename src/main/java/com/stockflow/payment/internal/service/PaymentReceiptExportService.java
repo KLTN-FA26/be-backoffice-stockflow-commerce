@@ -180,6 +180,9 @@ public class PaymentReceiptExportService {
         if (filter.reference() != null) {
             parts.add(label("filter.reference", "statement reference {0}", filter.reference()));
         }
+        if (filter.search() != null) {
+            parts.add(label("filter.search", "search \"{0}\"", filter.search()));
+        }
         return ExportLabels.filterLine(messages, parts);
     }
 

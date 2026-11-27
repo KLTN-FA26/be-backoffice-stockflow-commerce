@@ -78,19 +78,22 @@ class BankTransactionController {
     @Operation(summary = "Bank transfers, newest first; status NEEDS_REVIEW is the Accountant's queue",
             description = "status: one or more of RECEIVED, APPLIED, NEEDS_REVIEW, IGNORED, comma-separated; every "
                     + "status when omitted. from / to bound when the bank booked the transfer (ISO instants, to "
-                    + "exclusive).")
+                    + "exclusive). amount keeps the transfers of exactly that many dong.")
     @RequiresPermission(resource = PaymentResources.BANK_TRANSACTIONS, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<PageResponse<BankTransactionResponse>> list(
             @Parameter(description = "Comma-separated statuses") @RequestParam(required = false) String status,
             @RequestParam(required = false) Instant from,
             @RequestParam(required = false) Instant to,
+            @Parameter(description = "Exact amount transferred, in dong (VND); every amount when omitted")
+            @RequestParam(required = false) java.math.BigDecimal amount,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         int pageNumber = Math.max(page, 0);
         int pageSize = Math.min(size == null ? Pages.DEFAULT_PAGE_SIZE : Math.max(size, 1), Pages.MAX_PAGE_SIZE);
-        BankTransactionLog.Page found = transactions.list(statuses(status), from, to, pageNumber, pageSize);
+        BankTransactionLog.Page found = transactions.list(statuses(status), from, to, amount, pageNumber,
+                pageSize);
         return ApiResponse.ok(PageResponse.of(responses(found.rows()), pageNumber, pageSize, found.total()));
     }
 

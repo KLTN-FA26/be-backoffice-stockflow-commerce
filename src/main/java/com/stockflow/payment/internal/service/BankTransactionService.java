@@ -411,7 +411,15 @@ public class BankTransactionService {
     @Transactional(readOnly = true)
     public BankTransactionLog.Page list(Collection<BankTransactionStatus> statuses, Instant from, Instant to,
                                         int page, int size) {
-        return transactions.search(statuses == null ? Set.of() : new LinkedHashSet<>(statuses), from, to, page, size);
+        return list(statuses, from, to, null, page, size);
+    }
+
+    /** {@link #list(Collection, Instant, Instant, int, int)}, kept to the transfers of exactly {@code amount} if given. */
+    @Transactional(readOnly = true)
+    public BankTransactionLog.Page list(Collection<BankTransactionStatus> statuses, Instant from, Instant to,
+                                        java.math.BigDecimal amount, int page, int size) {
+        return transactions.search(statuses == null ? Set.of() : new LinkedHashSet<>(statuses), from, to, amount,
+                page, size);
     }
 
     View view(BankTransaction t) {

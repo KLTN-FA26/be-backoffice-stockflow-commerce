@@ -471,14 +471,31 @@ public class InstallmentService {
                                                   UUID orderId, InstallmentStatus status,
                                                   InstallmentMilestone milestone, LocalDate dueBefore, Boolean reached,
                                                   Boolean overdue, Boolean owing, int page, int size, String sort) {
+        return installments(customerId, customerIds, null, orderId, status, milestone, dueBefore, reached, overdue,
+                owing, null, page, size, sort);
+    }
+
+    /**
+     * {@link #installments(UUID, java.util.Collection, UUID, InstallmentStatus, InstallmentMilestone, LocalDate,
+     * Boolean, Boolean, Boolean, int, int, String)}, the accountant's search also finding the contract and order
+     * numbers containing {@code term} (an installment of one of {@code customerIds} OR one so numbered, audit bo-27),
+     * and kept to the installments still owing exactly {@code outstanding} when it is given (audit bo-26: what a bank
+     * transfer of that amount could pay) - the {@link Installment#outstanding} the list shows.
+     */
+    @Transactional(readOnly = true)
+    public PageResponse<Installment> installments(UUID customerId, java.util.Collection<UUID> customerIds,
+                                                  String term, UUID orderId, InstallmentStatus status,
+                                                  InstallmentMilestone milestone, LocalDate dueBefore, Boolean reached,
+                                                  Boolean overdue, Boolean owing, BigDecimal outstanding, int page,
+                                                  int size, String sort) {
         if (status == InstallmentStatus.OVERDUE) {
             throw new BusinessException(ErrorCode.INSTALLMENT_OVERDUE_IS_A_FLAG,
                     "OVERDUE is not an installment status any more; filter with overdue=true")
                     .localized("refusal.payment.overdueIsAFlag");
         }
         return Pages.toResponse(search.installments(new InstallmentSearch.InstallmentFilter(customerId, orderId, status,
-                milestone, dueBefore, reached, overdue, overdue == null ? null : today(), null, customerIds, owing),
-                Pages.of(page, size, SORT.parse(sort))));
+                milestone, dueBefore, reached, overdue, overdue == null ? null : today(), null, customerIds, owing,
+                null, term, outstanding), Pages.of(page, size, SORT.parse(sort))));
     }
 
     /**

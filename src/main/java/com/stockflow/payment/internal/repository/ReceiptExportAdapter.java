@@ -16,7 +16,8 @@ import java.util.UUID;
 /**
  * {@link ReceiptExportSearch} over {@code payment.payment_receipt}, its lines and {@code payment.installment}, all three
  * the payment module's own. The filter is the list's ({@code InstallmentBookAdapter.matching}) spelt in SQL: customer,
- * status, the normalised reference (BR-03, {@code reference_normalized}) and the received days, both inclusive.
+ * status, the normalised reference (BR-03, {@code reference_normalized}), the received days, both inclusive, and the
+ * search box (a matched customer, or a line paying a contract or order number containing the term).
  */
 @Repository
 class ReceiptExportAdapter implements ReceiptExportSearch {
@@ -85,6 +86,16 @@ class ReceiptExportAdapter implements ReceiptExportSearch {
         if (filter.receivedTo() != null) {
             clauses.add("r.received_on <= :receivedTo");
             params.addValue("receivedTo", filter.receivedTo());
+        }
+        if (filter.search() != null) {
+            String numbers = InstallmentBookAdapter.lineNumberMatches("r.id", ":searchPattern");
+            params.addValue("searchPattern", filter.searchPattern());
+            if (filter.searchCustomers().isEmpty()) {
+                clauses.add(numbers);
+            } else {
+                clauses.add("(r.customer_id IN (:searchCustomers) OR " + numbers + ")");
+                params.addValue("searchCustomers", filter.searchCustomers());
+            }
         }
         return clauses.isEmpty() ? "TRUE" : String.join(" AND ", clauses);
     }
