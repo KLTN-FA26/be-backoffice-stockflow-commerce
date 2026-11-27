@@ -30,6 +30,7 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
@@ -42,8 +43,12 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.doAnswer;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -69,7 +74,8 @@ class ChatSalesOwnerIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
     @Autowired ObjectMapper json;
-    @Autowired SalesOwnership ownership;
+    /** Real, with a hook for the race of review fix 3: what commits between the owner check and the locks. */
+    @MockitoSpyBean SalesOwnership ownership;
     @Autowired StaffCoverService covers;
     @Autowired IdentityService identity;
     @Autowired ConversationReassignment reassignment;
@@ -385,6 +391,94 @@ class ChatSalesOwnerIntegrationTest {
     }
 
     @Test
+    @DisplayName("Review fix 2 / BR-S08, 16 §5: a resolved conversation the customer reopens after its agent was "
+            + "locked goes to the queue, flagged first - not back to the locked agent")
+    void aReopenAfterTheAgentsLockGoesToTheQueue() throws Exception {
+        Portal alice = portal();
+        own(alice, owner);
+        UUID ended = open(alice, "Cu");
+        reply(owner, ended, "Xong").andExpect(status().isCreated());
+        move(owner, ended, "RESOLVED");
+        identity.changeUserStatus(owner, UserStatusChange.LOCK, "Nghi viec");
+        assertThat(agentOf(ended)).as("an ended conversation is not requeued when its agent is locked")
+                .isEqualTo(owner);
+
+        customerWrites(alice, ended, "Em hoi lai").andExpect(status().isCreated());
+
+        assertThat(statusOf(ended)).isEqualTo("QUEUED");
+        assertThat(agentOf(ended)).isNull();
+        assertThat(jdbc.queryForObject("SELECT requeued_at IS NOT NULL FROM chat.conversation WHERE id = ?",
+                Boolean.class, ended)).as("shown first").isTrue();
+        assertThat(jdbc.queryForList("SELECT to_status FROM chat.conversation_event WHERE conversation_id = ? AND "
+                + "type = 'STATUS_CHANGED' ORDER BY occurred_at, id", String.class, ended))
+                .as("16 §5: reopened, then back to the queue").endsWith("REOPENED", "QUEUED");
+    }
+
+    @Test
+    @DisplayName("Review fix 2 / BR-S06, 16 §5: a resolved conversation the customer reopens after an owner transfer "
+            + "goes to the new owner, by the reopen endpoint and by writing")
+    void aReopenAfterAnOwnerTransferGoesToTheNewOwner() throws Exception {
+        Portal alice = portal();
+        own(alice, owner);
+        UUID first = open(alice, "Cu");
+        reply(owner, first, "Xong").andExpect(status().isCreated());
+        move(owner, first, "RESOLVED");
+        UUID second = open(alice, "Cu nua");
+        reply(owner, second, "Xong").andExpect(status().isCreated());
+        move(owner, second, "RESOLVED");
+        change(alice, otherSales, SalesOwnerChangeReason.WORKLOAD, false);
+        assertThat(agentOf(first)).as("an ended conversation stays with the old owner").isEqualTo(owner);
+
+        http.asCustomer(alice.account(), post(MINE + "/" + first + "/reopen")).andExpect(status().isOk());
+        customerWrites(alice, second, "Em hoi lai").andExpect(status().isCreated());
+
+        for (UUID reopened : List.of(first, second)) {
+            assertThat(statusOf(reopened)).isEqualTo("REOPENED");
+            assertThat(agentOf(reopened)).as("the customer's owner now").isEqualTo(otherSales);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM chat.conversation_event WHERE conversation_id = ? AND"
+                    + " type = 'TRANSFERRED' AND actor_type = 'SYSTEM' AND target_user_id = ? AND detail ->> 'reason'"
+                    + " = 'REOPENED'", Long.class, reopened, otherSales)).isEqualTo(1L);
+        }
+        reply(owner, second, "Em day").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CHAT_NOT_ASSIGNEE"));
+        reply(otherSales, second, "Em tiep nhan a").andExpect(status().isCreated());
+    }
+
+    @Test
+    @DisplayName("Review fix 3 / BR-S06: a change to B that read B as the owner, but locks the conversations only after "
+            + "the change to C was applied, moves nothing - they stay with C, the owner")
+    void aStaleChangeThatLocksLateMovesNothing() throws Exception {
+        Portal alice = portal();
+        own(alice, owner);
+        UUID active = open(alice, "Hoi");
+        reply(owner, active, "Em day").andExpect(status().isCreated());
+        change(alice, otherSales, SalesOwnerChangeReason.WORKLOAD, false);
+        Await.until("the conversation follows B", WAIT, () -> otherSales.equals(agentOf(active)));
+        UUID third = people.staff("SALES_STAFF");
+        // B's change, delivered (again, or late) after its owner check passed: B still owned alice then.
+        CustomerSalesOwnerChanged toB = new CustomerSalesOwnerChanged(alice.customer(), owner, otherSales,
+                SalesOwnerChangeReason.WORKLOAD, null, false, manager, Instant.now());
+        // Between that check and the locks, the change to C commits and the chat applies it (another thread).
+        AtomicBoolean raced = new AtomicBoolean();
+        doAnswer(call -> {
+            Object read = call.callRealMethod();
+            if (raced.compareAndSet(false, true)) {
+                CompletableFuture.runAsync(() -> change(alice, third, SalesOwnerChangeReason.REGION, false))
+                        .get(60, TimeUnit.SECONDS);
+                Await.until("the conversation follows C", WAIT, () -> third.equals(agentOf(active)));
+            }
+            return read;
+        }).when(ownership).ownerOf(alice.customer());
+
+        int moved = reassignment.followOwner(toB);
+
+        assertThat(raced).as("the race was run").isTrue();
+        assertThat(moved).isZero();
+        assertThat(agentOf(active)).as("the owner now is C").isEqualTo(third);
+        assertThat(salesOwner(alice)).isEqualTo(third);
+    }
+
+    @Test
     @DisplayName("BR-S08: a deactivation delivered after the account works again moves nothing")
     void aStaleDeactivationMovesNothing() throws Exception {
         Portal alice = portal();
@@ -500,6 +594,11 @@ class ChatSalesOwnerIntegrationTest {
     private UUID open(Portal portal, String text) throws Exception {
         return id(http.asCustomer(portal.account(), post(MINE).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"text\":\"" + text + "\"}")).andExpect(status().isCreated()));
+    }
+
+    private ResultActions customerWrites(Portal portal, UUID conversation, String text) throws Exception {
+        return http.asCustomer(portal.account(), post(MINE + "/" + conversation + "/messages")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"text\":\"" + text + "\"}"));
     }
 
     private ResultActions openAsStaff(Role role, UUID user, Portal portal) throws Exception {
