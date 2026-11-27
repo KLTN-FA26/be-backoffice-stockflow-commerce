@@ -20,6 +20,15 @@ public final class CustomerResources {
      */
     public static final String LEGAL_PROFILES = "customer-legal-profiles";
 
+    /** Sales-owner plan: who looks after a customer - READ (Sales, manager, accountant), UPDATE (manager: BR-S01). */
+    public static final String SALES_OWNERS = "customer-sales-owners";
+    /** Sales-owner plan §10.7: leads from the public form - READ, UPDATE (Sales their own, manager all). */
+    public static final String SALES_LEADS = "sales-leads";
+    /** Sales-owner plan §10.4: the managers' assignment board. */
+    public static final String SALES_WORKLOAD = "sales-workload";
+    /** Sales-owner plan §10.5: a customer's request to change salesperson - CREATE (portal), READ, APPROVE (manager). */
+    public static final String OWNER_CHANGE_REQUESTS = "sales-owner-change-requests";
+
     private CustomerResources() {
     }
 }

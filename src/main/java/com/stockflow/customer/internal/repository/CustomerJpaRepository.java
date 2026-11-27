@@ -28,6 +28,15 @@ interface CustomerJpaRepository extends BaseJpaRepository<CustomerJpaEntity> {
     @org.springframework.data.jpa.repository.Query(
             "select c.id, c.fullName, c.taxCode from CustomerJpaEntity c where c.id in :ids")
     java.util.List<Object[]> findLabels(@Param("ids") java.util.Collection<UUID> ids);
+    /** {@code [id, salesOwnerId, salesOwnerState, salesOwnerSince]} of each of these customers, in one query. */
+    @org.springframework.data.jpa.repository.Query("select c.id, c.salesOwnerId, c.salesOwnerState, c.salesOwnerSince "
+            + "from CustomerJpaEntity c where c.id in :ids")
+    java.util.List<Object[]> findSalesOwners(@Param("ids") java.util.Collection<UUID> ids);
+
+    @org.springframework.data.jpa.repository.Query("select c.id from CustomerJpaEntity c "
+            + "where c.salesOwnerId = :userId and c.salesOwnerState = :state order by c.id")
+    java.util.List<UUID> findIdsOwnedBy(@Param("userId") UUID userId,
+                                        @Param("state") com.stockflow.customer.api.SalesOwnerState state);
     Optional<CustomerJpaEntity> findByUserId(UUID userId);
     Optional<CustomerJpaEntity> findByEmailIgnoreCase(String email);
 

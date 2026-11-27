@@ -5,6 +5,7 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.contracts.SalesOwnerChangeReason;
 import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.customer.internal.domain.Customer;
 import com.stockflow.customer.internal.domain.CustomerRepository;
@@ -16,6 +17,7 @@ import com.stockflow.identity.api.InviteCustomerAccountCommand;
 import com.stockflow.identity.api.PortalAccountService;
 import com.stockflow.identity.api.PortalInvitationLink;
 import com.stockflow.identity.api.PortalInvitationStatus;
+import com.stockflow.identity.api.SalesStaff;
 import com.stockflow.notification.api.NotificationService;
 import com.stockflow.notification.api.PortalInvitationMail;
 import org.slf4j.Logger;
@@ -63,18 +65,23 @@ public class CustomerOnboardingService {
 
     private final CustomerRepository customers;
     private final CustomerStatusHistory history;
+    private final SalesOwnershipService ownership;
+    private final SalesStaff salesStaff;
     private final PortalAccountService accounts;
     private final NotificationService notifications;
     private final TransactionTemplate transactions;
     private final Clock clock;
     private final String activationUrl;
 
-    CustomerOnboardingService(CustomerRepository customers, CustomerStatusHistory history, PortalAccountService accounts,
+    CustomerOnboardingService(CustomerRepository customers, CustomerStatusHistory history,
+                              SalesOwnershipService ownership, SalesStaff salesStaff, PortalAccountService accounts,
                               NotificationService notifications, PlatformTransactionManager transactionManager,
                               Clock clock,
                               @Value("${stockflow.customer.portal-activation-url:}") String activationUrl) {
         this.customers = customers;
         this.history = history;
+        this.ownership = ownership;
+        this.salesStaff = salesStaff;
         this.accounts = accounts;
         this.notifications = notifications;
         this.transactions = new TransactionTemplate(transactionManager);
@@ -87,9 +94,18 @@ public class CustomerOnboardingService {
      * is optional - household businesses and small shops may supply it later (decision 2026-10-12);
      * {@code contactName} is the person invited; {@code actorUserId} is the Sales account, recorded on
      * the invitation and in the status history.
+     *
+     * <p>{@code salesOwnerId} (sales-owner plan BR-S02): null for the default - the creating salesperson owns the
+     * customer, a Sales Manager (a holder of {@code customer-sales-owners:UPDATE}) leaves it unassigned - or the
+     * salesperson a manager chose.</p>
      */
     public record CreateBusinessCustomer(String companyName, String taxCode, String contactName, String email,
-                                         String phone, UUID actorUserId) {
+                                         String phone, UUID actorUserId, UUID salesOwnerId) {
+
+        public CreateBusinessCustomer(String companyName, String taxCode, String contactName, String email,
+                                      String phone, UUID actorUserId) {
+            this(companyName, taxCode, contactName, email, phone, actorUserId, null);
+        }
     }
 
     public enum InvitationDelivery { SENT, FAILED }
@@ -113,7 +129,9 @@ public class CustomerOnboardingService {
      *         {@code CUSTOMER_TAX_CODE_ALREADY_EXISTS} for a pending or active customer with this tax
      *         code; {@code CUSTOMER_EMAIL_ALREADY_EXISTS}; {@code USER_EMAIL_ALREADY_EXISTS} for any
      *         account - staff or customer - with this e-mail; {@code PORTAL_INVITATION_UNAVAILABLE} when
-     *         no activation address is configured, before anything is written
+     *         no activation address is configured, before anything is written; {@code FORBIDDEN} for a
+     *         salesperson naming another owner; {@code SALES_OWNER_NOT_ASSIGNABLE} for an owner who is not an
+     *         active salesperson
      */
     @Auditable(action = AuditAction.CREATE, resourceType = "customer", resourceId = "#result?.customer()?.customerId()")
     public Invited create(CreateBusinessCustomer command) {
@@ -135,6 +153,7 @@ public class CustomerOnboardingService {
             if (customers.findByEmail(email).isPresent()) {
                 throw new BusinessException(ErrorCode.CUSTOMER_EMAIL_ALREADY_EXISTS);
             }
+            UUID owner = firstOwner(command);
             PortalInvitationLink link = accounts.invite(new InviteCustomerAccountCommand(email,
                     command.contactName().trim(), command.actorUserId()));
             Customer customer;
@@ -144,12 +163,38 @@ public class CustomerOnboardingService {
             } catch (IllegalArgumentException invalid) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED, invalid.getMessage());
             }
-            CustomerSummary saved = CustomerServiceImpl.toSummary(customers.save(customer));
+            Customer stored = customers.save(customer);
             history.record(new CustomerStatusChange(Identifiers.newId(), customer.id(), null,
                     CustomerStatus.PENDING_ACTIVATION, null, command.actorUserId(), clock.instant()));
+            if (owner != null) {
+                stored = ownership.assignAtCreation(stored, owner, SalesOwnerChangeReason.CREATED_BY_SALES,
+                        command.actorUserId());
+            }
+            CustomerSummary saved = CustomerServiceImpl.toSummary(stored);
             return new Created(saved, link);
         }));
         return invited(created.customer(), created.link());
+    }
+
+    /**
+     * The customer's first owner (sales-owner plan BR-S02, plan §4 cases 1 and 2): the salesperson a manager named, or
+     * the creating salesperson, or nobody when a manager (or anyone who is not a salesperson) creates it without naming
+     * one. Only a manager names someone other than themselves; whether the one named may own customers (BR-S04) is
+     * checked when the owner is assigned.
+     *
+     * @throws BusinessException {@code FORBIDDEN} for a salesperson naming someone else
+     */
+    private UUID firstOwner(CreateBusinessCustomer command) {
+        UUID actor = command.actorUserId();
+        boolean managesOwners = actor != null && salesStaff.holdsPermission(actor, SalesOwnershipService.MANAGES_OWNERS);
+        if (command.salesOwnerId() != null) {
+            if (!managesOwners && !command.salesOwnerId().equals(actor)) {
+                throw new BusinessException(ErrorCode.FORBIDDEN,
+                        "Only a Sales Manager chooses another salesperson to look after a new customer");
+            }
+            return command.salesOwnerId();
+        }
+        return actor != null && !managesOwners && salesStaff.isActiveSalesAgent(actor) ? actor : null;
     }
 
     /**

@@ -1013,6 +1013,72 @@ class B2bOnboardingIntegrationTest {
                 .isInstanceOfSatisfying(BusinessException.class, e -> assertThat(e.errorCode()).isEqualTo(expected));
     }
 
+    /**
+     * Sales-owner plan BR-S02, cases 1 and 2: a salesperson who creates a customer owns it (one history row,
+     * CREATED_BY_SALES); a Sales Manager who names nobody leaves it UNASSIGNED, or names the salesperson who will own it;
+     * a salesperson cannot name someone else (403), and nobody can name an account that is not a salesperson (422).
+     */
+    @Test
+    @org.junit.jupiter.api.DisplayName("BR-S02 / cases 1-2: the creating salesperson owns the new customer; a manager "
+            + "names one or leaves it unassigned")
+    void theFirstOwnerIsTheCreatingSalespersonOrTheManagersChoice() throws Exception {
+        StaffAccount salesperson = staffAccount("SALES_STAFF");
+        StaffAccount manager = staffAccount("SALES_MANAGER");
+        StaffAccount colleague = staffAccount("SALES_STAFF");
+        StaffAccount storekeeper = staffAccount("WAREHOUSE_STAFF");
+
+        UUID own = customerId(create(salesperson.token(), json(Map.of("companyName", "Owner Co", "taxCode", mst(),
+                "contactName", "A", "email", unique("own"))), null).andExpect(status().isCreated()));
+        assertThat(owner(own)).isEqualTo(salesperson.id() + ":ASSIGNED");
+        assertThat(jdbc.queryForList("""
+                SELECT coalesce(from_user_id::text, '-') || '>' || to_user_id || ':' || reason || ':' || changed_by
+                  FROM customer.customer_sales_owner_history WHERE customer_id = ?""", String.class, own))
+                .containsExactly("->" + salesperson.id() + ":CREATED_BY_SALES:" + salesperson.id());
+
+        UUID unassigned = customerId(create(manager.token(), json(Map.of("companyName", "Queue Co", "taxCode", mst(),
+                "contactName", "B", "email", unique("queue"))), null).andExpect(status().isCreated()));
+        assertThat(owner(unassigned)).isEqualTo("null:UNASSIGNED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM customer.customer_sales_owner_history WHERE customer_id = ?",
+                Long.class, unassigned)).isZero();
+
+        UUID chosen = customerId(create(manager.token(), json(Map.of("companyName", "Chosen Co", "taxCode", mst(),
+                "contactName", "C", "email", unique("chosen"), "salesOwnerId", colleague.id())), null)
+                .andExpect(status().isCreated()));
+        assertThat(owner(chosen)).isEqualTo(colleague.id() + ":ASSIGNED");
+        assertThat(jdbc.queryForObject("SELECT changed_by FROM customer.customer_sales_owner_history WHERE customer_id = ?",
+                UUID.class, chosen)).isEqualTo(manager.id());
+
+        long customers = count("customer.customer");
+        create(salesperson.token(), json(Map.of("companyName", "Grab Co", "taxCode", mst(), "contactName", "D",
+                "email", unique("grab"), "salesOwnerId", colleague.id())), null)
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+        create(manager.token(), json(Map.of("companyName", "Store Co", "taxCode", mst(), "contactName", "E",
+                "email", unique("store"), "salesOwnerId", storekeeper.id())), null)
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("SALES_OWNER_NOT_ASSIGNABLE"));
+        assertThat(count("customer.customer")).as("nothing is left behind").isEqualTo(customers);
+    }
+
+    private record StaffAccount(UUID id, String token) {
+    }
+
+    private StaffAccount staffAccount(String role) {
+        String token = staffToken(role);
+        UUID id = UUID.fromString(new String(java.util.Base64.getUrlDecoder().decode(token.split("\\.")[1]),
+                java.nio.charset.StandardCharsets.UTF_8).replaceAll("(?s).*\"sub\"\\s*:\\s*\"([^\"]+)\".*", "$1"));
+        return new StaffAccount(id, token);
+    }
+
+    private UUID customerId(ResultActions created) throws Exception {
+        return UUID.fromString(mapper.readTree(created.andReturn().getResponse().getContentAsString())
+                .at("/data/customer/customerId").asText());
+    }
+
+    private String owner(UUID customerId) {
+        return jdbc.queryForObject("SELECT coalesce(sales_owner_id::text, 'null') || ':' || sales_owner_state "
+                + "FROM customer.customer WHERE id = ?", String.class, customerId);
+    }
+
     private String staffToken(String role) {
         String username = "staff-" + role.toLowerCase() + "-" + UUID.randomUUID();
         UUID userId = Identifiers.newId();

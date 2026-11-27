@@ -60,6 +60,27 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
     }
 
     @Override
+    public java.util.Map<UUID, com.stockflow.customer.internal.domain.SalesOwner> salesOwners(
+            java.util.Collection<UUID> customerIds) {
+        java.util.Set<UUID> ids = customerIds == null ? java.util.Set.of() : customerIds.stream()
+                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        if (ids.isEmpty()) {
+            return java.util.Map.of();
+        }
+        java.util.Map<UUID, com.stockflow.customer.internal.domain.SalesOwner> owners = new HashMap<>();
+        for (Object[] row : customers.findSalesOwners(ids)) {
+            owners.put((UUID) row[0], new com.stockflow.customer.internal.domain.SalesOwner((UUID) row[1],
+                    (com.stockflow.customer.api.SalesOwnerState) row[2], (java.time.Instant) row[3]));
+        }
+        return owners;
+    }
+
+    @Override
+    public java.util.List<UUID> idsOwnedBy(UUID userId, com.stockflow.customer.api.SalesOwnerState state) {
+        return userId == null ? java.util.List.of() : customers.findIdsOwnedBy(userId, state);
+    }
+
+    @Override
     public Optional<Customer> findById(UUID id) {
         return customers.findById(id).map(this::withAddresses);
     }

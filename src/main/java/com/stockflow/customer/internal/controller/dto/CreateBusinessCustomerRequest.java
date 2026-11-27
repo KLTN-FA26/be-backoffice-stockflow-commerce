@@ -5,6 +5,8 @@ import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
+import java.util.UUID;
+
 /**
  * Sales onboarding a business customer (kltn-docs 18 §4.1). The tax code is optional - household
  * businesses and small shops may supply it later - and normalised by the service when given (10 digits,
@@ -18,6 +20,17 @@ public record CreateBusinessCustomerRequest(
         @Size(max = 20) String taxCode,
         @NotBlank @Size(max = 200) String contactName,
         @NotBlank @Email @Size(max = 320) String email,
-        @VietnamPhone String phone
+        @VietnamPhone String phone,
+        /*
+         * Sales-owner plan BR-S02: who looks after the customer. Omitted: the creating salesperson, or nobody when a
+         * Sales Manager creates it. Only a manager may name someone else.
+         */
+        UUID salesOwnerId
 ) {
+
+    /** Without an owner named: the default of BR-S02. */
+    public CreateBusinessCustomerRequest(String companyName, String taxCode, String contactName, String email,
+                                         String phone) {
+        this(companyName, taxCode, contactName, email, phone, null);
+    }
 }
