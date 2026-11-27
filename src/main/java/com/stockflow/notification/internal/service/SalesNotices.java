@@ -60,10 +60,17 @@ class SalesNotices {
      * The holders of a permission without the salespeople who do not look after this customer, plus the audience:
      * the people the permission names for their role (coordinator, managers, warehouse managers) stay; of Sales, only
      * the owner or cover - or, with no active owner, the managers - remain.
+     *
+     * <p>Only a <i>plain</i> salesperson is dropped: one whose every role is a Sales role. Someone who holds SALES_STAFF
+     * besides another role - a Production Coordinator or a Sales Manager who also sells - is told as that role, as
+     * before customers had owners. Judged on the roles held, not on which of them grants the permission: who grants
+     * what is the role matrix's business, which this directory does not read.</p>
      */
     List<UUID> exceptOtherSales(Collection<StaffContact> holders, SalesAudience audience) {
-        Set<UUID> salespeople = salesStaff.activeSalesAgents().stream().map(StaffMember::userId)
-                .collect(Collectors.toSet());
+        Set<UUID> salespeople = salesStaff.activeSalesAgents().stream()
+                .filter(member -> member.roles().stream().allMatch(role -> SalesStaff.SALES_ROLES.contains(
+                        role.code())))
+                .map(StaffMember::userId).collect(Collectors.toSet());
         Set<UUID> told = new LinkedHashSet<>();
         holders.stream().map(StaffContact::userId).filter(Objects::nonNull).filter(id -> !salespeople.contains(id))
                 .forEach(told::add);
