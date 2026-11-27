@@ -18,6 +18,16 @@ public interface PaymentService {
     CreditPosition creditPosition(UUID customerId);
 
     /**
+     * {@link #creditPosition} of many customers in one statement, for a list that shows each row's credit beside it
+     * (the back office customer list, audit bo-29): a list page asking one customer at a time would be one query per
+     * row. The same figures as {@link #creditPosition}, read the same way.
+     *
+     * @return a position for every distinct id given - a customer that owes nothing, or that payment never heard of,
+     *         has a zero position, since payment does not know which customers exist; null or empty in, empty out
+     */
+    java.util.Map<UUID, CreditPosition> creditPositions(java.util.Collection<UUID> customerIds);
+
+    /**
      * 4B-6 (15 §4.1 step 1): the installments a contract's signature makes, written in the caller's transaction so that
      * they and the signature commit together - the credit check of a contract signed a moment later counts them, and
      * the order waiting for its installment on signing has it to pay at once. The one due on signing is due from the
