@@ -14,6 +14,7 @@ import jakarta.persistence.LockModeType;
 import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.CriteriaQuery;
 import jakarta.persistence.criteria.Root;
+import org.hibernate.query.criteria.HibernateCriteriaBuilder;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
@@ -75,6 +76,15 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
     @Override
     public List<Installment> ofOrder(UUID orderId) {
         return installments.findByOrderIdOrderBySeqAsc(orderId).stream().map(InstallmentBookAdapter::toDomain).toList();
+    }
+
+    @Override
+    public List<Installment> findAll(Collection<UUID> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
+        }
+        return installments.findAllById(ids.stream().filter(Objects::nonNull).distinct().toList()).stream()
+                .map(InstallmentBookAdapter::toDomain).toList();
     }
 
     @Override
@@ -331,7 +341,39 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
                 .and(filter.receivedFrom() == null ? null
                         : (root, query, cb) -> cb.greaterThanOrEqualTo(root.get("receivedOn"), filter.receivedFrom()))
                 .and(filter.receivedTo() == null ? null
-                        : (root, query, cb) -> cb.lessThanOrEqualTo(root.get("receivedOn"), filter.receivedTo()));
+                        : (root, query, cb) -> cb.lessThanOrEqualTo(root.get("receivedOn"), filter.receivedTo()))
+                .and(filter.search() == null ? null : searched(filter));
+    }
+
+    /**
+     * The accountant's search box on receipts ({@link ReceiptFilter#search}): one of the customers the term matched, or
+     * a line paying an installment whose contract or order number contains it. The lines are plain rows with no entity
+     * (see the class comment), so the second half is {@link #lineNumberMatches} as a SQL fragment - the same one the
+     * export's {@code WHERE} uses, so the list, its total and its file keep matching the same receipts.
+     */
+    private static Specification<PaymentReceiptJpaEntity> searched(ReceiptFilter filter) {
+        String pattern = filter.searchPattern();
+        Specification<PaymentReceiptJpaEntity> numbers = (root, query, cb) -> {
+            HibernateCriteriaBuilder hcb = (HibernateCriteriaBuilder) cb;
+            return hcb.isTrue(hcb.sql(lineNumberMatches("?", "?"), Boolean.class, root.get("id"),
+                    hcb.literal(pattern), hcb.literal(pattern)));
+        };
+        return filter.searchCustomers().isEmpty() ? numbers
+                : Specification.<PaymentReceiptJpaEntity>where(Specs.in("customerId", filter.searchCustomers()))
+                .or(numbers);
+    }
+
+    /**
+     * SQL true when a line of receipt {@code receipt} paid an installment whose contract or order number, lowered,
+     * is {@code LIKE} {@code pattern} ({@link ReceiptFilter#searchPattern}, backslash the escape). Both arguments are
+     * placeholders or column references, never a value: the caller binds the pattern. The numbers are ASCII, so
+     * {@code lower} folds them whatever the database's locale. {@code uk_payment_receipt_line (receipt_id, ...)}
+     * finds a receipt's lines.
+     */
+    static String lineNumberMatches(String receipt, String pattern) {
+        return ("EXISTS (SELECT 1 FROM payment.payment_receipt_line sl JOIN payment.installment si"
+                + " ON si.id = sl.installment_id WHERE sl.receipt_id = %s AND (lower(si.contract_number) LIKE %s"
+                + " ESCAPE '\\' OR lower(si.order_number) LIKE %s ESCAPE '\\'))").formatted(receipt, pattern, pattern);
     }
 
     private Map<UUID, List<PaymentReceipt.Line>> linesOf(List<UUID> receiptIds) {

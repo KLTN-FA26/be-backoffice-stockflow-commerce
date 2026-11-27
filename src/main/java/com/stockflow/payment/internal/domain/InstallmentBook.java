@@ -34,6 +34,12 @@ public interface InstallmentBook {
     /** The order's installments, in the plan's order. */
     List<Installment> ofOrder(UUID orderId);
 
+    /**
+     * These installments, read in one statement without a lock (a page of receipts naming the installments their lines
+     * paid, audit bo-24); an id with no installment is left out, null or empty in, empty out.
+     */
+    List<Installment> findAll(Collection<UUID> ids);
+
     /** {@link #ofOrder} of several orders in one read, by order then seq. */
     List<Installment> ofOrders(Collection<UUID> orderIds);
 
