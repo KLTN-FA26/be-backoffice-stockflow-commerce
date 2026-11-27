@@ -131,12 +131,18 @@ class B2bOnboardingIntegrationTest {
     private String ecommerceAdmin;
     private String warehouse;
     private String systemAdmin;
+    /**
+     * The salesperson a manager or an admin names when creating a customer (owner decision 2026-11-28: no new customer
+     * without an owner), and the actor of the service-level calls below, which a salesperson makes and owns.
+     */
+    private UUID salesOwner;
 
     @BeforeAll
     void staff() {
         ecommerceAdmin = staffToken("SALES_MANAGER");
         warehouse = staffToken("WAREHOUSE_STAFF");
         systemAdmin = staffToken("SYSTEM_ADMIN");
+        salesOwner = staffAccount("SALES_STAFF").id();
     }
 
     @AfterAll
@@ -252,7 +258,7 @@ class B2bOnboardingIntegrationTest {
     @Test
     void onlySalesAndTheEcommerceAdminOnboardAndInputIsValidated() throws Exception {
         String body = json(Map.of("companyName", "Cong ty A", "taxCode", mst(), "contactName", "B",
-                "email", unique("perm")));
+                "email", unique("perm"), "salesOwnerId", salesOwner));
         long customers = count("customer.customer");
         mvc.perform(post("/api/v1/customers").contentType("application/json").content(body))
                 .andExpect(status().isUnauthorized());
@@ -263,7 +269,7 @@ class B2bOnboardingIntegrationTest {
         // SYSTEM_ADMIN holds every permission, here as everywhere else.
         // customer-customers:CREATE is seeded for SYSTEM_ADMIN too.
         create(systemAdmin, json(Map.of("companyName", "Cong ty B", "taxCode", mst(), "contactName", "C",
-                "email", unique("perm-admin"))), null).andExpect(status().isCreated());
+                "email", unique("perm-admin"), "salesOwnerId", salesOwner)), null).andExpect(status().isCreated());
         for (String invalid : List.of(
                 json(Map.of("taxCode", mst(), "contactName", "B", "email", unique("v1"))),
                 json(Map.of("companyName", "A", "taxCode", "12345", "contactName", "B", "email", unique("v-mst"))),
@@ -309,7 +315,7 @@ class B2bOnboardingIntegrationTest {
         // A failure after the account is written rolls the account back with the customer.
         String rolledBack = unique("rollback");
         assertThatCode(() -> onboarding.create(new CustomerOnboardingService.CreateBusinessCustomer(
-                "A", mst(), "B", rolledBack, "12", null)), ErrorCode.VALIDATION_FAILED);
+                "A", mst(), "B", rolledBack, "12", salesOwner)), ErrorCode.VALIDATION_FAILED);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM identity.app_user WHERE email=?",
                 Long.class, rolledBack)).isZero();
         assertThat(count("identity.app_user")).isEqualTo(users);
@@ -325,7 +331,7 @@ class B2bOnboardingIntegrationTest {
             String spelling = i % 2 == 0 ? email : email.toUpperCase();
             String code = mst();
             attempts.add(() -> onboarding.create(new CustomerOnboardingService.CreateBusinessCustomer(
-                    "Race Co", code, "Racer", spelling, null, null)));
+                    "Race Co", code, "Racer", spelling, null, salesOwner)));
         }
         List<Object> outcomes = race(attempts);
         assertThat(outcomes.stream().filter(CustomerOnboardingService.Invited.class::isInstance)).hasSize(1);
@@ -531,7 +537,8 @@ class B2bOnboardingIntegrationTest {
         // exempted it (sales-owner plan BR-S14, D4: the tax code is required otherwise).
         for (String who : List.of("mst-none-1", "mst-none-2")) {
             create(ecommerceAdmin, json(Map.of("companyName", "Quan nho", "contactName", "F", "email", unique(who),
-                    "taxCodeExemption", true, "taxCodeExemptionReason", "Household business")), null)
+                    "taxCodeExemption", true, "taxCodeExemptionReason", "Household business",
+                    "salesOwnerId", salesOwner)), null)
                     .andExpect(status().isCreated());
         }
 
@@ -540,7 +547,7 @@ class B2bOnboardingIntegrationTest {
         for (int i = 0; i < 4; i++) {
             String email = unique("mst-race-" + i);
             attempts.add(() -> onboarding.create(new CustomerOnboardingService.CreateBusinessCustomer(
-                    "Race Co", raced, "Racer", email, null, null)));
+                    "Race Co", raced, "Racer", email, null, salesOwner)));
         }
         List<Object> outcomes = race(attempts);
         assertThat(outcomes.stream().filter(CustomerOnboardingService.Invited.class::isInstance)).hasSize(1);
@@ -699,7 +706,8 @@ class B2bOnboardingIntegrationTest {
         String email = unique("shop");
         // Sales-owner plan BR-S14 / D4: without a tax code only a Sales Manager's exemption onboards it.
         String created = create(ecommerceAdmin, json(Map.of("companyName", "Quan ca phe Nho", "contactName", "Chu quan",
-                "email", email, "taxCodeExemption", true, "taxCodeExemptionReason", "No tax code yet")), null)
+                "email", email, "taxCodeExemption", true, "taxCodeExemptionReason", "No tax code yet",
+                "salesOwnerId", salesOwner)), null)
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.customer.taxCode").doesNotExist())
                 .andExpect(jsonPath("$.data.customer.status").value("PENDING_ACTIVATION"))
@@ -1018,12 +1026,12 @@ class B2bOnboardingIntegrationTest {
 
     /**
      * Sales-owner plan BR-S02, cases 1 and 2: a salesperson who creates a customer owns it (one history row,
-     * CREATED_BY_SALES); a Sales Manager who names nobody leaves it UNASSIGNED, or names the salesperson who will own it;
-     * a salesperson cannot name someone else (403), and nobody can name an account that is not a salesperson (422).
+     * CREATED_BY_SALES); a Sales Manager names the salesperson who will own it; a salesperson cannot name someone else
+     * (403), and nobody can name an account that is not an active salesperson (422).
      */
     @Test
     @org.junit.jupiter.api.DisplayName("BR-S02 / cases 1-2: the creating salesperson owns the new customer; a manager "
-            + "names one or leaves it unassigned")
+            + "names the one who will")
     void theFirstOwnerIsTheCreatingSalespersonOrTheManagersChoice() throws Exception {
         StaffAccount salesperson = staffAccount("SALES_STAFF");
         StaffAccount manager = staffAccount("SALES_MANAGER");
@@ -1037,12 +1045,6 @@ class B2bOnboardingIntegrationTest {
                 SELECT coalesce(from_user_id::text, '-') || '>' || to_user_id || ':' || reason || ':' || changed_by
                   FROM customer.customer_sales_owner_history WHERE customer_id = ?""", String.class, own))
                 .containsExactly("->" + salesperson.id() + ":CREATED_BY_SALES:" + salesperson.id());
-
-        UUID unassigned = customerId(create(manager.token(), json(Map.of("companyName", "Queue Co", "taxCode", mst(),
-                "contactName", "B", "email", unique("queue"))), null).andExpect(status().isCreated()));
-        assertThat(owner(unassigned)).isEqualTo("null:UNASSIGNED");
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM customer.customer_sales_owner_history WHERE customer_id = ?",
-                Long.class, unassigned)).isZero();
 
         UUID chosen = customerId(create(manager.token(), json(Map.of("companyName", "Chosen Co", "taxCode", mst(),
                 "contactName", "C", "email", unique("chosen"), "salesOwnerId", colleague.id())), null)
@@ -1060,6 +1062,56 @@ class B2bOnboardingIntegrationTest {
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.errorCode").value("SALES_OWNER_NOT_ASSIGNABLE"));
         assertThat(count("customer.customer")).as("nothing is left behind").isEqualTo(customers);
+    }
+
+    /**
+     * Owner decision 2026-11-28: no new customer without an owner. A Sales Manager or a System Admin who names nobody
+     * and no lead is refused with 400 SALES_OWNER_REQUIRED before anything is written - no customer, no portal account,
+     * no e-mail. The one named must be an active SALES_STAFF account (D42): a manager naming themselves, or a locked
+     * salesperson, keeps answering 422 SALES_OWNER_NOT_ASSIGNABLE. An admin who names one creates the customer.
+     */
+    @Test
+    @org.junit.jupiter.api.DisplayName("2026-11-28 / BR-S02: a manager or an admin must name the salesperson of a new "
+            + "customer: SALES_OWNER_REQUIRED")
+    void aManagerOrAnAdminMustNameTheNewCustomersSalesperson() throws Exception {
+        StaffAccount manager = staffAccount("SALES_MANAGER");
+        StaffAccount admin = staffAccount("SYSTEM_ADMIN");
+        StaffAccount salesperson = staffAccount("SALES_STAFF");
+        StaffAccount gone = staffAccount("SALES_STAFF");
+        new TransactionTemplate(transactions).executeWithoutResult(tx -> jdbc.update(
+                "UPDATE identity.app_user SET status = 'LOCKED' WHERE id = ?", gone.id()));
+        long customers = count("customer.customer");
+        long accounts = count("identity.app_user");
+
+        for (StaffAccount creator : List.of(manager, admin)) {
+            String email = unique("no-owner");
+            create(creator.token(), json(Map.of("companyName", "Queue Co", "taxCode", mst(), "contactName", "B",
+                    "email", email)), null)
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.errorCode").value("SALES_OWNER_REQUIRED"));
+            assertThat(linksSentTo(email)).as("no invitation for a refused customer").isEmpty();
+        }
+        // A customer a manager exempts from the tax code is no exception.
+        create(manager.token(), json(Map.of("companyName", "Ho kinh doanh", "contactName", "B", "email",
+                unique("no-owner-exempt"), "taxCodeExemption", true, "taxCodeExemptionReason", "Household")), null)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("SALES_OWNER_REQUIRED"));
+        for (UUID notAssignable : List.of(manager.id(), gone.id())) {
+            create(manager.token(), json(Map.of("companyName", "Queue Co", "taxCode", mst(), "contactName", "B",
+                    "email", unique("not-assignable"), "salesOwnerId", notAssignable)), null)
+                    .andExpect(status().isUnprocessableEntity())
+                    .andExpect(jsonPath("$.errorCode").value("SALES_OWNER_NOT_ASSIGNABLE"));
+        }
+        assertThat(count("customer.customer")).as("nothing is left behind").isEqualTo(customers);
+        assertThat(count("identity.app_user")).as("no portal account either").isEqualTo(accounts);
+
+        UUID named = customerId(create(admin.token(), json(Map.of("companyName", "Admin Co", "taxCode", mst(),
+                "contactName", "C", "email", unique("admin-named"), "salesOwnerId", salesperson.id())), null)
+                .andExpect(status().isCreated()));
+        assertThat(owner(named)).isEqualTo(salesperson.id() + ":ASSIGNED");
+        assertThat(jdbc.queryForObject(
+                "SELECT reason || ':' || changed_by FROM customer.customer_sales_owner_history WHERE customer_id = ?",
+                String.class, named)).isEqualTo("CREATED_BY_SALES:" + admin.id());
     }
 
     /**
@@ -1081,16 +1133,17 @@ class B2bOnboardingIntegrationTest {
                 "email", unique("nocode"), "taxCodeExemption", true, "taxCodeExemptionReason", "household")), null)
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
         create(manager.token(), json(Map.of("companyName", "No Code Co", "contactName", "A",
-                "email", unique("nocode"), "taxCodeExemption", true)), null)
-                .andExpect(status().isBadRequest());
+                "email", unique("nocode"), "taxCodeExemption", true, "salesOwnerId", salesperson.id())), null)
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
         create(manager.token(), json(Map.of("companyName", "No Code Co", "contactName", "A", "taxCode", mst(),
-                "email", unique("nocode"), "taxCodeExemption", true, "taxCodeExemptionReason", "x")), null)
-                .andExpect(status().isBadRequest());
+                "email", unique("nocode"), "taxCodeExemption", true, "taxCodeExemptionReason", "x",
+                "salesOwnerId", salesperson.id())), null)
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
         assertThat(count("customer.customer")).as("nothing is left behind").isEqualTo(customers);
 
         UUID exempted = customerId(create(manager.token(), json(Map.of("companyName", "Ho kinh doanh A",
                 "contactName", "A", "email", unique("exempt"), "taxCodeExemption", true,
-                "taxCodeExemptionReason", " Household business, code pending ")), null)
+                "taxCodeExemptionReason", " Household business, code pending ", "salesOwnerId", salesperson.id())), null)
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.customer.taxCodeMissing").value(true)));
         assertThat(jdbc.queryForObject("""
@@ -1101,7 +1154,8 @@ class B2bOnboardingIntegrationTest {
     /**
      * Sales-owner plan 10.7: a lead becomes a customer through its salesperson, who becomes the owner (LEAD_CONVERTED),
      * and the lead is CONVERTED naming it, in one transaction. A lead nobody was given, another salesperson's lead, or
-     * a converted one is refused, and nothing is written.
+     * a converted one is refused, and nothing is written. A manager converting a lead names no owner and is not refused
+     * SALES_OWNER_REQUIRED (owner decision 2026-11-28): the lead's salesperson is the owner.
      */
     @Test
     @org.junit.jupiter.api.DisplayName("10.7: converting a lead makes its salesperson the owner and the lead CONVERTED")

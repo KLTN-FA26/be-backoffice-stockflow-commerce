@@ -1188,6 +1188,11 @@ public enum ErrorCode {
     CUSTOMER_OWNED_BY_OTHER_SALES("This customer is looked after by another salesperson", 409),
     /** BR-S04: an owner, a cover or a lead's Sales is an ACTIVE account holding a Sales role. */
     SALES_OWNER_NOT_ASSIGNABLE("This person cannot look after customers", 422),
+    /**
+     * Owner decision 2026-11-28: no new customer without an owner. Someone who is not a salesperson (a Sales Manager, a
+     * System Admin) names the salesperson who will look after it, unless the customer is made from a lead.
+     */
+    SALES_OWNER_REQUIRED("Choose the salesperson who will look after this customer", 400),
     /** Two managers changing one customer's owner at once (case 15): the later one reloads. */
     SALES_OWNER_VERSION_CONFLICT("The customer's salesperson was changed meanwhile; reload and try again", 409),
     /** BR-S03: every change of owner says why; OTHER also needs a note. */

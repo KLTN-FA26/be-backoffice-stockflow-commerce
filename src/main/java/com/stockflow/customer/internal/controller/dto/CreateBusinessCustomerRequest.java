@@ -23,8 +23,10 @@ public record CreateBusinessCustomerRequest(
         @NotBlank @Email @Size(max = 320) String email,
         @VietnamPhone String phone,
         /*
-         * Sales-owner plan BR-S02: who looks after the customer. Omitted: the creating salesperson, or nobody when a
-         * Sales Manager creates it. Only a manager may name someone else.
+         * Sales-owner plan BR-S02: who looks after the customer. Omitted: the creating salesperson. Anyone who is not a
+         * salesperson (a Sales Manager, a System Admin) must name one unless the customer is made from a lead: no new
+         * customer is left without an owner (owner decision 2026-11-28, 400 SALES_OWNER_REQUIRED). Only a manager may
+         * name someone else.
          */
         UUID salesOwnerId,
         /* BR-S14 / D4: a manager creates the customer without a tax code; sent only without one, with the reason. */

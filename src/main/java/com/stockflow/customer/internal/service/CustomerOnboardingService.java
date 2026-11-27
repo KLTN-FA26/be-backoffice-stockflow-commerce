@@ -103,9 +103,10 @@ public class CustomerOnboardingService {
      * account, recorded on the invitation and in the status history.
      *
      * <p>{@code salesOwnerId} (sales-owner plan BR-S02): null for the default - the creating salesperson owns the
-     * customer, a Sales Manager (a holder of {@code customer-sales-owners:UPDATE}) leaves it unassigned - or the
-     * salesperson a manager chose. {@code leadId} (plan 10.7): the lead the customer is made from; its salesperson
-     * is the owner (LEAD_CONVERTED) and the lead becomes CONVERTED in the same transaction.</p>
+     * customer - or the salesperson a manager chose. Anyone who is not a salesperson (a Sales Manager, a System Admin)
+     * must name one: no new customer is left without an owner (owner decision 2026-11-28). {@code leadId} (plan 10.7):
+     * the lead the customer is made from; its salesperson is the owner (LEAD_CONVERTED) and the lead becomes CONVERTED
+     * in the same transaction.</p>
      */
     public record CreateBusinessCustomer(String companyName, String taxCode, String contactName, String email,
                                          String phone, UUID actorUserId, UUID salesOwnerId, boolean taxCodeExemption,
@@ -148,8 +149,9 @@ public class CustomerOnboardingService {
      *         code; {@code CUSTOMER_EMAIL_ALREADY_EXISTS}; {@code USER_EMAIL_ALREADY_EXISTS} for any
      *         account - staff or customer - with this e-mail; {@code PORTAL_INVITATION_UNAVAILABLE} when
      *         no activation address is configured, before anything is written; {@code FORBIDDEN} for a
-     *         salesperson naming another owner; {@code SALES_OWNER_NOT_ASSIGNABLE} for an owner who is not an
-     *         active salesperson
+     *         salesperson naming another owner; {@code SALES_OWNER_REQUIRED} for someone who is not a salesperson
+     *         naming no owner and no lead; {@code SALES_OWNER_NOT_ASSIGNABLE} for an owner who is not an active
+     *         salesperson
      */
     @Auditable(action = AuditAction.CREATE, resourceType = "customer", resourceId = "#result?.customer()?.customerId()")
     public Invited create(CreateBusinessCustomer command) {
@@ -194,10 +196,8 @@ public class CustomerOnboardingService {
             if (exemptionReason != null) {
                 exemptions.grant(stored.id(), exemptionReason, command.actorUserId(), clock.instant());
             }
-            if (owner != null) {
-                stored = ownership.assignAtCreation(stored, owner, lead != null ? SalesOwnerChangeReason.LEAD_CONVERTED
-                        : SalesOwnerChangeReason.CREATED_BY_SALES, command.actorUserId());
-            }
+            stored = ownership.assignAtCreation(stored, owner, lead != null ? SalesOwnerChangeReason.LEAD_CONVERTED
+                    : SalesOwnerChangeReason.CREATED_BY_SALES, command.actorUserId());
             if (lead != null) {
                 leads.converted(lead, stored.id(), command.actorUserId());
             }
@@ -241,11 +241,15 @@ public class CustomerOnboardingService {
 
     /**
      * The customer's first owner (sales-owner plan BR-S02, plan §4 cases 1 and 2): the salesperson a manager named, or
-     * the creating salesperson, or nobody when a manager (or anyone who is not a salesperson) creates it without naming
-     * one. Only a manager names someone other than themselves; whether the one named may own customers (BR-S04) is
-     * checked when the owner is assigned.
+     * the creating salesperson. Never nobody (owner decision 2026-11-28): a customer without an owner reaches nobody's
+     * list and its notices go to the managers, so a manager or an admin who creates one says who looks after it. The
+     * only customers without an owner are those whose owner left (NEEDS_ASSIGNMENT) and those of the one-time backfill
+     * that had no document (UNASSIGNED). Only a manager names someone other than themselves; whether the one named may
+     * own customers (BR-S04, D42: an active SALES_STAFF account) is checked when the owner is assigned.
      *
-     * @throws BusinessException {@code FORBIDDEN} for a salesperson naming someone else
+     * @return the owner, never null
+     * @throws BusinessException {@code FORBIDDEN} for a salesperson naming someone else; {@code SALES_OWNER_REQUIRED}
+     *         for anyone else naming nobody
      */
     private UUID firstOwner(CreateBusinessCustomer command) {
         UUID actor = command.actorUserId();
@@ -257,7 +261,10 @@ public class CustomerOnboardingService {
             }
             return command.salesOwnerId();
         }
-        return actor != null && !managesOwners && salesStaff.isActiveSalesAgent(actor) ? actor : null;
+        if (actor != null && !managesOwners && salesStaff.isActiveSalesAgent(actor)) {
+            return actor;
+        }
+        throw new BusinessException(ErrorCode.SALES_OWNER_REQUIRED);
     }
 
     /**
