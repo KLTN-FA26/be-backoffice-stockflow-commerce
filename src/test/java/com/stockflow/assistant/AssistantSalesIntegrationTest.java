@@ -244,9 +244,9 @@ class AssistantSalesIntegrationTest {
         assertThat(new BigDecimal(JsonPath.read(body, "$.data.lines[0].lastSoldUnitPrice").toString()))
                 .isEqualByComparingTo("10000");
         assertThat(JsonPath.<List<String>>read(body, "$.data.lines[0].flags")).contains("BELOW_LAST_SOLD");
-        assertThat(JsonPath.<Object>read(body, "$.data.credit"))
-                .as("the seeded Sales Manager does not hold customer-credit-profiles:READ: null, never zeros")
-                .isNull();
+        assertThat(JsonPath.<Object>read(body, "$.data.credit.outstanding"))
+                .as("the Sales Manager reads customers' credit (V20270127000500)")
+                .isNotNull();
 
         http.asRole(Role.SYSTEM_ADMIN, staff("SYSTEM_ADMIN"), get(BASE + "/quotes/" + quote.id() + "/price-review"))
                 .andExpect(status().isOk())
