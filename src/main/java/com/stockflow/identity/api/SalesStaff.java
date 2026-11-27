@@ -1,5 +1,6 @@
 package com.stockflow.identity.api;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -23,6 +24,22 @@ public interface SalesStaff {
 
     /** Whether the account is a Sales agent now: ACTIVE, SALES_STAFF, not a portal customer. False for null or unknown. */
     boolean isActiveSalesAgent(UUID userId);
+
+    /**
+     * {@link #isActiveSalesAgent}, with the account read {@code FOR SHARE} in the caller's transaction (which must exist):
+     * until it ends, no lock, disable or revoke of SALES_STAFF of that account can commit, since each of those takes the
+     * account's row {@code FOR UPDATE} first. For a write that makes the account responsible for something (an owner, a
+     * cover, a lead's Sales): without it, a lock committed between this check and the write left customers ASSIGNED to
+     * a locked account for good, because the after-commit listener that releases them had already run (finding C2).
+     * The database triggers on {@code customer.customer} and {@code identity.staff_cover} take the same lock.
+     */
+    boolean lockActiveSalesAgent(UUID userId);
+
+    /**
+     * Which of the accounts are Sales agents now ({@link #isActiveSalesAgent}), in one statement; unknown and null ids
+     * are left out. An owner who lost SALES_STAFF is no more working than a locked one (finding C3).
+     */
+    Set<UUID> activeSalesAgentsAmong(Collection<UUID> userIds);
 
     /** Every Sales agent, by name, with their roles. One query; bounded by the staff of the business. */
     List<StaffMember> activeSalesAgents();

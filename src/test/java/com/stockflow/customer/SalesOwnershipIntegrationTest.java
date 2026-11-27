@@ -47,6 +47,11 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -490,6 +495,159 @@ class SalesOwnershipIntegrationTest {
         identity.changeUserStatus(owner, UserStatusChange.DISABLE, REASON);
 
         assertThat(recorded.matching(StaffAccountDeactivated.class, e -> e.userId().equals(owner))).isEmpty();
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // Review findings C2 (lock vs assign), C3 (SALES_STAFF revoked), C4 (lock order)
+    // ---------------------------------------------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("Finding C2: a lock waits for an assignment in flight, and the listener then releases that customer")
+    void aLockWaitsForAnAssignmentInFlight() throws Exception {
+        UUID owner = staff("SALES_STAFF");
+        UUID customer = customer();
+        CountDownLatch assigned = new CountDownLatch(1);
+        CountDownLatch commit = new CountDownLatch(1);
+        ExecutorService threads = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> assignment = threads.submit(() -> tx.executeWithoutResult(status -> {
+                ownership.assign(new AssignSalesOwnerCommand(customer, owner, SalesOwnerChangeReason.OTHER, "race",
+                        false, 0, null));
+                assigned.countDown();
+                await(commit);
+            }));
+            assertThat(assigned.await(20, TimeUnit.SECONDS)).isTrue();
+            Future<?> lock = threads.submit(() -> identity.changeUserStatus(owner, UserStatusChange.LOCK, REASON));
+
+            Thread.sleep(1500);
+            assertThat(lock.isDone()).as("the lock waits for the assignment's transaction").isFalse();
+            commit.countDown();
+            assignment.get(20, TimeUnit.SECONDS);
+            lock.get(20, TimeUnit.SECONDS);
+        } finally {
+            commit.countDown();
+            threads.shutdownNow();
+        }
+        Await.until("the customer assigned in flight is released", Duration.ofSeconds(20),
+                () -> state(customer).equals("NEEDS_ASSIGNMENT"));
+    }
+
+    @Test
+    @DisplayName("Finding C2: an assignment waits for a lock in flight, then refuses the locked account")
+    void anAssignmentWaitsForALockInFlight() throws Exception {
+        UUID owner = staff("SALES_STAFF");
+        UUID customer = customer();
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch commit = new CountDownLatch(1);
+        ExecutorService threads = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> lock = threads.submit(() -> tx.executeWithoutResult(status -> {
+                identity.changeUserStatus(owner, UserStatusChange.LOCK, REASON);
+                entityManager.flush();
+                locked.countDown();
+                await(commit);
+            }));
+            assertThat(locked.await(20, TimeUnit.SECONDS)).isTrue();
+            Future<?> assignment = threads.submit(() -> ownership.assign(new AssignSalesOwnerCommand(customer, owner,
+                    SalesOwnerChangeReason.OTHER, "race", false, 0, null)));
+
+            Thread.sleep(1500);
+            assertThat(assignment.isDone()).as("the assignment waits for the lock's transaction").isFalse();
+            commit.countDown();
+            lock.get(20, TimeUnit.SECONDS);
+            assertThatThrownBy(() -> assignment.get(20, TimeUnit.SECONDS)).hasCauseInstanceOf(BusinessException.class)
+                    .cause().extracting(e -> ((BusinessException) e).errorCode())
+                    .isEqualTo(ErrorCode.SALES_OWNER_NOT_ASSIGNABLE);
+        } finally {
+            commit.countDown();
+            threads.shutdownNow();
+        }
+        assertThat(state(customer)).isEqualTo("UNASSIGNED");
+    }
+
+    @Test
+    @DisplayName("Finding C3: revoking SALES_STAFF releases the customers and open leads, ends the covers it stood in "
+            + "and makes the managers responsible at once; giving it back returns nothing (BR-S10)")
+    void revokingSalesStaffReleasesLikeALock() {
+        UUID owner = staff("SALES_STAFF");
+        identity.assignRole(owner, "WAREHOUSE_STAFF");
+        UUID colleague = staff("SALES_STAFF");
+        UUID customer = customerOwnedBy(owner);
+        UUID colleagues = customerOwnedBy(colleague);
+        UUID lead = lead("ASSIGNED", owner, null);
+        covers.arrange(new StaffCoverService.ArrangeCover(colleague, owner, today(), today().plusDays(2), null),
+                colleague, false);
+        recorded.clear();
+
+        identity.revokeRole(owner, "SALES_STAFF");
+
+        assertThat(recorded.matching(StaffAccountDeactivated.class, e -> e.userId().equals(owner)))
+                .singleElement().extracting(StaffAccountDeactivated::status)
+                .isEqualTo(StaffAccountDeactivated.SALES_ROLE_REVOKED);
+        assertThat(responsible.responsibleFor(colleagues, today()).orElseThrow().kind())
+                .as("a stand-in who is no salesperson covers nothing").isEqualTo(ResponsibleKind.OWNER);
+        Await.until("the customer and the lead are released", Duration.ofSeconds(20),
+                () -> state(customer).equals("NEEDS_ASSIGNMENT") && leadState(lead).equals("NEW:null"));
+        assertThat(responsible.responsibleFor(customer, today()).orElseThrow().kind())
+                .isEqualTo(ResponsibleKind.MANAGERS);
+        assertThat(state(colleagues)).isEqualTo("ASSIGNED");
+        recorded.clear();
+
+        identity.assignRole(owner, "SALES_STAFF");
+
+        assertThat(recorded.matching(StaffAccountReactivated.class, e -> e.userId().equals(owner))).hasSize(1);
+        assertThat(state(customer)).as("BR-S10: nothing comes back by itself").isEqualTo("NEEDS_ASSIGNMENT");
+        assertThat(leadState(lead)).isEqualTo("NEW:null");
+    }
+
+    @Test
+    @DisplayName("Finding C3: before the listener runs, an owner without SALES_STAFF is not working - the managers "
+            + "answer, anyone may act, a claim takes the customer")
+    void anOwnerWithoutTheRoleIsNotWorking() {
+        UUID owner = staff("SALES_STAFF");
+        UUID other = staff("SALES_STAFF");
+        UUID customer = customerOwnedBy(owner);
+        // Revoked behind identity's back: no event, the customer still says ASSIGNED.
+        write("""
+                DELETE FROM identity.user_role WHERE user_id = ?
+                   AND role_id = (SELECT id FROM identity.app_role WHERE code = 'SALES_STAFF')""", owner);
+
+        assertThat(responsible.responsibleFor(customer, today()).orElseThrow().kind())
+                .isEqualTo(ResponsibleKind.MANAGERS);
+        assertThat(ownership.mayActFor(other, customer, today())).isTrue();
+        assertThat(ownership.claimIfUnowned(customer, other, today())).isEqualTo(ClaimOutcome.CLAIMED);
+    }
+
+    @Test
+    @DisplayName("Finding C4: the order customers are locked in is PostgreSQL's order of uuids, not UUID.compareTo")
+    void customersAreLockedInTheDatabasesOrder() {
+        List<UUID> ids = new ArrayList<>();
+        for (int i = 0; i < 200; i++) {
+            ids.add(UUID.randomUUID());
+        }
+        ids.add(UUID.fromString("00000000-0000-7000-8000-000000000000"));
+        ids.add(UUID.fromString("f0000000-0000-7000-8000-000000000000"));
+        List<UUID> database = jdbc.queryForList("SELECT id FROM unnest(CAST(? AS uuid[])) AS t(id) ORDER BY id",
+                UUID.class, (Object) ids.stream().map(UUID::toString).toArray(String[]::new));
+
+        List<UUID> sorted = new ArrayList<>(ids);
+        sorted.sort(com.stockflow.common.id.Identifiers.DATABASE_ORDER);
+        List<UUID> javas = new ArrayList<>(ids);
+        javas.sort(UUID::compareTo);
+
+        assertThat(sorted).isEqualTo(database);
+        assertThat(javas).as("the order the transfer used before").isNotEqualTo(database);
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            if (!latch.await(30, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("the test never let the transaction commit");
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(interrupted);
+        }
     }
 
     // ---------------------------------------------------------------------------------------------------------------

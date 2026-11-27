@@ -22,7 +22,6 @@ import com.stockflow.customer.internal.domain.SalesOwnerHistory;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.SalesStaff;
 import com.stockflow.identity.api.StaffCovers;
-import com.stockflow.identity.api.UserLabel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
@@ -54,9 +53,11 @@ import java.util.stream.Collectors;
  *   <li>{@code CustomerSalesOwnerChanged} / {@code CustomerNeedsSalesOwner} is published, delivered after commit.</li>
  * </ol>
  *
- * <p>Whether a person may look after customers (BR-S04) is asked of identity ({@link SalesStaff}); whether the owner
- * works today is read from the account every time, not trusted from the customer's state, because the listener that
- * marks a locked owner's customers runs after the lock commits.</p>
+ * <p>Whether a person may look after customers (BR-S04) is asked of identity ({@link SalesStaff}), with the account
+ * read {@code FOR SHARE} when it is about to be made an owner (finding C2: a lock committing between the check and the
+ * write left customers assigned to a locked account for good). Whether the owner works today is read from the account
+ * every time - ACTIVE and still holding SALES_STAFF (finding C3) - not trusted from the customer's state, because the
+ * listener that marks a gone owner's customers runs after the lock or the revoke commits.</p>
  */
 @Service
 @Transactional
@@ -134,7 +135,7 @@ public class SalesOwnershipService implements SalesOwnership, ResponsibleSales {
         if (owner.state() != SalesOwnerState.ASSIGNED || owner.userId().equals(userId)) {
             return Optional.empty();
         }
-        if (!isActive(owner.userId())) {
+        if (!isWorking(owner.userId())) {
             return Optional.empty();
         }
         StaffCovers.ActiveCover cover = covers.activeCovers(List.of(owner.userId()), dayOr(day)).get(owner.userId());
@@ -159,9 +160,8 @@ public class SalesOwnershipService implements SalesOwnership, ResponsibleSales {
         }
         Set<UUID> assigned = owners.values().stream().filter(owner -> owner.state() == SalesOwnerState.ASSIGNED)
                 .map(SalesOwner::userId).collect(Collectors.toSet());
-        Map<UUID, UserLabel> labels = assigned.isEmpty() ? Map.of() : identity.userLabels(assigned);
-        Set<UUID> working = assigned.stream()
-                .filter(id -> labels.containsKey(id) && labels.get(id).active()).collect(Collectors.toSet());
+        // C3: an owner who is ACTIVE but no longer holds SALES_STAFF is gone as much as a locked one.
+        Set<UUID> working = assigned.isEmpty() ? Set.of() : salesStaff.activeSalesAgentsAmong(assigned);
         Map<UUID, StaffCovers.ActiveCover> coverOf = working.isEmpty() ? Map.of()
                 : covers.activeCovers(working, dayOr(businessDay));
         boolean anyWithoutOwner = owners.values().stream()
@@ -215,7 +215,7 @@ public class SalesOwnershipService implements SalesOwnership, ResponsibleSales {
         if (owner.isAssignedTo(claimerId)) {
             return ClaimOutcome.ALREADY_OWNER;
         }
-        boolean ownerActive = owner.state() == SalesOwnerState.ASSIGNED && isActive(owner.userId());
+        boolean ownerActive = owner.state() == SalesOwnerState.ASSIGNED && isWorking(owner.userId());
         if (ownerActive) {
             StaffCovers.ActiveCover cover = covers.activeCovers(List.of(owner.userId()), dayOr(day))
                     .get(owner.userId());
@@ -305,17 +305,20 @@ public class SalesOwnershipService implements SalesOwnership, ResponsibleSales {
         return saved;
     }
 
-    /** BR-S04: an owner is an active Sales agent. */
+    /**
+     * BR-S04: an owner is an active Sales agent - read {@code FOR SHARE}, so that no lock, disable or revoke of the
+     * account commits before this transaction does (finding C2; the trigger on {@code customer.customer} does the same).
+     */
     private void requireAssignable(UUID userId) {
-        if (!salesStaff.isActiveSalesAgent(userId)) {
+        if (!salesStaff.lockActiveSalesAgent(userId)) {
             throw new BusinessException(ErrorCode.SALES_OWNER_NOT_ASSIGNABLE,
                     "Account %s is not an active salesperson".formatted(userId));
         }
     }
 
-    private boolean isActive(UUID userId) {
-        UserLabel label = identity.userLabels(List.of(userId)).get(userId);
-        return label != null && label.active();
+    /** Whether the owner still works as a salesperson: ACTIVE and holding SALES_STAFF (findings C2, C3). */
+    private boolean isWorking(UUID userId) {
+        return salesStaff.isActiveSalesAgent(userId);
     }
 
     private LocalDate dayOr(LocalDate day) {

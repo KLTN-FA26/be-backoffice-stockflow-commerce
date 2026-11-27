@@ -43,8 +43,10 @@ import java.util.UUID;
  * <p>Only customers that are the source salesperson's when the batch runs move: assigned to them, or waiting for an
  * owner after they left. A customer the request named that was not theirs is {@code NOT_OWNED_BY_SOURCE}; one that
  * stopped being theirs while the batch ran - found so under its row lock - is {@code OWNER_CHANGED}; an id that is no
- * customer is {@code CUSTOMER_NOT_FOUND}. Customers are locked one by one in id order, the order every multi-customer
- * write of this module uses, so two batches cannot deadlock.</p>
+ * customer is {@code CUSTOMER_NOT_FOUND}. Customers are locked one by one in id order - PostgreSQL's order of uuids
+ * ({@link Identifiers#DATABASE_ORDER}), the order every multi-customer write of this module uses, including the release
+ * of a gone owner's customers and the return of a batch, which take theirs from SQL - so two batches cannot deadlock.
+ * Java's own {@code UUID.compareTo} compares signed halves and disagrees with it for half of all ids (finding C4).</p>
  */
 @Service
 @Transactional
@@ -217,8 +219,9 @@ public class SalesOwnerTransferService {
 
     private SalesOwnersTransferPlan plan(Transfer request) {
         boolean named = request.customerIds() != null && !request.customerIds().isEmpty();
-        Collection<UUID> asked = named ? new TreeSet<>(request.customerIds())
-                : new TreeSet<>(ownedBy(request.fromUserId()));
+        // C4: PostgreSQL's order of uuids, the order every multi-customer write of this module locks rows in.
+        Collection<UUID> asked = new TreeSet<>(Identifiers.DATABASE_ORDER);
+        asked.addAll(named ? request.customerIds() : ownedBy(request.fromUserId()));
         Map<UUID, SalesOwner> owners = customers.salesOwners(asked);
         List<UUID> candidates = new ArrayList<>();
         List<UUID> notOwned = new ArrayList<>();
@@ -277,8 +280,9 @@ public class SalesOwnerTransferService {
         return targets;
     }
 
+    /** The account read {@code FOR SHARE}: it cannot be locked or lose SALES_STAFF until the batch commits (C2). */
     private void requireAssignable(UUID userId) {
-        if (!salesStaff.isActiveSalesAgent(userId)) {
+        if (!salesStaff.lockActiveSalesAgent(userId)) {
             throw new BusinessException(ErrorCode.SALES_OWNER_NOT_ASSIGNABLE,
                     "Account %s is not an active salesperson".formatted(userId));
         }

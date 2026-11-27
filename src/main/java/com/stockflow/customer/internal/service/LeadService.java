@@ -247,7 +247,9 @@ public class LeadService {
             throw new BusinessException(ErrorCode.FORBIDDEN, "A Sales Manager assigns leads");
         }
         Lead lead = lock(leadId);
-        if (salesUserId == null || !salesStaff.isActiveSalesAgent(salesUserId)) {
+        // FOR SHARE (finding C2): a lock of the account cannot commit before this assignment does, so the listener that
+        // puts a gone salesperson's leads back in the queue (D44) always sees this one.
+        if (salesUserId == null || !salesStaff.lockActiveSalesAgent(salesUserId)) {
             throw new BusinessException(ErrorCode.SALES_OWNER_NOT_ASSIGNABLE,
                     "Account %s is not an active salesperson".formatted(salesUserId));
         }

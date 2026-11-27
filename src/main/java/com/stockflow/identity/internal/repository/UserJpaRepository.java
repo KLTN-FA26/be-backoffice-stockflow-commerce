@@ -124,6 +124,25 @@ public interface UserJpaRepository extends BaseJpaRepository<UserJpaEntity> {
             """)
     List<UserJpaEntity> findActiveStaffHoldingAnyRole(@Param("roleCodes") Collection<String> roleCodes);
 
+    /** {@link #findActiveStaffHoldingAnyRole} among {@code userIds}: the ids of those that would be among them. */
+    @Query("""
+            select u.id from UserJpaEntity u
+            where u.id in :userIds and u.status = com.stockflow.identity.internal.domain.UserStatus.ACTIVE
+              and exists (select 1 from UserRoleJpaEntity ur, RoleJpaEntity r
+                          where ur.userId = u.id and r.id = ur.roleId and r.code in :roleCodes)
+              and not exists (select 1 from UserRoleJpaEntity uc, RoleJpaEntity c
+                              where uc.userId = u.id and c.id = uc.roleId and c.code = 'CUSTOMER')
+            """)
+    List<UUID> findActiveStaffHoldingAnyRoleAmong(@Param("userIds") Collection<UUID> userIds,
+                                                  @Param("roleCodes") Collection<String> roleCodes);
+
+    /**
+     * Takes the account's row {@code FOR SHARE} until the transaction ends (finding C2): a status change or a role
+     * change of the account, which lock the row {@code FOR UPDATE} first, waits for it, and it waits for them.
+     */
+    @Query(value = "SELECT CAST(id AS varchar) FROM identity.app_user WHERE id = :id FOR SHARE", nativeQuery = true)
+    List<String> shareLockById(@Param("id") UUID id);
+
     /** {@link #findActiveStaffHoldingAnyRole} for one account: whether it would be among them. */
     @Query("""
             select count(u) > 0 from UserJpaEntity u

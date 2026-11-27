@@ -3,6 +3,7 @@
 --   LR  customer.lead_history.kind (P5): a RESUBMITTED entry changes neither status nor Sales, says what was sent and has
 --       no actor; a CHANGE still changes something
 --   LF  customer.lead_form_existing_customer (S4): one row per customer, gone with it
+--   TR  the assignability triggers, rewritten to take the account FOR SHARE (C2), still refuse and accept as before
 -- Needs the demo seed. Fixture rows are made here and everything is rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
@@ -103,5 +104,19 @@ ON CONFLICT (customer_id) DO UPDATE SET last_at = EXCLUDED.last_at WHERE seen.la
 SELECT pg_temp.expect_true('LF4 the window: a claim within 24 hours of the last changes nothing',
     (SELECT last_at = NOW() - INTERVAL '1 hour' FROM customer.lead_form_existing_customer
       WHERE customer_id = pg_temp.id('c1')));
+
+\echo '--- TR: the assignability triggers after C2'
+SELECT pg_temp.expect_ok('TR1 an active salesperson is assigned',
+    format('UPDATE customer.customer SET sales_owner_id = %L, sales_owner_state = ''ASSIGNED'', '
+           'sales_owner_since = NOW() WHERE id = %L', pg_temp.id('a'), pg_temp.id('c1')));
+SELECT pg_temp.expect_fail_like('TR2 a Sales Manager is no owner', 'must be an active salesperson',
+    format('UPDATE customer.customer SET sales_owner_id = %L WHERE id = %L', pg_temp.id('manager'), pg_temp.id('c1')));
+UPDATE identity.app_user SET status = 'LOCKED' WHERE id = pg_temp.id('a');
+SELECT pg_temp.expect_fail_like('TR3 a locked salesperson stands in for nobody', 'must be an active salesperson',
+    format('INSERT INTO identity.staff_cover (id, user_id, cover_user_id, from_date, to_date, created_at) VALUES '
+           '(gen_random_uuid(), %L, %L, CURRENT_DATE, CURRENT_DATE, NOW())', pg_temp.id('manager'), pg_temp.id('a')));
+SELECT pg_temp.expect_true('TR4 the functions lock the account they read',
+    (SELECT bool_and(prosrc LIKE '%FOR SHARE%') FROM pg_proc
+      WHERE proname IN ('check_sales_owner_assignable', 'check_staff_cover_stand_in')));
 
 ROLLBACK;

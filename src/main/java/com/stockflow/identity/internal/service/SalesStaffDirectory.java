@@ -10,9 +10,11 @@ import com.stockflow.identity.internal.repository.RoleJpaRepository;
 import com.stockflow.identity.internal.repository.UserJpaRepository;
 import com.stockflow.identity.internal.repository.UserRoleJpaRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -41,6 +43,24 @@ class SalesStaffDirectory implements SalesStaff {
     @Override
     public boolean isActiveSalesAgent(UUID userId) {
         return userId != null && users.isActiveStaffHoldingAnyRole(userId, SALES_ROLES);
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.MANDATORY)
+    public boolean lockActiveSalesAgent(UUID userId) {
+        if (userId == null) {
+            return false;
+        }
+        users.shareLockById(userId);
+        // A statement of its own, after the lock: under READ COMMITTED it sees what a lock that was waited for wrote.
+        return users.isActiveStaffHoldingAnyRole(userId, SALES_ROLES);
+    }
+
+    @Override
+    public Set<UUID> activeSalesAgentsAmong(Collection<UUID> userIds) {
+        Set<UUID> ids = userIds == null ? Set.of() : userIds.stream().filter(java.util.Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
+        return ids.isEmpty() ? Set.of() : Set.copyOf(users.findActiveStaffHoldingAnyRoleAmong(ids, SALES_ROLES));
     }
 
     @Override

@@ -27,14 +27,21 @@ interface StaffCoverJpaRepository extends BaseJpaRepository<StaffCoverJpaEntity>
             """)
     boolean overlapsActive(@Param("userId") UUID userId, @Param("from") LocalDate from, @Param("to") LocalDate to);
 
-    /** Only covers whose stand-in is still ACTIVE: a cover by someone who cannot sign in covers nothing. */
+    /**
+     * Only covers whose stand-in is still a Sales agent - ACTIVE and holding one of {@code roleCodes}: a cover by someone
+     * who cannot sign in, or who is no longer a salesperson, covers nothing (findings C2, C3), and who is responsible
+     * falls through to the owner.
+     */
     @Query("""
             select c from StaffCoverJpaEntity c
             where c.userId in :userIds and c.status = 'ACTIVE' and c.fromDate <= :day and c.toDate >= :day
               and exists (select 1 from UserJpaEntity u where u.id = c.coverUserId
                           and u.status = com.stockflow.identity.internal.domain.UserStatus.ACTIVE)
+              and exists (select 1 from UserRoleJpaEntity ur, RoleJpaEntity r
+                          where ur.userId = c.coverUserId and r.id = ur.roleId and r.code in :roleCodes)
             """)
-    List<StaffCoverJpaEntity> findActiveOn(@Param("userIds") Collection<UUID> userIds, @Param("day") LocalDate day);
+    List<StaffCoverJpaEntity> findActiveOn(@Param("userIds") Collection<UUID> userIds, @Param("day") LocalDate day,
+                                           @Param("roleCodes") Collection<String> roleCodes);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select c from StaffCoverJpaEntity c where c.coverUserId = :coverUserId and c.status = 'ACTIVE' order by c.id")

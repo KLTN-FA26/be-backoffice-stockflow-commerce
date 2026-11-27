@@ -98,7 +98,7 @@ public class StaffCoverService implements StaffCovers {
         }
         StaffCover cover = StaffCover.arrange(Identifiers.newId(), command.userId(), command.coverUserId(),
                 command.from(), command.to(), command.reason(), actorUserId, today());
-        if (!salesStaff.isActiveSalesAgent(command.coverUserId())) {
+        if (!salesStaff.lockActiveSalesAgent(command.coverUserId())) {
             throw new BusinessException(ErrorCode.SALES_OWNER_NOT_ASSIGNABLE,
                     "The stand-in must be an active salesperson");
         }

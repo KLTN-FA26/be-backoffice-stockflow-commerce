@@ -59,7 +59,8 @@ class StaffCoverRepositoryAdapter implements StaffCoverRepository {
         if (ids.isEmpty()) {
             return List.of();
         }
-        return covers.findActiveOn(ids, day).stream().map(StaffCoverRepositoryAdapter::toDomain).toList();
+        return covers.findActiveOn(ids, day, com.stockflow.identity.api.SalesStaff.SALES_ROLES).stream()
+                .map(StaffCoverRepositoryAdapter::toDomain).toList();
     }
 
     @Override
