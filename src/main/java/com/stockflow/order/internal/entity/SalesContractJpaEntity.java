@@ -64,6 +64,10 @@ public class SalesContractJpaEntity extends BaseEntity {
     private Instant sentAt;
     @Column(name = "sent_by")
     private UUID sentBy;
+
+    /** V20270128000300 (14 BR-26): the customer's Sales owner when drawn up; written once, with the row. */
+    @Column(name = "sales_owner_id", updatable = false)
+    private UUID salesOwnerId;
     @Column(name = "sent_document_key", length = 512)
     private String sentDocumentKey;
 
@@ -102,8 +106,9 @@ public class SalesContractJpaEntity extends BaseEntity {
     public SalesContractJpaEntity(UUID id, String contractNumber, UUID orderId, String sellerName, String sellerTaxCode,
                                   String sellerAddress, String sellerRepresentative, String sellerRepresentativeTitle,
                                   String buyerName, String buyerTaxCode, String buyerAddress, String buyerRepresentative,
-                                  String buyerRepresentativeTitle) {
+                                  String buyerRepresentativeTitle, UUID salesOwnerId) {
         super(id);
+        this.salesOwnerId = salesOwnerId;
         this.contractNumber = contractNumber;
         this.orderId = orderId;
         this.sellerName = sellerName;
@@ -171,6 +176,7 @@ public class SalesContractJpaEntity extends BaseEntity {
     }
     public Instant getSentAt() { return sentAt; }
     public UUID getSentBy() { return sentBy; }
+    public UUID getSalesOwnerId() { return salesOwnerId; }
     public String getSentDocumentKey() { return sentDocumentKey; }
     public LocalDate getSignedOn() { return signedOn; }
     public String getSignedFileKey() { return signedFileKey; }

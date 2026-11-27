@@ -73,7 +73,7 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
             entity = new SalesContractJpaEntity(contract.id(), contract.contractNumber(), contract.orderId(),
                     seller.name(), seller.taxCode(), seller.address(), seller.representative(),
                     seller.representativeTitle(), buyer.name(), buyer.taxCode(), buyer.address(),
-                    buyer.representative(), buyer.representativeTitle());
+                    buyer.representative(), buyer.representativeTitle(), contract.salesOwnerId());
         } else if (entity.getVersion() != contract.version()) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK, "Contract %s changed since it was read"
                     .formatted(contract.contractNumber()));
@@ -234,6 +234,7 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
                 e.getSignedOn(), e.getSignedFileKey(), e.getSignedFileName(), e.getSignedAt(), e.getSignedBy(),
                 e.getCancelledAt(), e.getCancelledBy(), e.getCancellationReason(), e.getCompletedAt(),
                 e.getVersion()).restoreReturnWindow(e.getReturnWindowDays()).restoreLiquidated(e.getLiquidatedAt())
+                .restoreSalesOwner(e.getSalesOwnerId())
                 .restoreCreditReview(e.isCreditReviewPending());
     }
 }

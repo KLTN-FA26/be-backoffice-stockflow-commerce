@@ -93,7 +93,8 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
     @Override
     public Quote save(Quote quote) {
         QuoteJpaEntity entity = jpa.findByIdWithLines(quote.id()).orElseGet(() ->
-                new QuoteJpaEntity(quote.id(), quote.quoteNumber(), quote.requestId(), quote.customerId()));
+                new QuoteJpaEntity(quote.id(), quote.quoteNumber(), quote.requestId(), quote.customerId(),
+                        quote.salesOwnerId()));
         Quote.Offer offer = quote.offer();
         entity.apply(quote.status(), quote.revision(), offer.validUntil(), offer.terms(), quote.sentAt(), quote.sentBy(), quote.respondedAt(),
                 quote.respondedBy(), quote.customerFeedback(), quote.cancellationReason(), quote.convertedOrderId(),
@@ -392,7 +393,8 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
         return Quote.restore(e.getId(), e.getQuoteNumber(), e.getRequestId(), e.getCustomerId(), e.getStatus(),
                 e.getRevision(), new Quote.Offer(e.getValidUntil(), e.getTerms(), e.getRequestedDeliveryDate(), lines, fees),
                 e.getSentAt(), e.getSentBy(), e.getRespondedAt(), e.getRespondedBy(), e.getCustomerFeedback(),
-                e.getCancellationReason(), e.getConvertedOrderId(), e.getConvertedAt(), e.isPriceReviewPending());
+                e.getCancellationReason(), e.getConvertedOrderId(), e.getConvertedAt(), e.isPriceReviewPending(),
+                e.getSalesOwnerId());
     }
 
     private static QuoteLine toDomain(QuoteLineJpaEntity l) {
