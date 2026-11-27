@@ -275,6 +275,45 @@ public final class Conversation extends AggregateRoot {
     }
 
     /**
+     * The customer reopened the conversation (16 §5): it goes back to whoever looks after the customer now, not to
+     * whoever had it when it ended. An ended conversation is left out when the owner changes ({@link #followOwner})
+     * and when its agent's account stops working ({@link #requeueFrom}), so the agent it kept may be someone who no
+     * longer looks after the customer - a former owner after a transfer - or nobody at all - a locked account. Done by
+     * the system, after the reopening is stored (the database judges one move at a time):
+     * <ul>
+     *   <li>the customer's acting salesperson (owner or cover, who answers customers) gets it, keeping REOPENED;</li>
+     *   <li>with none, an agent who no longer answers customers gives it back to the queue, flagged first as
+     *       {@link #requeueFrom} does (BR-S08);</li>
+     *   <li>with none, an agent who still answers keeps it: the customer has nobody else (a manager who served a
+     *       customer without an owner, say), and the queue would take it from the one person who knows it.</li>
+     * </ul>
+     *
+     * @param actingAgent    the customer's acting salesperson who answers customers; null when there is none
+     * @param agentAnswers   whether the agent on it still answers customers
+     * @return whether it changed hands
+     */
+    public boolean rerouteOnReopen(UUID actingAgent, boolean agentAnswers, Instant now) {
+        if (status != ConversationStatus.REOPENED) {
+            return false;
+        }
+        UUID previous = assignedAgentId;
+        if (actingAgent != null) {
+            if (actingAgent.equals(previous)) {
+                return false;
+            }
+            giveTo(actingAgent, now);
+            record(previous == null ? ConversationEventType.ASSIGNED : ConversationEventType.TRANSFERRED,
+                    Actor.system(), now, null, actingAgent, REOPEN_REROUTED_NOTE, previous == null ? null
+                            : "{\"previousAgent\":\"" + previous + "\",\"reason\":\"REOPENED\"}");
+            return true;
+        }
+        return previous != null && !agentAnswers && requeueFrom(previous, now);
+    }
+
+    /** The log's note on a reopened conversation handed to whoever looks after the customer now. English, stored. */
+    public static final String REOPEN_REROUTED_NOTE = "Reopened: handed to whoever looks after the customer now";
+
+    /**
      * Hands the conversation to {@code agentId}: a supervisor assigns one nobody has (16 §2), the agent in charge or a
      * supervisor transfers one to a colleague (16 edge case "agent nghỉ": everything goes with it - context, notes,
      * history - because they are the conversation's, not the agent's). Whether {@code agentId} answers customers at
