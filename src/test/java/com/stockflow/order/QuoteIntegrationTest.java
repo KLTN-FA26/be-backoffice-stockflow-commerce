@@ -735,6 +735,53 @@ class QuoteIntegrationTest {
         assertThat(itemsOf(neverOrdered.sku())).as("a SKU no order named has no item").isZero();
     }
 
+    @Test
+    @DisplayName("a blocked blank stops its customers' SKUs at send, accept and convert (SOURCE_VARIANT_NOT_ACTIVE); "
+            + "activated again they sell, the SKU never touched")
+    void aBlockedBlankStopsItsCustomersSkusAtEveryStep() {
+        CustomerSkuRows.Issued issued = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, PER_CARTON);
+        Instant validUntil = Instant.now().plus(Duration.ofDays(7));
+        List<Quotes.Line> lines = List.of(new Quotes.Line(issued.sku(), 3,
+                List.of(new Quotes.Tier(2, new BigDecimal("3000")))));
+        Quotes.QuoteView drafted = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                new Quotes.Draft(validUntil, null, lines, null, List.of())));
+
+        blank(issued, "BLOCKED");
+        assertBlankRefused(() -> quotes.send(sales, drafted.id(), drafted.version()));
+        blank(issued, "ACTIVE");
+        Quotes.QuoteView sent = quotes.send(sales, drafted.id(), drafted.version());
+
+        blank(issued, "BLOCKED");
+        long seen = quotes.get(portal, sent.id()).version();
+        assertBlankRefused(() -> quotes.accept(portal, sent.id(), new Quotes.Acceptance(seen, Map.of())));
+        blank(issued, "ACTIVE");
+        Quotes.QuoteView accepted = quotes.accept(portal, sent.id(), new Quotes.Acceptance(
+                quotes.get(portal, sent.id()).version(), Map.of()));
+
+        blank(issued, "BLOCKED");
+        assertBlankRefused(() -> quotes.convert(sales, accepted.id(),
+                new Quotes.Conversion(accepted.version(), null, null)));
+        blank(issued, "ACTIVE");
+        assertThat(quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
+                .convertedOrder().orderId()).isNotNull();
+        assertThat(jdbc.queryForObject("SELECT status FROM product.customer_skus WHERE sku = ?", String.class,
+                issued.sku())).as("blocking the blank never touched the customer's SKU").isEqualTo("ACTIVE");
+    }
+
+    /** The status of the catalogue variant {@code issued} is drawn on, as blocking or activating it leaves it. */
+    private void blank(CustomerSkuRows.Issued issued, String status) {
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE product.variants SET status = ? WHERE id = ?", status,
+                issued.sourceVariantId()));
+    }
+
+    private static void assertBlankRefused(org.assertj.core.api.ThrowableAssert.ThrowingCallable step) {
+        assertThatThrownBy(step).isInstanceOfSatisfying(BusinessException.class, e -> {
+            assertThat(e.errorCode()).isEqualTo(ErrorCode.SKU_NOT_SELLABLE);
+            assertThat(e.fieldErrors()).extracting(com.stockflow.common.api.FieldError::code)
+                    .containsExactly("SOURCE_VARIANT_NOT_ACTIVE");
+        });
+    }
+
     /** Drafted (its plate fee priced), sent, accepted as offered and converted: the DRAFT order of {@code sku}. */
     private UUID convertedOrderOf(String sku) {
         Instant validUntil = Instant.now().plus(Duration.ofDays(7));
