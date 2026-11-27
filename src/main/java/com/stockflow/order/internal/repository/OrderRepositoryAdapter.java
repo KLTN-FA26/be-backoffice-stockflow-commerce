@@ -372,6 +372,23 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
     }
 
     @Override
+    public Map<UUID, String> firstLineSkus(Collection<UUID> orderIds) {
+        if (orderIds.isEmpty()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT DISTINCT ON (order_id) order_id, sku FROM ordering.order_line
+                         WHERE order_id IN (:orders)
+                         ORDER BY order_id, id""")
+                .setParameter("orders", List.copyOf(new java.util.HashSet<>(orderIds)))
+                .getResultList();
+        Map<UUID, String> skus = new HashMap<>();
+        rows.forEach(r -> skus.put((UUID) r[0], (String) r[1]));
+        return skus;
+    }
+
+    @Override
     public java.util.Set<UUID> withShipments(Collection<UUID> orderIds) {
         if (orderIds.isEmpty()) {
             return java.util.Set.of();

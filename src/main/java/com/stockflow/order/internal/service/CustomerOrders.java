@@ -94,10 +94,20 @@ public interface CustomerOrders {
     /**
      * @param cancellationRequestStatus the status of the customer's latest cancellation request (PENDING, APPROVED
      *                                  or REJECTED); null when they never asked
+     * @param firstItemName             what the first line is, as a quote row names its first item: the design the
+     *                                  line's SKU was made to, else the SKU; null for an order with no line. A card
+     *                                  with only a line count told the customer's orders apart by number alone
      */
     record Card(UUID orderId, String orderNumber, OrderStatus status, StatusGroup statusGroup, BigDecimal total,
                 String currency, Instant placedAt, int lineCount, DeliveryState deliveryState,
-                String cancellationRequestStatus) {
+                String cancellationRequestStatus, String firstItemName) {
+
+        public Card(UUID orderId, String orderNumber, OrderStatus status, StatusGroup statusGroup, BigDecimal total,
+                    String currency, Instant placedAt, int lineCount, DeliveryState deliveryState,
+                    String cancellationRequestStatus) {
+            this(orderId, orderNumber, status, statusGroup, total, currency, placedAt, lineCount, deliveryState,
+                    cancellationRequestStatus, null);
+        }
     }
 
     /**
